@@ -703,20 +703,6 @@ func TestIsHealthCheck(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "returns false for context with wrong value type",
-			setupCtx: func() context.Context {
-				return context.WithValue(context.Background(), healthCheckContextKey{}, "not-a-bool")
-			},
-			expected: false,
-		},
-		{
-			name: "returns false for context with false value",
-			setupCtx: func() context.Context {
-				return context.WithValue(context.Background(), healthCheckContextKey{}, false)
-			},
-			expected: false,
-		},
-		{
 			name: "returns true when nested in parent context",
 			setupCtx: func() context.Context {
 				markedCtx := WithHealthCheckMarker(context.Background())

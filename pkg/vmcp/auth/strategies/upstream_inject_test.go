@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types" // BackendAuthStrategy, ErrUpstreamTokenNotFound
-	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
 func TestUpstreamInjectStrategy_Name(t *testing.T) {
@@ -118,7 +118,7 @@ func TestUpstreamInjectStrategy_Authenticate(t *testing.T) {
 		},
 		{
 			name:     "health check bypass",
-			setupCtx: func() context.Context { return health.WithHealthCheckMarker(context.Background()) },
+			setupCtx: func() context.Context { return healthcontext.WithHealthCheckMarker(context.Background()) },
 			strategy: &authtypes.BackendAuthStrategy{
 				Type: authtypes.StrategyTypeUpstreamInject,
 				UpstreamInject: &authtypes.UpstreamInjectConfig{

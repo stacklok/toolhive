@@ -32,6 +32,7 @@ import (
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
+	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
 const (
@@ -168,19 +169,31 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-// identityPropagatingRoundTripper propagates identity to backend HTTP requests.
+// identityPropagatingRoundTripper propagates identity and health-check markers to backend HTTP requests.
 // This ensures that identity information from the vMCP handler is available for authentication
 // strategies that need it (e.g., token exchange).
+//
+// The health-check marker is stored at transport creation time and re-injected into every
+// outgoing request, including the DELETE that mcp-go sends when closing a streamable-HTTP
+// session. Without this, mcp-go's Close() creates a fresh context.Background()-based request
+// that loses the health-check marker, causing auth strategies (UpstreamInjectStrategy,
+// TokenExchangeStrategy) to fail with "no identity found in context".
 type identityPropagatingRoundTripper struct {
-	base     http.RoundTripper
-	identity *auth.Identity
+	base          http.RoundTripper
+	identity      *auth.Identity
+	isHealthCheck bool
 }
 
-// RoundTrip implements http.RoundTripper by adding identity to the request context.
+// RoundTrip implements http.RoundTripper by adding identity and health-check marker to the request context.
 func (i *identityPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx := req.Context()
 	if i.identity != nil {
-		// Add identity to the request's context
-		ctx := auth.WithIdentity(req.Context(), i.identity)
+		ctx = auth.WithIdentity(ctx, i.identity)
+	}
+	if i.isHealthCheck {
+		ctx = healthcontext.WithHealthCheckMarker(ctx)
+	}
+	if i.identity != nil || i.isHealthCheck {
 		req = req.Clone(ctx)
 	}
 	return i.base.RoundTrip(req)
@@ -283,12 +296,16 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		target:       target,
 	}
 
-	// Extract identity from context and propagate it to backend requests
-	// This ensures authentication strategies (e.g., token exchange) can access identity
+	// Extract identity and health-check marker from context and propagate them to backend
+	// requests. The health-check marker must be carried through to the DELETE request that
+	// mcp-go emits when closing a streamable-HTTP session: mcp-go creates that request with
+	// context.Background(), which loses both the identity and the health-check marker that
+	// were present on the original ListCapabilities call context.
 	identity, _ := auth.IdentityFromContext(ctx)
 	baseTransport = &identityPropagatingRoundTripper{
-		base:     baseTransport,
-		identity: identity,
+		base:          baseTransport,
+		identity:      identity,
+		isHealthCheck: healthcontext.IsHealthCheck(ctx),
 	}
 
 	// Inject W3C Trace Context headers (traceparent/tracestate) into outgoing requests.

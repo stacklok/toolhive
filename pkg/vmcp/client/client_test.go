@@ -33,11 +33,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/mock/gomock"
 
+	pkgauth "github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authmocks "github.com/stacklok/toolhive/pkg/vmcp/auth/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
 func TestHTTPBackendClient_ListCapabilities_WithMockFactory(t *testing.T) {
@@ -1019,4 +1021,126 @@ func TestWrapBackendError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// identityPropagatingRoundTripper
+// ---------------------------------------------------------------------------
+
+func TestIdentityPropagatingRoundTripper_WithIdentity_PropagatesIdentityInContext(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	identity := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "user-1"}}
+	rt := &identityPropagatingRoundTripper{base: base, identity: identity}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
+	require.True(t, ok, "identity should be in downstream request context")
+	assert.Equal(t, "user-1", got.Subject)
+}
+
+func TestIdentityPropagatingRoundTripper_NilIdentity_NoIdentityInContext(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	rt := &identityPropagatingRoundTripper{base: base, identity: nil}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	_, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
+	assert.False(t, ok, "no identity should be in downstream context when nil identity configured")
+}
+
+func TestIdentityPropagatingRoundTripper_HealthCheck_PropagatesMarker(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: true}
+
+	// Simulate mcp-go Close(): request created with context.Background(), no health check marker.
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	assert.True(t, healthcontext.IsHealthCheck(base.capturedReq.Context()),
+		"health check marker should be propagated even when original request context lacks it")
+}
+
+func TestIdentityPropagatingRoundTripper_NonHealthCheck_NoMarkerAdded(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: false}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	assert.False(t, healthcontext.IsHealthCheck(base.capturedReq.Context()),
+		"health check marker should not be injected for non-health-check transports")
+}
+
+func TestIdentityPropagatingRoundTripper_HealthCheckWithIdentity_PropagatesBoth(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	identity := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "svc-account"}}
+	rt := &identityPropagatingRoundTripper{base: base, identity: identity, isHealthCheck: true}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
+	require.True(t, ok)
+	assert.Equal(t, "svc-account", got.Subject)
+	assert.True(t, healthcontext.IsHealthCheck(base.capturedReq.Context()))
+}
+
+// TestIdentityPropagatingRoundTripper_HealthCheckClose_OriginalRequestContextUnchanged verifies
+// that when the transport is in health-check mode, RoundTrip injects the health-check marker
+// into the downstream request's context without mutating the original request context. This
+// covers requests (e.g. the DELETE mcp-go emits on Close()) whose context does not already
+// carry the marker.
+func TestIdentityPropagatingRoundTripper_HealthCheckClose_OriginalRequestContextUnchanged(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: true}
+
+	originalCtx := context.Background() // no health check marker — simulates mcp-go Close()
+	req, err := http.NewRequestWithContext(originalCtx, http.MethodDelete, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	// Original request context must NOT be modified.
+	assert.False(t, healthcontext.IsHealthCheck(originalCtx),
+		"original request context must not be mutated")
+	// But downstream context MUST have the marker.
+	require.NotNil(t, base.capturedReq)
+	assert.True(t, healthcontext.IsHealthCheck(base.capturedReq.Context()),
+		"downstream request must carry health check marker")
 }

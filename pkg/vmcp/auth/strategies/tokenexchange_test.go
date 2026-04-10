@@ -18,7 +18,7 @@ import (
 	"github.com/stacklok/toolhive-core/env/mocks"
 	"github.com/stacklok/toolhive/pkg/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
-	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
 // Test constants
@@ -108,7 +108,7 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 	}{
 		{
 			name:     "health check without client credentials skips authentication",
-			setupCtx: func() context.Context { return health.WithHealthCheckMarker(context.Background()) },
+			setupCtx: func() context.Context { return healthcontext.WithHealthCheckMarker(context.Background()) },
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 					t.Error("token endpoint should not be called when no client credentials are configured")
@@ -125,7 +125,7 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 		},
 		{
 			name:     "health check with client credentials uses client credentials grant",
-			setupCtx: func() context.Context { return health.WithHealthCheckMarker(context.Background()) },
+			setupCtx: func() context.Context { return healthcontext.WithHealthCheckMarker(context.Background()) },
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					t.Helper()

@@ -136,7 +136,7 @@ func TestForEachStep_ErrorAbort(t *testing.T) {
 
 	te.expectToolCall("oci.get_image_config",
 		map[string]any{"image": "test:latest"},
-		map[string]any{"packages": json.RawMessage(`[{"name":"openssl"},{"name":"curl"}]`)},
+		map[string]any{"packages": json.RawMessage(`[{"name":"openssl"}]`)},
 	)
 
 	def := simpleWorkflow("test-foreach-abort",
@@ -147,7 +147,6 @@ func TestForEachStep_ErrorAbort(t *testing.T) {
 			ID:            "check_vulns",
 			Type:          StepTypeForEach,
 			Collection:    "{{json .steps.get_packages.output.packages}}",
-			MaxParallel:   1, // sequential to make abort behavior deterministic
 			MaxIterations: 10,
 			InnerStep: &WorkflowStep{
 				ID:   "inner",

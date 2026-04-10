@@ -2345,9 +2345,12 @@ const docTemplate = `{
             "pkg_api_v1.installSkillRequest": {
                 "description": "Request to install a skill",
                 "properties": {
-                    "client": {
-                        "description": "Client is the target client (e.g., \"claude-code\")",
-                        "type": "string"
+                    "clients": {
+                        "description": "Clients lists target client identifiers (e.g., \"claude-code\"). Omit for default client.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array"
                     },
                     "force": {
                         "description": "Force allows overwriting unmanaged skill directories",

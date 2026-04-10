@@ -25,7 +25,7 @@ thv skill install [skill-name] [flags]
 ### Options
 
 ```
-      --client string         Target client application (e.g. claude-code)
+      --clients string        Comma-separated target client applications (e.g. claude-code,opencode)
       --force                 Overwrite existing skill directory
       --group string          Group to add the skill to after installation
   -h, --help                  help for install

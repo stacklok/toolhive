@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 REPO = "stacklok/toolhive"
 WORKFLOW_NAME = "Main build"
 PER_PAGE = 100
-MAX_PAGES = 3  # Up to 300 runs; increase if needed
+MAX_PAGES = 3  # Pages of all push-triggered workflow runs (not just Main build)
 
 
 def gh_api(endpoint):
@@ -148,11 +148,19 @@ def main():
         ginkgo_fails = extract_ginkgo_failures(log_lines)
         for test_name in ginkgo_fails:
             job = "unknown"
-            for line in log_lines:
+            fail_line_idx = None
+            for i, line in enumerate(log_lines):
                 if '[FAIL]' in line and test_name.split('[It]')[0].strip()[:20] in strip_ansi(line):
                     job = extract_job_name(line)
+                    fail_line_idx = i
                     break
-            mode = extract_failure_mode(log_text)
+            # Extract per-test log context (50 lines before the [FAIL] line)
+            if fail_line_idx is not None:
+                start = max(0, fail_line_idx - 50)
+                test_log = "\n".join(log_lines[start:fail_line_idx + 1])
+            else:
+                test_log = log_text
+            mode = extract_failure_mode(test_log)
             results.append((test_name, {
                 "run_id": run_id, "date": run_date, "job": job, "mode": mode,
             }))
@@ -165,11 +173,19 @@ def main():
                 if parent in unit_fails:
                     continue
             job = "unknown"
-            for line in log_lines:
+            fail_line_idx = None
+            for i, line in enumerate(log_lines):
                 if '❌' in line and test_name in line:
                     job = extract_job_name(line)
+                    fail_line_idx = i
                     break
-            mode = extract_failure_mode(log_text)
+            # Extract per-test log context (50 lines before the ❌ line)
+            if fail_line_idx is not None:
+                start = max(0, fail_line_idx - 50)
+                test_log = "\n".join(log_lines[start:fail_line_idx + 1])
+            else:
+                test_log = log_text
+            mode = extract_failure_mode(test_log)
             results.append((test_name, {
                 "run_id": run_id, "date": run_date, "job": job, "mode": mode,
             }))
@@ -185,8 +201,13 @@ def main():
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {pool.submit(process_run, run): run for run in failed_runs}
         for future in as_completed(futures):
-            for test_name, occurrence in future.result():
-                test_failures[test_name].append(occurrence)
+            run = futures[future]
+            try:
+                for test_name, occurrence in future.result():
+                    test_failures[test_name].append(occurrence)
+            except Exception as e:
+                print(f"Warning: failed to process run {run['id']}: {e}",
+                      file=sys.stderr)
 
     # Sort by failure count descending
     ranked = sorted(test_failures.items(), key=lambda x: -len(x[1]))

@@ -14,6 +14,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
+// retryAfterSecs tells MCP clients how long to wait before retrying.
+// Matches the initial MonitoredTokenSource backoff interval so that clients
+// retry around the same time the next token refresh attempt happens.
+const retryAfterSecs = "10"
+
 // CreateTokenInjectionMiddleware returns a middleware that injects a Bearer token
 // from the provided oauth2.TokenSource. It returns 503 Service Unavailable with a
 // Retry-After header when the token cannot be retrieved, so that MCP clients treat
@@ -29,7 +34,7 @@ func CreateTokenInjectionMiddleware(tokenSource oauth2.TokenSource) types.Middle
 					// the workload as unauthenticated in its Token() method.
 					// Return 503 instead of 401 so MCP clients do not mistake this
 					// for a server that requires client-side OAuth authentication.
-					w.Header().Set("Retry-After", "10")
+					w.Header().Set("Retry-After", retryAfterSecs)
 					http.Error(w, "Token temporarily unavailable", http.StatusServiceUnavailable)
 					return
 				}

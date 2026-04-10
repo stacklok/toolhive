@@ -43,7 +43,7 @@ func TestCreateTokenInjectionMiddleware(t *testing.T) {
 			},
 			wantStatus:      http.StatusServiceUnavailable,
 			wantNextCalled:  false,
-			wantRetryAfter:  "10",
+			wantRetryAfter:  retryAfterSecs,
 			wantBodyContain: "Token temporarily unavailable",
 		},
 		{

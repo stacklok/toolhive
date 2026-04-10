@@ -311,7 +311,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	if r.Config.RemoteURL == "" {
 		// Check policy gate before creating the server
-		if err := activePolicyGate().CheckCreateServer(ctx, r.Config); err != nil {
+		if err := ActivePolicyGate().CheckCreateServer(ctx, r.Config); err != nil {
 			return fmt.Errorf("server creation blocked by policy: %w", err)
 		}
 

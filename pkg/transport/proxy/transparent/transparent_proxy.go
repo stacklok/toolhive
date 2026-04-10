@@ -736,7 +736,7 @@ func (r *backendRecovery) podBackendURL(capturedAddr string) string {
 	if err != nil {
 		return r.targetURI
 	}
-	if parsed.Scheme == "https" {
+	if parsed.Scheme == "https" { //nolint:goconst // protocol name, not a magic string
 		return r.targetURI
 	}
 	parsed.Host = capturedAddr
@@ -788,6 +788,7 @@ func followRedirects(
 		}
 
 		// Block HTTPS-to-HTTP downgrades to prevent silent loss of transport security.
+		//nolint:goconst // "https" is a protocol name, not a magic string worth extracting
 		if req.URL.Scheme == "https" && redirectURL.Scheme == "http" {
 			slog.Warn("refusing redirect that downgrades from HTTPS to HTTP",
 				"from", req.URL.String(), "to", redirectURL.String())

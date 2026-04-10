@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -119,7 +120,14 @@ func rateLimitHandler(limiter Limiter) types.MiddlewareFunction {
 				return
 			}
 
-			decision, err := limiter.Allow(r.Context(), parsed.ResourceID, "")
+			// When no identity is present (unauthenticated), userID stays empty
+			// and per-user buckets are skipped — only shared limits apply. CEL
+			// validation ensures perUser rate limits require auth to be enabled.
+			var userID string
+			if identity, ok := auth.IdentityFromContext(r.Context()); ok {
+				userID = identity.Subject
+			}
+			decision, err := limiter.Allow(r.Context(), parsed.ResourceID, userID)
 			if err != nil {
 				slog.Warn("rate limit check failed, allowing request", "error", err)
 				next.ServeHTTP(w, r)

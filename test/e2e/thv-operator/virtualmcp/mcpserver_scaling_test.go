@@ -309,17 +309,21 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 			defer startCancel()
 			gomega.Expect(clientB.Start(startCtx)).To(gomega.Succeed())
 
-			ginkgo.By("Listing tools on proxy B using the session from proxy A")
-			listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer listCancel()
-			toolsB, err := clientB.ListTools(listCtx, mcp.ListToolsRequest{})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(toolsB.Tools).NotTo(gomega.BeEmpty(),
-				"proxy B should return tools via Redis-shared session")
-
-			ginkgo.By("Verifying both proxies returned the same tool count")
-			gomega.Expect(toolsB.Tools).To(gomega.HaveLen(len(toolsA.Tools)),
-				"Both proxy replicas should see the same session state and return identical tools")
+			// Proxy B must route the session's backend requests to the correct
+			// backend pod (the one that handled initialize on proxy A). With 2
+			// backends and random ClusterIP routing, P(all 5 hit the right pod
+			// by chance) ≈ 3%, so 5 consecutive successes give high confidence
+			// that Redis-backed session routing is working.
+			ginkgo.By("Sending 5 requests on proxy B to verify consistent backend routing")
+			for i := range 5 {
+				listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				toolsB, listErr := clientB.ListTools(listCtx, mcp.ListToolsRequest{})
+				listCancel()
+				gomega.Expect(listErr).NotTo(gomega.HaveOccurred(),
+					"Request %d/5 on proxy B should succeed — session should route to the correct backend", i+1)
+				gomega.Expect(toolsB.Tools).To(gomega.HaveLen(len(toolsA.Tools)),
+					"Request %d/5 on proxy B should return the same tools as proxy A", i+1)
+			}
 		})
 	})
 

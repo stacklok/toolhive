@@ -8,7 +8,6 @@ package script
 
 import (
 	"context"
-	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -49,6 +48,10 @@ type Tool struct {
 	// Call invokes the tool with the given arguments and returns the MCP result.
 	// Arguments are always a string-keyed map. When scripts use positional
 	// arguments, they are converted to "arg0", "arg1", etc.
+	//
+	// The caller is responsible for enforcing per-call timeouts (e.g., by
+	// wrapping ctx with context.WithTimeout in the closure). The engine
+	// passes the context through but does not apply additional deadlines.
 	Call func(ctx context.Context, arguments map[string]interface{}) (*mcp.CallToolResult, error)
 }
 
@@ -63,10 +66,6 @@ type Config struct {
 	// ParallelMax is the maximum number of concurrent goroutines that
 	// parallel() can spawn. Zero means unlimited.
 	ParallelMax int
-
-	// ToolCallTimeout is the maximum duration for a single tool call
-	// within a script. Zero means no timeout.
-	ToolCallTimeout time.Duration
 }
 
 // New creates an Executor bound to the given tools and configuration.

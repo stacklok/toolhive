@@ -95,18 +95,54 @@ def extract_job_name(line):
 def extract_failure_mode(log_text):
     """Determine failure mode from log content."""
     clean = strip_ansi(log_text)
+    # Also strip literal ANSI-like codes
+    clean = re.sub(r'\[\d+;\d+m', '', clean)
+    clean = re.sub(r'\[0m', '', clean)
     if re.search(r'Timed out after [\d.]+s', clean):
         match = re.search(r'Timed out after ([\d.]+)s', clean)
         return f"timeout ({match.group(1)}s)" if match else "timeout"
-    if 'Expected' in clean and 'to equal' in clean:
-        return "assertion"
+    if 'Server should be running' in clean:
+        return "server startup timeout"
     if 'panic:' in clean:
         return "panic"
     if 'connection refused' in clean.lower():
         return "connection refused"
-    if 'Server should be running' in clean:
-        return "server startup timeout"
+    if 'Expected' in clean and 'to equal' in clean:
+        return "assertion"
     return "assertion"
+
+
+def find_failure_context(log_lines, test_name, fail_line_idx):
+    """Find the [FAILED] block associated with a test near its [FAIL] summary line.
+
+    Ginkgo logs have two relevant markers:
+    - [FAILED] with the failure reason (e.g., "Timed out after 120s") — appears
+      in the failure block, potentially thousands of lines before the summary
+    - [FAIL] with the test name — appears in the summary section at the end
+
+    Search backwards from the [FAIL] line for the nearest [FAILED] block that
+    belongs to this test, then extract context around it.
+    """
+    # Search backwards from the fail summary line for [FAILED].
+    # Ginkgo emits multiple [FAILED] lines per test failure — the first has
+    # the reason (e.g., "Timed out after 120s"), later ones are summaries.
+    # Collect all [FAILED] lines in the block and return context around them.
+    search_start = max(0, fail_line_idx - 5000)
+    failed_lines = []
+    for i in range(fail_line_idx, search_start, -1):
+        clean_line = strip_ansi(log_lines[i])
+        if '[FAILED]' in clean_line:
+            failed_lines.append(i)
+    if failed_lines:
+        # Use the earliest (first) [FAILED] line — it has the failure reason
+        earliest = min(failed_lines)
+        latest = max(failed_lines)
+        start = max(0, earliest - 5)
+        end = min(len(log_lines), latest + 5)
+        return "\n".join(log_lines[start:end])
+    # Fallback: use lines around the [FAIL] summary
+    start = max(0, fail_line_idx - 50)
+    return "\n".join(log_lines[start:fail_line_idx + 1])
 
 
 def main():
@@ -154,10 +190,9 @@ def main():
                     job = extract_job_name(line)
                     fail_line_idx = i
                     break
-            # Extract per-test log context (50 lines before the [FAIL] line)
+            # Find the [FAILED] block for this test to get accurate failure mode
             if fail_line_idx is not None:
-                start = max(0, fail_line_idx - 50)
-                test_log = "\n".join(log_lines[start:fail_line_idx + 1])
+                test_log = find_failure_context(log_lines, test_name, fail_line_idx)
             else:
                 test_log = log_text
             mode = extract_failure_mode(test_log)

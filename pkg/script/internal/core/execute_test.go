@@ -4,171 +4,147 @@
 package core
 
 import (
-	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.starlark.net/starlark"
 )
 
-func TestExecute_BasicReturn(t *testing.T) {
+func TestExecute(t *testing.T) {
 	t.Parallel()
 
-	result, err := Execute(`return 42`, nil, 100_000)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	intVal, ok := result.Value.(starlark.Int)
-	if !ok {
-		t.Fatalf("expected Int, got %T", result.Value)
-	}
-	got, _ := intVal.Int64()
-	if got != 42 {
-		t.Errorf("expected 42, got %d", got)
-	}
-}
-
-func TestExecute_StringReturn(t *testing.T) {
-	t.Parallel()
-
-	result, err := Execute(`return "hello"`, nil, 100_000)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	strVal, ok := result.Value.(starlark.String)
-	if !ok {
-		t.Fatalf("expected String, got %T", result.Value)
-	}
-	if string(strVal) != "hello" {
-		t.Errorf("expected 'hello', got %q", strVal)
-	}
-}
-
-func TestExecute_NoReturn(t *testing.T) {
-	t.Parallel()
-
-	result, err := Execute(`x = 1 + 1`, nil, 100_000)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if result.Value != starlark.None {
-		t.Errorf("expected None for no return, got %v", result.Value)
-	}
-}
-
-func TestExecute_WithGlobals(t *testing.T) {
-	t.Parallel()
-
-	globals := starlark.StringDict{
-		"x": starlark.MakeInt(10),
-	}
-
-	result, err := Execute(`return x + 5`, globals, 100_000)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	intVal, ok := result.Value.(starlark.Int)
-	if !ok {
-		t.Fatalf("expected Int, got %T", result.Value)
-	}
-	got, _ := intVal.Int64()
-	if got != 15 {
-		t.Errorf("expected 15, got %d", got)
-	}
-}
-
-func TestExecute_PrintCapture(t *testing.T) {
-	t.Parallel()
-
-	result, err := Execute(`
+	tests := []struct {
+		name      string
+		script    string
+		globals   starlark.StringDict
+		stepLimit uint64
+		check     func(t *testing.T, result *ExecuteResult)
+		wantErr   string
+	}{
+		{
+			name:      "returns integer",
+			script:    `return 42`,
+			stepLimit: 100_000,
+			check: func(t *testing.T, result *ExecuteResult) {
+				t.Helper()
+				intVal, ok := result.Value.(starlark.Int)
+				require.True(t, ok, "expected Int, got %T", result.Value)
+				got, _ := intVal.Int64()
+				require.Equal(t, int64(42), got)
+			},
+		},
+		{
+			name:      "returns string",
+			script:    `return "hello"`,
+			stepLimit: 100_000,
+			check: func(t *testing.T, result *ExecuteResult) {
+				t.Helper()
+				strVal, ok := result.Value.(starlark.String)
+				require.True(t, ok, "expected String, got %T", result.Value)
+				require.Equal(t, "hello", string(strVal))
+			},
+		},
+		{
+			name:      "no return yields None",
+			script:    `x = 1 + 1`,
+			stepLimit: 100_000,
+			check: func(t *testing.T, result *ExecuteResult) {
+				t.Helper()
+				require.Equal(t, starlark.None, result.Value)
+			},
+		},
+		{
+			name:      "uses predeclared globals",
+			script:    `return x + 5`,
+			globals:   starlark.StringDict{"x": starlark.MakeInt(10)},
+			stepLimit: 100_000,
+			check: func(t *testing.T, result *ExecuteResult) {
+				t.Helper()
+				intVal, ok := result.Value.(starlark.Int)
+				require.True(t, ok)
+				got, _ := intVal.Int64()
+				require.Equal(t, int64(15), got)
+			},
+		},
+		{
+			name: "captures print output",
+			script: `
 print("line1")
 print("line2")
 return "done"
-`, nil, 100_000)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(result.Logs) != 2 {
-		t.Fatalf("expected 2 log lines, got %d", len(result.Logs))
-	}
-	if result.Logs[0] != "line1" || result.Logs[1] != "line2" {
-		t.Errorf("unexpected logs: %v", result.Logs)
-	}
-}
-
-func TestExecute_StepLimitExceeded(t *testing.T) {
-	t.Parallel()
-
-	// A tight loop with a very small step limit should fail
-	_, err := Execute(`
+`,
+			stepLimit: 100_000,
+			check: func(t *testing.T, result *ExecuteResult) {
+				t.Helper()
+				require.Equal(t, []string{"line1", "line2"}, result.Logs)
+			},
+		},
+		{
+			name: "step limit exceeded",
+			script: `
 x = 0
 for i in range(10000):
     x = x + 1
 return x
-`, nil, 100)
-
-	if err == nil {
-		t.Fatal("expected step limit error, got nil")
-	}
-	if !strings.Contains(err.Error(), "too many steps") {
-		t.Errorf("error should mention too many steps, got: %v", err)
-	}
-}
-
-func TestExecute_SyntaxError(t *testing.T) {
-	t.Parallel()
-
-	_, err := Execute(`return ][`, nil, 100_000)
-	if err == nil {
-		t.Fatal("expected syntax error, got nil")
-	}
-}
-
-func TestExecute_LoopsAndConditionals(t *testing.T) {
-	t.Parallel()
-
-	result, err := Execute(`
+`,
+			stepLimit: 100,
+			wantErr:   "too many steps",
+		},
+		{
+			name:      "syntax error",
+			script:    `return ][`,
+			stepLimit: 100_000,
+			wantErr:   "script execution failed",
+		},
+		{
+			name: "loops and conditionals",
+			script: `
 items = [1, 2, 3, 4, 5]
 total = 0
 for item in items:
     if item % 2 == 0:
         total = total + item
 return total
-`, nil, 100_000)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	intVal, ok := result.Value.(starlark.Int)
-	if !ok {
-		t.Fatalf("expected Int, got %T", result.Value)
-	}
-	got, _ := intVal.Int64()
-	if got != 6 {
-		t.Errorf("expected 6 (2+4), got %d", got)
-	}
-}
-
-func TestExecute_DictReturn(t *testing.T) {
-	t.Parallel()
-
-	result, err := Execute(`
+`,
+			stepLimit: 100_000,
+			check: func(t *testing.T, result *ExecuteResult) {
+				t.Helper()
+				intVal, ok := result.Value.(starlark.Int)
+				require.True(t, ok)
+				got, _ := intVal.Int64()
+				require.Equal(t, int64(6), got)
+			},
+		},
+		{
+			name: "returns dict",
+			script: `
 d = {"key": "value", "count": 42}
 return d
-`, nil, 100_000)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+`,
+			stepLimit: 100_000,
+			check: func(t *testing.T, result *ExecuteResult) {
+				t.Helper()
+				dictVal, ok := result.Value.(*starlark.Dict)
+				require.True(t, ok, "expected Dict, got %T", result.Value)
+				require.Equal(t, 2, dictVal.Len())
+			},
+		},
 	}
 
-	dictVal, ok := result.Value.(*starlark.Dict)
-	if !ok {
-		t.Fatalf("expected Dict, got %T", result.Value)
-	}
-	if dictVal.Len() != 2 {
-		t.Errorf("expected 2 entries, got %d", dictVal.Len())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := Execute(tt.script, tt.globals, tt.stepLimit)
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			tt.check(t, result)
+		})
 	}
 }

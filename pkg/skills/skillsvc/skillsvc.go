@@ -805,7 +805,7 @@ func (s *service) applyGitInstallExisting(
 		return &skills.InstallResult{Skill: existing}, nil
 	}
 	for _, ct := range toWrite {
-		dir := clientDirs[ct]
+		dir := filepath.Clean(clientDirs[ct])
 		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force {
 			return nil, httperr.WithCode(
 				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
@@ -836,7 +836,7 @@ func (s *service) applyGitInstallFresh(
 	files []gitresolver.FileEntry,
 ) (*skills.InstallResult, error) {
 	for _, ct := range clientTypes {
-		dir := clientDirs[ct]
+		dir := filepath.Clean(clientDirs[ct])
 		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force {
 			return nil, httperr.WithCode(
 				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
@@ -864,21 +864,21 @@ func (s *service) gitWriteMultiAndPersist(
 ) (*skills.InstallResult, error) {
 	var written []string
 	for _, ct := range dirsToWrite {
-		dir := clientDirs[ct]
+		dir := filepath.Clean(clientDirs[ct])
 		writeMode := opts.Force
 		if writeAggressive {
 			writeMode = true
 		}
 		if writeErr := gitresolver.WriteFiles(files, dir, writeMode); writeErr != nil {
 			for _, wct := range written {
-				_ = s.installer.Remove(clientDirs[wct])
+				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
 			}
 			return nil, fmt.Errorf("writing git skill: %w", writeErr)
 		}
 		if checkErr := skills.CheckFilesystem(dir); checkErr != nil {
 			_ = s.installer.Remove(dir)
 			for _, wct := range written {
-				_ = s.installer.Remove(clientDirs[wct])
+				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
 			}
 			return nil, fmt.Errorf("post-extraction verification failed: %w", checkErr)
 		}
@@ -889,14 +889,14 @@ func (s *service) gitWriteMultiAndPersist(
 	if isUpgrade {
 		if err := s.store.Update(ctx, sk); err != nil {
 			for _, wct := range written {
-				_ = s.installer.Remove(clientDirs[wct])
+				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
 			}
 			return nil, err
 		}
 	} else {
 		if err := s.store.Create(ctx, sk); err != nil {
 			for _, wct := range written {
-				_ = s.installer.Remove(clientDirs[wct])
+				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
 			}
 			return nil, err
 		}
@@ -1404,7 +1404,7 @@ func (s *service) installExtractionSameDigestNewClients(
 	}
 	var written []string
 	for _, ct := range toWrite {
-		dir := clientDirs[ct]
+		dir := filepath.Clean(clientDirs[ct])
 		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force {
 			removeSkillDirs(s.installer, clientDirs, written)
 			return nil, httperr.WithCode(
@@ -1428,7 +1428,7 @@ func (s *service) installExtractionSameDigestNewClients(
 
 func removeSkillDirs(inst skills.Installer, clientDirs map[string]string, clients []string) {
 	for _, ct := range clients {
-		_ = inst.Remove(clientDirs[ct])
+		_ = inst.Remove(filepath.Clean(clientDirs[ct]))
 	}
 }
 
@@ -1447,7 +1447,7 @@ func (s *service) installExtractionUpgradeDigest(
 	}
 	var written []string
 	for _, ct := range allClients {
-		dir := allDirs[ct]
+		dir := filepath.Clean(allDirs[ct])
 		if _, exErr := s.installer.Extract(opts.LayerData, dir, true); exErr != nil {
 			removeSkillDirs(s.installer, allDirs, written)
 			return nil, fmt.Errorf("extracting skill upgrade: %w", exErr)
@@ -1470,7 +1470,7 @@ func (s *service) installExtractionFresh(
 	clientDirs map[string]string,
 ) (*skills.InstallResult, error) {
 	for _, ct := range clientTypes {
-		dir := clientDirs[ct]
+		dir := filepath.Clean(clientDirs[ct])
 		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force {
 			return nil, httperr.WithCode(
 				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
@@ -1480,7 +1480,7 @@ func (s *service) installExtractionFresh(
 	}
 	var written []string
 	for _, ct := range clientTypes {
-		dir := clientDirs[ct]
+		dir := filepath.Clean(clientDirs[ct])
 		if _, exErr := s.installer.Extract(opts.LayerData, dir, opts.Force); exErr != nil {
 			removeSkillDirs(s.installer, clientDirs, written)
 			return nil, fmt.Errorf("extracting skill: %w", exErr)
@@ -1490,7 +1490,7 @@ func (s *service) installExtractionFresh(
 	sk := buildInstalledSkill(opts, scope, clientTypes, nil)
 	if err := s.store.Create(ctx, sk); err != nil {
 		for _, ct := range clientTypes {
-			_ = s.installer.Remove(clientDirs[ct])
+			_ = s.installer.Remove(filepath.Clean(clientDirs[ct]))
 		}
 		return nil, err
 	}

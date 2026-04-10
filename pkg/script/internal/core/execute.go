@@ -34,6 +34,9 @@ func Execute(script string, globals starlark.StringDict, stepLimit uint64) (*Exe
 		Print: func(_ *starlark.Thread, msg string) {
 			logs = append(logs, msg)
 		},
+		Load: func(_ *starlark.Thread, module string) (starlark.StringDict, error) {
+			return nil, fmt.Errorf("load(%q) is not permitted in scripts", module)
+		},
 	}
 
 	if stepLimit > 0 {

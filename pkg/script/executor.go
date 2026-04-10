@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -26,14 +25,26 @@ type executor struct {
 
 // Execute runs a Starlark script against the bound tools.
 func (e *executor) Execute(ctx context.Context, script string, data map[string]interface{}) (*mcp.CallToolResult, error) {
-	globals := e.buildGlobals(ctx, data)
+	globals, reserved := e.buildGlobals(ctx)
+
+	// Inject data arguments, rejecting any that shadow builtins or tools
+	for k, v := range data {
+		if reserved[k] {
+			return nil, fmt.Errorf("data argument %q conflicts with a builtin or tool name", k)
+		}
+		sv, err := conversions.GoToStarlark(v)
+		if err != nil {
+			return nil, fmt.Errorf("data argument %q: %w", k, err)
+		}
+		globals[k] = sv
+	}
 
 	result, err := core.Execute(script, globals, e.config.StepLimit)
 	if err != nil {
 		return nil, err
 	}
 
-	return e.buildResult(result)
+	return buildResult(result)
 }
 
 // ToolDescription returns the dynamic description for the virtual tool.
@@ -41,49 +52,22 @@ func (e *executor) ToolDescription() string {
 	return GenerateToolDescription(e.tools)
 }
 
-// buildGlobals creates the Starlark global environment from the bound tools
-// and data arguments.
-func (e *executor) buildGlobals(ctx context.Context, data map[string]interface{}) starlark.StringDict {
-	// Build tool maps
-	entries := make([]builtins.ToolEntry, len(e.tools))
+// buildGlobals creates the Starlark global environment from the bound tools.
+func (e *executor) buildGlobals(ctx context.Context) (starlark.StringDict, map[string]bool) {
+	defs := make([]builtins.ToolDef, len(e.tools))
 	for i, t := range e.tools {
-		entries[i] = builtins.ToolEntry{Name: t.Name, Call: t.Call}
-	}
-
-	byName, bySanitized, collisions := builtins.BuildToolMap(entries)
-	for _, warning := range collisions {
-		slog.Warn(warning)
-	}
-
-	// Build globals
-	globals := make(starlark.StringDict, len(bySanitized)+len(data)+2)
-
-	// Register each tool as a callable by its sanitized name
-	for sanitized, callFn := range bySanitized {
-		globals[sanitized] = builtins.MakeToolCallable(ctx, sanitized, callFn)
-	}
-
-	// Register call_tool() for name-based dispatch
-	globals["call_tool"] = builtins.NewCallTool(ctx, byName)
-
-	// Register parallel()
-	globals["parallel"] = builtins.NewParallel(e.config.ParallelMax)
-
-	// Inject data arguments as top-level variables
-	for k, v := range data {
-		sv, err := conversions.GoToStarlark(v)
-		if err != nil {
-			slog.Warn("failed to convert data argument to Starlark", "key", k, "error", err)
-			continue
+		defs[i] = builtins.ToolDef{
+			Name:        t.Name,
+			Description: t.Description,
+			Call:        t.Call,
 		}
-		globals[k] = sv
 	}
 
-	return globals
+	return builtins.Build(ctx, defs, e.config.StepLimit, e.config.ParallelMax)
 }
 
 // buildResult converts a core.ExecuteResult into an mcp.CallToolResult.
-func (*executor) buildResult(execResult *core.ExecuteResult) (*mcp.CallToolResult, error) {
+func buildResult(execResult *core.ExecuteResult) (*mcp.CallToolResult, error) {
 	goVal := conversions.StarlarkToGo(execResult.Value)
 
 	resultJSON, err := json.Marshal(goVal)

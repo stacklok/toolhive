@@ -1232,9 +1232,28 @@ func (s *service) resolveAndValidateClients(
 			}
 			return nil, nil, fmt.Errorf("resolving skill path for client %q: %w", ct, err)
 		}
+		if err := validateResolvedDir(dir); err != nil {
+			return nil, nil, fmt.Errorf("resolved path for client %q is unsafe: %w", ct, err)
+		}
 		paths[ct] = dir
 	}
 	return requested, paths, nil
+}
+
+// validateResolvedDir ensures a directory path returned by the PathResolver is
+// clean, absolute, and free of path-traversal segments. This provides
+// defense-in-depth against tainted paths reaching filesystem operations.
+func validateResolvedDir(dir string) error {
+	cleaned := filepath.Clean(dir)
+	if !filepath.IsAbs(cleaned) {
+		return fmt.Errorf("path must be absolute, got %q", dir)
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(cleaned), "/") {
+		if seg == ".." {
+			return fmt.Errorf("path contains traversal segment: %q", dir)
+		}
+	}
+	return nil
 }
 
 func dedupeStringsPreserveOrder(in []string) []string {

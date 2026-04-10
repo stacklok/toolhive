@@ -147,7 +147,7 @@ func waitForMCPServerRunning(name, namespace string, timeout, pollInterval time.
 
 // portForwardToPod starts a kubectl port-forward to a specific pod and returns the
 // local port and a cleanup function. The caller must call cleanup to stop the port-forward.
-func portForwardToPod(podName, namespace string, targetPort int32) (int, func(), error) {
+func portForwardToPod(podName string) (int, func(), error) {
 	// Find a free local port
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -158,11 +158,11 @@ func portForwardToPod(podName, namespace string, targetPort int32) (int, func(),
 	_ = listener.Close()
 
 	kubeconfigArg := fmt.Sprintf("--kubeconfig=%s", kubeconfig)
-	//nolint:gosec // kubeconfig, namespace, podName, and ports are test-controlled values
+	//nolint:gosec // kubeconfig, podName, and ports are test-controlled values
 	cmd := exec.Command("kubectl", kubeconfigArg,
-		"-n", namespace, "port-forward",
+		"-n", "default", "port-forward",
 		fmt.Sprintf("pod/%s", podName),
-		fmt.Sprintf("%d:%d", localPort, targetPort))
+		fmt.Sprintf("%d:%d", localPort, 8080))
 	if err := cmd.Start(); err != nil {
 		return 0, nil, fmt.Errorf("failed to start port-forward to %s: %w", podName, err)
 	}
@@ -458,12 +458,12 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 				"The two pods must be distinct")
 
 			ginkgo.By(fmt.Sprintf("Setting up port-forward to pod A (%s)", podA.Name))
-			localPortA, cleanupA, err := portForwardToPod(podA.Name, defaultNamespace, proxyPort)
+			localPortA, cleanupA, err := portForwardToPod(podA.Name)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			defer cleanupA()
 
 			ginkgo.By(fmt.Sprintf("Setting up port-forward to pod B (%s)", podB.Name))
-			localPortB, cleanupB, err := portForwardToPod(podB.Name, defaultNamespace, proxyPort)
+			localPortB, cleanupB, err := portForwardToPod(podB.Name)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			defer cleanupB()
 

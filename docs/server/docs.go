@@ -2350,7 +2350,8 @@ const docTemplate = `{
                         "items": {
                             "type": "string"
                         },
-                        "type": "array"
+                        "type": "array",
+                        "uniqueItems": false
                     },
                     "force": {
                         "description": "Force allows overwriting unmanaged skill directories",

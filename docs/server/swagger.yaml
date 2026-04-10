@@ -2097,10 +2097,12 @@ components:
       description: Request to install a skill
       properties:
         clients:
-          description: Clients lists target client identifiers (e.g., "claude-code"). Omit for default client.
+          description: Clients lists target client identifiers (e.g., "claude-code").
+            Omit for default client.
           items:
             type: string
           type: array
+          uniqueItems: false
         force:
           description: Force allows overwriting unmanaged skill directories
           type: boolean

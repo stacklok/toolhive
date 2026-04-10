@@ -2346,7 +2346,7 @@ const docTemplate = `{
                 "description": "Request to install a skill",
                 "properties": {
                     "clients": {
-                        "description": "Clients lists target client identifiers (e.g., \"claude-code\"). Omit for default client.",
+                        "description": "Clients lists target client identifiers (e.g., \"claude-code\"),\nor [\"all\"] to target every skill-supporting client.\nOmitting this field installs to all available clients.",
                         "items": {
                             "type": "string"
                         },

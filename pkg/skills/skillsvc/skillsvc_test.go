@@ -483,6 +483,54 @@ func TestInstallWithExtraction(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
 	})
 
+	t.Run("clients all sentinel expands to every skill-supporting client", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		dirA := filepath.Join(t.TempDir(), "a", "my-skill")
+		dirB := filepath.Join(t.TempDir(), "b", "my-skill")
+		pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code", "opencode"})
+		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
+		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+		inst.EXPECT().Extract(layerData, dirA, false).Return(&skills.ExtractResult{SkillDir: dirA, Files: 1}, nil)
+		inst.EXPECT().Extract(layerData, dirB, false).Return(&skills.ExtractResult{SkillDir: dirB, Files: 1}, nil)
+		store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, sk skills.InstalledSkill) error {
+				assert.ElementsMatch(t, []string{"claude-code", "opencode"}, sk.Clients)
+				return nil
+			})
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"all"},
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("all sentinel mixed with named client returns bad request", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+
+		svc := New(store, WithPathResolver(pr))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"all", "opencode"},
+		})
+		require.Error(t, err)
+		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+	})
+
 	t.Run("fresh install rolls back extraction on store.Create failure", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)

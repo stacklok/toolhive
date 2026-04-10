@@ -37,7 +37,7 @@ func init() {
 	skillCmd.AddCommand(skillInstallCmd)
 
 	skillInstallCmd.Flags().StringVar(&skillInstallClientsRaw, "clients", "",
-		"Comma-separated target client apps (e.g. claude-code,opencode)")
+		`Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client`)
 	skillInstallCmd.Flags().StringVar(&skillInstallScope, "scope", string(skills.ScopeUser), "Installation scope (user, project)")
 	skillInstallCmd.Flags().BoolVar(&skillInstallForce, "force", false, "Overwrite existing skill directory")
 	skillInstallCmd.Flags().StringVar(&skillInstallProjectRoot, "project-root", "", "Project root path for project-scoped installs")

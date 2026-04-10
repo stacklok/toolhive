@@ -1197,9 +1197,12 @@ func (s *service) extractOCIContent(ctx context.Context, d digest.Digest) ([]byt
 	return layerData, skillConfig, nil
 }
 
+// clientsAllSentinel is the reserved value that expands to all skill-supporting clients.
+const clientsAllSentinel = "all"
+
 // resolveAndValidateClients returns the deduplicated client list and a map of
-// client identifier to install directory. Empty opts.Clients means the first
-// skill-supporting client from the path resolver.
+// client identifier to install directory. Empty opts.Clients (or the sentinel
+// value "all") expands to every skill-supporting client returned by the path resolver.
 func (s *service) resolveAndValidateClients(
 	opts skills.InstallOptions,
 	skillName string,
@@ -1214,7 +1217,8 @@ func (s *service) resolveAndValidateClients(
 	}
 
 	var requested []string
-	if len(opts.Clients) == 0 {
+	switch {
+	case len(opts.Clients) == 0 || (len(opts.Clients) == 1 && strings.EqualFold(opts.Clients[0], clientsAllSentinel)):
 		clients := s.pathResolver.ListSkillSupportingClients()
 		if len(clients) == 0 {
 			return nil, nil, httperr.WithCode(
@@ -1222,12 +1226,18 @@ func (s *service) resolveAndValidateClients(
 				http.StatusInternalServerError,
 			)
 		}
-		requested = []string{clients[0]}
-	} else {
+		requested = clients
+	default:
 		for _, c := range opts.Clients {
 			if c == "" {
 				return nil, nil, httperr.WithCode(
 					errors.New("clients entries must be non-empty strings"),
+					http.StatusBadRequest,
+				)
+			}
+			if strings.EqualFold(c, clientsAllSentinel) {
+				return nil, nil, httperr.WithCode(
+					fmt.Errorf("%q cannot be combined with other client names", clientsAllSentinel),
 					http.StatusBadRequest,
 				)
 			}

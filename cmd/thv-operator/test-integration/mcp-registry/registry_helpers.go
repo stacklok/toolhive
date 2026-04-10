@@ -5,12 +5,15 @@ package operator_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -35,221 +38,195 @@ func NewMCPRegistryTestHelper(ctx context.Context, k8sClient client.Client, name
 	}
 }
 
+const (
+	sourceTypeFile = "file"
+	sourceTypeGit  = "git"
+	sourceTypeAPI  = "api"
+)
+
+// registryBuilderConfig holds the configuration data used to generate configYAML
+type registryBuilderConfig struct {
+	SourceName   string
+	Format       string
+	SourceType   string
+	FilePath     string // for file sources: path inside the mounted volume
+	GitRepo      string
+	GitBranch    string
+	GitPath      string
+	APIEndpoint  string
+	SyncInterval string
+	NameInclude  []string
+	NameExclude  []string
+	TagInclude   []string
+	TagExclude   []string
+	// ConfigMap source details (for volume/mount generation)
+	ConfigMapName string
+	ConfigMapKey  string
+}
+
 // RegistryBuilder provides a fluent interface for building MCPRegistry objects
 type RegistryBuilder struct {
-	registry *mcpv1alpha1.MCPRegistry
+	name        string
+	namespace   string
+	labels      map[string]string
+	annotations map[string]string
+	config      registryBuilderConfig
 }
 
 // NewRegistryBuilder creates a new MCPRegistry builder
 func (h *MCPRegistryTestHelper) NewRegistryBuilder(name string) *RegistryBuilder {
 	return &RegistryBuilder{
-		registry: &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: h.Namespace,
-				Labels: map[string]string{
-					"test.toolhive.io/suite": "operator-e2e",
-				},
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{},
+		name:      name,
+		namespace: h.Namespace,
+		labels: map[string]string{
+			"test.toolhive.io/suite": "operator-e2e",
+		},
+		config: registryBuilderConfig{
+			SourceName: "default",
+			Format:     "toolhive",
 		},
 	}
 }
 
-// ensureSourceConfig ensures there's at least one source config in the array
-func (rb *RegistryBuilder) ensureSourceConfig() {
-	if len(rb.registry.Spec.Sources) == 0 {
-		rb.registry.Spec.Sources = []mcpv1alpha1.MCPRegistrySourceConfig{
-			{
-				Name:   "default",
-				Format: mcpv1alpha1.RegistryFormatToolHive,
-			},
-		}
-	}
-}
-
-// ensureRegistryView ensures there's at least one registry view referencing the sources
-func (rb *RegistryBuilder) ensureRegistryView() {
-	if len(rb.registry.Spec.Registries) == 0 {
-		rb.registry.Spec.Registries = []mcpv1alpha1.MCPRegistryViewConfig{
-			{
-				Name:    "default",
-				Sources: []string{"default"},
-			},
-		}
-	}
-}
-
-// getCurrentSourceConfig returns the last source config in the array (for chaining)
-func (rb *RegistryBuilder) getCurrentSourceConfig() *mcpv1alpha1.MCPRegistrySourceConfig {
-	rb.ensureSourceConfig()
-	return &rb.registry.Spec.Sources[len(rb.registry.Spec.Sources)-1]
-}
-
-// WithConfigMapSource configures the registry with a ConfigMap source
+// WithConfigMapSource configures the registry with a ConfigMap-backed file source.
+// It sets source type to file and records ConfigMap details for volume/mount generation.
 func (rb *RegistryBuilder) WithConfigMapSource(configMapName, key string) *RegistryBuilder {
-	sourceConfig := rb.getCurrentSourceConfig()
-	sourceConfig.ConfigMapRef = &corev1.ConfigMapKeySelector{
-		LocalObjectReference: corev1.LocalObjectReference{
-			Name: configMapName,
-		},
-		Key: key,
-	}
-	rb.ensureRegistryView()
+	rb.config.SourceType = sourceTypeFile
+	rb.config.ConfigMapName = configMapName
+	rb.config.ConfigMapKey = key
+	rb.config.FilePath = fmt.Sprintf("/config/registry/%s/registry.json", rb.config.SourceName)
 	return rb
 }
 
 // WithGitSource configures the registry with a Git source
 func (rb *RegistryBuilder) WithGitSource(repository, branch, path string) *RegistryBuilder {
-	sourceConfig := rb.getCurrentSourceConfig()
-	sourceConfig.Git = &mcpv1alpha1.GitSource{
-		Repository: repository,
-		Branch:     branch,
-		Path:       path,
-	}
-	rb.ensureRegistryView()
-	return rb
-}
-
-// WithGitAuth adds authentication configuration to the current Git source.
-// This must be called after WithGitSource.
-func (rb *RegistryBuilder) WithGitAuth(username, secretName, secretKey string) *RegistryBuilder {
-	sourceConfig := rb.getCurrentSourceConfig()
-	if sourceConfig.Git == nil {
-		// Git source must be configured first
-		return rb
-	}
-	sourceConfig.Git.Auth = &mcpv1alpha1.GitAuthConfig{
-		Username: username,
-		PasswordSecretRef: corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: secretName,
-			},
-			Key: secretKey,
-		},
-	}
+	rb.config.SourceType = sourceTypeGit
+	rb.config.GitRepo = repository
+	rb.config.GitBranch = branch
+	rb.config.GitPath = path
 	return rb
 }
 
 // WithAPISource configures the registry with an API source
 func (rb *RegistryBuilder) WithAPISource(endpoint string) *RegistryBuilder {
-	sourceConfig := rb.getCurrentSourceConfig()
-	sourceConfig.API = &mcpv1alpha1.APISource{
-		Endpoint: endpoint,
-	}
-	rb.ensureRegistryView()
+	rb.config.SourceType = sourceTypeAPI
+	rb.config.APIEndpoint = endpoint
 	return rb
 }
 
-// WithRegistryName sets the name for the current source config
+// WithRegistryName sets the name for the source config
 func (rb *RegistryBuilder) WithRegistryName(name string) *RegistryBuilder {
-	sourceConfig := rb.getCurrentSourceConfig()
-	sourceConfig.Name = name
+	rb.config.SourceName = name
+	// Recalculate file path if this is a file source
+	if rb.config.SourceType == sourceTypeFile {
+		rb.config.FilePath = fmt.Sprintf("/config/registry/%s/registry.json", name)
+	}
 	return rb
 }
 
 // WithUpstreamFormat configures the source to use upstream MCP format
 func (rb *RegistryBuilder) WithUpstreamFormat() *RegistryBuilder {
-	sourceConfig := rb.getCurrentSourceConfig()
-	sourceConfig.Format = mcpv1alpha1.RegistryFormatUpstream
+	rb.config.Format = "upstream"
 	return rb
 }
 
-// WithSyncPolicy configures the sync policy for the current source
+// WithSyncPolicy configures the sync policy interval for the source
 func (rb *RegistryBuilder) WithSyncPolicy(interval string) *RegistryBuilder {
-	sourceConfig := rb.getCurrentSourceConfig()
-	sourceConfig.SyncPolicy = &mcpv1alpha1.SyncPolicy{
-		Interval: interval,
-	}
+	rb.config.SyncInterval = interval
 	return rb
 }
 
 // WithAnnotation adds an annotation to the registry
 func (rb *RegistryBuilder) WithAnnotation(key, value string) *RegistryBuilder {
-	if rb.registry.Annotations == nil {
-		rb.registry.Annotations = make(map[string]string)
+	if rb.annotations == nil {
+		rb.annotations = make(map[string]string)
 	}
-	rb.registry.Annotations[key] = value
+	rb.annotations[key] = value
 	return rb
 }
 
 // WithLabel adds a label to the registry
 func (rb *RegistryBuilder) WithLabel(key, value string) *RegistryBuilder {
-	if rb.registry.Labels == nil {
-		rb.registry.Labels = make(map[string]string)
+	if rb.labels == nil {
+		rb.labels = make(map[string]string)
 	}
-	rb.registry.Labels[key] = value
+	rb.labels[key] = value
 	return rb
 }
 
-// WithNameIncludeFilter sets name include patterns for filtering on the current source
+// WithNameIncludeFilter sets name include patterns for filtering on the source
 func (rb *RegistryBuilder) WithNameIncludeFilter(patterns []string) *RegistryBuilder {
-	sourceConfig := rb.getCurrentSourceConfig()
-	if sourceConfig.Filter == nil {
-		sourceConfig.Filter = &mcpv1alpha1.RegistryFilter{}
-	}
-	if sourceConfig.Filter.NameFilters == nil {
-		sourceConfig.Filter.NameFilters = &mcpv1alpha1.NameFilter{}
-	}
-	sourceConfig.Filter.NameFilters.Include = patterns
+	rb.config.NameInclude = patterns
 	return rb
 }
 
-// WithNameExcludeFilter sets name exclude patterns for filtering on the current source
+// WithNameExcludeFilter sets name exclude patterns for filtering on the source
 func (rb *RegistryBuilder) WithNameExcludeFilter(patterns []string) *RegistryBuilder {
-	sourceConfig := rb.getCurrentSourceConfig()
-	if sourceConfig.Filter == nil {
-		sourceConfig.Filter = &mcpv1alpha1.RegistryFilter{}
-	}
-	if sourceConfig.Filter.NameFilters == nil {
-		sourceConfig.Filter.NameFilters = &mcpv1alpha1.NameFilter{}
-	}
-	sourceConfig.Filter.NameFilters.Exclude = patterns
+	rb.config.NameExclude = patterns
 	return rb
 }
 
-// WithTagIncludeFilter sets tag include patterns for filtering on the current source
+// WithTagIncludeFilter sets tag include patterns for filtering on the source
 func (rb *RegistryBuilder) WithTagIncludeFilter(tags []string) *RegistryBuilder {
-	sourceConfig := rb.getCurrentSourceConfig()
-	if sourceConfig.Filter == nil {
-		sourceConfig.Filter = &mcpv1alpha1.RegistryFilter{}
-	}
-	if sourceConfig.Filter.Tags == nil {
-		sourceConfig.Filter.Tags = &mcpv1alpha1.TagFilter{}
-	}
-	sourceConfig.Filter.Tags.Include = tags
+	rb.config.TagInclude = tags
 	return rb
 }
 
-// WithTagExcludeFilter sets tag exclude patterns for filtering on the current source
+// WithTagExcludeFilter sets tag exclude patterns for filtering on the source
 func (rb *RegistryBuilder) WithTagExcludeFilter(tags []string) *RegistryBuilder {
-	sourceConfig := rb.getCurrentSourceConfig()
-	if sourceConfig.Filter == nil {
-		sourceConfig.Filter = &mcpv1alpha1.RegistryFilter{}
-	}
-	if sourceConfig.Filter.Tags == nil {
-		sourceConfig.Filter.Tags = &mcpv1alpha1.TagFilter{}
-	}
-	sourceConfig.Filter.Tags.Exclude = tags
+	rb.config.TagExclude = tags
 	return rb
 }
 
-// Build returns the constructed MCPRegistry.
-// It syncs the default registry view's source list with the actual source names.
+// Build returns the constructed MCPRegistry with configYAML generated from the builder config.
 func (rb *RegistryBuilder) Build() *mcpv1alpha1.MCPRegistry {
-	rb.ensureSourceConfig()
-	rb.ensureRegistryView()
+	configYAML := rb.buildConfigYAML()
 
-	// Sync the default registry view's source list with actual source names
-	if len(rb.registry.Spec.Registries) == 1 && rb.registry.Spec.Registries[0].Name == "default" {
-		sourceNames := make([]string, 0, len(rb.registry.Spec.Sources))
-		for _, s := range rb.registry.Spec.Sources {
-			sourceNames = append(sourceNames, s.Name)
-		}
-		rb.registry.Spec.Registries[0].Sources = sourceNames
+	spec := mcpv1alpha1.MCPRegistrySpec{
+		ConfigYAML: configYAML,
 	}
 
-	return rb.registry.DeepCopy()
+	// For ConfigMap file sources, add the volume and volume mount
+	if rb.config.SourceType == sourceTypeFile && rb.config.ConfigMapName != "" {
+		vol := corev1.Volume{
+			Name: fmt.Sprintf("registry-data-source-%s", rb.config.SourceName),
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: rb.config.ConfigMapName,
+					},
+					Items: []corev1.KeyToPath{
+						{
+							Key:  rb.config.ConfigMapKey,
+							Path: "registry.json",
+						},
+					},
+				},
+			},
+		}
+		volJSON, err := json.Marshal(vol)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to marshal volume")
+		spec.Volumes = []apiextensionsv1.JSON{{Raw: volJSON}}
+
+		mount := corev1.VolumeMount{
+			Name:      fmt.Sprintf("registry-data-source-%s", rb.config.SourceName),
+			MountPath: fmt.Sprintf("/config/registry/%s", rb.config.SourceName),
+			ReadOnly:  true,
+		}
+		mountJSON, err := json.Marshal(mount)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to marshal volume mount")
+		spec.VolumeMounts = []apiextensionsv1.JSON{{Raw: mountJSON}}
+	}
+
+	return &mcpv1alpha1.MCPRegistry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        rb.name,
+			Namespace:   rb.namespace,
+			Labels:      rb.labels,
+			Annotations: rb.annotations,
+		},
+		Spec: spec,
+	}
 }
 
 // Create builds and creates the MCPRegistry in the cluster
@@ -258,6 +235,93 @@ func (rb *RegistryBuilder) Create(h *MCPRegistryTestHelper) *mcpv1alpha1.MCPRegi
 	err := h.Client.Create(h.Context, registry)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to create MCPRegistry")
 	return registry
+}
+
+// buildConfigYAML generates the config.yaml content from the builder config
+func (rb *RegistryBuilder) buildConfigYAML() string {
+	var b strings.Builder
+
+	// Sources section
+	b.WriteString("sources:\n")
+	fmt.Fprintf(&b, "  - name: %s\n", rb.config.SourceName)
+	fmt.Fprintf(&b, "    format: %s\n", rb.config.Format)
+
+	// Source type specific fields
+	switch rb.config.SourceType {
+	case sourceTypeFile:
+		b.WriteString("    file:\n")
+		fmt.Fprintf(&b, "      path: %s\n", rb.config.FilePath)
+	case sourceTypeGit:
+		b.WriteString("    git:\n")
+		fmt.Fprintf(&b, "      repository: %s\n", rb.config.GitRepo)
+		fmt.Fprintf(&b, "      branch: %s\n", rb.config.GitBranch)
+		fmt.Fprintf(&b, "      path: %s\n", rb.config.GitPath)
+	case sourceTypeAPI:
+		b.WriteString("    api:\n")
+		fmt.Fprintf(&b, "      endpoint: %s\n", rb.config.APIEndpoint)
+	}
+
+	// Sync policy
+	if rb.config.SyncInterval != "" {
+		b.WriteString("    syncPolicy:\n")
+		fmt.Fprintf(&b, "      interval: %s\n", rb.config.SyncInterval)
+	}
+
+	// Filter
+	rb.writeFilterYAML(&b)
+
+	// Registries section
+	b.WriteString("registries:\n")
+	b.WriteString("  - name: default\n")
+	fmt.Fprintf(&b, "    sources:\n      - %s\n", rb.config.SourceName)
+
+	// Database defaults
+	b.WriteString("database:\n")
+	b.WriteString("  host: postgres\n")
+	b.WriteString("  port: 5432\n")
+	b.WriteString("  user: db_app\n")
+	b.WriteString("  database: registry\n")
+
+	// Auth defaults
+	b.WriteString("auth:\n")
+	b.WriteString("  mode: anonymous\n")
+
+	return b.String()
+}
+
+// writeFilterYAML writes filter configuration to the YAML builder
+func (rb *RegistryBuilder) writeFilterYAML(b *strings.Builder) {
+	hasNames := len(rb.config.NameInclude) > 0 || len(rb.config.NameExclude) > 0
+	hasTags := len(rb.config.TagInclude) > 0 || len(rb.config.TagExclude) > 0
+
+	if !hasNames && !hasTags {
+		return
+	}
+
+	b.WriteString("    filter:\n")
+
+	if hasNames {
+		b.WriteString("      names:\n")
+		writeStringList(b, "        include:\n", rb.config.NameInclude)
+		writeStringList(b, "        exclude:\n", rb.config.NameExclude)
+	}
+
+	if hasTags {
+		b.WriteString("      tags:\n")
+		writeStringList(b, "        include:\n", rb.config.TagInclude)
+		writeStringList(b, "        exclude:\n", rb.config.TagExclude)
+	}
+}
+
+// writeStringList writes a labeled YAML list if items is non-empty
+func writeStringList(b *strings.Builder, label string, items []string) {
+	if len(items) == 0 {
+		return
+	}
+	b.WriteString(label)
+	for _, item := range items {
+		fmt.Fprintf(b, "          - %s\n", item)
+	}
 }
 
 // CreateBasicConfigMapRegistry creates a simple MCPRegistry with ConfigMap source
@@ -427,4 +491,72 @@ func containsFinalizer(finalizers []string, _ string) bool {
 		}
 	}
 	return false
+}
+
+// buildConfigYAMLForMultipleSources generates a configYAML string for multiple sources.
+// Each source is specified as a map with keys: name, format, sourceType, and type-specific fields.
+func buildConfigYAMLForMultipleSources(sources []map[string]string) string {
+	var b strings.Builder
+
+	b.WriteString("sources:\n")
+	for _, src := range sources {
+		fmt.Fprintf(&b, "  - name: %s\n", src["name"])
+		format := src["format"]
+		if format == "" {
+			format = "toolhive"
+		}
+		fmt.Fprintf(&b, "    format: %s\n", format)
+
+		switch src["sourceType"] {
+		case sourceTypeFile:
+			b.WriteString("    file:\n")
+			fmt.Fprintf(&b, "      path: %s\n", src["filePath"])
+		case sourceTypeGit:
+			b.WriteString("    git:\n")
+			fmt.Fprintf(&b, "      repository: %s\n", src["repository"])
+			fmt.Fprintf(&b, "      branch: %s\n", src["branch"])
+			fmt.Fprintf(&b, "      path: %s\n", src["path"])
+			if src["authUsername"] != "" {
+				b.WriteString("      auth:\n")
+				fmt.Fprintf(&b, "        username: %s\n", src["authUsername"])
+				fmt.Fprintf(&b, "        passwordFile: %s\n", src["authPasswordFile"])
+			}
+		case sourceTypeAPI:
+			b.WriteString("    api:\n")
+			fmt.Fprintf(&b, "      endpoint: %s\n", src["endpoint"])
+		}
+
+		if interval, ok := src["interval"]; ok && interval != "" {
+			b.WriteString("    syncPolicy:\n")
+			fmt.Fprintf(&b, "      interval: %s\n", interval)
+		}
+	}
+
+	// Registries section with all source names
+	b.WriteString("registries:\n")
+	b.WriteString("  - name: default\n")
+	b.WriteString("    sources:\n")
+	for _, src := range sources {
+		fmt.Fprintf(&b, "      - %s\n", src["name"])
+	}
+
+	// Database defaults
+	b.WriteString("database:\n")
+	b.WriteString("  host: postgres\n")
+	b.WriteString("  port: 5432\n")
+	b.WriteString("  user: db_app\n")
+	b.WriteString("  database: registry\n")
+
+	// Auth defaults
+	b.WriteString("auth:\n")
+	b.WriteString("  mode: anonymous\n")
+
+	return b.String()
+}
+
+// mustMarshalJSON marshals a value to JSON, panicking on error (for test helpers only)
+func mustMarshalJSON(v interface{}) []byte {
+	data, err := json.Marshal(v)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to marshal JSON in test helper")
+	return data
 }

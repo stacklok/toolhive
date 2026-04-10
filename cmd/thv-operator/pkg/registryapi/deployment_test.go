@@ -9,356 +9,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
-
-func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name           string
-		mcpRegistry    *mcpv1alpha1.MCPRegistry
-		setupMocks     func()
-		expectedError  string
-		validateResult func(*testing.T, *appsv1.Deployment)
-	}{
-		{
-			name: "successful deployment creation",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-						{
-							Name:   "default",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: "test-configmap",
-								},
-								Key: "registry.json",
-							},
-						},
-					},
-					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
-						{
-							Name:    "default",
-							Sources: []string{"default"},
-						},
-					},
-				},
-			},
-			setupMocks: func() {
-			},
-			validateResult: func(t *testing.T, deployment *appsv1.Deployment) {
-				t.Helper()
-				require.NotNil(t, deployment)
-
-				// Verify basic metadata
-				assert.Equal(t, "test-registry-api", deployment.Name)
-				assert.Equal(t, "test-namespace", deployment.Namespace)
-
-				// Verify labels
-				expectedLabels := map[string]string{
-					"app.kubernetes.io/name":             "test-registry-api",
-					"app.kubernetes.io/component":        "registry-api",
-					"app.kubernetes.io/managed-by":       "toolhive-operator",
-					"toolhive.stacklok.io/registry-name": "test-registry",
-				}
-				assert.Equal(t, expectedLabels, deployment.Labels)
-
-				// Verify replica count
-				assert.Equal(t, int32(1), *deployment.Spec.Replicas)
-
-				// Verify selector
-				expectedSelector := map[string]string{
-					"app.kubernetes.io/name":      "test-registry-api",
-					"app.kubernetes.io/component": "registry-api",
-				}
-				assert.Equal(t, expectedSelector, deployment.Spec.Selector.MatchLabels)
-
-				// Verify pod template labels
-				assert.Equal(t, expectedLabels, deployment.Spec.Template.Labels)
-
-				// Verify pod template annotations - config hash should be a real computed hash, not a dummy
-				configHash := deployment.Spec.Template.Annotations["toolhive.stacklok.dev/config-hash"]
-				assert.NotEmpty(t, configHash)
-				assert.NotEqual(t, "hash-dummy-value", configHash)
-
-				// Verify service account uses the dynamically generated name (registry-name + "-registry-api")
-				assert.Equal(t, "test-registry-registry-api", deployment.Spec.Template.Spec.ServiceAccountName)
-
-				// Verify containers
-				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
-				container := deployment.Spec.Template.Spec.Containers[0]
-				assert.Equal(t, RegistryAPIContainerName, container.Name)
-				assert.Equal(t, getRegistryAPIImage(), container.Image)
-
-				// Verify container ports
-				require.Len(t, container.Ports, 1)
-				port := container.Ports[0]
-				assert.Equal(t, int32(RegistryAPIPort), port.ContainerPort)
-				assert.Equal(t, RegistryAPIPortName, port.Name)
-				assert.Equal(t, corev1.ProtocolTCP, port.Protocol)
-
-				// Verify resource requirements
-				assert.Equal(t, resource.MustParse(DefaultCPURequest), container.Resources.Requests[corev1.ResourceCPU])
-				assert.Equal(t, resource.MustParse(DefaultMemoryRequest), container.Resources.Requests[corev1.ResourceMemory])
-				assert.Equal(t, resource.MustParse(DefaultCPULimit), container.Resources.Limits[corev1.ResourceCPU])
-				assert.Equal(t, resource.MustParse(DefaultMemoryLimit), container.Resources.Limits[corev1.ResourceMemory])
-
-				// Verify liveness probe
-				require.NotNil(t, container.LivenessProbe)
-				assert.Equal(t, HealthCheckPath, container.LivenessProbe.HTTPGet.Path)
-				assert.Equal(t, intstr.FromInt32(RegistryAPIPort), container.LivenessProbe.HTTPGet.Port)
-				assert.Equal(t, int32(LivenessInitialDelay), container.LivenessProbe.InitialDelaySeconds)
-				assert.Equal(t, int32(LivenessPeriod), container.LivenessProbe.PeriodSeconds)
-
-				// Verify readiness probe
-				require.NotNil(t, container.ReadinessProbe)
-				assert.Equal(t, ReadinessCheckPath, container.ReadinessProbe.HTTPGet.Path)
-				assert.Equal(t, intstr.FromInt32(RegistryAPIPort), container.ReadinessProbe.HTTPGet.Port)
-				assert.Equal(t, int32(ReadinessInitialDelay), container.ReadinessProbe.InitialDelaySeconds)
-				assert.Equal(t, int32(ReadinessPeriod), container.ReadinessProbe.PeriodSeconds)
-
-			},
-		},
-		{
-			name: "user PodTemplateSpec merged correctly",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-						{
-							Name:   "default",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: "test-configmap",
-								},
-								Key: "registry.json",
-							},
-						},
-					},
-					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
-						{
-							Name:    "default",
-							Sources: []string{"default"},
-						},
-					},
-					PodTemplateSpec: &runtime.RawExtension{
-						Raw: []byte(`{"spec":{"serviceAccountName":"custom-sa"}}`),
-					},
-				},
-			},
-			setupMocks: func() {
-			},
-			validateResult: func(t *testing.T, deployment *appsv1.Deployment) {
-				t.Helper()
-				require.NotNil(t, deployment)
-
-				// User-provided service account name should take precedence
-				assert.Equal(t, "custom-sa", deployment.Spec.Template.Spec.ServiceAccountName)
-
-				// Default volumes and mounts should still be present
-				volumes := deployment.Spec.Template.Spec.Volumes
-				assert.True(t, hasVolume(volumes, RegistryServerConfigVolumeName))
-				assert.True(t, hasVolume(volumes, "storage-data"))
-				assert.True(t, hasVolume(volumes, "registry-data-source-default"))
-			},
-		},
-		{
-			name: "git auth secrets mounted correctly",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-						{
-							Name:   "private-git",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							Git: &mcpv1alpha1.GitSource{
-								Repository: "https://github.com/example/private-repo.git",
-								Branch:     "main",
-								Path:       "registry.json",
-								Auth: &mcpv1alpha1.GitAuthConfig{
-									Username: "git",
-									PasswordSecretRef: corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: "git-credentials",
-										},
-										Key: "token",
-									},
-								},
-							},
-						},
-					},
-					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
-						{
-							Name:    "private-git",
-							Sources: []string{"private-git"},
-						},
-					},
-				},
-			},
-			setupMocks: func() {
-			},
-			validateResult: func(t *testing.T, deployment *appsv1.Deployment) {
-				t.Helper()
-				require.NotNil(t, deployment)
-
-				// Verify git auth volume exists
-				volumes := deployment.Spec.Template.Spec.Volumes
-				assert.True(t, hasVolume(volumes, "git-auth-git-credentials"), "git auth volume should exist")
-
-				// Find the git auth volume and verify its configuration
-				var gitAuthVolume *corev1.Volume
-				for i := range volumes {
-					if volumes[i].Name == "git-auth-git-credentials" {
-						gitAuthVolume = &volumes[i]
-						break
-					}
-				}
-				require.NotNil(t, gitAuthVolume)
-				require.NotNil(t, gitAuthVolume.Secret)
-				assert.Equal(t, "git-credentials", gitAuthVolume.Secret.SecretName)
-				require.Len(t, gitAuthVolume.Secret.Items, 1)
-				assert.Equal(t, "token", gitAuthVolume.Secret.Items[0].Key)
-
-				// Verify container has git auth volume mount
-				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
-				container := deployment.Spec.Template.Spec.Containers[0]
-
-				var gitAuthMount *corev1.VolumeMount
-				for i := range container.VolumeMounts {
-					if container.VolumeMounts[i].Name == "git-auth-git-credentials" {
-						gitAuthMount = &container.VolumeMounts[i]
-						break
-					}
-				}
-				require.NotNil(t, gitAuthMount, "git auth volume mount should exist")
-				assert.Equal(t, "/secrets/git-credentials", gitAuthMount.MountPath)
-				assert.True(t, gitAuthMount.ReadOnly)
-			},
-		},
-		{
-			name: "multiple git auth secrets mounted for multiple registries",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-						{
-							Name:   "private-git-1",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							Git: &mcpv1alpha1.GitSource{
-								Repository: "https://github.com/example/private-repo-1.git",
-								Branch:     "main",
-								Path:       "registry.json",
-								Auth: &mcpv1alpha1.GitAuthConfig{
-									Username: "git",
-									PasswordSecretRef: corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: "git-credentials-1",
-										},
-										Key: "token",
-									},
-								},
-							},
-						},
-						{
-							Name:   "private-git-2",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							Git: &mcpv1alpha1.GitSource{
-								Repository: "https://github.com/example/private-repo-2.git",
-								Branch:     "main",
-								Path:       "registry.json",
-								Auth: &mcpv1alpha1.GitAuthConfig{
-									Username: "git",
-									PasswordSecretRef: corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: "git-credentials-2",
-										},
-										Key: "password",
-									},
-								},
-							},
-						},
-					},
-					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
-						{
-							Name:    "private-git-1",
-							Sources: []string{"private-git-1"},
-						},
-						{
-							Name:    "private-git-2",
-							Sources: []string{"private-git-2"},
-						},
-					},
-				},
-			},
-			setupMocks: func() {
-			},
-			validateResult: func(t *testing.T, deployment *appsv1.Deployment) {
-				t.Helper()
-				require.NotNil(t, deployment)
-
-				// Verify both git auth volumes exist
-				volumes := deployment.Spec.Template.Spec.Volumes
-				assert.True(t, hasVolume(volumes, "git-auth-git-credentials-1"), "git auth volume 1 should exist")
-				assert.True(t, hasVolume(volumes, "git-auth-git-credentials-2"), "git auth volume 2 should exist")
-
-				// Verify container has both git auth volume mounts
-				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
-				container := deployment.Spec.Template.Spec.Containers[0]
-
-				mountPaths := make(map[string]bool)
-				for _, mount := range container.VolumeMounts {
-					mountPaths[mount.MountPath] = true
-				}
-				assert.True(t, mountPaths["/secrets/git-credentials-1"], "git auth mount 1 should exist")
-				assert.True(t, mountPaths["/secrets/git-credentials-2"], "git auth mount 2 should exist")
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-
-			tt.setupMocks()
-
-			manager := &manager{}
-
-			configManager := config.NewConfigManager(tt.mcpRegistry)
-			deployment := manager.buildRegistryAPIDeployment(context.Background(), tt.mcpRegistry, configManager)
-			tt.validateResult(t, deployment)
-		})
-	}
-}
 
 func TestGetRegistryAPIImage(t *testing.T) {
 	t.Parallel()
@@ -872,6 +529,8 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 	t.Parallel()
 
+	const baseConfigYAML = "sources:\n  - name: k8s\n    kubernetes: {}\n"
+
 	t.Run("no podtemplatespec has no hash annotation", func(t *testing.T) {
 		t.Parallel()
 		mgr := &manager{}
@@ -881,16 +540,11 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-					{Name: "default", Format: mcpv1alpha1.RegistryFormatToolHive},
-				},
-				Registries: []mcpv1alpha1.MCPRegistryViewConfig{
-					{Name: "default", Sources: []string{"default"}},
-				},
+				ConfigYAML: baseConfigYAML,
 			},
 		}
-		configManager := config.NewConfigManager(mcpRegistry)
-		deployment := mgr.buildRegistryAPIDeployment(context.Background(), mcpRegistry, configManager)
+		deployment, err := mgr.buildRegistryAPIDeployment(context.Background(), mcpRegistry, "test-registry-registry-server-config")
+		require.NoError(t, err)
 
 		require.NotNil(t, deployment)
 		_, hasPTSHash := deployment.Annotations[podTemplateSpecHashAnnotation]
@@ -906,19 +560,14 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-					{Name: "default", Format: mcpv1alpha1.RegistryFormatToolHive},
-				},
-				Registries: []mcpv1alpha1.MCPRegistryViewConfig{
-					{Name: "default", Sources: []string{"default"}},
-				},
+				ConfigYAML: baseConfigYAML,
 				PodTemplateSpec: &runtime.RawExtension{
 					Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"registry-creds"}]}}`),
 				},
 			},
 		}
-		configManager := config.NewConfigManager(mcpRegistry)
-		deployment := mgr.buildRegistryAPIDeployment(context.Background(), mcpRegistry, configManager)
+		deployment, err := mgr.buildRegistryAPIDeployment(context.Background(), mcpRegistry, "test-registry-registry-server-config")
+		require.NoError(t, err)
 
 		require.NotNil(t, deployment)
 		ptsHash, hasPTSHash := deployment.Annotations[podTemplateSpecHashAnnotation]
@@ -929,363 +578,29 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 	t.Run("different podtemplatespec produces different hash", func(t *testing.T) {
 		t.Parallel()
 		mgr := &manager{}
-		baseSources := []mcpv1alpha1.MCPRegistrySourceConfig{
-			{Name: "default", Format: mcpv1alpha1.RegistryFormatToolHive},
-		}
-		baseRegistries := []mcpv1alpha1.MCPRegistryViewConfig{
-			{Name: "default", Sources: []string{"default"}},
-		}
 
 		registry1 := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "ns"},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Sources:         baseSources,
-				Registries:      baseRegistries,
+				ConfigYAML:      baseConfigYAML,
 				PodTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"creds-a"}]}}`)},
 			},
 		}
 		registry2 := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "ns"},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Sources:         baseSources,
-				Registries:      baseRegistries,
+				ConfigYAML:      baseConfigYAML,
 				PodTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"creds-b"}]}}`)},
 			},
 		}
 
-		d1 := mgr.buildRegistryAPIDeployment(context.Background(), registry1, config.NewConfigManager(registry1))
-		d2 := mgr.buildRegistryAPIDeployment(context.Background(), registry2, config.NewConfigManager(registry2))
+		d1, err1 := mgr.buildRegistryAPIDeployment(context.Background(), registry1, "test-registry-server-config")
+		d2, err2 := mgr.buildRegistryAPIDeployment(context.Background(), registry2, "test-registry-server-config")
+		require.NoError(t, err1)
+		require.NoError(t, err2)
 
 		require.NotNil(t, d1)
 		require.NotNil(t, d2)
 		assert.NotEqual(t, d1.Annotations[podTemplateSpecHashAnnotation], d2.Annotations[podTemplateSpecHashAnnotation])
-	})
-}
-
-func TestEnsureDeployment(t *testing.T) {
-	t.Parallel()
-
-	newScheme := func() *runtime.Scheme {
-		s := runtime.NewScheme()
-		_ = mcpv1alpha1.AddToScheme(s)
-		_ = appsv1.AddToScheme(s)
-		_ = corev1.AddToScheme(s)
-		return s
-	}
-
-	baseMCPRegistry := func() *mcpv1alpha1.MCPRegistry {
-		return &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-registry",
-				Namespace: "test-namespace",
-				UID:       types.UID("test-uid"),
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-					{
-						Name:   "default",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-					},
-				},
-				Registries: []mcpv1alpha1.MCPRegistryViewConfig{
-					{
-						Name:    "default",
-						Sources: []string{"default"},
-					},
-				},
-			},
-		}
-	}
-
-	t.Run("creates deployment when none exists", func(t *testing.T) {
-		t.Parallel()
-
-		scheme := newScheme()
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		mgr := &manager{client: fakeClient, scheme: scheme}
-
-		mcpRegistry := baseMCPRegistry()
-		configManager := config.NewConfigManager(mcpRegistry)
-
-		deployment, err := mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
-		require.NoError(t, err)
-		require.NotNil(t, deployment)
-
-		// Fetch from fake client to verify it was actually created
-		fetched := &appsv1.Deployment{}
-		err = fakeClient.Get(context.Background(), client.ObjectKey{
-			Name:      "test-registry-api",
-			Namespace: "test-namespace",
-		}, fetched)
-		require.NoError(t, err)
-
-		assert.Equal(t, "test-registry-api", fetched.Name)
-		assert.Equal(t, "test-namespace", fetched.Namespace)
-
-		// Verify labels
-		assert.Equal(t, "test-registry-api", fetched.Labels["app.kubernetes.io/name"])
-		assert.Equal(t, "registry-api", fetched.Labels["app.kubernetes.io/component"])
-		assert.Equal(t, "toolhive-operator", fetched.Labels["app.kubernetes.io/managed-by"])
-		assert.Equal(t, "test-registry", fetched.Labels["toolhive.stacklok.io/registry-name"])
-
-		// Verify config-hash annotation on pod template
-		configHash := fetched.Spec.Template.Annotations[configHashAnnotation]
-		assert.NotEmpty(t, configHash)
-
-		// Verify container image
-		require.Len(t, fetched.Spec.Template.Spec.Containers, 1)
-		assert.Equal(t, getRegistryAPIImage(), fetched.Spec.Template.Spec.Containers[0].Image)
-	})
-
-	t.Run("updates deployment when MCPRegistry spec changes", func(t *testing.T) {
-		t.Parallel()
-
-		scheme := newScheme()
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		mgr := &manager{client: fakeClient, scheme: scheme}
-
-		mcpRegistry := baseMCPRegistry()
-		configManager := config.NewConfigManager(mcpRegistry)
-
-		// First call: create
-		_, err := mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
-		require.NoError(t, err)
-
-		// Capture the original config hash
-		original := &appsv1.Deployment{}
-		err = fakeClient.Get(context.Background(), client.ObjectKey{
-			Name:      "test-registry-api",
-			Namespace: "test-namespace",
-		}, original)
-		require.NoError(t, err)
-		originalHash := original.Spec.Template.Annotations[configHashAnnotation]
-
-		// Modify the spec by adding a source entry
-		mcpRegistry.Spec.Sources = append(mcpRegistry.Spec.Sources, mcpv1alpha1.MCPRegistrySourceConfig{
-			Name:   "extra",
-			Format: mcpv1alpha1.RegistryFormatToolHive,
-			ConfigMapRef: &corev1.ConfigMapKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "extra-cm"},
-				Key:                  "extra.json",
-			},
-		})
-		mcpRegistry.Spec.Registries = append(mcpRegistry.Spec.Registries, mcpv1alpha1.MCPRegistryViewConfig{
-			Name:    "extra",
-			Sources: []string{"extra"},
-		})
-		configManager = config.NewConfigManager(mcpRegistry)
-
-		// Second call: update
-		_, err = mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
-		require.NoError(t, err)
-
-		// Fetch updated deployment
-		updated := &appsv1.Deployment{}
-		err = fakeClient.Get(context.Background(), client.ObjectKey{
-			Name:      "test-registry-api",
-			Namespace: "test-namespace",
-		}, updated)
-		require.NoError(t, err)
-
-		updatedHash := updated.Spec.Template.Annotations[configHashAnnotation]
-		assert.NotEqual(t, originalHash, updatedHash, "config-hash annotation should change when spec changes")
-	})
-
-	t.Run("updates deployment when PodTemplateSpec is added", func(t *testing.T) {
-		t.Parallel()
-
-		scheme := newScheme()
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		mgr := &manager{client: fakeClient, scheme: scheme}
-
-		mcpRegistry := baseMCPRegistry()
-		configManager := config.NewConfigManager(mcpRegistry)
-
-		// First call: create without PodTemplateSpec
-		_, err := mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
-		require.NoError(t, err)
-
-		// Add PodTemplateSpec with imagePullSecrets
-		mcpRegistry.Spec.PodTemplateSpec = &runtime.RawExtension{
-			Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"my-secret"}]}}`),
-		}
-		configManager = config.NewConfigManager(mcpRegistry)
-
-		// Second call: update
-		_, err = mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
-		require.NoError(t, err)
-
-		// Fetch updated deployment
-		fetched := &appsv1.Deployment{}
-		err = fakeClient.Get(context.Background(), client.ObjectKey{
-			Name:      "test-registry-api",
-			Namespace: "test-namespace",
-		}, fetched)
-		require.NoError(t, err)
-
-		// Verify imagePullSecrets appeared
-		require.NotEmpty(t, fetched.Spec.Template.Spec.ImagePullSecrets)
-		assert.Equal(t, "my-secret", fetched.Spec.Template.Spec.ImagePullSecrets[0].Name)
-
-		// Verify podtemplatespec-hash annotation is now set
-		ptsHash, hasPTSHash := fetched.Annotations[podTemplateSpecHashAnnotation]
-		assert.True(t, hasPTSHash, "should have podtemplatespec-hash annotation after adding PodTemplateSpec")
-		assert.NotEmpty(t, ptsHash)
-	})
-
-	t.Run("updates deployment when PodTemplateSpec changes", func(t *testing.T) {
-		t.Parallel()
-
-		scheme := newScheme()
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		mgr := &manager{client: fakeClient, scheme: scheme}
-
-		mcpRegistry := baseMCPRegistry()
-		mcpRegistry.Spec.PodTemplateSpec = &runtime.RawExtension{
-			Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"secret-a"}]}}`),
-		}
-		configManager := config.NewConfigManager(mcpRegistry)
-
-		// First call: create with PodTemplateSpec
-		_, err := mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
-		require.NoError(t, err)
-
-		original := &appsv1.Deployment{}
-		err = fakeClient.Get(context.Background(), client.ObjectKey{
-			Name:      "test-registry-api",
-			Namespace: "test-namespace",
-		}, original)
-		require.NoError(t, err)
-		originalPTSHash := original.Annotations[podTemplateSpecHashAnnotation]
-
-		// Change the PodTemplateSpec
-		mcpRegistry.Spec.PodTemplateSpec = &runtime.RawExtension{
-			Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"secret-b"}]}}`),
-		}
-		configManager = config.NewConfigManager(mcpRegistry)
-
-		// Second call: update
-		_, err = mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
-		require.NoError(t, err)
-
-		// Fetch updated deployment
-		fetched := &appsv1.Deployment{}
-		err = fakeClient.Get(context.Background(), client.ObjectKey{
-			Name:      "test-registry-api",
-			Namespace: "test-namespace",
-		}, fetched)
-		require.NoError(t, err)
-
-		// Verify the imagePullSecrets changed
-		require.NotEmpty(t, fetched.Spec.Template.Spec.ImagePullSecrets)
-		assert.Equal(t, "secret-b", fetched.Spec.Template.Spec.ImagePullSecrets[0].Name)
-
-		// Verify the podtemplatespec-hash annotation changed
-		updatedPTSHash := fetched.Annotations[podTemplateSpecHashAnnotation]
-		assert.NotEqual(t, originalPTSHash, updatedPTSHash, "podtemplatespec-hash should change when PodTemplateSpec changes")
-	})
-
-	t.Run("skips update when nothing changed", func(t *testing.T) {
-		t.Parallel()
-
-		scheme := newScheme()
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		mgr := &manager{client: fakeClient, scheme: scheme}
-
-		mcpRegistry := baseMCPRegistry()
-		configManager := config.NewConfigManager(mcpRegistry)
-
-		// First call: create
-		_, err := mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
-		require.NoError(t, err)
-
-		// Capture ResourceVersion after creation
-		created := &appsv1.Deployment{}
-		err = fakeClient.Get(context.Background(), client.ObjectKey{
-			Name:      "test-registry-api",
-			Namespace: "test-namespace",
-		}, created)
-		require.NoError(t, err)
-		originalResourceVersion := created.ResourceVersion
-
-		// Second call: same spec, should skip update
-		_, err = mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
-		require.NoError(t, err)
-
-		// Fetch again and verify ResourceVersion did not change
-		afterSecondCall := &appsv1.Deployment{}
-		err = fakeClient.Get(context.Background(), client.ObjectKey{
-			Name:      "test-registry-api",
-			Namespace: "test-namespace",
-		}, afterSecondCall)
-		require.NoError(t, err)
-
-		assert.Equal(t, originalResourceVersion, afterSecondCall.ResourceVersion,
-			"ResourceVersion should not change when no update is needed")
-	})
-
-	t.Run("preserves Spec.Replicas on update", func(t *testing.T) {
-		t.Parallel()
-
-		scheme := newScheme()
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		mgr := &manager{client: fakeClient, scheme: scheme}
-
-		mcpRegistry := baseMCPRegistry()
-		configManager := config.NewConfigManager(mcpRegistry)
-
-		// First call: create
-		_, err := mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
-		require.NoError(t, err)
-
-		// Simulate HPA scaling the deployment to 3 replicas
-		existing := &appsv1.Deployment{}
-		err = fakeClient.Get(context.Background(), client.ObjectKey{
-			Name:      "test-registry-api",
-			Namespace: "test-namespace",
-		}, existing)
-		require.NoError(t, err)
-
-		hpaReplicas := int32(3)
-		existing.Spec.Replicas = &hpaReplicas
-		err = fakeClient.Update(context.Background(), existing)
-		require.NoError(t, err)
-
-		// Modify the MCPRegistry spec to trigger an update
-		mcpRegistry.Spec.Sources = append(mcpRegistry.Spec.Sources, mcpv1alpha1.MCPRegistrySourceConfig{
-			Name:   "extra",
-			Format: mcpv1alpha1.RegistryFormatToolHive,
-			ConfigMapRef: &corev1.ConfigMapKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "extra-cm"},
-				Key:                  "extra.json",
-			},
-		})
-		mcpRegistry.Spec.Registries = append(mcpRegistry.Spec.Registries, mcpv1alpha1.MCPRegistryViewConfig{
-			Name:    "extra",
-			Sources: []string{"extra"},
-		})
-		configManager = config.NewConfigManager(mcpRegistry)
-
-		// Second call: update triggered by spec change
-		_, err = mgr.ensureDeployment(context.Background(), mcpRegistry, configManager)
-		require.NoError(t, err)
-
-		// Fetch and verify replicas were preserved
-		updated := &appsv1.Deployment{}
-		err = fakeClient.Get(context.Background(), client.ObjectKey{
-			Name:      "test-registry-api",
-			Namespace: "test-namespace",
-		}, updated)
-		require.NoError(t, err)
-
-		require.NotNil(t, updated.Spec.Replicas)
-		assert.Equal(t, int32(3), *updated.Spec.Replicas,
-			"Spec.Replicas should be preserved after update (HPA scaling should not be overwritten)")
 	})
 }

@@ -121,8 +121,8 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
-	// Validate new-path spec fields (mutual exclusivity, reserved names, mount paths)
-	if err := validateNewPathSpec(mcpRegistry); err != nil {
+	// Validate spec fields (reserved names, mount paths, pgpassSecretRef)
+	if err := validateSpec(mcpRegistry); err != nil {
 		mcpRegistry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
 		mcpRegistry.Status.Message = fmt.Sprintf("Spec validation failed: %v", err)
 		setRegistryReadyCondition(mcpRegistry, metav1.ConditionFalse,
@@ -314,23 +314,13 @@ func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registr
 	return nil
 }
 
-// validateNewPathSpec validates MCPRegistry spec fields for mutual exclusivity,
-// reserved resource name conflicts, and mount path collisions. Returns nil if
-// the spec is valid or a descriptive error if validation fails. CEL admission
-// rules cover the common cases; this is defense-in-depth inside the reconciler.
-//
-//nolint:staticcheck // Intentionally references deprecated fields for mutual exclusivity validation
-func validateNewPathSpec(mcpRegistry *mcpv1alpha1.MCPRegistry) error {
+// validateSpec validates MCPRegistry spec fields for reserved resource name
+// conflicts, mount path collisions, and pgpassSecretRef completeness. Returns
+// nil if the spec is valid or a descriptive error if validation fails. CEL
+// admission rules cover the common cases; this is defense-in-depth inside the
+// reconciler.
+func validateSpec(mcpRegistry *mcpv1alpha1.MCPRegistry) error {
 	spec := &mcpRegistry.Spec
-
-	if err := validatePathExclusivity(spec); err != nil {
-		return err
-	}
-
-	// Remaining validations only apply to the new configYAML path
-	if spec.ConfigYAML == "" {
-		return nil
-	}
 
 	// Parse user PodTemplateSpec once for subsequent checks
 	var userPTS *corev1.PodTemplateSpec
@@ -345,36 +335,8 @@ func validateNewPathSpec(mcpRegistry *mcpv1alpha1.MCPRegistry) error {
 		return err
 	}
 
-	return validateMountPathCollisions(spec, userPTS)
-}
-
-// validatePathExclusivity checks mutual exclusivity between new and legacy config paths,
-// and that new-path-only fields are not set without configYAML.
-//
-//nolint:staticcheck // Intentionally references deprecated fields for mutual exclusivity validation
-func validatePathExclusivity(spec *mcpv1alpha1.MCPRegistrySpec) error {
-	hasNewPath := spec.ConfigYAML != ""
-	hasLegacySources := len(spec.Sources) > 0 || len(spec.Registries) > 0
-	hasLegacyConfig := spec.DatabaseConfig != nil || spec.AuthConfig != nil || spec.TelemetryConfig != nil
-
-	if hasNewPath && (hasLegacySources || hasLegacyConfig) {
-		return fmt.Errorf(
-			"configYAML is mutually exclusive with sources, databaseConfig, and authConfig; " +
-				"use configYAML with volumes/volumeMounts for the decoupled path, " +
-				"or use sources/databaseConfig/authConfig for the legacy path")
-	}
-
-	if !hasNewPath && !hasLegacySources {
-		return fmt.Errorf("either configYAML or sources must be specified")
-	}
-
-	if !hasNewPath {
-		if len(spec.Volumes) > 0 || len(spec.VolumeMounts) > 0 {
-			return fmt.Errorf("volumes and volumeMounts require configYAML to be set")
-		}
-		if spec.PGPassSecretRef != nil {
-			return fmt.Errorf("pgpassSecretRef requires configYAML to be set; use databaseConfig for the legacy path")
-		}
+	if err := validateMountPathCollisions(spec, userPTS); err != nil {
+		return err
 	}
 
 	return validatePGPassSecretRef(spec.PGPassSecretRef)

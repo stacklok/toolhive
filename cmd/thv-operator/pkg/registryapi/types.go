@@ -42,14 +42,8 @@ const (
 	// ReadinessPeriod is the period in seconds for readiness probe checks
 	ReadinessPeriod = 5
 
-	// RegistryDataVolumeName is the name of the volume used for registry data
-	RegistryDataVolumeName = "registry-data"
-
 	// RegistryServerConfigVolumeName is the name of the volume used for registry server config
 	RegistryServerConfigVolumeName = "registry-server-config"
-
-	// RegistryDataMountPath is the mount path for registry data in containers
-	RegistryDataMountPath = "/data/registry"
 
 	// ServeCommand is the command used to start the registry API server
 	ServeCommand = "serve"
@@ -86,10 +80,6 @@ const (
 	pgpassFileName = ".pgpass"
 	// pgpassEnvVar is the environment variable name for the pgpass file path
 	pgpassEnvVar = "PGPASSFILE"
-
-	// Git auth volume and path constants
-	// gitAuthSecretsBasePath is the base path where git auth secrets are mounted
-	gitAuthSecretsBasePath = "/secrets"
 )
 
 // Error represents a structured error with condition information for operator components

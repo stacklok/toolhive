@@ -186,11 +186,11 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 			statusHelper.WaitForPhaseAny(registry2.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 
-			// Verify they operate independently
-			Expect(registry1.Spec.Sources[0].SyncPolicy.Interval).To(Equal("1h"))
-			Expect(registry2.Spec.Sources[0].SyncPolicy.Interval).To(Equal("30m"))
-			Expect(registry1.Spec.Sources[0].Format).To(Equal(mcpv1alpha1.RegistryFormatToolHive))
-			Expect(registry2.Spec.Sources[0].Format).To(Equal(mcpv1alpha1.RegistryFormatToolHive))
+			// Verify they operate independently by checking their configYAML
+			Expect(registry1.Spec.ConfigYAML).To(ContainSubstring("interval: 1h"))
+			Expect(registry2.Spec.ConfigYAML).To(ContainSubstring("interval: 30m"))
+			Expect(registry1.Spec.ConfigYAML).To(ContainSubstring("format: toolhive"))
+			Expect(registry2.Spec.ConfigYAML).To(ContainSubstring("format: toolhive"))
 		})
 
 		It("should allow multiple registries with same ConfigMap source", func() {
@@ -237,32 +237,9 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 				Create(registryHelper)
 
 			// Try to create second registry with same name - should fail
-			duplicateRegistry := &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "conflict-registry",
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
-						{
-							Name:   "default",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: configMap.Name,
-								},
-								Key: "registry.json",
-							},
-						},
-					},
-					Registries: []mcpv1alpha1.MCPRegistryViewConfig{
-						{
-							Name:    "default",
-							Sources: []string{"default"},
-						},
-					},
-				},
-			}
+			duplicateBuilder := registryHelper.NewRegistryBuilder("conflict-registry").
+				WithConfigMapSource(configMap.Name, "registry.json")
+			duplicateRegistry := duplicateBuilder.Build()
 
 			err := k8sClient.Create(ctx, duplicateRegistry)
 			Expect(err).To(HaveOccurred())

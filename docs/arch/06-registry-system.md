@@ -514,6 +514,18 @@ For Kubernetes deployments, registries managed via `MCPRegistry` CRD.
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpregistry_types.go`
 
+### How configYAML Works
+
+The MCPRegistry CRD uses a `configYAML` field that contains the complete
+[ToolHive Registry Server](https://github.com/stacklok/toolhive-registry-server)
+`config.yaml` verbatim. The operator passes this content through to the
+registry server without parsing or transforming it -- configuration
+validation is the registry server's responsibility.
+
+Any files referenced in `configYAML` (registry data, Git credentials, TLS
+certs) must be mounted into the registry-api container via explicit
+`volumes` and `volumeMounts` fields on the CRD.
+
 ### Example CRD
 
 ```yaml
@@ -521,28 +533,59 @@ apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPRegistry
 metadata:
   name: company-registry
+  namespace: toolhive-system
 spec:
-  source:
-    type: git
-    git:
-      repository: https://github.com/company/mcp-registry
-      branch: main
-      path: registry.json
-  syncPolicy:
-    interval: 1h
+  configYAML: |
+    sources:
+      - name: company-repo
+        format: toolhive
+        git:
+          repository: https://github.com/company/mcp-registry
+          branch: main
+          path: registry.json
+        syncPolicy:
+          interval: 1h
+    registries:
+      - name: default
+        sources: ["company-repo"]
+    database:
+      host: registry-db-rw
+      port: 5432
+      user: db_app
+      database: registry
+    auth:
+      mode: anonymous
 ```
 
 ### Source Types
 
+Sources are defined inside `configYAML`. The registry server supports
+several source types; the most common are Git, file (ConfigMap-backed),
+and Kubernetes.
+
 #### Git Source
 
 ```yaml
-source:
-  type: git
-  git:
-    repository: https://github.com/example/registry
-    branch: main
-    path: registry.json
+configYAML: |
+  sources:
+    - name: my-source
+      format: toolhive
+      git:
+        repository: https://github.com/example/registry
+        branch: main
+        path: registry.json
+      syncPolicy:
+        interval: 1h
+  registries:
+    - name: default
+      sources: ["my-source"]
+  database:
+    host: postgres
+    port: 5432
+    user: db_app
+    database: registry
+  auth:
+    mode: anonymous
 ```
 
 **Features:**
@@ -553,68 +596,127 @@ source:
 
 **Private Repository Authentication:**
 
+Git credentials are mounted as files using `volumes`/`volumeMounts` and
+referenced via `passwordFile` in the source configuration.
+
 ```yaml
-registries:
-  - name: default
-    format: toolhive
-    git:
-      repository: https://github.com/org/private-registry
-      branch: main
-      path: registry.json
-      auth:
-        username: "git"  # Use "git" for GitHub PATs
-        passwordSecretRef:
-          name: git-credentials
-          key: password
+spec:
+  configYAML: |
+    sources:
+      - name: private-repo
+        format: toolhive
+        git:
+          repository: https://github.com/org/private-registry
+          branch: main
+          path: registry.json
+          auth:
+            username: "git"  # Use "git" for GitHub PATs
+            passwordFile: /secrets/git-credentials/token
+        syncPolicy:
+          interval: 1h
+    registries:
+      - name: default
+        sources: ["private-repo"]
+    database:
+      host: postgres
+      port: 5432
+      user: db_app
+      database: registry
+    auth:
+      mode: anonymous
+  volumes:
+    - name: git-auth-credentials
+      secret:
+        secretName: git-credentials
+        items:
+          - key: token
+            path: token
+  volumeMounts:
+    - name: git-auth-credentials
+      mountPath: /secrets/git-credentials
+      readOnly: true
 ```
 
-The password is stored in a Kubernetes Secret and mounted securely in the registry-api pod.
+The password Secret is mounted explicitly into the registry-api pod via
+the `volumes` and `volumeMounts` fields. The `passwordFile` path in
+`configYAML` must match the `mountPath`.
 
-**Implementation**: `cmd/thv-operator/pkg/sources/git.go`
+**Implementation**: `cmd/thv-operator/pkg/registryapi/`
 
 #### ConfigMap Source
 
+Registry data from a ConfigMap is served by using a `file:` source in
+`configYAML` and mounting the ConfigMap with `volumes`/`volumeMounts`.
+
 ```yaml
-source:
-  type: configmap
-  configMapRef:
-    name: mcp-registry-data
-    key: registry.json
+spec:
+  configYAML: |
+    sources:
+      - name: production
+        format: toolhive
+        file:
+          path: /config/registry/production/registry.json
+        syncPolicy:
+          interval: 1h
+    registries:
+      - name: default
+        sources: ["production"]
+    database:
+      host: postgres
+      port: 5432
+      user: db_app
+      database: registry
+    auth:
+      mode: anonymous
+  volumes:
+    - name: registry-data-production
+      configMap:
+        name: mcp-registry-data
+        items:
+          - key: registry.json
+            path: registry.json
+  volumeMounts:
+    - name: registry-data-production
+      mountPath: /config/registry/production
+      readOnly: true
 ```
 
 **Features:**
 - Native Kubernetes resource
 - Direct updates via kubectl
 - No external dependencies
+- File path in `configYAML` must match the `mountPath`
 
-**Implementation**: `cmd/thv-operator/pkg/sources/configmap.go`
+**Implementation**: `cmd/thv-operator/pkg/registryapi/`
 
 ### Sync Policy
 
-**Automatic sync:**
+Sync intervals are configured per-source inside `configYAML`:
+
 ```yaml
-syncPolicy:
-  interval: 1h
+configYAML: |
+  sources:
+    - name: my-source
+      format: toolhive
+      git:
+        repository: https://github.com/example/registry
+        branch: main
+        path: registry.json
+      syncPolicy:
+        interval: 1h
 ```
 
-**Manual sync only:**
-
-Omit the `syncPolicy` field entirely. Manual sync can be triggered:
-
-```bash
-kubectl annotate mcpregistry company-registry \
-  toolhive.stacklok.dev/sync-trigger=true
-```
+Omit the `syncPolicy` block on a source for manual-only sync.
 
 **Implementation**: `cmd/thv-operator/controllers/mcpregistry_controller.go`
 
 ### API Service
 
-When `apiService.enabled: true`, operator creates:
+The operator always creates a registry API deployment for each MCPRegistry:
 
 1. **Deployment**: Running [ToolHive Registry Server](https://github.com/stacklok/toolhive-registry-server) (image: `ghcr.io/stacklok/thv-registry-api`)
 2. **Service**: Exposing API endpoints
-3. **ConfigMap**: Containing registry data
+3. **ConfigMap**: Containing the `configYAML` content mounted at `/config/config.yaml`
 
 **Access:**
 ```bash
@@ -626,7 +728,7 @@ kubectl port-forward svc/company-registry-api 8080:8080
 curl http://localhost:8080/api/v1/registry
 ```
 
-**Implementation**: `cmd/thv-operator/pkg/registryapi/service.go`
+**Implementation**: `cmd/thv-operator/pkg/registryapi/`
 
 ### Status Management
 

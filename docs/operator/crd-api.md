@@ -760,24 +760,6 @@ _Appears in:_
 
 
 
-#### api.v1alpha1.APISource
-
-
-
-APISource defines API source configuration for ToolHive Registry APIs
-Phase 1: Supports ToolHive API endpoints (no pagination)
-Phase 2: Will add support for upstream MCP Registry API with pagination
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `endpoint` _string_ | Endpoint is the base API URL (without path)<br />The controller will append the appropriate paths:<br />Phase 1 (ToolHive API):<br />  - /v0/servers - List all servers (single response, no pagination)<br />  - /v0/servers/\{name\} - Get specific server (future)<br />  - /v0/info - Get registry metadata (future)<br />Example: "http://my-registry-api.default.svc.cluster.local/api" |  | MinLength: 1 <br />Pattern: `^https?://.*` <br />Required: \{\} <br /> |
-
-
 #### api.v1alpha1.AWSStsConfig
 
 
@@ -1234,47 +1216,6 @@ _Appears in:_
 | `upstreamInject` | ExternalAuthTypeUpstreamInject is the type for upstream token injection<br />This injects an upstream IDP access token as the Authorization: Bearer header<br /> |
 
 
-#### api.v1alpha1.GitAuthConfig
-
-
-
-GitAuthConfig defines authentication settings for private Git repositories.
-Uses HTTP Basic authentication with username and password/token.
-The password is stored in a Kubernetes Secret and mounted as a file
-for the registry server to read.
-
-
-
-_Appears in:_
-- [api.v1alpha1.GitSource](#apiv1alpha1gitsource)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `username` _string_ | Username is the Git username for HTTP Basic authentication.<br />For GitHub/GitLab token-based auth, this is typically the literal string "git"<br />or the token itself depending on the provider. |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `passwordSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | PasswordSecretRef references a Kubernetes Secret containing the password or token<br />for Git authentication. The secret value will be mounted as a file and its path<br />passed to the registry server via the git.auth.passwordFile configuration.<br />Example secret:<br />  apiVersion: v1<br />  kind: Secret<br />  metadata:<br />    name: git-credentials<br />  stringData:<br />    token: <github token><br />Then reference it as:<br />  passwordSecretRef:<br />    name: git-credentials<br />    key: token |  | Required: \{\} <br /> |
-
-
-#### api.v1alpha1.GitSource
-
-
-
-GitSource defines Git repository source configuration
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `repository` _string_ | Repository is the Git repository URL (HTTP/HTTPS/SSH) |  | MinLength: 1 <br />Pattern: `^(file:///\|https?://\|git@\|ssh://\|git://).*` <br />Required: \{\} <br /> |
-| `branch` _string_ | Branch is the Git branch to use (mutually exclusive with Tag and Commit) |  | MinLength: 1 <br />Optional: \{\} <br /> |
-| `tag` _string_ | Tag is the Git tag to use (mutually exclusive with Branch and Commit) |  | MinLength: 1 <br />Optional: \{\} <br /> |
-| `commit` _string_ | Commit is the Git commit SHA to use (mutually exclusive with Branch and Tag) |  | MinLength: 1 <br />Optional: \{\} <br /> |
-| `path` _string_ | Path is the path to the registry file within the repository | registry.json | Pattern: `^.*\.json$` <br />Optional: \{\} <br /> |
-| `auth` _[api.v1alpha1.GitAuthConfig](#apiv1alpha1gitauthconfig)_ | Auth defines optional authentication for private Git repositories.<br />When specified, enables HTTP Basic authentication using the provided<br />username and password/token from a Kubernetes Secret. |  | Optional: \{\} <br /> |
-
-
 #### api.v1alpha1.HeaderForwardConfig
 
 
@@ -1461,23 +1402,6 @@ _Appears in:_
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from.<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL. |  | Optional: \{\} <br /> |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint.<br />If empty, OIDC discovery will be used to automatically determine the introspection URL. |  | Optional: \{\} <br /> |
 | `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token.<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication.<br />Defaults to true if not specified. |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.KubernetesSource
-
-
-
-KubernetesSource defines a source that discovers MCP servers from running Kubernetes resources.
-Per-entry claims can be set on CRDs via the toolhive.stacklok.dev/authz-claims JSON annotation.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `namespaces` _string array_ | Namespaces is a list of Kubernetes namespaces to watch for MCP servers.<br />If empty, watches the operator's configured namespace. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPExternalAuthConfig
@@ -1813,119 +1737,6 @@ _Appears in:_
 | `status` _[api.v1alpha1.MCPRegistryStatus](#apiv1alpha1mcpregistrystatus)_ |  |  |  |
 
 
-#### api.v1alpha1.MCPRegistryAWSRDSIAMConfig
-
-
-
-MCPRegistryAWSRDSIAMConfig defines AWS RDS IAM authentication configuration.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryDynamicAuthConfig](#apiv1alpha1mcpregistrydynamicauthconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `region` _string_ | Region is the AWS region for RDS IAM authentication.<br />Use "detect" to automatically detect the region from instance metadata. |  | MinLength: 1 <br />Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.MCPRegistryAuthConfig
-
-
-
-MCPRegistryAuthConfig defines authentication configuration for the registry API server.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistrySpec](#apiv1alpha1mcpregistryspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `mode` _[api.v1alpha1.MCPRegistryAuthMode](#apiv1alpha1mcpregistryauthmode)_ | Mode specifies the authentication mode (anonymous or oauth)<br />Defaults to "anonymous" if not specified.<br />Use "oauth" to enable OAuth/OIDC authentication. | anonymous | Enum: [anonymous oauth] <br />Optional: \{\} <br /> |
-| `publicPaths` _string array_ | PublicPaths defines additional paths that bypass authentication.<br />These extend the default public paths (health, docs, swagger, well-known).<br />Each path must start with "/". Do not add API data paths here.<br />Example: ["/custom/public", "/metrics"] |  | items:MinLength: 1 <br />items:Pattern: `^/` <br />Optional: \{\} <br /> |
-| `oauth` _[api.v1alpha1.MCPRegistryOAuthConfig](#apiv1alpha1mcpregistryoauthconfig)_ | OAuth defines OAuth/OIDC specific authentication settings<br />Only used when Mode is "oauth" |  | Optional: \{\} <br /> |
-| `authz` _[api.v1alpha1.MCPRegistryAuthzConfig](#apiv1alpha1mcpregistryauthzconfig)_ | Authz defines authorization configuration for role-based access control. |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.MCPRegistryAuthMode
-
-_Underlying type:_ _string_
-
-MCPRegistryAuthMode represents the authentication mode for the registry API server
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryAuthConfig](#apiv1alpha1mcpregistryauthconfig)
-
-| Field | Description |
-| --- | --- |
-| `anonymous` | MCPRegistryAuthModeAnonymous allows unauthenticated access<br /> |
-| `oauth` | MCPRegistryAuthModeOAuth enables OAuth/OIDC authentication<br /> |
-
-
-#### api.v1alpha1.MCPRegistryAuthzConfig
-
-
-
-MCPRegistryAuthzConfig defines authorization configuration for role-based access control
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryAuthConfig](#apiv1alpha1mcpregistryauthconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `roles` _[api.v1alpha1.MCPRegistryRolesConfig](#apiv1alpha1mcpregistryrolesconfig)_ | Roles defines the role-based authorization rules.<br />Each role is a list of claim matchers (JSON objects with string or []string values). |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.MCPRegistryDatabaseConfig
-
-
-
-MCPRegistryDatabaseConfig defines PostgreSQL database configuration for the registry API server.
-Uses a two-user security model: separate users for operations and migrations.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistrySpec](#apiv1alpha1mcpregistryspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `host` _string_ | Host is the database server hostname | postgres | Optional: \{\} <br /> |
-| `port` _integer_ | Port is the database server port | 5432 | Maximum: 65535 <br />Minimum: 1 <br />Optional: \{\} <br /> |
-| `user` _string_ | User is the application user (limited privileges: SELECT, INSERT, UPDATE, DELETE)<br />Credentials should be provided via pgpass file or environment variables | db_app | Optional: \{\} <br /> |
-| `migrationUser` _string_ | MigrationUser is the migration user (elevated privileges: CREATE, ALTER, DROP)<br />Used for running database schema migrations<br />Credentials should be provided via pgpass file or environment variables | db_migrator | Optional: \{\} <br /> |
-| `database` _string_ | Database is the database name | registry | Optional: \{\} <br /> |
-| `sslMode` _string_ | SSLMode is the SSL mode for the connection<br />Valid values: disable, allow, prefer, require, verify-ca, verify-full | prefer | Enum: [disable allow prefer require verify-ca verify-full] <br />Optional: \{\} <br /> |
-| `maxOpenConns` _integer_ | MaxOpenConns is the maximum number of open connections to the database | 10 | Minimum: 1 <br />Optional: \{\} <br /> |
-| `maxIdleConns` _integer_ | MaxIdleConns is the maximum number of idle connections in the pool | 2 | Minimum: 0 <br />Optional: \{\} <br /> |
-| `connMaxLifetime` _string_ | ConnMaxLifetime is the maximum amount of time a connection may be reused (Go duration format)<br />Examples: "30m", "1h", "24h" | 30m | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
-| `maxMetaSize` _integer_ | MaxMetaSize is the maximum allowed size in bytes for publisher-provided<br />metadata extensions (_meta). Must be greater than zero.<br />Defaults to 262144 (256KB) if not specified. |  | Minimum: 1 <br />Optional: \{\} <br /> |
-| `dynamicAuth` _[api.v1alpha1.MCPRegistryDynamicAuthConfig](#apiv1alpha1mcpregistrydynamicauthconfig)_ | DynamicAuth defines dynamic database authentication configuration.<br />When set, the registry server authenticates to the database using<br />short-lived credentials instead of static passwords. |  | Optional: \{\} <br /> |
-| `dbAppUserPasswordSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | DBAppUserPasswordSecretRef references a Kubernetes Secret containing the password for the application database user.<br />The operator will use this password along with DBMigrationUserPasswordSecretRef to generate a pgpass file<br />that is mounted to the registry API container. |  | Required: \{\} <br /> |
-| `dbMigrationUserPasswordSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | DBMigrationUserPasswordSecretRef references a Kubernetes Secret containing the password for the migration database user.<br />The operator will use this password along with DBAppUserPasswordSecretRef to generate a pgpass file<br />that is mounted to the registry API container. |  | Required: \{\} <br /> |
-
-
-#### api.v1alpha1.MCPRegistryDynamicAuthConfig
-
-
-
-MCPRegistryDynamicAuthConfig defines dynamic database authentication configuration.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryDatabaseConfig](#apiv1alpha1mcpregistrydatabaseconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `awsRdsIam` _[api.v1alpha1.MCPRegistryAWSRDSIAMConfig](#apiv1alpha1mcpregistryawsrdsiamconfig)_ | AWSRDSIAM enables AWS RDS IAM authentication for database connections. |  | Optional: \{\} <br /> |
-
-
 #### api.v1alpha1.MCPRegistryList
 
 
@@ -1944,68 +1755,6 @@ MCPRegistryList contains a list of MCPRegistry
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 | `items` _[api.v1alpha1.MCPRegistry](#apiv1alpha1mcpregistry) array_ |  |  |  |
-
-
-#### api.v1alpha1.MCPRegistryMetricsConfig
-
-
-
-MCPRegistryMetricsConfig defines metrics-specific configuration.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryTelemetryConfig](#apiv1alpha1mcpregistrytelemetryconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `enabled` _boolean_ | Enabled controls whether metrics collection is enabled. | false | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.MCPRegistryOAuthConfig
-
-
-
-MCPRegistryOAuthConfig defines OAuth/OIDC specific authentication settings
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryAuthConfig](#apiv1alpha1mcpregistryauthconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `resourceUrl` _string_ | ResourceURL is the URL identifying this protected resource (RFC 9728)<br />Used in the /.well-known/oauth-protected-resource endpoint |  | Optional: \{\} <br /> |
-| `providers` _[api.v1alpha1.MCPRegistryOAuthProviderConfig](#apiv1alpha1mcpregistryoauthproviderconfig) array_ | Providers defines the OAuth/OIDC providers for authentication<br />Multiple providers can be configured (e.g., Kubernetes + external IDP) |  | MinItems: 1 <br />Optional: \{\} <br /> |
-| `scopesSupported` _string array_ | ScopesSupported defines the OAuth scopes supported by this resource (RFC 9728)<br />Defaults to ["mcp-registry:read", "mcp-registry:write"] if not specified |  | Optional: \{\} <br /> |
-| `realm` _string_ | Realm is the protection space identifier for WWW-Authenticate header (RFC 7235)<br />Defaults to "mcp-registry" if not specified |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.MCPRegistryOAuthProviderConfig
-
-
-
-MCPRegistryOAuthProviderConfig defines configuration for an OAuth/OIDC provider
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryOAuthConfig](#apiv1alpha1mcpregistryoauthconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is a unique identifier for this provider (e.g., "kubernetes", "keycloak") |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `issuerUrl` _string_ | IssuerURL is the OIDC issuer URL (e.g., https://accounts.google.com)<br />The JWKS URL will be discovered automatically from .well-known/openid-configuration<br />unless JwksUrl is explicitly specified |  | MinLength: 1 <br />Pattern: `^https?://.*` <br />Required: \{\} <br /> |
-| `jwksUrl` _string_ | JwksUrl is the URL to fetch the JSON Web Key Set (JWKS) from<br />If specified, OIDC discovery is skipped and this URL is used directly<br />Example: https://kubernetes.default.svc/openid/v1/jwks |  | Pattern: `^https?://.*` <br />Optional: \{\} <br /> |
-| `audience` _string_ | Audience is the expected audience claim in the token (REQUIRED)<br />Per RFC 6749 Section 4.1.3, tokens must be validated against expected audience<br />For Kubernetes, this is typically the API server URL |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `clientId` _string_ | ClientID is the OAuth client ID for token introspection (optional) |  | Optional: \{\} <br /> |
-| `clientSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | ClientSecretRef is a reference to a Secret containing the client secret<br />The secret should have a key "clientSecret" containing the secret value |  | Optional: \{\} <br /> |
-| `caCertRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | CACertRef is a reference to a ConfigMap containing the CA certificate bundle<br />for verifying the provider's TLS certificate.<br />Required for Kubernetes in-cluster authentication or self-signed certificates |  | Optional: \{\} <br /> |
-| `caCertPath` _string_ | CaCertPath is the path to the CA certificate bundle for verifying the provider's TLS certificate.<br />Required for Kubernetes in-cluster authentication or self-signed certificates |  | Optional: \{\} <br /> |
-| `authTokenRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | AuthTokenRef is a reference to a Secret containing a bearer token for authenticating<br />to OIDC/JWKS endpoints. Useful when the OIDC discovery or JWKS endpoint requires authentication.<br />Example: ServiceAccount token for Kubernetes API server |  | Optional: \{\} <br /> |
-| `authTokenFile` _string_ | AuthTokenFile is the path to a file containing a bearer token for authenticating to OIDC/JWKS endpoints.<br />Useful when the OIDC discovery or JWKS endpoint requires authentication.<br />Example: /var/run/secrets/kubernetes.io/serviceaccount/token |  | Optional: \{\} <br /> |
-| `introspectionUrl` _string_ | IntrospectionURL is the OAuth 2.0 Token Introspection endpoint (RFC 7662)<br />Used for validating opaque (non-JWT) tokens<br />If not specified, only JWT tokens can be validated via JWKS |  | Pattern: `^https?://.*` <br />Optional: \{\} <br /> |
-| `allowPrivateIP` _boolean_ | AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses<br />Required when the OAuth provider (e.g., Kubernetes API server) is running on a private network<br />Example: Set to true when using https://kubernetes.default.svc as the issuer URL | false | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRegistryPhase
@@ -2028,53 +1777,6 @@ _Appears in:_
 | `Terminating` | MCPRegistryPhaseTerminating means the MCPRegistry is being deleted<br /> |
 
 
-#### api.v1alpha1.MCPRegistryRolesConfig
-
-
-
-MCPRegistryRolesConfig defines role-based authorization rules.
-Each role is a list of claim matchers — a request matching any entry in the list is granted the role.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryAuthzConfig](#apiv1alpha1mcpregistryauthzconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `superAdmin` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | SuperAdmin grants full administrative access to the registry. |  | Optional: \{\} <br /> |
-| `manageSources` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | ManageSources grants permission to create, update, and delete sources. |  | Optional: \{\} <br /> |
-| `manageRegistries` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | ManageRegistries grants permission to create, update, and delete registries. |  | Optional: \{\} <br /> |
-| `manageEntries` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | ManageEntries grants permission to create, update, and delete registry entries. |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.MCPRegistrySourceConfig
-
-
-
-MCPRegistrySourceConfig defines a data source configuration for the registry.
-Exactly one source type must be specified (ConfigMapRef, Git, API, URL, Managed, or Kubernetes).
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistrySpec](#apiv1alpha1mcpregistryspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is a unique identifier for this source within the MCPRegistry |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `format` _string_ | Format is the data format (toolhive, upstream) | toolhive | Enum: [toolhive upstream] <br /> |
-| `claims` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io)_ | Claims are key-value pairs attached to this source for authorization purposes.<br />All entries from this source inherit these claims. Values must be string or []string. |  | Type: object <br />Optional: \{\} <br /> |
-| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef defines the ConfigMap source configuration<br />Mutually exclusive with Git, API, URL, Managed, and Kubernetes |  | Optional: \{\} <br /> |
-| `git` _[api.v1alpha1.GitSource](#apiv1alpha1gitsource)_ | Git defines the Git repository source configuration<br />Mutually exclusive with ConfigMapRef, API, URL, Managed, and Kubernetes |  | Optional: \{\} <br /> |
-| `api` _[api.v1alpha1.APISource](#apiv1alpha1apisource)_ | API defines the API source configuration<br />Mutually exclusive with ConfigMapRef, Git, URL, Managed, and Kubernetes |  | Optional: \{\} <br /> |
-| `url` _[api.v1alpha1.URLSource](#apiv1alpha1urlsource)_ | URL defines a URL-hosted file source configuration.<br />The registry server fetches the registry data from the specified HTTP/HTTPS URL.<br />Mutually exclusive with ConfigMapRef, Git, API, Managed, and Kubernetes |  | Optional: \{\} <br /> |
-| `managed` _[api.v1alpha1.ManagedSource](#apiv1alpha1managedsource)_ | Managed defines a managed source that is directly manipulated via the registry API.<br />Managed sources do not sync from external sources.<br />At most one managed source is allowed per MCPRegistry.<br />Mutually exclusive with ConfigMapRef, Git, API, URL, and Kubernetes |  | Optional: \{\} <br /> |
-| `kubernetes` _[api.v1alpha1.KubernetesSource](#apiv1alpha1kubernetessource)_ | Kubernetes defines a source that discovers MCP servers from running Kubernetes resources.<br />Mutually exclusive with ConfigMapRef, Git, API, URL, and Managed |  | Optional: \{\} <br /> |
-| `syncPolicy` _[api.v1alpha1.SyncPolicy](#apiv1alpha1syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for this source.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting.<br />Not applicable for Managed and Kubernetes sources (will be ignored). |  | Optional: \{\} <br /> |
-| `filter` _[api.v1alpha1.RegistryFilter](#apiv1alpha1registryfilter)_ | Filter defines include/exclude patterns for registry content.<br />Not applicable for Managed and Kubernetes sources (will be ignored). |  | Optional: \{\} <br /> |
-
-
 #### api.v1alpha1.MCPRegistrySpec
 
 
@@ -2088,18 +1790,13 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `configYAML` _string_ | ConfigYAML is the complete registry server config.yaml content.<br />The operator creates a ConfigMap from this string and mounts it<br />at /config/config.yaml in the registry-api container.<br />The operator does NOT parse, validate, or transform this content.<br />Mutually exclusive with the legacy typed fields (Sources, Registries,<br />DatabaseConfig, AuthConfig, TelemetryConfig). When set, the operator<br />uses the decoupled code path — volumes and mounts must be provided<br />via the Volumes and VolumeMounts fields below. |  | Optional: \{\} <br /> |
-| `volumes` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | Volumes defines additional volumes to add to the registry API pod.<br />Each entry is a standard Kubernetes Volume object (JSON/YAML).<br />The operator appends them to the pod spec alongside its own config volume.<br />Only used when configYAML is set.<br />Use these to mount:<br />  - Secrets (git auth tokens, OAuth client secrets, CA certs)<br />  - ConfigMaps (registry data files)<br />  - PersistentVolumeClaims (registry data on persistent storage)<br />  - Any other volume type the registry server needs |  | Optional: \{\} <br /> |
-| `volumeMounts` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | VolumeMounts defines additional volume mounts for the registry-api container.<br />Each entry is a standard Kubernetes VolumeMount object (JSON/YAML).<br />The operator appends them to the container's volume mounts alongside the config mount.<br />Only used when configYAML is set.<br />Mount paths must match the file paths referenced in configYAML.<br />For example, if configYAML references passwordFile: /secrets/git-creds/token,<br />a corresponding volume mount must exist with mountPath: /secrets/git-creds. |  | Optional: \{\} <br /> |
-| `pgpassSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | PGPassSecretRef references a Secret containing a pre-created pgpass file.<br />Only used when configYAML is set. Mutually exclusive with DatabaseConfig.<br />Why this is a dedicated field instead of a regular volume/volumeMount:<br />PostgreSQL's libpq rejects pgpass files that aren't mode 0600. Kubernetes<br />secret volumes mount files as root-owned, and the registry-api container<br />runs as non-root (UID 65532). A root-owned 0600 file is unreadable by<br />UID 65532, and using fsGroup changes permissions to 0640 which libpq also<br />rejects. The only solution is an init container that copies the file to an<br />emptyDir as the app user and runs chmod 0600. This cannot be expressed<br />through volumes/volumeMounts alone — it requires an init container, two<br />extra volumes (secret + emptyDir), a subPath mount, and an environment<br />variable, all wired together correctly.<br />When specified, the operator generates all of that plumbing invisibly.<br />The user creates the Secret with pgpass-formatted content; the operator<br />handles only the Kubernetes permission mechanics.<br />Example Secret:<br />	apiVersion: v1<br />	kind: Secret<br />	metadata:<br />	  name: my-pgpass<br />	stringData:<br />	  .pgpass: \|<br />	    postgres:5432:registry:db_app:mypassword<br />	    postgres:5432:registry:db_migrator:otherpassword<br />Then reference it:<br />	pgpassSecretRef:<br />	  name: my-pgpass<br />	  key: .pgpass |  | Optional: \{\} <br /> |
-| `displayName` _string_ | DisplayName is a human-readable name for the registry.<br />Works with both the new configYAML path and the legacy typed path. |  | Optional: \{\} <br /> |
+| `configYAML` _string_ | ConfigYAML is the complete registry server config.yaml content.<br />The operator creates a ConfigMap from this string and mounts it<br />at /config/config.yaml in the registry-api container.<br />The operator does NOT parse, validate, or transform this content —<br />configuration validation is the registry server's responsibility.<br />Security note: this content is stored in a ConfigMap, not a Secret.<br />Do not inline credentials (passwords, tokens, client secrets) in this<br />field. Instead, reference credentials via file paths and mount the<br />actual secrets using the Volumes and VolumeMounts fields. For database<br />passwords, use PGPassSecretRef. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `volumes` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | Volumes defines additional volumes to add to the registry API pod.<br />Each entry is a standard Kubernetes Volume object (JSON/YAML).<br />The operator appends them to the pod spec alongside its own config volume.<br />Use these to mount:<br />  - Secrets (git auth tokens, OAuth client secrets, CA certs)<br />  - ConfigMaps (registry data files)<br />  - PersistentVolumeClaims (registry data on persistent storage)<br />  - Any other volume type the registry server needs |  | Optional: \{\} <br /> |
+| `volumeMounts` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | VolumeMounts defines additional volume mounts for the registry-api container.<br />Each entry is a standard Kubernetes VolumeMount object (JSON/YAML).<br />The operator appends them to the container's volume mounts alongside the config mount.<br />Mount paths must match the file paths referenced in configYAML.<br />For example, if configYAML references passwordFile: /secrets/git-creds/token,<br />a corresponding volume mount must exist with mountPath: /secrets/git-creds. |  | Optional: \{\} <br /> |
+| `pgpassSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | PGPassSecretRef references a Secret containing a pre-created pgpass file.<br />Why this is a dedicated field instead of a regular volume/volumeMount:<br />PostgreSQL's libpq rejects pgpass files that aren't mode 0600. Kubernetes<br />secret volumes mount files as root-owned, and the registry-api container<br />runs as non-root (UID 65532). A root-owned 0600 file is unreadable by<br />UID 65532, and using fsGroup changes permissions to 0640 which libpq also<br />rejects. The only solution is an init container that copies the file to an<br />emptyDir as the app user and runs chmod 0600. This cannot be expressed<br />through volumes/volumeMounts alone -- it requires an init container, two<br />extra volumes (secret + emptyDir), a subPath mount, and an environment<br />variable, all wired together correctly.<br />When specified, the operator generates all of that plumbing invisibly.<br />The user creates the Secret with pgpass-formatted content; the operator<br />handles only the Kubernetes permission mechanics.<br />Example Secret:<br />	apiVersion: v1<br />	kind: Secret<br />	metadata:<br />	  name: my-pgpass<br />	stringData:<br />	  .pgpass: \|<br />	    postgres:5432:registry:db_app:mypassword<br />	    postgres:5432:registry:db_migrator:otherpassword<br />Then reference it:<br />	pgpassSecretRef:<br />	  name: my-pgpass<br />	  key: .pgpass |  | Optional: \{\} <br /> |
+| `displayName` _string_ | DisplayName is a human-readable name for the registry. |  | Optional: \{\} <br /> |
 | `enforceServers` _boolean_ | EnforceServers indicates whether MCPServers in this namespace must have their images<br />present in at least one registry in the namespace. When any registry in the namespace<br />has this field set to true, enforcement is enabled for the entire namespace.<br />MCPServers with images not found in any registry will be rejected.<br />When false (default), MCPServers can be deployed regardless of registry presence. | false | Optional: \{\} <br /> |
-| `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the registry API server.<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the registry API server runs in, you must specify<br />the `registry-api` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML.<br />Works with both the new configYAML path and the legacy typed path. |  | Type: object <br />Optional: \{\} <br /> |
-| `sources` _[api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig) array_ | Sources defines the data source configurations for the registry.<br />Each source defines where registry data comes from (Git, API, ConfigMap, URL, Managed, or Kubernetes).<br />Deprecated: Use configYAML with volumes/volumeMounts instead. |  | MaxItems: 20 <br />Optional: \{\} <br /> |
-| `registries` _[api.v1alpha1.MCPRegistryViewConfig](#apiv1alpha1mcpregistryviewconfig) array_ | Registries defines lightweight registry views that aggregate one or more sources.<br />Each registry references sources by name and can optionally gate access via claims.<br />Deprecated: Use configYAML with volumes/volumeMounts instead. |  | MaxItems: 20 <br />Optional: \{\} <br /> |
-| `databaseConfig` _[api.v1alpha1.MCPRegistryDatabaseConfig](#apiv1alpha1mcpregistrydatabaseconfig)_ | DatabaseConfig defines the PostgreSQL database configuration for the registry API server.<br />If not specified, defaults will be used:<br />  - Host: "postgres"<br />  - Port: 5432<br />  - User: "db_app"<br />  - MigrationUser: "db_migrator"<br />  - Database: "registry"<br />  - SSLMode: "prefer"<br />  - MaxOpenConns: 10<br />  - MaxIdleConns: 2<br />  - ConnMaxLifetime: "30m"<br />Deprecated: Put database config in configYAML and use pgpassSecretRef. |  | Optional: \{\} <br /> |
-| `authConfig` _[api.v1alpha1.MCPRegistryAuthConfig](#apiv1alpha1mcpregistryauthconfig)_ | AuthConfig defines the authentication configuration for the registry API server.<br />If not specified, defaults to anonymous authentication.<br />Deprecated: Put auth config in configYAML instead. |  | Optional: \{\} <br /> |
-| `telemetryConfig` _[api.v1alpha1.MCPRegistryTelemetryConfig](#apiv1alpha1mcpregistrytelemetryconfig)_ | TelemetryConfig defines OpenTelemetry configuration for the registry API server.<br />When enabled, the server exports traces and metrics via OTLP.<br />Deprecated: Put telemetry config in configYAML instead. |  | Optional: \{\} <br /> |
+| `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the registry API server.<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the registry API server runs in, you must specify<br />the `registry-api` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRegistryStatus
@@ -2121,63 +1818,6 @@ _Appears in:_
 | `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
 | `url` _string_ | URL is the URL where the registry API can be accessed |  | Optional: \{\} <br /> |
 | `readyReplicas` _integer_ | ReadyReplicas is the number of ready registry API replicas |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.MCPRegistryTelemetryConfig
-
-
-
-MCPRegistryTelemetryConfig defines OpenTelemetry configuration for the registry API server.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistrySpec](#apiv1alpha1mcpregistryspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `enabled` _boolean_ | Enabled controls whether telemetry is enabled globally.<br />When false, no telemetry providers are initialized. | false | Optional: \{\} <br /> |
-| `serviceName` _string_ | ServiceName is the name of the service for telemetry identification.<br />Defaults to "thv-registry-api" if not specified. |  | Optional: \{\} <br /> |
-| `serviceVersion` _string_ | ServiceVersion is the version of the service for telemetry identification. |  | Optional: \{\} <br /> |
-| `endpoint` _string_ | Endpoint is the OTLP collector endpoint (host:port).<br />Defaults to "localhost:4318" if not specified. |  | Optional: \{\} <br /> |
-| `insecure` _boolean_ | Insecure allows HTTP connections instead of HTTPS to the OTLP endpoint.<br />Should only be true for development/testing environments. | false | Optional: \{\} <br /> |
-| `tracing` _[api.v1alpha1.MCPRegistryTracingConfig](#apiv1alpha1mcpregistrytracingconfig)_ | Tracing defines tracing-specific configuration. |  | Optional: \{\} <br /> |
-| `metrics` _[api.v1alpha1.MCPRegistryMetricsConfig](#apiv1alpha1mcpregistrymetricsconfig)_ | Metrics defines metrics-specific configuration. |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.MCPRegistryTracingConfig
-
-
-
-MCPRegistryTracingConfig defines tracing-specific configuration.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistryTelemetryConfig](#apiv1alpha1mcpregistrytelemetryconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `enabled` _boolean_ | Enabled controls whether tracing is enabled. | false | Optional: \{\} <br /> |
-| `sampling` _string_ | Sampling controls the trace sampling rate (0.0 to 1.0, exclusive of 0.0).<br />1.0 means sample all traces, 0.5 means sample 50%.<br />Defaults to 0.05 (5%) if not specified. |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.MCPRegistryViewConfig
-
-
-
-MCPRegistryViewConfig defines a lightweight registry view that aggregates one or more sources.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistrySpec](#apiv1alpha1mcpregistryspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is a unique identifier for this registry view |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `sources` _string array_ | Sources is an ordered list of source names that feed this registry.<br />Each name must reference a source defined in spec.sources. |  | MinItems: 1 <br />Required: \{\} <br /> |
-| `claims` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io)_ | Claims are key-value pairs that gate access to this registry view.<br />Only requests with matching claims can access this registry. Values must be string or []string. |  | Type: object <br />Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPRemoteProxy
@@ -2756,20 +2396,6 @@ _Appears in:_
 | `referencingWorkloads` _[api.v1alpha1.WorkloadReference](#apiv1alpha1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.ManagedSource
-
-
-
-ManagedSource defines a managed source that is directly manipulated via the registry API.
-Managed sources do not sync from external sources.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
-
-
-
 #### api.v1alpha1.ModelCacheConfig
 
 
@@ -2787,23 +2413,6 @@ _Appears in:_
 | `storageClassName` _string_ | StorageClassName is the storage class to use for the PVC<br />If not specified, uses the cluster's default storage class |  | Optional: \{\} <br /> |
 | `size` _string_ | Size is the size of the PVC for model caching (e.g., "10Gi") | 10Gi | Optional: \{\} <br /> |
 | `accessMode` _string_ | AccessMode is the access mode for the PVC | ReadWriteOnce | Enum: [ReadWriteOnce ReadWriteMany ReadOnlyMany] <br />Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.NameFilter
-
-
-
-NameFilter defines name-based filtering
-
-
-
-_Appears in:_
-- [api.v1alpha1.RegistryFilter](#apiv1alpha1registryfilter)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `include` _string array_ | Include is a list of glob patterns to include |  | Optional: \{\} <br /> |
-| `exclude` _string array_ | Exclude is a list of glob patterns to exclude |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.NetworkPermissions
@@ -3157,23 +2766,6 @@ _Appears in:_
 | `caCertSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | CACertSecretRef references a Secret containing a PEM-encoded CA certificate<br />for verifying the server. When not specified, system root CAs are used. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.RegistryFilter
-
-
-
-RegistryFilter defines include/exclude patterns for registry content
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `names` _[api.v1alpha1.NameFilter](#apiv1alpha1namefilter)_ | NameFilters defines name-based filtering |  | Optional: \{\} <br /> |
-| `tags` _[api.v1alpha1.TagFilter](#apiv1alpha1tagfilter)_ | Tags defines tag-based filtering |  | Optional: \{\} <br /> |
-
-
 #### api.v1alpha1.ResourceList
 
 
@@ -3377,42 +2969,6 @@ _Appears in:_
 | `passwordRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | PasswordRef is a reference to a Secret key containing the Redis password |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.SyncPolicy
-
-
-
-SyncPolicy defines automatic synchronization behavior.
-When specified, enables automatic synchronization at the given interval.
-Manual synchronization via annotation-based triggers is always available
-regardless of this policy setting.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `interval` _string_ | Interval is the sync interval for automatic synchronization (Go duration format)<br />Examples: "1h", "30m", "24h" |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Required: \{\} <br /> |
-
-
-#### api.v1alpha1.TagFilter
-
-
-
-TagFilter defines tag-based filtering
-
-
-
-_Appears in:_
-- [api.v1alpha1.RegistryFilter](#apiv1alpha1registryfilter)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `include` _string array_ | Include is a list of tags to include |  | Optional: \{\} <br /> |
-| `exclude` _string array_ | Exclude is a list of tags to exclude |  | Optional: \{\} <br /> |
-
-
 #### api.v1alpha1.TelemetryConfig
 
 
@@ -3573,24 +3129,6 @@ _Appears in:_
 | `name` _string_ | Name is the MCP tool name this limit applies to. |  | MinLength: 1 <br />Required: \{\} <br /> |
 | `shared` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | Shared token bucket for this specific tool. |  | Optional: \{\} <br /> |
 | `perUser` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | PerUser token bucket configuration for this tool. |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.URLSource
-
-
-
-URLSource defines a URL-hosted file source configuration.
-The registry server fetches registry data from the specified HTTP/HTTPS URL.
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRegistrySourceConfig](#apiv1alpha1mcpregistrysourceconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `endpoint` _string_ | Endpoint is the HTTP/HTTPS URL to fetch the registry file from.<br />HTTPS is required unless the host is localhost. |  | MinLength: 1 <br />Pattern: `^https?://.*` <br />Required: \{\} <br /> |
-| `timeout` _string_ | Timeout is the timeout for HTTP requests (Go duration format).<br />Defaults to "30s" if not specified. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.UpstreamInjectSpec

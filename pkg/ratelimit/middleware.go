@@ -120,6 +120,9 @@ func rateLimitHandler(limiter Limiter) types.MiddlewareFunction {
 				return
 			}
 
+			// When no identity is present (unauthenticated), userID stays empty
+			// and per-user buckets are skipped — only shared limits apply. CEL
+			// validation ensures perUser rate limits require auth to be enabled.
 			var userID string
 			if identity, ok := auth.IdentityFromContext(r.Context()); ok {
 				userID = identity.Subject

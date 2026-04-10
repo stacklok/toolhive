@@ -104,7 +104,7 @@ func CleanupRedis(ctx context.Context, c client.Client, namespace string) {
 }
 
 // SendToolCall sends a JSON-RPC tools/call request and returns the HTTP status code and body.
-func SendToolCall(httpClient *http.Client, port int32, toolName string, requestID int) (int, []byte) {
+func SendToolCall(ctx context.Context, httpClient *http.Client, port int32, toolName string, requestID int) (int, []byte) {
 	reqBody := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      requestID,
@@ -118,7 +118,7 @@ func SendToolCall(httpClient *http.Client, port int32, toolName string, requestI
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 	url := fmt.Sprintf("http://localhost:%d/mcp", port)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -133,46 +133,10 @@ func SendToolCall(httpClient *http.Client, port int32, toolName string, requestI
 	return resp.StatusCode, respBody
 }
 
-// SendAuthenticatedToolCall sends a JSON-RPC tools/call request with a Bearer token.
-// Returns the HTTP status code, response body, and the Retry-After header value (empty if not set).
-func SendAuthenticatedToolCall(
-	httpClient *http.Client, port int32, toolName string, requestID int, bearerToken string,
-) (int, []byte, string) {
-	reqBody := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      requestID,
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      toolName,
-			"arguments": map[string]any{"input": "test"},
-		},
-	}
-	bodyBytes, err := json.Marshal(reqBody)
-	gomega.Expect(err).ToNot(gomega.HaveOccurred())
-
-	url := fmt.Sprintf("http://localhost:%d/mcp", port)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(bodyBytes))
-	gomega.Expect(err).ToNot(gomega.HaveOccurred())
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("Authorization", "Bearer "+bearerToken)
-
-	resp, err := httpClient.Do(req)
-	gomega.Expect(err).ToNot(gomega.HaveOccurred())
-	defer func() { _ = resp.Body.Close() }()
-
-	retryAfter := resp.Header.Get("Retry-After")
-
-	respBody, err := io.ReadAll(resp.Body)
-	gomega.Expect(err).ToNot(gomega.HaveOccurred())
-
-	return resp.StatusCode, respBody, retryAfter
-}
-
 // SendInitialize sends a JSON-RPC initialize request and returns the session ID
 // from the Mcp-Session header. This must be called before tools/call when auth is enabled.
 func SendInitialize(
-	httpClient *http.Client, port int32, bearerToken string,
+	ctx context.Context, httpClient *http.Client, port int32, bearerToken string,
 ) (sessionID string) {
 	reqBody := map[string]any{
 		"jsonrpc": "2.0",
@@ -191,7 +155,7 @@ func SendInitialize(
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 	url := fmt.Sprintf("http://localhost:%d/mcp", port)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -215,7 +179,7 @@ func SendInitialize(
 
 // SendAuthenticatedToolCallWithSession sends a JSON-RPC tools/call with Bearer token and session ID.
 func SendAuthenticatedToolCallWithSession(
-	httpClient *http.Client, port int32, toolName string, requestID int, bearerToken, sessionID string,
+	ctx context.Context, httpClient *http.Client, port int32, toolName string, requestID int, bearerToken, sessionID string,
 ) (int, []byte, string) {
 	reqBody := map[string]any{
 		"jsonrpc": "2.0",
@@ -230,7 +194,7 @@ func SendAuthenticatedToolCallWithSession(
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 	url := fmt.Sprintf("http://localhost:%d/mcp", port)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -252,9 +216,9 @@ func SendAuthenticatedToolCallWithSession(
 }
 
 // GetOIDCToken fetches a JWT from the mock OIDC server for the given subject.
-func GetOIDCToken(httpClient *http.Client, oidcNodePort int32, subject string) string {
+func GetOIDCToken(ctx context.Context, httpClient *http.Client, oidcNodePort int32, subject string) string {
 	url := fmt.Sprintf("http://localhost:%d/token?subject=%s", oidcNodePort, subject)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 	resp, err := httpClient.Do(req)

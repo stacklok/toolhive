@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/script"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -624,6 +625,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Port:                    port,
 		AuthMiddleware:          authMiddleware,
 		AuthzMiddleware:         authzMiddleware,
+		ScriptMiddleware:        script.NewMiddleware(),
 		AuthInfoHandler:         authInfoHandler,
 		AuthServer:              embeddedAuthServer,
 		TelemetryProvider:       telemetryProvider,

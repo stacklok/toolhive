@@ -224,6 +224,7 @@ func TestCreateWorkload(t *testing.T) {
 					groupManager:    mockGroupManager,
 					workloadManager: mockWorkloadManager,
 					imageRetriever:  mockRetriever,
+					imagePuller:     func(_ context.Context, _ string) error { return nil },
 					appConfig:       &config.Config{},
 				},
 			}
@@ -415,6 +416,7 @@ func TestUpdateWorkload(t *testing.T) {
 					groupManager:    mockGroupManager,
 					workloadManager: mockWorkloadManager,
 					imageRetriever:  mockRetriever,
+					imagePuller:     func(_ context.Context, _ string) error { return nil },
 					appConfig:       &config.Config{},
 				},
 			}
@@ -559,6 +561,7 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 					workloadManager:  mockWorkloadManager,
 					containerRuntime: mockRuntime,
 					imageRetriever:   mockRetriever,
+					imagePuller:      func(_ context.Context, _ string) error { return nil },
 					appConfig:        &config.Config{},
 				},
 			}

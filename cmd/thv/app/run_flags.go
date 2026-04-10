@@ -330,8 +330,8 @@ func BuildRunnerConfig(
 			nil, envVarValidator, oidcConfig, telemetryConfig)
 	}
 
-	// Handle image retrieval
-	imageURL, serverMetadata, err := handleImageRetrieval(ctx, serverOrImage, runFlags, groupName)
+	// Resolve image from registry without pulling (fast registry lookup only).
+	imageURL, serverMetadata, err := handleImageResolution(ctx, serverOrImage, runFlags, groupName)
 	if err != nil {
 		return nil, err
 	}
@@ -352,10 +352,23 @@ func BuildRunnerConfig(
 	regServerName := runner.ResolveRegistryServerName(serverMetadata)
 
 	// Build the runner config
-	return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverMetadata,
+	runConfig, err := buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverMetadata,
 		envVars, envVarValidator, oidcConfig, telemetryConfig,
 		runner.WithRegistrySourceURLs(regAPIURL, regURL),
 		runner.WithRegistryServerName(regServerName))
+	if err != nil {
+		return nil, err
+	}
+
+	// Enforce policy gate and pull image before returning. The policy check
+	// runs before the pull so that a rejected server fails fast.
+	if err := retriever.EnforcePolicyAndPullImage(
+		ctx, runConfig, serverMetadata, imageURL, retriever.PullMCPServerImage, 0,
+	); err != nil {
+		return nil, err
+	}
+
+	return runConfig, nil
 }
 
 // setupOIDCConfiguration sets up OIDC configuration and validates URLs
@@ -410,8 +423,9 @@ func setupRuntimeAndValidation(ctx context.Context) (runtime.Deployer, runner.En
 	return rt, envVarValidator, nil
 }
 
-// handleImageRetrieval handles image retrieval and metadata fetching
-func handleImageRetrieval(
+// handleImageResolution resolves the image from the registry without pulling it.
+// The actual image pull is deferred so that a policy check can run first.
+func handleImageResolution(
 	ctx context.Context,
 	serverOrImage string,
 	runFlags *RunFlags,
@@ -436,8 +450,8 @@ func handleImageRetrieval(
 		}
 	}
 
-	// Try to get server from registry (container or remote) or direct URL
-	imageURL, serverMetadata, err := retriever.GetMCPServer(
+	// Resolve server from registry (container or remote) without pulling the image.
+	imageURL, serverMetadata, err := retriever.ResolveMCPServer(
 		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage, groupName, runtimeOverride)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %w", serverOrImage, err)
@@ -448,13 +462,10 @@ func handleImageRetrieval(
 		return imageURL, serverMetadata, nil
 	}
 
-	// Only pull image if we are not running in Kubernetes mode.
+	// Only return server metadata if we are not running in Kubernetes mode.
 	// This split will go away if we implement a separate command or binary
 	// for running MCP servers in Kubernetes.
 	if !runtime.IsKubernetesRuntime() {
-		// Take the MCP server we were supplied and either fetch the image, or
-		// build it from a protocol scheme. If the server URI refers to an image
-		// in our trusted registry, we will also fetch the image metadata.
 		if serverMetadata != nil {
 			return imageURL, serverMetadata, nil
 		}

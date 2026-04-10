@@ -43,11 +43,11 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to parse arguments: %v", err)), nil
 	}
 
-	// Use retriever to properly fetch and prepare the MCP server
+	// Resolve the MCP server from the registry without pulling the image.
 	// TODO: make this configurable so we could warn or even fail
-	imageURL, serverMetadata, err := retriever.GetMCPServer(ctx, args.Server, "", "disabled", "", nil)
+	imageURL, serverMetadata, err := retriever.ResolveMCPServer(ctx, args.Server, "", "disabled", "", nil)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to resolve MCP server: %v", err)), nil
 	}
 
 	// Resolve registry source URLs and server name when the server was discovered via registry lookup.
@@ -66,6 +66,13 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 		runner.WithRegistryServerName(regServerName))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to build run configuration: %v", err)), nil
+	}
+
+	// Enforce policy gate and pull image before running the server.
+	if err := retriever.EnforcePolicyAndPullImage(
+		ctx, runConfig, serverMetadata, imageURL, retriever.PullMCPServerImage, 0,
+	); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to enforce policy or pull image: %v", err)), nil
 	}
 
 	// Save and run the server

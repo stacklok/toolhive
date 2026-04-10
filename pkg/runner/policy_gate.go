@@ -47,9 +47,11 @@ func RegisterPolicyGate(g PolicyGate) {
 	policyGate = g
 }
 
-// activePolicyGate returns the currently registered policy gate under the
-// package-level mutex.
-func activePolicyGate() PolicyGate {
+// ActivePolicyGate returns the currently registered policy gate under the
+// package-level mutex. It is exported for use by other toolhive packages
+// (e.g. retriever) that enforce policy outside Runner.Run; it is not
+// intended for external consumers.
+func ActivePolicyGate() PolicyGate {
 	policyGateMu.RLock()
 	defer policyGateMu.RUnlock()
 	return policyGate

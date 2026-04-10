@@ -39,6 +39,7 @@ type WorkloadService struct {
 	containerRuntime runtime.Runtime
 	debugMode        bool
 	imageRetriever   retriever.Retriever
+	imagePuller      retriever.ImagePuller
 	appConfig        *config.Config
 }
 
@@ -58,7 +59,8 @@ func NewWorkloadService(
 		groupManager:     groupManager,
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
-		imageRetriever:   retriever.GetMCPServer,
+		imageRetriever:   retriever.ResolveMCPServer,
+		imagePuller:      retriever.PullMCPServerImage,
 		appConfig:        appConfig,
 	}
 }
@@ -175,7 +177,8 @@ func (s *WorkloadService) BuildFullRunConfig(
 		imageCtx, cancel := context.WithTimeout(ctx, imageRetrievalTimeout)
 		defer cancel()
 
-		// Fetch or build the requested image
+		// Resolve the requested image from the registry without pulling it.
+		// The actual pull is deferred until after the policy check.
 		imageURL, serverMetadata, err = s.imageRetriever(
 			imageCtx,
 			req.Image,
@@ -338,6 +341,17 @@ func (s *WorkloadService) BuildFullRunConfig(
 	if err != nil {
 		slog.Error("failed to build run config", "error", err)
 		return nil, fmt.Errorf("%w: Failed to build run config: %w", retriever.ErrInvalidRunConfig, err)
+	}
+
+	// Enforce policy gate and pull image before returning. The policy check
+	// runs before the pull so that a rejected server fails fast.
+	// For remote workloads (req.URL != "") there is no image to pull.
+	if req.URL == "" {
+		if err := retriever.EnforcePolicyAndPullImage(
+			ctx, runConfig, serverMetadata, imageURL, s.imagePuller, imageRetrievalTimeout,
+		); err != nil {
+			return nil, err
+		}
 	}
 
 	return runConfig, nil

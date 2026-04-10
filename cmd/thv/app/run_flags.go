@@ -364,6 +364,7 @@ func BuildRunnerConfig(
 	// runs before the pull so that a rejected server fails fast.
 	if err := retriever.EnforcePolicyAndPullImage(
 		ctx, runConfig, serverMetadata, imageURL, retriever.PullMCPServerImage, 0,
+		runner.IsImageProtocolScheme(serverOrImage),
 	); err != nil {
 		return nil, err
 	}

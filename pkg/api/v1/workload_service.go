@@ -349,6 +349,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 	if req.URL == "" {
 		if err := retriever.EnforcePolicyAndPullImage(
 			ctx, runConfig, serverMetadata, imageURL, s.imagePuller, imageRetrievalTimeout,
+			runner.IsImageProtocolScheme(req.Image),
 		); err != nil {
 			return nil, err
 		}

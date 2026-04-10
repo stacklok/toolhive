@@ -246,6 +246,7 @@ func TestEnforcePolicyAndPullImage(t *testing.T) {
 		// gate or set env vars using t.Setenv.
 		setup          func(t *testing.T)
 		nilRunConfig   bool // when true, pass nil *RunConfig to exercise nil-safety
+		locallyBuilt   bool // when true, image was built from a protocol scheme
 		serverMetadata regtypes.ServerMetadata
 		pullerErr      error
 		expectPulled   bool
@@ -301,6 +302,12 @@ func TestEnforcePolicyAndPullImage(t *testing.T) {
 			expectImageURL: testImageURL,
 		},
 		{
+			name:           "locally built image skips pull",
+			locallyBuilt:   true,
+			serverMetadata: nil,
+			expectPulled:   false,
+		},
+		{
 			name:           "nil runConfig with default policy gate",
 			nilRunConfig:   true,
 			serverMetadata: &regtypes.ImageMetadata{},
@@ -335,6 +342,7 @@ func TestEnforcePolicyAndPullImage(t *testing.T) {
 				testImageURL,
 				puller,
 				0,
+				tt.locallyBuilt,
 			)
 
 			if tt.expectErr != "" {

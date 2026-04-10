@@ -156,6 +156,10 @@ func PullMCPServerImage(ctx context.Context, imageURL string) error {
 // pull so that a rejected server fails fast without downloading the image.
 // In Kubernetes mode the pull is skipped because the kubelet handles it.
 //
+// When locallyBuilt is true the image was already built by a protocol-scheme
+// handler (npx://, uvx://, go://) and exists locally, so the pull is skipped
+// to avoid an unnecessary Docker daemon connection.
+//
 // When pullTimeout is positive a child context with that deadline is used for
 // the pull; otherwise ctx is forwarded as-is.
 //
@@ -168,6 +172,7 @@ func EnforcePolicyAndPullImage(
 	imageURL string,
 	puller ImagePuller,
 	pullTimeout time.Duration,
+	locallyBuilt bool,
 ) error {
 	if serverMetadata != nil && serverMetadata.IsRemote() {
 		return nil
@@ -177,8 +182,9 @@ func EnforcePolicyAndPullImage(
 		return fmt.Errorf("server creation blocked by policy: %w", err)
 	}
 
-	// Skip pull for Kubernetes runtime — the kubelet pulls its own image.
-	if containerRuntime.IsKubernetesRuntime() {
+	// Skip pull when the image was already built locally (protocol-scheme)
+	// or when running on Kubernetes (the kubelet pulls its own image).
+	if locallyBuilt || containerRuntime.IsKubernetesRuntime() {
 		return nil
 	}
 

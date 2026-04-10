@@ -71,6 +71,7 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 	// Enforce policy gate and pull image before running the server.
 	if err := retriever.EnforcePolicyAndPullImage(
 		ctx, runConfig, serverMetadata, imageURL, retriever.PullMCPServerImage, 0,
+		runner.IsImageProtocolScheme(args.Server),
 	); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to enforce policy or pull image: %v", err)), nil
 	}

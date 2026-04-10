@@ -19,6 +19,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -127,6 +128,9 @@ type TransparentProxy struct {
 	// Health check ping timeout (default: 5 seconds)
 	healthCheckPingTimeout time.Duration
 
+	// Health check failure threshold: consecutive failures before shutdown (default: 5)
+	healthCheckFailureThreshold int
+
 	// Shutdown timeout for graceful HTTP server shutdown (default: 30 seconds)
 	shutdownTimeout time.Duration
 }
@@ -147,7 +151,6 @@ const (
 	defaultIdleTimeout = 120 * time.Second
 
 	// HealthCheckIntervalEnvVar is the environment variable name for configuring health check interval.
-	// This is primarily useful for testing with shorter intervals.
 	HealthCheckIntervalEnvVar = "TOOLHIVE_HEALTH_CHECK_INTERVAL"
 
 	// sessionMetadataBackendURL is the session metadata key that stores the backend pod URL.
@@ -165,6 +168,20 @@ const (
 	// tracingTransport.RoundTrip rewrites the outbound Mcp-Session-Id header to this
 	// value so the backend sees its own session ID while the client keeps its original one.
 	sessionMetadataBackendSID = "backend_sid"
+
+	// HealthCheckPingTimeoutEnvVar is the environment variable name for configuring health check ping timeout.
+	HealthCheckPingTimeoutEnvVar = "TOOLHIVE_HEALTH_CHECK_PING_TIMEOUT"
+
+	// HealthCheckRetryDelayEnvVar is the environment variable name for configuring health check retry delay.
+	HealthCheckRetryDelayEnvVar = "TOOLHIVE_HEALTH_CHECK_RETRY_DELAY"
+
+	// HealthCheckFailureThresholdEnvVar is the environment variable name for configuring
+	// the number of consecutive health check failures before shutdown.
+	HealthCheckFailureThresholdEnvVar = "TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD"
+
+	// DefaultHealthCheckFailureThreshold is the default number of consecutive health check
+	// failures before the proxy initiates shutdown.
+	DefaultHealthCheckFailureThreshold = 5
 )
 
 // Option is a functional option for configuring TransparentProxy
@@ -220,6 +237,17 @@ func withHealthCheckPingTimeout(timeout time.Duration) Option {
 	return func(p *TransparentProxy) {
 		if timeout > 0 {
 			p.healthCheckPingTimeout = timeout
+		}
+	}
+}
+
+// withHealthCheckFailureThreshold sets the consecutive failure count before shutdown.
+// This is primarily useful for testing with lower thresholds.
+// Ignores non-positive values; default will be used.
+func withHealthCheckFailureThreshold(threshold int) Option {
+	return func(p *TransparentProxy) {
+		if threshold > 0 {
+			p.healthCheckFailureThreshold = threshold
 		}
 	}
 }
@@ -299,10 +327,58 @@ func NewTransparentProxy(
 func getHealthCheckInterval() time.Duration {
 	if val := os.Getenv(HealthCheckIntervalEnvVar); val != "" {
 		if d, err := time.ParseDuration(val); err == nil && d > 0 {
+			slog.Debug("using custom health check interval", "interval", d)
 			return d
 		}
+		slog.Warn("invalid health check interval, using default",
+			"env_var", HealthCheckIntervalEnvVar, "value", val, "default", DefaultHealthCheckInterval)
 	}
 	return DefaultHealthCheckInterval
+}
+
+// getHealthCheckPingTimeout returns the health check ping timeout to use.
+// Uses TOOLHIVE_HEALTH_CHECK_PING_TIMEOUT environment variable if set and valid,
+// otherwise returns the default timeout.
+func getHealthCheckPingTimeout() time.Duration {
+	if val := os.Getenv(HealthCheckPingTimeoutEnvVar); val != "" {
+		if d, err := time.ParseDuration(val); err == nil && d > 0 {
+			slog.Debug("using custom health check ping timeout", "timeout", d)
+			return d
+		}
+		slog.Warn("invalid health check ping timeout, using default",
+			"env_var", HealthCheckPingTimeoutEnvVar, "value", val, "default", DefaultPingerTimeout)
+	}
+	return DefaultPingerTimeout
+}
+
+// getHealthCheckRetryDelay returns the health check retry delay to use.
+// Uses TOOLHIVE_HEALTH_CHECK_RETRY_DELAY environment variable if set and valid,
+// otherwise returns the default delay.
+func getHealthCheckRetryDelay() time.Duration {
+	if val := os.Getenv(HealthCheckRetryDelayEnvVar); val != "" {
+		if d, err := time.ParseDuration(val); err == nil && d > 0 {
+			slog.Debug("using custom health check retry delay", "delay", d)
+			return d
+		}
+		slog.Warn("invalid health check retry delay, using default",
+			"env_var", HealthCheckRetryDelayEnvVar, "value", val, "default", DefaultHealthCheckRetryDelay)
+	}
+	return DefaultHealthCheckRetryDelay
+}
+
+// getHealthCheckFailureThreshold returns the consecutive failure threshold.
+// Uses TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD environment variable if set and valid,
+// otherwise returns the default threshold.
+func getHealthCheckFailureThreshold() int {
+	if val := os.Getenv(HealthCheckFailureThresholdEnvVar); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			slog.Debug("using custom health check failure threshold", "threshold", n)
+			return n
+		}
+		slog.Warn("invalid health check failure threshold, using default",
+			"env_var", HealthCheckFailureThresholdEnvVar, "value", val, "default", DefaultHealthCheckFailureThreshold)
+	}
+	return DefaultHealthCheckFailureThreshold
 }
 
 // NewTransparentProxyWithOptions creates a new transparent proxy with optional configuration.
@@ -324,25 +400,26 @@ func NewTransparentProxyWithOptions(
 	options ...Option,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
-		host:                   host,
-		port:                   port,
-		targetURI:              targetURI,
-		middlewares:            middlewares,
-		shutdownCh:             make(chan struct{}),
-		prometheusHandler:      prometheusHandler,
-		authInfoHandler:        authInfoHandler,
-		prefixHandlers:         prefixHandlers,
-		sessionManager:         session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
-		isRemote:               isRemote,
-		transportType:          transportType,
-		onHealthCheckFailed:    onHealthCheckFailed,
-		onUnauthorizedResponse: onUnauthorizedResponse,
-		endpointPrefix:         endpointPrefix,
-		trustProxyHeaders:      trustProxyHeaders,
-		healthCheckInterval:    getHealthCheckInterval(),
-		healthCheckRetryDelay:  DefaultHealthCheckRetryDelay,
-		healthCheckPingTimeout: DefaultPingerTimeout,
-		shutdownTimeout:        defaultShutdownTimeout,
+		host:                        host,
+		port:                        port,
+		targetURI:                   targetURI,
+		middlewares:                 middlewares,
+		shutdownCh:                  make(chan struct{}),
+		prometheusHandler:           prometheusHandler,
+		authInfoHandler:             authInfoHandler,
+		prefixHandlers:              prefixHandlers,
+		sessionManager:              session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
+		isRemote:                    isRemote,
+		transportType:               transportType,
+		onHealthCheckFailed:         onHealthCheckFailed,
+		onUnauthorizedResponse:      onUnauthorizedResponse,
+		endpointPrefix:              endpointPrefix,
+		trustProxyHeaders:           trustProxyHeaders,
+		healthCheckInterval:         getHealthCheckInterval(),
+		healthCheckRetryDelay:       getHealthCheckRetryDelay(),
+		healthCheckPingTimeout:      getHealthCheckPingTimeout(),
+		healthCheckFailureThreshold: getHealthCheckFailureThreshold(),
+		shutdownTimeout:             defaultShutdownTimeout,
 	}
 
 	// Apply options
@@ -992,24 +1069,10 @@ func (p *TransparentProxy) CloseListener() error {
 	return nil
 }
 
-// healthCheckRetryConfig holds retry configuration for health checks.
-// These values are designed to handle transient network issues like
-// VPN/firewall idle connection timeouts (commonly 5-10 minutes).
-const (
-	// healthCheckRetryCount is the number of consecutive failures before marking unhealthy.
-	// This prevents immediate shutdown on transient network issues.
-	healthCheckRetryCount = 3
-)
-
 // performHealthCheckRetry performs a retry health check after a delay
 // Returns true if the retry was successful (health check recovered), false otherwise
 func (p *TransparentProxy) performHealthCheckRetry(ctx context.Context) bool {
-	retryDelay := p.healthCheckRetryDelay
-	if retryDelay == 0 {
-		retryDelay = DefaultHealthCheckRetryDelay
-	}
-
-	retryTimer := time.NewTimer(retryDelay)
+	retryTimer := time.NewTimer(p.healthCheckRetryDelay)
 	defer retryTimer.Stop()
 
 	select {
@@ -1040,10 +1103,10 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 	slog.Warn("health check failed",
 		"target", p.targetURI,
 		"attempt", consecutiveFailures,
-		"max_attempts", healthCheckRetryCount,
+		"max_attempts", p.healthCheckFailureThreshold,
 		"status", status)
 
-	if consecutiveFailures < healthCheckRetryCount {
+	if consecutiveFailures < p.healthCheckFailureThreshold {
 		if p.performHealthCheckRetry(ctx) {
 			consecutiveFailures = 0
 		}
@@ -1053,7 +1116,7 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 	// All retries exhausted, initiate shutdown
 	//nolint:gosec // G706: logging target URI from config
 	slog.Error("health check failed after consecutive attempts; initiating proxy shutdown",
-		"target", p.targetURI, "attempts", healthCheckRetryCount)
+		"target", p.targetURI, "attempts", p.healthCheckFailureThreshold)
 	if p.onHealthCheckFailed != nil {
 		p.onHealthCheckFailed()
 	}

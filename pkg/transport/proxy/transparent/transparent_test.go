@@ -571,13 +571,146 @@ func TestTransparentProxy_NilUnauthorizedCallback(t *testing.T) {
 func TestHealthCheckRetryConstants(t *testing.T) {
 	t.Parallel()
 
-	// Verify retry count is reasonable (not too low, not too high)
-	assert.GreaterOrEqual(t, healthCheckRetryCount, 2, "Should retry at least twice before giving up")
-	assert.LessOrEqual(t, healthCheckRetryCount, 10, "Should not retry too many times")
+	// Verify failure threshold is reasonable (not too low, not too high)
+	assert.GreaterOrEqual(t, DefaultHealthCheckFailureThreshold, 2, "Should retry at least twice before giving up")
+	assert.LessOrEqual(t, DefaultHealthCheckFailureThreshold, 10, "Should not retry too many times")
 
 	// Verify retry delay is reasonable
 	assert.GreaterOrEqual(t, DefaultHealthCheckRetryDelay, 1*time.Second, "Retry delay should be at least 1 second")
 	assert.LessOrEqual(t, DefaultHealthCheckRetryDelay, 30*time.Second, "Retry delay should not be too long")
+}
+
+func TestGetHealthCheckInterval(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		expected time.Duration
+	}{
+		{name: "default when unset", envValue: "", expected: DefaultHealthCheckInterval},
+		{name: "valid duration", envValue: "30s", expected: 30 * time.Second},
+		{name: "valid short duration", envValue: "500ms", expected: 500 * time.Millisecond},
+		{name: "invalid string", envValue: "not-a-duration", expected: DefaultHealthCheckInterval},
+		{name: "zero duration", envValue: "0s", expected: DefaultHealthCheckInterval},
+		{name: "negative duration", envValue: "-5s", expected: DefaultHealthCheckInterval},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(HealthCheckIntervalEnvVar, tt.envValue)
+			assert.Equal(t, tt.expected, getHealthCheckInterval())
+		})
+	}
+}
+
+func TestGetHealthCheckPingTimeout(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		expected time.Duration
+	}{
+		{name: "default when unset", envValue: "", expected: DefaultPingerTimeout},
+		{name: "valid duration", envValue: "10s", expected: 10 * time.Second},
+		{name: "valid short duration", envValue: "500ms", expected: 500 * time.Millisecond},
+		{name: "invalid string", envValue: "not-a-duration", expected: DefaultPingerTimeout},
+		{name: "zero duration", envValue: "0s", expected: DefaultPingerTimeout},
+		{name: "negative duration", envValue: "-5s", expected: DefaultPingerTimeout},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(HealthCheckPingTimeoutEnvVar, tt.envValue)
+			assert.Equal(t, tt.expected, getHealthCheckPingTimeout())
+		})
+	}
+}
+
+func TestGetHealthCheckRetryDelay(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		expected time.Duration
+	}{
+		{name: "default when unset", envValue: "", expected: DefaultHealthCheckRetryDelay},
+		{name: "valid duration", envValue: "10s", expected: 10 * time.Second},
+		{name: "valid short duration", envValue: "500ms", expected: 500 * time.Millisecond},
+		{name: "invalid string", envValue: "not-a-duration", expected: DefaultHealthCheckRetryDelay},
+		{name: "zero duration", envValue: "0s", expected: DefaultHealthCheckRetryDelay},
+		{name: "negative duration", envValue: "-5s", expected: DefaultHealthCheckRetryDelay},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(HealthCheckRetryDelayEnvVar, tt.envValue)
+			assert.Equal(t, tt.expected, getHealthCheckRetryDelay())
+		})
+	}
+}
+
+func TestGetHealthCheckFailureThreshold(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		expected int
+	}{
+		{name: "default when unset", envValue: "", expected: DefaultHealthCheckFailureThreshold},
+		{name: "valid integer", envValue: "10", expected: 10},
+		{name: "valid minimum", envValue: "1", expected: 1},
+		{name: "invalid string", envValue: "not-a-number", expected: DefaultHealthCheckFailureThreshold},
+		{name: "zero value", envValue: "0", expected: DefaultHealthCheckFailureThreshold},
+		{name: "negative value", envValue: "-3", expected: DefaultHealthCheckFailureThreshold},
+		{name: "float value", envValue: "2.5", expected: DefaultHealthCheckFailureThreshold},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(HealthCheckFailureThresholdEnvVar, tt.envValue)
+			assert.Equal(t, tt.expected, getHealthCheckFailureThreshold())
+		})
+	}
+}
+
+func TestNewTransparentProxyUsesEnvVars(t *testing.T) {
+	t.Setenv(HealthCheckPingTimeoutEnvVar, "15s")
+	t.Setenv(HealthCheckRetryDelayEnvVar, "8s")
+	t.Setenv(HealthCheckFailureThresholdEnvVar, "7")
+	t.Setenv(HealthCheckIntervalEnvVar, "20s")
+
+	proxy := newMinimalProxy()
+
+	assert.Equal(t, 15*time.Second, proxy.healthCheckPingTimeout)
+	assert.Equal(t, 8*time.Second, proxy.healthCheckRetryDelay)
+	assert.Equal(t, 7, proxy.healthCheckFailureThreshold)
+	assert.Equal(t, 20*time.Second, proxy.healthCheckInterval)
+}
+
+func TestNewTransparentProxyDefaultValues(t *testing.T) {
+	t.Setenv(HealthCheckIntervalEnvVar, "")
+	t.Setenv(HealthCheckPingTimeoutEnvVar, "")
+	t.Setenv(HealthCheckRetryDelayEnvVar, "")
+	t.Setenv(HealthCheckFailureThresholdEnvVar, "")
+
+	proxy := newMinimalProxy()
+
+	assert.Equal(t, DefaultPingerTimeout, proxy.healthCheckPingTimeout)
+	assert.Equal(t, DefaultHealthCheckRetryDelay, proxy.healthCheckRetryDelay)
+	assert.Equal(t, DefaultHealthCheckFailureThreshold, proxy.healthCheckFailureThreshold)
+	assert.Equal(t, DefaultHealthCheckInterval, proxy.healthCheckInterval)
+}
+
+func TestWithHealthCheckFailureThresholdOption(t *testing.T) {
+	t.Parallel()
+
+	proxy := newMinimalProxy(withHealthCheckFailureThreshold(8))
+
+	assert.Equal(t, 8, proxy.healthCheckFailureThreshold)
+}
+
+func TestWithHealthCheckFailureThresholdOption_IgnoresNonPositive(t *testing.T) {
+	t.Setenv(HealthCheckFailureThresholdEnvVar, "")
+
+	proxy := newMinimalProxy(withHealthCheckFailureThreshold(0))
+
+	assert.Equal(t, DefaultHealthCheckFailureThreshold, proxy.healthCheckFailureThreshold)
 }
 
 // TestRewriteEndpointURL tests the rewriteEndpointURL function
@@ -975,6 +1108,28 @@ type callbackTracker struct {
 	mu      sync.Mutex
 }
 
+// newMinimalProxy creates a proxy with minimal configuration for unit tests
+// that only need to inspect struct fields (no server started, no health checks).
+func newMinimalProxy(options ...Option) *TransparentProxy {
+	return NewTransparentProxyWithOptions(
+		"127.0.0.1",
+		0, // port (auto-assign)
+		"http://localhost:8080",
+		nil,   // prometheusHandler
+		nil,   // authInfoHandler
+		nil,   // prefixHandlers
+		false, // enableHealthCheck
+		false, // isRemote
+		"sse", // transportType
+		nil,   // onHealthCheckFailed
+		nil,   // onUnauthorizedResponse
+		"",    // endpointPrefix
+		false, // trustProxyHeaders
+		nil,   // middlewares
+		options...,
+	)
+}
+
 func newCallbackTracker() (*callbackTracker, func()) {
 	tracker := &callbackTracker{
 		done: make(chan struct{}),
@@ -1051,6 +1206,7 @@ func setupRemoteProxyTestWithTimeout(t *testing.T, serverURL string, callback ty
 		withHealthCheckInterval(100*time.Millisecond),    // Use 100ms for faster tests
 		withHealthCheckRetryDelay(50*time.Millisecond),   // Use 50ms retry delay for faster tests
 		withHealthCheckPingTimeout(100*time.Millisecond), // Use 100ms ping timeout for faster tests
+		withHealthCheckFailureThreshold(3),               // Use 3 for faster tests (production default is 5)
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

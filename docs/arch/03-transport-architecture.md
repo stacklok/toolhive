@@ -355,6 +355,33 @@ thv run my-slow-server
 
 **Note:** This timeout only affects the streamable HTTP proxy used with stdio transport. The transparent proxy used by SSE and streamable-http transports (where the container runs its own HTTP server) does not impose a request timeout.
 
+### Health Check Tuning Parameters
+
+**Implementation**: `pkg/transport/proxy/transparent/transparent_proxy.go`
+
+The transparent proxy health check behavior can be tuned via environment variables. These control how the proxy detects and responds to unhealthy backends:
+
+| Environment Variable | Description | Default | Type |
+|---|---|---|---|
+| `TOOLHIVE_HEALTH_CHECK_INTERVAL` | How often to run health checks | `10s` | duration |
+| `TOOLHIVE_HEALTH_CHECK_PING_TIMEOUT` | Timeout for each health check ping | `5s` | duration |
+| `TOOLHIVE_HEALTH_CHECK_RETRY_DELAY` | Delay between retry attempts after a failure | `5s` | duration |
+| `TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD` | Consecutive failures before proxy shutdown | `5` | integer |
+
+Duration values use Go's `time.ParseDuration` format (e.g., `10s`, `500ms`, `1m30s`). Invalid values are ignored with a warning log, and the default is used instead.
+
+**Threshold of 1**: Setting `TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD=1` means the proxy shuts down on the first health check failure with no retries.
+
+**Failure window**: With the defaults, the proxy tolerates roughly `(threshold-1) × (interval + retryDelay)` before shutting down — approximately 60 seconds with default values. This is designed to survive transient network disruptions without prematurely killing healthy backends. If `TOOLHIVE_HEALTH_CHECK_PING_TIMEOUT` exceeds `TOOLHIVE_HEALTH_CHECK_INTERVAL`, each health check cycle takes longer than one interval tick, extending the failure window beyond what the formula predicts.
+
+**Usage example** (increase tolerance for a flaky network):
+```bash
+export TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD=10
+export TOOLHIVE_HEALTH_CHECK_RETRY_DELAY=10s
+```
+
+> **Note**: These parameters only affect the transparent proxy (used by SSE and streamable HTTP transports). The stdio transport's streamable HTTP proxy uses separate timeout settings. The vMCP server uses its own circuit breaker pattern.
+
 ### Kubernetes Support for Remote MCPs
 
 **Implementation**: [PR #2151](https://github.com/stacklok/toolhive/pull/2151)

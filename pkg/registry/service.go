@@ -80,7 +80,7 @@ func (s *DefaultConfigurator) SetRegistryFromInput(input string, allowPrivateIP 
 		}
 
 	default:
-		return "", fmt.Errorf("unsupported registry type: %s", registryType)
+		return registryType, fmt.Errorf("unsupported registry type: %s", registryType)
 	}
 
 	// Reset the config singleton to clear cached configuration

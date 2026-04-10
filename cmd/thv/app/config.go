@@ -313,14 +313,17 @@ func enhanceRegistryError(err error, url, registryType string) error {
 
 		// Check for validation errors (502 Bad Gateway)
 		if errors.Is(regErr.Err, config.ErrRegistryValidationFailed) {
-			return fmt.Errorf("validation failed\n"+
-				"The %s at %s returned an invalid response or does not appear to be a valid registry.\n"+
-				"Please verify:\n"+
-				"  - The URL points to a valid MCP registry\n"+
-				"  - The remote URL returns valid JSON (not an HTML page)\n"+
-				"  - The registry format is correct\n"+
-				"  - The registry contains at least one server\n"+
-				"Original error: %v", registryType, url, regErr.Err)
+			msg := "validation failed\n" +
+				"The %s at %s returned an invalid response or does not appear to be a valid registry.\n" +
+				"Please verify:\n"
+			if registryType != config.RegistryTypeFile {
+				msg += "  - The URL points to a valid MCP registry\n" +
+					"  - The remote URL returns valid JSON (not an HTML page)\n"
+			}
+			msg += "  - The registry format is correct\n" +
+				"  - The registry contains at least one server\n" +
+				"Original error: %v"
+			return fmt.Errorf(msg, registryType, url, regErr.Err)
 		}
 	}
 

@@ -64,19 +64,19 @@ func (s *DefaultConfigurator) SetRegistryFromInput(input string, allowPrivateIP 
 	case config.RegistryTypeURL:
 		err = s.provider.SetRegistryURL(cleanPath, allowPrivateIP)
 		if err != nil {
-			return "", fmt.Errorf("failed to set remote registry: %w", err)
+			return registryType, fmt.Errorf("failed to set remote registry: %w", err)
 		}
 
 	case config.RegistryTypeAPI:
 		err = s.provider.SetRegistryAPI(cleanPath, allowPrivateIP)
 		if err != nil {
-			return "", fmt.Errorf("failed to set registry API: %w", err)
+			return registryType, fmt.Errorf("failed to set registry API: %w", err)
 		}
 
 	case config.RegistryTypeFile:
 		err = s.provider.SetRegistryFile(cleanPath)
 		if err != nil {
-			return "", fmt.Errorf("failed to set local registry file: %w", err)
+			return registryType, fmt.Errorf("failed to set local registry file: %w", err)
 		}
 
 	default:

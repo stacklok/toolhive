@@ -317,6 +317,7 @@ func enhanceRegistryError(err error, url, registryType string) error {
 				"The %s at %s returned an invalid response or does not appear to be a valid registry.\n"+
 				"Please verify:\n"+
 				"  - The URL points to a valid MCP registry\n"+
+				"  - The remote URL returns valid JSON (not an HTML page)\n"+
 				"  - The registry format is correct\n"+
 				"  - The registry contains at least one server\n"+
 				"Original error: %v", registryType, url, regErr.Err)

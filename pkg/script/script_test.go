@@ -180,6 +180,52 @@ return x
 	require.Contains(t, err.Error(), "too many steps")
 }
 
+func TestExecutor_DataShadowingRejected(t *testing.T) {
+	t.Parallel()
+
+	tools := []Tool{
+		{
+			Name:        "my-tool",
+			Description: "A tool",
+			Call: func(_ context.Context, _ map[string]interface{}) (*mcp.CallToolResult, error) {
+				return mcp.NewToolResultText("ok"), nil
+			},
+		},
+	}
+
+	exec := New(tools, nil)
+
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{"shadows tool", "my_tool"},
+		{"shadows call_tool", "call_tool"},
+		{"shadows parallel", "parallel"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := exec.Execute(context.Background(), `return 1`,
+				map[string]interface{}{tt.key: "value"})
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "conflicts with")
+		})
+	}
+}
+
+func TestExecutor_InvalidDataArgument(t *testing.T) {
+	t.Parallel()
+
+	exec := New(nil, nil)
+	_, err := exec.Execute(context.Background(), `return 1`,
+		map[string]interface{}{"bad": struct{}{}})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `data argument "bad"`)
+}
+
 func TestExecutor_ScriptLogs(t *testing.T) {
 	t.Parallel()
 

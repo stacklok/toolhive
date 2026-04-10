@@ -97,6 +97,12 @@ return x
 			wantErr:   "script execution failed",
 		},
 		{
+			name:      "load statement rejected",
+			script:    `load("module.star", "func")`,
+			stepLimit: 100_000,
+			wantErr:   "load statement within a function",
+		},
+		{
 			name: "loops and conditionals",
 			script: `
 items = [1, 2, 3, 4, 5]

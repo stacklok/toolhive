@@ -13,63 +13,60 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestExecutor_MultiToolScript(t *testing.T) {
+func TestExecutor(t *testing.T) {
 	t.Parallel()
 
-	tools := []Tool{
-		{
-			Name:        "get-user",
-			Description: "Get user by ID",
-			Call: func(_ context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-				return mcp.NewToolResultText(fmt.Sprintf(`{"name": "user-%v"}`, args["id"])), nil
-			},
-		},
-		{
-			Name:        "get-posts",
-			Description: "Get posts by user",
-			Call: func(_ context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-				return mcp.NewToolResultText(fmt.Sprintf(`[{"title": "post by %v"}]`, args["user"])), nil
-			},
+	echoTool := Tool{
+		Name:        "echo",
+		Description: "Returns arguments as JSON",
+		Call: func(_ context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
+			b, _ := json.Marshal(args)
+			return mcp.NewToolResultText(string(b)), nil
 		},
 	}
 
-	exec := New(tools, nil)
-	result, err := exec.Execute(context.Background(), `
-user = get_user(id=1)
-posts = get_posts(user=user["name"])
-return {"user": user, "posts": posts}
-`, nil)
-
-	require.NoError(t, err)
-	require.False(t, result.IsError)
-
-	text := extractText(t, result)
-	var parsed map[string]interface{}
-	require.NoError(t, json.Unmarshal([]byte(text), &parsed))
-	require.Contains(t, parsed, "user")
-	require.Contains(t, parsed, "posts")
-}
-
-func TestExecutor_LoopsAndConditionals(t *testing.T) {
-	t.Parallel()
-
-	tools := []Tool{
-		{
-			Name:        "check-status",
-			Description: "Check service status",
-			Call: func(_ context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-				svc, _ := args["service"].(string)
-				status := "healthy"
-				if svc == "db" {
-					status = "degraded"
-				}
-				return mcp.NewToolResultText(fmt.Sprintf(`{"service": "%s", "status": "%s"}`, svc, status)), nil
-			},
+	statusTool := Tool{
+		Name:        "check-status",
+		Description: "Check service status",
+		Call: func(_ context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
+			svc, _ := args["service"].(string)
+			status := "healthy"
+			if svc == "db" {
+				status = "degraded"
+			}
+			return mcp.NewToolResultText(fmt.Sprintf(`{"service": "%s", "status": "%s"}`, svc, status)), nil
 		},
 	}
 
-	exec := New(tools, nil)
-	result, err := exec.Execute(context.Background(), `
+	fetchTool := Tool{
+		Name:        "fetch",
+		Description: "Fetch data by ID",
+		Call: func(_ context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText(fmt.Sprintf(`"result-%v"`, args["id"])), nil
+		},
+	}
+
+	hyphenatedTool := Tool{
+		Name:        "my-hyphenated-tool",
+		Description: "A tool with hyphens",
+		Call: func(_ context.Context, _ map[string]interface{}) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText(`"called"`), nil
+		},
+	}
+
+	tests := []struct {
+		name   string
+		tools  []Tool
+		config *Config
+		script string
+		data   map[string]interface{}
+		check  func(t *testing.T, result *mcp.CallToolResult)
+		errMsg string
+	}{
+		{
+			name:  "multi-tool script with loops and conditionals",
+			tools: []Tool{statusTool},
+			script: `
 services = ["api", "db", "cache"]
 degraded = []
 for svc in services:
@@ -77,172 +74,135 @@ for svc in services:
     if status["status"] != "healthy":
         degraded.append(status["service"])
 return degraded
-`, nil)
-
-	require.NoError(t, err)
-
-	text := extractText(t, result)
-	var parsed []interface{}
-	require.NoError(t, json.Unmarshal([]byte(text), &parsed))
-	require.Equal(t, []interface{}{"db"}, parsed)
-}
-
-func TestExecutor_Parallel(t *testing.T) {
-	t.Parallel()
-
-	tools := []Tool{
-		{
-			Name:        "fetch",
-			Description: "Fetch data",
-			Call: func(_ context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-				return mcp.NewToolResultText(fmt.Sprintf(`"result-%v"`, args["id"])), nil
+`,
+			check: func(t *testing.T, result *mcp.CallToolResult) {
+				t.Helper()
+				var parsed []interface{}
+				require.NoError(t, json.Unmarshal([]byte(extractText(t, result)), &parsed))
+				require.Equal(t, []interface{}{"db"}, parsed)
 			},
 		},
-	}
-
-	exec := New(tools, nil)
-	result, err := exec.Execute(context.Background(), `
+		{
+			name:  "JSON text automatically parsed into structured data",
+			tools: []Tool{echoTool},
+			script: `
+result = echo(name="alice", count=42)
+return {"name": result["name"], "count": result["count"]}
+`,
+			check: func(t *testing.T, result *mcp.CallToolResult) {
+				t.Helper()
+				var parsed map[string]interface{}
+				require.NoError(t, json.Unmarshal([]byte(extractText(t, result)), &parsed))
+				require.Equal(t, "alice", parsed["name"])
+				require.Equal(t, float64(42), parsed["count"])
+			},
+		},
+		{
+			name:  "parallel fan-out returns ordered results",
+			tools: []Tool{fetchTool},
+			script: `
 results = parallel([
     lambda: fetch(id=1),
     lambda: fetch(id=2),
     lambda: fetch(id=3),
 ])
 return results
-`, nil)
-
-	require.NoError(t, err)
-
-	text := extractText(t, result)
-	var parsed []interface{}
-	require.NoError(t, json.Unmarshal([]byte(text), &parsed))
-	require.Len(t, parsed, 3)
-}
-
-func TestExecutor_DataArguments(t *testing.T) {
-	t.Parallel()
-
-	tools := []Tool{
-		{
-			Name:        "greet",
-			Description: "Greet someone",
-			Call: func(_ context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
-				return mcp.NewToolResultText(fmt.Sprintf(`"Hello, %v!"`, args["name"])), nil
+`,
+			check: func(t *testing.T, result *mcp.CallToolResult) {
+				t.Helper()
+				var parsed []interface{}
+				require.NoError(t, json.Unmarshal([]byte(extractText(t, result)), &parsed))
+				require.Len(t, parsed, 3)
 			},
 		},
-	}
-
-	exec := New(tools, nil)
-	result, err := exec.Execute(context.Background(), `
-return greet(name=user_name)
-`, map[string]interface{}{"user_name": "Alice"})
-
-	require.NoError(t, err)
-
-	text := extractText(t, result)
-	require.Contains(t, text, "Alice")
-}
-
-func TestExecutor_CallToolByOriginalName(t *testing.T) {
-	t.Parallel()
-
-	tools := []Tool{
 		{
-			Name:        "my-hyphenated-tool",
-			Description: "A tool with hyphens",
-			Call: func(_ context.Context, _ map[string]interface{}) (*mcp.CallToolResult, error) {
-				return mcp.NewToolResultText(`"called"`), nil
+			name:  "data arguments injected as top-level variables",
+			tools: []Tool{echoTool},
+			script: `
+return echo(name=user_name)
+`,
+			data: map[string]interface{}{"user_name": "Alice"},
+			check: func(t *testing.T, result *mcp.CallToolResult) {
+				t.Helper()
+				require.Contains(t, extractText(t, result), "Alice")
 			},
 		},
-	}
-
-	exec := New(tools, nil)
-	result, err := exec.Execute(context.Background(), `
-return call_tool("my-hyphenated-tool")
-`, nil)
-
-	require.NoError(t, err)
-	text := extractText(t, result)
-	require.Contains(t, text, "called")
-}
-
-func TestExecutor_StepLimitExceeded(t *testing.T) {
-	t.Parallel()
-
-	exec := New(nil, &Config{StepLimit: 100})
-	_, err := exec.Execute(context.Background(), `
+		{
+			name:   "call_tool dispatches by original name",
+			tools:  []Tool{hyphenatedTool},
+			script: `return call_tool("my-hyphenated-tool")`,
+			check: func(t *testing.T, result *mcp.CallToolResult) {
+				t.Helper()
+				require.Contains(t, extractText(t, result), "called")
+			},
+		},
+		{
+			name:   "step limit exceeded",
+			config: &Config{StepLimit: 100},
+			script: `
 x = 0
 for i in range(10000):
     x = x + 1
 return x
-`, nil)
-
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "too many steps")
-}
-
-func TestExecutor_DataShadowingRejected(t *testing.T) {
-	t.Parallel()
-
-	tools := []Tool{
+`,
+			errMsg: "too many steps",
+		},
 		{
-			Name:        "my-tool",
-			Description: "A tool",
-			Call: func(_ context.Context, _ map[string]interface{}) (*mcp.CallToolResult, error) {
-				return mcp.NewToolResultText("ok"), nil
+			name: "script logs appear as second content item",
+			script: `
+print("log line 1")
+print("log line 2")
+return "done"
+`,
+			check: func(t *testing.T, result *mcp.CallToolResult) {
+				t.Helper()
+				require.Len(t, result.Content, 2, "should have result text + logs")
+				logsContent, ok := mcp.AsTextContent(result.Content[1])
+				require.True(t, ok)
+				require.Contains(t, logsContent.Text, "log line 1")
+				require.Contains(t, logsContent.Text, "log line 2")
 			},
 		},
-	}
-
-	exec := New(tools, nil)
-
-	tests := []struct {
-		name string
-		key  string
-	}{
-		{"shadows tool", "my_tool"},
-		{"shadows call_tool", "call_tool"},
-		{"shadows parallel", "parallel"},
+		{
+			name:   "data argument shadowing builtin rejected",
+			tools:  []Tool{echoTool},
+			script: `return 1`,
+			data:   map[string]interface{}{"call_tool": "shadow"},
+			errMsg: "conflicts with",
+		},
+		{
+			name:   "data argument shadowing tool rejected",
+			tools:  []Tool{echoTool},
+			script: `return 1`,
+			data:   map[string]interface{}{"echo": "shadow"},
+			errMsg: "conflicts with",
+		},
+		{
+			name:   "invalid data argument type rejected",
+			script: `return 1`,
+			data:   map[string]interface{}{"bad": struct{}{}},
+			errMsg: `data argument "bad"`,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := exec.Execute(context.Background(), `return 1`,
-				map[string]interface{}{tt.key: "value"})
-			require.Error(t, err)
-			require.Contains(t, err.Error(), "conflicts with")
+
+			exec := New(tt.tools, tt.config)
+			result, err := exec.Execute(context.Background(), tt.script, tt.data)
+
+			if tt.errMsg != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.errMsg)
+				return
+			}
+
+			require.NoError(t, err)
+			require.False(t, result.IsError)
+			tt.check(t, result)
 		})
 	}
-}
-
-func TestExecutor_InvalidDataArgument(t *testing.T) {
-	t.Parallel()
-
-	exec := New(nil, nil)
-	_, err := exec.Execute(context.Background(), `return 1`,
-		map[string]interface{}{"bad": struct{}{}})
-
-	require.Error(t, err)
-	require.Contains(t, err.Error(), `data argument "bad"`)
-}
-
-func TestExecutor_ScriptLogs(t *testing.T) {
-	t.Parallel()
-
-	exec := New(nil, nil)
-	result, err := exec.Execute(context.Background(), `
-print("log line 1")
-print("log line 2")
-return "done"
-`, nil)
-
-	require.NoError(t, err)
-	require.Len(t, result.Content, 2, "should have result text + logs")
-
-	logsContent, ok := mcp.AsTextContent(result.Content[1])
-	require.True(t, ok)
-	require.Contains(t, logsContent.Text, "log line 1")
-	require.Contains(t, logsContent.Text, "log line 2")
 }
 
 func TestExecutor_ToolDescription(t *testing.T) {

@@ -28,16 +28,15 @@ type ToolDef struct {
 //   - call_tool("name", ...) for name-based dispatch
 //   - parallel([fn1, fn2, ...]) for concurrent fan-out
 //
-// Reserved contains every global name registered, so the caller can
-// reject data arguments that would shadow builtins or tools.
+// The caller can check for key existence in the returned globals to
+// prevent data arguments from shadowing builtins or tools.
 func Build(
 	ctx context.Context, tools []ToolDef, stepLimit uint64, parallelMax int,
-) (globals starlark.StringDict, reserved map[string]bool) {
+) starlark.StringDict {
 	byName := make(map[string]callFunc, len(tools))
 	seen := make(map[string]string, len(tools)) // sanitized → original
 
-	globals = make(starlark.StringDict, len(tools)+2)
-	reserved = make(map[string]bool, len(tools)+2)
+	globals := make(starlark.StringDict, len(tools)+2)
 
 	// Register each tool as a callable by its sanitized name
 	for _, t := range tools {
@@ -52,16 +51,13 @@ func Build(
 		seen[sanitized] = t.Name
 
 		globals[sanitized] = makeToolCallable(ctx, sanitized, t.Call)
-		reserved[sanitized] = true
 	}
 
 	// Register call_tool() for name-based dispatch
 	globals["call_tool"] = newCallTool(ctx, byName)
-	reserved["call_tool"] = true
 
 	// Register parallel() for concurrent fan-out
 	globals["parallel"] = newParallel(ctx, stepLimit, parallelMax)
-	reserved["parallel"] = true
 
-	return globals, reserved
+	return globals
 }

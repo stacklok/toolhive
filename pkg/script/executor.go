@@ -25,11 +25,11 @@ type executor struct {
 
 // Execute runs a Starlark script against the bound tools.
 func (e *executor) Execute(ctx context.Context, script string, data map[string]interface{}) (*mcp.CallToolResult, error) {
-	globals, reserved := e.buildGlobals(ctx)
+	globals := e.buildGlobals(ctx)
 
 	// Inject data arguments, rejecting any that shadow builtins or tools
 	for k, v := range data {
-		if reserved[k] {
+		if _, exists := globals[k]; exists {
 			return nil, fmt.Errorf("data argument %q conflicts with a builtin or tool name", k)
 		}
 		sv, err := conversions.GoToStarlark(v)
@@ -53,7 +53,7 @@ func (e *executor) ToolDescription() string {
 }
 
 // buildGlobals creates the Starlark global environment from the bound tools.
-func (e *executor) buildGlobals(ctx context.Context) (starlark.StringDict, map[string]bool) {
+func (e *executor) buildGlobals(ctx context.Context) starlark.StringDict {
 	defs := make([]builtins.ToolDef, len(e.tools))
 	for i, t := range e.tools {
 		defs[i] = builtins.ToolDef{

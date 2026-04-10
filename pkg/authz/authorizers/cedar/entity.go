@@ -217,6 +217,8 @@ func convertToCedarValue(v interface{}) cedar.Value {
 		return convertInterfaceArrayToCedar(val)
 	case []string:
 		return convertStringArrayToCedar(val)
+	case map[string]interface{}:
+		return convertMapToCedarRecord(val)
 	default:
 		// Skip unsupported types
 		return nil

@@ -159,8 +159,9 @@ func (c *Client) Install(ctx context.Context, opts skills.InstallOptions) (*skil
 		Version:     opts.Version,
 		Scope:       opts.Scope,
 		ProjectRoot: opts.ProjectRoot,
-		Client:      opts.Client,
+		Clients:     opts.Clients,
 		Force:       opts.Force,
+		Group:       opts.Group,
 	}
 
 	var resp installResponse

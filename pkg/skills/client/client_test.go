@@ -130,14 +130,14 @@ func TestInstall(t *testing.T) {
 				Name:    "my-skill",
 				Version: "1.0.0",
 				Scope:   skills.ScopeUser,
-				Client:  "claude-code",
+				Clients: []string{"claude-code"},
 				Force:   true,
 			},
 			wantBody: installRequest{
 				Name:    "my-skill",
 				Version: "1.0.0",
 				Scope:   skills.ScopeUser,
-				Client:  "claude-code",
+				Clients: []string{"claude-code"},
 				Force:   true,
 			},
 			response: installResponse{Skill: skills.InstalledSkill{

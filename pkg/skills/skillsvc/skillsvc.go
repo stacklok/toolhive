@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
@@ -745,14 +747,12 @@ func (s *service) installFromGit(
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
-	clientType := s.resolveClient(opts.Client)
-
-	targetDir, err := s.pathResolver.GetSkillPath(clientType, opts.Name, scope, opts.ProjectRoot)
+	clientTypes, clientDirs, err := s.resolveAndValidateClients(opts, opts.Name, scope, opts.ProjectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("resolving skill path: %w", err)
+		return nil, err
 	}
 
-	return s.applyGitInstall(ctx, opts, scope, clientType, targetDir, resolved.Files)
+	return s.applyGitInstall(ctx, opts, scope, clientTypes, clientDirs, resolved.Files)
 }
 
 // applyGitInstall handles the create/upgrade/no-op logic for a git-based skill
@@ -762,8 +762,8 @@ func (s *service) applyGitInstall(
 	ctx context.Context,
 	opts skills.InstallOptions,
 	scope skills.Scope,
-	clientType string,
-	targetDir string,
+	clientTypes []string,
+	clientDirs map[string]string,
 	files []gitresolver.FileEntry,
 ) (*skills.InstallResult, error) {
 	existing, storeErr := s.store.Get(ctx, opts.Name, scope, opts.ProjectRoot)
@@ -773,56 +773,89 @@ func (s *service) applyGitInstall(
 	case storeErr != nil && !isNotFound:
 		return nil, fmt.Errorf("checking existing skill: %w", storeErr)
 
-	case storeErr == nil && existing.Digest == opts.Digest:
-		// Same commit hash — already installed, no-op.
+	case storeErr == nil && existing.Digest == opts.Digest && (clientsContainAll(existing.Clients, clientTypes) ||
+		(len(existing.Clients) == 0 && len(clientTypes) <= 1)):
 		return &skills.InstallResult{Skill: existing}, nil
 
+	case storeErr == nil && existing.Digest == opts.Digest:
+		var toWrite []string
+		for _, ct := range clientTypes {
+			if !slices.Contains(existing.Clients, ct) {
+				toWrite = append(toWrite, ct)
+			}
+		}
+		if len(toWrite) == 0 {
+			return &skills.InstallResult{Skill: existing}, nil
+		}
+		return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files, toWrite, existing.Clients, true, false)
+
 	case storeErr == nil:
-		// Different commit — upgrade.
-		return s.writeAndPersistGitSkill(ctx, opts, scope, clientType, targetDir, files, existing.Clients, true)
+		return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files, clientTypes, existing.Clients, true, true)
 
 	default:
-		// Fresh install — check for unmanaged directory on disk.
-		if _, statErr := os.Stat(targetDir); statErr == nil && !opts.Force {
-			return nil, httperr.WithCode(
-				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", targetDir),
-				http.StatusConflict,
-			)
+		for _, ct := range clientTypes {
+			dir := clientDirs[ct]
+			if _, statErr := os.Stat(dir); statErr == nil && !opts.Force {
+				return nil, httperr.WithCode(
+					fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
+					http.StatusConflict,
+				)
+			}
 		}
-		return s.writeAndPersistGitSkill(ctx, opts, scope, clientType, targetDir, files, nil, false)
+		return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files, clientTypes, nil, false, false)
 	}
 }
 
-// writeAndPersistGitSkill writes git skill files to disk, verifies the result,
-// and creates or updates the DB record. When existingClients is non-nil, the
-// record is updated (upgrade); otherwise a new record is created.
-func (s *service) writeAndPersistGitSkill(
+// gitWriteMultiAndPersist writes git files to the given client directories,
+// verifies each tree, then creates or updates the store record. On failure
+// after any write, previously written directories in this call are removed.
+func (s *service) gitWriteMultiAndPersist(
 	ctx context.Context,
 	opts skills.InstallOptions,
 	scope skills.Scope,
-	clientType string,
-	targetDir string,
+	allRequested []string,
+	clientDirs map[string]string,
 	files []gitresolver.FileEntry,
+	dirsToWrite []string,
 	existingClients []string,
-	isUpgrade bool,
+	isUpgrade, writeAggressive bool,
 ) (*skills.InstallResult, error) {
-	if writeErr := gitresolver.WriteFiles(files, targetDir, isUpgrade || opts.Force); writeErr != nil {
-		return nil, fmt.Errorf("writing git skill: %w", writeErr)
+	var written []string
+	for _, ct := range dirsToWrite {
+		dir := clientDirs[ct]
+		writeMode := opts.Force
+		if writeAggressive {
+			writeMode = true
+		}
+		if writeErr := gitresolver.WriteFiles(files, dir, writeMode); writeErr != nil {
+			for _, wct := range written {
+				_ = s.installer.Remove(clientDirs[wct])
+			}
+			return nil, fmt.Errorf("writing git skill: %w", writeErr)
+		}
+		if checkErr := skills.CheckFilesystem(dir); checkErr != nil {
+			_ = s.installer.Remove(dir)
+			for _, wct := range written {
+				_ = s.installer.Remove(clientDirs[wct])
+			}
+			return nil, fmt.Errorf("post-extraction verification failed: %w", checkErr)
+		}
+		written = append(written, ct)
 	}
-	// Defense in depth: verify the extracted directory post-write.
-	if checkErr := skills.CheckFilesystem(targetDir); checkErr != nil {
-		_ = s.installer.Remove(targetDir)
-		return nil, fmt.Errorf("post-extraction verification failed: %w", checkErr)
-	}
-	sk := buildInstalledSkill(opts, scope, clientType, existingClients)
+
+	sk := buildInstalledSkill(opts, scope, allRequested, existingClients)
 	if isUpgrade {
 		if err := s.store.Update(ctx, sk); err != nil {
-			_ = s.installer.Remove(targetDir)
+			for _, wct := range written {
+				_ = s.installer.Remove(clientDirs[wct])
+			}
 			return nil, err
 		}
 	} else {
 		if err := s.store.Create(ctx, sk); err != nil {
-			_ = s.installer.Remove(targetDir)
+			for _, wct := range written {
+				_ = s.installer.Remove(clientDirs[wct])
+			}
 			return nil, err
 		}
 	}
@@ -1122,136 +1155,234 @@ func (s *service) extractOCIContent(ctx context.Context, d digest.Digest) ([]byt
 	return layerData, skillConfig, nil
 }
 
+// resolveAndValidateClients returns the deduplicated client list and a map of
+// client identifier to install directory. Empty opts.Clients means the first
+// skill-supporting client from the path resolver.
+func (s *service) resolveAndValidateClients(
+	opts skills.InstallOptions,
+	skillName string,
+	scope skills.Scope,
+	projectRoot string,
+) ([]string, map[string]string, error) {
+	if s.pathResolver == nil {
+		return nil, nil, httperr.WithCode(
+			fmt.Errorf("path resolver is required for skill installs"),
+			http.StatusInternalServerError,
+		)
+	}
+
+	var requested []string
+	if len(opts.Clients) == 0 {
+		clients := s.pathResolver.ListSkillSupportingClients()
+		if len(clients) == 0 {
+			return nil, nil, httperr.WithCode(
+				errors.New("no skill-supporting clients configured"),
+				http.StatusInternalServerError,
+			)
+		}
+		requested = []string{clients[0]}
+	} else {
+		for _, c := range opts.Clients {
+			if c == "" {
+				return nil, nil, httperr.WithCode(
+					errors.New("clients entries must be non-empty strings"),
+					http.StatusBadRequest,
+				)
+			}
+		}
+		requested = dedupeStringsPreserveOrder(opts.Clients)
+	}
+
+	paths := make(map[string]string, len(requested))
+	for _, ct := range requested {
+		dir, err := s.pathResolver.GetSkillPath(ct, skillName, scope, projectRoot)
+		if err != nil {
+			if errors.Is(err, client.ErrUnsupportedClientType) || errors.Is(err, client.ErrSkillsNotSupported) {
+				return nil, nil, httperr.WithCode(
+					fmt.Errorf("invalid client %q: %w", ct, err),
+					http.StatusBadRequest,
+				)
+			}
+			return nil, nil, fmt.Errorf("resolving skill path for client %q: %w", ct, err)
+		}
+		paths[ct] = dir
+	}
+	return requested, paths, nil
+}
+
+func dedupeStringsPreserveOrder(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+// clientsContainAll reports whether every value in requested appears in existing.
+func clientsContainAll(existing, requested []string) bool {
+	for _, r := range requested {
+		if !slices.Contains(existing, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeClientLists returns existing followed by any requested entries not already present.
+func mergeClientLists(existing, requested []string) []string {
+	out := make([]string, len(existing))
+	copy(out, existing)
+	seen := make(map[string]struct{}, len(existing)+len(requested))
+	for _, c := range existing {
+		seen[c] = struct{}{}
+	}
+	for _, c := range requested {
+		if _, ok := seen[c]; ok {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // installWithExtraction handles the full install flow: managed/unmanaged
 // detection, extraction, and DB record creation or update.
 func (s *service) installWithExtraction(
 	ctx context.Context, opts skills.InstallOptions, scope skills.Scope,
 ) (*skills.InstallResult, error) {
-	if s.pathResolver == nil {
-		return nil, httperr.WithCode(
-			fmt.Errorf("path resolver is required for extraction-based installs"),
-			http.StatusInternalServerError,
-		)
-	}
-
-	clientType := s.resolveClient(opts.Client)
-
-	targetDir, err := s.pathResolver.GetSkillPath(clientType, opts.Name, scope, opts.ProjectRoot)
+	clientTypes, clientDirs, err := s.resolveAndValidateClients(opts, opts.Name, scope, opts.ProjectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("resolving skill path: %w", err)
+		return nil, err
 	}
 
-	// Check store for existing managed record.
 	existing, storeErr := s.store.Get(ctx, opts.Name, scope, opts.ProjectRoot)
 	isNotFound := errors.Is(storeErr, storage.ErrNotFound)
-
-	switch {
-	case storeErr != nil && !isNotFound:
-		// Unexpected store error.
+	if storeErr != nil && !isNotFound {
 		return nil, fmt.Errorf("checking existing skill: %w", storeErr)
+	}
 
-	case storeErr == nil && existing.Digest == opts.Digest:
-		// Same digest — already installed, no-op.
+	digestMatches := storeErr == nil && existing.Digest == opts.Digest
+	// Legacy rows may have an empty Clients slice; treat as satisfied for a
+	// single-target install (previous behavior). Multi-client requests must
+	// still merge onto disk when the store has no client list.
+	allRequestedPresent := digestMatches && (clientsContainAll(existing.Clients, clientTypes) ||
+		(len(existing.Clients) == 0 && len(clientTypes) <= 1))
+
+	if digestMatches && allRequestedPresent {
 		return &skills.InstallResult{Skill: existing}, nil
-
-	case storeErr == nil:
-		// Different digest — upgrade path.
-		return s.upgradeSkill(ctx, opts, scope, clientType, targetDir, existing)
-
-	default:
-		// Not found in store — check for unmanaged directory.
-		return s.freshInstall(ctx, opts, scope, clientType, targetDir)
-	}
-}
-
-// upgradeSkill handles re-extraction when the digest differs from the stored record.
-func (s *service) upgradeSkill(
-	ctx context.Context,
-	opts skills.InstallOptions,
-	scope skills.Scope,
-	clientType, targetDir string,
-	existing skills.InstalledSkill,
-) (*skills.InstallResult, error) {
-	if _, err := s.installer.Extract(opts.LayerData, targetDir, true); err != nil {
-		return nil, fmt.Errorf("extracting skill upgrade: %w", err)
 	}
 
-	sk := buildInstalledSkill(opts, scope, clientType, existing.Clients)
-	if err := s.store.Update(ctx, sk); err != nil {
-		// Rollback: clean up extracted files since the store record wasn't updated.
-		_ = s.installer.Remove(targetDir)
-		return nil, err
+	if digestMatches && storeErr == nil {
+		var toWrite []string
+		for _, ct := range clientTypes {
+			if !slices.Contains(existing.Clients, ct) {
+				toWrite = append(toWrite, ct)
+			}
+		}
+		if len(toWrite) == 0 {
+			return &skills.InstallResult{Skill: existing}, nil
+		}
+		var written []string
+		for _, ct := range toWrite {
+			dir := clientDirs[ct]
+			if _, statErr := os.Stat(dir); statErr == nil && !opts.Force {
+				for _, wct := range written {
+					_ = s.installer.Remove(clientDirs[wct])
+				}
+				return nil, httperr.WithCode(
+					fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
+					http.StatusConflict,
+				)
+			}
+			if _, exErr := s.installer.Extract(opts.LayerData, dir, opts.Force); exErr != nil {
+				for _, wct := range written {
+					_ = s.installer.Remove(clientDirs[wct])
+				}
+				return nil, fmt.Errorf("extracting skill: %w", exErr)
+			}
+			written = append(written, ct)
+		}
+		sk := buildInstalledSkill(opts, scope, clientTypes, existing.Clients)
+		if err := s.store.Update(ctx, sk); err != nil {
+			for _, wct := range written {
+				_ = s.installer.Remove(clientDirs[wct])
+			}
+			return nil, err
+		}
+		return &skills.InstallResult{Skill: sk}, nil
 	}
-	return &skills.InstallResult{Skill: sk}, nil
-}
 
-// freshInstall handles first-time installation when no store record exists.
-func (s *service) freshInstall(
-	ctx context.Context,
-	opts skills.InstallOptions,
-	scope skills.Scope,
-	clientType, targetDir string,
-) (*skills.InstallResult, error) {
-	// Check for unmanaged directory on disk.
-	if _, statErr := os.Stat(targetDir); statErr == nil && !opts.Force {
-		return nil, httperr.WithCode(
-			fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", targetDir),
-			http.StatusConflict,
-		)
+	if storeErr == nil && !digestMatches {
+		var written []string
+		for _, ct := range clientTypes {
+			dir := clientDirs[ct]
+			if _, exErr := s.installer.Extract(opts.LayerData, dir, true); exErr != nil {
+				for _, wct := range written {
+					_ = s.installer.Remove(clientDirs[wct])
+				}
+				return nil, fmt.Errorf("extracting skill upgrade: %w", exErr)
+			}
+			written = append(written, ct)
+		}
+		sk := buildInstalledSkill(opts, scope, clientTypes, existing.Clients)
+		if err := s.store.Update(ctx, sk); err != nil {
+			for _, ct := range clientTypes {
+				_ = s.installer.Remove(clientDirs[ct])
+			}
+			return nil, err
+		}
+		return &skills.InstallResult{Skill: sk}, nil
 	}
 
-	if _, err := s.installer.Extract(opts.LayerData, targetDir, opts.Force); err != nil {
-		return nil, fmt.Errorf("extracting skill: %w", err)
-	}
-
-	sk := buildInstalledSkill(opts, scope, clientType, nil)
-	if err := s.store.Create(ctx, sk); err != nil {
-		// Rollback: clean up extracted files since the store record wasn't created.
-		_ = s.installer.Remove(targetDir)
-		return nil, err
-	}
-	return &skills.InstallResult{Skill: sk}, nil
-}
-
-// resolveClient returns the provided client type, or falls back to the first
-// skill-supporting client from the path resolver.
-func (s *service) resolveClient(clientType string) string {
-	if clientType != "" {
-		return clientType
-	}
-	if s.pathResolver != nil {
-		clients := s.pathResolver.ListSkillSupportingClients()
-		if len(clients) > 0 {
-			return clients[0]
+	for _, ct := range clientTypes {
+		dir := clientDirs[ct]
+		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force {
+			return nil, httperr.WithCode(
+				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
+				http.StatusConflict,
+			)
 		}
 	}
-	return ""
+	var written []string
+	for _, ct := range clientTypes {
+		dir := clientDirs[ct]
+		if _, exErr := s.installer.Extract(opts.LayerData, dir, opts.Force); exErr != nil {
+			for _, wct := range written {
+				_ = s.installer.Remove(clientDirs[wct])
+			}
+			return nil, fmt.Errorf("extracting skill: %w", exErr)
+		}
+		written = append(written, ct)
+	}
+	sk := buildInstalledSkill(opts, scope, clientTypes, nil)
+	if err := s.store.Create(ctx, sk); err != nil {
+		for _, ct := range clientTypes {
+			_ = s.installer.Remove(clientDirs[ct])
+		}
+		return nil, err
+	}
+	return &skills.InstallResult{Skill: sk}, nil
 }
 
 // buildInstalledSkill constructs an InstalledSkill from install options.
+// requestedClientTypes is the set of clients targeted by this install; they
+// are merged with existingClients for the persisted Clients field.
 func buildInstalledSkill(
 	opts skills.InstallOptions,
 	scope skills.Scope,
-	clientType string,
+	requestedClientTypes []string,
 	existingClients []string,
 ) skills.InstalledSkill {
-	clients := func() []string {
-		if len(existingClients) > 0 {
-			for _, c := range existingClients {
-				if c == clientType {
-					return existingClients
-				}
-			}
-			// Defensive copy to avoid mutating the caller's slice.
-			newClients := make([]string, len(existingClients), len(existingClients)+1)
-			copy(newClients, existingClients)
-			return append(newClients, clientType)
-		}
-		if clientType != "" {
-			return []string{clientType}
-		}
-		return nil
-	}()
+	clients := mergeClientLists(existingClients, requestedClientTypes)
 
 	return skills.InstalledSkill{
 		Metadata: skills.SkillMetadata{

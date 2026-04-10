@@ -42,7 +42,7 @@ func TestParseToolResult(t *testing.T) {
 			},
 		},
 		{
-			name: "text content with JSON",
+			name:   "text content with JSON",
 			result: mcp.NewToolResultText(`{"items": [1, 2, 3]}`),
 			expect: map[string]interface{}{
 				"items": []interface{}{float64(1), float64(2), float64(3)},

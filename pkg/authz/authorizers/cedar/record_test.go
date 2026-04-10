@@ -161,13 +161,42 @@ func TestConvertMapToCedarRecord(t *testing.T) {
 		{
 			name: "Unsupported types",
 			input: map[string]interface{}{
-				"map":    map[string]interface{}{"nested": "value"},
 				"struct": struct{ Name string }{"test"},
 				"valid":  "this should be included",
 			},
 			expected: map[string]cedar.Value{
 				"valid": cedar.String("this should be included"),
-				// Other keys should be skipped
+				// struct key should be skipped
+			},
+		},
+		{
+			name: "Nested map converts to Cedar record",
+			input: map[string]interface{}{
+				"act": map[string]interface{}{
+					"sub": "spiffe://toolhive.dev/ns/agents/sa/devops-agent",
+				},
+			},
+			expected: map[string]cedar.Value{
+				"act": cedar.NewRecord(cedar.RecordMap{
+					cedar.String("sub"): cedar.String("spiffe://toolhive.dev/ns/agents/sa/devops-agent"),
+				}),
+			},
+		},
+		{
+			name: "Deeply nested map",
+			input: map[string]interface{}{
+				"outer": map[string]interface{}{
+					"inner": map[string]interface{}{
+						"value": "deep",
+					},
+				},
+			},
+			expected: map[string]cedar.Value{
+				"outer": cedar.NewRecord(cedar.RecordMap{
+					cedar.String("inner"): cedar.NewRecord(cedar.RecordMap{
+						cedar.String("value"): cedar.String("deep"),
+					}),
+				}),
 			},
 		},
 		{

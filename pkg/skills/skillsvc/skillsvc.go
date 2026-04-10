@@ -1247,6 +1247,7 @@ func (s *service) resolveAndValidateClients(
 			}
 			return nil, nil, fmt.Errorf("resolving skill path for client %q: %w", ct, err)
 		}
+		dir = filepath.Clean(dir)
 		if err := validateResolvedDir(dir); err != nil {
 			return nil, nil, fmt.Errorf("resolved path for client %q is unsafe: %w", ct, err)
 		}
@@ -1276,6 +1277,7 @@ func (s *service) expandToExistingClients(
 		if err != nil {
 			return nil, nil, fmt.Errorf("resolving skill path for existing client %q: %w", ct, err)
 		}
+		dir = filepath.Clean(dir)
 		if err := validateResolvedDir(dir); err != nil {
 			return nil, nil, fmt.Errorf("resolved path for client %q is unsafe: %w", ct, err)
 		}
@@ -1284,15 +1286,13 @@ func (s *service) expandToExistingClients(
 	return allClients, allDirs, nil
 }
 
-// validateResolvedDir ensures a directory path returned by the PathResolver is
-// clean, absolute, and free of path-traversal segments. This provides
-// defense-in-depth against tainted paths reaching filesystem operations.
+// validateResolvedDir ensures a directory path is absolute and free of
+// path-traversal segments. Callers must pass a filepath.Clean'd value.
 func validateResolvedDir(dir string) error {
-	cleaned := filepath.Clean(dir)
-	if !filepath.IsAbs(cleaned) {
+	if !filepath.IsAbs(dir) {
 		return fmt.Errorf("path must be absolute, got %q", dir)
 	}
-	for _, seg := range strings.Split(filepath.ToSlash(cleaned), "/") {
+	for _, seg := range strings.Split(filepath.ToSlash(dir), "/") {
 		if seg == ".." {
 			return fmt.Errorf("path contains traversal segment: %q", dir)
 		}

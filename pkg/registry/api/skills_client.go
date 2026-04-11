@@ -196,14 +196,19 @@ type skillsListResponse struct {
 }
 
 // doSkillsGet performs an HTTP GET request and decodes the JSON response into dest.
+// The endpoint must be rooted at the client's configured baseURL to prevent request forgery.
 func (c *mcpSkillsClient) doSkillsGet(ctx context.Context, endpoint string, dest any) error {
+	if !strings.HasPrefix(endpoint, c.baseURL) {
+		return fmt.Errorf("skills request URL %q is not under the configured base URL %q", endpoint, c.baseURL)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("User-Agent", c.userAgent)
 
-	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: URL from configured registry
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to execute request: %w", err)
 	}

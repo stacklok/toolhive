@@ -476,6 +476,13 @@ func runFromConfigFile(ctx context.Context) error {
 		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
 
+	// Enforce policy in the main process before saving state or spawning a
+	// detached worker, so violations surface synchronously with a non-zero
+	// exit code rather than silently failing in the background log.
+	if err := runner.EagerCheckCreateServer(ctx, runConfig); err != nil {
+		return fmt.Errorf("server creation blocked by policy: %w", err)
+	}
+
 	// Save the run config to disk in the usual directory (before running)
 	// This ensures that imported configs are persisted like normal runs
 	if err := runConfig.SaveState(ctx); err != nil {

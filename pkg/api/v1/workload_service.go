@@ -79,7 +79,7 @@ func NewWorkloadService(
 		debugMode:        debugMode,
 		imageRetriever:   retriever.ResolveMCPServer,
 		imagePuller:      retriever.PullMCPServerImage,
-		configProvider:   config.NewDefaultProvider(),
+		configProvider:   config.NewProvider(),
 	}
 }
 
@@ -278,9 +278,12 @@ func (s *WorkloadService) BuildFullRunConfig(
 		}
 	}
 
+	// Snapshot config once for this request so all fields within a single BuildFullRunConfig
+	// call are consistent with each other, even if a concurrent registry update fires mid-call.
+	cfg := s.configProvider.GetConfig()
+
 	// Resolve registry source URLs and server name when the server was discovered via registry lookup.
-	// Read config fresh each time so enterprise registry changes take effect without a restart.
-	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, s.configProvider.GetConfig())
+	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, cfg)
 	regServerName := runner.ResolveRegistryServerName(serverMetadata)
 
 	options := []runner.RunConfigBuilderOption{
@@ -362,7 +365,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			"",
 			req.Name,
 			transportType,
-			s.configProvider.GetConfig().DisableUsageMetrics,
+			cfg.DisableUsageMetrics,
 		),
 	)
 

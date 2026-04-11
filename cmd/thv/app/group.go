@@ -553,7 +553,7 @@ func deployRemoteServer(ctx context.Context, serverName string,
 		Env:         serverEnvVars,
 		Volumes:     []string{},
 		Secrets:     serverSecrets,
-		// Don't pre-set RemoteURL - let GetMCPServer discover it through group lookup
+		// Don't pre-set RemoteURL - let ResolveMCPServer discover it through group lookup
 	}
 
 	// Use the shared runSingleServer function, passing the serverName

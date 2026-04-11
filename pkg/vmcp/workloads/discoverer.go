@@ -19,6 +19,8 @@ const (
 	WorkloadTypeMCPServer WorkloadType = "MCPServer"
 	// WorkloadTypeMCPRemoteProxy represents an MCPRemoteProxy workload
 	WorkloadTypeMCPRemoteProxy WorkloadType = "MCPRemoteProxy"
+	// WorkloadTypeMCPServerEntry represents an MCPServerEntry workload (zero-infrastructure catalog entry)
+	WorkloadTypeMCPServerEntry WorkloadType = "MCPServerEntry"
 )
 
 // TypedWorkload contains information about a discovered workload

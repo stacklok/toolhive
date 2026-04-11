@@ -41,6 +41,10 @@ See `cmd/thv-operator/DESIGN.md` for detailed decision guidelines.
 - Chainsaw tests require a real Kubernetes cluster
 - Status updates require a separate client patch (`r.Status().Update()`)
 
+## Status Condition Parity
+
+When adding a status condition to one CRD type, check all parallel types (e.g., `MCPServer` and `VirtualMCPServer`) for the same condition. Conditions that warn about misconfiguration or unsupported states should be consistent across types that share the same feature set — a gap means one type silently accepts invalid config that the other rejects.
+
 ## Key Operator Commands
 
 ```bash

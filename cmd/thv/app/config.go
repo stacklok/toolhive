@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -180,6 +181,19 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 func setRegistryCmdFunc(cmd *cobra.Command, args []string) error {
 	input := args[0]
 
+	cfg := &registry.UpdateRegistryConfig{
+		AllowPrivateIP: allowPrivateRegistryIp,
+		HasAuth:        registryAuthIssuer != "" && registryAuthClientID != "",
+	}
+	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
+		cfg.URL = input
+	} else {
+		cfg.LocalPath = input
+	}
+	if err := registry.ActivePolicyGate().CheckUpdateRegistry(cmd.Context(), cfg); err != nil {
+		return err
+	}
+
 	// Always clear existing auth when changing registry (security: prevents
 	// tokens from being sent to the wrong server).
 	provider := config.NewDefaultProvider()
@@ -236,7 +250,13 @@ func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
+func unsetRegistryCmdFunc(cmd *cobra.Command, _ []string) error {
+	if err := registry.ActivePolicyGate().CheckDeleteRegistry(cmd.Context(), &registry.DeleteRegistryConfig{
+		Name: "default",
+	}); err != nil {
+		return err
+	}
+
 	service := registry.NewConfigurator()
 	err := service.UnsetRegistry()
 	if err != nil {
@@ -293,13 +313,17 @@ func enhanceRegistryError(err error, url, registryType string) error {
 
 		// Check for validation errors (502 Bad Gateway)
 		if errors.Is(regErr.Err, config.ErrRegistryValidationFailed) {
-			return fmt.Errorf("validation failed\n"+
-				"The %s at %s returned an invalid response or does not appear to be a valid registry.\n"+
-				"Please verify:\n"+
-				"  - The URL points to a valid MCP registry\n"+
-				"  - The registry format is correct\n"+
-				"  - The registry contains at least one server\n"+
-				"Original error: %v", registryType, url, regErr.Err)
+			msg := "validation failed\n" +
+				"The %s at %s returned an invalid response or does not appear to be a valid registry.\n" +
+				"Please verify:\n"
+			if registryType != config.RegistryTypeFile {
+				msg += "  - The URL points to a valid MCP registry\n" +
+					"  - The remote URL returns valid JSON (not an HTML page)\n"
+			}
+			msg += "  - The registry format is correct\n" +
+				"  - The registry contains at least one server\n" +
+				"Original error: %v"
+			return fmt.Errorf(msg, registryType, url, regErr.Err)
 		}
 	}
 

@@ -127,6 +127,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              entries:
+                description: Entries lists MCPServerEntry names in this group
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              entryCount:
+                description: EntryCount is the number of MCPServerEntries
+                format: int32
+                type: integer
               observedGeneration:
                 description: ObservedGeneration reflects the generation most recently
                   observed by the controller

@@ -40,29 +40,41 @@ func NewManager(
 // ReconcileAPIService orchestrates the deployment, service creation, and readiness checking for the registry API.
 // This method coordinates all aspects of API service including creating/updating the deployment and service,
 // checking readiness, and updating the MCPRegistry status with deployment references and endpoint information.
+//
+// It creates a ConfigMap from the raw ConfigYAML string and mounts user-provided volumes directly,
+// without parsing or transforming config.
 func (m *manager) ReconcileAPIService(
 	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
 ) *Error {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 	ctxLogger.Info("Reconciling API service")
 
-	// Create ConfigManager for building configuration
-	configManager := config.NewConfigManager(mcpRegistry)
-
-	// Ensure registry server config ConfigMap exists
-	err := m.ensureRegistryServerConfigConfigMap(ctx, mcpRegistry, configManager)
+	// Create config ConfigMap from raw YAML
+	configMap, err := config.RawConfigToConfigMap(mcpRegistry.Name, mcpRegistry.Namespace, mcpRegistry.Spec.ConfigYAML)
 	if err != nil {
-		ctxLogger.Error(err, "Failed to ensure registry server config config map")
+		ctxLogger.Error(err, "Failed to create config map from raw YAML")
 		return &Error{
 			Err:             err,
-			Message:         fmt.Sprintf("Failed to ensure registry server config config map: %v", err),
+			Message:         fmt.Sprintf("Failed to create config map from raw YAML: %v", err),
 			ConditionReason: "ConfigMapFailed",
 		}
 	}
 
+	// Upsert the ConfigMap with owner reference
+	configMapsClient := configmaps.NewClient(m.client, m.scheme)
+	if _, err := configMapsClient.UpsertWithOwnerReference(ctx, configMap, mcpRegistry); err != nil {
+		ctxLogger.Error(err, "Failed to upsert registry server config config map")
+		return &Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to upsert registry server config config map: %v", err),
+			ConditionReason: "ConfigMapFailed",
+		}
+	}
+
+	configMapName := configMap.Name
+
 	// Ensure RBAC resources (ServiceAccount, Role, RoleBinding) before deployment
-	err = m.ensureRBACResources(ctx, mcpRegistry)
-	if err != nil {
+	if err := m.ensureRBACResources(ctx, mcpRegistry); err != nil {
 		ctxLogger.Error(err, "Failed to ensure RBAC resources")
 		return &Error{
 			Err:             err,
@@ -71,21 +83,8 @@ func (m *manager) ReconcileAPIService(
 		}
 	}
 
-	// Ensure pgpass secret for PostgreSQL authentication if dbConfig provided.
-	if mcpRegistry.HasDatabaseConfig() {
-		err = m.ensurePGPassSecret(ctx, mcpRegistry)
-		if err != nil {
-			ctxLogger.Error(err, "Failed to ensure pgpass secret")
-			return &Error{
-				Err:             err,
-				Message:         fmt.Sprintf("Failed to ensure pgpass secret: %v", err),
-				ConditionReason: "PGPassSecretFailed",
-			}
-		}
-	}
-
-	// Step 1: Ensure deployment exists and is configured correctly
-	deployment, err := m.ensureDeployment(ctx, mcpRegistry, configManager)
+	// Ensure deployment exists and is configured correctly
+	deployment, err := m.ensureDeployment(ctx, mcpRegistry, configMapName)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to ensure deployment")
 		return &Error{
@@ -95,9 +94,8 @@ func (m *manager) ReconcileAPIService(
 		}
 	}
 
-	// Step 2: Ensure service exists and is configured correctly
-	_, err = m.ensureService(ctx, mcpRegistry)
-	if err != nil {
+	// Ensure service exists and is configured correctly
+	if err := m.ensureService(ctx, mcpRegistry); err != nil {
 		ctxLogger.Error(err, "Failed to ensure service")
 		return &Error{
 			Err:             err,
@@ -106,13 +104,9 @@ func (m *manager) ReconcileAPIService(
 		}
 	}
 
-	// Step 3: Check API readiness
+	// Check API readiness
 	isReady := m.CheckAPIReadiness(ctx, deployment)
 
-	// Note: Status updates are now handled by the controller
-	// The controller can call IsAPIReady to check readiness and update status accordingly
-
-	// Step 4: Log completion status
 	if isReady {
 		ctxLogger.Info("API service reconciliation completed successfully - API is ready")
 	} else {
@@ -183,12 +177,6 @@ func (m *manager) GetAPIStatus(ctx context.Context, mcpRegistry *mcpv1alpha1.MCP
 	return m.CheckAPIReadiness(ctx, deployment), deployment.Status.ReadyReplicas
 }
 
-// getConfigMapName generates the ConfigMap name for registry storage
-// This mirrors the logic in ConfigMapStorageManager to maintain consistency
-func getConfigMapName(mcpRegistry *mcpv1alpha1.MCPRegistry) string {
-	return mcpRegistry.GetStorageName()
-}
-
 // labelsForRegistryAPI generates standard labels for registry API resources
 func labelsForRegistryAPI(mcpRegistry *mcpv1alpha1.MCPRegistry, resourceName string) map[string]string {
 	return map[string]string{
@@ -197,28 +185,4 @@ func labelsForRegistryAPI(mcpRegistry *mcpv1alpha1.MCPRegistry, resourceName str
 		"app.kubernetes.io/managed-by":       "toolhive-operator",
 		"toolhive.stacklok.io/registry-name": mcpRegistry.Name,
 	}
-}
-
-func (m *manager) ensureRegistryServerConfigConfigMap(
-	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
-	configManager config.ConfigManager,
-) error {
-	cfg, err := configManager.BuildConfig()
-	if err != nil {
-		return fmt.Errorf("failed to build registry server config configuration: %w", err)
-	}
-
-	configMap, err := cfg.ToConfigMapWithContentChecksum(mcpRegistry)
-	if err != nil {
-		return fmt.Errorf("failed to create config map: %w", err)
-	}
-
-	// Use the kubernetes configmaps client for upsert operations
-	configMapsClient := configmaps.NewClient(m.client, m.scheme)
-	if _, err := configMapsClient.UpsertWithOwnerReference(ctx, configMap, mcpRegistry); err != nil {
-		return fmt.Errorf("failed to upsert registry server config config map: %w", err)
-	}
-
-	return nil
 }

@@ -156,6 +156,14 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
 	}
 
+	// Validate authServerRef/externalAuthConfigRef conflict and add authServerRef options
+	if err := ctrlutil.ValidateAndAddAuthServerRefOptions(
+		ctx, r.Client, proxy.Namespace, proxy.Name, proxy.Spec.AuthServerRef,
+		proxy.Spec.ExternalAuthConfigRef, resolvedOIDCConfig, &options,
+	); err != nil {
+		return nil, fmt.Errorf("failed to process authServerRef: %w", err)
+	}
+
 	// Add audit configuration if specified
 	runconfig.AddAuditConfigOptions(&options, proxy.Spec.Audit)
 

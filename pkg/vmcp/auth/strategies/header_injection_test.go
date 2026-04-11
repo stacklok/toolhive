@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
-	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
 func TestHeaderInjectionStrategy_Name(t *testing.T) {
@@ -43,7 +43,7 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 					HeaderValue: "secret-key-123",
 				},
 			},
-			setupCtx:    func() context.Context { return health.WithHealthCheckMarker(context.Background()) },
+			setupCtx:    func() context.Context { return healthcontext.WithHealthCheckMarker(context.Background()) },
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
 				t.Helper()

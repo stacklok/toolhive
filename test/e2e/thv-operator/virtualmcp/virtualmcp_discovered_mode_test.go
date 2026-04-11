@@ -59,7 +59,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 			},
 		}
 		Expect(k8sClient.Create(ctx, backend1)).To(Succeed())
@@ -75,7 +75,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				Image:     images.OSVMCPServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 			},
 		}
 		Expect(k8sClient.Create(ctx, backend2)).To(Succeed())
@@ -482,7 +482,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 					Image:     images.GofetchServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 				},
 			}
 			Expect(k8sClient.Create(ctx, backend3)).To(Succeed())

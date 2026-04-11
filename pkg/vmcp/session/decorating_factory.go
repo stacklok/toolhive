@@ -44,24 +44,7 @@ func (f *decoratingMultiSessionFactory) RestoreSession(
 	if err != nil {
 		return nil, err
 	}
-	for _, dec := range f.decorators {
-		var decorated MultiSession
-		decorated, err = dec(ctx, sess)
-		if err != nil {
-			if closeErr := sess.Close(); closeErr != nil {
-				slog.Warn("failed to close session after decorator error", "error", closeErr)
-			}
-			return nil, err
-		}
-		if decorated == nil {
-			if closeErr := sess.Close(); closeErr != nil {
-				slog.Warn("failed to close session after decorator returned nil", "error", closeErr)
-			}
-			return nil, fmt.Errorf("decorator returned nil session without error")
-		}
-		sess = decorated
-	}
-	return sess, nil
+	return f.applyDecorators(ctx, sess)
 }
 
 func (f *decoratingMultiSessionFactory) MakeSessionWithID(
@@ -75,6 +58,13 @@ func (f *decoratingMultiSessionFactory) MakeSessionWithID(
 	if err != nil {
 		return nil, err
 	}
+	return f.applyDecorators(ctx, sess)
+}
+
+// applyDecorators runs the decorator chain over sess in order, closing sess on
+// any error and returning the fully-decorated session on success.
+func (f *decoratingMultiSessionFactory) applyDecorators(ctx context.Context, sess MultiSession) (MultiSession, error) {
+	var err error
 	for _, dec := range f.decorators {
 		var decorated MultiSession
 		decorated, err = dec(ctx, sess)

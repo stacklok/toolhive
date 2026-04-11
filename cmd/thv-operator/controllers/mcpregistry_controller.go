@@ -23,6 +23,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
 
 // Default timing constants for the controller
@@ -118,6 +119,18 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// The user must fix the spec and the next reconciliation will retry
 			return ctrl.Result{}, nil
 		}
+	}
+
+	// Validate spec fields (reserved names, mount paths, pgpassSecretRef)
+	if err := validateSpec(mcpRegistry); err != nil {
+		mcpRegistry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
+		mcpRegistry.Status.Message = fmt.Sprintf("Spec validation failed: %v", err)
+		setRegistryReadyCondition(mcpRegistry, metav1.ConditionFalse,
+			"ValidationFailed", err.Error())
+		if statusErr := r.Status().Update(ctx, mcpRegistry); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPRegistry status with spec validation error")
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// 2. Handle deletion if DeletionTimestamp is set
@@ -298,6 +311,129 @@ func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registr
 	}
 
 	ctxLogger.Info("MCPRegistry finalization completed", "registry", registry.Name)
+	return nil
+}
+
+// validateSpec validates MCPRegistry spec fields for reserved resource name
+// conflicts, mount path collisions, and pgpassSecretRef completeness. Returns
+// nil if the spec is valid or a descriptive error if validation fails. CEL
+// admission rules cover the common cases; this is defense-in-depth inside the
+// reconciler.
+func validateSpec(mcpRegistry *mcpv1alpha1.MCPRegistry) error {
+	spec := &mcpRegistry.Spec
+
+	// Parse user PodTemplateSpec once for subsequent checks
+	var userPTS *corev1.PodTemplateSpec
+	if mcpRegistry.HasPodTemplateSpec() {
+		parsed, err := registryapi.ParsePodTemplateSpec(mcpRegistry.GetPodTemplateSpecRaw())
+		if err == nil && parsed != nil {
+			userPTS = parsed
+		}
+	}
+
+	if err := validateReservedNames(spec, userPTS); err != nil {
+		return err
+	}
+
+	if err := validateMountPathCollisions(spec, userPTS); err != nil {
+		return err
+	}
+
+	return validatePGPassSecretRef(spec.PGPassSecretRef)
+}
+
+// validatePGPassSecretRef checks that pgpassSecretRef has required name and key when set.
+func validatePGPassSecretRef(ref *corev1.SecretKeySelector) error {
+	if ref == nil {
+		return nil
+	}
+	if ref.Name == "" {
+		return fmt.Errorf("pgpassSecretRef.name is required")
+	}
+	if ref.Key == "" {
+		return fmt.Errorf("pgpassSecretRef.key is required")
+	}
+	return nil
+}
+
+// validateReservedNames checks that user-provided volumes and init containers do not
+// collide with operator-reserved names.
+func validateReservedNames(spec *mcpv1alpha1.MCPRegistrySpec, userPTS *corev1.PodTemplateSpec) error {
+	reservedVolumeNames := map[string]bool{
+		registryapi.RegistryServerConfigVolumeName: true,
+	}
+	if spec.PGPassSecretRef != nil {
+		reservedVolumeNames[registryapi.PGPassSecretVolumeName] = true
+		reservedVolumeNames[registryapi.PGPassVolumeName] = true
+	}
+
+	volumes, err := spec.ParseVolumes()
+	if err != nil {
+		return fmt.Errorf("invalid volumes: %w", err)
+	}
+	for _, vol := range volumes {
+		if reservedVolumeNames[vol.Name] {
+			return fmt.Errorf("volume name '%s' is reserved by the operator", vol.Name)
+		}
+	}
+
+	if userPTS != nil {
+		for _, vol := range userPTS.Spec.Volumes {
+			if reservedVolumeNames[vol.Name] {
+				return fmt.Errorf("volume name '%s' is reserved by the operator", vol.Name)
+			}
+		}
+
+		if spec.PGPassSecretRef != nil {
+			for _, ic := range userPTS.Spec.InitContainers {
+				if ic.Name == registryapi.PGPassInitContainerName {
+					return fmt.Errorf(
+						"init container name '%s' is reserved by the operator when pgpassSecretRef is set",
+						registryapi.PGPassInitContainerName)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateMountPathCollisions detects duplicate mount paths across operator-generated mounts,
+// spec.VolumeMounts, and user PodTemplateSpec container mounts.
+func validateMountPathCollisions(spec *mcpv1alpha1.MCPRegistrySpec, userPTS *corev1.PodTemplateSpec) error {
+	mountPaths := make(map[string]struct{})
+
+	// Operator-generated mounts
+	mountPaths[config.RegistryServerConfigFilePath] = struct{}{}
+	if spec.PGPassSecretRef != nil {
+		mountPaths[registryapi.PGPassAppUserMountPath] = struct{}{}
+	}
+
+	mounts, err := spec.ParseVolumeMounts()
+	if err != nil {
+		return fmt.Errorf("invalid volumeMounts: %w", err)
+	}
+	for _, mount := range mounts {
+		if _, exists := mountPaths[mount.MountPath]; exists {
+			return fmt.Errorf("duplicate mount path '%s'", mount.MountPath)
+		}
+		mountPaths[mount.MountPath] = struct{}{}
+	}
+
+	if userPTS != nil {
+		for i := range userPTS.Spec.Containers {
+			if userPTS.Spec.Containers[i].Name == registryapi.RegistryAPIContainerName {
+				for _, mount := range userPTS.Spec.Containers[i].VolumeMounts {
+					if _, exists := mountPaths[mount.MountPath]; exists {
+						return fmt.Errorf("duplicate mount path '%s'", mount.MountPath)
+					}
+					mountPaths[mount.MountPath] = struct{}{}
+				}
+				break
+			}
+		}
+	}
+
 	return nil
 }
 

@@ -64,6 +64,7 @@ type backendAwareTestSession struct {
 }
 
 func (s *backendAwareTestSession) Tools() []vmcp.Tool                  { return s.tools }
+func (s *backendAwareTestSession) AllTools() []vmcp.Tool               { return s.tools }
 func (*backendAwareTestSession) Resources() []vmcp.Resource            { return nil }
 func (*backendAwareTestSession) Prompts() []vmcp.Prompt                { return nil }
 func (*backendAwareTestSession) BackendSessions() map[string]string    { return nil }

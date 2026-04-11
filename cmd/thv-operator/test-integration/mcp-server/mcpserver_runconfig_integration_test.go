@@ -63,7 +63,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Transport: "stdio",
 					ProxyMode: "sse",
 					ProxyPort: 8080,
-					McpPort:   8081,
+					MCPPort:   8081,
 					Args:      []string{"--verbose", "--debug"},
 					Env: []corev1.EnvVar{
 						{
@@ -775,7 +775,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Image:     "deterministic/mcp-server:v1.0.0",
 					Transport: "sse",
 					ProxyPort: 9090,
-					McpPort:   8080,
+					MCPPort:   8080,
 					Args:      []string{"--arg1", "--arg2", "--arg3"},
 					Env: []corev1.EnvVar{
 						{Name: "VAR_C", Value: "value_c"},

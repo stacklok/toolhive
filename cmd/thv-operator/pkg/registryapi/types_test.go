@@ -66,50 +66,6 @@ func TestLabelsForRegistryAPI(t *testing.T) {
 	}
 }
 
-// TestGetConfigMapName tests ConfigMap name generation
-func TestGetConfigMapName(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name        string
-		mcpRegistry *mcpv1alpha1.MCPRegistry
-		expected    string
-		description string
-	}{
-		{
-			name: "BasicConfigMapName",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-registry",
-				},
-			},
-			expected:    "test-registry-registry-storage",
-			description: "Should generate correct ConfigMap name for basic registry",
-		},
-		{
-			name: "ConfigMapNameWithSpecialChars",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-special-registry-123",
-				},
-			},
-			expected:    "my-special-registry-123-registry-storage",
-			description: "Should handle special characters in registry name",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			result := getConfigMapName(tt.mcpRegistry)
-			assert.Equal(t, tt.expected, result, tt.description)
-
-			// Also verify it matches the MCPRegistry helper method
-			assert.Equal(t, tt.mcpRegistry.GetStorageName(), result,
-				"getConfigMapName should match MCPRegistry.GetStorageName()")
-		})
-	}
-}
-
 // TestMCPRegistryHelperMethods tests the helper methods on MCPRegistry type
 func TestMCPRegistryHelperMethods(t *testing.T) {
 	t.Parallel()

@@ -840,6 +840,12 @@ spec:
                         This allows vMCP to operate without Kubernetes API access by embedding all backend
                         information directly in the configuration.
                       properties:
+                        caBundlePath:
+                          description: |-
+                            CABundlePath is the file path to a custom CA certificate bundle for TLS verification.
+                            Only valid when Type is "entry". The operator mounts CA bundles at
+                            /etc/toolhive/ca-bundles/<name>/ca.crt.
+                          type: string
                         metadata:
                           additionalProperties:
                             type: string
@@ -861,6 +867,14 @@ spec:
                           enum:
                           - sse
                           - streamable-http
+                          type: string
+                        type:
+                          description: |-
+                            Type is the backend workload type: "entry" for MCPServerEntry backends, or empty
+                            for container/proxy backends. Entry backends connect directly to remote MCP servers.
+                          enum:
+                          - entry
+                          - ""
                           type: string
                         url:
                           description: URL is the backend's MCP server base URL.

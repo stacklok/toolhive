@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -1772,7 +1773,7 @@ func TestConvertBackendsToStaticBackends_SkipsInvalidBackends(t *testing.T) {
 		// "no-transport-backend" intentionally missing
 	}
 
-	result := convertBackendsToStaticBackends(ctx, backends, transportMap)
+	result := convertBackendsToStaticBackends(ctx, backends, transportMap, nil)
 
 	// Should only include the valid backend
 	assert.Len(t, result, 1, "should only include backends with URL and transport")
@@ -2186,4 +2187,266 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 	var specErr *SpecValidationError
 	require.True(t, stderrors.As(err, &specErr), "expected a *SpecValidationError, got %T: %v", err, err)
 	assert.Contains(t, specErr.Message, "invalid auth server integration")
+}
+
+// TestConvertBackendsToStaticBackends_WithCABundlePathMap tests that CA bundle paths
+// are correctly set on StaticBackendConfig when the caBundlePathMap is populated.
+func TestConvertBackendsToStaticBackends_WithCABundlePathMap(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		backends         []vmcp.Backend
+		transportMap     map[string]string
+		caBundlePathMap  map[string]string
+		expectedCount    int
+		validateBackends func(t *testing.T, configs []vmcpconfig.StaticBackendConfig)
+	}{
+		{
+			name: "backend with CA bundle path gets it set",
+			backends: []vmcp.Backend{
+				{Name: "entry-with-ca", BaseURL: "https://mcp.example.com"},
+			},
+			transportMap:    map[string]string{"entry-with-ca": "streamable-http"},
+			caBundlePathMap: map[string]string{"entry-with-ca": "/etc/toolhive/ca-bundles/entry-with-ca/ca.crt"},
+			expectedCount:   1,
+			validateBackends: func(t *testing.T, configs []vmcpconfig.StaticBackendConfig) {
+				t.Helper()
+				assert.Equal(t, "/etc/toolhive/ca-bundles/entry-with-ca/ca.crt", configs[0].CABundlePath)
+			},
+		},
+		{
+			name: "backend without CA bundle path has empty CABundlePath",
+			backends: []vmcp.Backend{
+				{Name: "server1", BaseURL: "http://server1:8080"},
+			},
+			transportMap:    map[string]string{"server1": "streamable-http"},
+			caBundlePathMap: map[string]string{},
+			expectedCount:   1,
+			validateBackends: func(t *testing.T, configs []vmcpconfig.StaticBackendConfig) {
+				t.Helper()
+				assert.Empty(t, configs[0].CABundlePath)
+			},
+		},
+		{
+			name: "mixed backends with and without CA bundles",
+			backends: []vmcp.Backend{
+				{Name: "entry-with-ca", BaseURL: "https://mcp.example.com"},
+				{Name: "regular-server", BaseURL: "http://server:8080"},
+				{Name: "another-entry", BaseURL: "https://mcp2.example.com"},
+			},
+			transportMap: map[string]string{
+				"entry-with-ca":  "streamable-http",
+				"regular-server": "streamable-http",
+				"another-entry":  "sse",
+			},
+			caBundlePathMap: map[string]string{
+				"entry-with-ca": "/etc/toolhive/ca-bundles/entry-with-ca/ca.crt",
+			},
+			expectedCount: 3,
+			validateBackends: func(t *testing.T, configs []vmcpconfig.StaticBackendConfig) {
+				t.Helper()
+				for _, cfg := range configs {
+					switch cfg.Name {
+					case "entry-with-ca":
+						assert.Equal(t, "/etc/toolhive/ca-bundles/entry-with-ca/ca.crt", cfg.CABundlePath)
+					case "regular-server", "another-entry":
+						assert.Empty(t, cfg.CABundlePath)
+					}
+				}
+			},
+		},
+		{
+			name: "backend without URL is skipped",
+			backends: []vmcp.Backend{
+				{Name: "no-url", BaseURL: ""},
+				{Name: "has-url", BaseURL: "http://server:8080"},
+			},
+			transportMap:    map[string]string{"no-url": "streamable-http", "has-url": "streamable-http"},
+			caBundlePathMap: map[string]string{},
+			expectedCount:   1,
+			validateBackends: func(t *testing.T, configs []vmcpconfig.StaticBackendConfig) {
+				t.Helper()
+				assert.Equal(t, "has-url", configs[0].Name)
+			},
+		},
+		{
+			name: "backend without transport is skipped",
+			backends: []vmcp.Backend{
+				{Name: "no-transport", BaseURL: "http://server:8080"},
+				{Name: "has-transport", BaseURL: "http://server:8081"},
+			},
+			transportMap:    map[string]string{"has-transport": "streamable-http"},
+			caBundlePathMap: map[string]string{},
+			expectedCount:   1,
+			validateBackends: func(t *testing.T, configs []vmcpconfig.StaticBackendConfig) {
+				t.Helper()
+				assert.Equal(t, "has-transport", configs[0].Name)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := convertBackendsToStaticBackends(t.Context(), tt.backends, tt.transportMap, tt.caBundlePathMap)
+			assert.Len(t, result, tt.expectedCount)
+
+			if tt.validateBackends != nil {
+				tt.validateBackends(t, result)
+			}
+		})
+	}
+}
+
+// TestBuildCABundlePathMap tests that the CA bundle path map is correctly built
+// from MCPServerEntry workloads that have caBundleRef configured.
+func TestBuildCABundlePathMap(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		entries        []mcpv1alpha1.MCPServerEntry
+		typedWorkloads []workloads.TypedWorkload
+		expectedMap    map[string]string
+	}{
+		{
+			name:    "no MCPServerEntry workloads yields empty map",
+			entries: nil,
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "server1", Type: workloads.WorkloadTypeMCPServer},
+			},
+			expectedMap: map[string]string{},
+		},
+		{
+			name: "entry without caBundleRef is not in map",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-no-ca", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  "test-group",
+					},
+				},
+			},
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "entry-no-ca", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedMap: map[string]string{},
+		},
+		{
+			name: "entry with caBundleRef using default key",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-with-ca", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  "test-group",
+						CABundleRef: &mcpv1alpha1.CABundleSource{
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
+							},
+						},
+					},
+				},
+			},
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "entry-with-ca", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedMap: map[string]string{
+				"entry-with-ca": "/etc/toolhive/ca-bundles/entry-with-ca/ca.crt",
+			},
+		},
+		{
+			name: "entry with caBundleRef using custom key",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "custom-entry", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  "test-group",
+						CABundleRef: &mcpv1alpha1.CABundleSource{
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
+								Key:                  "custom-cert.pem",
+							},
+						},
+					},
+				},
+			},
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "custom-entry", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedMap: map[string]string{
+				"custom-entry": "/etc/toolhive/ca-bundles/custom-entry/custom-cert.pem",
+			},
+		},
+		{
+			name: "mixed workloads only includes entries with caBundleRef",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-with-ca", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  "test-group",
+						CABundleRef: &mcpv1alpha1.CABundleSource{
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-no-ca", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp2.example.com",
+						Transport: "sse",
+						GroupRef:  "test-group",
+					},
+				},
+			},
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "server1", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "entry-with-ca", Type: workloads.WorkloadTypeMCPServerEntry},
+				{Name: "entry-no-ca", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedMap: map[string]string{
+				"entry-with-ca": "/etc/toolhive/ca-bundles/entry-with-ca/ca.crt",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
+
+			objs := make([]client.Object, 0, len(tt.entries))
+			for i := range tt.entries {
+				objs = append(objs, &tt.entries[i])
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objs...).
+				Build()
+
+			r := &VirtualMCPServerReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			result, err := r.buildCABundlePathMap(t.Context(), "default", tt.typedWorkloads)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedMap, result)
+		})
+	}
 }

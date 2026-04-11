@@ -18,7 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
-	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
 const (
@@ -107,7 +107,7 @@ func (s *TokenExchangeStrategy) Authenticate(
 	// For health checks there is no user identity to exchange. If client credentials
 	// are configured, use a client credentials grant to authenticate the probe request.
 	// Otherwise skip authentication — the backend will be probed unauthenticated.
-	if health.IsHealthCheck(ctx) {
+	if healthcontext.IsHealthCheck(ctx) {
 		if config.ClientID != "" && config.ClientSecret != "" {
 			return s.authenticateWithClientCredentials(ctx, req, config)
 		}

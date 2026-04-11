@@ -1450,7 +1450,7 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: workingAuthConfigName,
 				},
@@ -1472,7 +1472,7 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				// Reference a non-existent auth config to trigger error
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: missingAuthConfigName,

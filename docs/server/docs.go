@@ -45,7 +45,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket": {
-                "description": "Shared defines a token bucket shared across all users for this specific tool.\n+kubebuilder:validation:Required",
+                "description": "PerUser token bucket configuration for this tool.\n+optional",
                 "properties": {
                     "maxTokens": {
                         "description": "MaxTokens is the maximum number of tokens (bucket capacity).\nThis is also the burst size: the maximum number of requests that can be served\ninstantaneously before the bucket is depleted.\n+kubebuilder:validation:Required\n+kubebuilder:validation:Minimum=1",
@@ -60,6 +60,9 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig": {
                 "description": "RateLimitConfig contains the CRD rate limiting configuration.\nWhen set, rate limiting middleware is added to the proxy middleware chain.",
                 "properties": {
+                    "perUser": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                    },
                     "shared": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
                     },
@@ -79,6 +82,9 @@ const docTemplate = `{
                     "name": {
                         "description": "Name is the MCP tool name this limit applies to.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1",
                         "type": "string"
+                    },
+                    "perUser": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
                     },
                     "shared": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
@@ -864,6 +870,10 @@ const docTemplate = `{
                     "registered": {
                         "description": "Registered indicates whether the client is registered in the ToolHive configuration",
                         "type": "boolean"
+                    },
+                    "supports_skills": {
+                        "description": "SupportsSkills indicates whether ToolHive can install skills for this client",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -1195,6 +1205,14 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "mutating_webhooks": {
+                        "description": "MutatingWebhooks contains the configuration for mutating webhook middleware.\nMutating webhooks run before validating webhooks, per RFC THV-0017 ordering.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.Config"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "name": {
                         "description": "Name is the name of the MCP server",
                         "type": "string"
@@ -1230,6 +1248,10 @@ const docTemplate = `{
                     },
                     "registry_api_url": {
                         "description": "RegistryAPIURL is the registry API URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
+                        "type": "string"
+                    },
+                    "registry_server_name": {
+                        "description": "RegistryServerName is the registry entry name used to look up this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
                         "type": "string"
                     },
                     "registry_url": {
@@ -2116,6 +2138,9 @@ const docTemplate = `{
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
                     },
+                    "runtime_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
+                    },
                     "secrets": {
                         "description": "Secret parameters to inject",
                         "items": {
@@ -2716,6 +2741,9 @@ const docTemplate = `{
                     "proxy_port": {
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
+                    },
+                    "runtime_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
                     },
                     "secrets": {
                         "description": "Secret parameters to inject",
@@ -3541,7 +3569,7 @@ const docTemplate = `{
         },
         "/api/v1beta/discovery/clients": {
             "get": {
-                "description": "List all clients compatible with ToolHive and their status",
+                "description": "List all clients compatible with ToolHive and their status.\nEach object includes supports_skills when ToolHive can install skills for that client.",
                 "responses": {
                     "200": {
                         "content": {
@@ -3932,6 +3960,16 @@ const docTemplate = `{
                         },
                         "description": "No Content"
                     },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden - blocked by policy"
+                    },
                     "404": {
                         "content": {
                             "application/json": {
@@ -4041,6 +4079,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden - blocked by policy"
                     },
                     "404": {
                         "content": {

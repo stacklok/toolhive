@@ -99,11 +99,13 @@ func TestCreateWorkload(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		requestBody    string
-		setupMock      func(*testing.T, *workloadsmocks.MockManager, *runtimemocks.MockRuntime, *groupsmocks.MockManager)
-		expectedStatus int
-		expectedBody   string
+		name                  string
+		requestBody           string
+		setupMock             func(*testing.T, *workloadsmocks.MockManager, *runtimemocks.MockRuntime, *groupsmocks.MockManager)
+		expectedServerOrImage string
+		expectedRuntimeConfig *templates.RuntimeConfig
+		expectedStatus        int
+		expectedBody          string
 	}{
 		{
 			name:        "invalid JSON",
@@ -131,6 +133,57 @@ func TestCreateWorkload(t *testing.T) {
 			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "Invalid proxy_mode",
+		},
+		{
+			name:        "with runtime config override",
+			requestBody: `{"name": "test-workload", "image": "go://github.com/example/server", "runtime_config": {"builder_image": "golang:1.24-alpine", "additional_packages": ["ca-certificates"]}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+						assert.NotNil(t, runConfig.RuntimeConfig)
+						assert.Equal(t, "golang:1.24-alpine", runConfig.RuntimeConfig.BuilderImage)
+						assert.Equal(t, []string{"ca-certificates"}, runConfig.RuntimeConfig.AdditionalPackages)
+						return nil
+					})
+			},
+			expectedRuntimeConfig: func() *templates.RuntimeConfig {
+				base := getBaseRuntimeConfig(templates.TransportTypeGO)
+				return &templates.RuntimeConfig{
+					BuilderImage:       "golang:1.24-alpine",
+					AdditionalPackages: append(append([]string{}, base.AdditionalPackages...), "ca-certificates"),
+				}
+			}(),
+			expectedServerOrImage: "go://github.com/example/server",
+			expectedStatus:        http.StatusCreated,
+			expectedBody:          "test-workload",
+		},
+		{
+			name:        "empty runtime config is ignored",
+			requestBody: `{"name": "test-workload", "image": "go://github.com/example/server", "runtime_config": {}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+						assert.Nil(t, runConfig.RuntimeConfig)
+						return nil
+					})
+			},
+			expectedServerOrImage: "go://github.com/example/server",
+			expectedStatus:        http.StatusCreated,
+			expectedBody:          "test-workload",
+		},
+		{
+			name:        "runtime config with non protocol image is rejected",
+			requestBody: `{"name": "test-workload", "image": "nginx:latest", "runtime_config": {"builder_image": "golang:1.24-alpine"}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "runtime_config is only supported for protocol-scheme images",
 		},
 		{
 			name:        "with tool filters",
@@ -207,12 +260,17 @@ func TestCreateWorkload(t *testing.T) {
 			mockGroupManager := groupsmocks.NewMockManager(ctrl)
 
 			tt.setupMock(t, mockWorkloadManager, mockRuntime, mockGroupManager)
+			expectedServerOrImage := tt.expectedServerOrImage
+			if expectedServerOrImage == "" {
+				expectedServerOrImage = "test-image"
+			}
 
 			mockRetriever := makeMockRetriever(t,
-				"test-image",
+				expectedServerOrImage,
 				"test-image",
 				&regtypes.ImageMetadata{Image: "test-image"},
 				nil,
+				tt.expectedRuntimeConfig,
 			)
 
 			routes := &WorkloadRoutes{
@@ -224,7 +282,8 @@ func TestCreateWorkload(t *testing.T) {
 					groupManager:    mockGroupManager,
 					workloadManager: mockWorkloadManager,
 					imageRetriever:  mockRetriever,
-					appConfig:       &config.Config{},
+					imagePuller:     func(_ context.Context, _ string) error { return nil },
+					configProvider:  config.NewDefaultProvider(),
 				},
 			}
 
@@ -385,6 +444,35 @@ func TestUpdateWorkload(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "tool override for actual-tool must have either Name or Description set",
 		},
+		{
+			name:         "runtime config omitted on update clears stored override",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "test-image"}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload"}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+						assert.Nil(t, runConfig.RuntimeConfig)
+						return &errgroup.Group{}, nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+		},
+		{
+			name:         "runtime config with non protocol image is rejected",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "nginx:latest", "runtime_config": {"builder_image": "golang:1.24-alpine"}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload"}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "runtime_config is only supported for protocol-scheme images",
+		},
 	}
 
 	for _, tt := range tests {
@@ -404,6 +492,7 @@ func TestUpdateWorkload(t *testing.T) {
 				"test-image",
 				&regtypes.ImageMetadata{Image: "test-image"},
 				nil,
+				nil,
 			)
 
 			routes := &WorkloadRoutes{
@@ -415,7 +504,8 @@ func TestUpdateWorkload(t *testing.T) {
 					groupManager:    mockGroupManager,
 					workloadManager: mockWorkloadManager,
 					imageRetriever:  mockRetriever,
-					appConfig:       &config.Config{},
+					imagePuller:     func(_ context.Context, _ string) error { return nil },
+					configProvider:  config.NewDefaultProvider(),
 				},
 			}
 
@@ -547,6 +637,7 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 				"test-image",
 				&regtypes.ImageMetadata{Image: "test-image"},
 				nil,
+				nil,
 			)
 
 			routes := &WorkloadRoutes{
@@ -559,7 +650,8 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 					workloadManager:  mockWorkloadManager,
 					containerRuntime: mockRuntime,
 					imageRetriever:   mockRetriever,
-					appConfig:        &config.Config{},
+					imagePuller:      func(_ context.Context, _ string) error { return nil },
+					configProvider:   config.NewDefaultProvider(),
 				},
 			}
 
@@ -586,12 +678,14 @@ func makeMockRetriever(
 	returnedImage string,
 	returnedServerMetadata regtypes.ServerMetadata,
 	returnedError error,
+	expectedRuntimeConfig *templates.RuntimeConfig,
 ) retriever.Retriever {
 	t.Helper()
 
-	return func(_ context.Context, serverOrImage string, _ string, verificationType string, _ string, _ *templates.RuntimeConfig) (string, regtypes.ServerMetadata, error) {
+	return func(_ context.Context, serverOrImage string, _ string, verificationType string, _ string, runtimeConfig *templates.RuntimeConfig) (string, regtypes.ServerMetadata, error) {
 		assert.Equal(t, expectedServerOrImage, serverOrImage)
 		assert.Equal(t, retriever.VerifyImageWarn, verificationType)
+		assert.Equal(t, expectedRuntimeConfig, runtimeConfig)
 		return returnedImage, returnedServerMetadata, returnedError
 	}
 }

@@ -1,0 +1,25 @@
+# Basic MCPServerEntry: unauthenticated public remote MCP server.
+#
+# MCPServerEntry declares a remote MCP endpoint without deploying any
+# infrastructure (no pods, services, or deployments). VirtualMCPServer
+# connects directly to the remote URL.
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: remote-tools
+  namespace: toolhive-system
+spec:
+  description: "Group containing remote MCP server entries"
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServerEntry
+metadata:
+  name: context7
+  namespace: toolhive-system
+spec:
+  remoteURL: https://mcp.context7.com/mcp
+  transport: streamable-http
+  groupRef: remote-tools

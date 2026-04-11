@@ -46,7 +46,7 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				Env: []corev1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},

@@ -69,7 +69,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				// Reference the unauthenticated external auth config
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: externalAuthConfigName,
@@ -244,7 +244,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 			},
 		}
 		Expect(k8sClient.Create(ctx, backend)).To(Succeed())
@@ -420,7 +420,7 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				// Reference the headerInjection external auth config
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: externalAuthConfigName,
@@ -643,7 +643,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 			},
 		}
 		Expect(k8sClient.Create(ctx, backend)).To(Succeed())
@@ -834,7 +834,7 @@ var _ = Describe("VirtualMCPServer Health Check with HeaderInjection Auth", Orde
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				Env: []corev1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
@@ -1050,7 +1050,7 @@ var _ = Describe("VirtualMCPServer Health Check with TokenExchange Auth", Ordere
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				Env: []corev1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},

@@ -43,15 +43,16 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to parse arguments: %v", err)), nil
 	}
 
-	// Use retriever to properly fetch and prepare the MCP server
+	// Resolve the MCP server from the registry without pulling the image.
 	// TODO: make this configurable so we could warn or even fail
-	imageURL, serverMetadata, err := retriever.GetMCPServer(ctx, args.Server, "", "disabled", "", nil)
+	imageURL, serverMetadata, err := retriever.ResolveMCPServer(ctx, args.Server, "", "disabled", "", nil)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to resolve MCP server: %v", err)), nil
 	}
 
-	// Resolve registry source URLs when the server was discovered via registry lookup.
+	// Resolve registry source URLs and server name when the server was discovered via registry lookup.
 	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, h.configProvider.GetConfig())
+	regServerName := runner.ResolveRegistryServerName(serverMetadata)
 
 	// Build run configuration.
 	// Use type assertion with nil check to guard against typed nil pointers.
@@ -61,9 +62,18 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 	}
 
 	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata,
-		runner.WithRegistrySourceURLs(regAPIURL, regURL))
+		runner.WithRegistrySourceURLs(regAPIURL, regURL),
+		runner.WithRegistryServerName(regServerName))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to build run configuration: %v", err)), nil
+	}
+
+	// Enforce policy gate and pull image before running the server.
+	if err := retriever.EnforcePolicyAndPullImage(
+		ctx, runConfig, serverMetadata, imageURL, retriever.PullMCPServerImage, 0,
+		runner.IsImageProtocolScheme(args.Server),
+	); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to enforce policy or pull image: %v", err)), nil
 	}
 
 	// Save and run the server

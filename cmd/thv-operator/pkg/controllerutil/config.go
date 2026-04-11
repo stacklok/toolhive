@@ -74,6 +74,31 @@ func FindReferencingMCPServers(
 	return referencingServers, nil
 }
 
+// FindReferencingMCPRemoteProxies finds MCPRemoteProxies in the given namespace that reference a config resource.
+// The refExtractor function should return the config name from an MCPRemoteProxy if it references the config,
+// or nil if it doesn't reference any config of this type.
+func FindReferencingMCPRemoteProxies(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	configName string,
+	refExtractor func(*mcpv1alpha1.MCPRemoteProxy) *string,
+) ([]mcpv1alpha1.MCPRemoteProxy, error) {
+	proxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	if err := c.List(ctx, proxyList, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
+	}
+
+	var referencingProxies []mcpv1alpha1.MCPRemoteProxy
+	for _, proxy := range proxyList.Items {
+		if refName := refExtractor(&proxy); refName != nil && *refName == configName {
+			referencingProxies = append(referencingProxies, proxy)
+		}
+	}
+
+	return referencingProxies, nil
+}
+
 // CompareWorkloadRefs compares two WorkloadReference values by Kind then Name.
 // Suitable for use with slices.SortFunc.
 func CompareWorkloadRefs(a, b mcpv1alpha1.WorkloadReference) int {

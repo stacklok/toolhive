@@ -15,9 +15,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -126,6 +128,9 @@ type TransparentProxy struct {
 	// Health check ping timeout (default: 5 seconds)
 	healthCheckPingTimeout time.Duration
 
+	// Health check failure threshold: consecutive failures before shutdown (default: 5)
+	healthCheckFailureThreshold int
+
 	// Shutdown timeout for graceful HTTP server shutdown (default: 30 seconds)
 	shutdownTimeout time.Duration
 }
@@ -146,13 +151,43 @@ const (
 	defaultIdleTimeout = 120 * time.Second
 
 	// HealthCheckIntervalEnvVar is the environment variable name for configuring health check interval.
-	// This is primarily useful for testing with shorter intervals.
 	HealthCheckIntervalEnvVar = "TOOLHIVE_HEALTH_CHECK_INTERVAL"
 
 	// sessionMetadataBackendURL is the session metadata key that stores the backend pod URL.
 	// It is written on initialize and read in the Rewrite closure to route follow-up requests
 	// to the same backend pod that handled the session's initialize request.
 	sessionMetadataBackendURL = "backend_url"
+
+	// sessionMetadataInitBody stores the raw JSON-RPC initialize request body.
+	// It is used to transparently re-initialize a backend session when the pod that
+	// originally handled initialize has been replaced (new IP or lost in-memory state).
+	sessionMetadataInitBody = "init_body"
+
+	// sessionMetadataBackendSID stores the backend's assigned Mcp-Session-Id when it
+	// diverges from the client-facing session ID after a transparent re-initialization.
+	// tracingTransport.RoundTrip rewrites the outbound Mcp-Session-Id header to this
+	// value so the backend sees its own session ID while the client keeps its original one.
+	sessionMetadataBackendSID = "backend_sid"
+
+	// HealthCheckPingTimeoutEnvVar is the environment variable name for configuring health check ping timeout.
+	HealthCheckPingTimeoutEnvVar = "TOOLHIVE_HEALTH_CHECK_PING_TIMEOUT"
+
+	// HealthCheckRetryDelayEnvVar is the environment variable name for configuring health check retry delay.
+	HealthCheckRetryDelayEnvVar = "TOOLHIVE_HEALTH_CHECK_RETRY_DELAY"
+
+	// HealthCheckFailureThresholdEnvVar is the environment variable name for configuring
+	// the number of consecutive health check failures before shutdown.
+	HealthCheckFailureThresholdEnvVar = "TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD"
+
+	// DefaultHealthCheckFailureThreshold is the default number of consecutive health check
+	// failures before the proxy initiates shutdown.
+	DefaultHealthCheckFailureThreshold = 5
+
+	// maxRedirects is the maximum number of HTTP redirects to follow when
+	// forwarding requests to a remote MCP server. Uses the same limit as
+	// http.Client (10), but unlike http.Client the HTTP method is always
+	// preserved (POST never becomes GET) because MCP uses JSON-RPC over POST.
+	maxRedirects = 10
 )
 
 // Option is a functional option for configuring TransparentProxy
@@ -208,6 +243,17 @@ func withHealthCheckPingTimeout(timeout time.Duration) Option {
 	return func(p *TransparentProxy) {
 		if timeout > 0 {
 			p.healthCheckPingTimeout = timeout
+		}
+	}
+}
+
+// withHealthCheckFailureThreshold sets the consecutive failure count before shutdown.
+// This is primarily useful for testing with lower thresholds.
+// Ignores non-positive values; default will be used.
+func withHealthCheckFailureThreshold(threshold int) Option {
+	return func(p *TransparentProxy) {
+		if threshold > 0 {
+			p.healthCheckFailureThreshold = threshold
 		}
 	}
 }
@@ -287,10 +333,58 @@ func NewTransparentProxy(
 func getHealthCheckInterval() time.Duration {
 	if val := os.Getenv(HealthCheckIntervalEnvVar); val != "" {
 		if d, err := time.ParseDuration(val); err == nil && d > 0 {
+			slog.Debug("using custom health check interval", "interval", d)
 			return d
 		}
+		slog.Warn("invalid health check interval, using default",
+			"env_var", HealthCheckIntervalEnvVar, "value", val, "default", DefaultHealthCheckInterval)
 	}
 	return DefaultHealthCheckInterval
+}
+
+// getHealthCheckPingTimeout returns the health check ping timeout to use.
+// Uses TOOLHIVE_HEALTH_CHECK_PING_TIMEOUT environment variable if set and valid,
+// otherwise returns the default timeout.
+func getHealthCheckPingTimeout() time.Duration {
+	if val := os.Getenv(HealthCheckPingTimeoutEnvVar); val != "" {
+		if d, err := time.ParseDuration(val); err == nil && d > 0 {
+			slog.Debug("using custom health check ping timeout", "timeout", d)
+			return d
+		}
+		slog.Warn("invalid health check ping timeout, using default",
+			"env_var", HealthCheckPingTimeoutEnvVar, "value", val, "default", DefaultPingerTimeout)
+	}
+	return DefaultPingerTimeout
+}
+
+// getHealthCheckRetryDelay returns the health check retry delay to use.
+// Uses TOOLHIVE_HEALTH_CHECK_RETRY_DELAY environment variable if set and valid,
+// otherwise returns the default delay.
+func getHealthCheckRetryDelay() time.Duration {
+	if val := os.Getenv(HealthCheckRetryDelayEnvVar); val != "" {
+		if d, err := time.ParseDuration(val); err == nil && d > 0 {
+			slog.Debug("using custom health check retry delay", "delay", d)
+			return d
+		}
+		slog.Warn("invalid health check retry delay, using default",
+			"env_var", HealthCheckRetryDelayEnvVar, "value", val, "default", DefaultHealthCheckRetryDelay)
+	}
+	return DefaultHealthCheckRetryDelay
+}
+
+// getHealthCheckFailureThreshold returns the consecutive failure threshold.
+// Uses TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD environment variable if set and valid,
+// otherwise returns the default threshold.
+func getHealthCheckFailureThreshold() int {
+	if val := os.Getenv(HealthCheckFailureThresholdEnvVar); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			slog.Debug("using custom health check failure threshold", "threshold", n)
+			return n
+		}
+		slog.Warn("invalid health check failure threshold, using default",
+			"env_var", HealthCheckFailureThresholdEnvVar, "value", val, "default", DefaultHealthCheckFailureThreshold)
+	}
+	return DefaultHealthCheckFailureThreshold
 }
 
 // NewTransparentProxyWithOptions creates a new transparent proxy with optional configuration.
@@ -312,25 +406,26 @@ func NewTransparentProxyWithOptions(
 	options ...Option,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
-		host:                   host,
-		port:                   port,
-		targetURI:              targetURI,
-		middlewares:            middlewares,
-		shutdownCh:             make(chan struct{}),
-		prometheusHandler:      prometheusHandler,
-		authInfoHandler:        authInfoHandler,
-		prefixHandlers:         prefixHandlers,
-		sessionManager:         session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
-		isRemote:               isRemote,
-		transportType:          transportType,
-		onHealthCheckFailed:    onHealthCheckFailed,
-		onUnauthorizedResponse: onUnauthorizedResponse,
-		endpointPrefix:         endpointPrefix,
-		trustProxyHeaders:      trustProxyHeaders,
-		healthCheckInterval:    getHealthCheckInterval(),
-		healthCheckRetryDelay:  DefaultHealthCheckRetryDelay,
-		healthCheckPingTimeout: DefaultPingerTimeout,
-		shutdownTimeout:        defaultShutdownTimeout,
+		host:                        host,
+		port:                        port,
+		targetURI:                   targetURI,
+		middlewares:                 middlewares,
+		shutdownCh:                  make(chan struct{}),
+		prometheusHandler:           prometheusHandler,
+		authInfoHandler:             authInfoHandler,
+		prefixHandlers:              prefixHandlers,
+		sessionManager:              session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
+		isRemote:                    isRemote,
+		transportType:               transportType,
+		onHealthCheckFailed:         onHealthCheckFailed,
+		onUnauthorizedResponse:      onUnauthorizedResponse,
+		endpointPrefix:              endpointPrefix,
+		trustProxyHeaders:           trustProxyHeaders,
+		healthCheckInterval:         getHealthCheckInterval(),
+		healthCheckRetryDelay:       getHealthCheckRetryDelay(),
+		healthCheckPingTimeout:      getHealthCheckPingTimeout(),
+		healthCheckFailureThreshold: getHealthCheckFailureThreshold(),
+		shutdownTimeout:             defaultShutdownTimeout,
 	}
 
 	// Apply options
@@ -360,9 +455,36 @@ func NewTransparentProxyWithOptions(
 	return proxy
 }
 
+// recoverySessionStore is the subset of session.Manager that backendRecovery needs.
+type recoverySessionStore interface {
+	Get(id string) (session.Session, bool)
+	UpsertSession(sess session.Session) error
+}
+
+// backendRecovery handles transparent re-initialization of backend sessions when the
+// target pod is unreachable (dial error) or has lost its in-memory session state (404).
+// It depends only on a narrow session interface and a forward function, so it can be
+// tested without standing up a full proxy.
+type backendRecovery struct {
+	targetURI string
+	forward   func(*http.Request) (*http.Response, error)
+	sessions  recoverySessionStore
+}
+
 type tracingTransport struct {
-	base http.RoundTripper
-	p    *TransparentProxy
+	p        *TransparentProxy
+	recovery *backendRecovery
+}
+
+func newTracingTransport(base http.RoundTripper, p *TransparentProxy) *tracingTransport {
+	return &tracingTransport{
+		p: p,
+		recovery: &backendRecovery{
+			targetURI: p.targetURI,
+			forward:   base.RoundTrip,
+			sessions:  p.sessionManager,
+		},
+	}
 }
 
 func (p *TransparentProxy) setServerInitialized() {
@@ -375,14 +497,6 @@ func (p *TransparentProxy) setServerInitialized() {
 // serverInitialized returns whether the server has been initialized (thread-safe)
 func (p *TransparentProxy) serverInitialized() bool {
 	return p.isServerInitialized.Load()
-}
-
-func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
-	tr := t.base
-	if tr == nil {
-		tr = http.DefaultTransport
-	}
-	return tr.RoundTrip(req)
 }
 
 // nolint:gocyclo // This function handles multiple request types and is complex by design
@@ -436,11 +550,50 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 	}
 
-	resp, err := t.forward(req)
+	// Capture the client-facing session ID before the backend SID rewrite below.
+	// Recovery and session cleanup paths must look up sessions by the client SID
+	// (the store key), not the backend SID that is written into the header.
+	clientSID := req.Header.Get("Mcp-Session-Id")
+
+	// Rewrite the outbound Mcp-Session-Id to the backend's assigned session ID when
+	// the proxy transparently re-initialized the backend session. This is done here
+	// (after the guard check above) so the guard always sees the original client
+	// session ID and can look it up correctly in the session store.
+	if clientSID != "" {
+		if sess, ok := t.p.sessionManager.Get(normalizeSessionID(clientSID)); ok {
+			if backendSID, exists := sess.GetMetadataValue(sessionMetadataBackendSID); exists && backendSID != "" {
+				req.Header.Set("Mcp-Session-Id", backendSID)
+			}
+		}
+	}
+
+	// Attach an httptrace to capture the actual backend pod IP after kube-proxy
+	// DNAT resolves the ClusterIP to a specific pod. The captured address is stored
+	// as backend_url so follow-up requests always reach the same pod, even after a
+	// proxy runner restart that would otherwise lose the in-memory routing state.
+	var capturedPodAddr string
+	if sawInitialize {
+		trace := &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) {
+				capturedPodAddr = info.Conn.RemoteAddr().String()
+			},
+		}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+	}
+
+	resp, err := followRedirects(t.recovery.forward, req, reqBody)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			// Expected during shutdown or client disconnect—silently ignore
 			return nil, err
+		}
+		// Dial error against a stored pod IP means the pod has been replaced.
+		// Attempt transparent re-initialization so the client sees no error.
+		if isDialError(err) {
+			req.Header.Set("Mcp-Session-Id", clientSID)
+			if reInitResp, reInitErr := t.recovery.reinitializeAndReplay(req, reqBody); reInitResp != nil || reInitErr != nil {
+				return reInitResp, reInitErr
+			}
 		}
 		slog.Error("failed to forward request", "error", err)
 		return nil, err
@@ -463,10 +616,26 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// reference would only waste memory.
 	if req.Method == http.MethodDelete &&
 		(resp.StatusCode >= 200 && resp.StatusCode < 300 || resp.StatusCode == http.StatusNotFound) {
-		if sid := req.Header.Get("Mcp-Session-Id"); sid != "" {
-			if err := t.p.sessionManager.Delete(normalizeSessionID(sid)); err != nil {
+		if clientSID != "" {
+			if err := t.p.sessionManager.Delete(normalizeSessionID(clientSID)); err != nil {
 				slog.Debug("failed to delete session from transparent proxy",
-					"session_id", sid, "error", err)
+					"session_id", clientSID, "error", err)
+			}
+		}
+	}
+
+	// Backend returned 404 for a non-initialize, non-DELETE request whose session IS
+	// known to the proxy. This means the backend pod lost its in-memory session state
+	// (e.g. it was restarted but got the same IP). Attempt transparent re-initialization
+	// so the client sees no error. DELETE is excluded because the session has already
+	// been cleaned up above and the 404 is the expected terminal response.
+	if resp.StatusCode == http.StatusNotFound && !sawInitialize && req.Method != http.MethodDelete {
+		if clientSID != "" {
+			req.Header.Set("Mcp-Session-Id", clientSID)
+			if reInitResp, reInitErr := t.recovery.reinitializeAndReplay(req, reqBody); reInitResp != nil || reInitErr != nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				return reInitResp, reInitErr
 			}
 		}
 	}
@@ -480,14 +649,15 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			internalID := normalizeSessionID(ct)
 			if _, ok := t.p.sessionManager.Get(internalID); !ok {
 				sess := session.NewProxySession(internalID)
-				// Store targetURI as the default backend_url for this session.
-				// In single-replica deployments targetURI is already the pod address,
-				// so no override is needed. In multi-replica deployments the
-				// vMCP/operator layer is responsible for setting backend_url to the
-				// actual pod DNS name (e.g. http://mcp-server-0.mcp-server.default.svc:8080)
-				// before the request reaches this proxy; the Rewrite closure then reads
-				// that value and routes follow-up requests to the correct pod.
-				sess.SetMetadata(sessionMetadataBackendURL, t.p.targetURI)
+				// Store the actual pod IP (captured via GotConn) as backend_url so that
+				// after a proxy runner restart the session is routed to the same backend
+				// pod that handled initialize, not a random pod via ClusterIP.
+				sess.SetMetadata(sessionMetadataBackendURL, t.recovery.podBackendURL(capturedPodAddr))
+				// Store the initialize body so we can transparently re-initialize the
+				// backend session if the pod is later replaced or loses session state.
+				if len(reqBody) > 0 {
+					sess.SetMetadata(sessionMetadataInitBody, string(reqBody))
+				}
 				if err := t.p.sessionManager.AddSession(sess); err != nil {
 					//nolint:gosec // G706: session ID from HTTP response header
 					slog.Error("failed to create session from header",
@@ -551,6 +721,249 @@ func (t *tracingTransport) detectInitialize(body []byte) bool {
 		}
 	}
 	return false
+}
+
+// podBackendURL constructs a backend URL that targets the specific pod IP captured
+// via httptrace.GotConn, using the scheme from targetURI. Falls back to targetURI
+// when no address was captured (e.g. single-replica, connection reuse without a new conn),
+// or when targetURI uses HTTPS — IP-literal HTTPS URLs fail TLS verification because
+// server certificates are issued for hostnames, not pod IPs.
+func (r *backendRecovery) podBackendURL(capturedAddr string) string {
+	if capturedAddr == "" {
+		return r.targetURI
+	}
+	parsed, err := url.Parse(r.targetURI)
+	if err != nil {
+		return r.targetURI
+	}
+	if parsed.Scheme == "https" { //nolint:goconst // protocol name, not a magic string
+		return r.targetURI
+	}
+	parsed.Host = capturedAddr
+	return parsed.String()
+}
+
+// isDialError reports whether err is a TCP dial failure, indicating that the
+// target host is unreachable (pod has been terminated or rescheduled).
+func isDialError(err error) bool {
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
+}
+
+// followRedirects wraps a forward call with same-host HTTP redirect following.
+// MCP clients expect JSON-RPC responses and cannot handle 3xx redirects, so the
+// proxy must resolve them before returning the response. Only same-host redirects
+// are followed to prevent SSRF. The HTTP method and request body are always
+// preserved (POST never becomes GET), which is correct for JSON-RPC semantics.
+func followRedirects(
+	forward func(*http.Request) (*http.Response, error),
+	req *http.Request,
+	body []byte,
+) (*http.Response, error) {
+	resp, err := forward(req)
+	if err != nil {
+		return nil, err
+	}
+
+	originalHost := req.URL.Host
+	for redirectsFollowed := 0; redirectsFollowed < maxRedirects &&
+		isRedirectStatus(resp.StatusCode); redirectsFollowed++ {
+		location := resp.Header.Get("Location")
+		if location == "" {
+			break
+		}
+
+		redirectURL, parseErr := req.URL.Parse(location)
+		if parseErr != nil {
+			slog.Warn("failed to parse redirect Location header",
+				"location", location, "error", parseErr)
+			break
+		}
+
+		// Block cross-host redirects to prevent SSRF and credential leakage.
+		if redirectURL.Host != originalHost {
+			slog.Warn("refusing cross-host redirect from remote MCP server; update the configured target URL",
+				"from_host", originalHost, "to_host", redirectURL.Host)
+			break
+		}
+
+		// Block HTTPS-to-HTTP downgrades to prevent silent loss of transport security.
+		//nolint:goconst // "https" is a protocol name, not a magic string worth extracting
+		if req.URL.Scheme == "https" && redirectURL.Scheme == "http" {
+			slog.Warn("refusing redirect that downgrades from HTTPS to HTTP",
+				"from", req.URL.String(), "to", redirectURL.String())
+			break
+		}
+
+		slog.Info("following HTTP redirect from remote MCP server; consider updating the server URL",
+			"status", resp.StatusCode,
+			"from", req.URL.String(),
+			"to", redirectURL.String(),
+			"redirect_number", redirectsFollowed+1)
+
+		// Drain and close the redirect response body to release the
+		// underlying connection back to the transport's connection pool.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		// Clone preserves Method and all headers. We intentionally do not
+		// change the method to GET for 301/302 (as browsers do) because
+		// MCP JSON-RPC requires POST with a body on every request.
+		req = req.Clone(req.Context())
+		req.URL = redirectURL
+		req.Host = redirectURL.Host
+		if len(body) > 0 {
+			req.Body = io.NopCloser(bytes.NewReader(body))
+			req.ContentLength = int64(len(body))
+		}
+
+		resp, err = forward(req)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return resp, nil
+}
+
+// isRedirectStatus reports whether the HTTP status code is a redirect
+// that should be followed. This excludes 300 (Multiple Choices), 303
+// (See Other), and 304 (Not Modified) which are not standard redirects
+// or would require changing the request method.
+func isRedirectStatus(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently, // 301
+		http.StatusFound,             // 302
+		http.StatusTemporaryRedirect, // 307
+		http.StatusPermanentRedirect: // 308
+		return true
+	default:
+		return false
+	}
+}
+
+// reinitializeAndReplay is called when the proxy detects that the backend pod
+// that owned a session is no longer reachable (dial error) or has lost its
+// in-memory session state (backend returned 404). It transparently:
+//  1. Re-sends the stored initialize body to the ClusterIP service so kube-proxy
+//     selects a healthy pod and the backend creates a new session.
+//  2. Captures the new pod IP via httptrace.GotConn and stores it as backend_url.
+//  3. Maps the client's original session ID to the new backend session ID.
+//  4. Replays the original client request so the client sees no error.
+//
+// Returns (nil, nil) when re-initialization is not applicable (session unknown
+// to the proxy, or no stored init body for the session).
+func (r *backendRecovery) reinitializeAndReplay(req *http.Request, origBody []byte) (*http.Response, error) {
+	sid := req.Header.Get("Mcp-Session-Id")
+	if sid == "" {
+		return nil, nil
+	}
+	internalSID := normalizeSessionID(sid)
+	sess, ok := r.sessions.Get(internalSID)
+	if !ok {
+		return nil, nil
+	}
+
+	initBody, hasInit := sess.GetMetadataValue(sessionMetadataInitBody)
+	if !hasInit || initBody == "" {
+		// No stored init body — cannot re-initialize transparently.
+		// Reset backend_url to ClusterIP so the next request goes through
+		// kube-proxy and lets the client receive a clean 404 to re-initialize.
+		sess.SetMetadata(sessionMetadataBackendURL, r.targetURI)
+		_ = r.sessions.UpsertSession(sess)
+		return nil, nil
+	}
+
+	slog.Debug("backend session lost; transparently re-initializing",
+		"session_id", sid, "target", r.targetURI)
+
+	// Capture the new pod IP via GotConn on the re-initialize connection.
+	var capturedPodAddr string
+	trace := &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			capturedPodAddr = info.Conn.RemoteAddr().String()
+		},
+	}
+	initCtx := httptrace.WithClientTrace(req.Context(), trace)
+
+	// Build a fresh initialize request to the ClusterIP (no Mcp-Session-Id —
+	// the backend assigns a new session ID in the response).
+	parsedTarget, err := url.Parse(r.targetURI)
+	if err != nil {
+		return nil, nil
+	}
+	initURL := *req.URL
+	initURL.Scheme = parsedTarget.Scheme
+	initURL.Host = parsedTarget.Host
+
+	initReq, err := http.NewRequestWithContext(initCtx, http.MethodPost, initURL.String(), bytes.NewReader([]byte(initBody)))
+	if err != nil {
+		return nil, nil
+	}
+	// Propagate headers from the original request (Authorization, tenant headers, etc.)
+	// so the backend accepts the re-initialize. Mcp-Session-Id must not be forwarded —
+	// the backend assigns a new session ID in the response. Content-Length and
+	// Transfer-Encoding are deleted because http.NewRequestWithContext already set
+	// ContentLength from the body; leaving stale header values would be misleading
+	// (Go's transport ignores them in favour of the struct field, but clarity matters).
+	initReq.Header = req.Header.Clone()
+	initReq.Header.Del("Mcp-Session-Id")
+	initReq.Header.Del("Content-Length")
+	initReq.Header.Del("Transfer-Encoding")
+	initReq.Header.Set("Content-Type", "application/json")
+
+	initResp, err := r.forward(initReq)
+	if err != nil {
+		slog.Error("transparent re-initialize failed", "error", err)
+		return nil, err
+	}
+	_, _ = io.Copy(io.Discard, initResp.Body)
+	_ = initResp.Body.Close()
+
+	newBackendSID := initResp.Header.Get("Mcp-Session-Id")
+	if newBackendSID == "" {
+		slog.Debug("re-initialize response contained no Mcp-Session-Id; falling back to ClusterIP")
+		sess.SetMetadata(sessionMetadataBackendURL, r.targetURI)
+		_ = r.sessions.UpsertSession(sess)
+		return nil, nil
+	}
+
+	// Update session: point backend_url at the newly-discovered pod and record
+	// the backend session ID so tracingTransport.RoundTrip rewrites Mcp-Session-Id on outbound requests.
+	newPodURL := r.podBackendURL(capturedPodAddr)
+	sess.SetMetadata(sessionMetadataBackendURL, newPodURL)
+	// Store the raw backend session ID (not normalized) because the Rewrite closure
+	// uses this value verbatim as the outbound Mcp-Session-Id header. Normalizing
+	// would change non-UUID IDs to a UUID v5 hash the backend never issued.
+	sess.SetMetadata(sessionMetadataBackendSID, newBackendSID)
+	if upsertErr := r.sessions.UpsertSession(sess); upsertErr != nil {
+		slog.Debug("failed to update session after re-initialize", "error", upsertErr)
+	}
+
+	// Replay the original client request to the new pod with the new backend SID.
+	// Use the captured pod address directly so we bypass the Rewrite closure
+	// (which still holds the old backend_url until the next session load).
+	// For HTTPS targets, keep the original hostname: IP-literal HTTPS requests
+	// fail TLS verification because server certs are issued for hostnames, not pod IPs.
+	replayHost := capturedPodAddr
+	if replayHost == "" || parsedTarget.Scheme == "https" {
+		replayHost = parsedTarget.Host
+	}
+	replayReq := req.Clone(req.Context())
+	replayReq.URL.Scheme = parsedTarget.Scheme
+	replayReq.URL.Host = replayHost
+	replayReq.Host = replayHost // keep Host header consistent with URL to avoid backend validation errors
+	replayReq.Header.Set("Mcp-Session-Id", newBackendSID)
+	replayReq.Body = io.NopCloser(bytes.NewReader(origBody))
+	replayReq.ContentLength = int64(len(origBody))
+	// origBody is fully buffered, so chunked encoding is unnecessary and would
+	// suppress the Content-Length header. Clear any TransferEncoding copied from
+	// the original request so net/http sends Content-Length instead.
+	replayReq.TransferEncoding = nil
+
+	slog.Debug("replaying original request after transparent re-initialization",
+		"new_pod_url", newPodURL, "new_backend_sid", newBackendSID)
+	return r.forward(replayReq)
 }
 
 // modifyResponse modifies HTTP responses based on transport-specific requirements.
@@ -643,7 +1056,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		},
 	}
 
-	proxy.Transport = &tracingTransport{base: http.DefaultTransport, p: p}
+	proxy.Transport = newTracingTransport(http.DefaultTransport, p)
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		return p.modifyResponse(resp)
 	}
@@ -754,24 +1167,10 @@ func (p *TransparentProxy) CloseListener() error {
 	return nil
 }
 
-// healthCheckRetryConfig holds retry configuration for health checks.
-// These values are designed to handle transient network issues like
-// VPN/firewall idle connection timeouts (commonly 5-10 minutes).
-const (
-	// healthCheckRetryCount is the number of consecutive failures before marking unhealthy.
-	// This prevents immediate shutdown on transient network issues.
-	healthCheckRetryCount = 3
-)
-
 // performHealthCheckRetry performs a retry health check after a delay
 // Returns true if the retry was successful (health check recovered), false otherwise
 func (p *TransparentProxy) performHealthCheckRetry(ctx context.Context) bool {
-	retryDelay := p.healthCheckRetryDelay
-	if retryDelay == 0 {
-		retryDelay = DefaultHealthCheckRetryDelay
-	}
-
-	retryTimer := time.NewTimer(retryDelay)
+	retryTimer := time.NewTimer(p.healthCheckRetryDelay)
 	defer retryTimer.Stop()
 
 	select {
@@ -802,10 +1201,10 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 	slog.Warn("health check failed",
 		"target", p.targetURI,
 		"attempt", consecutiveFailures,
-		"max_attempts", healthCheckRetryCount,
+		"max_attempts", p.healthCheckFailureThreshold,
 		"status", status)
 
-	if consecutiveFailures < healthCheckRetryCount {
+	if consecutiveFailures < p.healthCheckFailureThreshold {
 		if p.performHealthCheckRetry(ctx) {
 			consecutiveFailures = 0
 		}
@@ -815,7 +1214,7 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 	// All retries exhausted, initiate shutdown
 	//nolint:gosec // G706: logging target URI from config
 	slog.Error("health check failed after consecutive attempts; initiating proxy shutdown",
-		"target", p.targetURI, "attempts", healthCheckRetryCount)
+		"target", p.targetURI, "attempts", p.healthCheckFailureThreshold)
 	if p.onHealthCheckFailed != nil {
 		p.onHealthCheckFailed()
 	}

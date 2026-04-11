@@ -4,6 +4,7 @@
 package controllers
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8smeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,6 +29,19 @@ import (
 	registryapimocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/mocks"
 )
 
+// toRawJSONSlice marshals each item to JSON and wraps it in apiextensionsv1.JSON
+// so tests can construct []apiextensionsv1.JSON fields from typed Go structs.
+func toRawJSONSlice[T any](t *testing.T, items []T) []apiextensionsv1.JSON {
+	t.Helper()
+	result := make([]apiextensionsv1.JSON, len(items))
+	for i, item := range items {
+		data, err := json.Marshal(item)
+		require.NoError(t, err)
+		result[i] = apiextensionsv1.JSON{Raw: data}
+	}
+	return result
+}
+
 // newMCPRegistryTestScheme creates a runtime scheme with all required API groups registered.
 func newMCPRegistryTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -38,13 +53,17 @@ func newMCPRegistryTestScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-// newMCPRegistryWithFinalizer creates an MCPRegistry with the controller finalizer already set.
+// newMCPRegistryWithFinalizer creates an MCPRegistry with the controller finalizer
+// and a minimal valid spec (configYAML) so it passes reconciler validation.
 func newMCPRegistryWithFinalizer(name, namespace string) *mcpv1alpha1.MCPRegistry { //nolint:unparam
 	return &mcpv1alpha1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       name,
 			Namespace:  namespace,
 			Finalizers: []string{"mcpregistry.toolhive.stacklok.dev/finalizer"},
+		},
+		Spec: mcpv1alpha1.MCPRegistrySpec{
+			ConfigYAML: "sources:\n  - name: k8s\n    format: upstream\n    kubernetes: {}\nregistries:\n  - name: default\n    sources: [\"k8s\"]\ndatabase:\n  host: postgres\n  port: 5432\n  user: db_app\n  database: registry\nauth:\n  mode: anonymous\n",
 		},
 	}
 }
@@ -86,6 +105,9 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 				t.Helper()
 				mcpRegistry := &mcpv1alpha1.MCPRegistry{
 					ObjectMeta: metav1.ObjectMeta{Name: registryName, Namespace: registryNamespace},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						ConfigYAML: "sources:\n  - name: k8s\n    kubernetes: {}\n",
+					},
 				}
 				builder := fake.NewClientBuilder().
 					WithScheme(s).
@@ -123,6 +145,9 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 						},
 						DeletionTimestamp: &now,
 					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						ConfigYAML: "sources:\n  - name: k8s\n    kubernetes: {}\n",
+					},
 				}
 				builder := fake.NewClientBuilder().
 					WithScheme(s).
@@ -157,6 +182,9 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 						Namespace:         registryNamespace,
 						Finalizers:        []string{"other.finalizer/test"},
 						DeletionTimestamp: &now,
+					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						ConfigYAML: "sources:\n  - name: k8s\n    kubernetes: {}\n",
 					},
 				}
 				builder := fake.NewClientBuilder().
@@ -412,6 +440,206 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			assert.Equal(t, tt.expErr, err)
 			if tt.assertRegistry != nil {
 				tt.assertRegistry(t, fakeClient)
+			}
+		})
+	}
+}
+
+func TestValidateSpec(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		spec    mcpv1alpha1.MCPRegistrySpec
+		wantErr string
+	}{
+		{
+			name: "valid configYAML with no extra fields",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+			},
+		},
+		{
+			name: "pgpassSecretRef with empty name",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				PGPassSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: ""},
+					Key:                  ".pgpass",
+				},
+			},
+			wantErr: "pgpassSecretRef.name is required",
+		},
+		{
+			name: "pgpassSecretRef with empty key",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				PGPassSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+					Key:                  "",
+				},
+			},
+			wantErr: "pgpassSecretRef.key is required",
+		},
+		{
+			name: "reserved volume name registry-server-config in spec volumes",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
+					{Name: registryapi.RegistryServerConfigVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}),
+			},
+			wantErr: "reserved by the operator",
+		},
+		{
+			name: "reserved volume name pgpass-secret when pgpassSecretRef is set",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				PGPassSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+					Key:                  ".pgpass",
+				},
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
+					{Name: registryapi.PGPassSecretVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}),
+			},
+			wantErr: "reserved by the operator",
+		},
+		{
+			name: "non-reserved volume name passes",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
+					{Name: "my-custom-volume", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}),
+			},
+		},
+		{
+			name: "reserved volume name pgpass-secret when pgpassSecretRef is NOT set passes",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				Volumes: toRawJSONSlice(t, []corev1.Volume{
+					{Name: registryapi.PGPassSecretVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}),
+			},
+			// pgpass-secret is only reserved when pgpassSecretRef is set
+		},
+		{
+			name: "reserved volume name registry-server-config in PodTemplateSpec",
+			spec: func() mcpv1alpha1.MCPRegistrySpec {
+				pts := corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Volumes: []corev1.Volume{
+							{
+								Name: registryapi.RegistryServerConfigVolumeName,
+								VolumeSource: corev1.VolumeSource{
+									EmptyDir: &corev1.EmptyDirVolumeSource{},
+								},
+							},
+						},
+						Containers: []corev1.Container{
+							{Name: "registry-api"},
+						},
+					},
+				}
+				raw, _ := json.Marshal(pts)
+				return mcpv1alpha1.MCPRegistrySpec{
+					ConfigYAML:      "sources:\n  - name: default\n",
+					PodTemplateSpec: &runtime.RawExtension{Raw: raw},
+				}
+			}(),
+			wantErr: "reserved by the operator",
+		},
+		{
+			name: "init container setup-pgpass in PodTemplateSpec when pgpassSecretRef is set",
+			spec: func() mcpv1alpha1.MCPRegistrySpec {
+				pts := corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						InitContainers: []corev1.Container{
+							{Name: registryapi.PGPassInitContainerName, Image: "busybox"},
+						},
+						Containers: []corev1.Container{
+							{Name: "registry-api"},
+						},
+					},
+				}
+				raw, _ := json.Marshal(pts)
+				return mcpv1alpha1.MCPRegistrySpec{
+					ConfigYAML: "sources:\n  - name: default\n",
+					PGPassSecretRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+						Key:                  ".pgpass",
+					},
+					PodTemplateSpec: &runtime.RawExtension{Raw: raw},
+				}
+			}(),
+			wantErr: "reserved by the operator when pgpassSecretRef is set",
+		},
+		{
+			name: "mount path collision from PodTemplateSpec container mounts",
+			spec: func() mcpv1alpha1.MCPRegistrySpec {
+				pts := corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name: "registry-api",
+								VolumeMounts: []corev1.VolumeMount{
+									{Name: "user-vol", MountPath: "/config"},
+								},
+							},
+						},
+					},
+				}
+				raw, _ := json.Marshal(pts)
+				return mcpv1alpha1.MCPRegistrySpec{
+					ConfigYAML:      "sources:\n  - name: default\n",
+					PodTemplateSpec: &runtime.RawExtension{Raw: raw},
+				}
+			}(),
+			wantErr: "duplicate mount path '/config'",
+		},
+		{
+			name: "duplicate mount path in spec volumeMounts",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				VolumeMounts: toRawJSONSlice(t, []corev1.VolumeMount{
+					{Name: "vol-a", MountPath: "/data/files"},
+					{Name: "vol-b", MountPath: "/data/files"},
+				}),
+			},
+			wantErr: "duplicate mount path",
+		},
+		{
+			name: "mount path collision with operator-reserved config path",
+			spec: mcpv1alpha1.MCPRegistrySpec{
+				ConfigYAML: "sources:\n  - name: default\n",
+				VolumeMounts: toRawJSONSlice(t, []corev1.VolumeMount{
+					{Name: "my-vol", MountPath: "/config"},
+				}),
+			},
+			wantErr: "duplicate mount path '/config'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mcpRegistry := &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-registry",
+					Namespace: "default",
+				},
+				Spec: tt.spec,
+			}
+
+			err := validateSpec(mcpRegistry)
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}

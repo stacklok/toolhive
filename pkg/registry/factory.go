@@ -10,22 +10,30 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/registry/auth"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
-var (
-	defaultProvider     Provider
-	defaultProviderOnce sync.Once
-	defaultProviderErr  error
-	// defaultProviderMu protects the ResetDefaultProvider operation
-	// to prevent race conditions when resetting the sync.Once.
-	// The mutex is NOT needed for GetDefaultProviderWithConfig since
-	// sync.Once already provides thread-safety for initialization.
-	defaultProviderMu sync.Mutex
-)
+// providerState groups the sync.Once with the values it initialises.
+// Storing all three together behind an atomic pointer means ResetDefaultProvider
+// can swap in a fresh struct without ever writing to a struct that another
+// goroutine may be reading — eliminating the data race between Reset and Do.
+type providerState struct {
+	once     sync.Once
+	provider Provider
+	err      error
+}
+
+// currentProviderState is the live singleton state. Replaced atomically by
+// ResetDefaultProvider; never mutated after creation except inside once.Do.
+var currentProviderState atomic.Pointer[providerState]
+
+func init() {
+	currentProviderState.Store(&providerState{})
+}
 
 // ProviderOption configures optional behavior for NewRegistryProvider.
 type ProviderOption func(*providerOptions)
@@ -79,10 +87,20 @@ func NewRegistryProvider(cfg *config.Config, opts ...ProviderOption) (Provider, 
 	return NewLocalRegistryProvider(), nil
 }
 
-// GetDefaultProvider returns the default registry provider instance
-// This maintains backward compatibility with the existing singleton pattern
+// GetDefaultProvider returns the default registry provider instance.
+// config.NewProvider() is called inside the sync.Once closure so that any
+// registered ProviderFactory is invoked at most once, not on every call.
 func GetDefaultProvider() (Provider, error) {
-	return GetDefaultProviderWithConfig(config.NewDefaultProvider())
+	s := currentProviderState.Load()
+	s.once.Do(func() {
+		cfg, err := config.NewProvider().LoadOrCreateConfig()
+		if err != nil {
+			s.err = err
+			return
+		}
+		s.provider, s.err = NewRegistryProvider(cfg)
+	})
+	return s.provider, s.err
 }
 
 // GetDefaultProviderWithConfig returns a registry provider using the given config provider.
@@ -90,31 +108,25 @@ func GetDefaultProvider() (Provider, error) {
 // The interactive flag controls whether browser-based OAuth flows are allowed.
 // Pass true for CLI contexts, false for headless/serve mode.
 func GetDefaultProviderWithConfig(configProvider config.Provider, opts ...ProviderOption) (Provider, error) {
-	defaultProviderOnce.Do(func() {
+	s := currentProviderState.Load()
+	s.once.Do(func() {
 		cfg, err := configProvider.LoadOrCreateConfig()
 		if err != nil {
-			defaultProviderErr = err
+			s.err = err
 			return
 		}
-		defaultProvider, defaultProviderErr = NewRegistryProvider(cfg, opts...)
+		s.provider, s.err = NewRegistryProvider(cfg, opts...)
 	})
-
-	return defaultProvider, defaultProviderErr
+	return s.provider, s.err
 }
 
-// ResetDefaultProvider clears the cached default provider instance
-// This allows the provider to be recreated with updated configuration.
-// This function is thread-safe and can be called concurrently.
-// The mutex is required here because we're modifying the sync.Once itself,
-// which is not a thread-safe operation.
+// ResetDefaultProvider clears the cached default provider instance so the
+// next call to GetDefaultProvider or GetDefaultProviderWithConfig creates a
+// fresh one. The atomic swap is safe to call concurrently: goroutines that
+// already hold a reference to the old state finish against that state cleanly,
+// while goroutines that load after the swap initialise against the new state.
 func ResetDefaultProvider() {
-	defaultProviderMu.Lock()
-	defer defaultProviderMu.Unlock()
-
-	// Reset the sync.Once to allow re-initialization
-	defaultProviderOnce = sync.Once{}
-	defaultProvider = nil
-	defaultProviderErr = nil
+	currentProviderState.Store(&providerState{})
 }
 
 // resolveTokenSource creates a TokenSource from the config if registry auth is configured.

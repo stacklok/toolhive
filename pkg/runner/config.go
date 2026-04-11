@@ -63,6 +63,10 @@ type RunConfig struct {
 	// Empty when the server was not discovered via registry lookup.
 	RegistryURL string `json:"registry_url,omitempty" yaml:"registry_url,omitempty"`
 
+	// RegistryServerName is the registry entry name used to look up this server's metadata.
+	// Empty when the server was not discovered via registry lookup.
+	RegistryServerName string `json:"registry_server_name,omitempty" yaml:"registry_server_name,omitempty"`
+
 	// RemoteAuthConfig contains OAuth configuration for remote MCP servers
 	RemoteAuthConfig *remote.Config `json:"remote_auth_config,omitempty" yaml:"remote_auth_config,omitempty"`
 
@@ -221,6 +225,10 @@ type RunConfig struct {
 
 	// ValidatingWebhooks contains the configuration for validating webhook middleware.
 	ValidatingWebhooks []webhook.Config `json:"validating_webhooks,omitempty" yaml:"validating_webhooks,omitempty"`
+
+	// MutatingWebhooks contains the configuration for mutating webhook middleware.
+	// Mutating webhooks run before validating webhooks, per RFC THV-0017 ordering.
+	MutatingWebhooks []webhook.Config `json:"mutating_webhooks,omitempty" yaml:"mutating_webhooks,omitempty"`
 
 	// existingPort is the port from an existing workload being updated (not serialized)
 	// Used during port validation to allow reusing the same port

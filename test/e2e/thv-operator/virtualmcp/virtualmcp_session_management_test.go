@@ -71,7 +71,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 				},
 			})).To(gomega.Succeed())
 
@@ -445,7 +445,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 				},
 			})).To(gomega.Succeed())
 

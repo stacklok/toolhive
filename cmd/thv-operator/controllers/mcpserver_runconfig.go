@@ -145,7 +145,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		runner.WithName(m.Name),
 		runner.WithImage(m.Spec.Image),
 		runner.WithCmdArgs(m.Spec.Args),
-		runner.WithTransportAndPorts(m.Spec.Transport, int(m.GetProxyPort()), int(m.GetMcpPort())),
+		runner.WithTransportAndPorts(m.Spec.Transport, int(m.GetProxyPort()), int(m.GetMCPPort())),
 		runner.WithProxyMode(transporttypes.ProxyMode(effectiveProxyMode)),
 		runner.WithHost(proxyHost),
 		runner.WithTrustProxyHeaders(m.Spec.TrustProxyHeaders),
@@ -259,6 +259,14 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		resolvedOIDCConfig, &options,
 	); err != nil {
 		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
+	}
+
+	// Validate authServerRef/externalAuthConfigRef conflict and add authServerRef options
+	if err := ctrlutil.ValidateAndAddAuthServerRefOptions(
+		ctx, r.Client, m.Namespace, m.Name, m.Spec.AuthServerRef,
+		m.Spec.ExternalAuthConfigRef, resolvedOIDCConfig, &options,
+	); err != nil {
+		return nil, fmt.Errorf("failed to process authServerRef: %w", err)
 	}
 
 	// Add audit configuration if specified

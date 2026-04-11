@@ -51,6 +51,7 @@ func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 		{
 			name:           "invalid local file - missing",
 			allowPrivateIP: false,
+			expectedType:   config.RegistryTypeFile,
 			expectError:    true,
 			setupFunc: func(_ *testing.T) string {
 				return "/tmp/non-existent-file-xyz123.json"
@@ -59,6 +60,7 @@ func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 		{
 			name:           "invalid local file - wrong structure",
 			allowPrivateIP: false,
+			expectedType:   config.RegistryTypeFile,
 			expectError:    true,
 			setupFunc: func(t *testing.T) string {
 				t.Helper()
@@ -94,6 +96,7 @@ func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 			// Check results
 			if tt.expectError {
 				assert.Error(t, err, "Expected an error")
+				assert.Equal(t, tt.expectedType, registryType, "Registry type should be returned even on error")
 			} else {
 				assert.NoError(t, err, "Should not return error")
 				assert.Equal(t, tt.expectedType, registryType, "Registry type should match")

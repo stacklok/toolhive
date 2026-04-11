@@ -1,0 +1,23 @@
+# MCPServerEntry with header forwarding for API key injection.
+#
+# headerForward supports both plaintext headers (visible via kubectl) and
+# secret-backed headers (values stored in Kubernetes Secrets).
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServerEntry
+metadata:
+  name: internal-api
+  namespace: toolhive-system
+spec:
+  remoteURL: https://internal-mcp.corp.example.com/mcp
+  transport: sse
+  groupRef: remote-tools
+  headerForward:
+    addPlaintextHeaders:
+      X-Tenant-ID: "tenant-123"
+    addHeadersFromSecret:
+      - headerName: Authorization
+        valueSecretRef:
+          name: internal-api-credentials
+          key: bearer-token

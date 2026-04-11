@@ -181,6 +181,32 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Check if the MCPServer instance is marked to be deleted — do this before
+	// any validation or external API calls to avoid unnecessary work during deletion
+	if mcpServer.GetDeletionTimestamp() != nil {
+		if controllerutil.ContainsFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer") {
+			if err := r.finalizeMCPServer(ctx, mcpServer); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			controllerutil.RemoveFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer")
+			err := r.Update(ctx, mcpServer)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Add finalizer for this CR
+	if !controllerutil.ContainsFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer") {
+		controllerutil.AddFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer")
+		err = r.Update(ctx, mcpServer)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	// Check if the restart annotation has been updated and trigger a rolling restart if needed
 	if shouldTriggerRestart, err := r.handleRestartAnnotation(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to handle restart annotation")
@@ -196,9 +222,10 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Validate CABundleRef if specified
 	r.validateCABundleRef(ctx, mcpServer)
 
-	// Validate stdio replica cap and session storage requirements
+	// Validate stdio replica cap, session storage, and rate limit config
 	r.validateStdioReplicaCap(ctx, mcpServer)
 	r.validateSessionStorageForReplicas(ctx, mcpServer)
+	r.validateRateLimitConfig(ctx, mcpServer)
 
 	// Validate PodTemplateSpec early - before other validations
 	// This ensures we fail fast if the spec is invalid
@@ -239,6 +266,17 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Check if authServerRef is referenced and handle config hash tracking
+	if err := r.handleAuthServerRef(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to handle authServerRef")
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after authServerRef error")
 		}
 		return ctrl.Result{}, err
 	}
@@ -303,35 +341,6 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Update status to persist the condition
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after image validation")
-		}
-	}
-
-	// Check if the MCPServer instance is marked to be deleted
-	if mcpServer.GetDeletionTimestamp() != nil {
-		// The object is being deleted
-		if controllerutil.ContainsFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer") {
-			// Run finalization logic. If the finalization logic fails,
-			// don't remove the finalizer so that we can retry during the next reconciliation.
-			if err := r.finalizeMCPServer(ctx, mcpServer); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			// Remove the finalizer. Once all finalizers have been removed, the object will be deleted.
-			controllerutil.RemoveFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer")
-			err := r.Update(ctx, mcpServer)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// Add finalizer for this CR
-	if !controllerutil.ContainsFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer") {
-		controllerutil.AddFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer")
-		err = r.Update(ctx, mcpServer)
-		if err != nil {
-			return ctrl.Result{}, err
 		}
 	}
 
@@ -1217,14 +1226,14 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		}
 	}
 
-	// Add embedded auth server volumes and env vars if configured
-	if m.Spec.ExternalAuthConfigRef != nil {
-		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfig(
-			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef,
+	// Add embedded auth server volumes and env vars. AuthServerRef takes precedence;
+	// externalAuthConfigRef is used as a fallback (legacy path).
+	if configName := ctrlutil.EmbeddedAuthServerConfigName(m.Spec.ExternalAuthConfigRef, m.Spec.AuthServerRef); configName != "" {
+		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigByName(
+			ctx, r.Client, m.Namespace, configName,
 		)
 		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to generate embedded auth server configuration")
+			log.FromContext(ctx).Error(err, "Failed to generate auth server configuration")
 			return nil
 		}
 		volumes = append(volumes, authServerVolumes...)
@@ -2043,6 +2052,116 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	return nil
 }
 
+// handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.
+// It updates the MCPServer status when the auth server configuration changes and sets
+// the AuthServerRefValidated condition.
+func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
+	if m.Spec.AuthServerRef == nil {
+		meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1alpha1.ConditionTypeAuthServerRefValidated)
+		if m.Status.AuthServerConfigHash != "" {
+			m.Status.AuthServerConfigHash = ""
+			if err := r.Status().Update(ctx, m); err != nil {
+				return fmt.Errorf("failed to clear authServerRef hash from status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	// Only MCPExternalAuthConfig kind is supported
+	if m.Spec.AuthServerRef.Kind != "MCPExternalAuthConfig" {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:   mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+			Status: metav1.ConditionFalse,
+			Reason: mcpv1alpha1.ConditionReasonAuthServerRefInvalidKind,
+			Message: fmt.Sprintf("unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported",
+				m.Spec.AuthServerRef.Kind),
+			ObservedGeneration: m.Generation,
+		})
+		return fmt.Errorf("unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported", m.Spec.AuthServerRef.Kind)
+	}
+
+	// Fetch the referenced MCPExternalAuthConfig
+	authConfig, err := ctrlutil.GetExternalAuthConfigByName(ctx, r.Client, m.Namespace, m.Spec.AuthServerRef.Name)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+				Type:   mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+				Status: metav1.ConditionFalse,
+				Reason: mcpv1alpha1.ConditionReasonAuthServerRefNotFound,
+				Message: fmt.Sprintf("MCPExternalAuthConfig '%s' not found in namespace '%s'",
+					m.Spec.AuthServerRef.Name, m.Namespace),
+				ObservedGeneration: m.Generation,
+			})
+			return fmt.Errorf("MCPExternalAuthConfig '%s' not found in namespace '%s'",
+				m.Spec.AuthServerRef.Name, m.Namespace)
+		}
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonAuthServerRefFetchError,
+			Message:            fmt.Sprintf("Failed to fetch MCPExternalAuthConfig '%s'", m.Spec.AuthServerRef.Name),
+			ObservedGeneration: m.Generation,
+		})
+		return fmt.Errorf("failed to get authServerRef MCPExternalAuthConfig %s: %w", m.Spec.AuthServerRef.Name, err)
+	}
+
+	// Validate the config type is embeddedAuthServer
+	if authConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:   mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+			Status: metav1.ConditionFalse,
+			Reason: mcpv1alpha1.ConditionReasonAuthServerRefInvalidType,
+			Message: fmt.Sprintf("authServerRef '%s' has type %q, but only embeddedAuthServer is supported",
+				m.Spec.AuthServerRef.Name, authConfig.Spec.Type),
+			ObservedGeneration: m.Generation,
+		})
+		return fmt.Errorf("authServerRef '%s' has type %q, but only embeddedAuthServer is supported",
+			m.Spec.AuthServerRef.Name, authConfig.Spec.Type)
+	}
+
+	// MCPServer supports only single-upstream embedded auth server configs
+	if embeddedCfg := authConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
+		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+			Type:   mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+			Status: metav1.ConditionFalse,
+			Reason: mcpv1alpha1.ConditionReasonAuthServerRefMultiUpstream,
+			Message: fmt.Sprintf("MCPServer supports only one upstream provider (found %d); "+
+				"use VirtualMCPServer for multi-upstream",
+				len(embeddedCfg.UpstreamProviders)),
+			ObservedGeneration: m.Generation,
+		})
+		return fmt.Errorf("MCPServer %s/%s: embedded auth server has %d upstream providers, "+
+			"but only 1 is supported; use VirtualMCPServer",
+			m.Namespace, m.Name, len(embeddedCfg.UpstreamProviders))
+	}
+
+	// AuthServerRef valid
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1alpha1.ConditionReasonAuthServerRefValid,
+		Message:            fmt.Sprintf("AuthServerRef '%s' is valid", authConfig.Name),
+		ObservedGeneration: m.Generation,
+	})
+
+	// Check if the config hash has changed
+	if m.Status.AuthServerConfigHash != authConfig.Status.ConfigHash {
+		ctxLogger.Info("authServerRef config has changed, updating MCPServer",
+			"mcpserver", m.Name,
+			"authServerRef", authConfig.Name,
+			"oldHash", m.Status.AuthServerConfigHash,
+			"newHash", authConfig.Status.ConfigHash)
+
+		m.Status.AuthServerConfigHash = authConfig.Status.ConfigHash
+		if err := r.Status().Update(ctx, m); err != nil {
+			return fmt.Errorf("failed to update authServerRef hash in status: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // handleOIDCConfig validates and tracks the hash of the referenced MCPOIDCConfig.
 // It updates the MCPServer status when the OIDC configuration changes and sets
 // the OIDCConfigRefValidated condition.
@@ -2279,6 +2398,61 @@ func (r *MCPServerReconciler) validateSessionStorageForReplicas(ctx context.Cont
 	}
 }
 
+// setRateLimitConfigCondition sets the RateLimitConfigValid status condition.
+func setRateLimitConfigCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionRateLimitConfigValid,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: mcpServer.Generation,
+	})
+}
+
+// validateRateLimitConfig validates that per-user rate limiting has authentication enabled.
+// Sets the RateLimitConfigValid condition. This is defense-in-depth only; CEL admission
+// validation is the primary gate. Reconciliation continues even when the condition is False
+// because per-user buckets are silently skipped when userID is empty (graceful degradation).
+func (r *MCPServerReconciler) validateRateLimitConfig(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+	rl := mcpServer.Spec.RateLimiting
+	if rl == nil {
+		setRateLimitConfigCondition(mcpServer, metav1.ConditionTrue,
+			mcpv1alpha1.ConditionReasonRateLimitNotApplicable,
+			"rate limiting is not configured")
+		if err := r.Status().Update(ctx, mcpServer); err != nil {
+			log.FromContext(ctx).Error(err, "Failed to update MCPServer status after rate limit validation")
+		}
+		return
+	}
+
+	authEnabled := mcpServer.Spec.OIDCConfig != nil ||
+		mcpServer.Spec.OIDCConfigRef != nil ||
+		mcpServer.Spec.ExternalAuthConfigRef != nil
+
+	hasPerUser := rl.PerUser != nil
+	if !hasPerUser {
+		for _, t := range rl.Tools {
+			if t.PerUser != nil {
+				hasPerUser = true
+				break
+			}
+		}
+	}
+
+	if hasPerUser && !authEnabled {
+		setRateLimitConfigCondition(mcpServer, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonRateLimitPerUserRequiresAuth,
+			"perUser rate limiting requires authentication to be enabled (oidcConfig, oidcConfigRef, or externalAuthConfigRef)")
+	} else {
+		setRateLimitConfigCondition(mcpServer, metav1.ConditionTrue,
+			mcpv1alpha1.ConditionReasonRateLimitConfigValid,
+			"rate limit configuration is valid")
+	}
+	if err := r.Status().Update(ctx, mcpServer); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to update MCPServer status after rate limit validation")
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
@@ -2299,8 +2473,10 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			// Find MCPServers that reference this MCPExternalAuthConfig
 			var requests []reconcile.Request
 			for _, server := range mcpServerList.Items {
-				if server.Spec.ExternalAuthConfigRef != nil &&
-					server.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name {
+				if (server.Spec.ExternalAuthConfigRef != nil &&
+					server.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name) ||
+					(server.Spec.AuthServerRef != nil &&
+						server.Spec.AuthServerRef.Name == externalAuthConfig.Name) {
 					requests = append(requests, reconcile.Request{
 						NamespacedName: types.NamespacedName{
 							Name:      server.Name,

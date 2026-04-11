@@ -1,0 +1,83 @@
+# Example: MCPRegistry with private Git repository using the decoupled configYAML path
+#
+# This example demonstrates how to sync registry data from a private Git
+# repository using the new configYAML field. In the decoupled path, the
+# git auth secret is mounted explicitly via volumes/volumeMounts instead
+# of the operator auto-generating mounts from passwordSecretRef.
+#
+# Key differences from the legacy path:
+# - Git auth uses "passwordFile:" with a file path, not "passwordSecretRef:"
+# - The secret volume and mount are defined explicitly in the MCPRegistry spec
+# - The passwordFile path in configYAML must match the volumeMount mountPath
+#
+# Prerequisites:
+# 1. Create a Personal Access Token (PAT) with read access to the repository
+#    - GitHub: Create a PAT at https://github.com/settings/tokens with `repo` scope
+#    - GitLab: Create a token at Settings > Access Tokens with `read_repository` scope
+# 2. Create the Secret (see below)
+# 3. Apply this MCPRegistry resource
+
+---
+# Secret containing the Git credentials
+# IMPORTANT: Use stringData for plain text or data for base64-encoded values
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-credentials
+  namespace: toolhive-system
+type: Opaque
+stringData:
+  # For GitHub PATs, use "ghp_..." token
+  # For GitLab, use the personal access token
+  # For Bitbucket, use an app password
+  token: "ghp_your_personal_access_token_here"
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: git-auth-configyaml
+  namespace: toolhive-system
+spec:
+  displayName: "Private Git Registry (configYAML)"
+  configYAML: |
+    sources:
+      - name: private-repo
+        format: toolhive
+        git:
+          repository: https://github.com/your-org/private-mcp-registry
+          branch: main
+          path: registry.json
+          auth:
+            # Username depends on Git provider:
+            # - GitHub PAT: use "git"
+            # - GitLab token: use "oauth2"
+            # - Bitbucket app password: use your Bitbucket username
+            username: git
+            # File path must match the volumeMount below
+            passwordFile: /secrets/git-credentials/token
+        syncPolicy:
+          interval: 1h
+    registries:
+      - name: default
+        sources: ["private-repo"]
+    database:
+      host: postgres
+      port: 5432
+      user: db_app
+      database: registry
+    auth:
+      mode: anonymous
+  # Volume to project the git credentials secret into the container filesystem
+  volumes:
+    - name: git-auth-credentials
+      secret:
+        secretName: git-credentials
+        items:
+          - key: token
+            path: token
+  # Mount the secret at the path referenced by passwordFile in configYAML
+  volumeMounts:
+    - name: git-auth-credentials
+      mountPath: /secrets/git-credentials
+      readOnly: true

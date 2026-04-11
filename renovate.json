@@ -229,17 +229,6 @@
     },
     {
       "customType": "regex",
-      "description": "Update Go version in go.mod",
-      "managerFilePatterns": [
-        "/(^|/)go\\.mod$/"
-      ],
-      "matchStrings": ["go (?<currentValue>\\d+\\.\\d+(\\.\\d+)?)"],
-      "depNameTemplate": "golang",
-      "datasourceTemplate": "golang-version",
-      "versioningTemplate": "loose"
-    },
-    {
-      "customType": "regex",
       "description": "Update Kind CLI version in GitHub workflows",
       "managerFilePatterns": [".github/workflows/*.yml"],
       "matchStrings": ["version:\\s+v(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s+#\\s+kind"],

@@ -257,6 +257,11 @@ func (r *VirtualMCPServerReconciler) buildTransportMap(
 		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
 	}
 
+	mcpServerEntryMap, err := r.listMCPServerEntriesAsMap(ctx, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list MCPServerEntries: %w", err)
+	}
+
 	for _, workload := range typedWorkloads {
 		var transport string
 
@@ -276,6 +281,11 @@ func (r *VirtualMCPServerReconciler) buildTransportMap(
 			if mcpRemoteProxy, found := mcpRemoteProxyMap[workload.Name]; found {
 				transport = string(mcpRemoteProxy.Spec.Transport)
 			}
+
+		case workloads.WorkloadTypeMCPServerEntry:
+			if mcpServerEntry, found := mcpServerEntryMap[workload.Name]; found {
+				transport = mcpServerEntry.Spec.Transport
+			}
 		}
 
 		if transport != "" {
@@ -284,6 +294,46 @@ func (r *VirtualMCPServerReconciler) buildTransportMap(
 	}
 
 	return transportMap, nil
+}
+
+// buildCABundlePathMap builds a map of backend names to CA bundle file paths for MCPServerEntry backends.
+// Only entries with a caBundleRef are included in the map.
+func (r *VirtualMCPServerReconciler) buildCABundlePathMap(
+	ctx context.Context,
+	namespace string,
+	typedWorkloads []workloads.TypedWorkload,
+) (map[string]string, error) {
+	caBundlePathMap := make(map[string]string)
+
+	// Early return if no MCPServerEntry workloads to avoid unnecessary API calls
+	hasEntries := false
+	for _, workload := range typedWorkloads {
+		if workload.Type == workloads.WorkloadTypeMCPServerEntry {
+			hasEntries = true
+			break
+		}
+	}
+	if !hasEntries {
+		return caBundlePathMap, nil
+	}
+
+	mcpServerEntryMap, err := r.listMCPServerEntriesAsMap(ctx, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list MCPServerEntries: %w", err)
+	}
+
+	for _, workload := range typedWorkloads {
+		if workload.Type != workloads.WorkloadTypeMCPServerEntry {
+			continue
+		}
+		entry, found := mcpServerEntryMap[workload.Name]
+		if !found || entry.Spec.CABundleRef == nil || entry.Spec.CABundleRef.ConfigMapRef == nil {
+			continue
+		}
+		caBundlePathMap[workload.Name] = caBundleMountPath(workload.Name, entry.Spec.CABundleRef)
+	}
+
+	return caBundlePathMap, nil
 }
 
 // extractInlineBackendNames extracts the list of inline backend names from the VirtualMCPServer spec.
@@ -378,7 +428,13 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 			return fmt.Errorf("failed to build transport map for static mode: %w", err)
 		}
 
-		config.Backends = convertBackendsToStaticBackends(ctx, backends, transportMap)
+		// Build CA bundle path map for MCPServerEntry backends
+		caBundlePathMap, err := r.buildCABundlePathMap(ctx, vmcp.Namespace, typedWorkloads)
+		if err != nil {
+			return fmt.Errorf("failed to build CA bundle path map for static mode: %w", err)
+		}
+
+		config.Backends = convertBackendsToStaticBackends(ctx, backends, transportMap, caBundlePathMap)
 
 		// Validate at least one backend exists
 		if len(config.Backends) == 0 {

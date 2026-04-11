@@ -1258,7 +1258,7 @@ func TestConvertToJSONRPC2ID(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := convertToJSONRPC2ID(tc.input)
+			result, err := mcpparser.ConvertToJSONRPC2ID(tc.input)
 
 			if tc.expectError {
 				assert.Error(t, err)

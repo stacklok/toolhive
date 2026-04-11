@@ -103,6 +103,8 @@ func cleanupRedis(namespace, name string) {
 }
 
 // getReadyMCPServerPods returns all Running+Ready pods for an MCPServer.
+//
+//nolint:unparam // namespace kept as parameter for reusability across test contexts
 func getReadyMCPServerPods(mcpServerName, namespace string) ([]corev1.Pod, error) {
 	podList := &corev1.PodList{}
 	if err := k8sClient.List(ctx, podList,
@@ -144,6 +146,8 @@ func waitForMCPServerRunning(name, namespace string, timeout, pollInterval time.
 
 // portForwardToPod starts a kubectl port-forward to a specific pod and returns the
 // local port and a cleanup function. The caller must call cleanup to stop the port-forward.
+//
+//nolint:unparam // namespace kept as parameter for reusability across test contexts
 func portForwardToPod(podName, namespace string, targetPort int32) (int, func(), error) {
 	// Find a free local port
 	listener, err := net.Listen("tcp", ":0")
@@ -172,7 +176,7 @@ func portForwardToPod(podName, namespace string, targetPort int32) (int, func(),
 	}
 
 	// Wait for the port-forward to be ready
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", localPort), 500*time.Millisecond)
 		if dialErr == nil {
 			_ = conn.Close()
@@ -192,6 +196,136 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 		defaultNamespace = "default"
 		proxyPort        = int32(8080)
 	)
+
+	ginkgo.Context("When MCPServer has replicas=2 and backendReplicas=2", ginkgo.Ordered, func() {
+		var (
+			mcpServerName string
+			redisName     string
+		)
+
+		ginkgo.BeforeAll(func() {
+			ts := time.Now().UnixNano()
+			mcpServerName = fmt.Sprintf("e2e-backend-scale-%d", ts)
+			redisName = fmt.Sprintf("e2e-redis-be-%d", ts)
+
+			ginkgo.By("Deploying Redis for session storage")
+			deployRedis(defaultNamespace, redisName, timeout, pollInterval)
+
+			replicas := int32(2)
+			backendReplicas := int32(2)
+			redisAddr := fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace)
+
+			ginkgo.By("Creating MCPServer with replicas=2, backendReplicas=2, Redis session storage")
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: mcpServerName, Namespace: defaultNamespace},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:           images.YardstickServerImage,
+					Transport:       "streamable-http",
+					ProxyPort:       proxyPort,
+					MCPPort:         8080,
+					Replicas:        &replicas,
+					BackendReplicas: &backendReplicas,
+					SessionAffinity: "None",
+					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+						Provider: mcpv1alpha1.SessionStorageProviderRedis,
+						Address:  redisAddr,
+					},
+				},
+			})).To(gomega.Succeed())
+
+			ginkgo.By("Waiting for MCPServer to be Running")
+			waitForMCPServerRunning(mcpServerName, defaultNamespace, timeout, pollInterval)
+
+			ginkgo.By("Waiting for 2 ready proxy runner pods")
+			gomega.Eventually(func() (int, error) {
+				pods, err := getReadyMCPServerPods(mcpServerName, defaultNamespace)
+				if err != nil {
+					return 0, err
+				}
+				return len(pods), nil
+			}, timeout, pollInterval).Should(gomega.Equal(2))
+		})
+
+		ginkgo.AfterAll(func() {
+			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: mcpServerName, Namespace: defaultNamespace},
+			})
+			cleanupRedis(defaultNamespace, redisName)
+
+			gomega.Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: mcpServerName, Namespace: defaultNamespace}, &mcpv1alpha1.MCPServer{})
+				return apierrors.IsNotFound(err)
+			}, timeout, pollInterval).Should(gomega.BeTrue())
+		})
+
+		ginkgo.It("Should route session from proxy A to proxy B via Redis-shared state", func() {
+			ginkgo.By("Getting the two ready proxy pods")
+			var pods []corev1.Pod
+			gomega.Eventually(func() (int, error) {
+				var err error
+				pods, err = getReadyMCPServerPods(mcpServerName, defaultNamespace)
+				if err != nil {
+					return 0, err
+				}
+				return len(pods), nil
+			}, timeout, pollInterval).Should(gomega.Equal(2))
+
+			podA := pods[0]
+			podB := pods[1]
+			gomega.Expect(podA.Name).NotTo(gomega.Equal(podB.Name),
+				"The two proxy pods must be distinct")
+
+			ginkgo.By(fmt.Sprintf("Setting up port-forward to proxy A (%s)", podA.Name))
+			localPortA, cleanupA, err := portForwardToPod(podA.Name, defaultNamespace, proxyPort)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			defer cleanupA()
+
+			ginkgo.By(fmt.Sprintf("Setting up port-forward to proxy B (%s)", podB.Name))
+			localPortB, cleanupB, err := portForwardToPod(podB.Name, defaultNamespace, proxyPort)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			defer cleanupB()
+
+			ginkgo.By("Initializing a session on proxy A")
+			clientA, err := CreateInitializedMCPClient(int32(localPortA), "e2e-cross-proxy-test", 30*time.Second)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			defer clientA.Close()
+
+			sessionID := clientA.Client.GetSessionId()
+			gomega.Expect(sessionID).NotTo(gomega.BeEmpty(), "session ID must be assigned after Initialize")
+
+			ginkgo.By(fmt.Sprintf("Listing tools on proxy A (%s)", podA.Name))
+			toolsA, err := clientA.Client.ListTools(clientA.Ctx, mcp.ListToolsRequest{})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Expect(toolsA.Tools).NotTo(gomega.BeEmpty(),
+				"proxy A should return tools for this session")
+
+			ginkgo.By(fmt.Sprintf("Creating a new client to proxy B (%s) with the SAME session ID", podB.Name))
+			serverURLB := fmt.Sprintf("http://localhost:%d/mcp", localPortB)
+			clientB, err := mcpclient.NewStreamableHttpClient(serverURLB, transport.WithSession(sessionID))
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			defer func() { _ = clientB.Close() }()
+
+			startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer startCancel()
+			gomega.Expect(clientB.Start(startCtx)).To(gomega.Succeed())
+
+			// Proxy B must route the session's backend requests to the correct
+			// backend pod (the one that handled initialize on proxy A). With 2
+			// backends and random ClusterIP routing, P(all 5 hit the right pod
+			// by chance) ≈ 3%, so 5 consecutive successes give high confidence
+			// that Redis-backed session routing is working.
+			ginkgo.By("Sending 5 requests on proxy B to verify consistent backend routing")
+			for i := range 5 {
+				listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				toolsB, listErr := clientB.ListTools(listCtx, mcp.ListToolsRequest{})
+				listCancel()
+				gomega.Expect(listErr).NotTo(gomega.HaveOccurred(),
+					"Request %d/5 on proxy B should succeed — session should route to the correct backend", i+1)
+				gomega.Expect(toolsB.Tools).To(gomega.HaveLen(len(toolsA.Tools)),
+					"Request %d/5 on proxy B should return the same tools as proxy A", i+1)
+			}
+		})
+	})
 
 	ginkgo.Context("When MCPServer has replicas=2 with Redis session storage", ginkgo.Ordered, func() {
 		var (
@@ -217,7 +351,7 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 					Image:           images.YardstickServerImage,
 					Transport:       "streamable-http",
 					ProxyPort:       proxyPort,
-					McpPort:         8080,
+					MCPPort:         8080,
 					Replicas:        &replicas,
 					SessionAffinity: "None",
 					SessionStorage: &mcpv1alpha1.SessionStorageConfig{

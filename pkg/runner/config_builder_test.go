@@ -990,9 +990,8 @@ func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This test uses dynamically selected ports and must run serially to avoid port races.
 func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
-	t.Parallel()
-
 	mockValidator := &mockEnvVarValidator{}
 
 	// Find available ports dynamically to avoid flaky failures when a
@@ -1052,9 +1051,9 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
+		//nolint:paralleltest // Keep the subtests serial for stable port validation.
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
 			ctx := context.Background()
 			envVars := make(map[string]string)
 
@@ -1416,6 +1415,83 @@ func TestResolveRegistrySourceURLs(t *testing.T) {
 			apiURL, registryURL := ResolveRegistrySourceURLs(tt.serverMetadata, tt.appConfig)
 			assert.Equal(t, tt.expectedAPI, apiURL)
 			assert.Equal(t, tt.expectedReg, registryURL)
+		})
+	}
+}
+
+func TestWithRegistryServerName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "name set",
+			input:    "my-server",
+			expected: "my-server",
+		},
+		{
+			name:     "empty name",
+			input:    "",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			opt := WithRegistryServerName(tt.input)
+			err := opt(builder)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, builder.config.RegistryServerName)
+		})
+	}
+}
+
+func TestResolveRegistryServerName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		serverMetadata regtypes.ServerMetadata
+		expected       string
+	}{
+		{
+			name:           "nil metadata returns empty string",
+			serverMetadata: nil,
+			expected:       "",
+		},
+		{
+			name: "metadata with name set",
+			serverMetadata: &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
+					Name: "fetch",
+				},
+			},
+			expected: "fetch",
+		},
+		{
+			name: "metadata with empty name",
+			serverMetadata: &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
+					Name: "",
+				},
+			},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := ResolveRegistryServerName(tt.serverMetadata)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

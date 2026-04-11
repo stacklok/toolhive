@@ -108,6 +108,31 @@ const (
 	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
 )
 
+const (
+	// ConditionTypeAuthServerRefValidated indicates whether the AuthServerRef is valid
+	ConditionTypeAuthServerRefValidated = "AuthServerRefValidated"
+)
+
+const (
+	// ConditionReasonAuthServerRefValid indicates the referenced auth server config is valid
+	ConditionReasonAuthServerRefValid = "AuthServerRefValid"
+
+	// ConditionReasonAuthServerRefNotFound indicates the referenced auth server config was not found
+	ConditionReasonAuthServerRefNotFound = "AuthServerRefNotFound"
+
+	// ConditionReasonAuthServerRefFetchError indicates an error occurred fetching the auth server config
+	ConditionReasonAuthServerRefFetchError = "AuthServerRefFetchError"
+
+	// ConditionReasonAuthServerRefInvalidKind indicates the authServerRef kind is not supported
+	ConditionReasonAuthServerRefInvalidKind = "AuthServerRefInvalidKind"
+
+	// ConditionReasonAuthServerRefInvalidType indicates the referenced config is not an embeddedAuthServer
+	ConditionReasonAuthServerRefInvalidType = "AuthServerRefInvalidType"
+
+	// ConditionReasonAuthServerRefMultiUpstream indicates multi-upstream is not supported
+	ConditionReasonAuthServerRefMultiUpstream = "MultiUpstreamNotSupported"
+)
+
 // ConditionTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
 const ConditionTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
 
@@ -147,6 +172,18 @@ const (
 	ConditionReasonSessionStorageNotApplicable = "SessionStorageWarningNotApplicable"
 )
 
+// ConditionRateLimitConfigValid indicates whether the rate limit configuration is valid.
+const ConditionRateLimitConfigValid = "RateLimitConfigValid"
+
+const (
+	// ConditionReasonRateLimitConfigValid indicates the rate limit configuration is valid.
+	ConditionReasonRateLimitConfigValid = "RateLimitConfigValid"
+	// ConditionReasonRateLimitPerUserRequiresAuth indicates perUser rate limiting requires authentication.
+	ConditionReasonRateLimitPerUserRequiresAuth = "PerUserRequiresAuth"
+	// ConditionReasonRateLimitNotApplicable indicates rate limiting is not configured.
+	ConditionReasonRateLimitNotApplicable = "RateLimitNotApplicable"
+)
+
 // SessionStorageProviderRedis is the provider name for Redis-backed session storage.
 const SessionStorageProviderRedis = "redis"
 
@@ -155,6 +192,8 @@ const SessionStorageProviderRedis = "redis"
 // +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
 // +kubebuilder:validation:XValidation:rule="!(has(self.telemetry) && has(self.telemetryConfigRef))",message="telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="rateLimiting requires sessionStorage with provider 'redis'"
+// +kubebuilder:validation:XValidation:rule="!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) || has(self.oidcConfig) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="rateLimiting.perUser requires authentication (oidcConfig, oidcConfigRef, or externalAuthConfigRef)"
+// +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t, !has(t.perUser)) || has(self.oidcConfig) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="per-tool perUser rate limiting requires authentication (oidcConfig, oidcConfigRef, or externalAuthConfigRef)"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPServerSpec struct {
@@ -182,11 +221,11 @@ type MCPServerSpec struct {
 	// +kubebuilder:default=8080
 	ProxyPort int32 `json:"proxyPort,omitempty"`
 
-	// McpPort is the port that MCP server listens to
+	// MCPPort is the port that MCP server listens to
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +optional
-	McpPort int32 `json:"mcpPort,omitempty"`
+	MCPPort int32 `json:"mcpPort,omitempty"`
 
 	// Args are additional arguments to pass to the MCP server
 	// +listType=atomic
@@ -269,6 +308,12 @@ type MCPServerSpec struct {
 	// The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer.
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
+
+	// AuthServerRef optionally references a resource that configures an embedded
+	// OAuth 2.0/OIDC authorization server to authenticate MCP clients.
+	// Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer).
+	// +optional
+	AuthServerRef *AuthServerRef `json:"authServerRef,omitempty"`
 
 	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
 	// The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.
@@ -488,15 +533,22 @@ type SessionStorageConfig struct {
 }
 
 // RateLimitConfig defines rate limiting configuration for an MCP server.
-// At least one of shared or tools must be configured.
+// At least one of shared, perUser, or tools must be configured.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.shared) || (has(self.tools) && size(self.tools) > 0)",message="at least one of shared or tools must be configured"
+// +kubebuilder:validation:XValidation:rule="has(self.shared) || has(self.perUser) || (has(self.tools) && size(self.tools) > 0)",message="at least one of shared, perUser, or tools must be configured"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type RateLimitConfig struct {
-	// Shared defines a token bucket shared across all users for the entire server.
+	// Shared is a token bucket shared across all users for the entire server.
 	// +optional
 	Shared *RateLimitBucket `json:"shared,omitempty"`
+
+	// PerUser is a token bucket applied independently to each authenticated user
+	// at the server level. Requires authentication to be enabled.
+	// Each unique userID creates Redis keys that expire after 2x refillPeriod.
+	// Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys.
+	// +optional
+	PerUser *RateLimitBucket `json:"perUser,omitempty"`
 
 	// Tools defines per-tool rate limit overrides.
 	// Each entry applies additional rate limits to calls targeting a specific tool name.
@@ -507,7 +559,8 @@ type RateLimitConfig struct {
 	Tools []ToolRateLimitConfig `json:"tools,omitempty"`
 }
 
-// RateLimitBucket defines a token bucket configuration.
+// RateLimitBucket defines a token bucket configuration with a maximum capacity
+// and a refill period. Used by both shared (global) and per-user rate limits.
 type RateLimitBucket struct {
 	// MaxTokens is the maximum number of tokens (bucket capacity).
 	// This is also the burst size: the maximum number of requests that can be served
@@ -524,15 +577,24 @@ type RateLimitBucket struct {
 }
 
 // ToolRateLimitConfig defines rate limits for a specific tool.
+// At least one of shared or perUser must be configured.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.shared) || has(self.perUser)",message="at least one of shared or perUser must be configured"
+//
+//nolint:lll // kubebuilder marker exceeds line length
 type ToolRateLimitConfig struct {
 	// Name is the MCP tool name this limit applies to.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 
-	// Shared defines a token bucket shared across all users for this specific tool.
-	// +kubebuilder:validation:Required
-	Shared *RateLimitBucket `json:"shared"`
+	// Shared token bucket for this specific tool.
+	// +optional
+	Shared *RateLimitBucket `json:"shared,omitempty"`
+
+	// PerUser token bucket configuration for this tool.
+	// +optional
+	PerUser *RateLimitBucket `json:"perUser,omitempty"`
 }
 
 // Permission profile types
@@ -836,6 +898,21 @@ type ExternalAuthConfigRef struct {
 	Name string `json:"name"`
 }
 
+// AuthServerRef defines a reference to a resource that configures an embedded
+// OAuth 2.0/OIDC authorization server. Currently only MCPExternalAuthConfig is supported;
+// the enum will be extended when a dedicated auth server CRD is introduced.
+type AuthServerRef struct {
+	// Kind identifies the type of the referenced resource.
+	// +kubebuilder:validation:Enum=MCPExternalAuthConfig
+	// +kubebuilder:default=MCPExternalAuthConfig
+	Kind string `json:"kind"`
+
+	// Name is the name of the referenced resource in the same namespace.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
 // ToolConfigRef defines a reference to a MCPToolConfig resource.
 // The referenced MCPToolConfig must be in the same namespace as the MCPServer.
 type ToolConfigRef struct {
@@ -971,6 +1048,11 @@ type MCPServerStatus struct {
 	// +optional
 	ExternalAuthConfigHash string `json:"externalAuthConfigHash,omitempty"`
 
+	// AuthServerConfigHash is the hash of the referenced authServerRef spec,
+	// used to detect configuration changes and trigger reconciliation.
+	// +optional
+	AuthServerConfigHash string `json:"authServerConfigHash,omitempty"`
+
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
 	// +optional
 	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
@@ -1067,10 +1149,10 @@ func (m *MCPServer) GetProxyPort() int32 {
 	return 8080
 }
 
-// GetMcpPort returns the MCP port of the MCPServer
-func (m *MCPServer) GetMcpPort() int32 {
-	if m.Spec.McpPort > 0 {
-		return m.Spec.McpPort
+// GetMCPPort returns the MCP port of the MCPServer
+func (m *MCPServer) GetMCPPort() int32 {
+	if m.Spec.MCPPort > 0 {
+		return m.Spec.MCPPort
 	}
 	return 8080
 }

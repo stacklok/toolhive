@@ -46,7 +46,7 @@ func TestRegisterPolicyGate(t *testing.T) {
 
 	RegisterPolicyGate(denyGate)
 
-	got := activePolicyGate()
+	got := ActivePolicyGate()
 	require.Equal(t, denyGate, got)
 
 	err := got.CheckCreateServer(context.Background(), NewRunConfig())
@@ -71,7 +71,7 @@ func TestActivePolicyGate_DefaultIsAllowAll(t *testing.T) {
 	policyGate = allowAllGate{}
 	policyGateMu.Unlock()
 
-	got := activePolicyGate()
+	got := ActivePolicyGate()
 	assert.IsType(t, allowAllGate{}, got)
 
 	err := got.CheckCreateServer(context.Background(), NewRunConfig())

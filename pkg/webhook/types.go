@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -22,6 +23,9 @@ const DefaultTimeout = 10 * time.Second
 
 // MaxTimeout is the maximum allowed timeout for webhook HTTP calls.
 const MaxTimeout = 30 * time.Second
+
+// MinTimeout is the minimum allowed timeout for webhook HTTP calls.
+const MinTimeout = 1 * time.Second
 
 // MaxResponseSize is the maximum allowed size in bytes for webhook responses (1 MB).
 const MaxResponseSize = 1 << 20
@@ -96,8 +100,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("webhook failure_policy must be %q or %q, got %q",
 			FailurePolicyFail, FailurePolicyIgnore, c.FailurePolicy)
 	}
-	if c.Timeout < 0 {
-		return fmt.Errorf("webhook timeout must be non-negative")
+	if c.Timeout < MinTimeout {
+		return fmt.Errorf("webhook timeout must be between %v and %v", MinTimeout, MaxTimeout)
 	}
 	if c.Timeout > MaxTimeout {
 		return fmt.Errorf("webhook timeout %v exceeds maximum %v", c.Timeout, MaxTimeout)
@@ -107,6 +111,54 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("webhook TLS config: %w", err)
 		}
 	}
+	return nil
+}
+
+// UnmarshalJSON accepts webhook timeout values as either strings (for example "5s")
+// or numeric nanoseconds, while keeping the rest of the struct on the standard JSON path.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Name          string          `json:"name"`
+		URL           string          `json:"url"`
+		Timeout       json.RawMessage `json:"timeout"`
+		FailurePolicy FailurePolicy   `json:"failure_policy"`
+		TLSConfig     *TLSConfig      `json:"tls_config,omitempty"`
+		HMACSecretRef string          `json:"hmac_secret_ref,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	*c = Config{
+		Name:          raw.Name,
+		URL:           raw.URL,
+		FailurePolicy: raw.FailurePolicy,
+		TLSConfig:     raw.TLSConfig,
+		HMACSecretRef: raw.HMACSecretRef,
+	}
+
+	if len(raw.Timeout) == 0 || string(raw.Timeout) == "null" {
+		return nil
+	}
+
+	if raw.Timeout[0] == '"' {
+		var timeoutStr string
+		if err := json.Unmarshal(raw.Timeout, &timeoutStr); err != nil {
+			return fmt.Errorf("invalid timeout value: %w", err)
+		}
+		d, err := time.ParseDuration(timeoutStr)
+		if err != nil {
+			return fmt.Errorf("invalid timeout value %q: %w", timeoutStr, err)
+		}
+		c.Timeout = d
+		return nil
+	}
+
+	var timeoutNanos int64
+	if err := json.Unmarshal(raw.Timeout, &timeoutNanos); err != nil {
+		return fmt.Errorf("invalid timeout value: %w", err)
+	}
+	c.Timeout = time.Duration(timeoutNanos)
 	return nil
 }
 
@@ -173,6 +225,21 @@ func validateTLSConfig(cfg *TLSConfig) error {
 	// If one of client cert/key is provided, both must be present.
 	if (cfg.ClientCertPath == "") != (cfg.ClientKeyPath == "") {
 		return fmt.Errorf("both client_cert_path and client_key_path must be provided for mTLS")
+	}
+	if cfg.CABundlePath != "" {
+		if _, err := os.Stat(cfg.CABundlePath); err != nil {
+			return fmt.Errorf("ca_bundle_path %q not found: %w", cfg.CABundlePath, err)
+		}
+	}
+	if cfg.ClientCertPath != "" {
+		if _, err := os.Stat(cfg.ClientCertPath); err != nil {
+			return fmt.Errorf("client_cert_path %q not found: %w", cfg.ClientCertPath, err)
+		}
+	}
+	if cfg.ClientKeyPath != "" {
+		if _, err := os.Stat(cfg.ClientKeyPath); err != nil {
+			return fmt.Errorf("client_key_path %q not found: %w", cfg.ClientKeyPath, err)
+		}
 	}
 	return nil
 }

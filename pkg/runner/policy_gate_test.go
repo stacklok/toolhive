@@ -78,6 +78,54 @@ func TestActivePolicyGate_DefaultIsAllowAll(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestEagerCheckCreateServer verifies that EagerCheckCreateServer delegates to
+// the currently registered gate and surfaces the gate's result synchronously.
+//
+//nolint:paralleltest // Subtests mutate the global policy gate.
+func TestEagerCheckCreateServer(t *testing.T) {
+	sentinel := errors.New("blocked by eager test policy")
+
+	tests := []struct {
+		name    string
+		gate    PolicyGate
+		wantErr error
+	}{
+		{
+			name:    "allow: default gate permits creation",
+			gate:    allowAllGate{},
+			wantErr: nil,
+		},
+		{
+			name:    "deny: registered gate blocks creation",
+			gate:    &errorPolicyGate{err: sentinel},
+			wantErr: sentinel,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Save and restore the global gate independently for each subtest.
+			policyGateMu.Lock()
+			original := policyGate
+			policyGate = tc.gate
+			policyGateMu.Unlock()
+			t.Cleanup(func() {
+				policyGateMu.Lock()
+				policyGate = original
+				policyGateMu.Unlock()
+			})
+
+			err := EagerCheckCreateServer(context.Background(), NewRunConfig())
+
+			if tc.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // errorPolicyGate is a test helper that always returns the configured error.
 type errorPolicyGate struct {
 	NoopPolicyGate

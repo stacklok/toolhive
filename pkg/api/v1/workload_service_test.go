@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
+	"github.com/stacklok/toolhive/pkg/runner"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
@@ -366,4 +367,63 @@ func TestRuntimeConfigForImageBuild(t *testing.T) {
 		override.AdditionalPackages[0] = "git"
 		assert.Equal(t, expectedPackages, result.AdditionalPackages)
 	})
+}
+
+// testDenyPolicyGate is a test helper that always blocks server creation with
+// the configured error.
+type testDenyPolicyGate struct {
+	runner.NoopPolicyGate
+	err error
+}
+
+func (g *testDenyPolicyGate) CheckCreateServer(_ context.Context, _ *runner.RunConfig) error {
+	return g.err
+}
+
+// TestCreateWorkloadFromRequest_PolicyGateDenied verifies that
+// CreateWorkloadFromRequest returns an error immediately when the policy gate
+// blocks the operation, and that RunWorkloadDetached is never called.
+//
+//nolint:paralleltest // Mutates the global policy gate.
+func TestCreateWorkloadFromRequest_PolicyGateDenied(t *testing.T) {
+	sentinel := errors.New("blocked by test policy gate")
+
+	// Save and restore the global gate around the test.
+	original := runner.ActivePolicyGate()
+	runner.RegisterPolicyGate(&testDenyPolicyGate{err: sentinel})
+	t.Cleanup(func() { runner.RegisterPolicyGate(original) })
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	// The group manager must confirm the "default" group exists so that
+	// BuildFullRunConfig can reach the policy check without failing earlier.
+	mockGroupManager := groupsmocks.NewMockManager(ctrl)
+	mockGroupManager.EXPECT().
+		Exists(gomock.Any(), "default").
+		Return(true, nil)
+
+	// No RunWorkloadDetached expectation: any unexpected call will cause gomock
+	// to fail the test, verifying that the policy gate stops execution early.
+	mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
+
+	service := &WorkloadService{
+		groupManager:    mockGroupManager,
+		workloadManager: mockWorkloadManager,
+		configProvider:  config.NewDefaultProvider(),
+		// imageRetriever and imagePuller are nil because req.URL != "" means the
+		// local image pull path is skipped entirely.
+	}
+
+	req := &createRequest{
+		Name: "testserver",
+		updateRequest: updateRequest{
+			URL: "https://mcp.example.com/mcp",
+		},
+	}
+
+	_, err := service.CreateWorkloadFromRequest(context.Background(), req)
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, sentinel)
 }

@@ -199,3 +199,91 @@ func TestNewRegistryRoutesForServe_NoFactory_ReturnsValidRoutes(t *testing.T) {
 	assert.NotNil(t, routes.configService, "configService must be initialised")
 	assert.True(t, routes.serveMode, "serveMode must be true for NewRegistryRoutesForServe")
 }
+
+// TestNewRegistryRoutes_ConfigServiceAndProviderAreConsistent verifies that
+// configService (which drives the type/source fields) and getCurrentProvider
+// (which drives the server list) both draw from the same config provider instance.
+// Before the fix, configService used config.NewDefaultProvider() independently,
+// causing type/source to reflect local config while the server list could reflect
+// a factory-backed config (or vice versa) — inconsistency within a single response.
+//
+//nolint:paralleltest // Mutates global state: config.registeredFactory and regpkg.defaultProviderOnce
+func TestNewRegistryRoutes_ConfigServiceAndProviderAreConsistent(t *testing.T) {
+	const sentinelName = "consistency-sentinel-server"
+
+	configPath := writeFactorySentinelRegistry(t, sentinelName)
+
+	config.RegisterProviderFactory(func() config.Provider {
+		return config.NewPathProvider(configPath)
+	})
+	t.Cleanup(func() {
+		config.RegisterProviderFactory(nil)
+		registry.ResetDefaultProvider()
+	})
+
+	routes := NewRegistryRoutes()
+	registry.ResetDefaultProvider()
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/registry", nil)
+	routes.listRegistries(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code, "listRegistries should return 200")
+
+	var body registryListResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body), "response body should be valid JSON")
+	require.Len(t, body.Registries, 1, "should return exactly one registry")
+
+	reg := body.Registries[0]
+	// configService reads Type/Source from the shared provider. On the old code,
+	// configService used config.NewDefaultProvider() which bypassed the factory,
+	// so Type would be "default" and Source would be "" even when a factory was set.
+	assert.Equal(t, RegistryTypeFile, reg.Type,
+		"Type must be 'file' — proves configService uses the factory-backed provider, not an independent one")
+	assert.NotEmpty(t, reg.Source,
+		"Source must be non-empty for a file registry — proves configService reads from the shared provider")
+
+	// getCurrentProvider also uses the shared provider, so it loads servers from the same registry.
+	// ServerCount > 0 proves both data sources are in sync.
+	assert.Greater(t, reg.ServerCount, 0,
+		"ServerCount must be > 0 — proves getCurrentProvider uses the same factory-backed provider as configService")
+}
+
+// TestNewRegistryRoutesForServe_ConfigServiceAndProviderAreConsistent is the
+// serve-mode equivalent of TestNewRegistryRoutes_ConfigServiceAndProviderAreConsistent.
+//
+//nolint:paralleltest // Mutates global state: config.registeredFactory and regpkg.defaultProviderOnce
+func TestNewRegistryRoutesForServe_ConfigServiceAndProviderAreConsistent(t *testing.T) {
+	const sentinelName = "consistency-sentinel-server"
+
+	configPath := writeFactorySentinelRegistry(t, sentinelName)
+
+	config.RegisterProviderFactory(func() config.Provider {
+		return config.NewPathProvider(configPath)
+	})
+	t.Cleanup(func() {
+		config.RegisterProviderFactory(nil)
+		registry.ResetDefaultProvider()
+	})
+
+	routes := NewRegistryRoutesForServe()
+	registry.ResetDefaultProvider()
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/registry", nil)
+	routes.listRegistries(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code, "listRegistries should return 200 in serve mode")
+
+	var body registryListResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body), "response body should be valid JSON")
+	require.Len(t, body.Registries, 1, "should return exactly one registry")
+
+	reg := body.Registries[0]
+	assert.Equal(t, RegistryTypeFile, reg.Type,
+		"Type must be 'file' in serve mode — proves configService uses the factory-backed provider")
+	assert.NotEmpty(t, reg.Source,
+		"Source must be non-empty for a file registry in serve mode")
+	assert.Greater(t, reg.ServerCount, 0,
+		"ServerCount must be > 0 in serve mode — proves getCurrentProvider uses the same factory-backed provider as configService")
+}

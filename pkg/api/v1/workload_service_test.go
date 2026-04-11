@@ -24,7 +24,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 	t.Run("with names", func(t *testing.T) {
 		t.Parallel()
 
-		service := &WorkloadService{appConfig: &config.Config{}}
+		service := &WorkloadService{configProvider: config.NewDefaultProvider()}
 
 		req := bulkOperationRequest{
 			Names: []string{"workload1", "workload2"},
@@ -55,7 +55,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 		service := &WorkloadService{
 			groupManager:    mockGroupManager,
 			workloadManager: mockWorkloadManager,
-			appConfig:       &config.Config{},
+			configProvider:  config.NewDefaultProvider(),
 		}
 
 		req := bulkOperationRequest{
@@ -71,7 +71,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 	t.Run("invalid group name", func(t *testing.T) {
 		t.Parallel()
 
-		service := &WorkloadService{appConfig: &config.Config{}}
+		service := &WorkloadService{configProvider: config.NewDefaultProvider()}
 
 		req := bulkOperationRequest{
 			Group: "invalid-group-name-with-special-chars!@#",
@@ -96,8 +96,8 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 			Return(false, nil)
 
 		service := &WorkloadService{
-			groupManager: mockGroupManager,
-			appConfig:    &config.Config{},
+			groupManager:   mockGroupManager,
+			configProvider: config.NewDefaultProvider(),
 		}
 
 		req := bulkOperationRequest{
@@ -130,7 +130,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 		service := &WorkloadService{
 			groupManager:    mockGroupManager,
 			workloadManager: mockWorkloadManager,
-			appConfig:       &config.Config{},
+			configProvider:  config.NewDefaultProvider(),
 		}
 
 		req := bulkOperationRequest{
@@ -150,6 +150,10 @@ func TestNewWorkloadService(t *testing.T) {
 
 	service := NewWorkloadService(nil, nil, nil, false)
 	require.NotNil(t, service)
+	// configProvider must be set so GetConfig() is called at point-of-use,
+	// not cached once at startup (fixes stale enterprise registry URL bug).
+	assert.NotNil(t, service.configProvider,
+		"configProvider must be initialized so config is read fresh on each call, not snapshotted at construction")
 }
 
 func TestRuntimeConfigFromRequest(t *testing.T) {

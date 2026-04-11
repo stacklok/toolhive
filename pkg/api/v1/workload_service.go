@@ -62,7 +62,7 @@ type WorkloadService struct {
 	debugMode        bool
 	imageRetriever   retriever.Retriever
 	imagePuller      retriever.ImagePuller
-	appConfig        *config.Config
+	configProvider   config.Provider
 }
 
 // NewWorkloadService creates a new WorkloadService instance
@@ -72,10 +72,6 @@ func NewWorkloadService(
 	containerRuntime runtime.Runtime,
 	debugMode bool,
 ) *WorkloadService {
-	// Load application config for global settings
-	configProvider := config.NewDefaultProvider()
-	appConfig := configProvider.GetConfig()
-
 	return &WorkloadService{
 		workloadManager:  workloadManager,
 		groupManager:     groupManager,
@@ -83,7 +79,7 @@ func NewWorkloadService(
 		debugMode:        debugMode,
 		imageRetriever:   retriever.ResolveMCPServer,
 		imagePuller:      retriever.PullMCPServerImage,
-		appConfig:        appConfig,
+		configProvider:   config.NewDefaultProvider(),
 	}
 }
 
@@ -283,7 +279,8 @@ func (s *WorkloadService) BuildFullRunConfig(
 	}
 
 	// Resolve registry source URLs and server name when the server was discovered via registry lookup.
-	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, s.appConfig)
+	// Read config fresh each time so enterprise registry changes take effect without a restart.
+	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, s.configProvider.GetConfig())
 	regServerName := runner.ResolveRegistryServerName(serverMetadata)
 
 	options := []runner.RunConfigBuilderOption{
@@ -365,7 +362,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			"",
 			req.Name,
 			transportType,
-			s.appConfig.DisableUsageMetrics,
+			s.configProvider.GetConfig().DisableUsageMetrics,
 		),
 	)
 

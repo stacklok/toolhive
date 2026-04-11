@@ -285,9 +285,10 @@ type RegistryRoutes struct {
 
 // NewRegistryRoutes creates a new RegistryRoutes with the default config provider
 func NewRegistryRoutes() *RegistryRoutes {
+	p := config.NewProvider()
 	return &RegistryRoutes{
-		configProvider: config.NewProvider(),
-		configService:  regpkg.NewConfigurator(),
+		configProvider: p,
+		configService:  regpkg.NewConfiguratorWithProvider(p),
 	}
 }
 
@@ -303,9 +304,10 @@ func NewRegistryRoutesWithProvider(provider config.Provider) *RegistryRoutes {
 // NewRegistryRoutesForServe creates RegistryRoutes configured for serve mode.
 // In serve mode, the registry provider uses non-interactive auth (no browser OAuth).
 func NewRegistryRoutesForServe() *RegistryRoutes {
+	p := config.NewProvider()
 	return &RegistryRoutes{
-		configProvider: config.NewProvider(),
-		configService:  regpkg.NewConfigurator(),
+		configProvider: p,
+		configService:  regpkg.NewConfiguratorWithProvider(p),
 		serveMode:      true,
 	}
 }

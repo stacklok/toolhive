@@ -70,13 +70,13 @@ func NewSkillsClient(baseURL string, allowPrivateIp bool, tokenSource auth.Token
 
 // GetSkill retrieves a skill by namespace and name (latest version).
 func (c *mcpSkillsClient) GetSkill(ctx context.Context, namespace, name string) (*thvregistry.Skill, error) {
-	path, err := url.JoinPath(skillsBasePath, url.PathEscape(namespace), url.PathEscape(name))
+	endpoint, err := url.JoinPath(c.baseURL, skillsBasePath, url.PathEscape(namespace), url.PathEscape(name))
 	if err != nil {
-		return nil, fmt.Errorf("failed to build skills path: %w", err)
+		return nil, fmt.Errorf("failed to build skills URL: %w", err)
 	}
 
 	var skill thvregistry.Skill
-	if err := c.doSkillsGet(ctx, path, &skill); err != nil {
+	if err := c.doSkillsGet(ctx, endpoint, &skill); err != nil {
 		return nil, err
 	}
 	return &skill, nil
@@ -84,15 +84,15 @@ func (c *mcpSkillsClient) GetSkill(ctx context.Context, namespace, name string) 
 
 // GetSkillVersion retrieves a specific version of a skill.
 func (c *mcpSkillsClient) GetSkillVersion(ctx context.Context, namespace, name, version string) (*thvregistry.Skill, error) {
-	path, err := url.JoinPath(skillsBasePath,
+	endpoint, err := url.JoinPath(c.baseURL, skillsBasePath,
 		url.PathEscape(namespace), url.PathEscape(name),
 		"versions", url.PathEscape(version))
 	if err != nil {
-		return nil, fmt.Errorf("failed to build skills path: %w", err)
+		return nil, fmt.Errorf("failed to build skills URL: %w", err)
 	}
 
 	var skill thvregistry.Skill
-	if err := c.doSkillsGet(ctx, path, &skill); err != nil {
+	if err := c.doSkillsGet(ctx, endpoint, &skill); err != nil {
 		return nil, err
 	}
 	return &skill, nil
@@ -141,13 +141,17 @@ func (c *mcpSkillsClient) ListSkills(ctx context.Context, opts *SkillsListOption
 // SearchSkills searches for skills matching the query.
 // Returns a single page of results (no auto-pagination).
 func (c *mcpSkillsClient) SearchSkills(ctx context.Context, query string) (*SkillsListResult, error) {
+	basePath, err := url.JoinPath(c.baseURL, skillsBasePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build skills URL: %w", err)
+	}
 	params := url.Values{}
 	params.Add("search", query)
 
-	pathAndQuery := skillsBasePath + "?" + params.Encode()
+	endpoint := basePath + "?" + params.Encode()
 
 	var listResp skillsListResponse
-	if err := c.doSkillsGet(ctx, pathAndQuery, &listResp); err != nil {
+	if err := c.doSkillsGet(ctx, endpoint, &listResp); err != nil {
 		return nil, err
 	}
 
@@ -159,13 +163,13 @@ func (c *mcpSkillsClient) SearchSkills(ctx context.Context, query string) (*Skil
 
 // ListSkillVersions lists all versions of a specific skill.
 func (c *mcpSkillsClient) ListSkillVersions(ctx context.Context, namespace, name string) (*SkillsListResult, error) {
-	path, err := url.JoinPath(skillsBasePath, url.PathEscape(namespace), url.PathEscape(name), "versions")
+	endpoint, err := url.JoinPath(c.baseURL, skillsBasePath, url.PathEscape(namespace), url.PathEscape(name), "versions")
 	if err != nil {
-		return nil, fmt.Errorf("failed to build skills path: %w", err)
+		return nil, fmt.Errorf("failed to build skills URL: %w", err)
 	}
 
 	var listResp skillsListResponse
-	if err := c.doSkillsGet(ctx, path, &listResp); err != nil {
+	if err := c.doSkillsGet(ctx, endpoint, &listResp); err != nil {
 		return nil, err
 	}
 
@@ -191,29 +195,15 @@ type skillsListResponse struct {
 	} `json:"metadata"`
 }
 
-// doSkillsGet performs an HTTP GET request to the given path (relative to the
-// client's configured baseURL) and decodes the JSON response into dest.
-// The path is joined to the trusted baseURL to prevent request forgery.
-func (c *mcpSkillsClient) doSkillsGet(ctx context.Context, pathAndQuery string, dest any) error {
-	// Parse the trusted base URL and resolve the relative path against it,
-	// ensuring the final request URL is always rooted at the configured base.
-	base, err := url.Parse(c.baseURL)
-	if err != nil {
-		return fmt.Errorf("invalid base URL %q: %w", c.baseURL, err)
-	}
-	ref, err := url.Parse(pathAndQuery)
-	if err != nil {
-		return fmt.Errorf("invalid request path %q: %w", pathAndQuery, err)
-	}
-	resolved := base.ResolveReference(ref)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolved.String(), nil)
+// doSkillsGet performs an HTTP GET request and decodes the JSON response into dest.
+func (c *mcpSkillsClient) doSkillsGet(ctx context.Context, endpoint string, dest any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("User-Agent", c.userAgent)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: URL from configured registry
 	if err != nil {
 		return fmt.Errorf("failed to execute request: %w", err)
 	}
@@ -248,15 +238,19 @@ func (c *mcpSkillsClient) fetchSkillsPage(
 		params.Add("search", opts.Search)
 	}
 
-	pathAndQuery := func() string {
+	basePath, err := url.JoinPath(c.baseURL, skillsBasePath)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to build skills URL: %w", err)
+	}
+	endpoint := func() string {
 		if len(params) > 0 {
-			return skillsBasePath + "?" + params.Encode()
+			return basePath + "?" + params.Encode()
 		}
-		return skillsBasePath
+		return basePath
 	}()
 
 	var listResp skillsListResponse
-	if err := c.doSkillsGet(ctx, pathAndQuery, &listResp); err != nil {
+	if err := c.doSkillsGet(ctx, endpoint, &listResp); err != nil {
 		return nil, "", err
 	}
 

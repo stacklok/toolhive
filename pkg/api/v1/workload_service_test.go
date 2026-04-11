@@ -6,6 +6,7 @@ package v1
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,7 +25,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 	t.Run("with names", func(t *testing.T) {
 		t.Parallel()
 
-		service := &WorkloadService{appConfig: &config.Config{}}
+		service := &WorkloadService{configProvider: config.NewDefaultProvider()}
 
 		req := bulkOperationRequest{
 			Names: []string{"workload1", "workload2"},
@@ -55,7 +56,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 		service := &WorkloadService{
 			groupManager:    mockGroupManager,
 			workloadManager: mockWorkloadManager,
-			appConfig:       &config.Config{},
+			configProvider:  config.NewDefaultProvider(),
 		}
 
 		req := bulkOperationRequest{
@@ -71,7 +72,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 	t.Run("invalid group name", func(t *testing.T) {
 		t.Parallel()
 
-		service := &WorkloadService{appConfig: &config.Config{}}
+		service := &WorkloadService{configProvider: config.NewDefaultProvider()}
 
 		req := bulkOperationRequest{
 			Group: "invalid-group-name-with-special-chars!@#",
@@ -96,8 +97,8 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 			Return(false, nil)
 
 		service := &WorkloadService{
-			groupManager: mockGroupManager,
-			appConfig:    &config.Config{},
+			groupManager:   mockGroupManager,
+			configProvider: config.NewDefaultProvider(),
 		}
 
 		req := bulkOperationRequest{
@@ -130,7 +131,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 		service := &WorkloadService{
 			groupManager:    mockGroupManager,
 			workloadManager: mockWorkloadManager,
-			appConfig:       &config.Config{},
+			configProvider:  config.NewDefaultProvider(),
 		}
 
 		req := bulkOperationRequest{
@@ -150,6 +151,38 @@ func TestNewWorkloadService(t *testing.T) {
 
 	service := NewWorkloadService(nil, nil, nil, false)
 	require.NotNil(t, service)
+	assert.NotNil(t, service.configProvider,
+		"configProvider must be initialized so config is read fresh on each call, not snapshotted at construction")
+}
+
+// writeFactorySentinelConfig writes a YAML config file with DisableUsageMetrics: true
+// as a sentinel value and returns its path.
+func writeFactorySentinelConfig(t *testing.T, dir string) string {
+	t.Helper()
+	configPath := dir + "/config.yaml"
+	require.NoError(t, os.WriteFile(configPath, []byte("disable_usage_metrics: true\n"), 0600))
+	return configPath
+}
+
+// TestNewWorkloadService_RespectsRegisteredFactory verifies that NewWorkloadService
+// uses config.NewProvider() (which checks the registered ProviderFactory) rather than
+// config.NewDefaultProvider() (which always uses the default XDG path and bypasses factories).
+//
+//nolint:paralleltest // Mutates global state: config.registeredFactory
+func TestNewWorkloadService_RespectsRegisteredFactory(t *testing.T) {
+	configPath := writeFactorySentinelConfig(t, t.TempDir())
+
+	config.RegisterProviderFactory(func() config.Provider {
+		return config.NewPathProvider(configPath)
+	})
+	t.Cleanup(func() { config.RegisterProviderFactory(nil) })
+
+	service := NewWorkloadService(nil, nil, nil, false)
+	require.NotNil(t, service)
+
+	cfg := service.configProvider.GetConfig()
+	assert.True(t, cfg.DisableUsageMetrics,
+		"configProvider must use the factory-backed provider — DisableUsageMetrics is the sentinel set by the factory config")
 }
 
 func TestRuntimeConfigFromRequest(t *testing.T) {

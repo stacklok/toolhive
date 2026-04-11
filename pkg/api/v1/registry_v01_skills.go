@@ -21,19 +21,20 @@ const (
 	skillsMaxLimit     = 200
 )
 
-// RegistryV01SkillsRouter creates a router for the v0.1 skills API.
-// This provides upstream-compatible endpoints for listing and retrieving skills.
+// RegistryV01SkillsRouter creates a router for the v0.1 skills extension API.
+// Skills live under the x/dev.toolhive extension namespace, matching the
+// registry server's route structure: /registry/{name}/v0.1/x/dev.toolhive/skills
 // The {registryName} path param is currently ignored (always uses default provider).
 func RegistryV01SkillsRouter() http.Handler {
 	r := chi.NewRouter()
-	r.Route("/{registryName}/v0.1", func(r chi.Router) {
+	r.Route("/{registryName}/v0.1/x/dev.toolhive", func(r chi.Router) {
 		r.Get("/skills", listSkillsV01)
 		r.Get("/skills/{namespace}/{skillName}", getSkillV01)
 	})
 	return r
 }
 
-// listSkillsV01 handles GET /registry/{registryName}/v0.1/skills
+// listSkillsV01 handles GET /registry/{registryName}/v0.1/x/dev.toolhive/skills
 func listSkillsV01(w http.ResponseWriter, r *http.Request) {
 	provider, err := registry.GetDefaultProvider()
 	if err != nil {
@@ -82,7 +83,7 @@ func listSkillsV01(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// getSkillV01 handles GET /registry/{registryName}/v0.1/skills/{namespace}/{skillName}
+// getSkillV01 handles GET /registry/{registryName}/v0.1/x/dev.toolhive/skills/{namespace}/{skillName}
 func getSkillV01(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	skillName := chi.URLParam(r, "skillName")

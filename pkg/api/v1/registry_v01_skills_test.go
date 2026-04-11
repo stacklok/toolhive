@@ -29,6 +29,8 @@ func TestFilterSkillsV01(t *testing.T) {
 		wantCount int
 	}{
 		{"code", 1},
+		{"CODE", 1},        // case-insensitive
+		{"Code-Review", 1}, // mixed case
 		{"stacklok", 2},
 		{"weather", 1},
 		{"commits", 1},
@@ -106,4 +108,47 @@ func TestRegistryV01SkillsRouter_GetSkill_NotFound(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "application/json",
+		"Error responses should be JSON")
+
+	var body registryErrorResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "not_found", body.Code)
+}
+
+func TestFilterSkillsV01_EmptyResult_NotNull(t *testing.T) {
+	t.Parallel()
+
+	skills := []types.Skill{
+		{Namespace: "stacklok", Name: "test", Description: "A test skill"},
+	}
+
+	result := filterSkillsV01(skills, "nonexistent")
+	assert.NotNil(t, result, "Filter result should be empty slice, not nil")
+	assert.Empty(t, result)
+
+	// Verify JSON encoding produces [] not null
+	data, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.Equal(t, "[]", string(data))
+}
+
+func TestRegistryV01SkillsRouter_ListSkills_PaginationBeyondResults(t *testing.T) {
+	t.Parallel()
+
+	handler := RegistryV01SkillsRouter()
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/default/v0.1/x/dev.toolhive/skills?page=999&limit=10")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body skillsV01Response
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Empty(t, body.Skills, "Page beyond results should return empty skills")
+	assert.Equal(t, 999, body.Metadata.Page)
+	assert.GreaterOrEqual(t, body.Metadata.Total, 0)
 }

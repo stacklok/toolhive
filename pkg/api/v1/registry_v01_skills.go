@@ -15,8 +15,9 @@ import (
 
 	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regpkg "github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/registry/api"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
 const (
@@ -37,28 +38,55 @@ func RegistryV01SkillsRouter() http.Handler {
 	return r
 }
 
-// getProvider returns the default registry provider configured for non-interactive
-// (serve) mode to prevent browser-based OAuth flows from HTTP request handlers.
-func getProvider() (registry.Provider, error) {
-	return registry.GetDefaultProviderWithConfig(
+// getSkillsProvider returns the default registry provider configured for
+// non-interactive (serve) mode to prevent browser-based OAuth flows from
+// HTTP request handlers. Returns false and writes a structured JSON error
+// response if the provider cannot be obtained.
+func getSkillsProvider(w http.ResponseWriter) (regpkg.Provider, bool) {
+	provider, err := regpkg.GetDefaultProviderWithConfig(
 		config.NewProvider(),
-		registry.WithInteractive(false),
+		regpkg.WithInteractive(false),
 	)
+	if err != nil {
+		if errors.Is(err, auth.ErrRegistryAuthRequired) {
+			writeRegistryAuthRequiredError(w)
+			return nil, false
+		}
+		var unavailableErr *regpkg.UnavailableError
+		if errors.As(err, &unavailableErr) {
+			slog.Error("upstream registry unavailable", "error", err)
+			writeRegistryUnavailableError(w, unavailableErr)
+			return nil, false
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to get registry provider")
+		slog.Error("failed to get registry provider", "error", err)
+		return nil, false
+	}
+	return provider, true
+}
+
+// writeJSONError writes a structured JSON error response matching the
+// registryErrorResponse format used by other registry endpoints.
+func writeJSONError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(registryErrorResponse{
+		Code:    code,
+		Message: message,
+	})
 }
 
 // listSkillsV01 handles GET /registry/{registryName}/v0.1/x/dev.toolhive/skills
 func listSkillsV01(w http.ResponseWriter, r *http.Request) {
-	provider, err := getProvider()
-	if err != nil {
-		slog.Error("failed to get registry provider", "error", err)
-		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
+	provider, ok := getSkillsProvider(w)
+	if !ok {
 		return
 	}
 
 	skills, err := provider.ListAvailableSkills()
 	if err != nil {
 		slog.Error("failed to list skills", "error", err)
-		http.Error(w, "Failed to list skills", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list skills")
 		return
 	}
 	if skills == nil {
@@ -100,27 +128,31 @@ func getSkillV01(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	skillName := chi.URLParam(r, "skillName")
 
-	provider, err := getProvider()
-	if err != nil {
-		slog.Error("failed to get registry provider", "error", err)
-		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
+	provider, ok := getSkillsProvider(w)
+	if !ok {
 		return
 	}
 
 	skill, err := provider.GetSkill(namespace, skillName)
 	if err != nil {
-		// Map upstream 404 responses to HTTP 404
+		// Map upstream HTTP errors to appropriate responses
 		var httpErr *api.RegistryHTTPError
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
-			http.Error(w, "Skill not found", http.StatusNotFound)
-			return
+		if errors.As(err, &httpErr) {
+			switch httpErr.StatusCode {
+			case http.StatusNotFound:
+				writeJSONError(w, http.StatusNotFound, "not_found", "Skill not found")
+				return
+			case http.StatusUnauthorized, http.StatusForbidden:
+				writeRegistryAuthRequiredError(w)
+				return
+			}
 		}
 		slog.Error("failed to get skill", "namespace", namespace, "name", skillName, "error", err)
-		http.Error(w, "Failed to get skill", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to get skill")
 		return
 	}
 	if skill == nil {
-		http.Error(w, "Skill not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "not_found", "Skill not found")
 		return
 	}
 

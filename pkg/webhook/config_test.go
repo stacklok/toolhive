@@ -20,6 +20,7 @@ func testWebhookConfig(name, url string) webhook.Config {
 	return webhook.Config{
 		Name:          name,
 		URL:           url,
+		Timeout:       5 * time.Second,
 		FailurePolicy: webhook.FailurePolicyIgnore,
 		TLSConfig: &webhook.TLSConfig{
 			InsecureSkipVerify: true,
@@ -74,7 +75,7 @@ func TestLoadConfig_JSON_Valid(t *testing.T) {
 	dir := t.TempDir()
 	content := `{
   "validating": [
-    {"name":"v1","url":"http://localhost/v","failure_policy":"ignore","tls_config":{"insecure_skip_verify":true}}
+    {"name":"v1","url":"http://localhost/v","timeout":"5s","failure_policy":"ignore","tls_config":{"insecure_skip_verify":true}}
   ],
   "mutating": []
 }`
@@ -84,6 +85,7 @@ func TestLoadConfig_JSON_Valid(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, cfg.Validating, 1)
 	assert.Equal(t, "v1", cfg.Validating[0].Name)
+	assert.Equal(t, 5*time.Second, cfg.Validating[0].Timeout)
 	assert.Empty(t, cfg.Mutating)
 }
 
@@ -256,6 +258,40 @@ func TestValidateConfig_InvalidMutating(t *testing.T) {
 	err := webhook.ValidateConfig(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mutating webhook[0]")
+}
+
+func TestValidateConfig_RejectsShortTimeout(t *testing.T) {
+	t.Parallel()
+	cfg := &webhook.FileConfig{
+		Validating: []webhook.Config{
+			{Name: "too-short", URL: "https://example.com/v", FailurePolicy: webhook.FailurePolicyFail, Timeout: 500 * time.Millisecond},
+		},
+	}
+	err := webhook.ValidateConfig(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "between 1s and 30s")
+}
+
+func TestValidateConfig_RejectsMissingTLSFiles(t *testing.T) {
+	t.Parallel()
+	cfg := &webhook.FileConfig{
+		Validating: []webhook.Config{
+			{
+				Name:          "tls-missing",
+				URL:           "https://example.com/v",
+				FailurePolicy: webhook.FailurePolicyFail,
+				Timeout:       5 * time.Second,
+				TLSConfig: &webhook.TLSConfig{
+					CABundlePath:   "/no/such/ca.crt",
+					ClientCertPath: "/no/such/cert.pem",
+					ClientKeyPath:  "/no/such/key.pem",
+				},
+			},
+		},
+	}
+	err := webhook.ValidateConfig(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ca_bundle_path")
 }
 
 func TestValidateConfig_CollectsAllErrors(t *testing.T) {

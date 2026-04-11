@@ -56,3 +56,11 @@ func ActivePolicyGate() PolicyGate {
 	defer policyGateMu.RUnlock()
 	return policyGate
 }
+
+// EagerCheckCreateServer calls CheckCreateServer on the currently registered
+// policy gate. Callers in the CLI or API layer should call this before saving
+// state or spawning a detached worker so that policy violations surface
+// synchronously in the main process, not silently in the background.
+func EagerCheckCreateServer(ctx context.Context, cfg *RunConfig) error {
+	return ActivePolicyGate().CheckCreateServer(ctx, cfg)
+}

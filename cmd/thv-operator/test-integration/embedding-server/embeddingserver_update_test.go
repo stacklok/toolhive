@@ -177,7 +177,7 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 					Model: "sentence-transformers/all-MiniLM-L6-v2",
 					Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
 					Port:  8080,
-					Env: []mcpv1alpha1.EnvVar{
+					Env: []corev1.EnvVar{
 						{Name: "LOG_LEVEL", Value: "info"},
 					},
 				},
@@ -186,7 +186,7 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 				{
 					Name: "Should update StatefulSet when env var value changes",
 					ApplyUpdate: func(es *mcpv1alpha1.EmbeddingServer) {
-						es.Spec.Env = []mcpv1alpha1.EnvVar{
+						es.Spec.Env = []corev1.EnvVar{
 							{Name: "LOG_LEVEL", Value: "debug"},
 						}
 					},
@@ -205,7 +205,7 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 				{
 					Name: "Should update StatefulSet when new env var is added",
 					ApplyUpdate: func(es *mcpv1alpha1.EmbeddingServer) {
-						es.Spec.Env = []mcpv1alpha1.EnvVar{
+						es.Spec.Env = []corev1.EnvVar{
 							{Name: "LOG_LEVEL", Value: "debug"},
 							{Name: "NEW_VAR", Value: "new_value"},
 						}

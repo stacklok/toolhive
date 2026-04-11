@@ -429,15 +429,15 @@ type ResourceMetadataOverrides struct {
 }
 
 // EnvVar represents an environment variable in a container
-type EnvVar struct {
-	// Name of the environment variable
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
+// type EnvVar struct {
+// 	// Name of the environment variable
+// 	// +kubebuilder:validation:Required
+// 	Name string `json:"name"`
 
-	// Value of the environment variable
-	// +kubebuilder:validation:Required
-	Value string `json:"value"`
-}
+// 	// Value of the environment variable
+// 	// +kubebuilder:validation:Required
+// 	Value string `json:"value"`
+// }
 
 // Volume represents a volume to mount in a container
 type Volume struct {

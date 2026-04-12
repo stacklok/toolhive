@@ -1210,6 +1210,13 @@ components:
             type: string
           type: array
           uniqueItems: false
+        stateless:
+          description: |-
+            Stateless indicates the server only supports POST (no SSE/GET).
+            When true, the proxy returns 405 for incoming GET requests and uses a
+            POST-based health check instead of the default GET probe.
+            Applies to both remote URLs and local container workloads.
+          type: boolean
         target_host:
           description: TargetHost is the host to forward traffic to (only applicable
             to SSE transport)

@@ -319,6 +319,14 @@ func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	}
 }
 
+// WithStateless declares the server is stateless (POST-only, no SSE).
+func WithStateless(stateless bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.Stateless = stateless
+		return nil
+	}
+}
+
 // WithEndpointPrefix sets the path prefix for SSE endpoint URLs
 func WithEndpointPrefix(prefix string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

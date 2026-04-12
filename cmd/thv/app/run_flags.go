@@ -412,7 +412,9 @@ func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags, appConf
 
 // setupRuntimeAndValidation creates container runtime and selects environment variable validator.
 // The provided configProvider is reused so the factory-registered provider is not bypassed.
-func setupRuntimeAndValidation(ctx context.Context, configProvider cfg.Provider) (runtime.Deployer, runner.EnvVarValidator, error) {
+func setupRuntimeAndValidation(
+	ctx context.Context, configProvider cfg.Provider,
+) (runtime.Deployer, runner.EnvVarValidator, error) {
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create container runtime: %w", err)

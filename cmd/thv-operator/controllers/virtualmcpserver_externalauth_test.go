@@ -638,7 +638,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 						Default: &mcpv1alpha1.BackendAuthConfig{
-							Type: "external_auth_config_ref",
+							Type: "externalAuthConfigRef",
 							ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 								Name: "missing-default-auth", // Auth config doesn't exist
 							},
@@ -676,7 +676,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 						Source: "discovered",
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 							"api-backend": {
-								Type: "external_auth_config_ref",
+								Type: "externalAuthConfigRef",
 								ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 									Name: "missing-backend-auth",
 								},
@@ -765,7 +765,7 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 		validate    func(*testing.T, *authtypes.BackendAuthStrategy)
 	}{
 		{
-			name: "external_auth_config_ref type",
+			name: "externalAuthConfigRef type",
 			crdConfig: &mcpv1alpha1.BackendAuthConfig{
 				Type: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{

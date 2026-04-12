@@ -650,6 +650,47 @@ func TestResolveTransportType(t *testing.T) {
 	}
 }
 
+func TestSetupTelemetryConfiguration_LoadOrCreateConfigPath(t *testing.T) {
+	// This test validates the bug fix: BuildRunnerConfig and configureMiddlewareAndOptions
+	// must call provider.LoadOrCreateConfig() (not provider.GetConfig()) so that
+	// enterprise providers can merge OTEL config from external sources (e.g. config-server).
+	// LoadOrCreateConfig reads from the provider's backing store; GetConfig on
+	// DefaultProvider reads only the cached global singleton, bypassing any registered
+	// ProviderFactory.
+	t.Parallel()
+	slog.SetDefault(logging.New(logging.WithOutput(os.Stdout), logging.WithLevel(slog.LevelDebug), logging.WithFormat(logging.FormatText)))
+
+	provider, cleanup := createTestConfigProvider(t, &config.Config{
+		OTEL: config.OpenTelemetryConfig{
+			Endpoint:     "https://provider-endpoint.example.com",
+			SamplingRate: 0.42,
+			EnvVars:      []string{"PROVIDER_VAR=provider_value"},
+		},
+	})
+	defer cleanup()
+
+	// Simulate the fixed code path: call LoadOrCreateConfig() on the provider.
+	// The old buggy code called GetConfig() on DefaultProvider, which reads a
+	// global singleton and bypasses factory-registered providers entirely.
+	appConfig, err := provider.LoadOrCreateConfig()
+	require.NoError(t, err)
+
+	cmd := &cobra.Command{}
+	AddRunFlags(cmd, &RunFlags{})
+
+	result := getTelemetryFromFlags(
+		cmd, appConfig,
+		"", 0.0, nil, false, false, false, true, true,
+	)
+
+	assert.Equal(t, "https://provider-endpoint.example.com", result.OtelEndpoint,
+		"OTEL endpoint from provider config should be applied when no CLI flag is set")
+	assert.Equal(t, 0.42, result.OtelSamplingRate,
+		"OTEL sampling rate from provider config should be applied when no CLI flag is set")
+	assert.Equal(t, []string{"PROVIDER_VAR=provider_value"}, result.OtelEnvironmentVariables,
+		"OTEL env vars from provider config should be applied when no CLI flag is set")
+}
+
 func TestResolveServerName(t *testing.T) {
 	t.Parallel()
 

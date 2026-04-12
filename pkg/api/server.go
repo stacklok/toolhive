@@ -354,6 +354,7 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		"/api/v1beta/groups":    v1.GroupsRouter(b.groupManager, b.workloadManager, b.clientManager),
 		"/api/v1beta/skills":    v1.SkillsRouter(b.skillManager),
 		"/registry":             v1.RegistryV01Router(),
+		"/v1/registries":        v1.RegistriesV1Router(),
 	}
 	for prefix, router := range standardRouters {
 		r.Mount(prefix, standardTimeout(router))

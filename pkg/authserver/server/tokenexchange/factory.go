@@ -18,7 +18,7 @@ import (
 // the actual lifetime is the minimum of this value and the subject token's remaining lifetime.
 func Factory(delegationLifespan time.Duration) server.Factory {
 	return func(config *server.AuthorizationServerConfig, storage fosite.Storage, strategy any) any {
-		validator, err := NewSubjectTokenValidator(config.SigningJWKS, config.GetAccessTokenIssuer())
+		validator, err := NewSelfIssuedTokenValidator(config.SigningJWKS, config.GetAccessTokenIssuer())
 		if err != nil {
 			// This is a programming error — the config should always have a valid JWKS and issuer.
 			panic(fmt.Sprintf("tokenexchange: failed to create subject token validator: %v", err))

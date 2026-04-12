@@ -53,28 +53,31 @@ type ValidatedClaims struct {
 	Extra map[string]interface{}
 }
 
-// SubjectTokenValidator validates subject tokens presented during RFC 8693 token exchange.
+// Compile-time check that SelfIssuedTokenValidator implements SubjectTokenValidator.
+var _ SubjectTokenValidator = (*SelfIssuedTokenValidator)(nil)
+
+// SelfIssuedTokenValidator validates subject tokens presented during RFC 8693 token exchange.
 // It verifies that the token was issued by this authorization server by checking
 // the signature against the server's own JWKS, and validates standard JWT claims.
-type SubjectTokenValidator struct {
+type SelfIssuedTokenValidator struct {
 	jwks   *jose.JSONWebKeySet
 	issuer string
 }
 
-// NewSubjectTokenValidator creates a new validator for subject tokens.
+// NewSelfIssuedTokenValidator creates a new validator for subject tokens.
 // The jwks parameter must be non-nil and contain the authorization server's
 // signing keys (private keys are accepted; only the public portion is used
 // for verification). The issuer parameter is the expected "iss" claim value
 // and is also used as the expected audience, since tokens issued by this
 // server are intended for this server during token exchange.
-func NewSubjectTokenValidator(jwks *jose.JSONWebKeySet, issuer string) (*SubjectTokenValidator, error) {
+func NewSelfIssuedTokenValidator(jwks *jose.JSONWebKeySet, issuer string) (*SelfIssuedTokenValidator, error) {
 	if jwks == nil {
 		return nil, fmt.Errorf("JWKS must not be nil")
 	}
 	if issuer == "" {
 		return nil, fmt.Errorf("issuer must not be empty")
 	}
-	return &SubjectTokenValidator{
+	return &SelfIssuedTokenValidator{
 		jwks:   jwks,
 		issuer: issuer,
 	}, nil
@@ -84,7 +87,7 @@ func NewSubjectTokenValidator(jwks *jose.JSONWebKeySet, issuer string) (*Subject
 // It checks the signature against the server's JWKS, validates issuer and audience,
 // ensures the token is not expired, and requires a subject claim for delegation.
 // Returns the validated claims on success, or a descriptive error on failure.
-func (v *SubjectTokenValidator) Validate(_ context.Context, rawToken string) (*ValidatedClaims, error) {
+func (v *SelfIssuedTokenValidator) Validate(_ context.Context, rawToken string) (*ValidatedClaims, error) {
 	parsedToken, err := jwt.ParseSigned(rawToken, allowedSignatureAlgorithms)
 	if err != nil {
 		return nil, fmt.Errorf("subject token is not a valid JWT: %w", err)
@@ -143,7 +146,7 @@ func verifySignature(
 }
 
 // publicKeys extracts the public key portion of each key in the JWKS.
-func (v *SubjectTokenValidator) publicKeys() *jose.JSONWebKeySet {
+func (v *SelfIssuedTokenValidator) publicKeys() *jose.JSONWebKeySet {
 	result := &jose.JSONWebKeySet{
 		Keys: make([]jose.JSONWebKey, 0, len(v.jwks.Keys)),
 	}

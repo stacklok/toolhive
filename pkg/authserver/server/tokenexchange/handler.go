@@ -39,7 +39,7 @@ var _ fosite.TokenEndpointHandler = (*Handler)(nil)
 // RFC 8693 Section 4.1.
 type Handler struct {
 	*oauth2.HandleHelper
-	validator          *SubjectTokenValidator
+	validator          SubjectTokenValidator
 	delegationLifespan time.Duration
 	config             tokenExchangeConfig
 }

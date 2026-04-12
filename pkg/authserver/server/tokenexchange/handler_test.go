@@ -34,6 +34,7 @@ func newTestHandler(t *testing.T, tj *testJWKS, delegationLifespan time.Duration
 		// PopulateTokenEndpointResponse, so IssueAccessToken is never called.
 		HandleHelper:       nil,
 		validator:          validator,
+		selfValidator:      validator,
 		delegationLifespan: delegationLifespan,
 		config: &mockConfig{
 			scopeStrategy:    fosite.ExactScopeStrategy,
@@ -74,6 +75,24 @@ func defaultFormValues(t *testing.T, tj *testJWKS) url.Values {
 		"subject_token":      {token},
 		"subject_token_type": {TokenTypeAccessToken},
 	}
+}
+
+// signActorToken creates a self-issued JWT suitable for use as an actor_token.
+// The sub claim is set to the given subject (typically the client_id).
+func signActorToken(t *testing.T, tj *testJWKS, subject string) string {
+	t.Helper()
+
+	now := time.Now()
+	claims := jwt.Claims{
+		Subject:  subject,
+		Issuer:   testIssuer,
+		Audience: jwt.Audience{testIssuer},
+		Expiry:   jwt.NewNumericDate(now.Add(time.Hour)),
+		IssuedAt: jwt.NewNumericDate(now),
+	}
+	return tj.signToken(t, claims, map[string]interface{}{
+		"client_id": testAgentClientID,
+	})
 }
 
 func TestTokenExchangeHandler_CanHandleTokenEndpointRequest(t *testing.T) {
@@ -214,6 +233,103 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			wantErr:      true,
 			wantFositeIs: fosite.ErrInvalidGrant,
 			hintContains: "public",
+		},
+		{
+			name:     "valid exchange with actor_token",
+			ctx:      func(_ *testing.T) context.Context { return context.Background() },
+			client:   defaultClient,
+			lifespan: 15 * time.Minute,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := defaultFormValues(t, tj)
+				f.Set("actor_token", signActorToken(t, tj, testAgentClientID))
+				f.Set("actor_token_type", TokenTypeJWT)
+				return f
+			},
+			check: func(t *testing.T, req *fosite.AccessRequest) {
+				t.Helper()
+
+				sess, ok := req.GetSession().(*session.Session)
+				require.True(t, ok, "session should be *session.Session")
+
+				// Verify subject is the user from the subject token.
+				assert.Equal(t, "user-123", sess.JWTClaims.Subject)
+
+				// Verify the act claim uses the actor token's sub.
+				actClaim, exists := sess.JWTClaims.Extra["act"]
+				require.True(t, exists, "act claim must be present")
+				actMap, ok := actClaim.(map[string]interface{})
+				require.True(t, ok, "act claim must be a map")
+				assert.Equal(t, testAgentClientID, actMap["sub"])
+			},
+		},
+		{
+			name:     "actor_token sub mismatch with client ID",
+			ctx:      func(_ *testing.T) context.Context { return context.Background() },
+			client:   defaultClient,
+			lifespan: 15 * time.Minute,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := defaultFormValues(t, tj)
+				f.Set("actor_token", signActorToken(t, tj, "other-agent"))
+				f.Set("actor_token_type", TokenTypeJWT)
+				return f
+			},
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidGrant,
+			hintContains: "does not match the authenticated client identity",
+		},
+		{
+			name:   "actor_token without actor_token_type",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := defaultFormValues(t, tj)
+				f.Set("actor_token", signActorToken(t, tj, testAgentClientID))
+				return f
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidRequest,
+			hintContains: "actor_token_type",
+		},
+		{
+			name:   "actor_token_type without actor_token",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := defaultFormValues(t, tj)
+				f.Set("actor_token_type", TokenTypeJWT)
+				return f
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidRequest,
+			hintContains: "actor_token_type",
+		},
+		{
+			name:   "id_token subject_token_type accepted",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				token := tj.signToken(t, validClaims(), validExtraClaims())
+				return url.Values{
+					"grant_type":         {GrantTypeTokenExchange},
+					"subject_token":      {token},
+					"subject_token_type": {TokenTypeIDToken},
+				}
+			},
+			lifespan: 15 * time.Minute,
+			check: func(t *testing.T, req *fosite.AccessRequest) {
+				t.Helper()
+
+				sess, ok := req.GetSession().(*session.Session)
+				require.True(t, ok, "session should be *session.Session")
+				assert.Equal(t, "user-123", sess.JWTClaims.Subject)
+			},
 		},
 		{
 			name:   "invalid subject_token — bad JWT",

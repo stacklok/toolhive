@@ -34,6 +34,7 @@ func Factory(delegationLifespan time.Duration) server.Factory {
 				Config:              config.Config,
 			},
 			validator:          validator,
+			selfValidator:      validator,
 			delegationLifespan: delegationLifespan,
 			config:             config.Config,
 		}

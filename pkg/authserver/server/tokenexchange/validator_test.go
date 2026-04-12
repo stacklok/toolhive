@@ -92,34 +92,34 @@ func validExtraClaims() map[string]interface{} {
 	}
 }
 
-func TestSubjectTokenValidator_NewValidation(t *testing.T) {
+func TestSelfIssuedTokenValidator_NewValidation(t *testing.T) {
 	t.Parallel()
 
 	tj := newTestJWKS(t)
 
 	t.Run("nil JWKS returns error", func(t *testing.T) {
 		t.Parallel()
-		_, err := NewSubjectTokenValidator(nil, testIssuer)
+		_, err := NewSelfIssuedTokenValidator(nil, testIssuer)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "JWKS must not be nil")
 	})
 
 	t.Run("empty issuer returns error", func(t *testing.T) {
 		t.Parallel()
-		_, err := NewSubjectTokenValidator(tj.jwks, "")
+		_, err := NewSelfIssuedTokenValidator(tj.jwks, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "issuer must not be empty")
 	})
 
 	t.Run("valid params succeed", func(t *testing.T) {
 		t.Parallel()
-		v, err := NewSubjectTokenValidator(tj.jwks, testIssuer)
+		v, err := NewSelfIssuedTokenValidator(tj.jwks, testIssuer)
 		require.NoError(t, err)
 		assert.NotNil(t, v)
 	})
 }
 
-func TestSubjectTokenValidator_Validate(t *testing.T) {
+func TestSelfIssuedTokenValidator_Validate(t *testing.T) {
 	t.Parallel()
 
 	tj := newTestJWKS(t)
@@ -237,7 +237,7 @@ func TestSubjectTokenValidator_Validate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			validator, err := NewSubjectTokenValidator(tj.jwks, testIssuer)
+			validator, err := NewSelfIssuedTokenValidator(tj.jwks, testIssuer)
 			require.NoError(t, err)
 			rawToken := tt.token(t)
 

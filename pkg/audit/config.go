@@ -78,9 +78,9 @@ func DefaultConfig() *Config {
 	return &Config{
 		// Note, these defaults are also present on the kubebuilder annotations above.
 		// If you change these defaults, you must also change the kubebuilder annotations.
-		IncludeRequestData:      false,        // Disabled by default for privacy
-		IncludeResponseData:     false,        // Disabled by default for privacy
-		MaxDataSize:             1024,         // 1KB default limit
+		IncludeRequestData:      false,         // Disabled by default for privacy
+		IncludeResponseData:     false,         // Disabled by default for privacy
+		MaxDataSize:             1024,          // 1KB default limit
 		DetectApplicationErrors: &detectErrors, // Enabled by default to surface JSON-RPC errors
 	}
 }

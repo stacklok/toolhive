@@ -388,6 +388,25 @@ func (*Auditor) determineOutcome(statusCode int) string {
 	}
 }
 
+// detectApplicationError inspects the captured response body prefix for a
+// JSON-RPC error field. It reuses rw.body when IncludeResponseData is
+// enabled to avoid double-buffering.
+func (*Auditor) detectApplicationError(rw *responseWriter) *mcp.ParsedMCPResponse {
+	var prefix []byte
+	if rw.body != nil && rw.body.Len() > 0 {
+		prefix = rw.body.Bytes()
+		if len(prefix) > errorDetectionBufferSize {
+			prefix = prefix[:errorDetectionBufferSize]
+		}
+	} else if rw.errorDetectionBody != nil && rw.errorDetectionBody.Len() > 0 {
+		prefix = rw.errorDetectionBody.Bytes()
+	}
+	if len(prefix) > 0 && prefix[0] == '{' {
+		return mcp.ParseMCPResponse(prefix)
+	}
+	return nil
+}
+
 // extractSource extracts source information from the HTTP request.
 func (a *Auditor) extractSource(r *http.Request) EventSource {
 	// Get the client IP address

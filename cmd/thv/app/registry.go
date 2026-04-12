@@ -65,23 +65,19 @@ func init() {
 
 func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 	// Get all servers from registry
-	provider, err := registry.GetDefaultProvider()
+	store, err := registry.DefaultStore()
 	if err != nil {
-		return fmt.Errorf("failed to get registry provider: %w", err)
+		return fmt.Errorf("failed to get registry store: %w", err)
 	}
 
-	// Force refresh if requested
-	if refreshRegistry {
-		if cached, ok := provider.(*registry.CachedAPIRegistryProvider); ok {
-			if err := cached.ForceRefresh(); err != nil {
-				return fmt.Errorf("failed to refresh registry: %w", err)
-			}
-		}
-	}
-
-	servers, err := provider.ListServers()
+	serverJSONs, err := store.ListServers("")
 	if err != nil {
 		return fmt.Errorf("failed to list servers: %w", err)
+	}
+
+	servers, err := registry.ConvertServersToServerMetadata(serverJSONs)
+	if err != nil {
+		return fmt.Errorf("failed to convert servers: %w", err)
 	}
 
 	// Sort servers by name using the utility function
@@ -100,23 +96,19 @@ func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 	// Get server information
 	serverName := args[0]
-	provider, err := registry.GetDefaultProvider()
+	store, err := registry.DefaultStore()
 	if err != nil {
-		return fmt.Errorf("failed to get registry provider: %w", err)
+		return fmt.Errorf("failed to get registry store: %w", err)
 	}
 
-	// Force refresh if requested
-	if refreshRegistry {
-		if cached, ok := provider.(*registry.CachedAPIRegistryProvider); ok {
-			if err := cached.ForceRefresh(); err != nil {
-				return fmt.Errorf("failed to refresh registry: %w", err)
-			}
-		}
-	}
-
-	server, err := provider.GetServer(serverName)
+	serverJSON, err := store.GetServer("", serverName)
 	if err != nil {
 		return fmt.Errorf("failed to get server information: %w", err)
+	}
+
+	server, err := registry.ConvertServerJSONToMetadata(serverJSON)
+	if err != nil {
+		return fmt.Errorf("failed to convert server: %w", err)
 	}
 
 	// Output based on format

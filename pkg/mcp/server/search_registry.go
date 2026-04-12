@@ -9,7 +9,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	types "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 // searchRegistryArgs holds the arguments for searching the registry
@@ -42,9 +42,14 @@ func (h *Handler) SearchRegistry(_ context.Context, request mcp.CallToolRequest)
 	}
 
 	// Search the registry
-	servers, err := h.registryProvider.SearchServers(args.Query)
+	serverJSONs, err := h.registryStore.SearchServers("", args.Query)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to search registry: %v", err)), nil
+	}
+
+	servers, err := registry.ConvertServersToServerMetadata(serverJSONs)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to convert servers: %v", err)), nil
 	}
 
 	// Format results with all available information
@@ -54,14 +59,6 @@ func (h *Handler) SearchRegistry(_ context.Context, request mcp.CallToolRequest)
 			Name:        srv.GetName(),
 			Description: srv.GetDescription(),
 			Transport:   srv.GetTransport(),
-		}
-
-		// Add image-specific fields if it's an ImageMetadata
-		if imgMeta, ok := srv.(*types.ImageMetadata); ok {
-			info.Image = imgMeta.Image
-			info.Args = imgMeta.Args
-			info.Tools = imgMeta.Tools
-			info.Tags = imgMeta.Tags
 		}
 
 		results = append(results, info)

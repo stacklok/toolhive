@@ -15,10 +15,10 @@ import (
 
 // Handler handles MCP tool requests for ToolHive
 type Handler struct {
-	ctx              context.Context
-	workloadManager  workloads.Manager
-	registryProvider registry.Provider
-	configProvider   config.Provider
+	ctx             context.Context
+	workloadManager workloads.Manager
+	registryStore   *registry.Store
+	configProvider  config.Provider
 }
 
 // NewHandler creates a new ToolHive handler
@@ -32,20 +32,15 @@ func NewHandler(ctx context.Context) (*Handler, error) {
 	// Create config provider
 	configProvider := config.NewProvider()
 
-	// This handler runs inside `thv serve` — disable browser-based OAuth to
-	// prevent the singleton registry provider from using interactive mode.
-	registryProvider, err := registry.GetDefaultProviderWithConfig(
-		configProvider,
-		registry.WithInteractive(false),
-	)
+	store, err := registry.DefaultStore()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get registry provider: %w", err)
+		return nil, fmt.Errorf("failed to get registry store: %w", err)
 	}
 
 	return &Handler{
-		ctx:              ctx,
-		workloadManager:  workloadManager,
-		registryProvider: registryProvider,
-		configProvider:   configProvider,
+		ctx:             ctx,
+		workloadManager: workloadManager,
+		registryStore:   store,
+		configProvider:  configProvider,
 	}, nil
 }

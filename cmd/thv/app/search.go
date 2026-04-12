@@ -39,13 +39,19 @@ func init() {
 func searchCmdFunc(_ *cobra.Command, args []string) error {
 	// Search for servers
 	query := args[0]
-	provider, err := registry.GetDefaultProvider()
+	store, err := registry.DefaultStore()
 	if err != nil {
-		return fmt.Errorf("failed to get registry provider: %w", err)
+		return fmt.Errorf("failed to get registry store: %w", err)
 	}
-	servers, err := provider.SearchServers(query)
+
+	serverJSONs, err := store.SearchServers("", query)
 	if err != nil {
 		return fmt.Errorf("failed to search servers: %w", err)
+	}
+
+	servers, err := registry.ConvertServersToServerMetadata(serverJSONs)
+	if err != nil {
+		return fmt.Errorf("failed to convert servers: %w", err)
 	}
 
 	if len(servers) == 0 {

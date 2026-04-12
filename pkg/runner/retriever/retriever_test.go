@@ -12,114 +12,27 @@ import (
 	"github.com/stretchr/testify/require"
 
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
-	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
-func TestResolveMCPServer_WithGroup(t *testing.T) {
+func TestResolveMCPServer_WithGroup_ReturnsError(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 
-	// Test group functionality by using actual registry provider
-	provider, err := registry.GetDefaultProvider()
-	require.NoError(t, err)
+	// Registry-based groups are no longer supported; any group lookup should
+	// return an error.
+	_, _, err := ResolveMCPServer(
+		ctx,
+		"some-server",
+		"",
+		VerifyImageDisabled,
+		"any-group",
+		nil,
+	)
 
-	reg, err := provider.GetRegistry()
-	require.NoError(t, err)
-
-	// Find a group that exists in the registry
-	var testGroupName string
-	var group *regtypes.Group
-	for _, g := range reg.Groups {
-		if g != nil && g.Name != "" {
-			testGroupName = g.Name
-			group = g
-			break
-		}
-	}
-
-	if testGroupName == "" || group == nil {
-		t.Skip("No groups found in registry, skipping group tests")
-	}
-
-	// Find a server in the group to test with
-	var testServerName string
-	if len(group.Servers) > 0 {
-		for serverName := range group.Servers {
-			testServerName = serverName
-			break
-		}
-	} else if len(group.RemoteServers) > 0 {
-		for serverName := range group.RemoteServers {
-			testServerName = serverName
-			break
-		}
-	}
-
-	if testServerName == "" {
-		t.Skip("No servers found in test group, skipping")
-	}
-
-	tests := []struct {
-		name          string
-		serverName    string
-		groupName     string
-		expectError   bool
-		errorContains string
-	}{
-		{
-			name:        "valid server in group",
-			serverName:  testServerName,
-			groupName:   testGroupName,
-			expectError: false,
-		},
-		{
-			name:          "non-existent server in group",
-			serverName:    "non-existent-server",
-			groupName:     testGroupName,
-			expectError:   true,
-			errorContains: "not found in group",
-		},
-		{
-			name:          "non-existent group",
-			serverName:    testServerName,
-			groupName:     "non-existent-group",
-			expectError:   true,
-			errorContains: "not found in registry",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			imageURL, serverMetadata, err := ResolveMCPServer(
-				ctx,
-				tt.serverName,
-				"",
-				VerifyImageDisabled,
-				tt.groupName,
-				nil,
-			)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorContains != "" {
-					assert.Contains(t, err.Error(), tt.errorContains)
-				}
-				assert.Empty(t, imageURL)
-				assert.Nil(t, serverMetadata)
-			} else {
-				assert.NoError(t, err)
-				assert.NotEmpty(t, imageURL)
-				assert.NotNil(t, serverMetadata)
-
-				// Verify server metadata name is set
-				assert.Equal(t, tt.serverName, serverMetadata.GetName())
-			}
-		})
-	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no longer supported")
 }
 
 func TestResolveMCPServer_WithoutGroup(t *testing.T) {

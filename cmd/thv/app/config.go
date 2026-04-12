@@ -218,7 +218,7 @@ func setRegistryCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Reset the registry provider cache to pick up the new configuration
-	registry.ResetDefaultProvider()
+	registry.ResetDefaultStore()
 
 	// Add additional security warnings for private IP usage
 	if allowPrivateRegistryIp {
@@ -271,7 +271,7 @@ func unsetRegistryCmdFunc(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Reset the registry provider cache to pick up the default configuration
-	registry.ResetDefaultProvider()
+	registry.ResetDefaultStore()
 
 	return nil
 }

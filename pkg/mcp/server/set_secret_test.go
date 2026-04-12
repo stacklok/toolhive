@@ -16,7 +16,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	configmocks "github.com/stacklok/toolhive/pkg/config/mocks"
-	registrymocks "github.com/stacklok/toolhive/pkg/registry/mocks"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
@@ -151,7 +150,6 @@ func TestHandler_SetSecret(t *testing.T) {
 			t.Parallel()
 
 			// Create mocks
-			mockRegistry := registrymocks.NewMockProvider(ctrl)
 			mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
 			mockConfigProvider := configmocks.NewMockProvider(ctrl)
 
@@ -161,10 +159,10 @@ func TestHandler_SetSecret(t *testing.T) {
 			}
 
 			handler := &Handler{
-				ctx:              context.Background(),
-				workloadManager:  mockWorkloadManager,
-				registryProvider: mockRegistry,
-				configProvider:   mockConfigProvider,
+				ctx:             context.Background(),
+				workloadManager: mockWorkloadManager,
+				registryStore:   emptyStore(),
+				configProvider:  mockConfigProvider,
 			}
 
 			request := mcp.CallToolRequest{

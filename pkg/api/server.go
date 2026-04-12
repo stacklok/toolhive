@@ -41,7 +41,6 @@ import (
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
-	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/fileutils"
@@ -747,18 +746,18 @@ func newOCIRegistryClient() (ociskills.RegistryClient, error) {
 }
 
 // lazySkillLookup implements skillsvc.SkillLookup by resolving the registry
-// provider on each call. This ensures that registry config changes (via
+// Store on each call. This ensures that registry config changes (via
 // thv config set-registry or the API) are picked up without restarting
-// the server, because ResetDefaultProvider clears the cached provider and
-// the next GetDefaultProviderWithConfig call creates a fresh one.
+// the server, because ResetDefaultStore clears the cached Store and
+// the next DefaultStore call creates a fresh one.
 type lazySkillLookup struct{}
 
 func (lazySkillLookup) SearchSkills(query string) ([]regtypes.Skill, error) {
-	provider, err := registry.GetDefaultProviderWithConfig(config.NewDefaultProvider())
+	store, err := registry.DefaultStore()
 	if err != nil {
 		return nil, err
 	}
-	return provider.SearchSkills(query)
+	return store.SearchSkills("", query)
 }
 
 // clientPathAdapter adapts *client.ClientManager to the skills.PathResolver interface.

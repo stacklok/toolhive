@@ -16,7 +16,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	registrymocks "github.com/stacklok/toolhive/pkg/registry/mocks"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
@@ -30,10 +29,10 @@ func newTestServer(t *testing.T, cfg *Config) *Server {
 		t.Cleanup(func() { ctrl.Finish() })
 
 		handler := &Handler{
-			ctx:              context.Background(),
-			workloadManager:  workloadsmocks.NewMockManager(ctrl),
-			registryProvider: registrymocks.NewMockProvider(ctrl),
-			configProvider:   config.NewDefaultProvider(),
+			ctx:             context.Background(),
+			workloadManager: workloadsmocks.NewMockManager(ctrl),
+			registryStore:   emptyStore(),
+			configProvider:  config.NewDefaultProvider(),
 		}
 		return newServerWithHandler(context.Background(), cfg, handler)
 	}

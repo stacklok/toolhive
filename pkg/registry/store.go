@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+// Package registry provides MCP server registry management functionality.
+// It supports multiple registry sources including embedded data, local files,
+// remote URLs, and API endpoints, with lazy loading and conversion capabilities.
 package registry
 
 import (
@@ -19,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/registry/auth"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // Store is the central registry data holder. It manages two kinds of
@@ -460,4 +464,37 @@ func buildProxiedHTTPClient(allowPrivateIP bool, tokenSource auth.TokenSource) (
 	}
 	httpClient.Transport = auth.WrapTransport(httpClient.Transport, tokenSource)
 	return httpClient, nil
+}
+
+// resolveTokenSource creates a TokenSource from the config if registry auth is configured.
+// Returns nil if no auth is configured or if token source creation fails (logs warning).
+func resolveTokenSource(cfg *config.Config, interactive bool) auth.TokenSource {
+	if cfg == nil || cfg.RegistryAuth.Type != config.RegistryAuthTypeOAuth || cfg.RegistryAuth.OAuth == nil {
+		return nil
+	}
+
+	// Try to create secrets provider for token persistence
+	var secretsProvider secrets.Provider
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		slog.Debug("Secrets provider not available for registry auth token persistence",
+			"error", err)
+	} else {
+		secretsProvider, err = secrets.CreateSecretProvider(providerType)
+		if err != nil {
+			slog.Warn("Failed to create secrets provider for registry auth, tokens will not be persisted",
+				"error", err)
+		} else {
+			slog.Debug("Secrets provider created for registry auth token persistence",
+				"provider_type", providerType)
+		}
+	}
+
+	tokenSource, err := auth.NewTokenSource(cfg.RegistryAuth.OAuth, cfg.RegistryApiUrl, secretsProvider, interactive)
+	if err != nil {
+		slog.Warn("Failed to create registry auth token source", "error", err)
+		return nil
+	}
+
+	return tokenSource
 }

@@ -218,62 +218,18 @@ func handleProtocolScheme(
 	return generatedImage, nil
 }
 
-// handleGroupLookup handles the group lookup case
+// handleGroupLookup handles the group lookup case.
+// Registry-based groups are no longer supported; this function returns an error
+// directing users to use workload groups instead.
 func handleGroupLookup(
 	_ context.Context,
-	serverOrImage string,
+	_ string,
 	groupName string,
 ) (string, *types.ImageMetadata, types.ServerMetadata, error) {
-	var imageMetadata *types.ImageMetadata
-	var imageToUse string
-
-	provider, err := registry.GetDefaultProvider()
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to get registry provider: %w", err)
-	}
-
-	reg, err := provider.GetRegistry()
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to get registry: %w", err)
-	}
-
-	group, exists := reg.GetGroupByName(groupName)
-	if !exists {
-		return "", nil, nil, fmt.Errorf("group '%s' not found in registry", groupName)
-	}
-
-	// First check if the server exists and whether it's remote
-	var server types.ServerMetadata
-	var serverFound bool
-	if containerServer, exists := group.Servers[serverOrImage]; exists {
-		server = containerServer
-		serverFound = true
-	} else if remoteServer, exists := group.RemoteServers[serverOrImage]; exists {
-		server = remoteServer
-		serverFound = true
-	}
-
-	if serverFound {
-		// Server found, check if it's remote
-		if server.IsRemote() {
-			return serverOrImage, nil, server, nil
-		}
-		// It's a container server, get the ImageMetadata
-		if imgMetadata, ok := server.(*types.ImageMetadata); ok {
-			imageMetadata = imgMetadata
-			slog.Debug("Found imageMetadata in group", "server", serverOrImage, "metadata", imageMetadata)
-			imageToUse = imageMetadata.Image
-		} else {
-			// This shouldn't happen since we just found it, but handle it anyway
-			slog.Debug("ImageMetadata not found in group: could not cast", "server", serverOrImage)
-			imageToUse = serverOrImage
-		}
-	} else {
-		// Server not found in group - fail explicitly
-		return "", nil, nil, fmt.Errorf("server '%s' not found in group '%s'", serverOrImage, groupName)
-	}
-
-	return imageToUse, imageMetadata, nil, nil
+	return "", nil, nil, fmt.Errorf(
+		"registry-based group lookup (group %q) is no longer supported; use workload groups instead",
+		groupName,
+	)
 }
 
 // handleRegistryLookup handles the standard registry lookup case
@@ -285,25 +241,31 @@ func handleRegistryLookup(
 	var imageToUse string
 
 	// Try to find the server in the registry
-	provider, err := registry.GetDefaultProvider()
+	store, err := registry.DefaultStore()
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to get registry provider: %w", err)
+		return "", nil, nil, fmt.Errorf("failed to get registry store: %w", err)
 	}
 
-	// First check if the server exists and whether it's remote
-	server, err := provider.GetServer(serverOrImage)
+	serverJSON, err := store.GetServer("", serverOrImage)
 	if err == nil {
-		// Server found, check if it's remote
-		if server.IsRemote() {
-			return serverOrImage, nil, server, nil
-		}
-		// It's a container server, get the ImageMetadata
-		if imgMeta, ok := server.(*types.ImageMetadata); ok {
-			imageMetadata = imgMeta
-			imageToUse = imgMeta.Image
-			slog.Debug("Found imageMetadata in registry", "server", serverOrImage)
+		// Convert to ServerMetadata
+		server, convErr := registry.ConvertServerJSONToMetadata(serverJSON)
+		if convErr == nil {
+			// Server found, check if it's remote
+			if server.IsRemote() {
+				return serverOrImage, nil, server, nil
+			}
+			// It's a container server, get the ImageMetadata
+			if imgMeta, ok := server.(*types.ImageMetadata); ok {
+				imageMetadata = imgMeta
+				imageToUse = imgMeta.Image
+				slog.Debug("Found imageMetadata in registry", "server", serverOrImage)
+			} else {
+				slog.Debug("ImageMetadata not found in registry: could not cast", "server", serverOrImage)
+				imageToUse = serverOrImage
+			}
 		} else {
-			slog.Debug("ImageMetadata not found in registry: could not cast", "server", serverOrImage)
+			slog.Debug("Failed to convert server to metadata", "server", serverOrImage, "error", convErr)
 			imageToUse = serverOrImage
 		}
 	} else {

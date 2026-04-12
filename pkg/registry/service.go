@@ -13,19 +13,19 @@ import (
 // It encapsulates registry type detection, validation, and persistence.
 //
 // Note: Callers are responsible for resetting the registry provider cache after configuration
-// changes by calling registry.ResetDefaultProvider(). This avoids circular dependencies between
+// changes by calling registry.ResetDefaultStore(). This avoids circular dependencies between
 // the config and registry packages.
 //
 //go:generate mockgen -destination=mocks/mock_service.go -package=mocks -source=service.go Configurator
 type Configurator interface {
 	// SetRegistryFromInput auto-detects the registry type (URL/API/File) and configures it.
 	// Returns the detected registry type and any error.
-	// Callers should call registry.ResetDefaultProvider() after this method succeeds.
+	// Callers should call registry.ResetDefaultStore() after this method succeeds.
 	SetRegistryFromInput(input string, allowPrivateIP bool) (registryType string, err error)
 
 	// UnsetRegistry resets the registry configuration to defaults (built-in registry).
 	// Returns any error that occurred during the operation.
-	// Callers should call registry.ResetDefaultProvider() after this method succeeds.
+	// Callers should call registry.ResetDefaultStore() after this method succeeds.
 	UnsetRegistry() error
 
 	// GetRegistryInfo returns information about the currently configured registry.

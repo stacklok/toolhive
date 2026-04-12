@@ -312,9 +312,9 @@ func getworkloadDefaultName(_ context.Context, serverOrImage string) string {
 	// Check if it's a server name from registry (including reverse-DNS names with slashes)
 	if !strings.Contains(serverOrImage, "://") && !strings.Contains(serverOrImage, ":") {
 		// Check if this is a registry server name by attempting to look it up
-		provider, err := registry.GetDefaultProvider()
+		store, err := registry.DefaultStore()
 		if err == nil {
-			_, err := provider.GetServer(serverOrImage)
+			_, err := store.GetServer("", serverOrImage)
 			if err == nil {
 				// It's a valid registry server name - sanitize for container/filesystem use
 				// Replace dots and slashes with dashes to create a valid workload name

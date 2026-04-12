@@ -30,7 +30,6 @@ import (
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/groups"
 	groupmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
-	regmocks "github.com/stacklok/toolhive/pkg/registry/mocks"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	gitmocks "github.com/stacklok/toolhive/pkg/skills/gitresolver/mocks"
@@ -1862,7 +1861,7 @@ func TestInstallFromRegistry(t *testing.T) {
 	tests := []struct {
 		name        string
 		opts        skills.InstallOptions
-		setup       func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver)
+		setup       func(t *testing.T, ctrl *gomock.Controller) (*skillsmocks.MockSkillLookup, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver)
 		wantCode    int
 		wantErr     string
 		wantName    string
@@ -1872,9 +1871,9 @@ func TestInstallFromRegistry(t *testing.T) {
 		{
 			name: "registry resolves skill with OCI package",
 			opts: skills.InstallOptions{Name: "my-skill"},
-			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*skillsmocks.MockSkillLookup, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				lookup := regmocks.NewMockProvider(ctrl)
+				lookup := skillsmocks.NewMockSkillLookup(ctrl)
 				lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
 					{
 						Namespace: "io.github.test",
@@ -1912,9 +1911,9 @@ func TestInstallFromRegistry(t *testing.T) {
 		{
 			name: "multiple exact name matches returns conflict",
 			opts: skills.InstallOptions{Name: "my-skill"},
-			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*skillsmocks.MockSkillLookup, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				lookup := regmocks.NewMockProvider(ctrl)
+				lookup := skillsmocks.NewMockSkillLookup(ctrl)
 				lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
 					{Namespace: "io.github.alice", Name: "my-skill"},
 					{Namespace: "io.github.bob", Name: "my-skill"},
@@ -1928,9 +1927,9 @@ func TestInstallFromRegistry(t *testing.T) {
 		{
 			name: "skill with no installable packages returns unprocessable",
 			opts: skills.InstallOptions{Name: "my-skill"},
-			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*skillsmocks.MockSkillLookup, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				lookup := regmocks.NewMockProvider(ctrl)
+				lookup := skillsmocks.NewMockSkillLookup(ctrl)
 				lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
 					{
 						Namespace: "io.github.test",
@@ -1949,9 +1948,9 @@ func TestInstallFromRegistry(t *testing.T) {
 		{
 			name: "registry lookup error degrades to not found",
 			opts: skills.InstallOptions{Name: "my-skill"},
-			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*skillsmocks.MockSkillLookup, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				lookup := regmocks.NewMockProvider(ctrl)
+				lookup := skillsmocks.NewMockSkillLookup(ctrl)
 				lookup.EXPECT().SearchSkills("my-skill").Return(nil, fmt.Errorf("network error"))
 				store := storemocks.NewMockSkillStore(ctrl)
 				return lookup, nil, nil, store, nil
@@ -1962,7 +1961,7 @@ func TestInstallFromRegistry(t *testing.T) {
 		{
 			name: "nil skill lookup returns not found",
 			opts: skills.InstallOptions{Name: "my-skill"},
-			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*skillsmocks.MockSkillLookup, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
 				store := storemocks.NewMockSkillStore(ctrl)
 				return nil, nil, nil, store, nil
@@ -1973,9 +1972,9 @@ func TestInstallFromRegistry(t *testing.T) {
 		{
 			name: "partial name match only returns not found",
 			opts: skills.InstallOptions{Name: "my-skill"},
-			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*skillsmocks.MockSkillLookup, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				lookup := regmocks.NewMockProvider(ctrl)
+				lookup := skillsmocks.NewMockSkillLookup(ctrl)
 				// Search returns a skill with a different name (partial match only).
 				lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
 					{Namespace: "io.github.test", Name: "my-skill-extended"},
@@ -1989,9 +1988,9 @@ func TestInstallFromRegistry(t *testing.T) {
 		{
 			name: "invalid OCI identifier in registry result returns unprocessable",
 			opts: skills.InstallOptions{Name: "my-skill"},
-			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*skillsmocks.MockSkillLookup, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				lookup := regmocks.NewMockProvider(ctrl)
+				lookup := skillsmocks.NewMockSkillLookup(ctrl)
 				lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
 					{
 						Namespace: "io.github.test",
@@ -2010,9 +2009,9 @@ func TestInstallFromRegistry(t *testing.T) {
 		{
 			name: "case-insensitive name match resolves correctly",
 			opts: skills.InstallOptions{Name: "my-skill"},
-			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*skillsmocks.MockSkillLookup, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				lookup := regmocks.NewMockProvider(ctrl)
+				lookup := skillsmocks.NewMockSkillLookup(ctrl)
 				// Registry returns mixed-case name; should still match.
 				lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
 					{
@@ -2046,9 +2045,9 @@ func TestInstallFromRegistry(t *testing.T) {
 		{
 			name: "supply chain: registry reference with wrong repo name is rejected",
 			opts: skills.InstallOptions{Name: "my-skill"},
-			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*skillsmocks.MockSkillLookup, *ocimocks.MockRegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				lookup := regmocks.NewMockProvider(ctrl)
+				lookup := skillsmocks.NewMockSkillLookup(ctrl)
 				// Registry points to wrong-name repo, but artifact declares my-skill.
 				lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
 					{
@@ -2411,7 +2410,7 @@ func TestInstallFromRegistryGitFallback(t *testing.T) {
 	tests := []struct {
 		name     string
 		opts     skills.InstallOptions
-		setup    func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver)
+		setup    func(t *testing.T, ctrl *gomock.Controller) (*skillsmocks.MockSkillLookup, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver)
 		wantCode int
 		wantErr  string
 		wantName string
@@ -2419,9 +2418,9 @@ func TestInstallFromRegistryGitFallback(t *testing.T) {
 		{
 			name: "registry git package triggers git install",
 			opts: skills.InstallOptions{Name: "my-skill"},
-			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*skillsmocks.MockSkillLookup, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				lookup := regmocks.NewMockProvider(ctrl)
+				lookup := skillsmocks.NewMockSkillLookup(ctrl)
 				lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
 					{
 						Namespace: "io.github.test",
@@ -2457,9 +2456,9 @@ func TestInstallFromRegistryGitFallback(t *testing.T) {
 		{
 			name: "registry git package with invalid URL returns unprocessable",
 			opts: skills.InstallOptions{Name: "my-skill"},
-			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*skillsmocks.MockSkillLookup, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
-				lookup := regmocks.NewMockProvider(ctrl)
+				lookup := skillsmocks.NewMockSkillLookup(ctrl)
 				lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
 					{
 						Namespace: "io.github.test",

@@ -7,77 +7,62 @@ import (
 	"context"
 	"testing"
 
+	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
+
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
-	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	runtime "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	registrymocks "github.com/stacklok/toolhive/pkg/registry/mocks"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
+// testSource is a Source implementation that returns preconfigured servers.
+type testSource struct {
+	servers []*v0.ServerJSON
+}
+
+func (s *testSource) Load(_ context.Context) (*registry.LoadResult, error) {
+	return &registry.LoadResult{Servers: s.servers}, nil
+}
+
+// newTestStore creates a Store backed by the given servers for testing.
+func newTestStore(servers []*v0.ServerJSON) *registry.Store {
+	store := registry.NewStore("test")
+	store.AddLocalRegistry("test", &testSource{servers: servers})
+	return store
+}
+
+// emptyStore returns a Store with no servers for tests that don't need registry data.
+func emptyStore() *registry.Store {
+	return registry.NewStore("test")
+}
+
 func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 	t.Parallel()
-	ctrl := gomock.NewController(t)
-	t.Cleanup(func() { ctrl.Finish() })
 
 	tests := []struct {
 		name        string
 		query       string
-		mockServers []regtypes.ServerMetadata
-		setupMocks  func(*registrymocks.MockProvider)
+		servers     []*v0.ServerJSON
 		wantErr     bool
 		checkResult func(*testing.T, *mcp.CallToolResult)
 	}{
 		{
 			name:  "successful search with results",
 			query: "test",
-			mockServers: []regtypes.ServerMetadata{
-				&regtypes.ImageMetadata{
-					BaseServerMetadata: regtypes.BaseServerMetadata{
-						Name:        "test-server",
-						Description: "Test server description",
-						Transport:   "sse",
-						Tools:       []string{"tool1", "tool2"},
-						Tags:        []string{"tag1", "tag2"},
-					},
-					Image: "test/image:latest",
+			servers: []*v0.ServerJSON{
+				{
+					Name:        "test-server",
+					Description: "Test server description",
 				},
-				&regtypes.ImageMetadata{
-					BaseServerMetadata: regtypes.BaseServerMetadata{
-						Name:        "another-test",
-						Description: "Another test server",
-						Transport:   "stdio",
-					},
-					Image: "test/another:v1",
+				{
+					Name:        "another-test",
+					Description: "Another test server",
 				},
-			},
-			setupMocks: func(m *registrymocks.MockProvider) {
-				m.EXPECT().
-					SearchServers("test").
-					Return([]regtypes.ServerMetadata{
-						&regtypes.ImageMetadata{
-							BaseServerMetadata: regtypes.BaseServerMetadata{
-								Name:        "test-server",
-								Description: "Test server description",
-								Transport:   "sse",
-								Tools:       []string{"tool1", "tool2"},
-								Tags:        []string{"tag1", "tag2"},
-							},
-							Image: "test/image:latest",
-						},
-						&regtypes.ImageMetadata{
-							BaseServerMetadata: regtypes.BaseServerMetadata{
-								Name:        "another-test",
-								Description: "Another test server",
-								Transport:   "stdio",
-							},
-							Image: "test/another:v1",
-						},
-					}, nil)
 			},
 			wantErr: false,
 			checkResult: func(t *testing.T, result *mcp.CallToolResult) {
@@ -87,34 +72,14 @@ func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 			},
 		},
 		{
-			name:        "empty search results",
-			query:       "nonexistent",
-			mockServers: []regtypes.ServerMetadata{},
-			setupMocks: func(m *registrymocks.MockProvider) {
-				m.EXPECT().
-					SearchServers("nonexistent").
-					Return([]regtypes.ServerMetadata{}, nil)
-			},
+			name:    "empty search results",
+			query:   "nonexistent",
+			servers: nil,
 			wantErr: false,
 			checkResult: func(t *testing.T, result *mcp.CallToolResult) {
 				t.Helper()
 				assert.NotNil(t, result)
 				assert.False(t, result.IsError)
-			},
-		},
-		{
-			name:  "search error",
-			query: "error",
-			setupMocks: func(m *registrymocks.MockProvider) {
-				m.EXPECT().
-					SearchServers("error").
-					Return(nil, assert.AnError)
-			},
-			wantErr: false, // Handler returns error as tool result, not actual error
-			checkResult: func(t *testing.T, result *mcp.CallToolResult) {
-				t.Helper()
-				assert.NotNil(t, result)
-				assert.True(t, result.IsError)
 			},
 		},
 	}
@@ -122,17 +87,11 @@ func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			mockRegistry := registrymocks.NewMockProvider(ctrl)
-			mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
-
-			if tt.setupMocks != nil {
-				tt.setupMocks(mockRegistry)
-			}
 
 			handler := &Handler{
-				ctx:              context.Background(),
-				workloadManager:  mockWorkloadManager,
-				registryProvider: mockRegistry,
+				ctx:             context.Background(),
+				workloadManager: workloadsmocks.NewMockManager(gomock.NewController(t)),
+				registryStore:   newTestStore(tt.servers),
 			}
 
 			request := mcp.CallToolRequest{
@@ -165,30 +124,12 @@ func TestHandler_ListServers_WithMocks(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		workloads   []core.Workload
 		setupMocks  func(*workloadsmocks.MockManager)
 		wantErr     bool
 		checkResult func(*testing.T, *mcp.CallToolResult)
 	}{
 		{
 			name: "list multiple workloads",
-			workloads: []core.Workload{
-				{
-					Name:   "server1",
-					Status: runtime.WorkloadStatusRunning,
-					Port:   8080,
-					Labels: map[string]string{
-						"toolhive.server": "test-server",
-					},
-				},
-				{
-					Name:   "server2",
-					Status: runtime.WorkloadStatusStopped,
-					Labels: map[string]string{
-						"toolhive.server": "another-server",
-					},
-				},
-			},
 			setupMocks: func(m *workloadsmocks.MockManager) {
 				m.EXPECT().
 					ListWorkloads(gomock.Any(), true).
@@ -250,7 +191,6 @@ func TestHandler_ListServers_WithMocks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			mockRegistry := registrymocks.NewMockProvider(ctrl)
 			mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
 
 			if tt.setupMocks != nil {
@@ -258,9 +198,9 @@ func TestHandler_ListServers_WithMocks(t *testing.T) {
 			}
 
 			handler := &Handler{
-				ctx:              context.Background(),
-				workloadManager:  mockWorkloadManager,
-				registryProvider: mockRegistry,
+				ctx:             context.Background(),
+				workloadManager: mockWorkloadManager,
+				registryStore:   emptyStore(),
 			}
 
 			result, err := handler.ListServers(context.Background(), mcp.CallToolRequest{})
@@ -325,7 +265,6 @@ func TestHandler_StopServer_WithMocks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			mockRegistry := registrymocks.NewMockProvider(ctrl)
 			mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
 
 			if tt.setupMocks != nil {
@@ -333,9 +272,9 @@ func TestHandler_StopServer_WithMocks(t *testing.T) {
 			}
 
 			handler := &Handler{
-				ctx:              context.Background(),
-				workloadManager:  mockWorkloadManager,
-				registryProvider: mockRegistry,
+				ctx:             context.Background(),
+				workloadManager: mockWorkloadManager,
+				registryStore:   emptyStore(),
 			}
 
 			request := mcp.CallToolRequest{
@@ -409,7 +348,6 @@ func TestHandler_RemoveServer_WithMocks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			mockRegistry := registrymocks.NewMockProvider(ctrl)
 			mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
 
 			if tt.setupMocks != nil {
@@ -417,9 +355,9 @@ func TestHandler_RemoveServer_WithMocks(t *testing.T) {
 			}
 
 			handler := &Handler{
-				ctx:              context.Background(),
-				workloadManager:  mockWorkloadManager,
-				registryProvider: mockRegistry,
+				ctx:             context.Background(),
+				workloadManager: mockWorkloadManager,
+				registryStore:   emptyStore(),
 			}
 
 			request := mcp.CallToolRequest{
@@ -453,7 +391,6 @@ func TestHandler_GetServerLogs_WithMocks(t *testing.T) {
 	tests := []struct {
 		name        string
 		serverName  string
-		logs        string
 		setupMocks  func(*workloadsmocks.MockManager)
 		wantErr     bool
 		checkResult func(*testing.T, *mcp.CallToolResult)
@@ -461,7 +398,6 @@ func TestHandler_GetServerLogs_WithMocks(t *testing.T) {
 		{
 			name:       "successful get logs",
 			serverName: "test-server",
-			logs:       "2024-01-01 12:00:00 Server started\n2024-01-01 12:00:01 Listening on port 8080",
 			setupMocks: func(m *workloadsmocks.MockManager) {
 				m.EXPECT().
 					GetLogs(gomock.Any(), "test-server", false, 0).
@@ -472,7 +408,6 @@ func TestHandler_GetServerLogs_WithMocks(t *testing.T) {
 				t.Helper()
 				assert.NotNil(t, result)
 				assert.False(t, result.IsError)
-				// When using NewToolResultText, the content is a text result
 				assert.NotEmpty(t, result.Content)
 			},
 		},
@@ -496,7 +431,6 @@ func TestHandler_GetServerLogs_WithMocks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			mockRegistry := registrymocks.NewMockProvider(ctrl)
 			mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
 
 			if tt.setupMocks != nil {
@@ -504,9 +438,9 @@ func TestHandler_GetServerLogs_WithMocks(t *testing.T) {
 			}
 
 			handler := &Handler{
-				ctx:              context.Background(),
-				workloadManager:  mockWorkloadManager,
-				registryProvider: mockRegistry,
+				ctx:             context.Background(),
+				workloadManager: mockWorkloadManager,
+				registryStore:   emptyStore(),
 			}
 
 			request := mcp.CallToolRequest{

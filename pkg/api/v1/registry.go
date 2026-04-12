@@ -48,22 +48,6 @@ func writeRegistryAuthRequiredError(w http.ResponseWriter) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// RegistryUnavailableCode is the machine-readable error code returned in the
-// structured JSON 503 response when the upstream registry is unreachable.
-const RegistryUnavailableCode = "registry_unavailable"
-
-// writeRegistryUnavailableError writes a structured JSON 503 response when the
-// upstream registry cannot be reached or returns an unexpected error (e.g. 404).
-func writeRegistryUnavailableError(w http.ResponseWriter, unavailableErr *regpkg.UnavailableError) {
-	body := registryErrorResponse{
-		Code:    RegistryUnavailableCode,
-		Message: unavailableErr.Error(),
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusServiceUnavailable)
-	_ = json.NewEncoder(w).Encode(body)
-}
-
 // resolveAuthStatus returns the auth_status and auth_type strings for API responses
 // by delegating to the AuthManager.
 func (rr *RegistryRoutes) resolveAuthStatus() (authStatus, authType string) {
@@ -129,8 +113,8 @@ func (rr *RegistryRoutes) registryAuthLogin(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Reset the singleton provider so subsequent registry calls pick up the new token.
-	regpkg.ResetDefaultProvider()
+	// Reset the singleton store so subsequent registry calls pick up the new token.
+	regpkg.ResetDefaultStore()
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "authenticated"})
@@ -167,8 +151,8 @@ func (rr *RegistryRoutes) registryAuthLogout(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Reset the singleton provider so subsequent registry calls reflect the logged-out state.
-	regpkg.ResetDefaultProvider()
+	// Reset the singleton store so subsequent registry calls reflect the logged-out state.
+	regpkg.ResetDefaultStore()
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "logged_out"})
@@ -249,31 +233,16 @@ func (rr *RegistryRoutes) getRegistryInfo() (RegistryType, string) {
 	return RegistryType(registryType), source
 }
 
-// getCurrentProvider returns the current registry provider using the injected config.
-// In serve mode, the provider is created with non-interactive auth to prevent
-// browser-based OAuth flows from being triggered by API requests.
-func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Provider, bool) {
-	var opts []regpkg.ProviderOption
-	if rr.serveMode {
-		opts = append(opts, regpkg.WithInteractive(false))
-	}
-	provider, err := regpkg.GetDefaultProviderWithConfig(rr.configProvider, opts...)
+// getCurrentStore returns the default registry Store. Returns false and writes
+// an appropriate HTTP error response if the Store cannot be obtained.
+func (*RegistryRoutes) getCurrentStore(w http.ResponseWriter) (*regpkg.Store, bool) {
+	store, err := regpkg.DefaultStore()
 	if err != nil {
-		if isRegistryAuthError(err) {
-			writeRegistryAuthRequiredError(w)
-			return nil, false
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
-			return nil, false
-		}
-		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
-		slog.Error("failed to get registry provider", "error", err)
+		http.Error(w, "Failed to get registry store", http.StatusInternalServerError)
+		slog.Error("failed to get registry store", "error", err)
 		return nil, false
 	}
-	return provider, true
+	return store, true
 }
 
 // RegistryRoutes defines the routes for the registry API.
@@ -358,23 +327,14 @@ func RegistryRouter(serveMode bool) http.Handler {
 //		@Success		200	{object}	registryListResponse
 //		@Router			/api/v1beta/registry [get]
 func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
-	provider, ok := rr.getCurrentProvider(w)
+	store, ok := rr.getCurrentStore(w)
 	if !ok {
 		return
 	}
 
-	reg, err := provider.GetRegistry()
+	servers, err := store.ListServers("")
 	if err != nil {
-		if isRegistryAuthError(err) {
-			writeRegistryAuthRequiredError(w)
-			return
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
-			return
-		}
+		slog.Error("failed to list servers for registry info", "error", err)
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
 	}
@@ -386,9 +346,7 @@ func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request)
 	registries := []registryInfo{
 		{
 			Name:        defaultRegistryName,
-			Version:     reg.Version,
-			LastUpdated: reg.LastUpdated,
-			ServerCount: len(reg.Servers),
+			ServerCount: len(servers),
 			Type:        registryType,
 			Source:      source,
 			AuthStatus:  regAuthStatus,
@@ -439,23 +397,14 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, ok := rr.getCurrentProvider(w)
+	store, ok := rr.getCurrentStore(w)
 	if !ok {
 		return
 	}
 
-	reg, err := provider.GetRegistry()
+	servers, err := store.ListServers("")
 	if err != nil {
-		if isRegistryAuthError(err) {
-			writeRegistryAuthRequiredError(w)
-			return
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
-			return
-		}
+		slog.Error("failed to list servers for getRegistry", "error", err)
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
 	}
@@ -466,15 +415,12 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 
 	response := getRegistryResponse{
 		Name:        defaultRegistryName,
-		Version:     reg.Version,
-		LastUpdated: reg.LastUpdated,
-		ServerCount: len(reg.Servers),
+		ServerCount: len(servers),
 		Type:        registryType,
 		Source:      source,
 		AuthStatus:  regAuthStatus,
 		AuthType:    regAuthType,
 		AuthConfig:  rr.resolveAuthConfig(),
-		Registry:    reg,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -564,8 +510,8 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Reset the registry provider cache to pick up configuration changes
-	regpkg.ResetDefaultProvider()
+	// Reset the registry store cache to pick up configuration changes
+	regpkg.ResetDefaultStore()
 
 	// If registry was reset to default, responseType is already "default".
 	// Otherwise resolve from config.
@@ -725,43 +671,38 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, ok := rr.getCurrentProvider(w)
+	store, ok := rr.getCurrentStore(w)
 	if !ok {
 		return
 	}
 
-	// Get the full registry to access both container and remote servers
-	reg, err := provider.GetRegistry()
+	serverJSONs, err := store.ListServers("")
 	if err != nil {
-		if isRegistryAuthError(err) {
-			writeRegistryAuthRequiredError(w)
-			return
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
-			return
-		}
-		slog.Error("failed to get registry", "error", err)
-		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
+		slog.Error("failed to list servers", "error", err)
+		http.Error(w, "Failed to list servers", http.StatusInternalServerError)
 		return
 	}
 
-	// Build response with both container and remote servers
+	// Build response by converting ServerJSON to ToolHive types
 	response := listServersResponse{
-		Servers:       make([]*registry.ImageMetadata, 0, len(reg.Servers)),
-		RemoteServers: make([]*registry.RemoteServerMetadata, 0, len(reg.RemoteServers)),
+		Servers:       make([]*registry.ImageMetadata, 0),
+		RemoteServers: make([]*registry.RemoteServerMetadata, 0),
 	}
 
-	// Add container servers
-	for _, server := range reg.Servers {
-		response.Servers = append(response.Servers, server)
-	}
-
-	// Add remote servers
-	for _, server := range reg.RemoteServers {
-		response.RemoteServers = append(response.RemoteServers, server)
+	for _, srvJSON := range serverJSONs {
+		md, err := regpkg.ConvertServerJSONToMetadata(srvJSON)
+		if err != nil {
+			continue // skip unconvertible entries
+		}
+		if md.IsRemote() {
+			if remote, ok := md.(*registry.RemoteServerMetadata); ok {
+				response.RemoteServers = append(response.RemoteServers, remote)
+			}
+		} else {
+			if img, ok := md.(*registry.ImageMetadata); ok {
+				response.Servers = append(response.Servers, img)
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -801,16 +742,23 @@ func (rr *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, ok := rr.getCurrentProvider(w)
+	store, ok := rr.getCurrentStore(w)
 	if !ok {
 		return
 	}
 
-	// Try to get the server (could be container or remote)
-	server, err := provider.GetServer(decodedServerName)
+	serverJSON, err := store.GetServer("", decodedServerName)
 	if err != nil {
 		//nolint:gosec // G706: server name from URL parameter for diagnostics
 		slog.Error("failed to get server", "server", decodedServerName, "error", err)
+		http.Error(w, "Server not found", http.StatusNotFound)
+		return
+	}
+
+	server, err := regpkg.ConvertServerJSONToMetadata(serverJSON)
+	if err != nil {
+		//nolint:gosec // G706: server name from URL parameter for diagnostics
+		slog.Error("failed to convert server", "server", decodedServerName, "error", err)
 		http.Error(w, "Server not found", http.StatusNotFound)
 		return
 	}
@@ -905,8 +853,6 @@ type getRegistryResponse struct {
 	// AuthConfig contains the non-secret OAuth configuration when auth is configured.
 	// Nil when auth_status is "none".
 	AuthConfig *regpkg.OAuthPublicConfig `json:"auth_config,omitempty"`
-	// Full registry data
-	Registry *registry.Registry `json:"registry"`
 }
 
 // listServersResponse represents the response for listing servers in a registry

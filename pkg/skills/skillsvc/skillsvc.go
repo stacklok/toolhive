@@ -76,7 +76,8 @@ func WithGroupManager(mgr groups.Manager) Option {
 }
 
 // SkillLookup resolves a plain skill name against a registry/index.
-// registry.Provider implicitly satisfies this interface.
+//
+//go:generate mockgen -destination=../mocks/mock_skill_lookup.go -package=mocks -source=skillsvc.go SkillLookup
 type SkillLookup interface {
 	SearchSkills(query string) ([]regtypes.Skill, error)
 }

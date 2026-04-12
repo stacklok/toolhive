@@ -14,10 +14,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	types "github.com/stacklok/toolhive-core/registry/types"
-	"github.com/stacklok/toolhive/pkg/config"
 	regpkg "github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/registry/api"
-	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
 const (
@@ -38,31 +36,16 @@ func RegistryV01SkillsRouter() http.Handler {
 	return r
 }
 
-// getSkillsProvider returns the default registry provider configured for
-// non-interactive (serve) mode to prevent browser-based OAuth flows from
-// HTTP request handlers. Returns false and writes a structured JSON error
-// response if the provider cannot be obtained.
-func getSkillsProvider(w http.ResponseWriter) (regpkg.Provider, bool) {
-	provider, err := regpkg.GetDefaultProviderWithConfig(
-		config.NewProvider(),
-		regpkg.WithInteractive(false),
-	)
+// getSkillsStore returns the default registry Store. Returns false and writes
+// a structured JSON error response if the Store cannot be obtained.
+func getSkillsStore(w http.ResponseWriter) (*regpkg.Store, bool) {
+	store, err := regpkg.DefaultStore()
 	if err != nil {
-		if errors.Is(err, auth.ErrRegistryAuthRequired) {
-			writeRegistryAuthRequiredError(w)
-			return nil, false
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
-			return nil, false
-		}
-		writeJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to get registry provider")
-		slog.Error("failed to get registry provider", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to get registry store")
+		slog.Error("failed to get registry store", "error", err)
 		return nil, false
 	}
-	return provider, true
+	return store, true
 }
 
 // writeJSONError writes a structured JSON error response matching the
@@ -78,12 +61,12 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 
 // listSkillsV01 handles GET /registry/{registryName}/v0.1/x/dev.toolhive/skills
 func listSkillsV01(w http.ResponseWriter, r *http.Request) {
-	provider, ok := getSkillsProvider(w)
+	store, ok := getSkillsStore(w)
 	if !ok {
 		return
 	}
 
-	skills, err := provider.ListAvailableSkills()
+	skills, err := store.ListSkills("")
 	if err != nil {
 		slog.Error("failed to list skills", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list skills")
@@ -128,12 +111,12 @@ func getSkillV01(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	skillName := chi.URLParam(r, "skillName")
 
-	provider, ok := getSkillsProvider(w)
+	store, ok := getSkillsStore(w)
 	if !ok {
 		return
 	}
 
-	skill, err := provider.GetSkill(namespace, skillName)
+	skill, err := store.GetSkill("", namespace, skillName)
 	if err != nil {
 		// Map upstream HTTP errors to appropriate responses
 		var httpErr *api.RegistryHTTPError

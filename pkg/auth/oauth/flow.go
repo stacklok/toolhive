@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -60,6 +61,13 @@ type Config struct {
 
 	// OAuthParams are additional parameters to pass to the authorization URL
 	OAuthParams map[string]string
+
+	// ScopeParamName overrides the query parameter name used to send scopes in the
+	// authorization URL. When empty (default), the standard "scope" parameter is used.
+	// Some providers use non-standard parameter names (e.g., Slack uses "user_scope"
+	// for user-token scopes). When set, scopes are sent under this parameter name
+	// instead of "scope", and the standard "scope" parameter is cleared.
+	ScopeParamName string
 }
 
 // Flow handles the OAuth authentication flow
@@ -265,6 +273,18 @@ func (f *Flow) buildAuthURL() string {
 		for key, value := range f.config.OAuthParams {
 			opts = append(opts, oauth2.SetAuthURLParam(key, value))
 		}
+	}
+
+	// When a custom scope parameter name is configured, move scopes from the
+	// standard "scope" parameter to the custom one. This supports OAuth providers
+	// that use non-standard parameter names (e.g., Slack's "user_scope").
+	// The standard "scope" is cleared by setting it to empty; oauth2Config.Scopes
+	// is preserved so token refresh requests still include scopes correctly.
+	if f.config.ScopeParamName != "" && len(f.oauth2Config.Scopes) > 0 {
+		opts = append(opts,
+			oauth2.SetAuthURLParam("scope", ""),
+			oauth2.SetAuthURLParam(f.config.ScopeParamName, strings.Join(f.oauth2Config.Scopes, " ")),
+		)
 	}
 
 	// Add PKCE parameters if enabled

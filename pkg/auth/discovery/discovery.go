@@ -509,6 +509,7 @@ type OAuthFlowConfig struct {
 	SkipBrowser          bool
 	Resource             string // RFC 8707 resource indicator (optional)
 	OAuthParams          map[string]string
+	ScopeParamName       string // Override scope query parameter name (e.g., "user_scope" for Slack)
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -645,6 +646,7 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 			config.CallbackPort,
 			config.Resource,
 			config.OAuthParams,
+			config.ScopeParamName,
 		)
 	}
 

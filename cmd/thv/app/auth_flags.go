@@ -72,6 +72,7 @@ type RemoteAuthFlags struct {
 	RemoteAuthClientSecret     string
 	RemoteAuthClientSecretFile string
 	RemoteAuthScopes           []string
+	RemoteAuthScopeParamName   string
 	RemoteAuthSkipBrowser      bool
 	RemoteAuthTimeout          time.Duration
 	RemoteAuthCallbackPort     int
@@ -163,6 +164,8 @@ func AddRemoteAuthFlags(cmd *cobra.Command, config *RemoteAuthFlags) {
 			"authorization server supports dynamic client registration (RFC 7591) or if using PKCE)")
 	cmd.Flags().StringSliceVar(&config.RemoteAuthScopes, "remote-auth-scopes", []string{},
 		"OAuth scopes to request for remote server authentication (defaults: OIDC uses 'openid,profile,email')")
+	cmd.Flags().StringVar(&config.RemoteAuthScopeParamName, "remote-auth-scope-param-name", "",
+		"Override the query parameter name for scopes in the authorization URL (e.g., 'user_scope' for Slack OAuth)")
 	cmd.Flags().BoolVar(&config.RemoteAuthSkipBrowser, "remote-auth-skip-browser", false,
 		"Skip opening browser for remote server OAuth flow (default false)")
 	cmd.Flags().DurationVar(&config.RemoteAuthTimeout, "remote-auth-timeout", 30*time.Second,

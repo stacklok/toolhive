@@ -18,12 +18,15 @@ import (
 
 // listSkillsV01 handles GET /registry/{registryName}/v0.1/x/dev.toolhive/skills
 func listSkillsV01(w http.ResponseWriter, r *http.Request) {
+	registryName := chi.URLParam(r, "registryName")
+	if proxyIfNeeded(w, r, registryName) {
+		return
+	}
+
 	store, ok := getRegistryStore(w)
 	if !ok {
 		return
 	}
-
-	registryName := chi.URLParam(r, "registryName")
 	skills, err := store.ListSkills(registryName)
 	if err != nil {
 		slog.Error("failed to list skills", "error", err)
@@ -54,6 +57,11 @@ func listSkillsV01(w http.ResponseWriter, r *http.Request) {
 
 // getSkillV01 handles GET /registry/{registryName}/v0.1/x/dev.toolhive/skills/{namespace}/{skillName}
 func getSkillV01(w http.ResponseWriter, r *http.Request) {
+	registryName := chi.URLParam(r, "registryName")
+	if proxyIfNeeded(w, r, registryName) {
+		return
+	}
+
 	namespace := chi.URLParam(r, "namespace")
 	skillName := chi.URLParam(r, "skillName")
 
@@ -62,7 +70,6 @@ func getSkillV01(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	registryName := chi.URLParam(r, "registryName")
 	skill, err := store.GetSkill(registryName, namespace, skillName)
 	if err != nil {
 		// Map upstream HTTP errors to appropriate responses

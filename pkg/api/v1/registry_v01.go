@@ -4,10 +4,14 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -39,6 +43,65 @@ func RegistryV01Router() http.Handler {
 		r.Get("/x/dev.toolhive/skills/{namespace}/{skillName}", getSkillV01)
 	})
 	return r
+}
+
+// --- Proxy support for proxied registries ---
+
+// proxyIfNeeded checks if the registry is proxied and forwards the request
+// to the upstream server. Returns true if the request was proxied (caller
+// should return), false if the registry is local (caller should continue).
+func proxyIfNeeded(w http.ResponseWriter, r *http.Request, registryName string) bool {
+	store, err := regpkg.DefaultStore()
+	if err != nil || !store.IsProxied(registryName) {
+		return false
+	}
+
+	baseURL := store.ProxyURL(registryName)
+	httpClient := store.ProxyHTTPClient(registryName)
+	if baseURL == "" || httpClient == nil {
+		return false
+	}
+
+	// Build the upstream URL: baseURL + /v0.1/... (the path after the registry name)
+	// The incoming request path is /registry/{registryName}/v0.1/...
+	// We need to extract everything after /{registryName} and append it to baseURL
+	prefix := "/registry/" + registryName
+	suffix := strings.TrimPrefix(r.URL.Path, prefix)
+	upstreamURL := strings.TrimRight(baseURL, "/") + suffix
+	if r.URL.RawQuery != "" {
+		upstreamURL += "?" + r.URL.RawQuery
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, upstreamURL, nil)
+	if err != nil {
+		slog.Error("failed to create proxy request", "error", err)
+		writeJSONError(w, http.StatusBadGateway, "proxy_error", "Failed to proxy request to upstream registry")
+		return true
+	}
+
+	resp, err := httpClient.Do(proxyReq)
+	if err != nil {
+		slog.Error("proxy request failed", "upstream", upstreamURL, "error", err)
+		writeJSONError(w, http.StatusBadGateway, "proxy_error", "Upstream registry unavailable")
+		return true
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Copy response headers and status
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	// Copy response body (limited to prevent memory issues)
+	const maxProxyResponseSize = 50 * 1024 * 1024 // 50 MB
+	_, _ = io.Copy(w, io.LimitReader(resp.Body, maxProxyResponseSize))
+	return true
 }
 
 // --- Shared helpers for v0.1 endpoints ---

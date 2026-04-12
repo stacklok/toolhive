@@ -90,6 +90,30 @@ func (s *Store) AddProxiedRegistry(name string, baseURL string, httpClient *http
 	}
 }
 
+// ProxyURL returns the upstream base URL for a proxied registry.
+// Returns empty string if the registry is not proxied.
+func (s *Store) ProxyURL(registryName string) string {
+	name := s.resolve(registryName)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if pr, ok := s.proxied[name]; ok {
+		return pr.baseURL
+	}
+	return ""
+}
+
+// ProxyHTTPClient returns the HTTP client for a proxied registry.
+// Returns nil if the registry is not proxied.
+func (s *Store) ProxyHTTPClient(registryName string) *http.Client {
+	name := s.resolve(registryName)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if pr, ok := s.proxied[name]; ok {
+		return pr.httpClient
+	}
+	return nil
+}
+
 // Reset clears all registry data so the Store can be re-populated after a
 // configuration change.
 func (s *Store) Reset() {

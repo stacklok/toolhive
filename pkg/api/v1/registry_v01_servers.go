@@ -22,12 +22,15 @@ type serversV01Response struct {
 
 // listServersV01 handles GET /registry/{registryName}/v0.1/servers
 func listServersV01(w http.ResponseWriter, r *http.Request) {
+	registryName := chi.URLParam(r, "registryName")
+	if proxyIfNeeded(w, r, registryName) {
+		return
+	}
+
 	store, ok := getRegistryStore(w)
 	if !ok {
 		return
 	}
-
-	registryName := chi.URLParam(r, "registryName")
 	servers, err := store.ListServers(registryName)
 	if err != nil {
 		slog.Error("failed to list servers", "error", err)
@@ -58,6 +61,11 @@ func listServersV01(w http.ResponseWriter, r *http.Request) {
 
 // getServerV01 handles GET /registry/{registryName}/v0.1/servers/{serverName}/versions/latest
 func getServerV01(w http.ResponseWriter, r *http.Request) {
+	registryName := chi.URLParam(r, "registryName")
+	if proxyIfNeeded(w, r, registryName) {
+		return
+	}
+
 	serverName := chi.URLParam(r, "serverName")
 
 	// URL-decode the server name to handle special characters (server names
@@ -73,7 +81,6 @@ func getServerV01(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	registryName := chi.URLParam(r, "registryName")
 	server, err := store.GetServer(registryName, decodedName)
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "not_found", "Server not found")

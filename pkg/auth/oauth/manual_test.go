@@ -269,6 +269,7 @@ func TestCreateOAuthConfigManual(t *testing.T) {
 				tt.callbackPort,
 				tt.resource,
 				oauthParams,
+				"",
 			)
 
 			if tt.expectError {
@@ -335,6 +336,7 @@ func TestCreateOAuthConfigManual_ScopeDefaultBehavior(t *testing.T) {
 				8080,
 				"",
 				nil, // No OAuth params for basic tests
+				"",  // No scope param name override
 			)
 
 			require.NoError(t, err)
@@ -378,6 +380,7 @@ func TestCreateOAuthConfigManual_PKCEBehavior(t *testing.T) {
 				8080,
 				"",
 				nil, // No OAuth params for basic tests
+				"",  // No scope param name override
 			)
 
 			require.NoError(t, err)
@@ -426,6 +429,7 @@ func TestCreateOAuthConfigManual_CallbackPortBehavior(t *testing.T) {
 				tt.port,
 				"",
 				nil, // No OAuth params for basic tests
+				"",  // No scope param name override
 			)
 
 			require.NoError(t, err)
@@ -491,6 +495,7 @@ func TestCreateOAuthConfigManual_OAuthParamsBehavior(t *testing.T) {
 				8080,
 				"",
 				tt.oauthParams,
+				"",
 			)
 
 			require.NoError(t, err)

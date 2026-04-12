@@ -323,7 +323,7 @@ func BuildRunnerConfig(
 	telemetryConfig := setupTelemetryConfiguration(cmd, runFlags, appConfig)
 
 	// Setup runtime and validation
-	rt, envVarValidator, err := setupRuntimeAndValidation(ctx)
+	rt, envVarValidator, err := setupRuntimeAndValidation(ctx, configProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +331,7 @@ func BuildRunnerConfig(
 	if runFlags.RemoteURL != "" {
 		slog.Debug(fmt.Sprintf("Attempting to run remote MCP server: %s", runFlags.RemoteURL))
 		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
-			nil, envVarValidator, oidcConfig, telemetryConfig)
+			nil, envVarValidator, oidcConfig, telemetryConfig, appConfig)
 	}
 
 	// Resolve image from registry without pulling (fast registry lookup only).
@@ -357,7 +357,7 @@ func BuildRunnerConfig(
 
 	// Build the runner config
 	runConfig, err := buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverMetadata,
-		envVars, envVarValidator, oidcConfig, telemetryConfig,
+		envVars, envVarValidator, oidcConfig, telemetryConfig, appConfig,
 		runner.WithRegistrySourceURLs(regAPIURL, regURL),
 		runner.WithRegistryServerName(regServerName))
 	if err != nil {
@@ -410,8 +410,9 @@ func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags, appConf
 		finalTelemetry.OtelUseLegacyAttributes)
 }
 
-// setupRuntimeAndValidation creates container runtime and selects environment variable validator
-func setupRuntimeAndValidation(ctx context.Context) (runtime.Deployer, runner.EnvVarValidator, error) {
+// setupRuntimeAndValidation creates container runtime and selects environment variable validator.
+// The provided configProvider is reused so the factory-registered provider is not bypassed.
+func setupRuntimeAndValidation(ctx context.Context, configProvider cfg.Provider) (runtime.Deployer, runner.EnvVarValidator, error) {
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create container runtime: %w", err)
@@ -421,8 +422,7 @@ func setupRuntimeAndValidation(ctx context.Context) (runtime.Deployer, runner.En
 	if process.IsDetached() || runtime.IsKubernetesRuntime() {
 		envVarValidator = &runner.DetachedEnvVarValidator{}
 	} else {
-		cfgProvider := cfg.NewDefaultProvider()
-		envVarValidator = runner.NewCLIEnvVarValidator(cfgProvider)
+		envVarValidator = runner.NewCLIEnvVarValidator(configProvider)
 	}
 
 	return rt, envVarValidator, nil
@@ -589,6 +589,7 @@ func buildRunnerConfig(
 	envVarValidator runner.EnvVarValidator,
 	oidcConfig *auth.TokenValidatorConfig,
 	telemetryConfig *telemetry.Config,
+	appConfig *cfg.Config,
 	extraOpts ...runner.RunConfigBuilderOption,
 ) (*runner.RunConfig, error) {
 	transportType := resolveTransportType(runFlags, serverMetadata)
@@ -670,7 +671,7 @@ func buildRunnerConfig(
 
 	// Configure middleware and additional options
 	additionalOpts, err := configureMiddlewareAndOptions(runFlags, serverMetadata, toolsOverride, oidcConfig,
-		telemetryConfig, serverName, transportType)
+		telemetryConfig, serverName, transportType, appConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -688,15 +689,9 @@ func configureMiddlewareAndOptions(
 	telemetryConfig *telemetry.Config,
 	serverName string,
 	transportType string,
+	appConfig *cfg.Config,
 ) ([]runner.RunConfigBuilderOption, error) {
 	var opts []runner.RunConfigBuilderOption
-
-	// Load application config for global settings
-	configProvider := cfg.NewProvider()
-	appConfig, err := configProvider.LoadOrCreateConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load application config: %w", err)
-	}
 
 	// Resolve the OTel service name from the workload name when not explicitly set
 	telemetry.ResolveServiceName(telemetryConfig, serverName)

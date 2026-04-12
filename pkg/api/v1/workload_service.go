@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -142,6 +143,17 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 func (s *WorkloadService) BuildFullRunConfig(
 	ctx context.Context, req *createRequest, existingPort int,
 ) (*runner.RunConfig, error) {
+	// If registry+server specified, resolve from registry Store
+	if req.Registry != "" && req.Server != "" {
+		if err := resolveRegistryServer(req, s.configProvider); err != nil {
+			return nil, fmt.Errorf("failed to resolve server from registry: %w", err)
+		}
+		// Fall through — req now has image/url/transport/etc filled in from registry
+	}
+	if req.Registry != "" && req.Server == "" || req.Registry == "" && req.Server != "" {
+		return nil, fmt.Errorf("both registry and server must be specified together")
+	}
+
 	// Default proxy mode to streamable-http if not specified (SSE is deprecated)
 	if !types.IsValidProxyMode(req.ProxyMode) {
 		if req.ProxyMode == "" {
@@ -556,4 +568,84 @@ func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req b
 	}
 
 	return workloadNames, nil
+}
+
+// resolveRegistryServer looks up a server in the registry store and populates
+// the request with its metadata. User-provided fields always take precedence.
+func resolveRegistryServer(req *createRequest, _ config.Provider) error {
+	store, err := registry.DefaultStore()
+	if err != nil {
+		return err
+	}
+
+	serverJSON, err := store.GetServer(req.Registry, req.Server)
+	if err != nil {
+		return err
+	}
+
+	metadata, err := registry.ConvertServerJSONToMetadata(serverJSON)
+	if err != nil {
+		return fmt.Errorf("failed to convert server metadata: %w", err)
+	}
+
+	// Apply registry defaults — user-provided fields always win (override)
+	applyRegistryDefaults(req, metadata)
+	return nil
+}
+
+// applyRegistryDefaults fills in empty fields on the createRequest from registry
+// metadata. Fields already set by the user are never overwritten.
+func applyRegistryDefaults(req *createRequest, metadata regtypes.ServerMetadata) {
+	// Common fields
+	if req.Transport == "" {
+		req.Transport = metadata.GetTransport()
+	}
+	if req.Name == "" {
+		req.Name = metadata.GetName()
+	}
+
+	switch md := metadata.(type) {
+	case *regtypes.ImageMetadata:
+		applyImageDefaults(req, md)
+	case *regtypes.RemoteServerMetadata:
+		applyRemoteDefaults(req, md)
+	}
+}
+
+// applyImageDefaults fills empty request fields from container image metadata.
+func applyImageDefaults(req *createRequest, md *regtypes.ImageMetadata) {
+	if req.Image == "" {
+		req.Image = md.Image
+	}
+	if req.TargetPort == 0 && md.TargetPort != 0 {
+		req.TargetPort = md.TargetPort
+	}
+	if len(req.CmdArguments) == 0 && len(md.Args) > 0 {
+		req.CmdArguments = md.Args
+	}
+	if req.PermissionProfile == nil && md.Permissions != nil {
+		req.PermissionProfile = md.Permissions
+	}
+	// Merge env vars: registry defaults, user overrides take precedence
+	if req.EnvVars == nil {
+		req.EnvVars = make(map[string]string)
+	}
+	for _, ev := range md.EnvVars {
+		if ev.Default != "" {
+			if _, userSet := req.EnvVars[ev.Name]; !userSet {
+				req.EnvVars[ev.Name] = ev.Default
+			}
+		}
+	}
+}
+
+// applyRemoteDefaults fills empty request fields from remote server metadata.
+func applyRemoteDefaults(req *createRequest, md *regtypes.RemoteServerMetadata) {
+	if req.URL == "" {
+		req.URL = md.URL
+	}
+	// Merge headers: use registry defaults only if user provided none
+	if len(req.Headers) == 0 && len(md.Headers) > 0 {
+		req.Headers = md.Headers
+	}
 }

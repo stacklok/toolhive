@@ -154,6 +154,10 @@ type createRequest struct {
 	updateRequest
 	// Name of the workload
 	Name string `json:"name"`
+	// Registry name to resolve server from (e.g. "default")
+	Registry string `json:"registry,omitempty"`
+	// Server name in the registry (e.g. "io.github.stacklok/fetch")
+	Server string `json:"server,omitempty"`
 }
 
 // oidcOptions represents OIDC configuration options

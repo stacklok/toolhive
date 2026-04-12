@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package app
@@ -6,9 +6,6 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
-	"os"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -19,32 +16,34 @@ import (
 var searchCmd = &cobra.Command{
 	Use:   "search [query]",
 	Short: "Search for MCP servers",
-	Long:  `Search for MCP servers in the registry by name, description, or tags.`,
-	Args:  cobra.ExactArgs(1),
-	RunE:  searchCmdFunc,
+	Long: `Search for MCP servers in the registry by name, description, or tags.
+This is a convenience alias for 'thv registry search'.`,
+	Args: cobra.ExactArgs(1),
+	RunE: searchCmdFunc,
 }
 
 var (
-	searchFormat string
+	searchFormat       string
+	searchRegistryName string
 )
 
 func init() {
-	// Add search command to root command
+	// Add search command to root command (top-level convenience alias)
 	rootCmd.AddCommand(searchCmd)
 
 	// Add flags for search command
 	searchCmd.Flags().StringVar(&searchFormat, "format", FormatText, "Output format (json or text)")
+	searchCmd.Flags().StringVar(&searchRegistryName, "registry", "", "Registry name to search (default: configured default)")
 }
 
 func searchCmdFunc(_ *cobra.Command, args []string) error {
-	// Search for servers
 	query := args[0]
 	store, err := registry.DefaultStore()
 	if err != nil {
 		return fmt.Errorf("failed to get registry store: %w", err)
 	}
 
-	serverJSONs, err := store.SearchServers("", query)
+	serverJSONs, err := store.SearchServers(searchRegistryName, query)
 	if err != nil {
 		return fmt.Errorf("failed to search servers: %w", err)
 	}
@@ -59,73 +58,19 @@ func searchCmdFunc(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Sort servers by name using the utility function
 	types.SortServersByName(servers)
 
-	// Output based on format
 	switch searchFormat {
 	case FormatJSON:
-		return printJSONSearchResults(servers)
+		jsonData, err := json.MarshalIndent(servers, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		fmt.Println(string(jsonData))
 	default:
 		fmt.Printf("Found %d servers matching query: %s\n", len(servers), query)
 		printTextSearchResults(servers)
-		return nil
-	}
-}
-
-// printJSONSearchResults prints servers in JSON format
-func printJSONSearchResults(servers []types.ServerMetadata) error {
-	// Marshal to JSON
-	jsonData, err := json.MarshalIndent(servers, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
-	// Print JSON
-	fmt.Println(string(jsonData))
 	return nil
-}
-
-// printTextSearchResults prints servers in text format
-func printTextSearchResults(servers []types.ServerMetadata) {
-	// Create a tabwriter for pretty output
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS"); err != nil {
-		slog.Warn(fmt.Sprintf("Failed to write output: %v", err))
-		return
-	}
-
-	// Print server information
-	for _, server := range servers {
-		stars := 0
-		if metadata := server.GetMetadata(); metadata != nil {
-			stars = metadata.Stars
-		}
-
-		serverType := "container"
-		if server.IsRemote() {
-			serverType = "remote"
-		}
-
-		// Print server information
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n",
-			server.GetName(),
-			serverType,
-			truncateSearchString(server.GetDescription(), 50),
-			server.GetTransport(),
-			stars,
-		); err != nil {
-			slog.Debug(fmt.Sprintf("Failed to write server information: %v", err))
-		}
-	}
-
-	// Flush the tabwriter
-	if err := w.Flush(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Failed to flush tabwriter: %v\n", err)
-	}
-}
-
-// truncateSearchString truncates a string to the specified length and adds "..." if truncated
-func truncateSearchString(s string, maxLen int) string {
-	return truncateString(s, maxLen)
 }

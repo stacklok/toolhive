@@ -115,12 +115,26 @@ func WithRegistrySourceURLs(apiURL, registryURL string) RunConfigBuilderOption {
 // ResolveRegistrySourceURLs returns the registry API URL and registry URL from
 // config when the server was discovered via registry lookup (non-nil metadata).
 // Both values are empty when metadata is nil (direct image reference or protocol scheme)
-// or when appConfig is nil.
+// or when appConfig is nil. It examines the default registry source in the new
+// structured registries list.
 func ResolveRegistrySourceURLs(serverMetadata regtypes.ServerMetadata, appConfig *appconfig.Config) (apiURL, registryURL string) {
 	if serverMetadata == nil || appConfig == nil {
 		return "", ""
 	}
-	return appConfig.RegistryApiUrl, appConfig.RegistryUrl
+	defaultName := appConfig.EffectiveDefaultRegistry()
+	src := appConfig.FindRegistry(defaultName)
+	if src == nil {
+		return "", ""
+	}
+	switch src.Type {
+	case appconfig.RegistrySourceTypeAPI:
+		return src.Location, ""
+	case appconfig.RegistrySourceTypeURL:
+		return "", src.Location
+	case appconfig.RegistrySourceTypeFile:
+		return "", ""
+	}
+	return "", ""
 }
 
 // WithRegistryServerName records the registry entry name used to look up this server's metadata.

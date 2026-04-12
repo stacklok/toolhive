@@ -26,14 +26,33 @@ import (
 // lockTimeout is the maximum time to wait for a file lock
 const lockTimeout = 1 * time.Second
 
+// RegistrySourceType describes the kind of a registry source.
+type RegistrySourceType string
+
+const (
+	// RegistrySourceTypeFile represents a local file registry.
+	RegistrySourceTypeFile RegistrySourceType = "file"
+	// RegistrySourceTypeURL represents a remote URL registry (static JSON).
+	RegistrySourceTypeURL RegistrySourceType = "url"
+	// RegistrySourceTypeAPI represents an MCP Registry API endpoint.
+	RegistrySourceTypeAPI RegistrySourceType = "api"
+)
+
+// RegistrySource describes a single registry entry in the config.
+type RegistrySource struct {
+	Name           string             `yaml:"name"`
+	Type           RegistrySourceType `yaml:"type"`
+	Location       string             `yaml:"location"`
+	AllowPrivateIP bool               `yaml:"allow_private_ip,omitempty"`
+	Auth           *RegistryAuth      `yaml:"auth,omitempty"`
+}
+
 // Config represents the configuration of the application.
 type Config struct {
 	Secrets                      Secrets                             `yaml:"secrets"`
 	Clients                      Clients                             `yaml:"clients"`
-	RegistryUrl                  string                              `yaml:"registry_url"`
-	RegistryApiUrl               string                              `yaml:"registry_api_url"`
-	LocalRegistryPath            string                              `yaml:"local_registry_path"`
-	AllowPrivateRegistryIp       bool                                `yaml:"allow_private_registry_ip"`
+	Registries                   []RegistrySource                    `yaml:"registries,omitempty"`
+	DefaultRegistry              string                              `yaml:"default_registry,omitempty"`
 	CACertificatePath            string                              `yaml:"ca_certificate_path,omitempty"`
 	OTEL                         OpenTelemetryConfig                 `yaml:"otel,omitempty"`
 	DefaultGroupMigration        bool                                `yaml:"default_group_migration,omitempty"`
@@ -46,7 +65,6 @@ type Config struct {
 	BuildEnvFromShell            []string                            `yaml:"build_env_from_shell,omitempty"`
 	BuildAuthFiles               map[string]string                   `yaml:"build_auth_files,omitempty"`
 	RuntimeConfigs               map[string]*templates.RuntimeConfig `yaml:"runtime_configs,omitempty"`
-	RegistryAuth                 RegistryAuth                        `yaml:"registry_auth,omitempty"`
 }
 
 // RegistryAuthTypeOAuth is the auth type for OAuth/OIDC authentication.
@@ -185,13 +203,38 @@ func createNewConfigWithDefaults() Config {
 			ProviderType:   "", // No default provider - user must run setup
 			SetupCompleted: false,
 		},
-		RegistryUrl:                  "",
-		RegistryApiUrl:               "",
-		AllowPrivateRegistryIp:       false,
 		DefaultGroupMigration:        false,
 		TelemetryConfigMigration:     false,
 		MiddlewareTelemetryMigration: false,
 	}
+}
+
+// FindRegistry returns the RegistrySource with the given name, or nil if not found.
+func (c *Config) FindRegistry(name string) *RegistrySource {
+	for i := range c.Registries {
+		if c.Registries[i].Name == name {
+			return &c.Registries[i]
+		}
+	}
+	return nil
+}
+
+// FindRegistryAuth returns the RegistryAuth for the named registry, or nil if
+// the registry does not exist or has no auth configured.
+func (c *Config) FindRegistryAuth(name string) *RegistryAuth {
+	src := c.FindRegistry(name)
+	if src == nil {
+		return nil
+	}
+	return src.Auth
+}
+
+// EffectiveDefaultRegistry returns DefaultRegistry if set, otherwise "embedded".
+func (c *Config) EffectiveDefaultRegistry() string {
+	if c.DefaultRegistry != "" {
+		return c.DefaultRegistry
+	}
+	return "embedded"
 }
 
 // applyBackwardCompatibility applies backward compatibility fixes to existing configs

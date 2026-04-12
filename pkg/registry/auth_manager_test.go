@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package registry
@@ -12,6 +12,22 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	configmocks "github.com/stacklok/toolhive/pkg/config/mocks"
 )
+
+// configWithAuth returns a Config with a "default" registry that has the given auth.
+func configWithAuth(regAuth *config.RegistryAuth) *config.Config {
+	src := config.RegistrySource{
+		Name:     "default",
+		Type:     config.RegistrySourceTypeAPI,
+		Location: "https://api.example.com",
+	}
+	if regAuth != nil {
+		src.Auth = regAuth
+	}
+	return &config.Config{
+		Registries:      []config.RegistrySource{src},
+		DefaultRegistry: "default",
+	}
+}
 
 func TestDefaultAuthManager_UnsetAuth(t *testing.T) {
 	t.Parallel()
@@ -40,25 +56,24 @@ func TestDefaultAuthManager_UnsetAuth(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			mockProvider := configmocks.NewMockProvider(ctrl)
 
-			// Capture the update function and verify it zeroes RegistryAuth.
 			mockProvider.EXPECT().
 				UpdateConfig(gomock.Any()).
 				DoAndReturn(func(fn func(*config.Config)) error {
 					if tt.updateErr != nil {
 						return tt.updateErr
 					}
-					cfg := &config.Config{
-						RegistryAuth: config.RegistryAuth{
-							Type: config.RegistryAuthTypeOAuth,
-							OAuth: &config.RegistryOAuthConfig{
-								Issuer:   "https://auth.example.com",
-								ClientID: "my-client",
-							},
+					cfg := configWithAuth(&config.RegistryAuth{
+						Type: config.RegistryAuthTypeOAuth,
+						OAuth: &config.RegistryOAuthConfig{
+							Issuer:   "https://auth.example.com",
+							ClientID: "my-client",
 						},
-					}
+					})
 					fn(cfg)
-					// After the update function runs, RegistryAuth must be zero.
-					require.Equal(t, config.RegistryAuth{}, cfg.RegistryAuth)
+					// After the update function runs, Auth must be nil.
+					src := cfg.FindRegistry("default")
+					require.NotNil(t, src)
+					require.Nil(t, src.Auth)
 					return nil
 				})
 
@@ -79,49 +94,46 @@ func TestDefaultAuthManager_GetAuthInfo(t *testing.T) {
 
 	tests := []struct {
 		name              string
-		registryAuth      config.RegistryAuth
+		cfg               *config.Config
 		wantAuthType      string
 		wantHasCachedToks bool
 	}{
 		{
-			name:              "returns empty when no auth configured",
-			registryAuth:      config.RegistryAuth{},
+			name:              "returns empty when no registries",
+			cfg:               &config.Config{},
 			wantAuthType:      "",
 			wantHasCachedToks: false,
 		},
 		{
-			name: "returns oauth type without cached tokens when OAuth section has no ref",
-			registryAuth: config.RegistryAuth{
+			name:              "returns empty when no auth configured",
+			cfg:               configWithAuth(nil),
+			wantAuthType:      "",
+			wantHasCachedToks: false,
+		},
+		{
+			name: "returns oauth type without cached tokens",
+			cfg: configWithAuth(&config.RegistryAuth{
 				Type: config.RegistryAuthTypeOAuth,
 				OAuth: &config.RegistryOAuthConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "my-client",
 				},
-			},
+			}),
 			wantAuthType:      config.RegistryAuthTypeOAuth,
 			wantHasCachedToks: false,
 		},
 		{
-			name: "returns oauth type with cached tokens when CachedRefreshTokenRef is set",
-			registryAuth: config.RegistryAuth{
+			name: "returns oauth type with cached tokens",
+			cfg: configWithAuth(&config.RegistryAuth{
 				Type: config.RegistryAuthTypeOAuth,
 				OAuth: &config.RegistryOAuthConfig{
 					Issuer:                "https://auth.example.com",
 					ClientID:              "my-client",
 					CachedRefreshTokenRef: "REGISTRY_OAUTH_aabbccdd",
 				},
-			},
+			}),
 			wantAuthType:      config.RegistryAuthTypeOAuth,
 			wantHasCachedToks: true,
-		},
-		{
-			name: "returns oauth type without cached tokens when OAuth section is nil",
-			registryAuth: config.RegistryAuth{
-				Type:  config.RegistryAuthTypeOAuth,
-				OAuth: nil,
-			},
-			wantAuthType:      config.RegistryAuthTypeOAuth,
-			wantHasCachedToks: false,
 		},
 	}
 
@@ -131,10 +143,7 @@ func TestDefaultAuthManager_GetAuthInfo(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			mockProvider := configmocks.NewMockProvider(ctrl)
-
-			mockProvider.EXPECT().
-				GetConfig().
-				Return(&config.Config{RegistryAuth: tt.registryAuth})
+			mockProvider.EXPECT().GetConfig().Return(tt.cfg)
 
 			mgr := NewAuthManager(mockProvider)
 			authType, hasCachedToks := mgr.GetAuthInfo()
@@ -150,48 +159,39 @@ func TestDefaultAuthManager_GetAuthStatus(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		registryAuth config.RegistryAuth
+		cfg          *config.Config
 		wantStatus   string
 		wantAuthType string
 	}{
 		{
-			name:         "returns none when no auth configured",
-			registryAuth: config.RegistryAuth{},
+			name:         "returns none when no auth",
+			cfg:          configWithAuth(nil),
 			wantStatus:   AuthStatusNone,
 			wantAuthType: "",
 		},
 		{
 			name: "returns configured when OAuth set but no cached tokens",
-			registryAuth: config.RegistryAuth{
+			cfg: configWithAuth(&config.RegistryAuth{
 				Type: config.RegistryAuthTypeOAuth,
 				OAuth: &config.RegistryOAuthConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "my-client",
 				},
-			},
+			}),
 			wantStatus:   AuthStatusConfigured,
 			wantAuthType: config.RegistryAuthTypeOAuth,
 		},
 		{
 			name: "returns authenticated when OAuth set with cached tokens",
-			registryAuth: config.RegistryAuth{
+			cfg: configWithAuth(&config.RegistryAuth{
 				Type: config.RegistryAuthTypeOAuth,
 				OAuth: &config.RegistryOAuthConfig{
 					Issuer:                "https://auth.example.com",
 					ClientID:              "my-client",
 					CachedRefreshTokenRef: "REGISTRY_OAUTH_aabbccdd",
 				},
-			},
+			}),
 			wantStatus:   AuthStatusAuthenticated,
-			wantAuthType: config.RegistryAuthTypeOAuth,
-		},
-		{
-			name: "returns configured when OAuth section is nil",
-			registryAuth: config.RegistryAuth{
-				Type:  config.RegistryAuthTypeOAuth,
-				OAuth: nil,
-			},
-			wantStatus:   AuthStatusConfigured,
 			wantAuthType: config.RegistryAuthTypeOAuth,
 		},
 	}
@@ -202,10 +202,7 @@ func TestDefaultAuthManager_GetAuthStatus(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			mockProvider := configmocks.NewMockProvider(ctrl)
-
-			mockProvider.EXPECT().
-				GetConfig().
-				Return(&config.Config{RegistryAuth: tt.registryAuth})
+			mockProvider.EXPECT().GetConfig().Return(tt.cfg)
 
 			mgr := NewAuthManager(mockProvider)
 			status, authType := mgr.GetAuthStatus()
@@ -220,26 +217,18 @@ func TestDefaultAuthManager_GetOAuthPublicConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		registryAuth config.RegistryAuth
-		wantConfig   *OAuthPublicConfig
+		name       string
+		cfg        *config.Config
+		wantConfig *OAuthPublicConfig
 	}{
 		{
-			name:         "returns nil when no auth configured",
-			registryAuth: config.RegistryAuth{},
-			wantConfig:   nil,
-		},
-		{
-			name: "returns nil when type is oauth but OAuth section is nil",
-			registryAuth: config.RegistryAuth{
-				Type:  config.RegistryAuthTypeOAuth,
-				OAuth: nil,
-			},
+			name:       "returns nil when no auth",
+			cfg:        configWithAuth(nil),
 			wantConfig: nil,
 		},
 		{
 			name: "returns config with all fields populated",
-			registryAuth: config.RegistryAuth{
+			cfg: configWithAuth(&config.RegistryAuth{
 				Type: config.RegistryAuthTypeOAuth,
 				OAuth: &config.RegistryOAuthConfig{
 					Issuer:   "https://auth.example.com",
@@ -247,7 +236,7 @@ func TestDefaultAuthManager_GetOAuthPublicConfig(t *testing.T) {
 					Audience: "api://toolhive",
 					Scopes:   []string{"openid", "profile"},
 				},
-			},
+			}),
 			wantConfig: &OAuthPublicConfig{
 				Issuer:   "https://auth.example.com",
 				ClientID: "my-client",
@@ -256,29 +245,15 @@ func TestDefaultAuthManager_GetOAuthPublicConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "returns config without optional fields",
-			registryAuth: config.RegistryAuth{
-				Type: config.RegistryAuthTypeOAuth,
-				OAuth: &config.RegistryOAuthConfig{
-					Issuer:   "https://auth.example.com",
-					ClientID: "my-client",
-				},
-			},
-			wantConfig: &OAuthPublicConfig{
-				Issuer:   "https://auth.example.com",
-				ClientID: "my-client",
-			},
-		},
-		{
 			name: "excludes cached token fields",
-			registryAuth: config.RegistryAuth{
+			cfg: configWithAuth(&config.RegistryAuth{
 				Type: config.RegistryAuthTypeOAuth,
 				OAuth: &config.RegistryOAuthConfig{
 					Issuer:                "https://auth.example.com",
 					ClientID:              "my-client",
 					CachedRefreshTokenRef: "REGISTRY_OAUTH_aabbccdd",
 				},
-			},
+			}),
 			wantConfig: &OAuthPublicConfig{
 				Issuer:   "https://auth.example.com",
 				ClientID: "my-client",
@@ -292,10 +267,7 @@ func TestDefaultAuthManager_GetOAuthPublicConfig(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			mockProvider := configmocks.NewMockProvider(ctrl)
-
-			mockProvider.EXPECT().
-				GetConfig().
-				Return(&config.Config{RegistryAuth: tt.registryAuth})
+			mockProvider.EXPECT().GetConfig().Return(tt.cfg)
 
 			mgr := NewAuthManager(mockProvider)
 			got := mgr.GetOAuthPublicConfig()

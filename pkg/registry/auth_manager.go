@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package registry
@@ -32,19 +32,17 @@ type OAuthPublicConfig struct {
 
 // AuthManager provides operations for managing registry authentication configuration.
 type AuthManager interface {
-	// SetOAuthAuth configures OIDC authentication for the registry.
+	// SetOAuthAuth configures OIDC authentication for the default registry.
 	// Validates the OIDC issuer before saving configuration.
 	SetOAuthAuth(ctx context.Context, issuer, clientID, audience string, scopes []string) error
 
-	// UnsetAuth removes registry authentication configuration.
+	// UnsetAuth removes registry authentication configuration from the default registry.
 	UnsetAuth() error
 
 	// GetAuthInfo returns the current auth type and whether tokens are cached.
 	GetAuthInfo() (authType string, hasCachedTokens bool)
 
 	// GetAuthStatus returns the auth status and auth type for API responses.
-	// Status is one of AuthStatusNone, AuthStatusConfigured, or AuthStatusAuthenticated.
-	// AuthType is "oauth" or empty string when no auth is configured.
 	GetAuthStatus() (status, authType string)
 
 	// GetOAuthPublicConfig returns the non-secret OAuth configuration,
@@ -64,7 +62,7 @@ func NewAuthManager(provider config.Provider) AuthManager {
 	}
 }
 
-// SetOAuthAuth configures OIDC authentication for the registry.
+// SetOAuthAuth configures OIDC authentication for the default registry.
 // PKCE (S256) is always enforced and not configurable.
 func (c *DefaultAuthManager) SetOAuthAuth(ctx context.Context, issuer, clientID, audience string, scopes []string) error {
 	updateFn, err := auth.ConfigureOAuth(ctx, issuer, clientID, audience, scopes)
@@ -74,24 +72,31 @@ func (c *DefaultAuthManager) SetOAuthAuth(ctx context.Context, issuer, clientID,
 	return c.provider.UpdateConfig(updateFn)
 }
 
-// UnsetAuth removes registry authentication configuration.
+// UnsetAuth removes registry authentication configuration from the default registry.
 func (c *DefaultAuthManager) UnsetAuth() error {
 	return c.provider.UpdateConfig(func(cfg *config.Config) {
-		cfg.RegistryAuth = config.RegistryAuth{}
+		defaultName := cfg.EffectiveDefaultRegistry()
+		src := cfg.FindRegistry(defaultName)
+		if src != nil {
+			src.Auth = nil
+		}
 	})
 }
 
-// GetAuthInfo returns the current auth type and whether tokens are cached.
+// GetAuthInfo returns the current auth type and whether tokens are cached
+// for the default registry.
 func (c *DefaultAuthManager) GetAuthInfo() (string, bool) {
 	cfg := c.provider.GetConfig()
-	if cfg.RegistryAuth.Type == "" {
+	defaultName := cfg.EffectiveDefaultRegistry()
+	regAuth := cfg.FindRegistryAuth(defaultName)
+	if regAuth == nil || regAuth.Type == "" {
 		return "", false
 	}
 
-	hasCachedTokens := cfg.RegistryAuth.OAuth != nil &&
-		cfg.RegistryAuth.OAuth.CachedRefreshTokenRef != ""
+	hasCachedTokens := regAuth.OAuth != nil &&
+		regAuth.OAuth.CachedRefreshTokenRef != ""
 
-	return cfg.RegistryAuth.Type, hasCachedTokens
+	return regAuth.Type, hasCachedTokens
 }
 
 // GetAuthStatus returns the auth status and auth type for API responses.
@@ -110,13 +115,15 @@ func (c *DefaultAuthManager) GetAuthStatus() (string, string) {
 // or nil if no OAuth auth is configured.
 func (c *DefaultAuthManager) GetOAuthPublicConfig() *OAuthPublicConfig {
 	cfg := c.provider.GetConfig()
-	if cfg.RegistryAuth.Type != config.RegistryAuthTypeOAuth || cfg.RegistryAuth.OAuth == nil {
+	defaultName := cfg.EffectiveDefaultRegistry()
+	regAuth := cfg.FindRegistryAuth(defaultName)
+	if regAuth == nil || regAuth.Type != config.RegistryAuthTypeOAuth || regAuth.OAuth == nil {
 		return nil
 	}
 	return &OAuthPublicConfig{
-		Issuer:   cfg.RegistryAuth.OAuth.Issuer,
-		ClientID: cfg.RegistryAuth.OAuth.ClientID,
-		Audience: cfg.RegistryAuth.OAuth.Audience,
-		Scopes:   cfg.RegistryAuth.OAuth.Scopes,
+		Issuer:   regAuth.OAuth.Issuer,
+		ClientID: regAuth.OAuth.ClientID,
+		Audience: regAuth.OAuth.Audience,
+		Scopes:   regAuth.OAuth.Scopes,
 	}
 }

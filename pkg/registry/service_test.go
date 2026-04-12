@@ -1,10 +1,9 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package registry_test
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -24,51 +23,34 @@ func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 		allowPrivateIP bool
 		expectedType   string
 		expectError    bool
-		setupFunc      func(t *testing.T) string // Returns path to test file if needed
-		cleanupFunc    func(path string)
 	}{
 		{
-			name:           "set local registry file",
+			name:           "set local file",
+			input:          "/tmp/test-registry.json",
 			allowPrivateIP: false,
 			expectedType:   config.RegistryTypeFile,
 			expectError:    false,
-			setupFunc: func(t *testing.T) string {
-				t.Helper()
-				tmpFile := filepath.Join(t.TempDir(), "test-registry.json")
-				content := []byte(`{
-					"version": "0.1",
-					"servers": {
-						"test": {
-							"command": ["test"],
-							"args": []
-						}
-					}
-				}`)
-				require.NoError(t, os.WriteFile(tmpFile, content, 0600))
-				return tmpFile
-			},
 		},
 		{
-			name:           "invalid local file - missing",
+			name:           "set URL ending in .json",
+			input:          "https://example.com/registry.json",
 			allowPrivateIP: false,
-			expectedType:   config.RegistryTypeFile,
-			expectError:    true,
-			setupFunc: func(_ *testing.T) string {
-				return "/tmp/non-existent-file-xyz123.json"
-			},
+			expectedType:   config.RegistryTypeURL,
+			expectError:    false,
 		},
 		{
-			name:           "invalid local file - wrong structure",
+			name:           "set API URL",
+			input:          "https://registry.example.com",
+			allowPrivateIP: false,
+			expectedType:   config.RegistryTypeAPI,
+			expectError:    false,
+		},
+		{
+			name:           "set file:// path",
+			input:          "file:///path/to/registry.json",
 			allowPrivateIP: false,
 			expectedType:   config.RegistryTypeFile,
-			expectError:    true,
-			setupFunc: func(t *testing.T) string {
-				t.Helper()
-				tmpFile := filepath.Join(t.TempDir(), "invalid-registry.json")
-				content := []byte(`{"invalid": "structure"}`)
-				require.NoError(t, os.WriteFile(tmpFile, content, 0600))
-				return tmpFile
-			},
+			expectError:    false,
 		},
 	}
 
@@ -76,31 +58,19 @@ func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create a test config provider
 			tmpDir := t.TempDir()
 			configPath := filepath.Join(tmpDir, "config.yaml")
 			provider := config.NewPathProvider(configPath)
 			service := registry.NewConfiguratorWithProvider(provider)
 
-			// Setup test data if needed
-			var input string
-			if tt.setupFunc != nil {
-				input = tt.setupFunc(t)
-			} else {
-				input = tt.input
-			}
+			registryType, err := service.SetRegistryFromInput(tt.input, tt.allowPrivateIP)
 
-			// Call the service
-			registryType, err := service.SetRegistryFromInput(input, tt.allowPrivateIP)
-
-			// Check results
 			if tt.expectError {
-				assert.Error(t, err, "Expected an error")
-				assert.Equal(t, tt.expectedType, registryType, "Registry type should be returned even on error")
+				assert.Error(t, err)
 			} else {
-				assert.NoError(t, err, "Should not return error")
-				assert.Equal(t, tt.expectedType, registryType, "Registry type should match")
+				assert.NoError(t, err)
 			}
+			assert.Equal(t, tt.expectedType, registryType)
 		})
 	}
 }
@@ -108,43 +78,28 @@ func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 func TestConfigurator_UnsetRegistry(t *testing.T) {
 	t.Parallel()
 
-	// Create a test config provider with a registry set
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
-	tmpFile := filepath.Join(tmpDir, "test-registry.json")
-
-	// Create a valid registry file
-	content := []byte(`{
-		"version": "0.1",
-		"servers": {
-			"test": {
-				"command": ["test"],
-				"args": []
-			}
-		}
-	}`)
-	require.NoError(t, os.WriteFile(tmpFile, content, 0600))
-
 	provider := config.NewPathProvider(configPath)
 	service := registry.NewConfiguratorWithProvider(provider)
 
-	// First, set a registry
-	_, err := service.SetRegistryFromInput(tmpFile, false)
-	require.NoError(t, err, "Should be able to set registry")
+	// Set a registry
+	_, err := service.SetRegistryFromInput("/tmp/test-registry.json", false)
+	require.NoError(t, err)
 
 	// Verify it's set
 	registryType, source := service.GetRegistryInfo()
-	assert.Equal(t, config.RegistryTypeFile, registryType, "Registry type should be file")
-	assert.NotEmpty(t, source, "Source should not be empty")
+	assert.Equal(t, config.RegistryTypeFile, registryType)
+	assert.NotEmpty(t, source)
 
-	// Now unset it
+	// Unset it
 	err = service.UnsetRegistry()
-	assert.NoError(t, err, "Should be able to unset registry")
+	require.NoError(t, err)
 
 	// Verify it's unset
 	registryType, source = service.GetRegistryInfo()
-	assert.Equal(t, config.RegistryTypeDefault, registryType, "Registry type should be default")
-	assert.Empty(t, source, "Source should be empty")
+	assert.Equal(t, config.RegistryTypeDefault, registryType)
+	assert.Empty(t, source)
 }
 
 func TestConfigurator_GetRegistryInfo(t *testing.T) {
@@ -154,33 +109,43 @@ func TestConfigurator_GetRegistryInfo(t *testing.T) {
 		name           string
 		setupFunc      func(t *testing.T, service registry.Configurator)
 		expectedType   string
-		expectedSource string // Empty means we don't check it
+		expectedSource string
 	}{
 		{
 			name:           "default registry",
-			setupFunc:      nil, // No setup, should be default
+			setupFunc:      nil,
 			expectedType:   config.RegistryTypeDefault,
 			expectedSource: "",
 		},
 		{
-			name: "local file registry",
+			name: "file registry",
 			setupFunc: func(t *testing.T, service registry.Configurator) {
 				t.Helper()
-				tmpFile := filepath.Join(t.TempDir(), "test-registry.json")
-				content := []byte(`{
-					"version": "0.1",
-					"servers": {
-						"test": {
-							"command": ["test"],
-							"args": []
-						}
-					}
-				}`)
-				require.NoError(t, os.WriteFile(tmpFile, content, 0600))
-				_, err := service.SetRegistryFromInput(tmpFile, false)
+				_, err := service.SetRegistryFromInput("/tmp/test.json", false)
 				require.NoError(t, err)
 			},
-			expectedType: config.RegistryTypeFile,
+			expectedType:   config.RegistryTypeFile,
+			expectedSource: "/tmp/test.json",
+		},
+		{
+			name: "URL registry",
+			setupFunc: func(t *testing.T, service registry.Configurator) {
+				t.Helper()
+				_, err := service.SetRegistryFromInput("https://example.com/registry.json", false)
+				require.NoError(t, err)
+			},
+			expectedType:   config.RegistryTypeURL,
+			expectedSource: "https://example.com/registry.json",
+		},
+		{
+			name: "API registry",
+			setupFunc: func(t *testing.T, service registry.Configurator) {
+				t.Helper()
+				_, err := service.SetRegistryFromInput("https://registry.example.com", false)
+				require.NoError(t, err)
+			},
+			expectedType:   config.RegistryTypeAPI,
+			expectedSource: "https://registry.example.com",
 		},
 	}
 
@@ -188,24 +153,19 @@ func TestConfigurator_GetRegistryInfo(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create a test config provider
 			tmpDir := t.TempDir()
 			configPath := filepath.Join(tmpDir, "config.yaml")
 			provider := config.NewPathProvider(configPath)
 			service := registry.NewConfiguratorWithProvider(provider)
 
-			// Setup if needed
 			if tt.setupFunc != nil {
 				tt.setupFunc(t, service)
 			}
 
-			// Get registry info
 			registryType, source := service.GetRegistryInfo()
-
-			// Check results
-			assert.Equal(t, tt.expectedType, registryType, "Registry type should match")
+			assert.Equal(t, tt.expectedType, registryType)
 			if tt.expectedSource != "" {
-				assert.Equal(t, tt.expectedSource, source, "Source should match")
+				assert.Equal(t, tt.expectedSource, source)
 			}
 		})
 	}

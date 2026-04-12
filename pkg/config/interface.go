@@ -17,11 +17,9 @@ type Provider interface {
 	LoadOrCreateConfig() (*Config, error)
 
 	// Registry operations
-	SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error
-	SetRegistryAPI(apiURL string, allowPrivateRegistryIp bool) error
-	SetRegistryFile(registryPath string) error
-	UnsetRegistry() error
-	GetRegistryConfig() (url, localPath string, allowPrivateIP bool, registryType string)
+	AddRegistry(source RegistrySource) error
+	RemoveRegistry(name string) error
+	SetDefaultRegistry(name string) error
 
 	// CA certificate operations
 	SetCACert(certPath string) error
@@ -82,29 +80,19 @@ func (*DefaultProvider) LoadOrCreateConfig() (*Config, error) {
 	return LoadOrCreateConfigWithDefaultPath()
 }
 
-// SetRegistryURL validates and sets a registry URL
-func (d *DefaultProvider) SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
-	return setRegistryURL(d, registryURL, allowPrivateRegistryIp)
+// AddRegistry adds or replaces a registry source
+func (d *DefaultProvider) AddRegistry(source RegistrySource) error {
+	return addRegistry(d, source)
 }
 
-// SetRegistryAPI validates and sets an MCP Registry API endpoint
-func (d *DefaultProvider) SetRegistryAPI(apiURL string, allowPrivateRegistryIp bool) error {
-	return setRegistryAPI(d, apiURL, allowPrivateRegistryIp)
+// RemoveRegistry removes a registry source by name
+func (d *DefaultProvider) RemoveRegistry(name string) error {
+	return removeRegistry(d, name)
 }
 
-// SetRegistryFile validates and sets a local registry file
-func (d *DefaultProvider) SetRegistryFile(registryPath string) error {
-	return setRegistryFile(d, registryPath)
-}
-
-// UnsetRegistry resets registry configuration to defaults
-func (d *DefaultProvider) UnsetRegistry() error {
-	return unsetRegistry(d)
-}
-
-// GetRegistryConfig returns current registry configuration
-func (d *DefaultProvider) GetRegistryConfig() (url, localPath string, allowPrivateIP bool, registryType string) {
-	return getRegistryConfig(d)
+// SetDefaultRegistry sets the default registry name
+func (d *DefaultProvider) SetDefaultRegistry(name string) error {
+	return setDefaultRegistry(d, name)
 }
 
 // SetCACert validates and sets the CA certificate path
@@ -253,29 +241,19 @@ func (p *PathProvider) LoadOrCreateConfig() (*Config, error) {
 	return LoadOrCreateConfigWithPath(p.configPath)
 }
 
-// SetRegistryURL validates and sets a registry URL
-func (p *PathProvider) SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
-	return setRegistryURL(p, registryURL, allowPrivateRegistryIp)
+// AddRegistry adds or replaces a registry source
+func (p *PathProvider) AddRegistry(source RegistrySource) error {
+	return addRegistry(p, source)
 }
 
-// SetRegistryAPI validates and sets an MCP Registry API endpoint
-func (p *PathProvider) SetRegistryAPI(apiURL string, allowPrivateRegistryIp bool) error {
-	return setRegistryAPI(p, apiURL, allowPrivateRegistryIp)
+// RemoveRegistry removes a registry source by name
+func (p *PathProvider) RemoveRegistry(name string) error {
+	return removeRegistry(p, name)
 }
 
-// SetRegistryFile validates and sets a local registry file
-func (p *PathProvider) SetRegistryFile(registryPath string) error {
-	return setRegistryFile(p, registryPath)
-}
-
-// UnsetRegistry resets registry configuration to defaults
-func (p *PathProvider) UnsetRegistry() error {
-	return unsetRegistry(p)
-}
-
-// GetRegistryConfig returns current registry configuration
-func (p *PathProvider) GetRegistryConfig() (url, localPath string, allowPrivateIP bool, registryType string) {
-	return getRegistryConfig(p)
+// SetDefaultRegistry sets the default registry name
+func (p *PathProvider) SetDefaultRegistry(name string) error {
+	return setDefaultRegistry(p, name)
 }
 
 // SetCACert validates and sets the CA certificate path
@@ -419,29 +397,19 @@ func (*KubernetesProvider) LoadOrCreateConfig() (*Config, error) {
 	return &config, nil
 }
 
-// SetRegistryURL is a no-op for Kubernetes environments
-func (*KubernetesProvider) SetRegistryURL(_ string, _ bool) error {
+// AddRegistry is a no-op for Kubernetes environments
+func (*KubernetesProvider) AddRegistry(_ RegistrySource) error {
 	return nil
 }
 
-// SetRegistryAPI is a no-op for Kubernetes environments
-func (*KubernetesProvider) SetRegistryAPI(_ string, _ bool) error {
+// RemoveRegistry is a no-op for Kubernetes environments
+func (*KubernetesProvider) RemoveRegistry(_ string) error {
 	return nil
 }
 
-// SetRegistryFile is a no-op for Kubernetes environments
-func (*KubernetesProvider) SetRegistryFile(_ string) error {
+// SetDefaultRegistry is a no-op for Kubernetes environments
+func (*KubernetesProvider) SetDefaultRegistry(_ string) error {
 	return nil
-}
-
-// UnsetRegistry is a no-op for Kubernetes environments
-func (*KubernetesProvider) UnsetRegistry() error {
-	return nil
-}
-
-// GetRegistryConfig returns empty registry configuration for Kubernetes environments
-func (*KubernetesProvider) GetRegistryConfig() (url, localPath string, allowPrivateIP bool, registryType string) {
-	return "", "", false, ""
 }
 
 // SetCACert is a no-op for Kubernetes environments

@@ -66,7 +66,7 @@ func setRegistryAuthCmdFunc(cmd *cobra.Command, _ []string) error {
 
 	// Enforce the coupling invariant: auth requires a registry URL.
 	cfg := provider.GetConfig()
-	if cfg.RegistryApiUrl == "" && cfg.RegistryUrl == "" && cfg.LocalRegistryPath == "" {
+	if len(cfg.Registries) == 0 {
 		return fmt.Errorf("no registry URL is configured; use 'thv config set-registry' with --issuer and --client-id flags instead")
 	}
 

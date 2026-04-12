@@ -1363,8 +1363,10 @@ func TestResolveRegistrySourceURLs(t *testing.T) {
 			name:           "nil metadata returns empty strings",
 			serverMetadata: nil,
 			appConfig: &appconfig.Config{
-				RegistryApiUrl: "https://api.example.com",
-				RegistryUrl:    "https://registry.example.com",
+				Registries: []appconfig.RegistrySource{
+					{Name: "default", Type: appconfig.RegistrySourceTypeAPI, Location: "https://api.example.com"},
+				},
+				DefaultRegistry: "default",
 			},
 			expectedAPI: "",
 			expectedReg: "",
@@ -1377,34 +1379,35 @@ func TestResolveRegistrySourceURLs(t *testing.T) {
 			expectedReg:    "",
 		},
 		{
-			name:           "non-nil metadata with both config URLs set",
+			name:           "non-nil metadata with API registry configured",
 			serverMetadata: &regtypes.ImageMetadata{},
 			appConfig: &appconfig.Config{
-				RegistryApiUrl: "https://api.example.com",
-				RegistryUrl:    "https://registry.example.com",
-			},
-			expectedAPI: "https://api.example.com",
-			expectedReg: "https://registry.example.com",
-		},
-		{
-			name:           "non-nil metadata with only RegistryApiUrl set",
-			serverMetadata: &regtypes.ImageMetadata{},
-			appConfig: &appconfig.Config{
-				RegistryApiUrl: "https://api.example.com",
-				RegistryUrl:    "",
+				Registries: []appconfig.RegistrySource{
+					{Name: "default", Type: appconfig.RegistrySourceTypeAPI, Location: "https://api.example.com"},
+				},
+				DefaultRegistry: "default",
 			},
 			expectedAPI: "https://api.example.com",
 			expectedReg: "",
 		},
 		{
-			name:           "non-nil metadata with only RegistryUrl set",
+			name:           "non-nil metadata with URL registry configured",
 			serverMetadata: &regtypes.ImageMetadata{},
 			appConfig: &appconfig.Config{
-				RegistryApiUrl: "",
-				RegistryUrl:    "https://registry.example.com",
+				Registries: []appconfig.RegistrySource{
+					{Name: "default", Type: appconfig.RegistrySourceTypeURL, Location: "https://registry.example.com"},
+				},
+				DefaultRegistry: "default",
 			},
 			expectedAPI: "",
 			expectedReg: "https://registry.example.com",
+		},
+		{
+			name:           "non-nil metadata with no registries configured",
+			serverMetadata: &regtypes.ImageMetadata{},
+			appConfig:      &appconfig.Config{},
+			expectedAPI:    "",
+			expectedReg:    "",
 		},
 	}
 

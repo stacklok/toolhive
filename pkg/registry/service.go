@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package registry
@@ -54,59 +54,53 @@ func NewConfiguratorWithProvider(provider config.Provider) Configurator {
 }
 
 // SetRegistryFromInput auto-detects the registry type and configures it.
+// The input is stored as the "default" registry entry.
 func (s *DefaultConfigurator) SetRegistryFromInput(input string, allowPrivateIP bool) (string, error) {
-	// Auto-detect the registry type
-	registryType, cleanPath := config.DetectRegistryType(input, allowPrivateIP)
+	// Determine the registry source type from the input.
+	sourceType := detectSourceType(input)
 
-	var err error
+	source := config.RegistrySource{
+		Name:           "default",
+		Type:           sourceType,
+		Location:       input,
+		AllowPrivateIP: allowPrivateIP,
+	}
 
-	switch registryType {
-	case config.RegistryTypeURL:
-		err = s.provider.SetRegistryURL(cleanPath, allowPrivateIP)
-		if err != nil {
-			return registryType, fmt.Errorf("failed to set remote registry: %w", err)
-		}
+	if err := s.provider.AddRegistry(source); err != nil {
+		return string(sourceType), fmt.Errorf("failed to add registry: %w", err)
+	}
 
-	case config.RegistryTypeAPI:
-		err = s.provider.SetRegistryAPI(cleanPath, allowPrivateIP)
-		if err != nil {
-			return registryType, fmt.Errorf("failed to set registry API: %w", err)
-		}
-
-	case config.RegistryTypeFile:
-		err = s.provider.SetRegistryFile(cleanPath)
-		if err != nil {
-			return registryType, fmt.Errorf("failed to set local registry file: %w", err)
-		}
-
-	default:
-		return registryType, fmt.Errorf("unsupported registry type: %s", registryType)
+	// Set as the default registry
+	if err := s.provider.SetDefaultRegistry("default"); err != nil {
+		return string(sourceType), fmt.Errorf("failed to set default registry: %w", err)
 	}
 
 	// Reset the config singleton to clear cached configuration
-	// Note: Callers are responsible for resetting the registry provider cache
 	config.ResetSingleton()
 
-	return registryType, nil
+	return string(sourceType), nil
 }
 
 // UnsetRegistry resets the registry configuration to defaults.
 func (s *DefaultConfigurator) UnsetRegistry() error {
-	// Get current config before unsetting
-	_, _, _, registryType := s.provider.GetRegistryConfig()
+	cfg := s.provider.GetConfig()
 
-	if registryType == config.RegistryTypeDefault {
+	if len(cfg.Registries) == 0 && cfg.DefaultRegistry == "" {
 		// Already using default registry, nothing to do
 		return nil
 	}
 
-	err := s.provider.UnsetRegistry()
-	if err != nil {
-		return fmt.Errorf("failed to reset registry configuration: %w", err)
+	// Remove the "default" registry entry
+	if err := s.provider.RemoveRegistry("default"); err != nil {
+		return fmt.Errorf("failed to remove registry configuration: %w", err)
+	}
+
+	// Clear the default registry setting
+	if err := s.provider.SetDefaultRegistry(""); err != nil {
+		return fmt.Errorf("failed to clear default registry: %w", err)
 	}
 
 	// Reset the config singleton to clear cached configuration
-	// Note: Callers are responsible for resetting the registry provider cache
 	config.ResetSingleton()
 
 	return nil
@@ -114,16 +108,41 @@ func (s *DefaultConfigurator) UnsetRegistry() error {
 
 // GetRegistryInfo returns information about the currently configured registry.
 func (s *DefaultConfigurator) GetRegistryInfo() (string, string) {
-	url, localPath, _, registryType := s.provider.GetRegistryConfig()
+	cfg := s.provider.GetConfig()
 
-	switch registryType {
-	case config.RegistryTypeAPI:
-		return config.RegistryTypeAPI, url
-	case config.RegistryTypeURL:
-		return config.RegistryTypeURL, url
-	case config.RegistryTypeFile:
-		return config.RegistryTypeFile, localPath
-	default:
-		return config.RegistryTypeDefault, ""
+	// Look for the default registry entry first
+	defaultName := cfg.EffectiveDefaultRegistry()
+	src := cfg.FindRegistry(defaultName)
+	if src != nil {
+		return string(src.Type), src.Location
 	}
+
+	// If there are any registries, return info about the first one
+	if len(cfg.Registries) > 0 {
+		first := cfg.Registries[0]
+		return string(first.Type), first.Location
+	}
+
+	return config.RegistryTypeDefault, ""
+}
+
+// detectSourceType determines the registry source type from the input string.
+func detectSourceType(input string) config.RegistrySourceType {
+	// Check for explicit file:// protocol
+	if len(input) > 7 && input[:7] == "file://" {
+		return config.RegistrySourceTypeFile
+	}
+
+	// HTTP/HTTPS URLs
+	if (len(input) > 7 && input[:7] == "http://") || (len(input) > 8 && input[:8] == "https://") {
+		// URLs ending with .json are treated as static registry files
+		if len(input) > 5 && input[len(input)-5:] == ".json" {
+			return config.RegistrySourceTypeURL
+		}
+		// Other URLs are treated as API endpoints
+		return config.RegistrySourceTypeAPI
+	}
+
+	// Default: local file path
+	return config.RegistrySourceTypeFile
 }

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package app
@@ -14,35 +14,68 @@ import (
 	"github.com/spf13/cobra"
 
 	types "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/registry"
 	transtypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 var registryCmd = &cobra.Command{
 	Use:   "registry",
-	Short: "Manage MCP server registry",
-	Long:  `Manage the MCP server registry, including listing and getting information about available MCP servers.`,
+	Short: "Manage MCP server registries",
+	Long:  `Manage MCP server registries, including listing registries, listing servers, getting server details, and searching.`,
 }
 
 var registryListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
-	Short:   "List available MCP servers",
-	Long:    `List all available MCP servers in the registry.`,
+	Short:   "List configured registries",
+	Long:    `List all configured registry sources.`,
 	RunE:    registryListCmdFunc,
 }
 
-var registryInfoCmd = &cobra.Command{
-	Use:   "info [server]",
+var registryServersCmd = &cobra.Command{
+	Use:     "servers",
+	Aliases: []string{"srv"},
+	Short:   "List available MCP servers",
+	Long:    `List all available MCP servers in the registry.`,
+	RunE:    registryServersCmdFunc,
+}
+
+var registryServerCmd = &cobra.Command{
+	Use:   "server [name]",
 	Short: "Get information about an MCP server",
 	Long:  `Get detailed information about a specific MCP server in the registry.`,
 	Args:  cobra.ExactArgs(1),
-	RunE:  registryInfoCmdFunc,
+	RunE:  registryServerCmdFunc,
+}
+
+var registrySkillsCmd = &cobra.Command{
+	Use:   "skills",
+	Short: "List available skills",
+	Long:  `List all available skills in the registry.`,
+	RunE:  registrySkillsCmdFunc,
+}
+
+var registrySearchCmd = &cobra.Command{
+	Use:   "search [query]",
+	Short: "Search for MCP servers",
+	Long:  `Search for MCP servers in the registry by name, description, or tags.`,
+	Args:  cobra.ExactArgs(1),
+	RunE:  registrySearchCmdFunc,
+}
+
+var registrySetDefaultCmd = &cobra.Command{
+	Use:   "set-default [name]",
+	Short: "Set the default registry",
+	Long:  `Set the default registry used for server lookups.`,
+	Args:  cobra.ExactArgs(1),
+	RunE:  registrySetDefaultCmdFunc,
 }
 
 var (
-	registryFormat  string
-	refreshRegistry bool
+	registryFormat   string
+	refreshRegistry  bool
+	registryNameFlag string
 )
 
 func init() {
@@ -51,26 +84,103 @@ func init() {
 
 	// Add subcommands to registry command
 	registryCmd.AddCommand(registryListCmd)
-	registryCmd.AddCommand(registryInfoCmd)
+	registryCmd.AddCommand(registryServersCmd)
+	registryCmd.AddCommand(registryServerCmd)
+	registryCmd.AddCommand(registrySkillsCmd)
+	registryCmd.AddCommand(registrySearchCmd)
+	registryCmd.AddCommand(registrySetDefaultCmd)
 
-	// Add flags for list and info commands
+	// Add flags for servers command
+	AddFormatFlag(registryServersCmd, &registryFormat)
+	registryServersCmd.Flags().BoolVar(&refreshRegistry, "refresh", false, "Force refresh registry cache")
+	registryServersCmd.Flags().StringVar(&registryNameFlag, "registry", "", "Registry name to query (default: configured default)")
+	registryServersCmd.PreRunE = ValidateFormat(&registryFormat)
+
+	// Add flags for server command
+	AddFormatFlag(registryServerCmd, &registryFormat)
+	registryServerCmd.Flags().BoolVar(&refreshRegistry, "refresh", false, "Force refresh registry cache")
+	registryServerCmd.Flags().StringVar(&registryNameFlag, "registry", "", "Registry name to query (default: configured default)")
+	registryServerCmd.PreRunE = ValidateFormat(&registryFormat)
+
+	// Add flags for skills command
+	AddFormatFlag(registrySkillsCmd, &registryFormat)
+	registrySkillsCmd.Flags().StringVar(&registryNameFlag, "registry", "", "Registry name to query (default: configured default)")
+	registrySkillsCmd.PreRunE = ValidateFormat(&registryFormat)
+
+	// Add flags for search command
+	AddFormatFlag(registrySearchCmd, &registryFormat)
+	registrySearchCmd.Flags().StringVar(&registryNameFlag, "registry", "", "Registry name to search (default: configured default)")
+	registrySearchCmd.PreRunE = ValidateFormat(&registryFormat)
+
+	// Add flags for list command
 	AddFormatFlag(registryListCmd, &registryFormat)
-	registryListCmd.Flags().BoolVar(&refreshRegistry, "refresh", false, "Force refresh registry cache")
 	registryListCmd.PreRunE = ValidateFormat(&registryFormat)
-
-	AddFormatFlag(registryInfoCmd, &registryFormat)
-	registryInfoCmd.Flags().BoolVar(&refreshRegistry, "refresh", false, "Force refresh registry cache")
-	registryInfoCmd.PreRunE = ValidateFormat(&registryFormat)
 }
 
 func registryListCmdFunc(_ *cobra.Command, _ []string) error {
-	// Get all servers from registry
 	store, err := registry.DefaultStore()
 	if err != nil {
 		return fmt.Errorf("failed to get registry store: %w", err)
 	}
 
-	serverJSONs, err := store.ListServers("")
+	names := store.ListRegistries()
+
+	switch registryFormat {
+	case FormatJSON:
+		type registryEntry struct {
+			Name      string `json:"name"`
+			IsDefault bool   `json:"is_default"`
+			Proxied   bool   `json:"proxied"`
+		}
+		entries := make([]registryEntry, 0, len(names))
+		defaultName := store.DefaultRegistryName()
+		for _, name := range names {
+			entries = append(entries, registryEntry{
+				Name:      name,
+				IsDefault: name == defaultName,
+				Proxied:   store.IsProxied(name),
+			})
+		}
+		jsonData, err := json.MarshalIndent(entries, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		fmt.Println(string(jsonData))
+	default:
+		defaultName := store.DefaultRegistryName()
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDEFAULT"); err != nil {
+			slog.Warn(fmt.Sprintf("Failed to write output: %v", err))
+			return nil
+		}
+		for _, name := range names {
+			regType := "local"
+			if store.IsProxied(name) {
+				regType = "proxied"
+			}
+			isDefault := ""
+			if name == defaultName {
+				isDefault = "*"
+			}
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", name, regType, isDefault); err != nil {
+				slog.Debug(fmt.Sprintf("Failed to write registry info: %v", err))
+			}
+		}
+		if err := w.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to flush tabwriter: %v\n", err)
+		}
+	}
+
+	return nil
+}
+
+func registryServersCmdFunc(_ *cobra.Command, _ []string) error {
+	store, err := registry.DefaultStore()
+	if err != nil {
+		return fmt.Errorf("failed to get registry store: %w", err)
+	}
+
+	serverJSONs, err := store.ListServers(registryNameFlag)
 	if err != nil {
 		return fmt.Errorf("failed to list servers: %w", err)
 	}
@@ -80,10 +190,8 @@ func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to convert servers: %w", err)
 	}
 
-	// Sort servers by name using the utility function
 	types.SortServersByName(servers)
 
-	// Output based on format
 	switch registryFormat {
 	case FormatJSON:
 		return printJSONServers(servers)
@@ -93,15 +201,14 @@ func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 }
 
-func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
-	// Get server information
+func registryServerCmdFunc(_ *cobra.Command, args []string) error {
 	serverName := args[0]
 	store, err := registry.DefaultStore()
 	if err != nil {
 		return fmt.Errorf("failed to get registry store: %w", err)
 	}
 
-	serverJSON, err := store.GetServer("", serverName)
+	serverJSON, err := store.GetServer(registryNameFlag, serverName)
 	if err != nil {
 		return fmt.Errorf("failed to get server information: %w", err)
 	}
@@ -111,7 +218,6 @@ func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to convert server: %w", err)
 	}
 
-	// Output based on format
 	switch registryFormat {
 	case FormatJSON:
 		return printJSONServer(server)
@@ -121,15 +227,132 @@ func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 	}
 }
 
+func registrySkillsCmdFunc(_ *cobra.Command, _ []string) error {
+	store, err := registry.DefaultStore()
+	if err != nil {
+		return fmt.Errorf("failed to get registry store: %w", err)
+	}
+
+	skills, err := store.ListSkills(registryNameFlag)
+	if err != nil {
+		return fmt.Errorf("failed to list skills: %w", err)
+	}
+
+	switch registryFormat {
+	case FormatJSON:
+		jsonData, err := json.MarshalIndent(skills, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		fmt.Println(string(jsonData))
+	default:
+		if len(skills) == 0 {
+			fmt.Println("No skills found.")
+			return nil
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		if _, err := fmt.Fprintln(w, "NAMESPACE\tNAME\tDESCRIPTION"); err != nil {
+			slog.Warn(fmt.Sprintf("Failed to write output: %v", err))
+			return nil
+		}
+		for _, sk := range skills {
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n",
+				sk.Namespace,
+				sk.Name,
+				truncateString(sk.Description, 50),
+			); err != nil {
+				slog.Debug(fmt.Sprintf("Failed to write skill info: %v", err))
+			}
+		}
+		if err := w.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to flush tabwriter: %v\n", err)
+		}
+	}
+
+	return nil
+}
+
+func registrySearchCmdFunc(_ *cobra.Command, args []string) error {
+	query := args[0]
+	store, err := registry.DefaultStore()
+	if err != nil {
+		return fmt.Errorf("failed to get registry store: %w", err)
+	}
+
+	serverJSONs, err := store.SearchServers(registryNameFlag, query)
+	if err != nil {
+		return fmt.Errorf("failed to search servers: %w", err)
+	}
+
+	servers, err := registry.ConvertServersToServerMetadata(serverJSONs)
+	if err != nil {
+		return fmt.Errorf("failed to convert servers: %w", err)
+	}
+
+	if len(servers) == 0 {
+		fmt.Printf("No servers found matching query: %s\n", query)
+		return nil
+	}
+
+	types.SortServersByName(servers)
+
+	switch registryFormat {
+	case FormatJSON:
+		jsonData, err := json.MarshalIndent(servers, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		fmt.Println(string(jsonData))
+	default:
+		fmt.Printf("Found %d servers matching query: %s\n", len(servers), query)
+		printTextSearchResults(servers)
+	}
+
+	return nil
+}
+
+func registrySetDefaultCmdFunc(_ *cobra.Command, args []string) error {
+	name := args[0]
+
+	provider := registry.NewConfigurator()
+
+	// Verify the registry exists
+	store, err := registry.DefaultStore()
+	if err != nil {
+		return fmt.Errorf("failed to get registry store: %w", err)
+	}
+
+	names := store.ListRegistries()
+	found := false
+	for _, n := range names {
+		if n == name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("registry %q not found; available registries: %s", name, strings.Join(names, ", "))
+	}
+
+	_ = provider // The SetDefaultRegistry is on config.Provider, not Configurator
+	// Use the config provider directly
+	configProvider := config.NewDefaultProvider()
+	if err := configProvider.SetDefaultRegistry(name); err != nil {
+		return fmt.Errorf("failed to set default registry: %w", err)
+	}
+
+	registry.ResetDefaultStore()
+
+	return nil
+}
+
 // printJSONServers prints servers in JSON format
 func printJSONServers(servers []types.ServerMetadata) error {
-	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
-	// Print JSON
 	fmt.Println(string(jsonData))
 	return nil
 }
@@ -141,21 +364,18 @@ func printJSONServer(server types.ServerMetadata) error {
 		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
-	// Print JSON
 	fmt.Println(string(jsonData))
 	return nil
 }
 
 // printTextServers prints servers in text format
 func printTextServers(servers []types.ServerMetadata) {
-	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTIER\tSTARS\tPULLS"); err != nil {
 		slog.Warn(fmt.Sprintf("Failed to write output: %v", err))
 		return
 	}
 
-	// Print server information
 	for _, server := range servers {
 		stars := 0
 		if metadata := server.GetMetadata(); metadata != nil {
@@ -178,7 +398,6 @@ func printTextServers(servers []types.ServerMetadata) {
 		}
 	}
 
-	// Flush the tabwriter
 	if err := w.Flush(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to flush tabwriter: %v\n", err)
 	}
@@ -224,7 +443,6 @@ func printTextServerInfo(name string, server types.ServerMetadata) {
 			if img.Permissions != nil {
 				fmt.Println("\nPermissions:")
 
-				// Print read permissions
 				if len(img.Permissions.Read) > 0 {
 					fmt.Println("  Read:")
 					for _, path := range img.Permissions.Read {
@@ -232,7 +450,6 @@ func printTextServerInfo(name string, server types.ServerMetadata) {
 					}
 				}
 
-				// Print write permissions
 				if len(img.Permissions.Write) > 0 {
 					fmt.Println("  Write:")
 					for _, path := range img.Permissions.Write {
@@ -240,7 +457,6 @@ func printTextServerInfo(name string, server types.ServerMetadata) {
 					}
 				}
 
-				// Print network permissions
 				if img.Permissions.Network != nil && img.Permissions.Network.Outbound != nil {
 					fmt.Println("  Network:")
 					outbound := img.Permissions.Network.Outbound
@@ -268,7 +484,6 @@ func printTextServerInfo(name string, server types.ServerMetadata) {
 		if remote, ok := server.(*types.RemoteServerMetadata); ok {
 			fmt.Printf("URL: %s\n", remote.URL)
 
-			// Print headers
 			if len(remote.Headers) > 0 {
 				fmt.Println("\nHeaders:")
 				for _, header := range remote.Headers {
@@ -284,7 +499,6 @@ func printTextServerInfo(name string, server types.ServerMetadata) {
 				}
 			}
 
-			// Print OAuth config
 			if remote.OAuthConfig != nil {
 				fmt.Println("\nOAuth Configuration:")
 				if remote.OAuthConfig.Issuer != "" {
@@ -302,7 +516,6 @@ func printTextServerInfo(name string, server types.ServerMetadata) {
 
 	fmt.Printf("Repository URL: %s\n", server.GetRepositoryURL())
 
-	// Print metadata
 	if metadata := server.GetMetadata(); metadata != nil {
 		fmt.Printf("Popularity: %d stars\n", metadata.Stars)
 		fmt.Printf("Last Updated: %s\n", metadata.LastUpdated)
@@ -311,7 +524,6 @@ func printTextServerInfo(name string, server types.ServerMetadata) {
 		fmt.Printf("Last Updated: N/A\n")
 	}
 
-	// Print tools
 	if tools := server.GetTools(); len(tools) > 0 {
 		fmt.Println("\nTools:")
 		for _, tool := range tools {
@@ -319,7 +531,6 @@ func printTextServerInfo(name string, server types.ServerMetadata) {
 		}
 	}
 
-	// Print environment variables
 	if envVars := server.GetEnvVars(); len(envVars) > 0 {
 		fmt.Println("\nEnvironment Variables:")
 		for _, envVar := range envVars {
@@ -335,13 +546,11 @@ func printTextServerInfo(name string, server types.ServerMetadata) {
 		}
 	}
 
-	// Print tags
 	if tags := server.GetTags(); len(tags) > 0 {
 		fmt.Println("\nTags:")
 		fmt.Printf("  %s\n", strings.Join(tags, ", "))
 	}
 
-	// Print custom metadata
 	if customMetadata := server.GetCustomMetadata(); len(customMetadata) > 0 {
 		fmt.Println("\nCustom Metadata:")
 		for key, value := range customMetadata {
@@ -349,7 +558,6 @@ func printTextServerInfo(name string, server types.ServerMetadata) {
 		}
 	}
 
-	// Print example command
 	fmt.Println("\nExample Command:")
 	fmt.Printf("  thv run %s\n", name)
 }
@@ -374,4 +582,39 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// printTextSearchResults prints servers in text format for search results
+func printTextSearchResults(servers []types.ServerMetadata) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS"); err != nil {
+		slog.Warn(fmt.Sprintf("Failed to write output: %v", err))
+		return
+	}
+
+	for _, server := range servers {
+		stars := 0
+		if metadata := server.GetMetadata(); metadata != nil {
+			stars = metadata.Stars
+		}
+
+		serverType := "container"
+		if server.IsRemote() {
+			serverType = "remote"
+		}
+
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n",
+			server.GetName(),
+			serverType,
+			truncateString(server.GetDescription(), 50),
+			server.GetTransport(),
+			stars,
+		); err != nil {
+			slog.Debug(fmt.Sprintf("Failed to write server information: %v", err))
+		}
+	}
+
+	if err := w.Flush(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to flush tabwriter: %v\n", err)
+	}
 }

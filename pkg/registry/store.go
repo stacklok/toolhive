@@ -400,15 +400,9 @@ func ResetDefaultStore() {
 // buildStoreFromConfig creates and populates a Store based on the given
 // config. This is separated from DefaultStore for testability.
 func buildStoreFromConfig(cfg *config.Config) *Store {
-	// Determine the default registry name based on what is configured.
-	// The first configured source in priority order becomes the default.
 	defaultName := "embedded"
-	if cfg != nil && cfg.RegistryApiUrl != "" {
-		defaultName = "api"
-	} else if cfg != nil && cfg.RegistryUrl != "" {
-		defaultName = "remote"
-	} else if cfg != nil && cfg.LocalRegistryPath != "" {
-		defaultName = "local"
+	if cfg != nil && cfg.DefaultRegistry != "" {
+		defaultName = cfg.DefaultRegistry
 	}
 
 	store := NewStore(defaultName)
@@ -420,32 +414,36 @@ func buildStoreFromConfig(cfg *config.Config) *Store {
 		return store
 	}
 
-	// Proxied API registry (auth-aware).
-	if cfg.RegistryApiUrl != "" {
-		tokenSource := resolveTokenSource(cfg, true)
-		httpClient, err := buildProxiedHTTPClient(cfg.AllowPrivateRegistryIp, tokenSource)
-		if err != nil {
-			slog.Warn("Failed to build HTTP client for proxied registry, skipping",
-				"url", cfg.RegistryApiUrl, "error", err)
-		} else {
-			store.AddProxiedRegistry("api", cfg.RegistryApiUrl, httpClient)
+	// Iterate over configured registries and add each to the store.
+	for _, reg := range cfg.Registries {
+		switch reg.Type {
+		case config.RegistrySourceTypeAPI:
+			tokenSource := resolveTokenSource(reg.Auth, reg.Location)
+			httpClient, err := buildProxiedHTTPClient(reg.AllowPrivateIP, tokenSource)
+			if err != nil {
+				slog.Warn("Failed to build HTTP client for proxied registry, skipping",
+					"name", reg.Name, "url", reg.Location, "error", err)
+				continue
+			}
+			store.AddProxiedRegistry(reg.Name, reg.Location, httpClient)
+		case config.RegistrySourceTypeURL:
+			store.AddLocalRegistry(reg.Name, &URLSource{
+				URL:            reg.Location,
+				AllowPrivateIP: reg.AllowPrivateIP,
+			})
+		case config.RegistrySourceTypeFile:
+			store.AddLocalRegistry(reg.Name, &FileSource{
+				Path: reg.Location,
+			})
+		default:
+			slog.Warn("Unknown registry source type, skipping",
+				"name", reg.Name, "type", reg.Type)
 		}
 	}
 
-	// Remote URL registry (static JSON over HTTP).
-	if cfg.RegistryUrl != "" {
-		store.AddLocalRegistry("remote", &URLSource{
-			URL:            cfg.RegistryUrl,
-			AllowPrivateIP: cfg.AllowPrivateRegistryIp,
-		})
-	}
-
-	// Local file registry.
-	if cfg.LocalRegistryPath != "" {
-		store.AddLocalRegistry("local", &FileSource{
-			Path: cfg.LocalRegistryPath,
-		})
-	}
+	// If the default name was set from config but doesn't correspond to any
+	// registered source (and is not "embedded"), keep it anyway; queries will
+	// surface a "registry not found" error at lookup time.
 
 	return store
 }
@@ -466,31 +464,38 @@ func buildProxiedHTTPClient(allowPrivateIP bool, tokenSource auth.TokenSource) (
 	return httpClient, nil
 }
 
-// resolveTokenSource creates a TokenSource from the config if registry auth is configured.
+// resolveTokenSource creates a TokenSource from the registry auth config if configured.
 // Returns nil if no auth is configured or if token source creation fails (logs warning).
-func resolveTokenSource(cfg *config.Config, interactive bool) auth.TokenSource {
-	if cfg == nil || cfg.RegistryAuth.Type != config.RegistryAuthTypeOAuth || cfg.RegistryAuth.OAuth == nil {
+func resolveTokenSource(regAuth *config.RegistryAuth, registryURL string) auth.TokenSource {
+	if regAuth == nil || regAuth.Type != config.RegistryAuthTypeOAuth || regAuth.OAuth == nil {
 		return nil
 	}
 
-	// Try to create secrets provider for token persistence
+	// Try to create secrets provider for token persistence.
+	// We load the global config to access the secrets provider type. This is
+	// intentional: secrets config is global, not per-registry.
 	var secretsProvider secrets.Provider
-	providerType, err := cfg.Secrets.GetProviderType()
+	globalCfg, err := config.NewProvider().LoadOrCreateConfig()
 	if err != nil {
-		slog.Debug("Secrets provider not available for registry auth token persistence",
-			"error", err)
+		slog.Debug("Could not load config for secrets provider", "error", err)
 	} else {
-		secretsProvider, err = secrets.CreateSecretProvider(providerType)
+		providerType, err := globalCfg.Secrets.GetProviderType()
 		if err != nil {
-			slog.Warn("Failed to create secrets provider for registry auth, tokens will not be persisted",
+			slog.Debug("Secrets provider not available for registry auth token persistence",
 				"error", err)
 		} else {
-			slog.Debug("Secrets provider created for registry auth token persistence",
-				"provider_type", providerType)
+			secretsProvider, err = secrets.CreateSecretProvider(providerType)
+			if err != nil {
+				slog.Warn("Failed to create secrets provider for registry auth, tokens will not be persisted",
+					"error", err)
+			} else {
+				slog.Debug("Secrets provider created for registry auth token persistence",
+					"provider_type", providerType)
+			}
 		}
 	}
 
-	tokenSource, err := auth.NewTokenSource(cfg.RegistryAuth.OAuth, cfg.RegistryApiUrl, secretsProvider, interactive)
+	tokenSource, err := auth.NewTokenSource(regAuth.OAuth, registryURL, secretsProvider, false)
 	if err != nil {
 		slog.Warn("Failed to create registry auth token source", "error", err)
 		return nil

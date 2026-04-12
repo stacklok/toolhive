@@ -211,11 +211,14 @@ func (o *oauthTokenSource) createTokenPersister(refreshTokenKey string) remote.T
 }
 
 // updateConfigTokenRef updates the config with the refresh token reference and expiry.
+// It updates the auth on the default registry entry.
 func (*oauthTokenSource) updateConfigTokenRef(refreshTokenKey string, expiry time.Time) {
 	if err := config.UpdateConfig(func(cfg *config.Config) {
-		if cfg.RegistryAuth.OAuth != nil {
-			cfg.RegistryAuth.OAuth.CachedRefreshTokenRef = refreshTokenKey
-			cfg.RegistryAuth.OAuth.CachedTokenExpiry = expiry
+		defaultName := cfg.EffectiveDefaultRegistry()
+		src := cfg.FindRegistry(defaultName)
+		if src != nil && src.Auth != nil && src.Auth.OAuth != nil {
+			src.Auth.OAuth.CachedRefreshTokenRef = refreshTokenKey
+			src.Auth.OAuth.CachedTokenExpiry = expiry
 		}
 	}); err != nil {
 		slog.Warn("Failed to update config with token reference", "error", err)

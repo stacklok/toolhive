@@ -41,6 +41,20 @@ func (m *MockProvider) EXPECT() *MockProviderMockRecorder {
 	return m.recorder
 }
 
+// AddRegistry mocks base method.
+func (m *MockProvider) AddRegistry(source config.RegistrySource) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AddRegistry", source)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// AddRegistry indicates an expected call of AddRegistry.
+func (mr *MockProviderMockRecorder) AddRegistry(source any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddRegistry", reflect.TypeOf((*MockProvider)(nil).AddRegistry), source)
+}
+
 // GetAllBuildEnv mocks base method.
 func (m *MockProvider) GetAllBuildEnv() map[string]string {
 	m.ctrl.T.Helper()
@@ -171,23 +185,6 @@ func (mr *MockProviderMockRecorder) GetConfiguredBuildAuthFiles() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetConfiguredBuildAuthFiles", reflect.TypeOf((*MockProvider)(nil).GetConfiguredBuildAuthFiles))
 }
 
-// GetRegistryConfig mocks base method.
-func (m *MockProvider) GetRegistryConfig() (string, string, bool, string) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetRegistryConfig")
-	ret0, _ := ret[0].(string)
-	ret1, _ := ret[1].(string)
-	ret2, _ := ret[2].(bool)
-	ret3, _ := ret[3].(string)
-	return ret0, ret1, ret2, ret3
-}
-
-// GetRegistryConfig indicates an expected call of GetRegistryConfig.
-func (mr *MockProviderMockRecorder) GetRegistryConfig() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRegistryConfig", reflect.TypeOf((*MockProvider)(nil).GetRegistryConfig))
-}
-
 // GetRuntimeConfig mocks base method.
 func (m *MockProvider) GetRuntimeConfig(transportType string) (*templates.RuntimeConfig, error) {
 	m.ctrl.T.Helper()
@@ -246,6 +243,20 @@ func (mr *MockProviderMockRecorder) MarkBuildAuthFileConfigured(name any) *gomoc
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkBuildAuthFileConfigured", reflect.TypeOf((*MockProvider)(nil).MarkBuildAuthFileConfigured), name)
 }
 
+// RemoveRegistry mocks base method.
+func (m *MockProvider) RemoveRegistry(name string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RemoveRegistry", name)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RemoveRegistry indicates an expected call of RemoveRegistry.
+func (mr *MockProviderMockRecorder) RemoveRegistry(name any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveRegistry", reflect.TypeOf((*MockProvider)(nil).RemoveRegistry), name)
+}
+
 // SetBuildEnv mocks base method.
 func (m *MockProvider) SetBuildEnv(key, value string) error {
 	m.ctrl.T.Helper()
@@ -302,46 +313,18 @@ func (mr *MockProviderMockRecorder) SetCACert(certPath any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetCACert", reflect.TypeOf((*MockProvider)(nil).SetCACert), certPath)
 }
 
-// SetRegistryAPI mocks base method.
-func (m *MockProvider) SetRegistryAPI(apiURL string, allowPrivateRegistryIp bool) error {
+// SetDefaultRegistry mocks base method.
+func (m *MockProvider) SetDefaultRegistry(name string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetRegistryAPI", apiURL, allowPrivateRegistryIp)
+	ret := m.ctrl.Call(m, "SetDefaultRegistry", name)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// SetRegistryAPI indicates an expected call of SetRegistryAPI.
-func (mr *MockProviderMockRecorder) SetRegistryAPI(apiURL, allowPrivateRegistryIp any) *gomock.Call {
+// SetDefaultRegistry indicates an expected call of SetDefaultRegistry.
+func (mr *MockProviderMockRecorder) SetDefaultRegistry(name any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetRegistryAPI", reflect.TypeOf((*MockProvider)(nil).SetRegistryAPI), apiURL, allowPrivateRegistryIp)
-}
-
-// SetRegistryFile mocks base method.
-func (m *MockProvider) SetRegistryFile(registryPath string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetRegistryFile", registryPath)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SetRegistryFile indicates an expected call of SetRegistryFile.
-func (mr *MockProviderMockRecorder) SetRegistryFile(registryPath any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetRegistryFile", reflect.TypeOf((*MockProvider)(nil).SetRegistryFile), registryPath)
-}
-
-// SetRegistryURL mocks base method.
-func (m *MockProvider) SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetRegistryURL", registryURL, allowPrivateRegistryIp)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SetRegistryURL indicates an expected call of SetRegistryURL.
-func (mr *MockProviderMockRecorder) SetRegistryURL(registryURL, allowPrivateRegistryIp any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetRegistryURL", reflect.TypeOf((*MockProvider)(nil).SetRegistryURL), registryURL, allowPrivateRegistryIp)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetDefaultRegistry", reflect.TypeOf((*MockProvider)(nil).SetDefaultRegistry), name)
 }
 
 // SetRuntimeConfig mocks base method.
@@ -454,20 +437,6 @@ func (m *MockProvider) UnsetCACert() error {
 func (mr *MockProviderMockRecorder) UnsetCACert() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnsetCACert", reflect.TypeOf((*MockProvider)(nil).UnsetCACert))
-}
-
-// UnsetRegistry mocks base method.
-func (m *MockProvider) UnsetRegistry() error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UnsetRegistry")
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// UnsetRegistry indicates an expected call of UnsetRegistry.
-func (mr *MockProviderMockRecorder) UnsetRegistry() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnsetRegistry", reflect.TypeOf((*MockProvider)(nil).UnsetRegistry))
 }
 
 // UpdateConfig mocks base method.

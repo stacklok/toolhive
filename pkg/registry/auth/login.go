@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package auth
@@ -51,12 +51,11 @@ func Login(
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	// Reject local file registries early -- OAuth login makes no sense for them.
-	if cfg.LocalRegistryPath != "" && cfg.RegistryApiUrl == "" && cfg.RegistryUrl == "" {
+	// Reject local-file-only registries early -- OAuth login makes no sense for them.
+	if hasOnlyFileRegistries(cfg) {
 		return fmt.Errorf(
-			"OAuth login is not supported for local file registries (path: %s); "+
+			"OAuth login is not supported for local file registries; " +
 				"use a remote registry URL with --registry instead",
-			cfg.LocalRegistryPath,
 		)
 	}
 
@@ -82,7 +81,12 @@ func Login(
 
 	registryURL := registryURLFromConfig(cfg)
 
-	ts, err := NewTokenSource(cfg.RegistryAuth.OAuth, registryURL, secretsProvider, true)
+	oauthCfg := findDefaultOAuthConfig(cfg)
+	if oauthCfg == nil {
+		return fmt.Errorf("OAuth config not found after save: %w", ErrRegistryAuthRequired)
+	}
+
+	ts, err := NewTokenSource(oauthCfg, registryURL, secretsProvider, true)
 	if err != nil {
 		return fmt.Errorf("creating token source: %w", err)
 	}
@@ -98,25 +102,27 @@ func Logout(ctx context.Context, configProvider config.Provider, secretsProvider
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	if err := validateOAuthConfig(cfg); err != nil {
-		return err
+
+	oauthCfg := findDefaultOAuthConfig(cfg)
+	if oauthCfg == nil {
+		return fmt.Errorf(
+			"registry OAuth authentication is not configured; run 'thv registry login' first: %w",
+			ErrRegistryAuthRequired,
+		)
 	}
 
 	registryURL := registryURLFromConfig(cfg)
 
-	if ref := cfg.RegistryAuth.OAuth.CachedRefreshTokenRef; ref != "" {
+	if ref := oauthCfg.CachedRefreshTokenRef; ref != "" {
 		if err := secretsProvider.DeleteSecret(ctx, ref); err != nil && !secrets.IsNotFoundError(err) {
 			return fmt.Errorf("deleting cached token: %w", err)
 		}
 	}
 
-	// Also attempt cleanup using the derived key as a fallback. If
-	// updateConfigTokenRef failed previously (it only logs a warning),
-	// the secret may exist under this key even when CachedRefreshTokenRef
-	// is empty or points to a different reference.
-	if cfg.RegistryAuth.OAuth.Issuer != "" {
-		derivedKey := DeriveSecretKey(registryURL, cfg.RegistryAuth.OAuth.Issuer)
-		if derivedKey != cfg.RegistryAuth.OAuth.CachedRefreshTokenRef {
+	// Also attempt cleanup using the derived key as a fallback.
+	if oauthCfg.Issuer != "" {
+		derivedKey := DeriveSecretKey(registryURL, oauthCfg.Issuer)
+		if derivedKey != oauthCfg.CachedRefreshTokenRef {
 			if err := secretsProvider.DeleteSecret(ctx, derivedKey); err != nil && !secrets.IsNotFoundError(err) {
 				slog.Debug("failed to delete derived secret key", "error", err)
 			}
@@ -130,34 +136,48 @@ func Logout(ctx context.Context, configProvider config.Provider, secretsProvider
 	}
 
 	return configProvider.UpdateConfig(func(c *config.Config) {
-		if c.RegistryAuth.OAuth != nil {
-			c.RegistryAuth.OAuth.CachedRefreshTokenRef = ""
-			c.RegistryAuth.OAuth.CachedTokenExpiry = time.Time{}
+		defaultName := c.EffectiveDefaultRegistry()
+		src := c.FindRegistry(defaultName)
+		if src != nil && src.Auth != nil && src.Auth.OAuth != nil {
+			src.Auth.OAuth.CachedRefreshTokenRef = ""
+			src.Auth.OAuth.CachedTokenExpiry = time.Time{}
 		}
 	})
 }
 
-// validateOAuthConfig checks that registry OAuth authentication is configured.
-func validateOAuthConfig(cfg *config.Config) error {
-	if cfg.RegistryAuth.Type != config.RegistryAuthTypeOAuth || cfg.RegistryAuth.OAuth == nil {
-		return fmt.Errorf(
-			"registry OAuth authentication is not configured; run 'thv registry login' first: %w",
-			ErrRegistryAuthRequired,
-		)
+// findDefaultOAuthConfig returns the OAuth config from the default registry, or nil.
+func findDefaultOAuthConfig(cfg *config.Config) *config.RegistryOAuthConfig {
+	defaultName := cfg.EffectiveDefaultRegistry()
+	src := cfg.FindRegistry(defaultName)
+	if src == nil || src.Auth == nil || src.Auth.Type != config.RegistryAuthTypeOAuth {
+		return nil
 	}
-	return nil
+	return src.Auth.OAuth
+}
+
+// hasOnlyFileRegistries returns true if the only configured registries are file-based.
+func hasOnlyFileRegistries(cfg *config.Config) bool {
+	if len(cfg.Registries) == 0 {
+		return false
+	}
+	for _, reg := range cfg.Registries {
+		if reg.Type != config.RegistrySourceTypeFile {
+			return false
+		}
+	}
+	return true
 }
 
 // hasRegistryConfig reports whether any registry source is configured.
 func hasRegistryConfig(cfg *config.Config) bool {
-	return cfg.RegistryApiUrl != "" || cfg.RegistryUrl != "" || cfg.LocalRegistryPath != ""
+	return len(cfg.Registries) > 0
 }
 
 // checkMissingLoginConfig inspects the current config and opts, and returns a
 // single formatted error listing every flag the user still needs to provide.
 func checkMissingLoginConfig(cfg *config.Config, opts LoginOptions) error {
 	hasRegistry := hasRegistryConfig(cfg)
-	hasOAuth := cfg.RegistryAuth.Type == config.RegistryAuthTypeOAuth && cfg.RegistryAuth.OAuth != nil
+	hasOAuth := findDefaultOAuthConfig(cfg) != nil
 
 	var missing []string
 	if !hasRegistry && opts.RegistryURL == "" {
@@ -186,53 +206,61 @@ func checkMissingLoginConfig(cfg *config.Config, opts LoginOptions) error {
 }
 
 // ensureRegistryURL saves the registry URL from opts when provided.
-// Existing auth is always cleared when a URL flag is given, to prevent tokens
-// from being sent to the wrong server after a registry change.
 // When no URL is provided via opts, existing config is used unchanged.
 func ensureRegistryURL(configProvider config.Provider, opts LoginOptions) error {
 	if opts.RegistryURL == "" {
-		// No override — use whatever is already in config.
 		return nil
 	}
 
-	registryType, cleanPath := config.DetectRegistryType(opts.RegistryURL, false)
+	sourceType := detectSourceType(opts.RegistryURL)
 
-	// Always clear auth when a registry URL is explicitly provided, so that
-	// tokens are never sent to the wrong server.
+	// Clear any existing auth on the default registry to prevent tokens
+	// from being sent to the wrong server.
 	if err := configProvider.UpdateConfig(func(c *config.Config) {
-		c.RegistryAuth = config.RegistryAuth{}
+		defaultName := c.EffectiveDefaultRegistry()
+		src := c.FindRegistry(defaultName)
+		if src != nil {
+			src.Auth = nil
+		}
 	}); err != nil {
 		return fmt.Errorf("clearing stale auth config: %w", err)
 	}
 
-	switch registryType {
-	case config.RegistryTypeAPI:
-		if err := configProvider.SetRegistryAPI(cleanPath, false); err != nil {
-			return fmt.Errorf("saving registry API URL: %w", err)
-		}
-	case config.RegistryTypeURL:
-		if err := configProvider.SetRegistryURL(cleanPath, false); err != nil {
-			return fmt.Errorf("saving registry URL: %w", err)
-		}
-	case config.RegistryTypeFile:
-		if err := configProvider.SetRegistryFile(cleanPath); err != nil {
-			return fmt.Errorf("saving registry file: %w", err)
-		}
-	default:
-		return fmt.Errorf("unsupported registry type %q for %q", registryType, opts.RegistryURL)
+	source := config.RegistrySource{
+		Name:     "default",
+		Type:     sourceType,
+		Location: opts.RegistryURL,
+	}
+	if err := configProvider.AddRegistry(source); err != nil {
+		return fmt.Errorf("saving registry: %w", err)
+	}
+	if err := configProvider.SetDefaultRegistry("default"); err != nil {
+		return fmt.Errorf("setting default registry: %w", err)
 	}
 	return nil
 }
 
-// ensureOAuthConfig ensures OAuth auth is configured.
+// detectSourceType determines the registry source type from the input string.
+func detectSourceType(input string) config.RegistrySourceType {
+	if strings.HasPrefix(input, "file://") {
+		return config.RegistrySourceTypeFile
+	}
+	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
+		if strings.HasSuffix(input, ".json") {
+			return config.RegistrySourceTypeURL
+		}
+		return config.RegistrySourceTypeAPI
+	}
+	return config.RegistrySourceTypeFile
+}
+
+// ensureOAuthConfig ensures OAuth auth is configured on the default registry.
 // When --issuer/--client-id flags are provided they are always applied (override semantics),
 // allowing the caller to update auth even when an existing config is present.
 // When no flags are supplied, existing config is used as-is.
-// Returns an actionable error when auth cannot be determined.
 func ensureOAuthConfig(
 	ctx context.Context, cfg *config.Config, configProvider config.Provider, opts LoginOptions,
 ) error {
-	// If auth flags were explicitly provided, always apply them.
 	if opts.Issuer != "" && opts.ClientID != "" {
 		updateFn, err := ConfigureOAuth(ctx, opts.Issuer, opts.ClientID, opts.Audience, opts.Scopes)
 		if err != nil {
@@ -242,24 +270,25 @@ func ensureOAuthConfig(
 	}
 
 	// No flags provided — use existing config if present.
-	if cfg.RegistryAuth.Type == config.RegistryAuthTypeOAuth && cfg.RegistryAuth.OAuth != nil {
+	if findDefaultOAuthConfig(cfg) != nil {
 		return nil
 	}
 
 	return fmt.Errorf("OAuth config missing and --issuer/--client-id not provided: %w", ErrRegistryAuthRequired)
 }
 
-// registryURLFromConfig returns the registry URL, preferring RegistryApiUrl.
+// registryURLFromConfig returns the URL of the default registry.
 func registryURLFromConfig(cfg *config.Config) string {
-	if cfg.RegistryApiUrl != "" {
-		return cfg.RegistryApiUrl
+	defaultName := cfg.EffectiveDefaultRegistry()
+	src := cfg.FindRegistry(defaultName)
+	if src == nil {
+		return ""
 	}
-	return cfg.RegistryUrl
+	return src.Location
 }
 
 // ConfigureOAuth validates the OIDC issuer, resolves default scopes, and returns
-// a config update function that persists the OAuth settings. This is the shared
-// implementation used by both Login and AuthManager.SetOAuthAuth.
+// a config update function that persists the OAuth settings on the default registry.
 func ConfigureOAuth(
 	ctx context.Context, issuer, clientID, audience string, scopes []string,
 ) (func(*config.Config), error) {
@@ -282,7 +311,12 @@ func ConfigureOAuth(
 	}()
 
 	return func(c *config.Config) {
-		c.RegistryAuth = config.RegistryAuth{
+		defaultName := c.EffectiveDefaultRegistry()
+		src := c.FindRegistry(defaultName)
+		if src == nil {
+			return
+		}
+		src.Auth = &config.RegistryAuth{
 			Type: config.RegistryAuthTypeOAuth,
 			OAuth: &config.RegistryOAuthConfig{
 				Issuer:       issuer,

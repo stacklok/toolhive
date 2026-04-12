@@ -80,13 +80,14 @@ func TestDefaultProvider(t *testing.T) {
 
 		// Update config
 		err = pathProvider.UpdateConfig(func(c *Config) {
-			c.RegistryUrl = "https://example.com"
+			c.DefaultRegistry = "test-registry"
 		})
 		assert.NoError(t, err)
 
-		// Verify update - just check that we can load the config
-		_, err = LoadOrCreateConfigFromPath(configPath)
+		// Verify update
+		cfg, err := LoadOrCreateConfigFromPath(configPath)
 		assert.NoError(t, err)
+		assert.Equal(t, "test-registry", cfg.DefaultRegistry)
 	})
 }
 
@@ -109,7 +110,9 @@ func TestPathProvider(t *testing.T) {
 		t.Parallel()
 		// Create a config with specific content
 		testConfig := &Config{
-			RegistryUrl: "https://test.com",
+			Registries: []RegistrySource{
+				{Name: "test", Type: RegistrySourceTypeURL, Location: "https://test.com"},
+			},
 			Secrets: Secrets{
 				ProviderType:   "encrypted",
 				SetupCompleted: true,
@@ -125,7 +128,8 @@ func TestPathProvider(t *testing.T) {
 		provider2 := NewPathProvider(configPath2)
 		config := provider2.GetConfig()
 		assert.NotNil(t, config)
-		assert.Equal(t, "https://test.com", config.RegistryUrl)
+		require.Len(t, config.Registries, 1)
+		assert.Equal(t, "https://test.com", config.Registries[0].Location)
 		assert.Equal(t, "encrypted", config.Secrets.ProviderType)
 	})
 
@@ -140,7 +144,7 @@ func TestPathProvider(t *testing.T) {
 		config := provider.GetConfig()
 		assert.NotNil(t, config)
 		// Should return default config on error
-		assert.Equal(t, "", config.RegistryUrl)
+		assert.Empty(t, config.Registries)
 		assert.False(t, config.Secrets.SetupCompleted)
 	})
 
@@ -166,14 +170,14 @@ func TestPathProvider(t *testing.T) {
 
 		// Update config
 		err = provider.UpdateConfig(func(c *Config) {
-			c.RegistryUrl = "https://updated.com"
+			c.DefaultRegistry = "updated"
 		})
 		assert.NoError(t, err)
 
 		// Verify update
 		config, err := LoadOrCreateConfigFromPath(configPath4)
 		require.NoError(t, err)
-		assert.Equal(t, "https://updated.com", config.RegistryUrl)
+		assert.Equal(t, "updated", config.DefaultRegistry)
 	})
 }
 
@@ -186,8 +190,7 @@ func TestKubernetesProvider(t *testing.T) {
 		config := provider.GetConfig()
 		assert.NotNil(t, config)
 		assert.IsType(t, &Config{}, config)
-		// Should return default config
-		assert.Equal(t, "", config.RegistryUrl)
+		assert.Empty(t, config.Registries)
 		assert.False(t, config.Secrets.SetupCompleted)
 	})
 
@@ -196,44 +199,34 @@ func TestKubernetesProvider(t *testing.T) {
 		config, err := provider.LoadOrCreateConfig()
 		assert.NoError(t, err)
 		assert.NotNil(t, config)
-		// Should return default config
-		assert.Equal(t, "", config.RegistryUrl)
+		assert.Empty(t, config.Registries)
 		assert.False(t, config.Secrets.SetupCompleted)
 	})
 
 	t.Run("UpdateConfig", func(t *testing.T) {
 		t.Parallel()
 		err := provider.UpdateConfig(func(c *Config) {
-			c.RegistryUrl = "https://example.com"
+			c.DefaultRegistry = "test"
 		})
 		assert.NoError(t, err) // Should be no-op
 	})
 
-	t.Run("SetRegistryURL", func(t *testing.T) {
+	t.Run("AddRegistry", func(t *testing.T) {
 		t.Parallel()
-		err := provider.SetRegistryURL("https://example.com", true)
+		err := provider.AddRegistry(RegistrySource{Name: "test"})
 		assert.NoError(t, err) // Should be no-op
 	})
 
-	t.Run("SetRegistryFile", func(t *testing.T) {
+	t.Run("RemoveRegistry", func(t *testing.T) {
 		t.Parallel()
-		err := provider.SetRegistryFile("/path/to/registry.yaml")
+		err := provider.RemoveRegistry("test")
 		assert.NoError(t, err) // Should be no-op
 	})
 
-	t.Run("UnsetRegistry", func(t *testing.T) {
+	t.Run("SetDefaultRegistry", func(t *testing.T) {
 		t.Parallel()
-		err := provider.UnsetRegistry()
+		err := provider.SetDefaultRegistry("test")
 		assert.NoError(t, err) // Should be no-op
-	})
-
-	t.Run("GetRegistryConfig", func(t *testing.T) {
-		t.Parallel()
-		url, localPath, allowPrivateIP, registryType := provider.GetRegistryConfig()
-		assert.Equal(t, "", url)
-		assert.Equal(t, "", localPath)
-		assert.False(t, allowPrivateIP)
-		assert.Equal(t, "", registryType)
 	})
 }
 
@@ -268,84 +261,49 @@ func TestNewProvider(t *testing.T) {
 func TestProviderRegistryOperations(t *testing.T) {
 	t.Parallel()
 
-	t.Run("DefaultProvider_RegistryOperations", func(t *testing.T) {
+	t.Run("PathProvider_AddAndRemoveRegistry", func(t *testing.T) {
 		t.Parallel()
-
-		// Use PathProvider to avoid singleton issues in parallel tests
 		tempDir := t.TempDir()
-		configPath := filepath.Join(tempDir, "default_config.yaml")
-		pathProvider := NewPathProvider(configPath)
-
-		// Create initial config
-		_, err := pathProvider.LoadOrCreateConfig()
-		require.NoError(t, err)
-
-		// Test SetRegistryURL with invalid URL (validation will fail)
-		err = pathProvider.SetRegistryURL("https://example.com", true)
-		// URL validation now checks that the URL returns valid ToolHive registry JSON
-		// This will fail for non-existent URLs
-		assert.Error(t, err, "Non-existent URL should fail validation")
-
-		// Test SetRegistryFile (must be a JSON file with valid registry structure)
-		registryFilePath := filepath.Join(tempDir, "registry.json")
-		validRegistryJSON := `{"servers": {"test-server": {"command": ["test"], "args": []}}}`
-		err = os.WriteFile(registryFilePath, []byte(validRegistryJSON), 0600)
-		require.NoError(t, err)
-		err = pathProvider.SetRegistryFile(registryFilePath)
-		assert.NoError(t, err)
-
-		// Test GetRegistryConfig after setting file
-		url, localPath, allowPrivateIP, registryType := pathProvider.GetRegistryConfig()
-		assert.Equal(t, "", url)
-		assert.NotEmpty(t, localPath) // Should have the absolute path
-		assert.False(t, allowPrivateIP)
-		assert.Equal(t, "file", registryType)
-
-		// Test UnsetRegistry
-		err = pathProvider.UnsetRegistry()
-		assert.NoError(t, err)
-	})
-
-	t.Run("PathProvider_RegistryOperations", func(t *testing.T) {
-		t.Parallel()
-		tempDir := t.TempDir() // Use separate temp dir for this test
-		configPath := filepath.Join(tempDir, "path_config.yaml")
+		configPath := filepath.Join(tempDir, "config.yaml")
 		provider := NewPathProvider(configPath)
 
-		// Create initial config
 		_, err := provider.LoadOrCreateConfig()
 		require.NoError(t, err)
 
-		// Test SetRegistryURL with invalid URL (validation will fail)
-		err = provider.SetRegistryURL("https://path-example.com", false)
-		// URL validation now checks that the URL returns valid ToolHive registry JSON
-		assert.Error(t, err, "Non-existent URL should fail validation")
-
-		// Test SetRegistryFile with invalid structure (should fail)
-		invalidFilePath := filepath.Join(tempDir, "invalid_registry.json")
-		err = os.WriteFile(invalidFilePath, []byte(`{"test": "registry"}`), 0600)
+		// Add a registry
+		err = provider.AddRegistry(RegistrySource{
+			Name:     "test-remote",
+			Type:     RegistrySourceTypeURL,
+			Location: "https://example.com/registry.json",
+		})
 		require.NoError(t, err)
-		err = provider.SetRegistryFile(invalidFilePath)
-		assert.Error(t, err, "Invalid registry structure should fail validation")
 
-		// Test SetRegistryFile with valid structure (should succeed)
-		validFilePath := filepath.Join(tempDir, "path_registry.json")
-		validRegistryJSON := `{"servers": {"test-server": {"command": ["test"], "args": []}}}`
-		err = os.WriteFile(validFilePath, []byte(validRegistryJSON), 0600)
+		cfg := provider.GetConfig()
+		require.Len(t, cfg.Registries, 1)
+		assert.Equal(t, "test-remote", cfg.Registries[0].Name)
+
+		// Remove registry
+		err = provider.RemoveRegistry("test-remote")
 		require.NoError(t, err)
-		err = provider.SetRegistryFile(validFilePath)
-		assert.NoError(t, err)
 
-		// Test GetRegistryConfig after setting file
-		url, localPath, allowPrivateIP, registryType := provider.GetRegistryConfig()
-		assert.Equal(t, "", url)
-		assert.NotEmpty(t, localPath) // Should have the absolute path
-		assert.False(t, allowPrivateIP)
-		assert.Equal(t, "file", registryType)
+		cfg = provider.GetConfig()
+		assert.Empty(t, cfg.Registries)
+	})
 
-		// Test UnsetRegistry
-		err = provider.UnsetRegistry()
-		assert.NoError(t, err)
+	t.Run("PathProvider_SetDefaultRegistry", func(t *testing.T) {
+		t.Parallel()
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		provider := NewPathProvider(configPath)
+
+		_, err := provider.LoadOrCreateConfig()
+		require.NoError(t, err)
+
+		err = provider.SetDefaultRegistry("my-registry")
+		require.NoError(t, err)
+
+		cfg := provider.GetConfig()
+		assert.Equal(t, "my-registry", cfg.DefaultRegistry)
 	})
 }
 

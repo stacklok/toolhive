@@ -91,6 +91,13 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 		return nil, err
 	}
 
+	// Enforce policy before saving state or starting the workload, so
+	// violations are returned as API errors rather than creating the server
+	// in a broken state.
+	if err := runner.EagerCheckCreateServer(ctx, runConfig); err != nil {
+		return nil, fmt.Errorf("server creation blocked by policy: %w", err)
+	}
+
 	// Save the workload state
 	if err := runConfig.SaveState(ctx); err != nil {
 		slog.Error("failed to save workload config", "error", err)

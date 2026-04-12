@@ -23,7 +23,8 @@ func listSkillsV01(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	skills, err := store.ListSkills("")
+	registryName := chi.URLParam(r, "registryName")
+	skills, err := store.ListSkills(registryName)
 	if err != nil {
 		slog.Error("failed to list skills", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list skills")
@@ -61,7 +62,8 @@ func getSkillV01(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	skill, err := store.GetSkill("", namespace, skillName)
+	registryName := chi.URLParam(r, "registryName")
+	skill, err := store.GetSkill(registryName, namespace, skillName)
 	if err != nil {
 		// Map upstream HTTP errors to appropriate responses
 		var httpErr *api.RegistryHTTPError

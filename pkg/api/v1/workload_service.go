@@ -145,12 +145,12 @@ func (s *WorkloadService) BuildFullRunConfig(
 ) (*runner.RunConfig, error) {
 	// If registry+server specified, resolve from registry Store
 	if req.Registry != "" && req.Server != "" {
-		if err := resolveRegistryServer(req, s.configProvider); err != nil {
+		if err := resolveRegistryServer(req); err != nil {
 			return nil, fmt.Errorf("failed to resolve server from registry: %w", err)
 		}
 		// Fall through — req now has image/url/transport/etc filled in from registry
 	}
-	if req.Registry != "" && req.Server == "" || req.Registry == "" && req.Server != "" {
+	if (req.Registry != "" && req.Server == "") || (req.Registry == "" && req.Server != "") {
 		return nil, fmt.Errorf("both registry and server must be specified together")
 	}
 
@@ -572,7 +572,7 @@ func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req b
 
 // resolveRegistryServer looks up a server in the registry store and populates
 // the request with its metadata. User-provided fields always take precedence.
-func resolveRegistryServer(req *createRequest, _ config.Provider) error {
+func resolveRegistryServer(req *createRequest) error {
 	store, err := registry.DefaultStore()
 	if err != nil {
 		return err

@@ -25,7 +25,8 @@ const (
 // It mounts both the standard server endpoints and the extension (skills)
 // endpoints under /registry/{registryName}/v0.1.
 //
-// The {registryName} path param is currently ignored (always uses default provider).
+// The {registryName} path param selects which registry to query. It is passed
+// through to Store methods, which resolve an empty name to the default registry.
 func RegistryV01Router() http.Handler {
 	r := chi.NewRouter()
 	r.Route("/{registryName}/v0.1", func(r chi.Router) {

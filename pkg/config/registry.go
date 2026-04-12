@@ -13,17 +13,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
-const (
-	// RegistryTypeFile represents a local file registry
-	RegistryTypeFile = "file"
-	// RegistryTypeURL represents a remote URL registry
-	RegistryTypeURL = "url"
-	// RegistryTypeAPI represents an MCP Registry API endpoint
-	RegistryTypeAPI = "api"
-	// RegistryTypeDefault represents a built-in registry
-	RegistryTypeDefault = "default"
-)
-
 // addRegistry adds or replaces a registry source in the config.
 func addRegistry(provider Provider, source RegistrySource) error {
 	return provider.UpdateConfig(func(c *Config) {

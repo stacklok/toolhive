@@ -5,6 +5,7 @@ package registry
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/stacklok/toolhive/pkg/config"
 )
@@ -123,20 +124,20 @@ func (s *DefaultConfigurator) GetRegistryInfo() (string, string) {
 		return string(first.Type), first.Location
 	}
 
-	return config.RegistryTypeDefault, ""
+	return "default", ""
 }
 
 // detectSourceType determines the registry source type from the input string.
 func detectSourceType(input string) config.RegistrySourceType {
 	// Check for explicit file:// protocol
-	if len(input) > 7 && input[:7] == "file://" {
+	if strings.HasPrefix(input, "file://") {
 		return config.RegistrySourceTypeFile
 	}
 
 	// HTTP/HTTPS URLs
-	if (len(input) > 7 && input[:7] == "http://") || (len(input) > 8 && input[:8] == "https://") {
+	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
 		// URLs ending with .json are treated as static registry files
-		if len(input) > 5 && input[len(input)-5:] == ".json" {
+		if strings.HasSuffix(input, ".json") {
 			return config.RegistrySourceTypeURL
 		}
 		// Other URLs are treated as API endpoints

@@ -27,7 +27,8 @@ func listServersV01(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	servers, err := store.ListServers("")
+	registryName := chi.URLParam(r, "registryName")
+	servers, err := store.ListServers(registryName)
 	if err != nil {
 		slog.Error("failed to list servers", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list servers")
@@ -72,7 +73,8 @@ func getServerV01(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	server, err := store.GetServer("", decodedName)
+	registryName := chi.URLParam(r, "registryName")
+	server, err := store.GetServer(registryName, decodedName)
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "not_found", "Server not found")
 		return

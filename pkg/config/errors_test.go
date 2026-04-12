@@ -24,7 +24,7 @@ func TestRegistryError(t *testing.T) {
 		{
 			name: "timeout error",
 			err: &RegistryError{
-				Type: RegistryTypeURL,
+				Type: string(RegistrySourceTypeURL),
 				URL:  "https://example.com",
 				Err:  fmt.Errorf("%w: connection timeout", ErrRegistryTimeout),
 			},
@@ -38,7 +38,7 @@ func TestRegistryError(t *testing.T) {
 		{
 			name: "unreachable error",
 			err: &RegistryError{
-				Type: RegistryTypeAPI,
+				Type: string(RegistrySourceTypeAPI),
 				URL:  "https://example.com",
 				Err:  fmt.Errorf("%w: connection refused", ErrRegistryUnreachable),
 			},
@@ -52,7 +52,7 @@ func TestRegistryError(t *testing.T) {
 		{
 			name: "validation error",
 			err: &RegistryError{
-				Type: RegistryTypeURL,
+				Type: string(RegistrySourceTypeURL),
 				URL:  "https://example.com",
 				Err:  fmt.Errorf("%w: invalid format", ErrRegistryValidationFailed),
 			},
@@ -79,7 +79,7 @@ func TestRegistryErrorUnwrap(t *testing.T) {
 
 	innerErr := errors.New("inner error")
 	regErr := &RegistryError{
-		Type: RegistryTypeURL,
+		Type: string(RegistrySourceTypeURL),
 		URL:  "https://example.com",
 		Err:  innerErr,
 	}

@@ -94,7 +94,8 @@ func (s *URLSource) Load(ctx context.Context) (*LoadResult, error) {
 		return nil, fmt.Errorf("registry at %s returned status %d", s.URL, resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	const maxRegistryResponseSize = 50 * 1024 * 1024 // 50 MB
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRegistryResponseSize))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body from %s: %w", s.URL, err)
 	}

@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -496,17 +497,27 @@ func discoverRegistries(httpClient *http.Client, serverURL string) ([]string, er
 			Name string `json:"name"`
 		} `json:"registries"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	const maxDiscoveryResponseSize = 1 * 1024 * 1024 // 1 MB
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxDiscoveryResponseSize)).Decode(&body); err != nil {
 		return nil, fmt.Errorf("failed to decode registries response: %w", err)
 	}
 
 	names := make([]string, 0, len(body.Registries))
 	for _, r := range body.Registries {
-		if r.Name != "" {
+		if r.Name != "" && isValidRegistryName(r.Name) {
 			names = append(names, r.Name)
 		}
 	}
 	return names, nil
+}
+
+// isValidRegistryName validates a discovered registry name to prevent path
+// traversal or injection when the name is concatenated into URLs.
+func isValidRegistryName(name string) bool {
+	if strings.Contains(name, "/") || strings.Contains(name, "..") || strings.Contains(name, "\\") {
+		return false
+	}
+	return len(name) > 0 && len(name) <= 128
 }
 
 // buildProxiedHTTPClient creates an HTTP client suitable for proxied registry

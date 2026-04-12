@@ -28,28 +28,28 @@ func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 			name:           "set local file",
 			input:          "/tmp/test-registry.json",
 			allowPrivateIP: false,
-			expectedType:   config.RegistryTypeFile,
+			expectedType:   string(config.RegistrySourceTypeFile),
 			expectError:    false,
 		},
 		{
 			name:           "set URL ending in .json",
 			input:          "https://example.com/registry.json",
 			allowPrivateIP: false,
-			expectedType:   config.RegistryTypeURL,
+			expectedType:   string(config.RegistrySourceTypeURL),
 			expectError:    false,
 		},
 		{
 			name:           "set API URL",
 			input:          "https://registry.example.com",
 			allowPrivateIP: false,
-			expectedType:   config.RegistryTypeAPI,
+			expectedType:   string(config.RegistrySourceTypeAPI),
 			expectError:    false,
 		},
 		{
 			name:           "set file:// path",
 			input:          "file:///path/to/registry.json",
 			allowPrivateIP: false,
-			expectedType:   config.RegistryTypeFile,
+			expectedType:   string(config.RegistrySourceTypeFile),
 			expectError:    false,
 		},
 	}
@@ -89,7 +89,7 @@ func TestConfigurator_UnsetRegistry(t *testing.T) {
 
 	// Verify it's set
 	registryType, source := service.GetRegistryInfo()
-	assert.Equal(t, config.RegistryTypeFile, registryType)
+	assert.Equal(t, string(config.RegistrySourceTypeFile), registryType)
 	assert.NotEmpty(t, source)
 
 	// Unset it
@@ -98,7 +98,7 @@ func TestConfigurator_UnsetRegistry(t *testing.T) {
 
 	// Verify it's unset
 	registryType, source = service.GetRegistryInfo()
-	assert.Equal(t, config.RegistryTypeDefault, registryType)
+	assert.Equal(t, "default", registryType)
 	assert.Empty(t, source)
 }
 
@@ -114,7 +114,7 @@ func TestConfigurator_GetRegistryInfo(t *testing.T) {
 		{
 			name:           "default registry",
 			setupFunc:      nil,
-			expectedType:   config.RegistryTypeDefault,
+			expectedType:   "default",
 			expectedSource: "",
 		},
 		{
@@ -124,7 +124,7 @@ func TestConfigurator_GetRegistryInfo(t *testing.T) {
 				_, err := service.SetRegistryFromInput("/tmp/test.json", false)
 				require.NoError(t, err)
 			},
-			expectedType:   config.RegistryTypeFile,
+			expectedType:   string(config.RegistrySourceTypeFile),
 			expectedSource: "/tmp/test.json",
 		},
 		{
@@ -134,7 +134,7 @@ func TestConfigurator_GetRegistryInfo(t *testing.T) {
 				_, err := service.SetRegistryFromInput("https://example.com/registry.json", false)
 				require.NoError(t, err)
 			},
-			expectedType:   config.RegistryTypeURL,
+			expectedType:   string(config.RegistrySourceTypeURL),
 			expectedSource: "https://example.com/registry.json",
 		},
 		{
@@ -144,7 +144,7 @@ func TestConfigurator_GetRegistryInfo(t *testing.T) {
 				_, err := service.SetRegistryFromInput("https://registry.example.com", false)
 				require.NoError(t, err)
 			},
-			expectedType:   config.RegistryTypeAPI,
+			expectedType:   string(config.RegistrySourceTypeAPI),
 			expectedSource: "https://registry.example.com",
 		},
 	}

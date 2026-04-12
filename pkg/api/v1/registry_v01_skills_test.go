@@ -53,7 +53,7 @@ func TestRegistryV01SkillsRouter_ListSkills(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/default/v0.1/x/dev.toolhive/skills")
+	resp, err := http.Get(srv.URL + "/embedded/v0.1/x/dev.toolhive/skills")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -74,7 +74,7 @@ func TestRegistryV01SkillsRouter_GetSkill_NotFound(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/default/v0.1/x/dev.toolhive/skills/nonexistent/noskill")
+	resp, err := http.Get(srv.URL + "/embedded/v0.1/x/dev.toolhive/skills/nonexistent/noskill")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -111,7 +111,7 @@ func TestRegistryV01SkillsRouter_ListSkills_PaginationBeyondResults(t *testing.T
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/default/v0.1/x/dev.toolhive/skills?page=999&limit=10")
+	resp, err := http.Get(srv.URL + "/embedded/v0.1/x/dev.toolhive/skills?page=999&limit=10")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 

@@ -234,11 +234,11 @@ func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	registryType, source := service.GetRegistryInfo()
 
 	switch registryType {
-	case config.RegistryTypeAPI:
+	case string(config.RegistrySourceTypeAPI):
 		fmt.Printf("Current registry: %s (API endpoint)\n", source)
-	case config.RegistryTypeURL:
+	case string(config.RegistrySourceTypeURL):
 		fmt.Printf("Current registry: %s (remote file)\n", source)
-	case config.RegistryTypeFile:
+	case string(config.RegistrySourceTypeFile):
 		fmt.Printf("Current registry: %s (local file)\n", source)
 		// Check if the file still exists
 		if _, err := os.Stat(source); err != nil {
@@ -316,7 +316,7 @@ func enhanceRegistryError(err error, url, registryType string) error {
 			msg := "validation failed\n" +
 				"The %s at %s returned an invalid response or does not appear to be a valid registry.\n" +
 				"Please verify:\n"
-			if registryType != config.RegistryTypeFile {
+			if registryType != string(config.RegistrySourceTypeFile) {
 				msg += "  - The URL points to a valid MCP registry\n" +
 					"  - The remote URL returns valid JSON (not an HTML page)\n"
 			}

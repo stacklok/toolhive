@@ -21,7 +21,7 @@ func TestListServersV01(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/default/v0.1/servers")
+	resp, err := http.Get(srv.URL + "/embedded/v0.1/servers")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -42,7 +42,7 @@ func TestGetServerV01_NotFound(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/default/v0.1/servers/nonexistent-server/versions/latest")
+	resp, err := http.Get(srv.URL + "/embedded/v0.1/servers/nonexistent-server/versions/latest")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -110,7 +110,7 @@ func TestListServersV01_PaginationBeyondResults(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/default/v0.1/servers?page=999&limit=10")
+	resp, err := http.Get(srv.URL + "/embedded/v0.1/servers?page=999&limit=10")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 

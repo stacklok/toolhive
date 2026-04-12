@@ -8,60 +8,17 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	types "github.com/stacklok/toolhive-core/registry/types"
-	regpkg "github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/registry/api"
 )
 
-const (
-	skillsDefaultLimit = 50
-	skillsMaxLimit     = 200
-)
-
-// RegistryV01SkillsRouter creates a router for the v0.1 skills extension API.
-// Skills live under the x/dev.toolhive extension namespace, matching the
-// registry server's route structure: /registry/{name}/v0.1/x/dev.toolhive/skills
-// The {registryName} path param is currently ignored (always uses default provider).
-func RegistryV01SkillsRouter() http.Handler {
-	r := chi.NewRouter()
-	r.Route("/{registryName}/v0.1/x/dev.toolhive", func(r chi.Router) {
-		r.Get("/skills", listSkillsV01)
-		r.Get("/skills/{namespace}/{skillName}", getSkillV01)
-	})
-	return r
-}
-
-// getSkillsStore returns the default registry Store. Returns false and writes
-// a structured JSON error response if the Store cannot be obtained.
-func getSkillsStore(w http.ResponseWriter) (*regpkg.Store, bool) {
-	store, err := regpkg.DefaultStore()
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to get registry store")
-		slog.Error("failed to get registry store", "error", err)
-		return nil, false
-	}
-	return store, true
-}
-
-// writeJSONError writes a structured JSON error response matching the
-// registryErrorResponse format used by other registry endpoints.
-func writeJSONError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(registryErrorResponse{
-		Code:    code,
-		Message: message,
-	})
-}
-
 // listSkillsV01 handles GET /registry/{registryName}/v0.1/x/dev.toolhive/skills
 func listSkillsV01(w http.ResponseWriter, r *http.Request) {
-	store, ok := getSkillsStore(w)
+	store, ok := getRegistryStore(w)
 	if !ok {
 		return
 	}
@@ -82,25 +39,13 @@ func listSkillsV01(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Paginate
-	page, limit := parseSkillsPagination(r)
-	total := len(skills)
-	start := (page - 1) * limit
-	if start > total {
-		start = total
-	}
-	end := start + limit
-	if end > total {
-		end = total
-	}
+	page, limit := parsePaginationV01(r)
+	start, end, meta := paginateSlice(len(skills), page, limit)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(skillsV01Response{
-		Skills: skills[start:end],
-		Metadata: skillsV01Metadata{
-			Total: total,
-			Page:  page,
-			Limit: limit,
-		},
+		Skills:   skills[start:end],
+		Metadata: meta,
 	}); err != nil {
 		slog.Error("failed to encode skills response", "error", err)
 	}
@@ -111,7 +56,7 @@ func getSkillV01(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	skillName := chi.URLParam(r, "skillName")
 
-	store, ok := getSkillsStore(w)
+	store, ok := getRegistryStore(w)
 	if !ok {
 		return
 	}
@@ -158,29 +103,7 @@ func filterSkillsV01(skills []types.Skill, query string) []types.Skill {
 	return result
 }
 
-func parseSkillsPagination(r *http.Request) (page, limit int) {
-	page = 1
-	limit = skillsDefaultLimit
-	if p := r.URL.Query().Get("page"); p != "" {
-		if v, err := strconv.Atoi(p); err == nil && v > 0 {
-			page = v
-		}
-	}
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= skillsMaxLimit {
-			limit = v
-		}
-	}
-	return page, limit
-}
-
 type skillsV01Response struct {
-	Skills   []types.Skill     `json:"skills"`
-	Metadata skillsV01Metadata `json:"metadata"`
-}
-
-type skillsV01Metadata struct {
-	Total int `json:"total"`
-	Page  int `json:"page"`
-	Limit int `json:"limit"`
+	Skills   []types.Skill         `json:"skills"`
+	Metadata paginationV01Metadata `json:"metadata"`
 }

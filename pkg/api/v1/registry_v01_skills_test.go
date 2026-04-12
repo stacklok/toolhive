@@ -46,39 +46,10 @@ func TestFilterSkillsV01(t *testing.T) {
 	}
 }
 
-func TestParseSkillsPagination(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		query     string
-		wantPage  int
-		wantLimit int
-	}{
-		{"defaults", "", 1, skillsDefaultLimit},
-		{"custom page", "page=3", 3, skillsDefaultLimit},
-		{"custom limit", "limit=10", 1, 10},
-		{"both", "page=2&limit=25", 2, 25},
-		{"invalid page", "page=-1", 1, skillsDefaultLimit},
-		{"limit over max", "limit=999", 1, skillsDefaultLimit},
-		{"non-numeric", "page=abc&limit=xyz", 1, skillsDefaultLimit},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			r := httptest.NewRequest(http.MethodGet, "/skills?"+tt.query, nil)
-			page, limit := parseSkillsPagination(r)
-			assert.Equal(t, tt.wantPage, page)
-			assert.Equal(t, tt.wantLimit, limit)
-		})
-	}
-}
-
 func TestRegistryV01SkillsRouter_ListSkills(t *testing.T) {
 	t.Parallel()
 
-	handler := RegistryV01SkillsRouter()
+	handler := RegistryV01Router()
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -99,7 +70,7 @@ func TestRegistryV01SkillsRouter_ListSkills(t *testing.T) {
 func TestRegistryV01SkillsRouter_GetSkill_NotFound(t *testing.T) {
 	t.Parallel()
 
-	handler := RegistryV01SkillsRouter()
+	handler := RegistryV01Router()
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -136,7 +107,7 @@ func TestFilterSkillsV01_EmptyResult_NotNull(t *testing.T) {
 func TestRegistryV01SkillsRouter_ListSkills_PaginationBeyondResults(t *testing.T) {
 	t.Parallel()
 
-	handler := RegistryV01SkillsRouter()
+	handler := RegistryV01Router()
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 

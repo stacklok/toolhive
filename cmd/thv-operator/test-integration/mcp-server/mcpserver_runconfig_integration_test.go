@@ -65,7 +65,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					ProxyPort: 8080,
 					MCPPort:   8081,
 					Args:      []string{"--verbose", "--debug"},
-					Env: []mcpv1alpha1.EnvVar{
+					Env: []corev1.EnvVar{
 						{
 							Name:  "DEBUG",
 							Value: "true",
@@ -300,7 +300,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				// Update multiple fields
 				mcpServer.Spec.Image = "example/mcp-server:v2.0.0"
 				mcpServer.Spec.ProxyPort = 9090
-				mcpServer.Spec.Env = append(mcpServer.Spec.Env, mcpv1alpha1.EnvVar{
+				mcpServer.Spec.Env = append(mcpServer.Spec.Env, corev1.EnvVar{
 					Name:  "NEW_VAR",
 					Value: "new_value",
 				})
@@ -777,7 +777,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					ProxyPort: 9090,
 					MCPPort:   8080,
 					Args:      []string{"--arg1", "--arg2", "--arg3"},
-					Env: []mcpv1alpha1.EnvVar{
+					Env: []corev1.EnvVar{
 						{Name: "VAR_C", Value: "value_c"},
 						{Name: "VAR_A", Value: "value_a"},
 						{Name: "VAR_B", Value: "value_b"},

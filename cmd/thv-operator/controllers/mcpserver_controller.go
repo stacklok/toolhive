@@ -1149,12 +1149,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Add user-specified proxy environment variables from ResourceOverrides
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
-		for _, envVar := range m.Spec.ResourceOverrides.ProxyDeployment.Env {
-			env = append(env, corev1.EnvVar{
-				Name:  envVar.Name,
-				Value: envVar.Value,
-			})
-		}
+		env = append(env, m.Spec.ResourceOverrides.ProxyDeployment.Env...)
 	}
 
 	// Add volume mounts for user-defined volumes
@@ -1762,12 +1757,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 		// Add user-specified environment variables
 		if mcpServer.Spec.ResourceOverrides != nil && mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
-			for _, envVar := range mcpServer.Spec.ResourceOverrides.ProxyDeployment.Env {
-				expectedProxyEnv = append(expectedProxyEnv, corev1.EnvVar{
-					Name:  envVar.Name,
-					Value: envVar.Value,
-				})
-			}
+			expectedProxyEnv = append(expectedProxyEnv, mcpServer.Spec.ResourceOverrides.ProxyDeployment.Env...)
 		}
 		// Add default environment variables that are always injected
 		expectedProxyEnv = ctrlutil.EnsureRequiredEnvVars(ctx, expectedProxyEnv)

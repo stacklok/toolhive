@@ -4,6 +4,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -77,7 +78,7 @@ type EmbeddingServerSpec struct {
 	// +listType=map
 	// +listMapKey=name
 	// +optional
-	Env []EnvVar `json:"env,omitempty"`
+	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// Resources defines compute resources for the embedding server
 	// +optional

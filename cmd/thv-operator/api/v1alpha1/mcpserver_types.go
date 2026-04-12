@@ -236,7 +236,7 @@ type MCPServerSpec struct {
 	// +listType=map
 	// +listMapKey=name
 	// +optional
-	Env []EnvVar `json:"env,omitempty"`
+	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// Volumes are volumes to mount in the MCP server container
 	// +listType=map
@@ -408,7 +408,7 @@ type ProxyDeploymentOverrides struct {
 	// +listType=map
 	// +listMapKey=name
 	// +optional
-	Env []EnvVar `json:"env,omitempty"`
+	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// ImagePullSecrets allows specifying image pull secrets for the proxy runner
 	// These are applied to both the Deployment and the ServiceAccount
@@ -429,15 +429,15 @@ type ResourceMetadataOverrides struct {
 }
 
 // EnvVar represents an environment variable in a container
-type EnvVar struct {
-	// Name of the environment variable
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
+// type EnvVar struct {
+// 	// Name of the environment variable
+// 	// +kubebuilder:validation:Required
+// 	Name string `json:"name"`
 
-	// Value of the environment variable
-	// +kubebuilder:validation:Required
-	Value string `json:"value"`
-}
+// 	// Value of the environment variable
+// 	// +kubebuilder:validation:Required
+// 	Value string `json:"value"`
+// }
 
 // Volume represents a volume to mount in a container
 type Volume struct {

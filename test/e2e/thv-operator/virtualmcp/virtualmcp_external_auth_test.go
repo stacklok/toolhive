@@ -835,7 +835,7 @@ var _ = Describe("VirtualMCPServer Health Check with HeaderInjection Auth", Orde
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				MCPPort:   8080,
-				Env: []mcpv1alpha1.EnvVar{
+				Env: []corev1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
@@ -1051,7 +1051,7 @@ var _ = Describe("VirtualMCPServer Health Check with TokenExchange Auth", Ordere
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				MCPPort:   8080,
-				Env: []mcpv1alpha1.EnvVar{
+				Env: []corev1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{

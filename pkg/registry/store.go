@@ -8,6 +8,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 
@@ -435,6 +437,24 @@ func buildStoreFromConfig(cfg *config.Config) *Store {
 			store.AddLocalRegistry(reg.Name, &FileSource{
 				Path: reg.Location,
 			})
+		case config.RegistrySourceTypeServer:
+			tokenSource := resolveTokenSource(reg.Auth, reg.Location)
+			httpClient, err := buildProxiedHTTPClient(reg.AllowPrivateIP, tokenSource)
+			if err != nil {
+				slog.Warn("Failed to build HTTP client for registry server, skipping",
+					"name", reg.Name, "url", reg.Location, "error", err)
+				continue
+			}
+			discovered, err := discoverRegistries(httpClient, reg.Location)
+			if err != nil {
+				slog.Warn("Failed to discover registries from server, skipping",
+					"name", reg.Name, "url", reg.Location, "error", err)
+				continue
+			}
+			for _, name := range discovered {
+				proxyURL := strings.TrimRight(reg.Location, "/") + "/registry/" + name
+				store.AddProxiedRegistry(reg.Name+"/"+name, proxyURL, httpClient)
+			}
 		default:
 			slog.Warn("Unknown registry source type, skipping",
 				"name", reg.Name, "type", reg.Type)
@@ -446,6 +466,47 @@ func buildStoreFromConfig(cfg *config.Config) *Store {
 	// surface a "registry not found" error at lookup time.
 
 	return store
+}
+
+// discoverRegistries calls GET /v1/registries on a registry server and returns
+// the names of all registries it hosts.
+func discoverRegistries(httpClient *http.Client, serverURL string) ([]string, error) {
+	endpoint := strings.TrimRight(serverURL, "/") + "/v1/registries"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create discovery request: %w", err)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover registries: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("registry server returned %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Registries []struct {
+			Name string `json:"name"`
+		} `json:"registries"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("failed to decode registries response: %w", err)
+	}
+
+	names := make([]string, 0, len(body.Registries))
+	for _, r := range body.Registries {
+		if r.Name != "" {
+			names = append(names, r.Name)
+		}
+	}
+	return names, nil
 }
 
 // buildProxiedHTTPClient creates an HTTP client suitable for proxied registry

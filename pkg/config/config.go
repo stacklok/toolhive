@@ -36,6 +36,9 @@ const (
 	RegistrySourceTypeURL RegistrySourceType = "url"
 	// RegistrySourceTypeAPI represents an MCP Registry API endpoint.
 	RegistrySourceTypeAPI RegistrySourceType = "api"
+	// RegistrySourceTypeServer represents a full registry server that may host
+	// multiple registries. thv discovers them via GET /v1/registries.
+	RegistrySourceTypeServer RegistrySourceType = "server"
 )
 
 // RegistrySource describes a single registry entry in the config.

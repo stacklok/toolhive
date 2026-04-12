@@ -127,7 +127,7 @@ func ResolveRegistrySourceURLs(serverMetadata regtypes.ServerMetadata, appConfig
 		return "", ""
 	}
 	switch src.Type {
-	case appconfig.RegistrySourceTypeAPI:
+	case appconfig.RegistrySourceTypeAPI, appconfig.RegistrySourceTypeServer:
 		return src.Location, ""
 	case appconfig.RegistrySourceTypeURL:
 		return "", src.Location

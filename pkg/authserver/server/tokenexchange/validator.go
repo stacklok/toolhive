@@ -66,16 +66,19 @@ type MayActClaim struct {
 	Sub string `json:"sub"`
 }
 
-// SubjectTokenValidator validates subject tokens presented during RFC 8693 token exchange.
+// Compile-time check that SelfIssuedTokenValidator implements SubjectTokenValidator.
+var _ SubjectTokenValidator = (*SelfIssuedTokenValidator)(nil)
+
+// SelfIssuedTokenValidator validates subject tokens presented during RFC 8693 token exchange.
 // It verifies that the token was issued by this authorization server by checking
 // the signature against the server's own JWKS, and validates standard JWT claims.
-type SubjectTokenValidator struct {
+type SelfIssuedTokenValidator struct {
 	publicJWKS       *jose.JSONWebKeySet
 	issuer           string
 	allowedAudiences []string
 }
 
-// NewSubjectTokenValidator creates a new validator for subject tokens.
+// NewSelfIssuedTokenValidator creates a new validator for subject tokens.
 // The jwks parameter must be non-nil and contain only the authorization server's
 // public signing keys (e.g. AuthorizationServerConfig.PublicJWKS) — the validator
 // only ever verifies signatures, so it must not be handed private key material.
@@ -83,16 +86,16 @@ type SubjectTokenValidator struct {
 // set of audiences this server accepts in a subject token's "aud" claim; per the
 // same secure default as AuthorizationServerConfig.AllowedAudiences, an empty
 // allowedAudiences rejects every subject token rather than skipping the check.
-func NewSubjectTokenValidator(
+func NewSelfIssuedTokenValidator(
 	jwks *jose.JSONWebKeySet, issuer string, allowedAudiences []string,
-) (*SubjectTokenValidator, error) {
+) (*SelfIssuedTokenValidator, error) {
 	if jwks == nil {
 		return nil, fmt.Errorf("JWKS must not be nil")
 	}
 	if issuer == "" {
 		return nil, fmt.Errorf("issuer must not be empty")
 	}
-	return &SubjectTokenValidator{
+	return &SelfIssuedTokenValidator{
 		publicJWKS:       jwks,
 		issuer:           issuer,
 		allowedAudiences: allowedAudiences,
@@ -113,7 +116,7 @@ func NewSubjectTokenValidator(
 // against the client's registered audiences.
 //
 // Returns the validated claims on success, or a descriptive error on failure.
-func (v *SubjectTokenValidator) Validate(_ context.Context, rawToken string) (*ValidatedClaims, error) {
+func (v *SelfIssuedTokenValidator) Validate(_ context.Context, rawToken string) (*ValidatedClaims, error) {
 	parsedToken, err := jwt.ParseSigned(rawToken, allowedSignatureAlgorithms)
 	if err != nil {
 		return nil, fmt.Errorf("subject token is not a valid JWT: %w", err)

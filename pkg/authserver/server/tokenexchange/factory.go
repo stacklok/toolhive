@@ -25,7 +25,7 @@ func Factory(delegationLifespan time.Duration) (server.Factory, error) {
 			time.Duration(0), server.MaxAccessTokenLifespan, delegationLifespan)
 	}
 	return func(config *server.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
-		validator, err := NewSubjectTokenValidator(config.PublicJWKS(), config.GetAccessTokenIssuer(), config.AllowedAudiences)
+		validator, err := NewSelfIssuedTokenValidator(config.PublicJWKS(), config.GetAccessTokenIssuer(), config.AllowedAudiences)
 		if err != nil {
 			return nil, fmt.Errorf("tokenexchange: failed to create subject token validator: %w", err)
 		}

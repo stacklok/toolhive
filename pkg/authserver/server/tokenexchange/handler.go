@@ -46,7 +46,7 @@ const maxDelegationDepth = 10
 // token effort.
 type Handler struct {
 	*oauth2.HandleHelper
-	validator          *SubjectTokenValidator
+	validator          SubjectTokenValidator
 	delegationLifespan time.Duration
 	config             tokenExchangeConfig
 	allowedAudiences   []string

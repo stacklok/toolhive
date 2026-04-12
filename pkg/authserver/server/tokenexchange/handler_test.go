@@ -30,7 +30,7 @@ const testAgentClientID = "devops-agent"
 func newTestHandler(t *testing.T, tj *testJWKS, delegationLifespan time.Duration) *Handler {
 	t.Helper()
 
-	validator, err := NewSubjectTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
+	validator, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
 	require.NoError(t, err)
 
 	return &Handler{
@@ -963,7 +963,7 @@ func newTestHandlerWithHelper(t *testing.T, tj *testJWKS, accessLifespan time.Du
 
 	const delegationLifespan = 15 * time.Minute
 
-	validator, err := NewSubjectTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
+	validator, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
 	require.NoError(t, err)
 
 	cfg := &mockConfig{

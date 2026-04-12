@@ -83,3 +83,41 @@ func TestWebhookErrorBaseType(t *testing.T) {
 	assert.Equal(t, `webhook "base-test": some error`, err.Error())
 	assert.Equal(t, inner, err.Unwrap())
 }
+
+func TestIsAlwaysDenyError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "unprocessable entity invalid response",
+			err:  NewInvalidResponseError("test", fmt.Errorf("unprocessable"), 422),
+			want: true,
+		},
+		{
+			name: "other invalid response status",
+			err:  NewInvalidResponseError("test", fmt.Errorf("bad request"), 400),
+			want: false,
+		},
+		{
+			name: "invalid response without status",
+			err:  NewInvalidResponseError("test", fmt.Errorf("decode error"), 0),
+			want: false,
+		},
+		{
+			name: "non invalid response error",
+			err:  NewNetworkError("test", fmt.Errorf("network")),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, IsAlwaysDenyError(tt.err))
+		})
+	}
+}

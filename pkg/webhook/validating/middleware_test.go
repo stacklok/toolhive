@@ -356,6 +356,66 @@ func TestCreateMiddleware(t *testing.T) {
 	require.NoError(t, mw.Close())
 }
 
+//nolint:paralleltest // Uses httptest server.
+func TestValidatingMiddleware_HTTP422AlwaysDenies(t *testing.T) {
+	tests := []struct {
+		name          string
+		failurePolicy webhook.FailurePolicy
+	}{
+		{
+			name:          "fail policy",
+			failurePolicy: webhook.FailurePolicyFail,
+		},
+		{
+			name:          "ignore policy",
+			failurePolicy: webhook.FailurePolicyIgnore,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte("unprocessable request"))
+			}))
+			defer server.Close()
+
+			cfg := webhook.Config{
+				Name:          "test-webhook",
+				URL:           server.URL,
+				Timeout:       webhook.DefaultTimeout,
+				FailurePolicy: tt.failurePolicy,
+				TLSConfig: &webhook.TLSConfig{
+					InsecureSkipVerify: true,
+				},
+			}
+
+			client, err := webhook.NewClient(cfg, webhook.TypeValidating, nil)
+			require.NoError(t, err)
+
+			mw := createValidatingHandler([]clientExecutor{{client: client, config: cfg}}, "test-server", "stdio")
+
+			reqBody := []byte(`{"jsonrpc":"2.0","method":"tools/call","id":1}`)
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(reqBody))
+			ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: 1})
+			req = req.WithContext(ctx)
+
+			var nextCalled bool
+			nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				nextCalled = true
+			})
+
+			rr := httptest.NewRecorder()
+			mw(nextHandler).ServeHTTP(rr, req)
+
+			assert.False(t, nextCalled)
+			assert.Equal(t, http.StatusForbidden, rr.Code)
+			assert.Contains(t, rr.Body.String(), "Request denied by policy")
+		})
+	}
+}
+
 //nolint:paralleltest // Shares a mock HTTP server and lastRequest state
 func TestMultiWebhookChain(t *testing.T) {
 	// Setup mock webhook servers

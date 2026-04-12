@@ -313,7 +313,11 @@ func BuildRunnerConfig(
 	}
 
 	// Load application config once for the entire build.
-	appConfig := cfg.NewDefaultProvider().GetConfig()
+	configProvider := cfg.NewProvider()
+	appConfig, err := configProvider.LoadOrCreateConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load application config: %w", err)
+	}
 
 	// Setup telemetry configuration
 	telemetryConfig := setupTelemetryConfiguration(cmd, runFlags, appConfig)
@@ -688,8 +692,11 @@ func configureMiddlewareAndOptions(
 	var opts []runner.RunConfigBuilderOption
 
 	// Load application config for global settings
-	configProvider := cfg.NewDefaultProvider()
-	appConfig := configProvider.GetConfig()
+	configProvider := cfg.NewProvider()
+	appConfig, err := configProvider.LoadOrCreateConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load application config: %w", err)
+	}
 
 	// Resolve the OTel service name from the workload name when not explicitly set
 	telemetry.ResolveServiceName(telemetryConfig, serverName)

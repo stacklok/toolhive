@@ -1,0 +1,23 @@
+{
+  "validating": [
+    {
+      "name": "policy-check",
+      "url": "https://policy.example.com/validate",
+      "failure_policy": "fail",
+      "timeout": "5s",
+      "tls_config": {
+        "ca_bundle_path": "/etc/toolhive/pki/webhook-ca.crt"
+      }
+    }
+  ],
+  "mutating": [
+    {
+      "name": "request-enricher",
+      "url": "https://enrichment.example.com/mutate",
+      "failure_policy": "ignore",
+      "tls_config": {
+        "insecure_skip_verify": true
+      }
+    }
+  ]
+}

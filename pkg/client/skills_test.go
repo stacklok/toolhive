@@ -47,6 +47,12 @@ func testSkillClientIntegrations() []clientAppConfig {
 			SkillsProjectPath: []string{".cursor", "skills"},
 		},
 		{
+			ClientType:        KimiCli,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".kimi", "skills"},
+			SkillsProjectPath: []string{".kimi", "skills"},
+		},
+		{
 			ClientType: VSCode,
 			// SupportsSkills defaults to false
 		},
@@ -77,6 +83,7 @@ func TestSupportsSkills(t *testing.T) {
 		{name: "Codex supports skills", client: Codex, expected: true},
 		{name: "OpenCode supports skills", client: OpenCode, expected: true},
 		{name: "Cursor supports skills", client: Cursor, expected: true},
+		{name: "KimiCli supports skills", client: KimiCli, expected: true},
 		{name: "unknown client returns false", client: ClientApp("nonexistent"), expected: false},
 	}
 
@@ -93,8 +100,8 @@ func TestListSkillSupportingClients(t *testing.T) {
 	cm := newTestSkillManager()
 	clients := cm.ListSkillSupportingClients()
 
-	// Should include ClaudeCode, Codex, Cursor, OpenCode, and our test-only no-paths-client
-	require.Len(t, clients, 5, "unexpected number of skill-supporting clients: %v", clients)
+	// Should include ClaudeCode, Codex, Cursor, KimiCli, OpenCode, and our test-only no-paths-client
+	require.Len(t, clients, 6, "unexpected number of skill-supporting clients: %v", clients)
 
 	// Verify sorted order
 	for i := 1; i < len(clients); i++ {
@@ -205,6 +212,21 @@ func TestGetSkillPath(t *testing.T) {
 			scope:       skills.ScopeProject,
 			projectRoot: "/tmp/myproject",
 			wantPath:    filepath.Join("/tmp/myproject", ".cursor", "skills", "my-skill"),
+		},
+		{
+			name:      "ScopeUser KimiCli",
+			client:    KimiCli,
+			skillName: "my-skill",
+			scope:     skills.ScopeUser,
+			wantPath:  filepath.Join(testHomeDir, ".kimi", "skills", "my-skill"),
+		},
+		{
+			name:        "ScopeProject KimiCli with explicit root",
+			client:      KimiCli,
+			skillName:   "my-skill",
+			scope:       skills.ScopeProject,
+			projectRoot: "/tmp/myproject",
+			wantPath:    filepath.Join("/tmp/myproject", ".kimi", "skills", "my-skill"),
 		},
 		{
 			name:      "client that does not support skills",

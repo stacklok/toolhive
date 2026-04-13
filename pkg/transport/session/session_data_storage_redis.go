@@ -87,6 +87,38 @@ func (s *RedisSessionDataStorage) Load(ctx context.Context, id string) (map[stri
 	return metadata, nil
 }
 
+// Update overwrites session metadata only if the key already exists.
+// Uses Redis SET XX (set-if-exists) to prevent resurrecting a session that
+// was deleted by a concurrent Delete call (e.g. from another pod).
+// Returns (true, nil) if updated, (false, nil) if the key was not found.
+func (s *RedisSessionDataStorage) Update(ctx context.Context, id string, metadata map[string]string) (bool, error) {
+	if id == "" {
+		return false, fmt.Errorf("cannot write session data with empty ID")
+	}
+	if metadata == nil {
+		metadata = make(map[string]string)
+	}
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		return false, fmt.Errorf("failed to serialize session metadata: %w", err)
+	}
+	// Mode "XX" means "only set if the key already exists".
+	res, err := s.client.SetArgs(ctx, s.key(id), data, redis.SetArgs{
+		Mode: "XX",
+		TTL:  s.ttl,
+	}).Result()
+	if err != nil {
+		// go-redis surfaces the "key does not exist" nil bulk reply as redis.Nil.
+		if errors.Is(err, redis.Nil) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to conditionally update session metadata: %w", err)
+	}
+	// SetArgs with Mode "XX" returns "" when the key does not exist and "OK"
+	// when the write succeeded.
+	return res == "OK", nil
+}
+
 // Create atomically creates session metadata only if the key does not
 // already exist. Uses Redis SET NX (set-if-not-exists) to eliminate the
 // TOCTOU race between Load and Upsert in multi-pod deployments.

@@ -456,14 +456,10 @@ func NewTransparentProxyWithOptions(
 	// Create health checker always for Kubernetes probes
 	var mcpPinger healthcheck.MCPPinger
 	if enableHealthCheck {
-		pingTimeout := proxy.healthCheckPingTimeout
-		if pingTimeout == 0 {
-			pingTimeout = DefaultPingerTimeout
-		}
 		if proxy.stateless {
-			mcpPinger = NewStatelessMCPPingerWithTimeout(targetURI, pingTimeout)
+			mcpPinger = NewStatelessMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
 		} else {
-			mcpPinger = NewMCPPingerWithTimeout(targetURI, pingTimeout)
+			mcpPinger = NewMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
 		}
 	}
 	proxy.healthChecker = healthcheck.NewHealthChecker(transportType, mcpPinger)
@@ -1246,11 +1242,7 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 }
 
 func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
-	interval := p.healthCheckInterval
-	if interval == 0 {
-		interval = DefaultHealthCheckInterval
-	}
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(p.healthCheckInterval)
 	defer ticker.Stop()
 
 	consecutiveFailures := 0

@@ -73,6 +73,10 @@ func Execute(script string, globals starlark.StringDict, stepLimit uint64) (*Exe
 // wrapScript wraps a user script in a function body so top-level return works.
 // The script becomes the body of __main__(), and its return value is captured
 // in __result__.
+//
+// Known limitation: the 4-space indentation changes the content of multi-line
+// string literals (triple-quoted strings). This is acceptable for tool
+// orchestration scripts where triple-quoted strings are uncommon.
 func wrapScript(script string) string {
 	var b strings.Builder
 	b.WriteString("def __main__():\n")

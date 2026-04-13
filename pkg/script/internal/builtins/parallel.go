@@ -6,28 +6,18 @@ package builtins
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"go.starlark.net/starlark"
-)
 
-// parallelState holds the shared state for a single parallel() invocation.
-type parallelState struct {
-	fns       *starlark.List
-	results   []starlark.Value
-	errs      []error
-	childLogs [][]string
-	sem       chan struct{}
-	stepLimit uint64
-	ctx       context.Context
-}
+	"github.com/stacklok/toolhive/pkg/foreach"
+)
 
 // newParallel creates a parallel() Starlark builtin that executes a list
 // of zero-arg callables concurrently and returns results in order.
 //
-// ctx is checked for cancellation before launching each goroutine and
-// while acquiring semaphore slots. stepLimit is propagated to child
-// threads. maxConcurrency limits simultaneous goroutines (0 = unlimited).
+// Uses a bounded worker pool (via foreach.Concurrent) so the goroutine
+// count matches maxConcurrency, not the task count. The step budget is
+// divided evenly across children to prevent amplification.
 func newParallel(ctx context.Context, stepLimit uint64, maxConcurrency int) *starlark.Builtin {
 	return starlark.NewBuiltin("parallel", func(
 		thread *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple,
@@ -42,102 +32,48 @@ func newParallel(ctx context.Context, stepLimit uint64, maxConcurrency int) *sta
 			return starlark.NewList(nil), nil
 		}
 
-		state := &parallelState{
-			fns:       fns,
-			results:   make([]starlark.Value, n),
-			errs:      make([]error, n),
-			childLogs: make([][]string, n),
-			stepLimit: stepLimit,
-			ctx:       ctx,
-		}
-		if maxConcurrency > 0 {
-			state.sem = make(chan struct{}, maxConcurrency)
+		// Divide step budget evenly across children to prevent amplification.
+		// With N children, each gets stepLimit/N steps.
+		childStepLimit := stepLimit / uint64(n) //nolint:gosec // n is from starlark.List.Len(), always non-negative
+
+		childLogs := make([][]string, n)
+
+		results, err := foreach.Concurrent(ctx, n, maxConcurrency,
+			func(_ context.Context, idx int) (starlark.Value, error) {
+				callable, ok := fns.Index(idx).(starlark.Callable)
+				if !ok {
+					return nil, fmt.Errorf("parallel: element %d is not callable (got %s)",
+						idx, fns.Index(idx).Type())
+				}
+
+				// Each child gets its own log buffer to avoid data races
+				var logs []string
+				childThread := &starlark.Thread{
+					Name: fmt.Sprintf("%s/parallel-%d", thread.Name, idx),
+					Print: func(_ *starlark.Thread, msg string) {
+						logs = append(logs, msg)
+					},
+				}
+				if childStepLimit > 0 {
+					childThread.SetMaxExecutionSteps(childStepLimit)
+				}
+
+				result, callErr := starlark.Call(childThread, callable, nil, nil)
+				childLogs[idx] = logs
+				return result, callErr
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("parallel: %w", err)
 		}
 
-		var wg sync.WaitGroup
-		wg.Add(n)
-		for i := range n {
-			go state.runTask(&wg, i, thread)
-		}
-		waitWithContext(ctx, &wg)
-
-		for i, err := range state.errs {
-			if err != nil {
-				return nil, fmt.Errorf("parallel: task %d failed: %w", i, err)
-			}
-		}
-
-		// Merge child logs into parent thread
-		for _, logs := range state.childLogs {
+		// Merge child logs into parent thread in order
+		for _, logs := range childLogs {
 			for _, msg := range logs {
 				thread.Print(thread, msg)
 			}
 		}
 
-		return starlark.NewList(state.results), nil
+		return starlark.NewList(results), nil
 	})
-}
-
-// runTask executes a single callable within the parallel fan-out.
-func (s *parallelState) runTask(wg *sync.WaitGroup, idx int, parent *starlark.Thread) {
-	defer wg.Done()
-
-	if s.ctx.Err() != nil {
-		s.errs[idx] = s.ctx.Err()
-		return
-	}
-
-	if s.sem != nil {
-		select {
-		case s.sem <- struct{}{}:
-			defer func() { <-s.sem }()
-		case <-s.ctx.Done():
-			s.errs[idx] = s.ctx.Err()
-			return
-		}
-	}
-
-	callable, ok := s.fns.Index(idx).(starlark.Callable)
-	if !ok {
-		s.errs[idx] = fmt.Errorf("parallel: element %d is not callable (got %s)",
-			idx, s.fns.Index(idx).Type())
-		return
-	}
-
-	var logs []string
-	childThread := &starlark.Thread{
-		Name: fmt.Sprintf("%s/parallel-%d", parent.Name, idx),
-		Print: func(_ *starlark.Thread, msg string) {
-			logs = append(logs, msg)
-		},
-	}
-	if s.stepLimit > 0 {
-		childThread.SetMaxExecutionSteps(s.stepLimit)
-	}
-
-	result, err := starlark.Call(childThread, callable, nil, nil)
-	if err != nil {
-		s.errs[idx] = err
-		return
-	}
-	s.results[idx] = result
-	s.childLogs[idx] = logs
-}
-
-// waitWithContext waits for wg to complete, remaining responsive to context
-// cancellation. If the context is cancelled, it still waits for goroutines
-// to finish (they will observe ctx.Err() on their next semaphore acquire
-// or tool call).
-func waitWithContext(ctx context.Context, wg *sync.WaitGroup) {
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-		<-done
-	}
 }

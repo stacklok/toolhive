@@ -86,5 +86,8 @@ func resolveConfig(cfg *Config) Config {
 	if c.StepLimit == 0 {
 		c.StepLimit = DefaultStepLimit
 	}
+	if c.ParallelMax < 0 {
+		c.ParallelMax = 0
+	}
 	return c
 }

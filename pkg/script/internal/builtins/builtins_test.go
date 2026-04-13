@@ -254,5 +254,5 @@ func TestBuild_NameCollision(t *testing.T) {
 	// But both should be callable via call_tool by original name
 	result, err := core.Execute(`return call_tool("my.tool")`, globals, 100_000)
 	require.NoError(t, err)
-	require.NotNil(t, result)
+	require.Equal(t, starlark.String("second"), result.Value, "should dispatch to my.tool, not my-tool")
 }

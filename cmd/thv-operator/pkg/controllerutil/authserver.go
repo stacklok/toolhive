@@ -132,9 +132,11 @@ func buildUpstreamSecretEnvVars(b *upstreamSecretBinding) []corev1.EnvVar {
 //     OAuth2Config must be nil for OIDC-typed providers.
 //   - OAuth2 providers: the two refs are independent — either, both, or
 //     neither may be non-nil.
+//   - oidc-trust providers: both are always nil — oidc-trust supplies JWKS
+//     trust only and never holds a client secret or participates in DCR.
 //   - Any other (currently unreachable) Type value: both are nil.
 //
-// Callers must not rely on the third bullet to mask an admission-bypassing
+// Callers must not rely on the last bullet to mask an admission-bypassing
 // object — `BuildAuthServerRunConfig` is the reconcile-time backstop for that.
 func extractUpstreamSecretRefs(
 	provider *mcpv1beta1.UpstreamProviderConfig,
@@ -152,6 +154,8 @@ func extractUpstreamSecretRefs(
 				initialAccessTokenRef = provider.OAuth2Config.DCRConfig.InitialAccessTokenRef
 			}
 		}
+	case mcpv1beta1.UpstreamProviderTypeOIDCTrust:
+		// oidc-trust providers have no client secret.
 	}
 	return clientSecretRef, initialAccessTokenRef
 }
@@ -767,6 +771,15 @@ func buildUpstreamRunConfig(
 				return nil, err
 			}
 			config.OAuth2Config = oauth2
+		}
+	case mcpv1beta1.UpstreamProviderTypeOIDCTrust:
+		// oidc-trust reuses the OIDC config but only needs issuer and clientID.
+		// No client secret, redirect URI, or scopes are required.
+		if provider.OIDCConfig != nil {
+			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
+				IssuerURL: provider.OIDCConfig.IssuerURL,
+				ClientID:  provider.OIDCConfig.ClientID,
+			}
 		}
 	}
 

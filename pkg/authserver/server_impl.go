@@ -63,6 +63,11 @@ func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.
 		return upstream.NewOIDCProvider(ctx, cfg.OIDCConfig)
 	case UpstreamProviderTypeOAuth2:
 		return upstream.NewOAuth2Provider(cfg.OAuth2Config)
+	case UpstreamProviderTypeOIDCTrust:
+		if cfg.OIDCConfig == nil {
+			return nil, fmt.Errorf("oidc_config is required for oidc-trust upstream")
+		}
+		return upstream.NewOIDCTrustProvider(cfg.OIDCConfig.Issuer, cfg.OIDCConfig.ClientID), nil
 	default:
 		return nil, fmt.Errorf("unsupported upstream type: %s", cfg.Type)
 	}
@@ -153,12 +158,9 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		"auth_code_lifespan", cfg.AuthCodeLifespan,
 	)
 
-	// Build extra factories for extension grant types.
-	extraFactories := []oauthserver.Factory{
-		tokenexchange.Factory(cfg.DelegationTokenLifespan),
-	}
-
 	// Build ordered upstream provider list from all configured upstreams.
+	// This must happen before factory creation so that oidc-trust providers
+	// can be extracted to derive TrustedIssuers for the token exchange handler.
 	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
 	for i := range cfg.Upstreams {
 		upCfg := &cfg.Upstreams[i]
@@ -172,6 +174,25 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 			Provider: upstreamProvider,
 		})
 		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
+	}
+
+	// Derive trusted issuers from oidc-trust upstreams for multi-issuer token exchange.
+	var trustedIssuers []tokenexchange.TrustedIssuer
+	for _, u := range upstreams {
+		if tp, ok := u.Provider.(*upstream.OIDCTrustProvider); ok {
+			trustedIssuers = append(trustedIssuers, tokenexchange.TrustedIssuer{
+				IssuerURL:        tp.IssuerURL(),
+				ExpectedAudience: tp.ExpectedAudience(),
+			})
+		}
+	}
+
+	// Build extra factories for extension grant types.
+	extraFactories := []oauthserver.Factory{
+		tokenexchange.Factory(tokenexchange.FactoryConfig{
+			DelegationLifespan: cfg.DelegationTokenLifespan,
+			TrustedIssuers:     trustedIssuers,
+		}),
 	}
 
 	// Run one-shot bulk migration of legacy data before handler construction.

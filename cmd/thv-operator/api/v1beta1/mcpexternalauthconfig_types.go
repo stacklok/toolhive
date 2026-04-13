@@ -547,6 +547,10 @@ const (
 
 	// UpstreamProviderTypeOAuth2 is for pure OAuth 2.0 providers with explicit endpoints
 	UpstreamProviderTypeOAuth2 UpstreamProviderType = "oauth2"
+
+	// UpstreamProviderTypeOIDCTrust is for OIDC providers that only provide JWKS trust
+	// for token exchange validation, without participating in redirect-flow login.
+	UpstreamProviderTypeOIDCTrust UpstreamProviderType = "oidc-trust"
 )
 
 // UpstreamProviderConfig defines configuration for an upstream Identity Provider.
@@ -575,8 +579,8 @@ type UpstreamProviderConfig struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
 	Name string `json:"name"`
 
-	// Type specifies the provider type: "oidc" or "oauth2"
-	// +kubebuilder:validation:Enum=oidc;oauth2
+	// Type specifies the provider type: "oidc", "oauth2", or "oidc-trust"
+	// +kubebuilder:validation:Enum=oidc;oauth2;oidc-trust
 	// +kubebuilder:validation:Required
 	Type UpstreamProviderType `json:"type"`
 
@@ -1632,12 +1636,15 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *UpstreamProviderConfig) error {
 	prefix := fmt.Sprintf("upstreamProviders[%d]", index)
 
-	typeOK := provider.Type == UpstreamProviderTypeOIDC || provider.Type == UpstreamProviderTypeOAuth2
+	typeOK := provider.Type == UpstreamProviderTypeOIDC ||
+		provider.Type == UpstreamProviderTypeOAuth2 ||
+		provider.Type == UpstreamProviderTypeOIDCTrust
 	configOK := (provider.Type == UpstreamProviderTypeOIDC && provider.OIDCConfig != nil && provider.OAuth2Config == nil) ||
-		(provider.Type == UpstreamProviderTypeOAuth2 && provider.OAuth2Config != nil && provider.OIDCConfig == nil)
+		(provider.Type == UpstreamProviderTypeOAuth2 && provider.OAuth2Config != nil && provider.OIDCConfig == nil) ||
+		(provider.Type == UpstreamProviderTypeOIDCTrust && provider.OIDCConfig != nil && provider.OAuth2Config == nil)
 	if !typeOK || !configOK {
-		return fmt.Errorf("%s: type must be 'oidc' or 'oauth2'; oidcConfig must be set when type is 'oidc' "+
-			"and oauth2Config must be set when type is 'oauth2' (and the other must not be set)", prefix)
+		return fmt.Errorf("%s: type must be 'oidc', 'oauth2', or 'oidc-trust'; oidcConfig must be set when type is "+
+			"'oidc' or 'oidc-trust' and oauth2Config must be set when type is 'oauth2' (and the other must not be set)", prefix)
 	}
 
 	// Validate OAuth2-specific constraints (defense-in-depth with CEL).

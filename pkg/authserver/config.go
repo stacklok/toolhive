@@ -227,6 +227,10 @@ const (
 
 	// UpstreamProviderTypeOAuth2 is for pure OAuth 2.0 providers with explicit endpoints.
 	UpstreamProviderTypeOAuth2 UpstreamProviderType = "oauth2"
+
+	// UpstreamProviderTypeOIDCTrust is for OIDC providers that only provide JWKS trust
+	// for token exchange validation, without participating in redirect-flow login.
+	UpstreamProviderTypeOIDCTrust UpstreamProviderType = "oidc-trust"
 )
 
 // DefaultUpstreamName is the name assigned to a single unnamed upstream.
@@ -916,6 +920,24 @@ func validateUpstreamType(up *UpstreamConfig, insecureAllowHTTP bool) error {
 		if err := up.OAuth2Config.ValidateWithInsecure(insecureAllowHTTP); err != nil {
 			return fmt.Errorf("upstream %q: %w", up.Name, err)
 		}
+	case UpstreamProviderTypeOIDCTrust:
+		if up.OIDCConfig == nil {
+			return fmt.Errorf("upstream %q: oidc_config is required for oidc-trust provider", up.Name)
+		}
+		if up.OAuth2Config != nil {
+			return fmt.Errorf("upstream %q: oauth2_config must not be set when type is %q", up.Name, up.Type)
+		}
+		// Validate the issuer URL (oidc-trust doesn't call OIDCConfig.Validate() which
+		// would incorrectly require redirect_uri, but we still need issuer URL validation
+		// to prevent HTTP downgrade on the non-CRD path).
+		if up.OIDCConfig.Issuer == "" {
+			return fmt.Errorf("upstream %q: issuer is required for oidc-trust provider", up.Name)
+		}
+		if err := validateIssuerURL(up.OIDCConfig.Issuer, insecureAllowHTTP); err != nil {
+			return fmt.Errorf("upstream %q: invalid issuer URL: %w", up.Name, err)
+		}
+		// ClientID is used as ExpectedAudience for token validation, may be empty
+		// for issuers where audience validation is not required.
 	default:
 		return fmt.Errorf("upstream %q: unsupported provider type: %q", up.Name, up.Type)
 	}

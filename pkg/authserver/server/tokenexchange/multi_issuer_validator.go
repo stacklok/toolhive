@@ -152,11 +152,13 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 		return nil, err
 	}
 
-	// Validate standard claims: issuer must match, audience must contain the expected value,
-	// and the token must not be expired.
+	// Validate standard claims: issuer must match, token must not be expired.
+	// Audience is checked only when ExpectedAudience is configured.
 	expected := jwt.Expected{
-		Issuer:      issuerConfig.IssuerURL,
-		AnyAudience: jwt.Audience{issuerConfig.ExpectedAudience},
+		Issuer: issuerConfig.IssuerURL,
+	}
+	if issuerConfig.ExpectedAudience != "" {
+		expected.AnyAudience = jwt.Audience{issuerConfig.ExpectedAudience}
 	}
 	if err := standardClaims.ValidateWithLeeway(expected, 0); err != nil {
 		return nil, fmt.Errorf("subject token claims validation failed: %w", err)
@@ -188,7 +190,7 @@ func (v *MultiIssuerTokenValidator) resolveJWKS(
 	// Cache expired — clear the discovered URL so we re-discover on next fetch.
 	// This handles the (rare) case where an issuer rotates its JWKS endpoint URL.
 	// The explicitly configured JWKSURL (from TrustedIssuer) is preserved.
-	if issuerConfig.TrustedIssuer.JWKSURL == "" {
+	if issuerConfig.JWKSURL == "" {
 		issuerConfig.jwksURL = ""
 	}
 

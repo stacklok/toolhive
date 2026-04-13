@@ -471,7 +471,7 @@ Global patterns at `~/.config/toolhive/thvignore` apply to all mounts. Disable w
 thv skill install code-review
 
 # Install targeting a specific client
-thv skill install code-review --client claude-code
+thv skill install code-review --clients claude-code
 
 # Install into a project (requires --project-root)
 thv skill install code-review --scope project --project-root /home/user/myproject
@@ -550,7 +550,7 @@ thv skill build ./my-skill --tag ghcr.io/myorg/my-skill:v1.0
 thv skill push ghcr.io/myorg/my-skill:v1.0
 
 # 4. Install from registry to verify
-thv skill install ghcr.io/myorg/my-skill:v1.0 --client claude-code
+thv skill install ghcr.io/myorg/my-skill:v1.0 --clients claude-code
 
 # 5. Confirm installation
 thv skill info my-skill

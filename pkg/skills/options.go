@@ -23,8 +23,8 @@ type InstallOptions struct {
 	Version string `json:"version,omitempty"`
 	// Scope is the installation scope.
 	Scope Scope `json:"scope,omitempty"`
-	// Client is the target client (e.g., "claude-code"). Empty means first skill-supporting client.
-	Client string `json:"client,omitempty"`
+	// Clients lists target clients (e.g., "claude-code"). Empty means first skill-supporting client.
+	Clients []string `json:"clients,omitempty"`
 	// Force allows overwriting unmanaged skill directories.
 	Force bool `json:"force,omitempty"`
 	// ProjectRoot is the project root path for project-scoped installs.

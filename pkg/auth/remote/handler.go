@@ -237,14 +237,9 @@ func (h *Handler) tryRestoreFromCachedTokens(
 	scopes []string,
 	authServerInfo *discovery.AuthServerInfo,
 ) (oauth2.TokenSource, error) {
-	// Resolve the refresh token from the secret manager
-	if h.secretProvider == nil {
-		return nil, fmt.Errorf("secret provider not configured, cannot restore cached tokens")
-	}
-
-	refreshToken, err := h.secretProvider.GetSecret(ctx, h.config.CachedRefreshTokenRef)
+	mgr, err := NewTokenPersistenceManager(h.secretProvider)
 	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve cached refresh token: %w", err)
+		return nil, fmt.Errorf("secret provider not configured, cannot restore cached tokens: %w", err)
 	}
 
 	// Resolve client credentials - prefer cached DCR credentials over config
@@ -284,12 +279,16 @@ func (h *Handler) tryRestoreFromCachedTokens(
 
 	// Create token source from cached refresh token.
 	// Passes resource for RFC 8707 compliance when configured.
-	baseSource := CreateTokenSourceFromCached(
+	baseSource, err := mgr.RestoreFromCache(
+		ctx,
+		h.config.CachedRefreshTokenRef,
 		oauth2Config,
-		refreshToken,
 		h.config.CachedTokenExpiry,
 		h.config.Resource,
 	)
+	if err != nil {
+		return nil, err
+	}
 
 	// Try to get a token to verify the cached tokens are valid
 	// This will trigger a refresh since we don't have an access token

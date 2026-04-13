@@ -18,12 +18,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
+// configUpdaterFunc is the signature for a callback that persists a token
+// reference and expiry back to the caller's config store.
+type configUpdaterFunc func(tokenRef string, expiry time.Time)
+
 // oauthTokenSource implements TokenSource using an OIDC browser-based flow.
 type oauthTokenSource struct {
-	oauthCfg        *config.RegistryOAuthConfig
-	registryURL     string
+	oauthCfg        *config.OAuthConfig
+	serviceURL      string
 	secretsProvider secrets.Provider
 	interactive     bool
+	configUpdater   configUpdaterFunc
 	mu              sync.Mutex
 	tokenSource     oauth2.TokenSource
 }
@@ -72,18 +77,15 @@ func (o *oauthTokenSource) Token(ctx context.Context) (string, error) {
 
 // tryRestoreFromCache attempts to restore token source from cached refresh token.
 func (o *oauthTokenSource) tryRestoreFromCache(ctx context.Context) error {
-	if o.secretsProvider == nil {
-		return fmt.Errorf("no secrets provider available")
-	}
-
-	refreshTokenKey := o.refreshTokenKey()
-
-	refreshToken, err := o.secretsProvider.GetSecret(ctx, refreshTokenKey)
+	mgr, err := remote.NewTokenPersistenceManager(o.secretsProvider)
 	if err != nil {
-		return fmt.Errorf("failed to get cached refresh token: %w", err)
+		return fmt.Errorf("no secrets provider available: %w", err)
 	}
-	if refreshToken == "" {
-		return fmt.Errorf("no cached refresh token found")
+
+	// Check the secret exists before OIDC discovery to avoid unnecessary network calls.
+	refreshToken, err := mgr.FetchRefreshToken(ctx, o.refreshTokenKey())
+	if err != nil {
+		return err
 	}
 
 	oauth2Cfg, err := o.buildOAuth2Config(ctx)
@@ -91,7 +93,7 @@ func (o *oauthTokenSource) tryRestoreFromCache(ctx context.Context) error {
 		return fmt.Errorf("failed to create oauth2 config: %w", err)
 	}
 
-	o.tokenSource = remote.CreateTokenSourceFromCached(oauth2Cfg, refreshToken, o.oauthCfg.CachedTokenExpiry, "")
+	o.tokenSource = remote.CreateTokenSourceFromCached(oauth2Cfg, refreshToken, o.oauthCfg.CachedTokenExpiry, o.oauthCfg.Resource)
 	return nil
 }
 
@@ -153,7 +155,7 @@ func (o *oauthTokenSource) buildOAuthFlowConfig(ctx context.Context) (*oauth.Con
 
 	scopes := ensureOfflineAccess(o.oauthCfg.Scopes)
 
-	return oauth.CreateOAuthConfigFromOIDC(
+	cfg, err := oauth.CreateOAuthConfigFromOIDC(
 		ctx,
 		o.oauthCfg.Issuer,
 		o.oauthCfg.ClientID,
@@ -161,8 +163,23 @@ func (o *oauthTokenSource) buildOAuthFlowConfig(ctx context.Context) (*oauth.Con
 		scopes,
 		true, // Always use PKCE (S256)
 		callbackPort,
-		o.oauthCfg.Audience,
+		o.oauthCfg.Resource,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Audience is a provider-specific request parameter (e.g. Auth0) distinct from
+	// the RFC 8707 resource indicator. Pass it as an extra auth URL parameter so
+	// providers that require it receive it correctly.
+	if o.oauthCfg.Audience != "" {
+		if cfg.OAuthParams == nil {
+			cfg.OAuthParams = make(map[string]string)
+		}
+		cfg.OAuthParams["audience"] = o.oauthCfg.Audience
+	}
+
+	return cfg, nil
 }
 
 // ensureOfflineAccess returns scopes with "offline_access" included.
@@ -210,15 +227,10 @@ func (o *oauthTokenSource) createTokenPersister(refreshTokenKey string) remote.T
 	}
 }
 
-// updateConfigTokenRef updates the config with the refresh token reference and expiry.
-func (*oauthTokenSource) updateConfigTokenRef(refreshTokenKey string, expiry time.Time) {
-	if err := config.UpdateConfig(func(cfg *config.Config) {
-		if cfg.RegistryAuth.OAuth != nil {
-			cfg.RegistryAuth.OAuth.CachedRefreshTokenRef = refreshTokenKey
-			cfg.RegistryAuth.OAuth.CachedTokenExpiry = expiry
-		}
-	}); err != nil {
-		slog.Warn("Failed to update config with token reference", "error", err)
+// updateConfigTokenRef delegates to the injected configUpdater if one was provided.
+func (o *oauthTokenSource) updateConfigTokenRef(refreshTokenKey string, expiry time.Time) {
+	if o.configUpdater != nil {
+		o.configUpdater(refreshTokenKey, expiry)
 	}
 }
 
@@ -228,5 +240,5 @@ func (o *oauthTokenSource) refreshTokenKey() string {
 	if o.oauthCfg.CachedRefreshTokenRef != "" {
 		return o.oauthCfg.CachedRefreshTokenRef
 	}
-	return DeriveSecretKey(o.registryURL, o.oauthCfg.Issuer)
+	return DeriveSecretKey(o.serviceURL, o.oauthCfg.Issuer)
 }

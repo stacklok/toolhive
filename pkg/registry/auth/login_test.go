@@ -22,8 +22,8 @@ import (
 // --- helpers ---
 
 // oauthConfig returns a minimal valid OAuth config for tests.
-func oauthConfig() *config.RegistryOAuthConfig {
-	return &config.RegistryOAuthConfig{
+func oauthConfig() *config.OAuthConfig {
+	return &config.OAuthConfig{
 		Issuer:   "https://auth.example.com",
 		ClientID: "test-client",
 	}

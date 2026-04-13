@@ -111,6 +111,7 @@ type EmbeddingServerRef struct {
 //
 // +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? (has(self.oidcConfig) || has(self.oidcConfigRef)) : true",message="spec.incomingAuth.oidcConfig or oidcConfigRef is required when type is oidc"
 // +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+// +kubebuilder:validation:XValidation:rule="!(has(self.authzConfig) && has(self.authzConfigRef))",message="authzConfig and authzConfigRef are mutually exclusive; use authzConfigRef to reference a shared MCPAuthzConfig"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type IncomingAuthConfig struct {
@@ -235,6 +236,11 @@ type VirtualMCPServerStatus struct {
 	// Only populated when IncomingAuth.OIDCConfigRef is set.
 	// +optional
 	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
+
+	// AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection.
+	// Only populated when IncomingAuth.AuthzConfigRef is set.
+	// +optional
+	AuthzConfigHash string `json:"authzConfigHash,omitempty"`
 }
 
 // VirtualMCPServerPhase represents the lifecycle phase of a VirtualMCPServer

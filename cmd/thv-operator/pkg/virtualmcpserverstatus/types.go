@@ -35,6 +35,9 @@ type StatusManager interface {
 	// SetOIDCConfigHash sets the OIDC config hash for change detection
 	SetOIDCConfigHash(hash string)
 
+	// SetAuthzConfigHash sets the authz config hash for change detection
+	SetAuthzConfigHash(hash string)
+
 	// SetGroupRefValidatedCondition sets the GroupRef validation condition
 	SetGroupRefValidatedCondition(reason, message string, status metav1.ConditionStatus)
 

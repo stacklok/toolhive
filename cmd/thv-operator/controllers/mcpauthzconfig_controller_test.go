@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	// Import authorizer backends so they register with the factory registry.
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/http"
@@ -85,7 +86,7 @@ func TestBuildFullAuthzConfigJSON(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := BuildFullAuthzConfigJSON(tt.spec)
+			result, err := ctrlutil.BuildFullAuthzConfigJSON(tt.spec)
 
 			if tt.expectError {
 				require.Error(t, err)

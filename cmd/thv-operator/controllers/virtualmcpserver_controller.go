@@ -157,11 +157,10 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, nil
 	}
 
-	// Validate MCPOIDCConfigRef if referenced (before resource creation).
-	// handleOIDCConfig is a no-op when OIDCConfigRef is nil.
-	if err := r.handleOIDCConfig(ctx, vmcp, statusManager); err != nil {
+	// Validate referenced config resources (OIDC, Authz) before resource creation.
+	if err := r.validateConfigRefs(ctx, vmcp, statusManager); err != nil {
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
-			ctxLogger.Error(applyErr, "Failed to apply status updates after MCPOIDCConfig validation error")
+			ctxLogger.Error(applyErr, "Failed to apply status updates after config ref validation error")
 		}
 		return ctrl.Result{}, err
 	}
@@ -2227,6 +2226,12 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&mcpv1alpha1.MCPOIDCConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.mapOIDCConfigToVirtualMCPServer),
 		).
+		// Watch referenced MCPAuthzConfigs so that validity/hash changes
+		// trigger VirtualMCPServer reconciliation.
+		Watches(
+			&mcpv1alpha1.MCPAuthzConfig{},
+			handler.EnqueueRequestsFromMapFunc(r.mapAuthzConfigToVirtualMCPServer),
+		).
 		Complete(r)
 }
 
@@ -2876,6 +2881,19 @@ func generateHMACSecret() (string, error) {
 	return base64.StdEncoding.EncodeToString(secret), nil
 }
 
+// validateConfigRefs validates referenced config resources (OIDC, Authz) before
+// resource creation. Each handler is a no-op when the corresponding ref is nil.
+func (r *VirtualMCPServerReconciler) validateConfigRefs(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	if err := r.handleOIDCConfig(ctx, vmcp, statusManager); err != nil {
+		return err
+	}
+	return r.handleAuthzConfig(ctx, vmcp, statusManager)
+}
+
 // handleOIDCConfig validates and tracks the hash of the referenced MCPOIDCConfig.
 // It sets the OIDCConfigRefValidated condition and triggers reconciliation when
 // the OIDC configuration changes.
@@ -2984,6 +3002,102 @@ func (r *VirtualMCPServerReconciler) updateOIDCConfigReferencingWorkloads(
 	}
 
 	return nil
+}
+
+// handleAuthzConfig validates and tracks the hash of the referenced MCPAuthzConfig.
+// It sets the AuthzConfigRefValidated condition and triggers reconciliation when
+// the authorization configuration changes.
+func (r *VirtualMCPServerReconciler) handleAuthzConfig(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	if vmcp.Spec.IncomingAuth == nil || vmcp.Spec.IncomingAuth.AuthzConfigRef == nil {
+		// No MCPAuthzConfig referenced, clear any stored hash
+		if vmcp.Status.AuthzConfigHash != "" {
+			statusManager.SetAuthzConfigHash("")
+		}
+		return nil
+	}
+
+	ref := vmcp.Spec.IncomingAuth.AuthzConfigRef
+
+	// Get the referenced MCPAuthzConfig
+	authzConfig, err := ctrlutil.GetAuthzConfigForWorkload(ctx, r.Client, vmcp.Namespace, ref)
+	if err != nil {
+		statusManager.SetCondition(
+			mcpv1alpha1.ConditionAuthzConfigRefValidated,
+			mcpv1alpha1.ConditionReasonAuthzConfigRefNotFound,
+			fmt.Sprintf("MCPAuthzConfig %s not found: %v", ref.Name, err),
+			metav1.ConditionFalse,
+		)
+		return err
+	}
+
+	// Validate that the MCPAuthzConfig is ready
+	if err := ctrlutil.ValidateAuthzConfigReady(authzConfig); err != nil {
+		statusManager.SetCondition(
+			mcpv1alpha1.ConditionAuthzConfigRefValidated,
+			mcpv1alpha1.ConditionReasonAuthzConfigRefNotValid,
+			err.Error(),
+			metav1.ConditionFalse,
+		)
+		return err
+	}
+
+	// Set valid condition
+	statusManager.SetCondition(
+		mcpv1alpha1.ConditionAuthzConfigRefValidated,
+		mcpv1alpha1.ConditionReasonAuthzConfigRefValid,
+		fmt.Sprintf("MCPAuthzConfig %s is valid and ready", ref.Name),
+		metav1.ConditionTrue,
+	)
+
+	// Check if the MCPAuthzConfig hash has changed
+	if vmcp.Status.AuthzConfigHash != authzConfig.Status.ConfigHash {
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Info("MCPAuthzConfig has changed, updating VirtualMCPServer",
+			"vmcp", vmcp.Name,
+			"authzConfig", authzConfig.Name,
+			"oldHash", vmcp.Status.AuthzConfigHash,
+			"newHash", authzConfig.Status.ConfigHash)
+
+		statusManager.SetAuthzConfigHash(authzConfig.Status.ConfigHash)
+	}
+
+	return nil
+}
+
+// mapAuthzConfigToVirtualMCPServer maps MCPAuthzConfig changes to VirtualMCPServer reconciliation requests.
+func (r *VirtualMCPServerReconciler) mapAuthzConfigToVirtualMCPServer(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	authzConfig, ok := obj.(*mcpv1alpha1.MCPAuthzConfig)
+	if !ok {
+		return nil
+	}
+
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(authzConfig.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPAuthzConfig watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, vmcp := range vmcpList.Items {
+		if vmcp.Spec.IncomingAuth != nil &&
+			vmcp.Spec.IncomingAuth.AuthzConfigRef != nil &&
+			vmcp.Spec.IncomingAuth.AuthzConfigRef.Name == authzConfig.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      vmcp.Name,
+					Namespace: vmcp.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
 }
 
 // mapOIDCConfigToVirtualMCPServer maps MCPOIDCConfig changes to VirtualMCPServer reconciliation requests.

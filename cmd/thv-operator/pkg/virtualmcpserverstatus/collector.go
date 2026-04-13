@@ -26,6 +26,7 @@ type StatusCollector struct {
 	url                *string
 	observedGeneration *int64
 	oidcConfigHash     *string
+	authzConfigHash    *string
 	conditions         map[string]metav1.Condition
 	discoveredBackends []mcpv1alpha1.DiscoveredBackend
 }
@@ -76,6 +77,12 @@ func (s *StatusCollector) SetObservedGeneration(generation int64) {
 // SetOIDCConfigHash sets the OIDC config hash to be updated.
 func (s *StatusCollector) SetOIDCConfigHash(hash string) {
 	s.oidcConfigHash = &hash
+	s.hasChanges = true
+}
+
+// SetAuthzConfigHash sets the authz config hash to be updated.
+func (s *StatusCollector) SetAuthzConfigHash(hash string) {
+	s.authzConfigHash = &hash
 	s.hasChanges = true
 }
 
@@ -181,6 +188,11 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 			vmcpStatus.OIDCConfigHash = *s.oidcConfigHash
 		}
 
+		// Apply authz config hash change
+		if s.authzConfigHash != nil {
+			vmcpStatus.AuthzConfigHash = *s.authzConfigHash
+		}
+
 		// Apply condition changes
 		for _, condition := range s.conditions {
 			if condition.Status == "" {
@@ -208,6 +220,7 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 			"phase", s.phase,
 			"message", s.message,
 			"oidcConfigHash", s.oidcConfigHash,
+			"authzConfigHash", s.authzConfigHash,
 			"conditionsCount", len(s.conditions),
 			"discoveredBackendsCount", len(s.discoveredBackends))
 		return true

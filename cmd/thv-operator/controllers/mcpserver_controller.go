@@ -292,6 +292,17 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Check if MCPAuthzConfig is referenced and handle it
+	if err := r.handleAuthzConfig(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to handle MCPAuthzConfig")
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPAuthzConfig error")
+		}
+		return ctrl.Result{}, err
+	}
+
 	// Validate MCPServer image against enforcing registries
 	imageValidator := validation.NewImageValidator(r.Client, mcpServer.Namespace, r.ImageValidation)
 	err = imageValidator.ValidateImage(ctx, mcpServer.Spec.Image, mcpServer.ObjectMeta)
@@ -1196,7 +1207,13 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	}
 
 	// Add volume mounts for authorization configuration
-	authzVolumeMount, authzVolume := ctrlutil.GenerateAuthzVolumeConfig(m.Spec.AuthzConfig, m.Name)
+	var authzVolumeMount *corev1.VolumeMount
+	var authzVolume *corev1.Volume
+	if m.Spec.AuthzConfigRef != nil {
+		authzVolumeMount, authzVolume = ctrlutil.GenerateAuthzVolumeConfigFromRef(m.Name)
+	} else {
+		authzVolumeMount, authzVolume = ctrlutil.GenerateAuthzVolumeConfig(m.Spec.AuthzConfig, m.Name)
+	}
 	if authzVolumeMount != nil {
 		volumeMounts = append(volumeMounts, *authzVolumeMount)
 		volumes = append(volumes, *authzVolume)
@@ -2321,6 +2338,91 @@ func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1
 	)
 }
 
+// handleAuthzConfig validates and tracks the hash of the referenced MCPAuthzConfig.
+// It updates the MCPServer status when the authorization configuration changes and sets
+// the AuthzConfigRefValidated condition.
+func (r *MCPServerReconciler) handleAuthzConfig(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
+
+	if m.Spec.AuthzConfigRef == nil {
+		// No MCPAuthzConfig referenced, clear any stored hash
+		if m.Status.AuthzConfigHash != "" {
+			m.Status.AuthzConfigHash = ""
+			if err := r.Status().Update(ctx, m); err != nil {
+				return fmt.Errorf("failed to clear MCPAuthzConfig hash from status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	// Fetch the referenced MCPAuthzConfig
+	authzConfig, err := ctrlutil.GetAuthzConfigForWorkload(ctx, r.Client, m.Namespace, m.Spec.AuthzConfigRef)
+	if err != nil {
+		setAuthzConfigRefCondition(m, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonAuthzConfigRefNotFound,
+			fmt.Sprintf("MCPAuthzConfig %s not found: %v", m.Spec.AuthzConfigRef.Name, err))
+		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update status after MCPAuthzConfig lookup error")
+		}
+		return err
+	}
+
+	// Validate that the MCPAuthzConfig is ready
+	if err := ctrlutil.ValidateAuthzConfigReady(authzConfig); err != nil {
+		setAuthzConfigRefCondition(m, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonAuthzConfigRefNotValid, err.Error())
+		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update status after MCPAuthzConfig validation check")
+		}
+		return err
+	}
+
+	// Ensure ConfigMap with reconstructed full config for volume mount
+	if err := ctrlutil.EnsureAuthzConfigMapFromRef(
+		ctx, r.Client, r.Scheme, m, m.Namespace, m.Name, authzConfig, labelsForInlineAuthzConfig(m.Name),
+	); err != nil {
+		ctxLogger.Error(err, "Failed to ensure authzref ConfigMap")
+		return err
+	}
+
+	// Detect whether the condition is transitioning to True
+	prevCondition := meta.FindStatusCondition(m.Status.Conditions, mcpv1alpha1.ConditionAuthzConfigRefValidated)
+	needsUpdate := prevCondition == nil || prevCondition.Status != metav1.ConditionTrue
+
+	setAuthzConfigRefCondition(m, metav1.ConditionTrue,
+		mcpv1alpha1.ConditionReasonAuthzConfigRefValid,
+		fmt.Sprintf("MCPAuthzConfig %s is valid and ready", m.Spec.AuthzConfigRef.Name))
+
+	if m.Status.AuthzConfigHash != authzConfig.Status.ConfigHash {
+		ctxLogger.Info("MCPAuthzConfig has changed, updating MCPServer",
+			"mcpserver", m.Name,
+			"authzConfig", authzConfig.Name,
+			"oldHash", m.Status.AuthzConfigHash,
+			"newHash", authzConfig.Status.ConfigHash)
+		m.Status.AuthzConfigHash = authzConfig.Status.ConfigHash
+		needsUpdate = true
+	}
+
+	if needsUpdate {
+		if err := r.Status().Update(ctx, m); err != nil {
+			return fmt.Errorf("failed to update MCPAuthzConfig status: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// setAuthzConfigRefCondition sets the AuthzConfigRefValidated status condition
+func setAuthzConfigRefCondition(m *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionAuthzConfigRefValidated,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: m.Generation,
+	})
+}
+
 // int32Ptr returns a pointer to an int32
 func int32Ptr(i int32) *int32 {
 	return &i
@@ -2540,5 +2642,40 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
 		Watches(&mcpv1alpha1.MCPOIDCConfig{}, oidcConfigHandler).
 		Watches(&mcpv1alpha1.MCPTelemetryConfig{}, telemetryConfigHandler).
+		Watches(
+			&mcpv1alpha1.MCPAuthzConfig{},
+			handler.EnqueueRequestsFromMapFunc(r.mapAuthzConfigToMCPServer),
+		).
 		Complete(r)
+}
+
+// mapAuthzConfigToMCPServer maps MCPAuthzConfig changes to MCPServer reconciliation requests.
+func (r *MCPServerReconciler) mapAuthzConfigToMCPServer(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	authzConfig, ok := obj.(*mcpv1alpha1.MCPAuthzConfig)
+	if !ok {
+		return nil
+	}
+
+	mcpServerList := &mcpv1alpha1.MCPServerList{}
+	if err := r.List(ctx, mcpServerList, client.InNamespace(authzConfig.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPServers for MCPAuthzConfig watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, server := range mcpServerList.Items {
+		if server.Spec.AuthzConfigRef != nil &&
+			server.Spec.AuthzConfigRef.Name == authzConfig.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      server.Name,
+					Namespace: server.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
 }

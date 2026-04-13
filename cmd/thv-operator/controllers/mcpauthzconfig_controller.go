@@ -35,9 +35,6 @@ const (
 
 	// authzConfigRequeueDelay is the delay before requeuing after adding a finalizer
 	authzConfigRequeueDelay = 500 * time.Millisecond
-
-	// authzConfigVersion is the default version for reconstructed authz configs
-	authzConfigVersion = "1.0"
 )
 
 // MCPAuthzConfigReconciler reconciles a MCPAuthzConfig object.
@@ -154,7 +151,7 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 // validateAuthzConfigSpec validates the MCPAuthzConfig spec by reconstructing the
 // full authorizer config and delegating to the factory's ValidateConfig method.
 func validateAuthzConfigSpec(spec mcpv1alpha1.MCPAuthzConfigSpec) error {
-	fullConfigJSON, err := BuildFullAuthzConfigJSON(spec)
+	fullConfigJSON, err := ctrlutil.BuildFullAuthzConfigJSON(spec)
 	if err != nil {
 		return err
 	}
@@ -181,40 +178,6 @@ func validateAuthzConfigSpec(spec mcpv1alpha1.MCPAuthzConfigSpec) error {
 type authzConfig struct {
 	Version string `json:"version"`
 	Type    string `json:"type"`
-}
-
-// BuildFullAuthzConfigJSON reconstructs the full authorizer config JSON from a
-// MCPAuthzConfig spec. The result is the same format accepted by authorizers.Config
-// and used in ConfigMaps: {"version": "1.0", "type": "<type>", "<configKey>": {<config>}}.
-func BuildFullAuthzConfigJSON(spec mcpv1alpha1.MCPAuthzConfigSpec) ([]byte, error) {
-	factory := authorizers.GetFactory(spec.Type)
-	if factory == nil {
-		return nil, fmt.Errorf("unsupported authorizer type: %s (registered types: %v)",
-			spec.Type, authorizers.RegisteredTypes())
-	}
-
-	configKey := factory.ConfigKey()
-
-	fullConfig := map[string]json.RawMessage{
-		"version": mustMarshalJSON(authzConfigVersion),
-		"type":    mustMarshalJSON(spec.Type),
-		configKey: spec.Config.Raw,
-	}
-
-	result, err := json.Marshal(fullConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal full authz config: %w", err)
-	}
-	return result, nil
-}
-
-// mustMarshalJSON marshals a value to JSON or panics. Only for simple string values.
-func mustMarshalJSON(v string) json.RawMessage {
-	b, err := json.Marshal(v)
-	if err != nil {
-		panic(fmt.Sprintf("failed to marshal %q: %v", v, err))
-	}
-	return b
 }
 
 // handleDeletion handles the deletion of a MCPAuthzConfig.

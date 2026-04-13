@@ -67,7 +67,7 @@ func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.
 		if cfg.OIDCConfig == nil {
 			return nil, fmt.Errorf("oidc_config is required for oidc-trust upstream")
 		}
-		return upstream.NewOIDCTrustProvider(cfg.OIDCConfig.Issuer, cfg.OIDCConfig.ClientID), nil
+		return upstream.NewOIDCTrustProvider(cfg.OIDCConfig.Issuer, cfg.OIDCConfig.ClientID, cfg.OIDCConfig.CABundlePath), nil
 	default:
 		return nil, fmt.Errorf("unsupported upstream type: %s", cfg.Type)
 	}

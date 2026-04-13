@@ -80,10 +80,13 @@ type externalIssuerConfig struct {
 
 // NewMultiIssuerTokenValidator creates a validator that accepts tokens from the
 // authorization server itself and from the provided list of trusted external issuers.
+// The httpClient parameter is used for OIDC discovery and JWKS fetching. When nil,
+// http.DefaultClient is used (which won't trust custom CAs like SPIFFE).
 func NewMultiIssuerTokenValidator(
 	selfValidator *SelfIssuedTokenValidator,
 	selfIssuer string,
 	trustedIssuers []TrustedIssuer,
+	httpClient *http.Client,
 ) *MultiIssuerTokenValidator {
 	issuers := make(map[string]*externalIssuerConfig, len(trustedIssuers))
 	for _, ti := range trustedIssuers {
@@ -93,13 +96,17 @@ func NewMultiIssuerTokenValidator(
 		}
 	}
 
+	if httpClient == nil {
+		httpClient = &http.Client{
+			Timeout: httpTimeout,
+		}
+	}
+
 	return &MultiIssuerTokenValidator{
 		selfIssuer:    selfIssuer,
 		selfValidator: selfValidator,
 		issuers:       issuers,
-		httpClient: &http.Client{
-			Timeout: httpTimeout,
-		},
+		httpClient:    httpClient,
 	}
 }
 

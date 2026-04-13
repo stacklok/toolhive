@@ -58,6 +58,11 @@ type OIDCConfig struct {
 	// Only set this for trusted in-cluster Kubernetes deployments.
 	// Production deployments reachable outside the cluster MUST use https://.
 	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
+
+	// CABundlePath is an optional path to a CA certificate bundle for verifying
+	// the issuer's TLS certificate. Used by oidc-trust providers when the issuer
+	// uses a non-public CA (e.g., SPIFFE CA in a kind cluster).
+	CABundlePath string
 }
 
 // subjectClaimPattern is the allowed shape for SubjectClaim: a claim-name token

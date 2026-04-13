@@ -5,6 +5,7 @@ package tokenexchange
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/ory/fosite"
@@ -21,6 +22,10 @@ type FactoryConfig struct {
 	// as subject tokens during token exchange. When empty, only self-issued tokens
 	// are accepted.
 	TrustedIssuers []TrustedIssuer
+	// HTTPClient is used for OIDC discovery and JWKS fetching from external issuers.
+	// Must be configured with the appropriate CA bundle (e.g., SPIFFE CA) to trust
+	// the external issuer's TLS certificates. When nil, http.DefaultClient is used.
+	HTTPClient *http.Client
 }
 
 // Factory returns a server.Factory that creates a token exchange Handler.
@@ -38,7 +43,7 @@ func Factory(cfg FactoryConfig) server.Factory {
 		// configured, otherwise self-issued only (backward compatible).
 		var validator SubjectTokenValidator
 		if len(cfg.TrustedIssuers) > 0 {
-			validator = NewMultiIssuerTokenValidator(selfValidator, config.GetAccessTokenIssuer(), cfg.TrustedIssuers)
+			validator = NewMultiIssuerTokenValidator(selfValidator, config.GetAccessTokenIssuer(), cfg.TrustedIssuers, cfg.HTTPClient)
 		} else {
 			validator = selfValidator
 		}

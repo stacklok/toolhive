@@ -230,6 +230,43 @@ func TestResolve_ConfigMapType(t *testing.T) {
 			},
 		},
 		{
+			name: "configmap with jwksAllowPrivateIP independent of protectedResourceAllowPrivateIP",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "independent-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					ProxyPort: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+							Name: "independent-config",
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "independent-config",
+					Namespace: "test-ns",
+				},
+				Data: map[string]string{
+					"issuer":             "https://auth.example.com",
+					"audience":           "test-audience",
+					"jwksAllowPrivateIP": "true",
+					// protectedResourceAllowPrivateIP intentionally absent
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer:                          "https://auth.example.com",
+				Audience:                        "test-audience",
+				ResourceURL:                     "http://independent-server.test-ns.svc.cluster.local:8080",
+				JWKSAllowPrivateIP:              true,
+				ProtectedResourceAllowPrivateIP: false,
+			},
+		},
+		{
 			name: "configmap with insecureAllowHTTP enabled",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{

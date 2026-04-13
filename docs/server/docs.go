@@ -827,7 +827,8 @@ const docTemplate = `{
                     "gemini-cli",
                     "vscode-server",
                     "mistral-vibe",
-                    "codex"
+                    "codex",
+                    "kimi-cli"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -855,7 +856,8 @@ const docTemplate = `{
                     "GeminiCli",
                     "VSCodeServer",
                     "MistralVibe",
-                    "Codex"
+                    "Codex",
+                    "KimiCli"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {

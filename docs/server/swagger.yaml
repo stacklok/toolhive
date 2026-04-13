@@ -92,6 +92,16 @@ components:
             Component is the component name to use in audit events.
             +optional
           type: string
+        detectApplicationErrors:
+          description: |-
+            DetectApplicationErrors controls whether the audit middleware inspects
+            JSON-RPC response bodies for application-level errors when the HTTP
+            status code indicates success (2xx). When enabled, a small prefix of
+            the response body is buffered to detect JSON-RPC error fields,
+            independent of the IncludeResponseData setting.
+            +kubebuilder:default=true
+            +optional
+          type: boolean
         enabled:
           description: |-
             Enabled controls whether audit logging is enabled.

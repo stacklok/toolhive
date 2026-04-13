@@ -99,6 +99,10 @@ const docTemplate = `{
                         "description": "Component is the component name to use in audit events.\n+optional",
                         "type": "string"
                     },
+                    "detectApplicationErrors": {
+                        "description": "DetectApplicationErrors controls whether the audit middleware inspects\nJSON-RPC response bodies for application-level errors when the HTTP\nstatus code indicates success (2xx). When enabled, a small prefix of\nthe response body is buffered to detect JSON-RPC error fields,\nindependent of the IncludeResponseData setting.\n+kubebuilder:default=true\n+optional",
+                        "type": "boolean"
+                    },
                     "enabled": {
                         "description": "Enabled controls whether audit logging is enabled.\nWhen true, enables audit logging with the configured options.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"

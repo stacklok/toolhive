@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"sort"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -543,6 +544,15 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 		}
 	}
 
+	// Sort by name for deterministic ordering. The Kubernetes informer cache returns
+	// items in non-deterministic order (Go map iteration), so without sorting the env
+	// vars appear in a different sequence on each reconcile. reflect.DeepEqual in
+	// containerNeedsUpdate is order-sensitive, so non-deterministic ordering causes a
+	// continuous deployment update loop with 4+ configs.
+	sort.Slice(envVars, func(i, j int) bool {
+		return envVars[i].Name < envVars[j].Name
+	})
+
 	return envVars
 }
 
@@ -581,6 +591,13 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 			envVars = append(envVars, *secretEnvVar)
 		}
 	}
+
+	// Sort by name for the same reason as discoverExternalAuthConfigSecrets: Go map
+	// iteration over Spec.OutgoingAuth.Backends is non-deterministic, which would
+	// cause a continuous deployment update loop via reflect.DeepEqual in containerNeedsUpdate.
+	sort.Slice(envVars, func(i, j int) bool {
+		return envVars[i].Name < envVars[j].Name
+	})
 
 	return envVars
 }

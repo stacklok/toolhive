@@ -1196,6 +1196,336 @@ func TestBuildOutgoingAuthConfig_SubjectProviderInjection(t *testing.T) {
 		"discovered backend SubjectProviderName should be injected from first upstream")
 }
 
+// TestDiscoverExternalAuthConfigSecrets_DeterministicOrdering verifies that
+// discoverExternalAuthConfigSecrets returns env vars sorted alphabetically by name regardless
+// of the order in which workloads are provided. Without sorting the function appends env vars
+// in the order of the typedWorkloads slice (which reflects non-deterministic informer cache
+// ordering), causing reflect.DeepEqual-based update detection to fire on every reconcile.
+func TestDiscoverExternalAuthConfigSecrets_DeterministicOrdering(t *testing.T) {
+	t.Parallel()
+
+	// Each auth config has a distinct name so that GenerateUniqueTokenExchangeEnvVarName
+	// produces a distinct env var name, and the expected sorted order is known upfront.
+	// Auth config names chosen so that alphabetical order of their generated env var names
+	// differs from the order they are referenced by the workloads slice below.
+	//
+	// Generated env var names:
+	//   "alpha-auth" → TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_ALPHA_AUTH
+	//   "beta-auth"  → TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_BETA_AUTH
+	//   "mu-auth"    → TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_MU_AUTH
+	//   "zeta-auth"  → TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_ZETA_AUTH
+	//
+	// Alphabetical order: ALPHA < BETA < MU < ZETA
+	//
+	// The workloads slice is intentionally in reverse-alphabetical order (ZETA, MU, BETA, ALPHA)
+	// so the test fails before sorting is implemented.
+
+	tests := []struct {
+		name          string
+		workloadOrder []workloads.TypedWorkload // order simulates non-deterministic informer cache
+	}{
+		{
+			name: "reverse alphabetical workload order",
+			workloadOrder: []workloads.TypedWorkload{
+				{Name: "server-zeta", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "server-mu", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "server-beta", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "server-alpha", Type: workloads.WorkloadTypeMCPServer},
+			},
+		},
+		{
+			name: "mixed non-alphabetical workload order",
+			workloadOrder: []workloads.TypedWorkload{
+				{Name: "server-mu", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "server-alpha", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "server-zeta", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "server-beta", Type: workloads.WorkloadTypeMCPServer},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+			vmcp := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "discovered",
+					},
+				},
+			}
+
+			// Four MCPServers each referencing a distinct MCPExternalAuthConfig.
+			// The MCPServer names match the workload Names in tt.workloadOrder.
+			mcpServers := []client.Object{
+				&mcpv1alpha1.MCPServer{
+					ObjectMeta: metav1.ObjectMeta{Name: "server-alpha", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerSpec{
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{Name: "alpha-auth"},
+					},
+				},
+				&mcpv1alpha1.MCPServer{
+					ObjectMeta: metav1.ObjectMeta{Name: "server-beta", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerSpec{
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{Name: "beta-auth"},
+					},
+				},
+				&mcpv1alpha1.MCPServer{
+					ObjectMeta: metav1.ObjectMeta{Name: "server-mu", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerSpec{
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{Name: "mu-auth"},
+					},
+				},
+				&mcpv1alpha1.MCPServer{
+					ObjectMeta: metav1.ObjectMeta{Name: "server-zeta", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerSpec{
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{Name: "zeta-auth"},
+					},
+				},
+			}
+
+			// One MCPExternalAuthConfig per MCPServer, each with a client secret ref so
+			// getExternalAuthConfigSecretEnvVar returns a non-nil env var.
+			authConfigs := []client.Object{
+				&mcpv1alpha1.MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "alpha-auth", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+						Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+						TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+							TokenURL:        "https://alpha.example.com/token",
+							Audience:        "alpha-service",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "alpha-secret", Key: "client-secret"},
+						},
+					},
+				},
+				&mcpv1alpha1.MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "beta-auth", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+						Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+						TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+							TokenURL:        "https://beta.example.com/token",
+							Audience:        "beta-service",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "beta-secret", Key: "client-secret"},
+						},
+					},
+				},
+				&mcpv1alpha1.MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "mu-auth", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+						Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+						TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+							TokenURL:        "https://mu.example.com/token",
+							Audience:        "mu-service",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "mu-secret", Key: "client-secret"},
+						},
+					},
+				},
+				&mcpv1alpha1.MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "zeta-auth", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+						Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+						TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+							TokenURL:        "https://zeta.example.com/token",
+							Audience:        "zeta-service",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "zeta-secret", Key: "client-secret"},
+						},
+					},
+				},
+			}
+
+			objects := []client.Object{vmcp}
+			objects = append(objects, mcpServers...)
+			objects = append(objects, authConfigs...)
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objects...).
+				Build()
+
+			r := &VirtualMCPServerReconciler{
+				Client:           fakeClient,
+				Scheme:           scheme,
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			ctx := context.Background()
+			envVars := r.discoverExternalAuthConfigSecrets(ctx, vmcp, tt.workloadOrder)
+
+			// We expect exactly one env var per auth config that has a client secret.
+			require.Len(t, envVars, 4, "expected one env var per auth config with a client secret")
+
+			// Env vars MUST be sorted alphabetically by Name.
+			// assert.Equal (not assert.ElementsMatch) is intentional — order matters for
+			// reflect.DeepEqual-based change detection in containerNeedsUpdate.
+			expectedNames := []string{
+				"TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_ALPHA_AUTH",
+				"TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_BETA_AUTH",
+				"TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_MU_AUTH",
+				"TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_ZETA_AUTH",
+			}
+			actualNames := make([]string, len(envVars))
+			for i, ev := range envVars {
+				actualNames[i] = ev.Name
+			}
+			assert.Equal(t, expectedNames, actualNames,
+				"env vars must be sorted alphabetically by Name to ensure deterministic reconcile behaviour")
+		})
+	}
+}
+
+// TestDiscoverInlineExternalAuthConfigSecrets_DeterministicOrdering verifies that
+// discoverInlineExternalAuthConfigSecrets returns env vars sorted alphabetically by name
+// regardless of map iteration order across reconcile loops.  Without sorting the function
+// appends env vars in the non-deterministic order of Go map iteration over
+// vmcp.Spec.OutgoingAuth.Backends, triggering an infinite update loop.
+func TestDiscoverInlineExternalAuthConfigSecrets_DeterministicOrdering(t *testing.T) {
+	t.Parallel()
+
+	// Build a VirtualMCPServer whose Spec.OutgoingAuth.Backends map has four entries so that
+	// the probability of Go map iteration producing alphabetical order by chance is low enough
+	// to make a flaky pass in the unfixed code practically impossible.
+	//
+	// Generated env var names (token exchange):
+	//   "inline-alpha-auth" → TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_INLINE_ALPHA_AUTH
+	//   "inline-beta-auth"  → TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_INLINE_BETA_AUTH
+	//   "inline-mu-auth"    → TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_INLINE_MU_AUTH
+	//   "inline-zeta-auth"  → TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_INLINE_ZETA_AUTH
+	//
+	// Alphabetical order: ALPHA < BETA < MU < ZETA
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+				Source: "inline",
+				// Map with four backends — Go map iteration order is non-deterministic.
+				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
+					"backend-zeta": {
+						Type: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+							Name: "inline-zeta-auth",
+						},
+					},
+					"backend-mu": {
+						Type: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+							Name: "inline-mu-auth",
+						},
+					},
+					"backend-beta": {
+						Type: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+							Name: "inline-beta-auth",
+						},
+					},
+					"backend-alpha": {
+						Type: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
+						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+							Name: "inline-alpha-auth",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	authConfigs := []client.Object{
+		&mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: "inline-alpha-auth", Namespace: "default"},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+					TokenURL:        "https://alpha.example.com/token",
+					Audience:        "alpha-service",
+					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "inline-alpha-secret", Key: "client-secret"},
+				},
+			},
+		},
+		&mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: "inline-beta-auth", Namespace: "default"},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+					TokenURL:        "https://beta.example.com/token",
+					Audience:        "beta-service",
+					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "inline-beta-secret", Key: "client-secret"},
+				},
+			},
+		},
+		&mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: "inline-mu-auth", Namespace: "default"},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+					TokenURL:        "https://mu.example.com/token",
+					Audience:        "mu-service",
+					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "inline-mu-secret", Key: "client-secret"},
+				},
+			},
+		},
+		&mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: "inline-zeta-auth", Namespace: "default"},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+					TokenURL:        "https://zeta.example.com/token",
+					Audience:        "zeta-service",
+					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{Name: "inline-zeta-secret", Key: "client-secret"},
+				},
+			},
+		},
+	}
+
+	objects := []client.Object{vmcp}
+	objects = append(objects, authConfigs...)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objects...).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	ctx := context.Background()
+	envVars := r.discoverInlineExternalAuthConfigSecrets(ctx, vmcp)
+
+	require.Len(t, envVars, 4, "expected one env var per inline auth config with a client secret")
+
+	// Env vars MUST be sorted alphabetically by Name.
+	// assert.Equal (not assert.ElementsMatch) is intentional — order matters for
+	// reflect.DeepEqual-based change detection in containerNeedsUpdate.
+	expectedNames := []string{
+		"TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_INLINE_ALPHA_AUTH",
+		"TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_INLINE_BETA_AUTH",
+		"TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_INLINE_MU_AUTH",
+		"TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_INLINE_ZETA_AUTH",
+	}
+	actualNames := make([]string, len(envVars))
+	for i, ev := range envVars {
+		actualNames[i] = ev.Name
+	}
+	assert.Equal(t, expectedNames, actualNames,
+		"env vars must be sorted alphabetically by Name to ensure deterministic reconcile behaviour")
+}
+
 // TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection verifies that
 // SubjectProviderName is auto-populated for the inline Spec.OutgoingAuth.Backends path
 // (virtualmcpserver_controller.go:2007) when AuthServerConfig is set.

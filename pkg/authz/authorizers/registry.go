@@ -14,6 +14,11 @@ import (
 // (e.g., Cedar, OPA) implements this interface to provide validation and
 // instantiation of authorizers from their specific configuration format.
 type AuthorizerFactory interface {
+	// ConfigKey returns the JSON key under which the backend-specific
+	// configuration is nested in the full authorizer config blob.
+	// For example, Cedar returns "cedar" and HTTP PDP returns "pdp".
+	ConfigKey() string
+
 	// ValidateConfig validates the authorizer-specific configuration.
 	// The rawConfig is the JSON-encoded authorizer configuration.
 	ValidateConfig(rawConfig json.RawMessage) error

@@ -88,9 +88,17 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	HeaderForward *HeaderForwardConfig `json:"headerForward,omitempty"`
 
-	// AuthzConfig defines authorization policy configuration for the proxy
+	// AuthzConfig defines authorization policy configuration for the proxy.
+	// Deprecated: Use AuthzConfigRef to reference a shared MCPAuthzConfig resource instead.
+	// AuthzConfig and AuthzConfigRef are mutually exclusive.
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
+
+	// AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+	// The referenced MCPAuthzConfig must exist in the same namespace as this MCPRemoteProxy.
+	// Mutually exclusive with authzConfig.
+	// +optional
+	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 
 	// Audit defines audit logging configuration for the proxy
 	// +optional

@@ -20,6 +20,8 @@ const testConfigType = "test-config-type"
 // testFactory is a simple test factory for config tests
 type testFactory struct{}
 
+func (*testFactory) ConfigKey() string { return "test" }
+
 func (*testFactory) ValidateConfig(rawConfig json.RawMessage) error {
 	var config struct {
 		TestField string `json:"test_field"`

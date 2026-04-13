@@ -88,7 +88,8 @@ func TestConverter_OIDCResolution(t *testing.T) {
 			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeKubernetes},
 			mockReturn: &oidc.OIDCConfig{
 				Issuer: "https://issuer.example.com", Audience: "my-audience",
-				ResourceURL: "https://resource.example.com", JWKSAllowPrivateIP: true,
+				ResourceURL:        "https://resource.example.com",
+				JWKSAllowPrivateIP: true, ProtectedResourceAllowPrivateIP: true,
 				JWKSURL: "https://issuer.example.com/jwks", IntrospectionURL: "https://issuer.example.com/introspect",
 			},
 			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
@@ -101,6 +102,22 @@ func TestConverter_OIDCResolution(t *testing.T) {
 				assert.Equal(t, "https://issuer.example.com/jwks", config.IncomingAuth.OIDC.JWKSURL)
 				assert.Equal(t, "https://issuer.example.com/introspect", config.IncomingAuth.OIDC.IntrospectionURL)
 				assert.True(t, config.IncomingAuth.OIDC.ProtectedResourceAllowPrivateIP)
+				assert.True(t, config.IncomingAuth.OIDC.JwksAllowPrivateIP)
+			},
+		},
+		{
+			name:       "fields mapped independently - jwksAllowPrivateIP true, protectedResourceAllowPrivateIP false",
+			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeKubernetes},
+			mockReturn: &oidc.OIDCConfig{
+				Issuer: "https://issuer.example.com", Audience: "my-audience",
+				JWKSAllowPrivateIP: true, ProtectedResourceAllowPrivateIP: false,
+			},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.NotNil(t, config.IncomingAuth.OIDC)
+				assert.True(t, config.IncomingAuth.OIDC.JwksAllowPrivateIP)
+				assert.False(t, config.IncomingAuth.OIDC.ProtectedResourceAllowPrivateIP)
 			},
 		},
 		{

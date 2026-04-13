@@ -209,6 +209,14 @@ func createMockClientConfigs() []clientAppConfig {
 			Extension:            TOML,
 			TOMLStorageType:      TOMLStorageTypeMap,
 		},
+		{
+			ClientType:           KimiCli,
+			Description:          "Kimi Code CLI (Mock)",
+			RelPath:              []string{"mock_kimi"},
+			SettingsFile:         "mcp.json",
+			MCPServersPathPrefix: "/mcpServers",
+			Extension:            JSON,
+		},
 	}
 }
 
@@ -394,6 +402,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					string(VSCodeServer),
 					string(MistralVibe),
 					string(Codex),
+					string(KimiCli),
 				},
 			},
 		}
@@ -486,7 +495,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case AmpWindsurf:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"AmpWindsurf config should contain mcpServers key")
-			case LMStudio, Trae, Kiro, Antigravity, GeminiCli:
+			case LMStudio, Trae, Kiro, Antigravity, GeminiCli, KimiCli:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"Config should contain mcpServers key")
 			case VSCodeServer:
@@ -543,9 +552,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case VSCode, VSCodeInsider:
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
-			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer,
-				MistralVibe, Codex:
+		case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
+			AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer,
+			MistralVibe, Codex, KimiCli:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}
@@ -1274,8 +1283,8 @@ func TestGetAllClients(t *testing.T) {
 
 	clients := GetAllClients()
 
-	// Should return all 25 supported clients
-	assert.Len(t, clients, 25, "Expected 25 supported clients")
+	// Should return all 26 supported clients
+	assert.Len(t, clients, 26, "Expected 26 supported clients")
 
 	// Verify the list is sorted alphabetically
 	for i := 1; i < len(clients); i++ {
@@ -1463,5 +1472,5 @@ func TestGetClientListCSV(t *testing.T) {
 
 	// Count the number of clients (should be 25)
 	clients := strings.Split(csv, ", ")
-	assert.Len(t, clients, 25, "Expected 25 clients in CSV list")
+	assert.Len(t, clients, 26, "Expected 26 clients in CSV list")
 }

@@ -68,7 +68,7 @@ func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.
 		if cfg.OIDCConfig == nil {
 			return nil, fmt.Errorf("oidc_config is required for oidc-trust upstream")
 		}
-		return upstream.NewOIDCTrustProvider(cfg.OIDCConfig.Issuer, cfg.OIDCConfig.ClientID, cfg.OIDCConfig.CABundlePath), nil
+		return upstream.NewOIDCTrustProvider(cfg.OIDCConfig.Issuer, cfg.OIDCConfig.ClientID, cfg.OIDCConfig.CABundlePath, cfg.OIDCConfig.AllowPrivateIP), nil
 	default:
 		return nil, fmt.Errorf("unsupported upstream type: %s", cfg.Type)
 	}
@@ -177,10 +177,11 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
 	}
 
-	// Derive trusted issuers (and their CA bundle paths, if any) from oidc-trust
-	// upstreams for multi-issuer token exchange.
+	// Derive trusted issuers (and their CA bundle/private-IP settings, if any)
+	// from oidc-trust upstreams for multi-issuer token exchange.
 	var trustedIssuers []tokenexchange.TrustedIssuer
 	var caBundlePath string
+	var allowPrivateIP bool
 	for _, u := range upstreams {
 		if tp, ok := u.Provider.(*upstream.OIDCTrustProvider); ok {
 			trustedIssuers = append(trustedIssuers, tokenexchange.TrustedIssuer{
@@ -190,21 +191,27 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 			if caBundlePath == "" && tp.CABundlePath() != "" {
 				caBundlePath = tp.CABundlePath()
 			}
+			if tp.AllowPrivateIP() {
+				allowPrivateIP = true
+			}
 		}
 	}
 
-	// Build HTTP client with CA trust for OIDC discovery/JWKS fetching.
+	// Build HTTP client with CA trust (and optional private-IP permission) for
+	// OIDC discovery/JWKS fetching.
 	var httpClient *http.Client
-	if caBundlePath != "" {
+	if caBundlePath != "" || allowPrivateIP {
 		var buildErr error
 		httpClient, buildErr = networking.NewHttpClientBuilder().
 			WithCABundle(caBundlePath).
+			WithPrivateIPs(allowPrivateIP).
 			Build()
 		if buildErr != nil {
 			return nil, fmt.Errorf("failed to build HTTP client for token exchange: %w", buildErr)
 		}
-		slog.Debug("token exchange HTTP client configured with CA bundle",
+		slog.Debug("token exchange HTTP client configured",
 			"ca_bundle", caBundlePath,
+			"allow_private_ip", allowPrivateIP,
 		)
 	}
 

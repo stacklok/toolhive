@@ -63,6 +63,9 @@ type OIDCConfig struct {
 	// the issuer's TLS certificate. Used by oidc-trust providers when the issuer
 	// uses a non-public CA (e.g., SPIFFE CA in a kind cluster).
 	CABundlePath string
+
+	// AllowPrivateIP allows connecting to OIDC endpoints on private IP addresses.
+	AllowPrivateIP bool
 }
 
 // subjectClaimPattern is the allowed shape for SubjectClaim: a claim-name token

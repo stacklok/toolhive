@@ -554,8 +554,9 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP boo
 				CommonOAuthConfig: upstream.CommonOAuthConfig{
 					ClientID: rc.OIDCConfig.ClientID,
 				},
-				Issuer:       rc.OIDCConfig.IssuerURL,
-				CABundlePath: rc.OIDCConfig.CABundlePath,
+				Issuer:         rc.OIDCConfig.IssuerURL,
+				CABundlePath:   rc.OIDCConfig.CABundlePath,
+				AllowPrivateIP: rc.OIDCConfig.AllowPrivateIP,
 			},
 		}, nil
 

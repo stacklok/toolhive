@@ -31,6 +31,11 @@ type OIDCConfig struct {
 	// Issuer is the URL of the upstream OIDC provider (e.g., https://accounts.google.com).
 	// The provider will fetch endpoints from {Issuer}/.well-known/openid-configuration.
 	Issuer string
+
+	// CABundlePath is an optional path to a CA certificate bundle for verifying
+	// the issuer's TLS certificate. Used by oidc-trust providers when the issuer
+	// uses a non-public CA (e.g., SPIFFE CA in a kind cluster).
+	CABundlePath string
 }
 
 // Validate checks that OIDCConfig has all required fields and valid values.

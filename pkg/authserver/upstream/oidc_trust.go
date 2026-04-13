@@ -20,16 +20,19 @@ var _ OAuth2Provider = (*OIDCTrustProvider)(nil)
 type OIDCTrustProvider struct {
 	issuerURL        string
 	expectedAudience string
+	caBundlePath     string
 }
 
 // NewOIDCTrustProvider creates a new OIDC trust-only provider.
 // The issuerURL is the OIDC issuer whose JWKS will be used for token validation.
 // The expectedAudience is the expected "aud" claim value; it may be empty for
 // issuers where audience validation is not required.
-func NewOIDCTrustProvider(issuerURL, expectedAudience string) *OIDCTrustProvider {
+// The caBundlePath is optional; when set, it is used to verify the issuer's TLS cert.
+func NewOIDCTrustProvider(issuerURL, expectedAudience, caBundlePath string) *OIDCTrustProvider {
 	return &OIDCTrustProvider{
 		issuerURL:        issuerURL,
 		expectedAudience: expectedAudience,
+		caBundlePath:     caBundlePath,
 	}
 }
 
@@ -46,6 +49,11 @@ func (p *OIDCTrustProvider) IssuerURL() string {
 // ExpectedAudience returns the expected audience for token validation.
 func (p *OIDCTrustProvider) ExpectedAudience() string {
 	return p.expectedAudience
+}
+
+// CABundlePath returns the CA bundle path for TLS verification of issuer endpoints.
+func (p *OIDCTrustProvider) CABundlePath() string {
+	return p.caBundlePath
 }
 
 // AuthorizationURL is not supported. oidc-trust providers only contribute

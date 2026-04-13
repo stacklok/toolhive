@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"time"
 
@@ -478,13 +479,11 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 	}
 
 	if _, isFullSession := metadata[sessiontypes.MetadataKeyTokenHash]; isFullSession {
-		// Phase 2 (full MultiSession): delete from storage, then evict from the
-		// node-local cache so onEvict closes backend connections immediately rather
-		// than waiting for the next Get or an LRU eviction.
+		// Phase 2 (full MultiSession): delete from storage. The cache entry will be
+		// evicted lazily on the next Get when checkSession finds the session gone.
 		if deleteErr := sm.storage.Delete(ctx, sessionID); deleteErr != nil {
 			return false, fmt.Errorf("Manager.Terminate: failed to delete session from storage: %w", deleteErr)
 		}
-		sm.sessions.Remove(sessionID)
 		slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
 		return false, nil
 	}
@@ -652,13 +651,9 @@ func (sm *Manager) checkSession(sessionID string, sess vmcpsession.MultiSession)
 		return cache.ErrExpired
 	}
 
-	// Compare backend IDs to detect cross-pod metadata drift.
-	// Only compare when the cached session carries MetadataKeyBackendIDs to
-	// avoid spurious evictions for sessions that don't track backend IDs.
-	if cachedIDs, present := sess.GetMetadata()[vmcpsession.MetadataKeyBackendIDs]; present {
-		if cachedIDs != metadata[vmcpsession.MetadataKeyBackendIDs] {
-			return cache.ErrExpired
-		}
+	// Evict if any metadata key has drifted, so the next Get restores current state.
+	if !maps.Equal(sess.GetMetadata(), metadata) {
+		return cache.ErrExpired
 	}
 
 	return nil
@@ -743,8 +738,8 @@ func (sm *Manager) DecorateSession(sessionID string, fn func(sessiontypes.MultiS
 	}
 	if !updated {
 		// Session was deleted (by Terminate or TTL) between Get and Update.
-		// Evict the stale cache entry so onEvict closes backend connections.
-		sm.sessions.Remove(sessionID)
+		// The cache entry will be evicted lazily on the next Get when checkSession
+		// finds the session gone from storage.
 		return fmt.Errorf("DecorateSession: session %q was deleted during decoration", sessionID)
 	}
 	sm.sessions.Set(sessionID, decorated)

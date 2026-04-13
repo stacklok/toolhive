@@ -127,6 +127,13 @@ func (s *configurableFailDataStorage) Create(ctx context.Context, id string, met
 	return s.DataStorage.Create(ctx, id, metadata)
 }
 
+func (s *configurableFailDataStorage) Update(ctx context.Context, id string, metadata map[string]string) (bool, error) {
+	if s.shouldFail() {
+		return false, errors.New("injected Update failure")
+	}
+	return s.DataStorage.Update(ctx, id, metadata)
+}
+
 func (s *configurableFailDataStorage) Delete(ctx context.Context, id string) error {
 	if s.failDelete {
 		return errors.New("injected Delete failure")
@@ -568,17 +575,36 @@ func TestSessionManager_Terminate(t *testing.T) {
 	t.Run("closes MultiSession backend connections", func(t *testing.T) {
 		t.Parallel()
 
+		// After Terminate deletes the session from storage, the next GetMultiSession
+		// call triggers checkSession → ErrExpired → onEvict → Close(). This verifies
+		// that backend connections are eventually closed via lazy eviction.
 		tools := []vmcp.Tool{{Name: "t1", Description: "tool 1"}}
 		ctrl := gomock.NewController(t)
+
+		// tokenHashMeta is carried by the session so CreateSession writes it to
+		// storage and Terminate takes the Phase 2 (storage.Delete) path.
+		tokenHashMeta := map[string]string{sessiontypes.MetadataKeyTokenHash: ""}
 
 		var createdSess *sessionmocks.MockMultiSession
 		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 		factory.EXPECT().
 			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				createdSess = newMockSession(t, ctrl, id, tools)
-				// Close() is called eagerly by onEvict when Terminate removes
-				// the entry from the node-local cache after storage.Delete.
+				createdSess = sessionmocks.NewMockMultiSession(ctrl)
+				createdSess.EXPECT().ID().Return(id).AnyTimes()
+				createdSess.EXPECT().GetMetadata().Return(tokenHashMeta).AnyTimes()
+				createdSess.EXPECT().Tools().Return(tools).AnyTimes()
+				createdSess.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
+				createdSess.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
+				createdSess.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
+				createdSess.EXPECT().GetData().Return(nil).AnyTimes()
+				createdSess.EXPECT().SetData(gomock.Any()).AnyTimes()
+				createdSess.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
+				createdSess.EXPECT().BackendSessions().Return(nil).AnyTimes()
+				createdSess.EXPECT().GetRoutingTable().Return(nil).AnyTimes()
+				createdSess.EXPECT().Prompts().Return(nil).AnyTimes()
+				// Close() is called by onEvict when checkSession detects the session
+				// is gone from storage on the next GetMultiSession call.
 				createdSess.EXPECT().Close().Return(nil).Times(1)
 				return createdSess, nil
 			}).Times(1)
@@ -589,15 +615,20 @@ func TestSessionManager_Terminate(t *testing.T) {
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
 
-		// Upgrade to full MultiSession.
+		// Upgrade to full MultiSession; CreateSession writes tokenHashMeta to storage.
 		_, err := sm.CreateSession(context.Background(), sessionID)
 		require.NoError(t, err)
 		require.NotNil(t, createdSess)
 
-		// Terminate deletes from storage and removes from cache; onEvict fires Close().
+		// Terminate deletes from storage; cache entry remains until next Get.
 		isNotAllowed, err := sm.Terminate(sessionID)
 		require.NoError(t, err)
 		assert.False(t, isNotAllowed)
+
+		// The next GetMultiSession triggers checkSession: storage returns
+		// ErrSessionNotFound → ErrExpired → onEvict → Close().
+		_, ok := sm.GetMultiSession(sessionID)
+		assert.False(t, ok, "terminated session must not be returned")
 		// gomock verifies Close() was called exactly once via Times(1)
 	})
 
@@ -1879,26 +1910,38 @@ func TestSessionManager_DecorateSession(t *testing.T) {
 		// decorator fn, so the re-check that follows fn() sees it is gone.
 		ctrl := gomock.NewController(t)
 		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		// The mock session carries MetadataKeyTokenHash so that:
+		// 1. CreateSession stores it in storage (via sess.GetMetadata()), keeping
+		//    cache and storage in sync for checkSession's maps.Equal comparison.
+		// 2. Terminate sees the key and takes the Phase 2 path (storage.Delete).
+		tokenHashMeta := map[string]string{sessiontypes.MetadataKeyTokenHash: ""}
 		factory.EXPECT().
 			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				sess := newMockSession(t, ctrl, id, nil)
+				sess := sessionmocks.NewMockMultiSession(ctrl)
+				sess.EXPECT().ID().Return(id).AnyTimes()
+				sess.EXPECT().GetMetadata().Return(tokenHashMeta).AnyTimes()
 				sess.EXPECT().Close().Return(nil).AnyTimes()
+				// Other methods called by the session manager infrastructure.
+				sess.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
+				sess.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
+				sess.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
+				sess.EXPECT().GetData().Return(nil).AnyTimes()
+				sess.EXPECT().SetData(gomock.Any()).AnyTimes()
+				sess.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
+				sess.EXPECT().BackendSessions().Return(nil).AnyTimes()
+				sess.EXPECT().GetRoutingTable().Return(nil).AnyTimes()
+				sess.EXPECT().Prompts().Return(nil).AnyTimes()
+				sess.EXPECT().Tools().Return(nil).AnyTimes()
 				return sess, nil
 			}).Times(1)
 
-		sm, storage := newTestSessionManager(t, factory, newFakeRegistry())
+		sm, _ := newTestSessionManager(t, factory, newFakeRegistry())
 
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
 		_, err := sm.CreateSession(context.Background(), sessionID)
 		require.NoError(t, err)
-
-		// Seed MetadataKeyTokenHash into storage so Terminate recognises this
-		// as a Phase 2 (full MultiSession) and deletes rather than marks terminated.
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
-			sessiontypes.MetadataKeyTokenHash: "",
-		}))
 
 		err = sm.DecorateSession(sessionID, func(sess sessiontypes.MultiSession) sessiontypes.MultiSession {
 			// Simulate concurrent Terminate() completing during decoration.
@@ -2023,16 +2066,14 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		assert.NoError(t, err, "matching backend list must return nil")
 	})
 
-	t.Run("no MetadataKeyBackendIDs in cached session skips comparison", func(t *testing.T) {
+	t.Run("matching metadata with no MetadataKeyBackendIDs does not evict", func(t *testing.T) {
 		t.Parallel()
-		// Sessions that don't carry MetadataKeyBackendIDs (e.g. test mocks
-		// returning an empty map) must not trigger spurious evictions.
+		// Sessions whose cached metadata exactly matches storage — including
+		// having no MetadataKeyBackendIDs — must not trigger eviction.
 		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 		sessionID := "no-ids-session"
 
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
-			vmcpsession.MetadataKeyBackendIDs: "backend-a",
-		}))
+		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{}))
 
 		ctrl := gomock.NewController(t)
 		cached := sessionmocks.NewMockMultiSession(ctrl)
@@ -2040,7 +2081,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		sm.sessions.Set(sessionID, cached)
 
 		err := sm.checkSession(sessionID, cached)
-		assert.NoError(t, err, "absent MetadataKeyBackendIDs in cache must not cause eviction")
+		assert.NoError(t, err, "matching empty metadata must not cause eviction")
 	})
 }
 

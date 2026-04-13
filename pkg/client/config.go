@@ -313,6 +313,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".cursor", "skills"},
+		SkillsProjectPath: []string{".cursor", "skills"},
 	},
 	{
 		ClientType:           ClaudeCode,

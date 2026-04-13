@@ -552,9 +552,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case VSCode, VSCodeInsider:
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
-		case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-			AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer,
-			MistralVibe, Codex, KimiCli:
+			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer,
+				MistralVibe, Codex, KimiCli:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}

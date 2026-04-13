@@ -35,6 +35,36 @@ Applies to test files and test directories.
 5. **Naming**: Test names must match what they actually assert — if the assertion changes, update the name too.
 6. **Boilerplate**: Minimize setup code; extract shared setup into helpers with `t.Helper()`
 
+## Running Operator E2E Tests
+
+Operator E2E tests live in `test/e2e/thv-operator/` and require a Kind cluster. All tasks are defined in `cmd/thv-operator/Taskfile.yml` and must be run from the repo root with `task -d cmd/thv-operator <task>` (or `cd cmd/thv-operator && task <task>`).
+
+**Full automated run** (creates cluster, deploys, tests, destroys on exit):
+```
+task -d cmd/thv-operator thv-operator-e2e-test
+```
+
+**Iterative manual workflow** (keep the cluster alive between test runs):
+```
+task -d cmd/thv-operator kind-setup-e2e       # Kind cluster with NodePort mappings
+task -d cmd/thv-operator operator-install-crds
+task -d cmd/thv-operator operator-deploy-local # builds & loads local images via ko
+task -d cmd/thv-operator thv-operator-e2e-test-run  # re-run as many times as needed
+task -d cmd/thv-operator kind-destroy          # when done
+```
+
+**Cluster variants:**
+- `kind-setup` — plain cluster, no port mappings (general use)
+- `kind-setup-e2e` — cluster with NodePort mappings required by Ginkgo E2E tests
+
+**Chainsaw (operator unit-level E2E):**
+```
+task -d cmd/thv-operator operator-e2e-test
+```
+Runs `chainsaw` against `test/e2e/chainsaw/operator/` scenarios. Installs `chainsaw` automatically if missing.
+
+The Ginkgo suite runs with `--procs=8` and uses `kconfig.yaml` (written to repo root by the kind-setup tasks) as its `KUBECONFIG`.
+
 ## E2E Test Coverage
 
 E2E tests must verify functional behavior, not just infrastructure state. Confirming that pods are ready or that counts are correct is not sufficient — the test must also exercise the actual code path (send traffic, trigger the feature) to prove it works end-to-end.
@@ -69,6 +99,23 @@ Avoid adding test-only hook fields (nil-checked `func()` fields) to production s
 - **Test at the observable boundary**: Control timing through the mock/stub's own behavior rather than hooking into production internals.
 
 Existing instances in the codebase are legacy — do not expand them. When touching a struct that already has hook fields, consider extracting them as part of the change.
+
+## Use `t.Cleanup` for Resource Teardown in Parallel Tests
+
+In tests using `t.Parallel()`, always register resource teardown (stopping servers, closing connections, cancelling contexts) with `t.Cleanup`, not just `defer`.
+
+A `require.*` failure or panic aborts the test function immediately, skipping all deferred calls. `t.Cleanup` handlers run regardless of how the test exits, preventing leaked goroutines, ports, and connections when tests fail early.
+
+```go
+// Good
+server := httptest.NewServer(handler)
+t.Cleanup(server.Close)
+
+// Avoid — skipped if test aborts early via require.*
+defer server.Close()
+```
+
+Make stop/close functions idempotent (`sync.Once`) when registering with both `t.Cleanup` and an explicit mid-test shutdown.
 
 ## Concurrent Tests: Always Add Timeouts to Blocking Barriers
 

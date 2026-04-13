@@ -83,6 +83,14 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Atomic operations with Lua scripts
     - Configuration and security model
 
+13. **[Skills System](12-skills-system.md)**
+    - Agent Skills lifecycle (discover, build, publish, install)
+    - SKILL.md format and validation
+    - OCI-based distribution and git resolution
+    - Installation scopes (user, project) and multi-client support
+    - Security model (archive safety, SSRF prevention, supply chain)
+    - Skills vs MCP servers design rationale
+
 ### Existing Documentation
 
 For middleware architecture, see: **[docs/middleware.md](../middleware.md)**
@@ -128,6 +136,10 @@ graph TB
         AuthStorage[11: Auth Server Storage<br/>Memory & Redis backends]
     end
 
+    subgraph "Agent Skills"
+        Skills[12: Skills System<br/>Build, publish, install]
+    end
+
     %% Navigation paths
     Overview --> Concepts
     Overview --> Deployment
@@ -149,6 +161,9 @@ graph TB
 
     Groups --> Workloads
     Groups --> vMCP
+    Groups --> Skills
+
+    Registry --> Skills
 
     Workloads --> Operator
     vMCP --> Operator
@@ -168,6 +183,7 @@ graph TB
     style Operator fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style vMCP fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style AuthStorage fill:#e0f2f1,stroke:#004d40,stroke-width:2px
+    style Skills fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
 ```
 
 **Color Legend:**
@@ -216,6 +232,9 @@ Review all documents in order (00 → 01 → 02 → 03 → ...)
 
 **Extending ToolHive:**
 - [Middleware](../middleware.md)
+
+**Agent Skills:**
+- [Skills System](12-skills-system.md)
 
 **Advanced Features:**
 - [Groups](07-groups.md)

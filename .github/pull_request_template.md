@@ -61,6 +61,22 @@ If no, write "No".
 Remove this section entirely if not applicable.
 -->
 
+## Implementation plan
+
+<!--
+Optional — include when this PR was planned with an AI assistant (Claude Code, etc.).
+Paste the approved plan inside the <details> block so reviewers can see the intended
+design without cluttering the main PR description. Remove this section entirely
+for PRs that were not AI-planned.
+-->
+
+<details>
+<summary>Approved implementation plan</summary>
+
+<!-- Paste the plan here -->
+
+</details>
+
 ## Special notes for reviewers
 
 <!--

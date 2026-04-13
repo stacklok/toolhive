@@ -441,7 +441,7 @@ kind: MCPRemoteProxy
 metadata:
   name: context7
 spec:
-  remoteURL: https://mcp.context7.com/mcp
+  remoteUrl: https://mcp.context7.com/mcp
   transport: streamable-http
   groupRef: engineering-team
   # Requires OIDC config, deploys proxy pod
@@ -454,7 +454,7 @@ kind: MCPServerEntry
 metadata:
   name: context7
 spec:
-  remoteURL: https://mcp.context7.com/mcp
+  remoteUrl: https://mcp.context7.com/mcp
   transport: streamable-http
   groupRef: engineering-team
   # No pods deployed, VirtualMCPServer connects directly

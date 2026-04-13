@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -17,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive-core/logging"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/webhook"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -650,6 +652,47 @@ func TestResolveTransportType(t *testing.T) {
 	}
 }
 
+func TestSetupTelemetryConfiguration_LoadOrCreateConfigPath(t *testing.T) {
+	// This test validates the bug fix: BuildRunnerConfig and configureMiddlewareAndOptions
+	// must call provider.LoadOrCreateConfig() (not provider.GetConfig()) so that
+	// enterprise providers can merge OTEL config from external sources (e.g. config-server).
+	// LoadOrCreateConfig reads from the provider's backing store; GetConfig on
+	// DefaultProvider reads only the cached global singleton, bypassing any registered
+	// ProviderFactory.
+	t.Parallel()
+	slog.SetDefault(logging.New(logging.WithOutput(os.Stdout), logging.WithLevel(slog.LevelDebug), logging.WithFormat(logging.FormatText)))
+
+	provider, cleanup := createTestConfigProvider(t, &config.Config{
+		OTEL: config.OpenTelemetryConfig{
+			Endpoint:     "https://provider-endpoint.example.com",
+			SamplingRate: 0.42,
+			EnvVars:      []string{"PROVIDER_VAR=provider_value"},
+		},
+	})
+	defer cleanup()
+
+	// Simulate the fixed code path: call LoadOrCreateConfig() on the provider.
+	// The old buggy code called GetConfig() on DefaultProvider, which reads a
+	// global singleton and bypasses factory-registered providers entirely.
+	appConfig, err := provider.LoadOrCreateConfig()
+	require.NoError(t, err)
+
+	cmd := &cobra.Command{}
+	AddRunFlags(cmd, &RunFlags{})
+
+	result := getTelemetryFromFlags(
+		cmd, appConfig,
+		"", 0.0, nil, false, false, false, true, true,
+	)
+
+	assert.Equal(t, "https://provider-endpoint.example.com", result.OtelEndpoint,
+		"OTEL endpoint from provider config should be applied when no CLI flag is set")
+	assert.Equal(t, 0.42, result.OtelSamplingRate,
+		"OTEL sampling rate from provider config should be applied when no CLI flag is set")
+	assert.Equal(t, []string{"PROVIDER_VAR=provider_value"}, result.OtelEnvironmentVariables,
+		"OTEL env vars from provider config should be applied when no CLI flag is set")
+}
+
 func TestResolveServerName(t *testing.T) {
 	t.Parallel()
 
@@ -698,4 +741,71 @@ func TestResolveServerName(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestLoadAndMergeWebhookConfigs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("merges files and applies default timeout", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+
+		first := filepath.Join(dir, "first.yaml")
+		second := filepath.Join(dir, "second.json")
+
+		require.NoError(t, os.WriteFile(first, []byte(`
+validating:
+  - name: policy
+    url: http://localhost/validate
+    failure_policy: ignore
+    tls_config:
+      insecure_skip_verify: true
+mutating:
+  - name: mutate-a
+    url: http://localhost/mutate-a
+    timeout: 3s
+    failure_policy: ignore
+    tls_config:
+      insecure_skip_verify: true
+`), 0600))
+		require.NoError(t, os.WriteFile(second, []byte(`{
+  "validating": [
+    {"name":"policy","url":"http://localhost/validate-v2","timeout":"5s","failure_policy":"ignore","tls_config":{"insecure_skip_verify":true}}
+  ],
+  "mutating": [
+    {"name":"mutate-b","url":"http://localhost/mutate-b","failure_policy":"ignore","tls_config":{"insecure_skip_verify":true}}
+  ]
+}`), 0600))
+
+		cfg, err := loadAndMergeWebhookConfigs([]string{first, second})
+		require.NoError(t, err)
+
+		require.Len(t, cfg.Validating, 1)
+		assert.Equal(t, "http://localhost/validate-v2", cfg.Validating[0].URL)
+		assert.Equal(t, 5*time.Second, cfg.Validating[0].Timeout)
+
+		require.Len(t, cfg.Mutating, 2)
+		assert.Equal(t, "mutate-a", cfg.Mutating[0].Name)
+		assert.Equal(t, 3*time.Second, cfg.Mutating[0].Timeout)
+		assert.Equal(t, "mutate-b", cfg.Mutating[1].Name)
+		assert.Equal(t, webhook.DefaultTimeout, cfg.Mutating[1].Timeout)
+	})
+
+	t.Run("rejects invalid merged config", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "invalid.yaml")
+
+		require.NoError(t, os.WriteFile(path, []byte(`
+validating:
+  - name: bad
+    url: https://example.com/validate
+    timeout: 500ms
+    failure_policy: fail
+`), 0600))
+
+		_, err := loadAndMergeWebhookConfigs([]string{path})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid webhook configuration")
+	})
 }

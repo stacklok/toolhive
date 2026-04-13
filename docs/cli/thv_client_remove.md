@@ -31,6 +31,7 @@ Valid clients:
   - cursor: Cursor editor
   - gemini-cli: Google Gemini CLI
   - goose: Goose AI agent
+  - kimi-cli: Kimi Code CLI
   - kiro: Kiro AI IDE
   - lm-studio: LM Studio application
   - mistral-vibe: Mistral Vibe IDE

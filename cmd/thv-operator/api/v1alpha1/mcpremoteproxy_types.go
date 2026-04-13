@@ -38,13 +38,14 @@ type HeaderFromSecret struct {
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+// +kubebuilder:validation:XValidation:rule="!(has(self.telemetry) && has(self.telemetryConfigRef))",message="telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPRemoteProxySpec struct {
 	// RemoteURL is the URL of the remote MCP server to proxy
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^https?://`
-	RemoteURL string `json:"remoteURL"`
+	RemoteURL string `json:"remoteUrl"`
 
 	// ProxyPort is the port to expose the MCP proxy on
 	// +kubebuilder:validation:Minimum=1
@@ -102,7 +103,17 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty"`
 
-	// Telemetry defines observability configuration for the proxy
+	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
+	// The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.
+	// Cross-namespace references are not supported for security and isolation reasons.
+	// Mutually exclusive with the deprecated inline Telemetry field.
+	// +optional
+	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
+
+	// Telemetry defines inline observability configuration for the proxy.
+	// Deprecated: Use TelemetryConfigRef to reference a shared MCPTelemetryConfig resource instead.
+	// This field will be removed in a future release. Setting both telemetry and telemetryConfigRef
+	// is rejected by CEL validation.
 	// +optional
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 
@@ -158,7 +169,7 @@ type MCPRemoteProxyStatus struct {
 
 	// ExternalURL is the external URL where the proxy can be accessed (if exposed externally)
 	// +optional
-	ExternalURL string `json:"externalURL,omitempty"`
+	ExternalURL string `json:"externalUrl,omitempty"`
 
 	// ObservedGeneration reflects the generation of the most recently observed MCPRemoteProxy
 	// +optional
@@ -173,6 +184,10 @@ type MCPRemoteProxyStatus struct {
 	// ToolConfigHash stores the hash of the referenced ToolConfig for change detection
 	// +optional
 	ToolConfigHash string `json:"toolConfigHash,omitempty"`
+
+	// TelemetryConfigHash stores the hash of the referenced MCPTelemetryConfig for change detection
+	// +optional
+	TelemetryConfigHash string `json:"telemetryConfigHash,omitempty"`
 
 	// ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec
 	// +optional
@@ -227,6 +242,9 @@ const (
 	// ConditionTypeMCPRemoteProxyToolConfigValidated indicates whether the ToolConfigRef is valid
 	ConditionTypeMCPRemoteProxyToolConfigValidated = "ToolConfigValidated"
 
+	// ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
+	ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
+
 	// ConditionTypeMCPRemoteProxyExternalAuthConfigValidated indicates whether the ExternalAuthConfigRef is valid
 	ConditionTypeMCPRemoteProxyExternalAuthConfigValidated = "ExternalAuthConfigValidated"
 
@@ -278,6 +296,18 @@ const (
 	// ConditionReasonMCPRemoteProxyToolConfigFetchError indicates an error occurred fetching the MCPToolConfig
 	ConditionReasonMCPRemoteProxyToolConfigFetchError = "ToolConfigFetchError"
 
+	// ConditionReasonMCPRemoteProxyTelemetryConfigRefValid indicates the TelemetryConfigRef is valid
+	ConditionReasonMCPRemoteProxyTelemetryConfigRefValid = "TelemetryConfigRefValid"
+
+	// ConditionReasonMCPRemoteProxyTelemetryConfigRefNotFound indicates the referenced MCPTelemetryConfig was not found
+	ConditionReasonMCPRemoteProxyTelemetryConfigRefNotFound = "TelemetryConfigRefNotFound"
+
+	// ConditionReasonMCPRemoteProxyTelemetryConfigRefInvalid indicates the referenced MCPTelemetryConfig is invalid
+	ConditionReasonMCPRemoteProxyTelemetryConfigRefInvalid = "TelemetryConfigRefInvalid"
+
+	// ConditionReasonMCPRemoteProxyTelemetryConfigRefFetchError indicates an error occurred fetching the MCPTelemetryConfig
+	ConditionReasonMCPRemoteProxyTelemetryConfigRefFetchError = "TelemetryConfigRefFetchError"
+
 	// ConditionReasonMCPRemoteProxyExternalAuthConfigValid indicates the ExternalAuthConfigRef is valid
 	ConditionReasonMCPRemoteProxyExternalAuthConfigValid = "ExternalAuthConfigValid"
 
@@ -327,7 +357,7 @@ const (
 	// ConditionReasonHeaderSecretNotFound indicates a referenced header Secret was not found
 	ConditionReasonHeaderSecretNotFound = "HeaderSecretNotFound"
 
-	// ConditionReasonRemoteURLInvalid indicates the remoteURL is malformed or has an invalid scheme
+	// ConditionReasonRemoteURLInvalid indicates the remoteUrl is malformed or has an invalid scheme
 	ConditionReasonRemoteURLInvalid = "RemoteURLInvalid"
 
 	// ConditionReasonJWKSURLInvalid indicates the JWKS URL is malformed or has an invalid scheme
@@ -338,7 +368,7 @@ const (
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=rp;mcprp,categories=toolhive
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteURL"
+//+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteUrl"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"

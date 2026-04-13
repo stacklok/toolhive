@@ -10,7 +10,7 @@ import (
 )
 
 // Condition types for EmbeddingServer (reuses common conditions from MCPServer)
-// ConditionImageValidated and ConditionPodTemplateValid are shared with MCPServer
+// ConditionPodTemplateValid is shared with MCPServer
 
 const (
 	// ConditionModelReady indicates whether the embedding model is downloaded and ready

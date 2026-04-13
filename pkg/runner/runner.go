@@ -309,12 +309,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	var transportOpts []transport.Option
 	var setupResult *runtime.SetupResult
 
-	if r.Config.RemoteURL == "" {
-		// Check policy gate before creating the server
-		if err := ActivePolicyGate().CheckCreateServer(ctx, r.Config); err != nil {
-			return fmt.Errorf("server creation blocked by policy: %w", err)
-		}
+	// Check policy gate before creating the server (applies to both local and remote)
+	if err := ActivePolicyGate().CheckCreateServer(ctx, r.Config); err != nil {
+		return fmt.Errorf("server creation blocked by policy: %w", err)
+	}
 
+	if r.Config.RemoteURL == "" {
 		// For local workloads, deploy the container using runtime.Setup first
 		var scalingConfig *rt.ScalingConfig
 		if r.Config.ScalingConfig != nil {
@@ -441,6 +441,17 @@ func (r *Runner) Run(ctx context.Context) error {
 				slog.Error("failed to update workload status", "error", err)
 			}
 		})
+	}
+
+	// Configure stateless mode if requested. Stateless mode applies to any
+	// streamable-HTTP server (remote or local container) where the upstream
+	// only accepts POST and does not support SSE-based sessions.
+	if r.Config.Stateless {
+		httpT, ok := transportHandler.(*transport.HTTPTransport)
+		if !ok {
+			return fmt.Errorf("--stateless requires streamable-HTTP or SSE transport, got %T", transportHandler)
+		}
+		httpT.SetStateless(true)
 	}
 
 	// Start the transport (which also starts the container and monitoring)

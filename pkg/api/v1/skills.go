@@ -101,7 +101,7 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 		Version:     req.Version,
 		Scope:       req.Scope,
 		ProjectRoot: req.ProjectRoot,
-		Client:      req.Client,
+		Clients:     req.Clients,
 		Force:       req.Force,
 		Group:       req.Group,
 	})

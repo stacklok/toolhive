@@ -888,8 +888,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type defines the authentication type |  | Enum: [discovered external_auth_config_ref] <br />Required: \{\} <br /> |
-| `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "external_auth_config_ref" |  | Optional: \{\} <br /> |
+| `type` _string_ | Type defines the authentication type |  | Enum: [discovered externalAuthConfigRef external_auth_config_ref] <br />Required: \{\} <br /> |
+| `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "externalAuthConfigRef" (or deprecated "external_auth_config_ref") |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.BearerTokenConfig
@@ -1776,7 +1776,6 @@ _Appears in:_
 | `volumeMounts` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | VolumeMounts defines additional volume mounts for the registry-api container.<br />Each entry is a standard Kubernetes VolumeMount object (JSON/YAML).<br />The operator appends them to the container's volume mounts alongside the config mount.<br />Mount paths must match the file paths referenced in configYAML.<br />For example, if configYAML references passwordFile: /secrets/git-creds/token,<br />a corresponding volume mount must exist with mountPath: /secrets/git-creds. |  | Optional: \{\} <br /> |
 | `pgpassSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | PGPassSecretRef references a Secret containing a pre-created pgpass file.<br />Why this is a dedicated field instead of a regular volume/volumeMount:<br />PostgreSQL's libpq rejects pgpass files that aren't mode 0600. Kubernetes<br />secret volumes mount files as root-owned, and the registry-api container<br />runs as non-root (UID 65532). A root-owned 0600 file is unreadable by<br />UID 65532, and using fsGroup changes permissions to 0640 which libpq also<br />rejects. The only solution is an init container that copies the file to an<br />emptyDir as the app user and runs chmod 0600. This cannot be expressed<br />through volumes/volumeMounts alone -- it requires an init container, two<br />extra volumes (secret + emptyDir), a subPath mount, and an environment<br />variable, all wired together correctly.<br />When specified, the operator generates all of that plumbing invisibly.<br />The user creates the Secret with pgpass-formatted content; the operator<br />handles only the Kubernetes permission mechanics.<br />Example Secret:<br />	apiVersion: v1<br />	kind: Secret<br />	metadata:<br />	  name: my-pgpass<br />	stringData:<br />	  .pgpass: \|<br />	    postgres:5432:registry:db_app:mypassword<br />	    postgres:5432:registry:db_migrator:otherpassword<br />Then reference it:<br />	pgpassSecretRef:<br />	  name: my-pgpass<br />	  key: .pgpass |  | Optional: \{\} <br /> |
 | `displayName` _string_ | DisplayName is a human-readable name for the registry. |  | Optional: \{\} <br /> |
-| `enforceServers` _boolean_ | EnforceServers indicates whether MCPServers in this namespace must have their images<br />present in at least one registry in the namespace. When any registry in the namespace<br />has this field set to true, enforcement is enabled for the entire namespace.<br />MCPServers with images not found in any registry will be rejected.<br />When false (default), MCPServers can be deployed regardless of registry presence. | false | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the registry API server.<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the registry API server runs in, you must specify<br />the `registry-api` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
 
 
@@ -1877,7 +1876,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `remoteURL` _string_ | RemoteURL is the URL of the remote MCP server to proxy |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
+| `remoteUrl` _string_ | RemoteURL is the URL of the remote MCP server to proxy |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
 | `proxyPort` _integer_ | ProxyPort is the port to expose the MCP proxy on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `transport` _string_ | Transport is the transport method for the remote proxy (sse or streamable-http) | streamable-http | Enum: [sse streamable-http] <br /> |
 | `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the proxy.<br />Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.<br />This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
@@ -1888,7 +1887,8 @@ _Appears in:_
 | `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the proxy |  | Optional: \{\} <br /> |
 | `audit` _[api.v1alpha1.AuditConfig](#apiv1alpha1auditconfig)_ | Audit defines audit logging configuration for the proxy |  | Optional: \{\} <br /> |
 | `toolConfigRef` _[api.v1alpha1.ToolConfigRef](#apiv1alpha1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this allows filtering and overriding tools from the remote MCP server. |  | Optional: \{\} <br /> |
-| `telemetry` _[api.v1alpha1.TelemetryConfig](#apiv1alpha1telemetryconfig)_ | Telemetry defines observability configuration for the proxy |  | Optional: \{\} <br /> |
+| `telemetryConfigRef` _[api.v1alpha1.MCPTelemetryConfigReference](#apiv1alpha1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />Mutually exclusive with the deprecated inline Telemetry field. |  | Optional: \{\} <br /> |
+| `telemetry` _[api.v1alpha1.TelemetryConfig](#apiv1alpha1telemetryconfig)_ | Telemetry defines inline observability configuration for the proxy.<br />Deprecated: Use TelemetryConfigRef to reference a shared MCPTelemetryConfig resource instead.<br />This field will be removed in a future release. Setting both telemetry and telemetryConfigRef<br />is rejected by CEL validation. |  | Optional: \{\} <br /> |
 | `resources` _[api.v1alpha1.ResourceRequirements](#apiv1alpha1resourcerequirements)_ | Resources defines the resource requirements for the proxy container |  | Optional: \{\} <br /> |
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the proxy.<br />If not specified, a ServiceAccount will be created automatically and used by the proxy. |  | Optional: \{\} <br /> |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false | Optional: \{\} <br /> |
@@ -1913,10 +1913,11 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `phase` _[api.v1alpha1.MCPRemoteProxyPhase](#apiv1alpha1mcpremoteproxyphase)_ | Phase is the current phase of the MCPRemoteProxy |  | Enum: [Pending Ready Failed Terminating] <br />Optional: \{\} <br /> |
 | `url` _string_ | URL is the internal cluster URL where the proxy can be accessed |  | Optional: \{\} <br /> |
-| `externalURL` _string_ | ExternalURL is the external URL where the proxy can be accessed (if exposed externally) |  | Optional: \{\} <br /> |
+| `externalUrl` _string_ | ExternalURL is the external URL where the proxy can be accessed (if exposed externally) |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration reflects the generation of the most recently observed MCPRemoteProxy |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRemoteProxy's state |  | Optional: \{\} <br /> |
 | `toolConfigHash` _string_ | ToolConfigHash stores the hash of the referenced ToolConfig for change detection |  | Optional: \{\} <br /> |
+| `telemetryConfigHash` _string_ | TelemetryConfigHash stores the hash of the referenced MCPTelemetryConfig for change detection |  | Optional: \{\} <br /> |
 | `externalAuthConfigHash` _string_ | ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec |  | Optional: \{\} <br /> |
 | `authServerConfigHash` _string_ | AuthServerConfigHash is the hash of the referenced authServerRef spec,<br />used to detect configuration changes and trigger reconciliation. |  | Optional: \{\} <br /> |
 | `oidcConfigHash` _string_ | OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection |  | Optional: \{\} <br /> |
@@ -2023,7 +2024,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `remoteURL` _string_ | RemoteURL is the URL of the remote MCP server.<br />Both HTTP and HTTPS schemes are accepted at admission time. |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
+| `remoteUrl` _string_ | RemoteURL is the URL of the remote MCP server.<br />Both HTTP and HTTPS schemes are accepted at admission time. |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
 | `transport` _string_ | Transport is the transport method for the remote server (sse or streamable-http).<br />No default is set (unlike MCPRemoteProxy) because MCPServerEntry points at external<br />servers the user doesn't control — requiring explicit transport avoids silent mismatches. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
 | `groupRef` _string_ | GroupRef is the name of the MCPGroup this entry belongs to.<br />Required — every MCPServerEntry must be part of a group for vMCP discovery. |  | MinLength: 1 <br />Required: \{\} <br /> |
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange<br />when connecting to the remote MCP server. The referenced MCPExternalAuthConfig must<br />exist in the same namespace as this MCPServerEntry. |  | Optional: \{\} <br /> |
@@ -2218,6 +2219,7 @@ same namespace as the MCPServer.
 
 
 _Appears in:_
+- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
 - [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |

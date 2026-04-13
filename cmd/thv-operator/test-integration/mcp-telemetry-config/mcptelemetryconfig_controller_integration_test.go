@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	testEndpoint = "https://otel-collector:4317"
-	timeout      = time.Second * 30
-	interval     = time.Millisecond * 250
+	testEndpoint           = "https://otel-collector:4317"
+	telemetryFinalizerName = "mcptelemetryconfig.toolhive.stacklok.dev/finalizer"
+	timeout                = time.Second * 30
+	interval               = time.Millisecond * 250
 )
 
 var _ = Describe("MCPTelemetryConfig Controller", func() {
@@ -149,7 +150,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 				return false
 			}
 			for _, f := range fetched.Finalizers {
-				if f == "mcptelemetryconfig.toolhive.stacklok.dev/finalizer" {
+				if f == telemetryFinalizerName {
 					return true
 				}
 			}
@@ -257,7 +258,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 				return false
 			}
 			for _, f := range fetched.Finalizers {
-				if f == "mcptelemetryconfig.toolhive.stacklok.dev/finalizer" {
+				if f == telemetryFinalizerName {
 					return true
 				}
 			}
@@ -322,5 +323,156 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 			}, fetched)
 			return err != nil // Should be NotFound
 		}, timeout, interval).Should(BeTrue(), "Config should be deleted after references are removed")
+	})
+
+	It("should track MCPRemoteProxy in ReferencingWorkloads", func() {
+		telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-proxy-ref-tracking",
+				Namespace: "default",
+			},
+		}
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+			Enabled:  true,
+			Endpoint: testEndpoint,
+			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+		}
+
+		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
+
+		// Wait for config to be ready
+		Eventually(func() bool {
+			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			return err == nil && fetched.Status.ConfigHash != ""
+		}, timeout, interval).Should(BeTrue())
+
+		// Create an MCPRemoteProxy that references this config
+		proxy := &mcpv1alpha1.MCPRemoteProxy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "proxy-ref-tracking",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				RemoteURL: "https://example.com/mcp",
+				TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+					Name: "test-proxy-ref-tracking",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, proxy)).To(Succeed())
+
+		// The MCPRemoteProxy watch should trigger reconciliation of MCPTelemetryConfig.
+		// Verify ReferencingWorkloads includes the proxy.
+		Eventually(func() []string {
+			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			if err != nil {
+				return nil
+			}
+			names := make([]string, 0, len(fetched.Status.ReferencingWorkloads))
+			for _, ref := range fetched.Status.ReferencingWorkloads {
+				names = append(names, ref.Kind+"/"+ref.Name)
+			}
+			return names
+		}, timeout, interval).Should(ContainElement("MCPRemoteProxy/proxy-ref-tracking"))
+	})
+
+	It("should block deletion when MCPRemoteProxy references the config", func() {
+		telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-proxy-deletion-protection",
+				Namespace: "default",
+			},
+		}
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+			Enabled:  true,
+			Endpoint: testEndpoint,
+			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+		}
+
+		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
+
+		// Wait for finalizer
+		Eventually(func() bool {
+			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			if err != nil {
+				return false
+			}
+			for _, f := range fetched.Finalizers {
+				if f == telemetryFinalizerName {
+					return true
+				}
+			}
+			return false
+		}, timeout, interval).Should(BeTrue())
+
+		// Create an MCPRemoteProxy that references this config
+		proxy := &mcpv1alpha1.MCPRemoteProxy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "proxy-deletion-blocker",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				RemoteURL: "https://example.com/mcp",
+				TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+					Name: "test-proxy-deletion-protection",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, proxy)).To(Succeed())
+
+		// Wait for ReferencingWorkloads to include the proxy
+		Eventually(func() []string {
+			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			if err != nil {
+				return nil
+			}
+			names := make([]string, 0, len(fetched.Status.ReferencingWorkloads))
+			for _, ref := range fetched.Status.ReferencingWorkloads {
+				names = append(names, ref.Name)
+			}
+			return names
+		}, timeout, interval).Should(ContainElement("proxy-deletion-blocker"))
+
+		// Attempt to delete — finalizer blocks removal
+		Expect(k8sClient.Delete(ctx, telemetryConfig)).To(Succeed())
+
+		// Verify object still exists
+		Consistently(func() bool {
+			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			return err == nil
+		}, 3*time.Second, interval).Should(BeTrue(), "Config should not be deleted while proxy references it")
+
+		// Remove the referencing proxy
+		Expect(k8sClient.Delete(ctx, proxy)).To(Succeed())
+
+		// Config should now be deleted
+		Eventually(func() bool {
+			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			return err != nil // Should be NotFound
+		}, timeout, interval).Should(BeTrue(), "Config should be deleted after proxy reference is removed")
 	})
 })

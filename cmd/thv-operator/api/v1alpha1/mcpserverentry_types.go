@@ -15,7 +15,7 @@ type MCPServerEntrySpec struct {
 	// Both HTTP and HTTPS schemes are accepted at admission time.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^https?://`
-	RemoteURL string `json:"remoteURL"`
+	RemoteURL string `json:"remoteUrl"`
 
 	// Transport is the transport method for the remote server (sse or streamable-http).
 	// No default is set (unlike MCPRemoteProxy) because MCPServerEntry points at external
@@ -154,7 +154,7 @@ const (
 //+kubebuilder:resource:shortName=mcpentry,categories=toolhive
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Transport",type="string",JSONPath=".spec.transport"
-//+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteURL"
+//+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteUrl"
 //+kubebuilder:printcolumn:name="Group",type="string",JSONPath=".spec.groupRef"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

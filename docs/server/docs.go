@@ -827,7 +827,8 @@ const docTemplate = `{
                     "gemini-cli",
                     "vscode-server",
                     "mistral-vibe",
-                    "codex"
+                    "codex",
+                    "kimi-cli"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -855,7 +856,8 @@ const docTemplate = `{
                     "GeminiCli",
                     "VSCodeServer",
                     "MistralVibe",
-                    "Codex"
+                    "Codex",
+                    "KimiCli"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {
@@ -1282,6 +1284,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "stateless": {
+                        "description": "Stateless indicates the server only supports POST (no SSE/GET).\nWhen true, the proxy returns 405 for incoming GET requests and uses a\nPOST-based health check instead of the default GET probe.\nApplies to both remote URLs and local container workloads.",
+                        "type": "boolean"
                     },
                     "target_host": {
                         "description": "TargetHost is the host to forward traffic to (only applicable to SSE transport)",
@@ -2345,9 +2351,13 @@ const docTemplate = `{
             "pkg_api_v1.installSkillRequest": {
                 "description": "Request to install a skill",
                 "properties": {
-                    "client": {
-                        "description": "Client is the target client (e.g., \"claude-code\")",
-                        "type": "string"
+                    "clients": {
+                        "description": "Clients lists target client identifiers (e.g., \"claude-code\"),\nor [\"all\"] to target every skill-supporting client.\nOmitting this field installs to all available clients.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     },
                     "force": {
                         "description": "Force allows overwriting unmanaged skill directories",

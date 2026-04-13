@@ -12,9 +12,6 @@ import (
 // Condition types for MCPServer
 // Note: ConditionTypeReady is shared across multiple resources and defined in mcpremoteproxy_types.go
 const (
-	// ConditionImageValidated indicates whether this image is fine to be used
-	ConditionImageValidated = "ImageValidated"
-
 	// ConditionGroupRefValidated indicates whether the GroupRef is valid
 	ConditionGroupRefValidated = "GroupRefValidated"
 
@@ -28,17 +25,6 @@ const (
 
 	// ConditionReasonNotReady indicates the MCPServer is not ready
 	ConditionReasonNotReady = "NotReady"
-)
-
-const (
-	// ConditionReasonImageValidationFailed indicates image validation failed
-	ConditionReasonImageValidationFailed = "ImageValidationFailed"
-	// ConditionReasonImageValidationSuccess indicates image validation succeeded
-	ConditionReasonImageValidationSuccess = "ImageValidationSuccess"
-	// ConditionReasonImageValidationError indicates an error occurred during validation
-	ConditionReasonImageValidationError = "ImageValidationError"
-	// ConditionReasonImageValidationSkipped indicates image validation was skipped
-	ConditionReasonImageValidationSkipped = "ImageValidationSkipped"
 )
 
 const (

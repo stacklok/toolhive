@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/webhook"
 )
 
 const (
@@ -57,6 +58,9 @@ type RunFlags struct {
 
 	// Remote MCP server support
 	RemoteURL string
+
+	// Stateless indicates the server is stateless (POST-only, no SSE)
+	Stateless bool
 
 	// Security and audit
 	AuthzConfig string
@@ -136,6 +140,10 @@ type RunFlags struct {
 	// Runtime configuration
 	RuntimeImage       string
 	RuntimeAddPackages []string
+
+	// WebhookConfigs is a list of paths to webhook configuration files.
+	// Each file may define validating and/or mutating webhooks.
+	WebhookConfigs []string
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -253,6 +261,9 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
 		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) "+
 			"(default false)")
+	cmd.Flags().BoolVar(&config.Stateless, "stateless", false,
+		"Declare the server as stateless (POST-only, no SSE). "+
+			"Use for MCP servers implementing streamable-HTTP stateless mode.")
 	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
 		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
@@ -277,6 +288,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	// Environment file processing flags
 	cmd.Flags().StringVar(&config.EnvFile, "env-file", "", "Load environment variables from a single file")
 	cmd.Flags().StringVar(&config.EnvFileDir, "env-file-dir", "", "Load environment variables from all files in a directory")
+
+	// Webhook configuration flags
+	cmd.Flags().StringArrayVar(&config.WebhookConfigs, "webhook-config", nil,
+		"Path to webhook configuration file (can be specified multiple times to merge configs)")
 
 	// Ignore functionality flags
 	cmd.Flags().BoolVar(&config.IgnoreGlobally, "ignore-globally", true,
@@ -313,13 +328,17 @@ func BuildRunnerConfig(
 	}
 
 	// Load application config once for the entire build.
-	appConfig := cfg.NewDefaultProvider().GetConfig()
+	configProvider := cfg.NewProvider()
+	appConfig, err := configProvider.LoadOrCreateConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load application config: %w", err)
+	}
 
 	// Setup telemetry configuration
 	telemetryConfig := setupTelemetryConfiguration(cmd, runFlags, appConfig)
 
 	// Setup runtime and validation
-	rt, envVarValidator, err := setupRuntimeAndValidation(ctx)
+	rt, envVarValidator, err := setupRuntimeAndValidation(ctx, configProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +346,7 @@ func BuildRunnerConfig(
 	if runFlags.RemoteURL != "" {
 		slog.Debug(fmt.Sprintf("Attempting to run remote MCP server: %s", runFlags.RemoteURL))
 		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
-			nil, envVarValidator, oidcConfig, telemetryConfig)
+			nil, envVarValidator, oidcConfig, telemetryConfig, appConfig)
 	}
 
 	// Resolve image from registry without pulling (fast registry lookup only).
@@ -353,7 +372,7 @@ func BuildRunnerConfig(
 
 	// Build the runner config
 	runConfig, err := buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverMetadata,
-		envVars, envVarValidator, oidcConfig, telemetryConfig,
+		envVars, envVarValidator, oidcConfig, telemetryConfig, appConfig,
 		runner.WithRegistrySourceURLs(regAPIURL, regURL),
 		runner.WithRegistryServerName(regServerName))
 	if err != nil {
@@ -406,8 +425,11 @@ func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags, appConf
 		finalTelemetry.OtelUseLegacyAttributes)
 }
 
-// setupRuntimeAndValidation creates container runtime and selects environment variable validator
-func setupRuntimeAndValidation(ctx context.Context) (runtime.Deployer, runner.EnvVarValidator, error) {
+// setupRuntimeAndValidation creates container runtime and selects environment variable validator.
+// The provided configProvider is reused so the factory-registered provider is not bypassed.
+func setupRuntimeAndValidation(
+	ctx context.Context, configProvider cfg.Provider,
+) (runtime.Deployer, runner.EnvVarValidator, error) {
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create container runtime: %w", err)
@@ -417,8 +439,7 @@ func setupRuntimeAndValidation(ctx context.Context) (runtime.Deployer, runner.En
 	if process.IsDetached() || runtime.IsKubernetesRuntime() {
 		envVarValidator = &runner.DetachedEnvVarValidator{}
 	} else {
-		cfgProvider := cfg.NewDefaultProvider()
-		envVarValidator = runner.NewCLIEnvVarValidator(cfgProvider)
+		envVarValidator = runner.NewCLIEnvVarValidator(configProvider)
 	}
 
 	return rt, envVarValidator, nil
@@ -524,6 +545,25 @@ func loadToolsOverrideConfig(toolsOverridePath string) (map[string]runner.ToolOv
 	return *loadedToolsOverride, nil
 }
 
+// loadAndMergeWebhookConfigs loads, merges, and validates webhook configuration files.
+// Each file may define validating and/or mutating webhooks. Later files override earlier
+// ones for webhooks with the same name.
+func loadAndMergeWebhookConfigs(paths []string) (*webhook.FileConfig, error) {
+	configs := make([]*webhook.FileConfig, 0, len(paths))
+	for _, path := range paths {
+		config, err := webhook.LoadConfig(path)
+		if err != nil {
+			return nil, err
+		}
+		configs = append(configs, config)
+	}
+	merged := webhook.MergeConfigs(configs...)
+	if err := webhook.ValidateConfig(merged); err != nil {
+		return nil, fmt.Errorf("invalid webhook configuration: %w", err)
+	}
+	return merged, nil
+}
+
 // configureRemoteHeaderOptions configures header forwarding options for remote servers
 func configureRemoteHeaderOptions(runFlags *RunFlags) ([]runner.RunConfigBuilderOption, error) {
 	var opts []runner.RunConfigBuilderOption
@@ -585,6 +625,7 @@ func buildRunnerConfig(
 	envVarValidator runner.EnvVarValidator,
 	oidcConfig *auth.TokenValidatorConfig,
 	telemetryConfig *telemetry.Config,
+	appConfig *cfg.Config,
 	extraOpts ...runner.RunConfigBuilderOption,
 ) (*runner.RunConfig, error) {
 	transportType := resolveTransportType(runFlags, serverMetadata)
@@ -623,6 +664,7 @@ func buildRunnerConfig(
 		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
 		runner.WithAllowDockerGateway(runFlags.AllowDockerGateway),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
+		runner.WithStateless(runFlags.Stateless),
 		runner.WithEndpointPrefix(runFlags.EndpointPrefix),
 		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
@@ -664,9 +706,21 @@ func buildRunnerConfig(
 	}
 	opts = append(opts, runtimeOpts...)
 
+	// Load and merge webhook configurations
+	if len(runFlags.WebhookConfigs) > 0 {
+		whCfg, err := loadAndMergeWebhookConfigs(runFlags.WebhookConfigs)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts,
+			runner.WithValidatingWebhooks(whCfg.Validating),
+			runner.WithMutatingWebhooks(whCfg.Mutating),
+		)
+	}
+
 	// Configure middleware and additional options
 	additionalOpts, err := configureMiddlewareAndOptions(runFlags, serverMetadata, toolsOverride, oidcConfig,
-		telemetryConfig, serverName, transportType)
+		telemetryConfig, serverName, transportType, appConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -684,12 +738,9 @@ func configureMiddlewareAndOptions(
 	telemetryConfig *telemetry.Config,
 	serverName string,
 	transportType string,
+	appConfig *cfg.Config,
 ) ([]runner.RunConfigBuilderOption, error) {
 	var opts []runner.RunConfigBuilderOption
-
-	// Load application config for global settings
-	configProvider := cfg.NewDefaultProvider()
-	appConfig := configProvider.GetConfig()
 
 	// Resolve the OTel service name from the workload name when not explicitly set
 	telemetry.ResolveServiceName(telemetryConfig, serverName)

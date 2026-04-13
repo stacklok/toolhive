@@ -82,6 +82,8 @@ const (
 	MistralVibe ClientApp = "mistral-vibe"
 	// Codex represents the OpenAI Codex CLI.
 	Codex ClientApp = "codex"
+	// KimiCli represents the Kimi Code CLI.
+	KimiCli ClientApp = "kimi-cli"
 )
 
 // Extension is extension of the client config file.
@@ -313,6 +315,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".cursor", "skills"},
+		SkillsProjectPath: []string{".cursor", "skills"},
 	},
 	{
 		ClientType:           ClaudeCode,
@@ -740,6 +745,24 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".agents", "skills"},
 		SkillsProjectPath: []string{".agents", "skills"},
+	},
+	{
+		ClientType:           KimiCli,
+		Description:          "Kimi Code CLI",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".kimi"},
+		Extension:            JSON,
+		// Kimi CLI does not use a transport type field in the config file
+		IsTransportTypeFieldSupported: false,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".kimi", "skills"},
+		SkillsProjectPath: []string{".kimi", "skills"},
 	},
 }
 

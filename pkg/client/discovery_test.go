@@ -111,11 +111,14 @@ func TestGetClientStatus(t *testing.T) {
 			SupportsSkills: true,
 		},
 		{
-			ClientType:   Cursor,
-			Description:  "Cursor editor (Test)",
-			SettingsFile: "mcp.json",
-			RelPath:      []string{".cursor"}, // Check .cursor directory
-			Extension:    JSON,
+			ClientType:        Cursor,
+			Description:       "Cursor editor (Test)",
+			SettingsFile:      "mcp.json",
+			RelPath:           []string{".cursor"}, // Check .cursor directory
+			Extension:         JSON,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".cursor", "skills"},
+			SkillsProjectPath: []string{".cursor", "skills"},
 		},
 		{
 			ClientType:   VSCode,
@@ -148,7 +151,7 @@ func TestGetClientStatus(t *testing.T) {
 	assert.True(t, exists)
 	assert.True(t, cursorStatus.Installed)
 	assert.False(t, cursorStatus.Registered)
-	assert.False(t, cursorStatus.SupportsSkills)
+	assert.True(t, cursorStatus.SupportsSkills)
 
 	vscodeStatus, exists := statusMap[VSCode]
 	assert.True(t, exists)

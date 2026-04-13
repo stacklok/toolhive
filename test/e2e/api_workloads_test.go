@@ -543,6 +543,18 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 			}, 60*time.Second, 2*time.Second).Should(BeTrue(),
 				"Created workload should appear in list")
 
+			By("Step 3.5: Waiting for workload to reach running state")
+			Eventually(func() bool {
+				workloads := listWorkloads(apiServer, true)
+				for _, w := range workloads {
+					if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
+						return true
+					}
+				}
+				return false
+			}, 60*time.Second, 2*time.Second).Should(BeTrue(),
+				"Workload should reach running state before deletion")
+
 			By("Step 4: Deleting workload")
 			delResp := deleteWorkloadAsync(apiServer, workloadName)
 			delResp.Body.Close()

@@ -426,7 +426,7 @@ thv skill install [flags] SKILL_NAME
 **Flags:**
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--client` | Target client application (e.g. claude-code) | |
+| `--clients` | Comma-separated target client applications (e.g. claude-code,opencode) | |
 | `--scope` | Installation scope (user, project) | user |
 | `--force` | Overwrite existing skill directory | false |
 | `--project-root` | Project root path (required when scope=project) | |

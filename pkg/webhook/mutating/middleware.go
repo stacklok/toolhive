@@ -171,6 +171,12 @@ func executeSingleMutation(
 
 	resp, err := exec.client.CallMutating(ctx, whReq)
 	if err != nil {
+		if webhook.IsAlwaysDenyError(err) {
+			slog.Info("Mutating webhook denied request due to HTTP 422 response", "webhook", whName, "error", err)
+			sendErrorResponse(w, http.StatusUnprocessableEntity, "Request denied by webhook policy", msgID)
+			return nil, err
+		}
+
 		if exec.config.FailurePolicy == webhook.FailurePolicyIgnore {
 			slog.Warn("Mutating webhook error ignored due to fail-open policy", "webhook", whName, "error", err)
 			return currentBody, nil

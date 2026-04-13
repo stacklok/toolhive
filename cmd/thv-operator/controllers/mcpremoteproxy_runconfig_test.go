@@ -344,7 +344,7 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			config, err := reconciler.createRunConfigFromMCPRemoteProxy(tt.proxy)
+			config, err := reconciler.createRunConfigFromMCPRemoteProxy(t.Context(), tt.proxy)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -497,7 +497,7 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithTokenExchange(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			runConfig, err := reconciler.createRunConfigFromMCPRemoteProxy(tt.proxy)
+			runConfig, err := reconciler.createRunConfigFromMCPRemoteProxy(t.Context(), tt.proxy)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -730,7 +730,7 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithBearerToken(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			runConfig, err := reconciler.createRunConfigFromMCPRemoteProxy(tt.proxy)
+			runConfig, err := reconciler.createRunConfigFromMCPRemoteProxy(t.Context(), tt.proxy)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -791,7 +791,7 @@ func TestValidateRunConfigForRemoteProxy(t *testing.T) {
 				Host:      "0.0.0.0",
 			},
 			expectErr: true,
-			errMsg:    "remoteURL is required",
+			errMsg:    "remoteUrl is required",
 		},
 		{
 			name: "missing name",

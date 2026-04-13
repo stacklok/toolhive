@@ -93,7 +93,7 @@ var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remote
 			By("verifying the API server rejects the resource")
 			err := k8sClient.Create(testCtx, proxy)
 			Expect(err).To(HaveOccurred(), "expected CRD validation to reject ftp:// URL")
-			Expect(err.Error()).To(ContainSubstring("remoteURL"))
+			Expect(err.Error()).To(ContainSubstring("remoteUrl"))
 		})
 	})
 

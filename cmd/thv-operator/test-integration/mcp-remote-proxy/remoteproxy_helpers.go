@@ -115,6 +115,26 @@ func (rb *RemoteProxyBuilder) WithExternalAuthConfigRef(name string) *RemoteProx
 	return rb
 }
 
+// WithAuthServerRef sets the AuthServerRef for the proxy
+func (rb *RemoteProxyBuilder) WithAuthServerRef(name string) *RemoteProxyBuilder {
+	rb.proxy.Spec.AuthServerRef = &mcpv1alpha1.AuthServerRef{
+		Kind: "MCPExternalAuthConfig",
+		Name: name,
+	}
+	return rb
+}
+
+// WithOIDCConfigRef sets the OIDCConfigRef for the proxy and clears
+// the inline OIDCConfig since they are mutually exclusive.
+func (rb *RemoteProxyBuilder) WithOIDCConfigRef(name, audience string) *RemoteProxyBuilder {
+	rb.proxy.Spec.OIDCConfig = nil
+	rb.proxy.Spec.OIDCConfigRef = &mcpv1alpha1.MCPOIDCConfigReference{
+		Name:     name,
+		Audience: audience,
+	}
+	return rb
+}
+
 // WithToolConfigRef sets the ToolConfigRef for the proxy
 func (rb *RemoteProxyBuilder) WithToolConfigRef(name string) *RemoteProxyBuilder {
 	rb.proxy.Spec.ToolConfigRef = &mcpv1alpha1.ToolConfigRef{

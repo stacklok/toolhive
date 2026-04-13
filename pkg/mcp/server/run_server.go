@@ -76,6 +76,15 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to enforce policy or pull image: %v", err)), nil
 	}
 
+	// Enforce policy eagerly for remote registry servers. EnforcePolicyAndPullImage
+	// returns nil immediately when serverMetadata.IsRemote() == true (it has no image
+	// to pull), so CheckCreateServer is never called for that case. Call
+	// EagerCheckCreateServer here so remote registry servers are blocked before state
+	// is persisted, matching the behaviour in runSingleServer and CreateWorkloadFromRequest.
+	if err := runner.EagerCheckCreateServer(ctx, runConfig); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Server creation blocked by policy: %v", err)), nil
+	}
+
 	// Save and run the server
 	if err := h.saveAndRunServer(ctx, runConfig, args.Name); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to run server: %v", err)), nil

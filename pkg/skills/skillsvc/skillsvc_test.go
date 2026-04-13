@@ -28,6 +28,7 @@ import (
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	ocimocks "github.com/stacklok/toolhive-core/oci/skills/mocks"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/groups"
 	groupmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	regmocks "github.com/stacklok/toolhive/pkg/registry/mocks"
@@ -376,10 +377,158 @@ func TestInstallWithExtraction(t *testing.T) {
 		_, err := svc.Install(t.Context(), skills.InstallOptions{
 			Name:      "my-skill",
 			LayerData: layerData,
-			Client:    "custom-client",
+			Clients:   []string{"custom-client"},
 			Digest:    "sha256:abc",
 		})
 		require.NoError(t, err)
+	})
+
+	t.Run("multiple clients fresh install", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		dirA := filepath.Join(t.TempDir(), "a", "my-skill")
+		dirB := filepath.Join(t.TempDir(), "b", "my-skill")
+		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
+		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+		inst.EXPECT().Extract(layerData, dirA, false).Return(&skills.ExtractResult{SkillDir: dirA, Files: 1}, nil)
+		inst.EXPECT().Extract(layerData, dirB, false).Return(&skills.ExtractResult{SkillDir: dirB, Files: 1}, nil)
+		store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, sk skills.InstalledSkill) error {
+				assert.ElementsMatch(t, []string{"claude-code", "opencode"}, sk.Clients)
+				return nil
+			})
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"claude-code", "opencode"},
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("same digest adds second client without re-extracting first", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		dirA := filepath.Join(t.TempDir(), "a")
+		dirB := filepath.Join(t.TempDir(), "b")
+		existing := skills.InstalledSkill{
+			Metadata: skills.SkillMetadata{Name: "my-skill"},
+			Digest:   "sha256:abc",
+			Clients:  []string{"claude-code"},
+		}
+		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
+		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
+		inst.EXPECT().Extract(layerData, dirB, false).Return(&skills.ExtractResult{SkillDir: dirB, Files: 1}, nil)
+		store.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, sk skills.InstalledSkill) error {
+				assert.ElementsMatch(t, []string{"claude-code", "opencode"}, sk.Clients)
+				return nil
+			})
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"claude-code", "opencode"},
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("invalid client returns bad request", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+
+		pr.EXPECT().GetSkillPath("not-a-real-client", "my-skill", skills.ScopeUser, "").Return("", fmt.Errorf("%w: not-a-real-client", client.ErrUnsupportedClientType))
+
+		svc := New(store, WithPathResolver(pr))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"not-a-real-client"},
+		})
+		require.Error(t, err)
+		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+	})
+
+	t.Run("empty string in clients list returns bad request", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+
+		svc := New(store, WithPathResolver(pr))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"claude-code", ""},
+		})
+		require.Error(t, err)
+		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+	})
+
+	t.Run("clients all sentinel expands to every skill-supporting client", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		dirA := filepath.Join(t.TempDir(), "a", "my-skill")
+		dirB := filepath.Join(t.TempDir(), "b", "my-skill")
+		pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code", "opencode"})
+		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
+		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+		inst.EXPECT().Extract(layerData, dirA, false).Return(&skills.ExtractResult{SkillDir: dirA, Files: 1}, nil)
+		inst.EXPECT().Extract(layerData, dirB, false).Return(&skills.ExtractResult{SkillDir: dirB, Files: 1}, nil)
+		store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, sk skills.InstalledSkill) error {
+				assert.ElementsMatch(t, []string{"claude-code", "opencode"}, sk.Clients)
+				return nil
+			})
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"all"},
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("all sentinel mixed with named client returns bad request", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+
+		svc := New(store, WithPathResolver(pr))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"all", "opencode"},
+		})
+		require.Error(t, err)
+		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
 	})
 
 	t.Run("fresh install rolls back extraction on store.Create failure", func(t *testing.T) {
@@ -437,6 +586,274 @@ func TestInstallWithExtraction(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "db update error")
+	})
+
+	t.Run("multi-client fresh install rolls back first client on second extract failure", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		dirA := filepath.Join(t.TempDir(), "a", "my-skill")
+		dirB := filepath.Join(t.TempDir(), "b", "my-skill")
+		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
+		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").
+			Return(skills.InstalledSkill{}, storage.ErrNotFound)
+		inst.EXPECT().Extract(layerData, dirA, false).
+			Return(&skills.ExtractResult{SkillDir: dirA, Files: 1}, nil)
+		inst.EXPECT().Extract(layerData, dirB, false).
+			Return(nil, fmt.Errorf("disk full"))
+		inst.EXPECT().Remove(dirA).Return(nil)
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"claude-code", "opencode"},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "disk full")
+	})
+
+	t.Run("upgrade digest rolls back written clients on second extract failure", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		dirA := filepath.Join(t.TempDir(), "a", "my-skill")
+		dirB := filepath.Join(t.TempDir(), "b", "my-skill")
+		existing := skills.InstalledSkill{
+			Metadata: skills.SkillMetadata{Name: "my-skill"},
+			Digest:   "sha256:old",
+			Clients:  []string{"claude-code"},
+		}
+		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
+		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
+		inst.EXPECT().Extract(layerData, dirA, true).
+			Return(&skills.ExtractResult{SkillDir: dirA, Files: 1}, nil)
+		inst.EXPECT().Extract(layerData, dirB, true).
+			Return(nil, fmt.Errorf("write error"))
+		inst.EXPECT().Remove(dirA).Return(nil)
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:new",
+			Clients:   []string{"claude-code", "opencode"},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "write error")
+	})
+
+	t.Run("upgrade digest rolls back all clients on store.Update failure", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		dirA := filepath.Join(t.TempDir(), "a", "my-skill")
+		dirB := filepath.Join(t.TempDir(), "b", "my-skill")
+		existing := skills.InstalledSkill{
+			Metadata: skills.SkillMetadata{Name: "my-skill"},
+			Digest:   "sha256:old",
+			Clients:  []string{"claude-code"},
+		}
+		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
+		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
+		inst.EXPECT().Extract(layerData, dirA, true).
+			Return(&skills.ExtractResult{SkillDir: dirA, Files: 1}, nil)
+		inst.EXPECT().Extract(layerData, dirB, true).
+			Return(&skills.ExtractResult{SkillDir: dirB, Files: 1}, nil)
+		store.EXPECT().Update(gomock.Any(), gomock.Any()).Return(fmt.Errorf("db failure"))
+		inst.EXPECT().Remove(dirA).Return(nil)
+		inst.EXPECT().Remove(dirB).Return(nil)
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:new",
+			Clients:   []string{"claude-code", "opencode"},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "db failure")
+	})
+
+	t.Run("same digest new client rolls back on extract failure", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		dirA := filepath.Join(t.TempDir(), "a", "my-skill")
+		dirB := filepath.Join(t.TempDir(), "b", "my-skill")
+		existing := skills.InstalledSkill{
+			Metadata: skills.SkillMetadata{Name: "my-skill"},
+			Digest:   "sha256:abc",
+			Clients:  []string{"claude-code"},
+		}
+		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
+		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
+		inst.EXPECT().Extract(layerData, dirB, false).Return(nil, fmt.Errorf("extract boom"))
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"claude-code", "opencode"},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "extract boom")
+	})
+
+	t.Run("same digest new client rolls back on store.Update failure", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		dirA := filepath.Join(t.TempDir(), "a", "my-skill")
+		dirB := filepath.Join(t.TempDir(), "b", "my-skill")
+		existing := skills.InstalledSkill{
+			Metadata: skills.SkillMetadata{Name: "my-skill"},
+			Digest:   "sha256:abc",
+			Clients:  []string{"claude-code"},
+		}
+		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
+		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
+		inst.EXPECT().Extract(layerData, dirB, false).
+			Return(&skills.ExtractResult{SkillDir: dirB, Files: 1}, nil)
+		store.EXPECT().Update(gomock.Any(), gomock.Any()).Return(fmt.Errorf("db update boom"))
+		inst.EXPECT().Remove(dirB).Return(nil)
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"claude-code", "opencode"},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "db update boom")
+	})
+
+	t.Run("same digest new client unmanaged dir conflict", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		dirA := filepath.Join(t.TempDir(), "a", "my-skill")
+		dirB := filepath.Join(t.TempDir(), "b", "my-skill")
+		require.NoError(t, os.MkdirAll(dirB, 0o750))
+
+		existing := skills.InstalledSkill{
+			Metadata: skills.SkillMetadata{Name: "my-skill"},
+			Digest:   "sha256:abc",
+			Clients:  []string{"claude-code"},
+		}
+		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
+		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		_, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"claude-code", "opencode"},
+		})
+		require.Error(t, err)
+		assert.Equal(t, http.StatusConflict, httperr.Code(err))
+		assert.Contains(t, err.Error(), "not managed by ToolHive")
+	})
+
+	t.Run("legacy row with explicit client is not a no-op", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		dirB := filepath.Join(t.TempDir(), "b", "my-skill")
+		existing := skills.InstalledSkill{
+			Metadata: skills.SkillMetadata{Name: "my-skill"},
+			Digest:   "sha256:abc",
+			Clients:  []string{},
+		}
+		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
+		inst.EXPECT().Extract(layerData, dirB, false).
+			Return(&skills.ExtractResult{SkillDir: dirB, Files: 1}, nil)
+		store.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, sk skills.InstalledSkill) error {
+				assert.Contains(t, sk.Clients, "opencode")
+				return nil
+			})
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		result, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"opencode"},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "my-skill", result.Skill.Metadata.Name)
+	})
+
+	t.Run("upgrade extracts to all existing clients not just requested", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockSkillStore(ctrl)
+		pr := skillsmocks.NewMockPathResolver(ctrl)
+		inst := skillsmocks.NewMockInstaller(ctrl)
+
+		dirA := filepath.Join(t.TempDir(), "a", "my-skill")
+		dirB := filepath.Join(t.TempDir(), "b", "my-skill")
+		existing := skills.InstalledSkill{
+			Metadata: skills.SkillMetadata{Name: "my-skill"},
+			Digest:   "sha256:old",
+			Clients:  []string{"claude-code"},
+		}
+		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
+		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
+		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
+		inst.EXPECT().Extract(layerData, dirB, true).
+			Return(&skills.ExtractResult{SkillDir: dirB, Files: 1}, nil)
+		inst.EXPECT().Extract(layerData, dirA, true).
+			Return(&skills.ExtractResult{SkillDir: dirA, Files: 1}, nil)
+		store.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, sk skills.InstalledSkill) error {
+				assert.ElementsMatch(t, []string{"opencode", "claude-code"}, sk.Clients)
+				assert.Equal(t, "sha256:new", sk.Digest)
+				return nil
+			})
+
+		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
+		result, err := svc.Install(t.Context(), skills.InstallOptions{
+			Name:      "my-skill",
+			LayerData: layerData,
+			Digest:    "sha256:new",
+			Clients:   []string{"opencode"},
+		})
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"opencode", "claude-code"}, result.Skill.Clients)
 	})
 }
 
@@ -612,7 +1029,7 @@ func TestInstallFromOCI(t *testing.T) {
 		},
 		{
 			name: "successful pull and install",
-			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1", Client: "claude-code"},
+			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1", Clients: []string{"claude-code"}},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
 				ociStore, err := ociskills.NewStore(tempDir(t))
@@ -646,7 +1063,7 @@ func TestInstallFromOCI(t *testing.T) {
 		},
 		{
 			name: "name mismatch between artifact and reference is rejected",
-			opts: skills.InstallOptions{Name: "ghcr.io/org/some-repo:v1", Client: "claude-code"},
+			opts: skills.InstallOptions{Name: "ghcr.io/org/some-repo:v1", Clients: []string{"claude-code"}},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
 				ociStore, err := ociskills.NewStore(tempDir(t))
@@ -666,7 +1083,7 @@ func TestInstallFromOCI(t *testing.T) {
 		},
 		{
 			name: "preserves caller version over config version",
-			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1", Version: "override-version", Client: "claude-code"},
+			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1", Version: "override-version", Clients: []string{"claude-code"}},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
 				ociStore, err := ociskills.NewStore(tempDir(t))
@@ -694,7 +1111,7 @@ func TestInstallFromOCI(t *testing.T) {
 		},
 		{
 			name: "hydrates version from config when caller omits it",
-			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1", Client: "claude-code"},
+			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1", Clients: []string{"claude-code"}},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
 				ociStore, err := ociskills.NewStore(tempDir(t))
@@ -793,7 +1210,7 @@ func TestInstallFromLocalStore(t *testing.T) {
 	}{
 		{
 			name: "happy path: build then install",
-			opts: skills.InstallOptions{Name: "my-skill", Client: "claude-code"},
+			opts: skills.InstallOptions{Name: "my-skill", Clients: []string{"claude-code"}},
 			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
 				t.Helper()
 				ociStore, err := ociskills.NewStore(tempDir(t))

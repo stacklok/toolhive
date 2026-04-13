@@ -125,6 +125,13 @@ func createValidatingHandler(executors []clientExecutor, serverName, transport s
 
 				resp, err := exec.client.Call(r.Context(), whReq)
 				if err != nil {
+					if webhook.IsAlwaysDenyError(err) {
+						slog.Info("Validating webhook denied request due to HTTP 422 response",
+							"webhook", whName, "error", err)
+						sendErrorResponse(w, http.StatusForbidden, "Request denied by policy", parsedMCP.ID)
+						return
+					}
+
 					// Handle error based on failure policy
 					if exec.config.FailurePolicy == webhook.FailurePolicyIgnore {
 						slog.Warn("Validating webhook error ignored due to fail-open policy",

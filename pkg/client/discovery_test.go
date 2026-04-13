@@ -121,11 +121,14 @@ func TestGetClientStatus(t *testing.T) {
 			SkillsProjectPath: []string{".cursor", "skills"},
 		},
 		{
-			ClientType:   VSCode,
-			Description:  "Visual Studio Code (Test)",
-			SettingsFile: "mcp.json",
-			RelPath:      []string{".config", "Code", "User"}, // This path won't exist in test
-			Extension:    JSON,
+			ClientType:        VSCode,
+			Description:       "Visual Studio Code (Test)",
+			SettingsFile:      "mcp.json",
+			RelPath:           []string{".config", "Code", "User"}, // This path won't exist in test
+			Extension:         JSON,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".copilot", "skills"},
+			SkillsProjectPath: []string{".github", "skills"},
 		},
 	}
 
@@ -157,7 +160,7 @@ func TestGetClientStatus(t *testing.T) {
 	assert.True(t, exists)
 	assert.False(t, vscodeStatus.Installed)
 	assert.False(t, vscodeStatus.Registered)
-	assert.False(t, vscodeStatus.SupportsSkills)
+	assert.True(t, vscodeStatus.SupportsSkills)
 }
 
 func TestGetClientStatus_Sorting(t *testing.T) {

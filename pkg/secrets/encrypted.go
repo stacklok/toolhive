@@ -82,7 +82,7 @@ func (e *EncryptedManager) DeleteSecret(_ context.Context, name string) error {
 			return err
 		}
 		if _, ok := secrets[name]; !ok {
-			return fmt.Errorf("cannot delete non-existent secret: %s", name)
+			return fmt.Errorf("%w: %s", ErrSecretNotFound, name)
 		}
 		delete(secrets, name)
 		return e.writeFileSecrets(secrets)

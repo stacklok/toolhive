@@ -162,6 +162,12 @@ func (c *ValidatingCache[K, V]) Set(key K, value V) {
 	c.lruCache.Add(key, value)
 }
 
+// Delete removes the entry for key from the cache, invoking onEvict if the key
+// was present. It is a no-op if the key does not exist.
+func (c *ValidatingCache[K, V]) Delete(key K) {
+	c.lruCache.Remove(key)
+}
+
 // Len returns the number of entries currently in the cache.
 func (c *ValidatingCache[K, V]) Len() int {
 	return c.lruCache.Len()

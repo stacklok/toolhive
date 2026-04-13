@@ -22,8 +22,8 @@ import (
 )
 
 // countReadyPods returns the number of Running+Ready pods for a VirtualMCPServer.
-func countReadyPods(vmcpName, namespace string) (int, error) {
-	podList, err := GetVirtualMCPServerPods(ctx, k8sClient, vmcpName, namespace)
+func countReadyPods(vmcpName string) (int, error) {
+	podList, err := GetVirtualMCPServerPods(ctx, k8sClient, vmcpName, defaultNamespace)
 	if err != nil {
 		return 0, err
 	}
@@ -43,9 +43,8 @@ func countReadyPods(vmcpName, namespace string) (int, error) {
 
 var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 	const (
-		timeout          = time.Minute * 5
-		pollInterval     = time.Second * 2
-		defaultNamespace = "default"
+		timeout      = time.Minute * 5
+		pollInterval = time.Second * 2
 	)
 
 	// -------------------------------------------------------------------------
@@ -124,7 +123,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 		ginkgo.It("Should eventually run 2 ready pods", func() {
 			ginkgo.By("Waiting for 2 pods to become Running+Ready")
 			gomega.Eventually(func() (int, error) {
-				return countReadyPods(vmcpName, defaultNamespace)
+				return countReadyPods(vmcpName)
 			}, timeout, pollInterval).Should(gomega.Equal(2))
 		})
 
@@ -217,7 +216,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 
 		ginkgo.It("Should initially have 1 running pod and no SessionStorageWarning", func() {
 			gomega.Eventually(func() (int, error) {
-				return countReadyPods(vmcpName, defaultNamespace)
+				return countReadyPods(vmcpName)
 			}, timeout, pollInterval).Should(gomega.Equal(1))
 
 			WaitForCondition(ctx, k8sClient, vmcpName, defaultNamespace,
@@ -251,7 +250,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 
 			ginkgo.By("Verifying 2 pods become ready")
 			gomega.Eventually(func() (int, error) {
-				return countReadyPods(vmcpName, defaultNamespace)
+				return countReadyPods(vmcpName)
 			}, timeout, pollInterval).Should(gomega.Equal(2))
 
 			ginkgo.By("Verifying SessionStorageWarning is now set")

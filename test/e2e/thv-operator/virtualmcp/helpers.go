@@ -34,6 +34,13 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/thv-operator/testutil"
 )
 
+// Shared test constants used across all e2e test files in this package.
+const (
+	defaultNamespace = "default"
+	e2eTimeout       = 5 * time.Minute
+	e2ePollInterval  = 2 * time.Second
+)
+
 // WaitForVirtualMCPServerReady waits for a VirtualMCPServer to reach Ready status
 // and ensures at least one associated pod is actually running and ready.
 // This is used when waiting for a single expected pod (e.g., one replica deployment).
@@ -828,7 +835,7 @@ func GetVMCPNodePort(
 		}
 
 		// Verify the HTTP server is ready to handle requests
-		if err := checkHTTPHealthReady(nodePort, 2*time.Second); err != nil {
+		if err := checkHTTPHealthReady(nodePort); err != nil {
 			return fmt.Errorf("nodePort %d accessible but HTTP server not ready: %w", nodePort, err)
 		}
 
@@ -854,8 +861,8 @@ func checkPortAccessible(nodePort int32, timeout time.Duration) error {
 
 // checkHTTPHealthReady verifies the HTTP server is ready by checking the /health endpoint.
 // This is more reliable than just TCP check as it ensures the application is serving requests.
-func checkHTTPHealthReady(nodePort int32, timeout time.Duration) error {
-	httpClient := &http.Client{Timeout: timeout}
+func checkHTTPHealthReady(nodePort int32) error {
+	httpClient := &http.Client{Timeout: 2 * time.Second}
 	url := fmt.Sprintf("http://localhost:%d/health", nodePort)
 
 	resp, err := httpClient.Get(url)

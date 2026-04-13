@@ -515,3 +515,65 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentMisses(t *testing.T)
 		assert.Equal(t, "v", results[i])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Delete
+// ---------------------------------------------------------------------------
+
+func TestValidatingCache_Delete_EntryIsGone(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	c := newStringCache(
+		func(_ string) (string, error) { calls++; return "v", nil },
+		alwaysAliveCheck,
+		nil,
+	)
+
+	c.Get("k") //nolint:errcheck // prime the cache
+	require.Equal(t, 1, calls)
+
+	c.Delete("k")
+
+	// Entry must be gone: Get triggers load again.
+	v, ok := c.Get("k")
+	require.True(t, ok)
+	assert.Equal(t, "v", v)
+	assert.Equal(t, 2, calls, "load must be called again after Delete")
+}
+
+func TestValidatingCache_Delete_InvokesOnEvict(t *testing.T) {
+	t.Parallel()
+
+	evictedKey := ""
+	evictedVal := ""
+	c := newStringCache(
+		func(_ string) (string, error) { return "v", nil },
+		alwaysAliveCheck,
+		func(key, val string) {
+			evictedKey = key
+			evictedVal = val
+		},
+	)
+
+	c.Get("k") //nolint:errcheck // prime the cache
+	c.Delete("k")
+
+	assert.Equal(t, "k", evictedKey)
+	assert.Equal(t, "v", evictedVal)
+}
+
+func TestValidatingCache_Delete_NoopOnMissingKey(t *testing.T) {
+	t.Parallel()
+
+	evictCalled := false
+	c := newStringCache(
+		func(_ string) (string, error) { return "v", nil },
+		alwaysAliveCheck,
+		func(_, _ string) { evictCalled = true },
+	)
+
+	// Delete a key that was never stored — must not panic or call onEvict.
+	c.Delete("nonexistent")
+	assert.False(t, evictCalled)
+}

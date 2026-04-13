@@ -100,15 +100,6 @@ type MCPRegistrySpec struct {
 	// +optional
 	DisplayName string `json:"displayName,omitempty"`
 
-	// EnforceServers indicates whether MCPServers in this namespace must have their images
-	// present in at least one registry in the namespace. When any registry in the namespace
-	// has this field set to true, enforcement is enabled for the entire namespace.
-	// MCPServers with images not found in any registry will be rejected.
-	// When false (default), MCPServers can be deployed regardless of registry presence.
-	// +kubebuilder:default=false
-	// +optional
-	EnforceServers bool `json:"enforceServers,omitempty"`
-
 	// PodTemplateSpec defines the pod template to use for the registry API server.
 	// This allows for customizing the pod configuration beyond what is provided by the other fields.
 	// Note that to modify the specific container the registry API server runs in, you must specify
@@ -201,11 +192,6 @@ type MCPRegistryList struct {
 	metav1.TypeMeta `json:",inline"` // nolint:revive
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []MCPRegistry `json:"items"`
-}
-
-// GetStorageName returns the name used for registry storage resources
-func (r *MCPRegistry) GetStorageName() string {
-	return fmt.Sprintf("%s-registry-storage", r.Name)
 }
 
 // GetAPIResourceName returns the base name for registry API resources (deployment, service)

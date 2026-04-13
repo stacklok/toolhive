@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+// Package validation provides validation functionality for the ToolHive operator.
 package validation
 
 import (

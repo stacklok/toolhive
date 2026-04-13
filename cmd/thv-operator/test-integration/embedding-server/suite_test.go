@@ -26,7 +26,6 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
 var (
@@ -102,7 +101,6 @@ var _ = BeforeSuite(func() {
 		Scheme:           k8sManager.GetScheme(),
 		Recorder:         k8sManager.GetEventRecorder("embeddingserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-		ImageValidation:  validation.ImageValidationAlwaysAllow,
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 

@@ -8,7 +8,6 @@ package controllers
 import (
 	"context"
 	"encoding/json"
-	goerr "errors"
 	"fmt"
 	"maps"
 	"os"
@@ -49,7 +48,6 @@ type MCPServerReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
-	ImageValidation  validation.ImageValidation
 }
 
 // defaultRBACRules are the default RBAC rules that the
@@ -290,58 +288,6 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPOIDCConfig error")
 		}
 		return ctrl.Result{}, err
-	}
-
-	// Validate MCPServer image against enforcing registries
-	imageValidator := validation.NewImageValidator(r.Client, mcpServer.Namespace, r.ImageValidation)
-	err = imageValidator.ValidateImage(ctx, mcpServer.Spec.Image, mcpServer.ObjectMeta)
-	if goerr.Is(err, validation.ErrImageNotChecked) {
-		ctxLogger.Info("Image validation skipped - no enforcement configured")
-		// Set condition to indicate validation was skipped
-		setImageValidationCondition(mcpServer, metav1.ConditionTrue,
-			mcpv1alpha1.ConditionReasonImageValidationSkipped,
-			"Image validation was not performed (no enforcement configured)")
-		// Update status to persist the condition
-		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update MCPServer status after image validation")
-		}
-	} else if goerr.Is(err, validation.ErrImageInvalid) {
-		ctxLogger.Error(err, "MCPServer image validation failed", "image", mcpServer.Spec.Image)
-		// Update status to reflect validation failure
-		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
-		mcpServer.Status.Message = err.Error() // Gets the specific validation failure reason
-		setImageValidationCondition(mcpServer, metav1.ConditionFalse,
-			mcpv1alpha1.ConditionReasonImageValidationFailed,
-			err.Error()) // This will include the wrapped error context with specific reason
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
-		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update MCPServer status after validation error")
-		}
-		// Requeue after 5 minutes to retry validation
-		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
-	} else if err != nil {
-		// Other system/infrastructure errors
-		ctxLogger.Error(err, "MCPServer image validation system error", "image", mcpServer.Spec.Image)
-		setImageValidationCondition(mcpServer, metav1.ConditionFalse,
-			mcpv1alpha1.ConditionReasonImageValidationError,
-			fmt.Sprintf("Error checking image validity: %v", err))
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady,
-			fmt.Sprintf("Error checking image validity: %v", err))
-		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update MCPServer status after validation error")
-		}
-		// Requeue after 5 minutes to retry validation
-		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
-	} else {
-		// Validation passed
-		ctxLogger.Info("Image validation passed", "image", mcpServer.Spec.Image)
-		setImageValidationCondition(mcpServer, metav1.ConditionTrue,
-			mcpv1alpha1.ConditionReasonImageValidationSuccess,
-			"Image validation passed - image found in enforced registries")
-		// Update status to persist the condition
-		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update MCPServer status after image validation")
-		}
 	}
 
 	// Update the MCPServer status with the pod status
@@ -683,18 +629,6 @@ func (r *MCPServerReconciler) updateCABundleStatus(ctx context.Context, mcpServe
 	if err := r.Status().Update(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to update MCPServer status after CABundleRef validation")
 	}
-}
-
-// setImageValidationCondition is a helper function to set the image validation status condition
-// This reduces code duplication in the image validation logic
-func setImageValidationCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
-	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionImageValidated,
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		ObservedGeneration: mcpServer.Generation,
-	})
 }
 
 // setReadyCondition sets the top-level Ready status condition.

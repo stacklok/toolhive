@@ -987,6 +987,7 @@ kubectl get configmap company-registry-storage -o jsonpath='{.data.registry\.jso
 - [Deployment Modes](01-deployment-modes.md) - Registry usage per mode
 - [Groups](07-groups.md) - Groups in registry
 - [Operator Architecture](09-operator-architecture.md) - MCPRegistry CRD
+- [Skills System](12-skills-system.md) - Skills discovery and distribution via registry
 
 ### External Documentation
 - [ToolHive User Documentation](https://docs.stacklok.com/toolhive/) - User-facing guides

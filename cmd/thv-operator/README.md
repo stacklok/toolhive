@@ -25,8 +25,7 @@ Represents an MCP server registry in Kubernetes. When you create an `MCPRegistry
 
 1. Synchronizes registry data from various sources (ConfigMap, Git)
 2. Deploys a Registry API service for server discovery
-3. Provides image validation
-4. Manages automatic and manual synchronization policies
+3. Manages automatic and manual synchronization policies
 
 For detailed MCPRegistry documentation, see [REGISTRY.md](REGISTRY.md).
 

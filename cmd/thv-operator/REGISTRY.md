@@ -99,16 +99,16 @@ metadata:
 
 ### Sync Status
 
-Check sync status:
+Check registry status:
 ```bash
-kubectl get mcpregistry my-registry -o jsonpath='{.status.syncStatus}'
+kubectl get mcpregistry my-registry -o jsonpath='{.status.phase}'
 ```
 
 Status phases:
-- `Idle`: No sync needed
-- `Syncing`: Sync in progress
-- `Complete`: Sync completed successfully
-- `Failed`: Sync failed (check `.status.syncStatus.message`)
+- `Pending`: Registry API deployment is not ready yet
+- `Ready`: Registry API is ready and serving requests
+- `Failed`: Operation failed (check `.status.message`)
+- `Terminating`: Being deleted
 
 ## Data Sources
 
@@ -360,15 +360,15 @@ curl http://localhost:8080/servers
 
 ### API Status
 
-Check API deployment status:
+Check API endpoint:
 ```bash
-kubectl get mcpregistry my-registry -o jsonpath='{.status.apiStatus}'
+kubectl get mcpregistry my-registry -o jsonpath='{.status.url}'
 ```
 
-API phases:
-- `Deploying`: API deployment in progress
-- `Ready`: API service is available
-- `Error`: API deployment failed
+Check ready replicas:
+```bash
+kubectl get mcpregistry my-registry -o jsonpath='{.status.readyReplicas}'
+```
 
 ## Status Management
 
@@ -394,24 +394,15 @@ Phases:
 ```yaml
 status:
   phase: Ready
-  message: "Registry is ready and API is serving requests"
-  syncStatus:
-    phase: Complete
-    message: "Registry data synchronized successfully"
-    serverCount: 5
-    lastSyncTime: "2025-01-14T10:30:00Z"
-    lastSyncHash: "abc123"
-  apiStatus:
-    phase: Ready
-    endpoint: "http://my-registry-api.toolhive-system.svc.cluster.local:8080"
-    readySince: "2025-01-14T10:25:00Z"
+  message: "Registry API is ready and serving requests"
+  url: "http://my-registry-api.toolhive-system:8080"
+  readyReplicas: 1
+  observedGeneration: 1
   conditions:
-    - type: SyncSuccessful
+    - type: Ready
       status: "True"
-      reason: SyncComplete
-    - type: APIReady
-      status: "True"
-      reason: DeploymentReady
+      reason: RegistryReady
+      message: "Registry API is ready and serving requests"
 ```
 
 ## Security Best Practices
@@ -455,8 +446,8 @@ stringData:
 
 **Sync Failures**:
 ```bash
-# Check sync status
-kubectl get mcpregistry my-registry -o jsonpath='{.status.syncStatus.message}'
+# Check registry status message
+kubectl get mcpregistry my-registry -o jsonpath='{.status.message}'
 
 # Common causes:
 # - Invalid ConfigMap/Git source
@@ -466,8 +457,8 @@ kubectl get mcpregistry my-registry -o jsonpath='{.status.syncStatus.message}'
 
 **API Not Ready**:
 ```bash
-# Check API status
-kubectl get mcpregistry my-registry -o jsonpath='{.status.apiStatus}'
+# Check phase and message
+kubectl get mcpregistry my-registry -o jsonpath='{.status.phase}: {.status.message}'
 
 # Check deployment
 kubectl get deployment my-registry-api

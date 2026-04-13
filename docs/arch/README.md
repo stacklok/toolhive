@@ -183,7 +183,7 @@ graph TB
     style Operator fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style vMCP fill:#e0f2f1,stroke:#004d40,stroke-width:2px
     style AuthStorage fill:#e0f2f1,stroke:#004d40,stroke-width:2px
-    style Skills fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    style Skills fill:#e8eaf6,stroke:#283593,stroke-width:2px
 ```
 
 **Color Legend:**
@@ -193,6 +193,7 @@ graph TB
 - 🟠 **Orange (Configuration & Security)**: Security model and configuration management
 - 🔴 **Pink (Distribution & Organization)**: How servers are cataloged and organized
 - 🟦 **Teal (Runtime Management)**: Lifecycle and cluster management
+- 🔷 **Indigo (Agent Skills)**: Skills lifecycle and distribution system
 
 **Navigation Paths:**
 - **For first-time readers**: Follow the arrows from Overview → Concepts → your area of interest

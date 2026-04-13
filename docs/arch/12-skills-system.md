@@ -105,7 +105,7 @@ Instructions for how the AI assistant should perform code reviews...
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | Yes | 2-64 lowercase alphanumeric chars + hyphens |
+| `name` | Yes | 2-64 chars; lowercase alphanumeric and hyphens; must start and end with alphanumeric; no consecutive hyphens |
 | `description` | Yes | Human-readable description (max 1024 chars) |
 | `version` | No | Semantic version |
 | `allowed-tools` | No | Space or comma-delimited tool names |
@@ -130,7 +130,7 @@ Skills install to one of two scopes:
 - Requires `--project-root` or auto-detected git root
 - Useful for project-specific conventions and workflows
 
-**Implementation:** `pkg/skills/types.go` (Scope), `pkg/skills/path_resolver.go`
+**Implementation:** `pkg/skills/types.go` (Scope, PathResolver)
 
 ### Multi-Client Support
 
@@ -142,9 +142,6 @@ thv skill install code-review
 
 # Install for specific client
 thv skill install code-review --client claude-code
-
-# Install for multiple clients at once
-thv skill install code-review --clients claude-code,cursor
 ```
 
 The `PathResolver` interface maps (client, skill-name, scope, project-root) to the correct filesystem path for each client.
@@ -247,7 +244,7 @@ flowchart TD
 
 3. **Supply chain validation**: For OCI installs, the skill name in the artifact must match the repository name in the reference.
 
-4. **Multi-client install**: When `--clients all` is specified, the skill is installed for every skill-supporting client in a single operation.
+4. **Client targeting**: When no `--client` flag is provided, the first skill-supporting client is used by default. Specify `--client claude-code` to target a particular client.
 
 **Implementation:** `pkg/skills/skillsvc/skillsvc.go` (Install)
 
@@ -274,7 +271,7 @@ git://github.com/org/repo@main#skills/my-skill  # Branch + subdirectory
 
 **Resolution process:**
 1. Parse the git reference (host, repo, ref, path)
-2. Resolve authentication (host-scoped: `GITHUB_TOKEN` for github.com, `GITLAB_TOKEN` for gitlab.com, `GIT_TOKEN` as fallback)
+2. Resolve authentication (`GITHUB_TOKEN` for github.com, `GITLAB_TOKEN` for gitlab.com — both host-scoped to prevent credential exfiltration; `GIT_TOKEN` as an unscoped fallback sent to any host)
 3. Clone the repository (2-minute timeout, shallow clone)
 4. Extract the skill directory files
 5. Validate and install as normal
@@ -285,30 +282,47 @@ git://github.com/org/repo@main#skills/my-skill  # Branch + subdirectory
 
 ## Storage
 
-Skill installation records are persisted in SQLite:
+Skill installation records are persisted in SQLite across four tables. The `entries` table is a shared parent for all entry types (skills share it with future entry kinds); `installed_skills` holds skill-specific columns and references `entries` via a foreign key; `oci_tags` caches OCI reference-to-digest mappings for upgrade detection and deduplication:
 
 ```
-skills table
+entries table
+├── id             (INTEGER PRIMARY KEY)
+├── entry_type     (TEXT, e.g. "skill")
+├── name           (TEXT, skill name)
+├── created_at     (TEXT, ISO 8601)
+├── updated_at     (TEXT, ISO 8601)
+└── UNIQUE(entry_type, name)
+
+installed_skills table
+├── id             (INTEGER PRIMARY KEY)
+├── entry_id       (FK → entries.id, CASCADE delete)
 ├── scope          (user | project)
 ├── project_root   (path, empty for user scope)
-├── skill_name     (unique name)
-├── client         (target client app)
 ├── reference      (OCI ref or git URL)
+├── tag            (OCI tag)
 ├── digest         (OCI digest for upgrade detection)
+├── version        (semantic version)
+├── description    (TEXT)
+├── author         (TEXT)
+├── tags           (BLOB, JSONB-encoded []string)
+├── client_apps    (BLOB, JSONB-encoded []string)
 ├── status         (installed | pending | failed)
-├── installed_at   (timestamp)
-├── metadata_json  (name, version, description, author, tags)
-└── UNIQUE(scope, project_root, skill_name, client)
+├── installed_at   (TEXT, ISO 8601)
+└── UNIQUE(entry_id, scope, project_root)
 
 skill_dependencies table
-├── skill_name
-├── scope
-├── project_root
-├── dep_reference  (OCI ref)
-└── dep_digest
+├── installed_skill_id  (FK → installed_skills.id, CASCADE delete)
+├── dep_name            (TEXT)
+├── dep_reference       (OCI ref)
+├── dep_digest          (TEXT)
+└── PRIMARY KEY(installed_skill_id, dep_reference)
+
+oci_tags table
+├── reference  (TEXT, PRIMARY KEY — OCI reference string)
+└── digest     (TEXT NOT NULL — content digest)
 ```
 
-**Implementation:** `pkg/storage/sqlite/skill_store.go`, `pkg/storage/interfaces.go` (SkillStore)
+**Implementation:** `pkg/storage/sqlite/skill_store.go`, `pkg/storage/interfaces.go` (SkillStore), `pkg/storage/sqlite/migrations/001_create_entries_and_skills.sql`
 
 ## API
 

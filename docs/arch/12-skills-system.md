@@ -142,9 +142,6 @@ thv skill install code-review
 
 # Install for specific client
 thv skill install code-review --client claude-code
-
-# Install for multiple clients at once
-thv skill install code-review --clients claude-code,cursor
 ```
 
 The `PathResolver` interface maps (client, skill-name, scope, project-root) to the correct filesystem path for each client.
@@ -247,7 +244,7 @@ flowchart TD
 
 3. **Supply chain validation**: For OCI installs, the skill name in the artifact must match the repository name in the reference.
 
-4. **Multi-client install**: When `--clients all` is specified, the skill is installed for every skill-supporting client in a single operation.
+4. **Client targeting**: When no `--client` flag is provided, the first skill-supporting client is used by default. Specify `--client claude-code` to target a particular client.
 
 **Implementation:** `pkg/skills/skillsvc/skillsvc.go` (Install)
 
@@ -285,7 +282,7 @@ git://github.com/org/repo@main#skills/my-skill  # Branch + subdirectory
 
 ## Storage
 
-Skill installation records are persisted in SQLite across three tables. The `entries` table is a shared parent for all entry types (skills share it with future entry kinds); `installed_skills` holds skill-specific columns and references `entries` via a foreign key:
+Skill installation records are persisted in SQLite across four tables. The `entries` table is a shared parent for all entry types (skills share it with future entry kinds); `installed_skills` holds skill-specific columns and references `entries` via a foreign key; `oci_tags` caches OCI reference-to-digest mappings for upgrade detection and deduplication:
 
 ```
 entries table
@@ -319,6 +316,10 @@ skill_dependencies table
 ├── dep_reference       (OCI ref)
 ├── dep_digest          (TEXT)
 └── PRIMARY KEY(installed_skill_id, dep_reference)
+
+oci_tags table
+├── reference  (TEXT, PRIMARY KEY — OCI reference string)
+└── digest     (TEXT NOT NULL — content digest)
 ```
 
 **Implementation:** `pkg/storage/sqlite/skill_store.go`, `pkg/storage/interfaces.go` (SkillStore), `pkg/storage/sqlite/migrations/001_create_entries_and_skills.sql`

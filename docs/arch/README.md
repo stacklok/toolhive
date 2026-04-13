@@ -193,7 +193,7 @@ graph TB
 - 🟠 **Orange (Configuration & Security)**: Security model and configuration management
 - 🔴 **Pink (Distribution & Organization)**: How servers are cataloged and organized
 - 🟦 **Teal (Runtime Management)**: Lifecycle and cluster management
-- 🔵 **Indigo (Agent Skills)**: Skills lifecycle and distribution system
+- 🔷 **Indigo (Agent Skills)**: Skills lifecycle and distribution system
 
 **Navigation Paths:**
 - **For first-time readers**: Follow the arrows from Overview → Concepts → your area of interest

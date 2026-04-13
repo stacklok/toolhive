@@ -475,7 +475,7 @@ func (d *k8sDiscoverer) getMCPServerEntryAsBackend(ctx context.Context, entryNam
 	}
 
 	// Unlike MCPServer/MCPRemoteProxy (which use status.URL, empty until ready),
-	// MCPServerEntry always has spec.remoteURL set. Explicitly check phase to
+	// MCPServerEntry always has spec.remoteUrl set. Explicitly check phase to
 	// avoid routing to entries that failed validation.
 	if mcpServerEntry.Status.Phase != mcpv1alpha1.MCPServerEntryPhaseValid {
 		slog.Debug("skipping server entry with non-valid phase",

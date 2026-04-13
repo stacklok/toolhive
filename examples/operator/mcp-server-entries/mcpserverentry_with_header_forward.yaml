@@ -10,7 +10,7 @@ metadata:
   name: internal-api
   namespace: toolhive-system
 spec:
-  remoteURL: https://internal-mcp.corp.example.com/mcp
+  remoteUrl: https://internal-mcp.corp.example.com/mcp
   transport: sse
   groupRef: remote-tools
   headerForward:

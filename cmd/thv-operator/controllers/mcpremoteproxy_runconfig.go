@@ -233,7 +233,7 @@ func (*MCPRemoteProxyReconciler) validateRunConfigForRemoteProxy(ctx context.Con
 	}
 
 	if config.RemoteURL == "" {
-		return fmt.Errorf("remoteURL is required for remote proxy")
+		return fmt.Errorf("remoteUrl is required for remote proxy")
 	}
 
 	if config.Name == "" {

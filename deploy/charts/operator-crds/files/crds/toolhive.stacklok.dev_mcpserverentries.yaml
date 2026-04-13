@@ -25,7 +25,7 @@ spec:
     - jsonPath: .spec.transport
       name: Transport
       type: string
-    - jsonPath: .spec.remoteURL
+    - jsonPath: .spec.remoteUrl
       name: Remote URL
       type: string
     - jsonPath: .spec.groupRef
@@ -162,7 +162,7 @@ spec:
                       Use addHeadersFromSecret for sensitive data like API keys or tokens.
                     type: object
                 type: object
-              remoteURL:
+              remoteUrl:
                 description: |-
                   RemoteURL is the URL of the remote MCP server.
                   Both HTTP and HTTPS schemes are accepted at admission time.
@@ -179,7 +179,7 @@ spec:
                 type: string
             required:
             - groupRef
-            - remoteURL
+            - remoteUrl
             - transport
             type: object
           status:

@@ -45,7 +45,7 @@ type MCPRemoteProxySpec struct {
 	// RemoteURL is the URL of the remote MCP server to proxy
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^https?://`
-	RemoteURL string `json:"remoteURL"`
+	RemoteURL string `json:"remoteUrl"`
 
 	// ProxyPort is the port to expose the MCP proxy on
 	// +kubebuilder:validation:Minimum=1
@@ -169,7 +169,7 @@ type MCPRemoteProxyStatus struct {
 
 	// ExternalURL is the external URL where the proxy can be accessed (if exposed externally)
 	// +optional
-	ExternalURL string `json:"externalURL,omitempty"`
+	ExternalURL string `json:"externalUrl,omitempty"`
 
 	// ObservedGeneration reflects the generation of the most recently observed MCPRemoteProxy
 	// +optional
@@ -357,7 +357,7 @@ const (
 	// ConditionReasonHeaderSecretNotFound indicates a referenced header Secret was not found
 	ConditionReasonHeaderSecretNotFound = "HeaderSecretNotFound"
 
-	// ConditionReasonRemoteURLInvalid indicates the remoteURL is malformed or has an invalid scheme
+	// ConditionReasonRemoteURLInvalid indicates the remoteUrl is malformed or has an invalid scheme
 	ConditionReasonRemoteURLInvalid = "RemoteURLInvalid"
 
 	// ConditionReasonJWKSURLInvalid indicates the JWKS URL is malformed or has an invalid scheme
@@ -368,7 +368,7 @@ const (
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=rp;mcprp,categories=toolhive
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteURL"
+//+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteUrl"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"

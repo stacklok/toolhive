@@ -388,7 +388,7 @@ export TOOLHIVE_HEALTH_CHECK_RETRY_DELAY=10s
 
 Remote MCP servers will be supported in Kubernetes mode by:
 
-1. **MCPServer CRD** with `remoteURL` field
+1. **MCPServer CRD** with `remoteUrl` field
 2. **Operator creates Deployment** with proxy-runner
 3. **No StatefulSet created** - proxy forwards to remote URL
 4. **Service exposes proxy** - Clients use ClusterIP/LoadBalancer

@@ -30,7 +30,7 @@ metadata:
   name: salesforce-mcp
   namespace: toolhive-system
 spec:
-  remoteURL: https://mcp.salesforce.com/v1
+  remoteUrl: https://mcp.salesforce.com/v1
   transport: streamable-http
   groupRef: remote-tools
   externalAuthConfigRef:

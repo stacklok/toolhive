@@ -133,14 +133,14 @@ graph TB
 
     Server -->|groupRef| Group
     Server -.->|externalAuthConfigRef| ExtAuth
-    Server -..->|authServerRef| ExtAuth
+    Server -.->|authServerRef| ExtAuth
     Server -.->|toolConfigRef| ToolCfg
     Server -.->|oidcConfigRef| OIDCCfg
     Server -.->|telemetryConfigRef| TelCfg
 
     Proxy -->|groupRef| Group
     Proxy -.->|externalAuthConfigRef| ExtAuth
-    Proxy -..->|authServerRef| ExtAuth
+    Proxy -.->|authServerRef| ExtAuth
     Proxy -.->|toolConfigRef| ToolCfg
     Proxy -.->|oidcConfigRef| OIDCCfg
     Proxy -.->|telemetryConfigRef| TelCfg
@@ -270,6 +270,7 @@ Defines a proxy for remote MCP servers with authentication, authorization, audit
 - `externalAuthConfigRef` - Outgoing auth for remote service authentication (token exchange, AWS STS, bearer token injection)
 - `authServerRef` - Incoming auth via the embedded OAuth 2.0/OIDC authorization server (references an MCPExternalAuthConfig of type `embeddedAuthServer`)
 - `authzConfig` - Authorization policies
+- `telemetryConfigRef` - Reference to shared MCPTelemetryConfig (replaces deprecated inline `telemetry`)
 - `toolConfigRef` - Tool filtering and renaming
 
 OIDC is optional — omit `oidcConfigRef` for unauthenticated proxies.
@@ -283,7 +284,7 @@ kind: MCPRemoteProxy
 metadata:
   name: bedrock-proxy
 spec:
-  remoteURL: https://bedrock-mcp.example.com
+  remoteUrl: https://bedrock-mcp.example.com
   authServerRef:
     kind: MCPExternalAuthConfig
     name: my-auth-server          # type: embeddedAuthServer

@@ -294,6 +294,8 @@ func GenerateAuthServerEnvVars(
 			if b.Provider.OAuth2Config != nil {
 				clientSecretRef = b.Provider.OAuth2Config.ClientSecretRef
 			}
+		case mcpv1beta1.UpstreamProviderTypeOIDCTrust:
+			// oidc-trust providers have no client secret.
 		}
 
 		if clientSecretRef != nil {
@@ -721,6 +723,15 @@ func buildUpstreamRunConfig(
 					RefreshTokenPath: m.RefreshTokenPath,
 					ExpiresInPath:    m.ExpiresInPath,
 				}
+			}
+		}
+	case mcpv1beta1.UpstreamProviderTypeOIDCTrust:
+		// oidc-trust reuses the OIDC config but only needs issuer and clientID.
+		// No client secret, redirect URI, or scopes are required.
+		if provider.OIDCConfig != nil {
+			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
+				IssuerURL: provider.OIDCConfig.IssuerURL,
+				ClientID:  provider.OIDCConfig.ClientID,
 			}
 		}
 	}

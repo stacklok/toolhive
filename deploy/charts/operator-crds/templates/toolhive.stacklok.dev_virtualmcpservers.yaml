@@ -665,11 +665,12 @@ spec:
                           - issuerUrl
                           type: object
                         type:
-                          description: 'Type specifies the provider type: "oidc" or
-                            "oauth2"'
+                          description: 'Type specifies the provider type: "oidc",
+                            "oauth2", or "oidc-trust"'
                           enum:
                           - oidc
                           - oauth2
+                          - oidc-trust
                           type: string
                       required:
                       - name
@@ -3161,11 +3162,12 @@ spec:
                           - issuerUrl
                           type: object
                         type:
-                          description: 'Type specifies the provider type: "oidc" or
-                            "oauth2"'
+                          description: 'Type specifies the provider type: "oidc",
+                            "oauth2", or "oidc-trust"'
                           enum:
                           - oidc
                           - oauth2
+                          - oidc-trust
                           type: string
                       required:
                       - name

@@ -400,6 +400,24 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig) (*authserver.Upstream
 			OAuth2Config: oauth2Cfg,
 		}, nil
 
+	case authserver.UpstreamProviderTypeOIDCTrust:
+		// oidc-trust reuses the OIDC config but only needs issuer and clientID.
+		// No client secret or redirect URI is required since this provider only
+		// provides JWKS trust for token exchange validation.
+		if rc.OIDCConfig == nil {
+			return nil, fmt.Errorf("oidc_config required for oidc-trust provider")
+		}
+		return &authserver.UpstreamConfig{
+			Name: rc.Name,
+			Type: authserver.UpstreamProviderTypeOIDCTrust,
+			OIDCConfig: &upstream.OIDCConfig{
+				CommonOAuthConfig: upstream.CommonOAuthConfig{
+					ClientID: rc.OIDCConfig.ClientID,
+				},
+				Issuer: rc.OIDCConfig.IssuerURL,
+			},
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported upstream type: %s", rc.Type)
 	}

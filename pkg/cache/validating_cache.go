@@ -132,14 +132,15 @@ func (c *ValidatingCache[K, V]) Get(key K) (V, bool) {
 			// pressure between the two calls — fall back to our freshly loaded
 			// value in that case rather than returning a zero value.
 			winner, found := c.lruCache.Get(key)
-			if !found {
-				// Winner was evicted between ContainsOrAdd and Get; keep our
-				// freshly loaded value rather than returning a zero value.
-				return result{v: v}, nil
-			}
-			// Discard our loaded value in favour of the winner.
+			// Discard our loaded value in favour of the winner (or clean up if
+			// the winner was itself evicted between ContainsOrAdd and Get).
 			if c.onEvict != nil {
 				c.onEvict(key, v)
+			}
+			if !found {
+				// Winner was evicted before we could retrieve it; signal a cache
+				// miss so the caller retries rather than receiving a stale value.
+				return nil, nil
 			}
 			return result{v: winner}, nil
 		}
@@ -159,12 +160,6 @@ func (c *ValidatingCache[K, V]) Get(key K) (V, bool) {
 // onEvict is called for it.
 func (c *ValidatingCache[K, V]) Set(key K, value V) {
 	c.lruCache.Add(key, value)
-}
-
-// Remove evicts the entry for key, calling onEvict if the key was present.
-// It is a no-op if the key is not in the cache.
-func (c *ValidatingCache[K, V]) Remove(key K) {
-	c.lruCache.Remove(key)
 }
 
 // Len returns the number of entries currently in the cache.

@@ -591,9 +591,21 @@ func TestSessionManager_Terminate(t *testing.T) {
 		factory.EXPECT().
 			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
-				createdSess = newMockSession(t, ctrl, id, tools)
-				// Close() is called eagerly by onEvict when Terminate removes
-				// the entry from the node-local cache after storage.Delete.
+				createdSess = sessionmocks.NewMockMultiSession(ctrl)
+				createdSess.EXPECT().ID().Return(id).AnyTimes()
+				createdSess.EXPECT().GetMetadata().Return(tokenHashMeta).AnyTimes()
+				createdSess.EXPECT().Tools().Return(tools).AnyTimes()
+				createdSess.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
+				createdSess.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
+				createdSess.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
+				createdSess.EXPECT().GetData().Return(nil).AnyTimes()
+				createdSess.EXPECT().SetData(gomock.Any()).AnyTimes()
+				createdSess.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
+				createdSess.EXPECT().BackendSessions().Return(nil).AnyTimes()
+				createdSess.EXPECT().GetRoutingTable().Return(nil).AnyTimes()
+				createdSess.EXPECT().Prompts().Return(nil).AnyTimes()
+				// Close() is called by onEvict when checkSession detects the session
+				// is gone from storage on the next GetMultiSession call.
 				createdSess.EXPECT().Close().Return(nil).Times(1)
 				return createdSess, nil
 			}).Times(1)
@@ -1927,18 +1939,12 @@ func TestSessionManager_DecorateSession(t *testing.T) {
 				return sess, nil
 			}).Times(1)
 
-		sm, storage := newTestSessionManager(t, factory, newFakeRegistry())
+		sm, _ := newTestSessionManager(t, factory, newFakeRegistry())
 
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
 		_, err := sm.CreateSession(context.Background(), sessionID)
 		require.NoError(t, err)
-
-		// Seed MetadataKeyTokenHash into storage so Terminate recognises this
-		// as a Phase 2 (full MultiSession) and deletes rather than marks terminated.
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
-			sessiontypes.MetadataKeyTokenHash: "",
-		}))
 
 		err = sm.DecorateSession(sessionID, func(sess sessiontypes.MultiSession) sessiontypes.MultiSession {
 			// Simulate concurrent Terminate() completing during decoration.
@@ -2078,7 +2084,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		sm.sessions.Set(sessionID, cached)
 
 		err := sm.checkSession(sessionID, cached)
-		assert.NoError(t, err, "absent MetadataKeyBackendIDs in cache must not cause eviction")
+		assert.NoError(t, err, "matching empty metadata must not cause eviction")
 	})
 }
 

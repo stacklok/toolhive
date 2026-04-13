@@ -2599,3 +2599,216 @@ func TestGetKeyFromLocalProvider(t *testing.T) {
 		require.Nil(t, key)
 	})
 }
+
+func TestValidateToken_DiscoveryFailsWithKeyProvider(t *testing.T) {
+	t.Parallel()
+
+	// closedTLSServer returns a closed TLS server URL and its CA cert path.
+	// Connection refused is instant because DNS resolves but the socket is closed.
+	closedTLSServer := func(t *testing.T) (string, string) {
+		t.Helper()
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		certPath := writeTestServerCert(t, server)
+		server.Close()
+		return server.URL, certPath
+	}
+
+	// setupClosedServerTest generates an RSA key pair, creates a validator pointed
+	// at a closed TLS server, and returns a signed JWT for that issuer. The
+	// keyProviderKID controls whether a mock key provider is configured:
+	//   - non-empty: configures a mock returning a key with that kid
+	//   - empty: no key provider is attached
+	type closedServerFixture struct {
+		validator   *TokenValidator
+		tokenString string
+	}
+	setupClosedServerTest := func(t *testing.T, keyProviderKID string) closedServerFixture {
+		t.Helper()
+
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+
+		privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+
+		opts := []TokenValidatorOption{WithEnvReader(mockEnv)}
+		if keyProviderKID != "" {
+			mockProvider := keysmocks.NewMockPublicKeyProvider(ctrl)
+			mockProvider.EXPECT().PublicKeys(gomock.Any()).Return([]*keys.PublicKeyData{
+				{KeyID: keyProviderKID, Algorithm: "RS256", PublicKey: &privateKey.PublicKey},
+			}, nil).AnyTimes()
+			opts = append(opts, WithKeyProvider(mockProvider))
+		}
+
+		closedURL, certPath := closedTLSServer(t)
+
+		ctx := context.Background()
+		validator, err := NewTokenValidator(ctx, TokenValidatorConfig{
+			Issuer:         closedURL,
+			Audience:       "test-audience",
+			ClientID:       "test-client",
+			CACertPath:     certPath,
+			AllowPrivateIP: true,
+		}, opts...)
+		require.NoError(t, err)
+
+		token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+			"iss": closedURL,
+			"aud": "test-audience",
+			"exp": time.Now().Add(time.Hour).Unix(),
+			"sub": "test-user",
+		})
+		token.Header["kid"] = testKeyID
+		tokenString, err := token.SignedString(privateKey)
+		require.NoError(t, err)
+
+		return closedServerFixture{validator: validator, tokenString: tokenString}
+	}
+
+	tests := []struct {
+		name            string
+		keyProviderKID  string // empty means no key provider
+		wantErr         error  // nil means success
+		wantSub         string // checked only when wantErr is nil
+		checkDiscovered bool   // whether to assert oidcDiscovered state after tolerated failure
+	}{
+		{
+			name:            "discovery fails but keyProvider resolves key",
+			keyProviderKID:  testKeyID,
+			wantErr:         nil,
+			wantSub:         "test-user",
+			checkDiscovered: true,
+		},
+		{
+			name:           "discovery fails and keyProvider kid miss returns error",
+			keyProviderKID: "other-kid",
+			wantErr:        ErrMissingJWKSURL,
+		},
+		{
+			name:    "discovery fails without keyProvider returns discovery error",
+			wantErr: ErrFailedToDiscoverOIDC,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fix := setupClosedServerTest(t, tt.keyProviderKID)
+			ctx := context.Background()
+
+			claims, err := fix.validator.ValidateToken(ctx, fix.tokenString)
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tt.wantSub, claims["sub"])
+			}
+			if tt.checkDiscovered {
+				// Discovery was attempted, failed, and tolerated — marked as done
+				// to avoid per-request retry penalty.
+				require.True(t, fix.validator.oidcDiscovered)
+			}
+		})
+	}
+
+	t.Run("keyProvider miss falls through to explicit JWKS URL", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+
+		privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+
+		// Mock key provider returns a key with a DIFFERENT kid than the token,
+		// so getKeyFromLocalProvider returns (nil, nil) on kid mismatch.
+		mockProvider := keysmocks.NewMockPublicKeyProvider(ctrl)
+		mockProvider.EXPECT().PublicKeys(gomock.Any()).Return([]*keys.PublicKeyData{
+			{KeyID: "other-kid", Algorithm: "RS256", PublicKey: &privateKey.PublicKey},
+		}, nil).AnyTimes()
+
+		// Build JWK key set for the JWKS server with the CORRECT kid
+		jwkKey, err := jwk.Import(&privateKey.PublicKey)
+		require.NoError(t, err)
+		require.NoError(t, jwkKey.Set(jwk.KeyIDKey, testKeyID))
+		require.NoError(t, jwkKey.Set(jwk.AlgorithmKey, "RS256"))
+		require.NoError(t, jwkKey.Set(jwk.KeyUsageKey, "sig"))
+		keySet := jwk.NewSet()
+		require.NoError(t, keySet.AddKey(jwkKey))
+
+		jwksServer, certPath := createTestJWKSServer(t, keySet)
+		t.Cleanup(jwksServer.Close)
+
+		ctx := context.Background()
+		validator, err := NewTokenValidator(ctx, TokenValidatorConfig{
+			JWKSURL:        jwksServer.URL,
+			Audience:       "test-audience",
+			ClientID:       "test-client",
+			CACertPath:     certPath,
+			AllowPrivateIP: true,
+		}, WithEnvReader(mockEnv), WithKeyProvider(mockProvider))
+		require.NoError(t, err)
+
+		token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+			"aud": "test-audience",
+			"exp": time.Now().Add(time.Hour).Unix(),
+			"sub": "test-user",
+		})
+		token.Header["kid"] = testKeyID
+		tokenString, err := token.SignedString(privateKey)
+		require.NoError(t, err)
+
+		claims, err := validator.ValidateToken(ctx, tokenString)
+		require.NoError(t, err)
+		require.Equal(t, "test-user", claims["sub"])
+	})
+
+	t.Run("keyProvider PublicKeys error falls through to JWKS miss", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+
+		privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+
+		mockProvider := keysmocks.NewMockPublicKeyProvider(ctrl)
+		mockProvider.EXPECT().PublicKeys(gomock.Any()).Return(nil, errors.New("key store unavailable")).AnyTimes()
+
+		closedURL, certPath := closedTLSServer(t)
+
+		ctx := context.Background()
+		validator, err := NewTokenValidator(ctx, TokenValidatorConfig{
+			Issuer:         closedURL,
+			Audience:       "test-audience",
+			ClientID:       "test-client",
+			CACertPath:     certPath,
+			AllowPrivateIP: true,
+		}, WithEnvReader(mockEnv), WithKeyProvider(mockProvider))
+		require.NoError(t, err)
+
+		token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+			"iss": closedURL,
+			"aud": "test-audience",
+			"exp": time.Now().Add(time.Hour).Unix(),
+			"sub": "test-user",
+		})
+		token.Header["kid"] = testKeyID
+		tokenString, err := token.SignedString(privateKey)
+		require.NoError(t, err)
+
+		// Provider error is swallowed (falls back to HTTP JWKS), but
+		// discovery was also skipped so no JWKS URL is available.
+		_, err = validator.ValidateToken(ctx, tokenString)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrMissingJWKSURL)
+		require.Contains(t, err.Error(), "local key provider could not resolve key")
+	})
+}

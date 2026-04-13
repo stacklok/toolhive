@@ -37,6 +37,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
+	"github.com/stacklok/toolhive/pkg/webhook"
 )
 
 // BuildContext defines the context in which the RunConfigBuilder is being used
@@ -261,6 +262,24 @@ func WithAuthzConfigPath(path string) RunConfigBuilderOption {
 func WithAuthzConfig(config *authz.Config) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.AuthzConfig = config
+		return nil
+	}
+}
+
+// WithValidatingWebhooks sets the validating webhook configurations.
+// These webhooks run after mutating webhooks and can accept or deny requests.
+func WithValidatingWebhooks(webhooks []webhook.Config) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.ValidatingWebhooks = webhooks
+		return nil
+	}
+}
+
+// WithMutatingWebhooks sets the mutating webhook configurations.
+// These webhooks run before validating webhooks and can transform requests.
+func WithMutatingWebhooks(webhooks []webhook.Config) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.MutatingWebhooks = webhooks
 		return nil
 	}
 }
@@ -591,6 +610,24 @@ func WithMiddlewareFromFlags(
 
 		// NOTE: AWS STS middleware is NOT added here because it is only configured
 		// through the operator path via PopulateMiddlewareConfigs(), not via CLI flags.
+		//
+		// NOTE: addCoreMiddlewares also injects usage metrics before webhook insertion here,
+		// which differs slightly from PopulateMiddlewareConfigs where usage metrics is added
+		// after webhooks. This is currently benign because usage metrics does not depend on
+		// webhook state, and the broader ordering TODO remains to unify these paths.
+
+		// Add Mutating webhooks before Validating webhooks
+		var err error
+		middlewareConfigs, err = addMutatingWebhookMiddleware(middlewareConfigs, b.config)
+		if err != nil {
+			return err
+		}
+
+		// Add Validating webhooks
+		middlewareConfigs, err = addValidatingWebhookMiddleware(middlewareConfigs, b.config)
+		if err != nil {
+			return err
+		}
 
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)

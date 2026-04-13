@@ -4,14 +4,25 @@
 package webhook
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestConfigValidate(t *testing.T) {
 	t.Parallel()
+
+	tmpDir := t.TempDir()
+	caBundle := filepath.Join(tmpDir, "ca.crt")
+	clientCert := filepath.Join(tmpDir, "cert.pem")
+	clientKey := filepath.Join(tmpDir, "key.pem")
+	require.NoError(t, os.WriteFile(caBundle, []byte("dummy ca"), 0600))
+	require.NoError(t, os.WriteFile(clientCert, []byte("dummy cert"), 0600))
+	require.NoError(t, os.WriteFile(clientKey, []byte("dummy key"), 0600))
 
 	validConfig := func() Config {
 		return Config{
@@ -41,7 +52,7 @@ func TestConfigValidate(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "valid config with zero timeout (uses default)",
+			name: "valid config with zero timeout sentinel",
 			modify: func(c *Config) {
 				c.Timeout = 0
 			},
@@ -51,9 +62,9 @@ func TestConfigValidate(t *testing.T) {
 			name: "valid config with TLS",
 			modify: func(c *Config) {
 				c.TLSConfig = &TLSConfig{
-					CABundlePath:   "/path/to/ca.crt",
-					ClientCertPath: "/path/to/cert.pem",
-					ClientKeyPath:  "/path/to/key.pem",
+					CABundlePath:   caBundle,
+					ClientCertPath: clientCert,
+					ClientKeyPath:  clientKey,
 				}
 			},
 			expectError: false,
@@ -96,7 +107,7 @@ func TestConfigValidate(t *testing.T) {
 				c.Timeout = -1 * time.Second
 			},
 			expectError:   true,
-			errorContains: "non-negative",
+			errorContains: "between 1s and 30s",
 		},
 		{
 			name: "timeout exceeds max",

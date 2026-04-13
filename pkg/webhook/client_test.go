@@ -41,11 +41,11 @@ func TestNewClient(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "valid config with zero timeout",
+			name: "valid config with minimum timeout",
 			config: Config{
 				Name:          "test",
 				URL:           "https://example.com/webhook",
-				Timeout:       0,
+				Timeout:       MinTimeout,
 				FailurePolicy: FailurePolicyIgnore,
 			},
 			expectError: false,

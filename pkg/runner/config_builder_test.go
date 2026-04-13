@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/webhook"
 )
 
 func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
@@ -545,6 +547,40 @@ func TestRunConfigBuilder_WithToolOverride(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunConfigBuilder_WithWebhookConfigs(t *testing.T) {
+	t.Parallel()
+
+	validating := []webhook.Config{
+		{
+			Name:          "validate-a",
+			URL:           "http://localhost/validate-a",
+			Timeout:       webhook.DefaultTimeout,
+			FailurePolicy: webhook.FailurePolicyIgnore,
+			TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+		},
+	}
+	mutating := []webhook.Config{
+		{
+			Name:          "mutate-a",
+			URL:           "http://localhost/mutate-a",
+			Timeout:       3 * time.Second,
+			FailurePolicy: webhook.FailurePolicyIgnore,
+			TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+		},
+	}
+
+	builder := &runConfigBuilder{
+		config: &RunConfig{},
+	}
+
+	require.NoError(t, WithValidatingWebhooks(validating)(builder))
+	require.NoError(t, WithMutatingWebhooks(mutating)(builder))
+	require.Len(t, builder.config.ValidatingWebhooks, 1)
+	require.Len(t, builder.config.MutatingWebhooks, 1)
+	assert.Equal(t, validating, builder.config.ValidatingWebhooks)
+	assert.Equal(t, mutating, builder.config.MutatingWebhooks)
 }
 
 func TestRunConfigBuilder_ToolOverrideMutualExclusivity(t *testing.T) {

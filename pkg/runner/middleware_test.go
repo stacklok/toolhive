@@ -886,8 +886,8 @@ func TestPopulateMiddlewareConfigs_FullCoverage(t *testing.T) {
 	config.Transport = types.TransportTypeStdio
 
 	// Setup options to hit all branches
-	config.MutatingWebhooks = []webhook.Config{{Name: "m-hook", URL: "http://example.com/m"}}
-	config.ValidatingWebhooks = []webhook.Config{{Name: "v-hook", URL: "http://example.com/v"}}
+	config.MutatingWebhooks = []webhook.Config{{Name: "m-hook", URL: "http://example.com/m", Timeout: webhook.DefaultTimeout}}
+	config.ValidatingWebhooks = []webhook.Config{{Name: "v-hook", URL: "http://example.com/v", Timeout: webhook.DefaultTimeout}}
 
 	config.ToolsFilter = []string{"tool1"}
 	config.ToolsOverride = map[string]ToolOverride{"tool1": {Name: "newtool1"}}

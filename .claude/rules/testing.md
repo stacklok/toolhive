@@ -104,14 +104,16 @@ Existing instances in the codebase are legacy — do not expand them. When touch
 
 In tests using `t.Parallel()`, always register resource teardown (stopping servers, closing connections, cancelling contexts) with `t.Cleanup`, not just `defer`.
 
-A `require.*` failure or panic aborts the test function immediately, skipping all deferred calls. `t.Cleanup` handlers run regardless of how the test exits, preventing leaked goroutines, ports, and connections when tests fail early.
+In parallel tests, `defer` runs when the parent test function returns — which can happen before `t.Parallel()` subtests finish. `t.Cleanup` handlers are tied to the test's full lifecycle and run after all subtests complete, preventing leaked goroutines, ports, and connections.
+
+Note: `require.*` uses `runtime.Goexit`, and panics unwind the stack — both run deferred functions. The difference is not about defers being skipped; it's about *when* they run relative to subtests.
 
 ```go
-// Good
+// Good — runs after all subtests complete
 server := httptest.NewServer(handler)
 t.Cleanup(server.Close)
 
-// Avoid — skipped if test aborts early via require.*
+// Avoid in parallel tests — may run before subtests finish
 defer server.Close()
 ```
 

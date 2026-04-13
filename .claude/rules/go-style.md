@@ -78,7 +78,7 @@ if someCondition {
 
 ## Copy Before Mutating Caller Input
 
-Never mutate a value passed in by a caller — maps, slices, and structs are reference types and in-place mutation surprises callers, can cause data races, and breaks the assumption that the caller's original value is unchanged after the call.
+Never mutate a value passed in by a caller. Maps and slices have reference semantics — passing them copies the header but shares the underlying data, so mutations are visible to the caller. Pointer parameters (`*T`) directly expose the caller's original value. Plain struct values (`T`) are copies and safe to modify, but structs passed as `*T`, or whose fields include maps, slices, or pointers, can still reach caller-visible data through those fields. In-place mutation surprises callers, can cause data races, and breaks the assumption that the caller's original value is unchanged after the call.
 
 Always copy the input first and mutate the copy:
 
@@ -90,6 +90,8 @@ meta["key"] = "value"
 // Avoid
 callerMeta["key"] = "value" // mutates the caller's map
 ```
+
+Note that `maps.Clone` (and `slices.Clone`) perform a **shallow copy** — if map values or slice elements contain pointers, slices, or nested maps, mutating those nested values will still affect the caller's data. Use a deep copy when the value type requires it.
 
 This applies to function parameters, values extracted from context, and values returned by storage/cache loads. If the function's doc comment does not explicitly state "the caller's value will be modified", treat all inputs as read-only.
 

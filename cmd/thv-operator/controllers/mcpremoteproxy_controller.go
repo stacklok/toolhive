@@ -48,6 +48,7 @@ type MCPRemoteProxyReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
@@ -657,9 +658,11 @@ func (r *MCPRemoteProxyReconciler) handleTelemetryConfig(ctx context.Context, pr
 	ctxLogger := log.FromContext(ctx)
 
 	if proxy.Spec.TelemetryConfigRef == nil {
-		// No MCPTelemetryConfig referenced, clear any stored hash
-		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated)
-		if proxy.Status.TelemetryConfigHash != "" {
+		// No MCPTelemetryConfig referenced, clear any stored hash and condition.
+		condType := mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated
+		condRemoved := meta.FindStatusCondition(proxy.Status.Conditions, condType) != nil
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, condType)
+		if condRemoved || proxy.Status.TelemetryConfigHash != "" {
 			proxy.Status.TelemetryConfigHash = ""
 			if err := r.Status().Update(ctx, proxy); err != nil {
 				return fmt.Errorf("failed to clear MCPTelemetryConfig hash from status: %w", err)

@@ -130,6 +130,56 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 			expectedCondStatus: metav1.ConditionTrue,
 			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyTelemetryConfigRefValid,
 		},
+		{
+			name: "recovery from False condition persists True",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{Name: "my-telemetry"},
+				},
+				Status: mcpv1alpha1.MCPRemoteProxyStatus{
+					TelemetryConfigHash: "abc123",
+					Conditions: []metav1.Condition{
+						{
+							Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
+							Status: metav1.ConditionFalse,
+							Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyTelemetryConfigRefFetchError,
+						},
+					},
+				},
+			},
+			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-telemetry", Namespace: "default"},
+				Spec:       newTelemetrySpec("https://otel-collector:4317", true, false),
+				Status: mcpv1alpha1.MCPTelemetryConfigStatus{
+					ConfigHash: "abc123",
+				},
+			},
+			expectError:        false,
+			expectedHash:       "abc123",
+			expectedCondType:   mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
+			expectedCondStatus: metav1.ConditionTrue,
+			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyTelemetryConfigRefValid,
+		},
+		{
+			name: "nil ref with stale condition persists removal",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
+				Spec:       mcpv1alpha1.MCPRemoteProxySpec{TelemetryConfigRef: nil},
+				Status: mcpv1alpha1.MCPRemoteProxyStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
+							Status: metav1.ConditionFalse,
+							Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyTelemetryConfigRefNotFound,
+						},
+					},
+				},
+			},
+			expectError:       false,
+			expectNoCondition: true,
+			expectHashCleared: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -158,20 +208,37 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 				require.NoError(t, err)
 			}
 
+			// Re-fetch persisted state from the fake client.
+			// For success paths, the handler persists via r.Status().Update().
+			// For error paths, conditions are set in-memory but the caller
+			// (validateAndHandleConfigs) is responsible for persisting — so
+			// we use in-memory state for error-path condition assertions.
+			persisted := &mcpv1alpha1.MCPRemoteProxy{}
+			require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{
+				Name: tt.proxy.Name, Namespace: tt.proxy.Namespace,
+			}, persisted))
+
+			// For success paths, assert on persisted state.
+			// For error paths, assert conditions on in-memory state (caller persists).
+			statusToCheck := persisted.Status
+			if tt.expectError {
+				statusToCheck = tt.proxy.Status
+			}
+
 			if tt.expectNoCondition {
-				for _, c := range tt.proxy.Status.Conditions {
+				for _, c := range persisted.Status.Conditions {
 					assert.NotEqual(t, mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated, c.Type,
-						"condition should have been removed")
+						"condition should have been removed from persisted state")
 				}
 			}
 
 			if tt.expectHashCleared {
-				assert.Empty(t, tt.proxy.Status.TelemetryConfigHash, "hash should be cleared")
+				assert.Empty(t, persisted.Status.TelemetryConfigHash, "hash should be cleared")
 			}
 
 			if tt.expectedCondType != "" {
 				var found bool
-				for _, c := range tt.proxy.Status.Conditions {
+				for _, c := range statusToCheck.Conditions {
 					if c.Type == tt.expectedCondType {
 						found = true
 						assert.Equal(t, tt.expectedCondStatus, c.Status)
@@ -183,7 +250,7 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 			}
 
 			if tt.expectedHash != "" {
-				assert.Equal(t, tt.expectedHash, tt.proxy.Status.TelemetryConfigHash)
+				assert.Equal(t, tt.expectedHash, persisted.Status.TelemetryConfigHash)
 			}
 		})
 	}

@@ -30,6 +30,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	// Build deployment components using helper functions
 	args := r.buildContainerArgs()
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
+	r.addTelemetryCABundleVolumes(ctx, proxy, &volumes, &volumeMounts)
 	env := r.buildEnvVarsForProxy(ctx, proxy)
 
 	// Add embedded auth server volumes and env vars. AuthServerRef takes precedence;
@@ -141,6 +142,29 @@ func (*MCPRemoteProxyReconciler) buildVolumesForProxy(
 	}
 
 	return volumeMounts, volumes
+}
+
+// addTelemetryCABundleVolumes appends CA bundle volumes for the referenced MCPTelemetryConfig.
+// Must be called from deploymentForMCPRemoteProxy where the client is available.
+func (r *MCPRemoteProxyReconciler) addTelemetryCABundleVolumes(
+	ctx context.Context,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+	volumes *[]corev1.Volume,
+	volumeMounts *[]corev1.VolumeMount,
+) {
+	if proxy.Spec.TelemetryConfigRef == nil {
+		return
+	}
+	telCfg, err := ctrlutil.GetTelemetryConfigForMCPRemoteProxy(ctx, r.Client, proxy)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to fetch MCPTelemetryConfig for CA bundle volume")
+		return
+	}
+	if telCfg != nil {
+		caVolumes, caMounts := ctrlutil.AddTelemetryCABundleVolumes(telCfg)
+		*volumes = append(*volumes, caVolumes...)
+		*volumeMounts = append(*volumeMounts, caMounts...)
+	}
 }
 
 // buildEnvVarsForProxy builds environment variables for the proxy container

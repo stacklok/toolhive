@@ -630,11 +630,18 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuditConfig:             cfg.Audit,
 		HealthMonitorConfig:     healthMonitorConfig,
 		StatusReportingInterval: getStatusReportingInterval(cfg),
-		Watcher:                 backendWatcher,
+		Watcher:                 nil, // set below if backendWatcher is non-nil
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,
 		SessionFactory:          sessionFactory,
 		SessionStorage:          cfg.SessionStorage,
+	}
+
+	// Assign Watcher only when backendWatcher is non-nil. A typed nil *k8s.BackendWatcher
+	// assigned directly to the Watcher interface field produces a non-nil interface value,
+	// which bypasses the nil check in handleReadiness and panics on the first /readyz probe.
+	if backendWatcher != nil {
+		serverCfg.Watcher = backendWatcher
 	}
 
 	// Convert composite tool configurations to workflow definitions

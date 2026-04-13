@@ -271,18 +271,16 @@ func TestHorizontalScaling_AllBackendsFailOnRestore(t *testing.T) {
 	// Use a stoppable backend so we can shut it down mid-test.
 	backend, stopBackend := startStoppableMCPBackend(t, "backend-alpha", "echo")
 
-	sm := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backend})
-	sessionID := createSession(t, sm, nil)
+	smWriter := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backend})
+	sessionID := createSession(t, smWriter, nil)
 
 	// Stop the backend — RestoreSession will be unable to reconnect.
 	stopBackend()
 
-	// Evict from the local cache so the next Get takes the restore path.
-	sm.sessions.Delete(sessionID)
-
-	// GetMultiSession must return a session (not false/nil) even though the
-	// backend is unreachable — the session comes back with an empty tool list.
-	sess, ok := sm.GetMultiSession(sessionID)
+	// Use a fresh manager: its cache is empty, so GetMultiSession takes the
+	// restore path without needing to explicitly evict the session.
+	smReader := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backend})
+	sess, ok := smReader.GetMultiSession(sessionID)
 	require.True(t, ok, "GetMultiSession must return ok=true even when backends are unreachable")
 	require.NotNil(t, sess)
 	assert.Empty(t, sess.Tools(), "routing table must be empty when no backend reconnected")
@@ -321,7 +319,8 @@ func TestHorizontalScaling_BackendExpiry_SkipsExpiredOnRestore(t *testing.T) {
 	require.True(t, toolNames["tool-alpha"], "session A must have tool-alpha before expiry")
 	require.True(t, toolNames["tool-beta"], "session A must have tool-beta before expiry")
 
-	// NotifyBackendExpired updates Redis to remove backend-beta and evicts from pod A's cache.
+	// NotifyBackendExpired updates Redis to remove backend-beta; the node-local cache
+	// entry is evicted lazily on the next GetMultiSession when checkSession detects drift.
 	smA.NotifyBackendExpired(sessionID, backendB.ID)
 
 	// Pod C: fresh Manager, same storage and both backends in registry.

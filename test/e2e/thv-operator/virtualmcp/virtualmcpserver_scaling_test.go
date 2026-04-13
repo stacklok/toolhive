@@ -23,7 +23,7 @@ import (
 
 // countReadyPods returns the number of Running+Ready pods for a VirtualMCPServer.
 func countReadyPods(vmcpName string) (int, error) {
-	podList, err := GetVirtualMCPServerPods(ctx, k8sClient, vmcpName, "default")
+	podList, err := GetVirtualMCPServerPods(ctx, k8sClient, vmcpName, defaultNamespace)
 	if err != nil {
 		return 0, err
 	}
@@ -43,9 +43,8 @@ func countReadyPods(vmcpName string) (int, error) {
 
 var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 	const (
-		timeout          = time.Minute * 5
-		pollInterval     = time.Second * 2
-		defaultNamespace = "default"
+		timeout      = time.Minute * 5
+		pollInterval = time.Second * 2
 	)
 
 	// -------------------------------------------------------------------------

@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"strings"
 	"time"
 
@@ -654,8 +653,18 @@ func (sm *Manager) checkSession(sessionID string, sess vmcpsession.MultiSession)
 		return cache.ErrExpired
 	}
 
-	// Evict if any metadata key has drifted, so the next Get restores current state.
-	if !maps.Equal(sess.GetMetadata(), metadata) {
+	// Evict if the backend ID list has drifted (e.g. NotifyBackendExpired removed a
+	// backend), so the next Get calls RestoreSession with the updated backend list.
+	//
+	// We intentionally compare only MetadataKeyBackendIDs rather than the full
+	// metadata map. Per-backend session IDs (MetadataKeyBackendSessionPrefix+*)
+	// are local connection values that change on every RestoreSession call — a
+	// cross-pod restored session will always have different per-backend session IDs
+	// from what is stored in Redis (established by a different pod). Comparing
+	// the full map would cause the session to be evicted on every cache hit after
+	// a cross-pod restore, preventing tools from ever being served.
+	sessBackendIDs := sess.GetMetadata()[vmcpsession.MetadataKeyBackendIDs]
+	if sessBackendIDs != metadata[vmcpsession.MetadataKeyBackendIDs] {
 		return cache.ErrExpired
 	}
 

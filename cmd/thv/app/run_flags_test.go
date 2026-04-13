@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -17,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive-core/logging"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/webhook"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -739,4 +741,71 @@ func TestResolveServerName(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestLoadAndMergeWebhookConfigs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("merges files and applies default timeout", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+
+		first := filepath.Join(dir, "first.yaml")
+		second := filepath.Join(dir, "second.json")
+
+		require.NoError(t, os.WriteFile(first, []byte(`
+validating:
+  - name: policy
+    url: http://localhost/validate
+    failure_policy: ignore
+    tls_config:
+      insecure_skip_verify: true
+mutating:
+  - name: mutate-a
+    url: http://localhost/mutate-a
+    timeout: 3s
+    failure_policy: ignore
+    tls_config:
+      insecure_skip_verify: true
+`), 0600))
+		require.NoError(t, os.WriteFile(second, []byte(`{
+  "validating": [
+    {"name":"policy","url":"http://localhost/validate-v2","timeout":"5s","failure_policy":"ignore","tls_config":{"insecure_skip_verify":true}}
+  ],
+  "mutating": [
+    {"name":"mutate-b","url":"http://localhost/mutate-b","failure_policy":"ignore","tls_config":{"insecure_skip_verify":true}}
+  ]
+}`), 0600))
+
+		cfg, err := loadAndMergeWebhookConfigs([]string{first, second})
+		require.NoError(t, err)
+
+		require.Len(t, cfg.Validating, 1)
+		assert.Equal(t, "http://localhost/validate-v2", cfg.Validating[0].URL)
+		assert.Equal(t, 5*time.Second, cfg.Validating[0].Timeout)
+
+		require.Len(t, cfg.Mutating, 2)
+		assert.Equal(t, "mutate-a", cfg.Mutating[0].Name)
+		assert.Equal(t, 3*time.Second, cfg.Mutating[0].Timeout)
+		assert.Equal(t, "mutate-b", cfg.Mutating[1].Name)
+		assert.Equal(t, webhook.DefaultTimeout, cfg.Mutating[1].Timeout)
+	})
+
+	t.Run("rejects invalid merged config", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "invalid.yaml")
+
+		require.NoError(t, os.WriteFile(path, []byte(`
+validating:
+  - name: bad
+    url: https://example.com/validate
+    timeout: 500ms
+    failure_policy: fail
+`), 0600))
+
+		_, err := loadAndMergeWebhookConfigs([]string{path})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid webhook configuration")
+	})
 }

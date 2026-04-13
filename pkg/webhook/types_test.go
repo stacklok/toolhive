@@ -52,12 +52,11 @@ func TestConfigValidate(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "invalid config with zero timeout",
+			name: "valid config with zero timeout sentinel",
 			modify: func(c *Config) {
 				c.Timeout = 0
 			},
-			expectError:   true,
-			errorContains: "between 1s and 30s",
+			expectError: false,
 		},
 		{
 			name: "valid config with TLS",

@@ -610,6 +610,11 @@ func WithMiddlewareFromFlags(
 
 		// NOTE: AWS STS middleware is NOT added here because it is only configured
 		// through the operator path via PopulateMiddlewareConfigs(), not via CLI flags.
+		//
+		// NOTE: addCoreMiddlewares also injects usage metrics before webhook insertion here,
+		// which differs slightly from PopulateMiddlewareConfigs where usage metrics is added
+		// after webhooks. This is currently benign because usage metrics does not depend on
+		// webhook state, and the broader ordering TODO remains to unify these paths.
 
 		// Add Mutating webhooks before Validating webhooks
 		var err error

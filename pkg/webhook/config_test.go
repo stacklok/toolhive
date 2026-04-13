@@ -66,8 +66,12 @@ mutating:
 	require.NoError(t, err)
 	require.Len(t, cfg.Validating, 1)
 	assert.Equal(t, "policy", cfg.Validating[0].Name)
+	require.NotNil(t, cfg.Validating[0].TLSConfig)
+	assert.True(t, cfg.Validating[0].TLSConfig.InsecureSkipVerify)
 	require.Len(t, cfg.Mutating, 1)
 	assert.Equal(t, "enricher", cfg.Mutating[0].Name)
+	require.NotNil(t, cfg.Mutating[0].TLSConfig)
+	assert.True(t, cfg.Mutating[0].TLSConfig.InsecureSkipVerify)
 }
 
 func TestLoadConfig_JSON_Valid(t *testing.T) {
@@ -124,6 +128,73 @@ func TestLoadConfig_EmptyFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, cfg.Validating)
 	assert.Empty(t, cfg.Mutating)
+}
+
+func TestLoadConfig_YAML_OmittedTimeoutUsesDefault(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := `
+validating:
+  - name: policy
+    url: http://localhost/validate
+    failure_policy: fail
+    tls_config:
+      insecure_skip_verify: true
+`
+	path := writeFile(t, dir, ".yaml", content)
+
+	cfg, err := webhook.LoadConfig(path)
+	require.NoError(t, err)
+	require.Len(t, cfg.Validating, 1)
+	assert.Equal(t, webhook.DefaultTimeout, cfg.Validating[0].Timeout)
+}
+
+func TestLoadConfig_JSON_OmittedTimeoutUsesDefault(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := `{
+  "validating": [
+    {"name":"v1","url":"http://localhost/v","failure_policy":"ignore","tls_config":{"insecure_skip_verify":true}}
+  ]
+}`
+	path := writeFile(t, dir, ".json", content)
+
+	cfg, err := webhook.LoadConfig(path)
+	require.NoError(t, err)
+	require.Len(t, cfg.Validating, 1)
+	assert.Equal(t, webhook.DefaultTimeout, cfg.Validating[0].Timeout)
+}
+
+func TestLoadConfig_JSON_NullTimeoutUsesDefault(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := `{
+  "validating": [
+    {"name":"v1","url":"http://localhost/v","timeout":null,"failure_policy":"ignore","tls_config":{"insecure_skip_verify":true}}
+  ]
+}`
+	path := writeFile(t, dir, ".json", content)
+
+	cfg, err := webhook.LoadConfig(path)
+	require.NoError(t, err)
+	require.Len(t, cfg.Validating, 1)
+	assert.Equal(t, webhook.DefaultTimeout, cfg.Validating[0].Timeout)
+}
+
+func TestLoadConfig_JSON_NumericTimeoutNanos(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := `{
+  "validating": [
+    {"name":"v1","url":"http://localhost/v","timeout":5000000000,"failure_policy":"ignore","tls_config":{"insecure_skip_verify":true}}
+  ]
+}`
+	path := writeFile(t, dir, ".json", content)
+
+	cfg, err := webhook.LoadConfig(path)
+	require.NoError(t, err)
+	require.Len(t, cfg.Validating, 1)
+	assert.Equal(t, 5*time.Second, cfg.Validating[0].Timeout)
 }
 
 func TestLoadConfig_YMLExtension(t *testing.T) {

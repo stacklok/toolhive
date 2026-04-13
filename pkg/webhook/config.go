@@ -58,7 +58,24 @@ func LoadConfig(path string) (*FileConfig, error) {
 		}
 	}
 
+	normalizeConfig(cfg)
+
 	return &cfg, nil
+}
+
+// normalizeConfig applies effective defaults after parsing so validation sees
+// the same values the runtime will use.
+func normalizeConfig(cfg FileConfig) {
+	for i := range cfg.Validating {
+		if cfg.Validating[i].Timeout == 0 {
+			cfg.Validating[i].Timeout = DefaultTimeout
+		}
+	}
+	for i := range cfg.Mutating {
+		if cfg.Mutating[i].Timeout == 0 {
+			cfg.Mutating[i].Timeout = DefaultTimeout
+		}
+	}
 }
 
 // MergeConfigs merges multiple FileConfigs into one.
@@ -107,13 +124,11 @@ func ValidateConfig(cfg *FileConfig) error {
 	var errs []error
 	for i, wh := range cfg.Validating {
 		if err := wh.Validate(); err != nil {
-			wh := wh // capture loop variable
 			errs = append(errs, fmt.Errorf("validating webhook[%d] %q: %w", i, wh.Name, err))
 		}
 	}
 	for i, wh := range cfg.Mutating {
 		if err := wh.Validate(); err != nil {
-			wh := wh // capture loop variable
 			errs = append(errs, fmt.Errorf("mutating webhook[%d] %q: %w", i, wh.Name, err))
 		}
 	}

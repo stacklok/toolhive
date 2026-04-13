@@ -53,14 +53,14 @@ const (
 // TLSConfig holds TLS-related configuration for webhook HTTP communication.
 type TLSConfig struct {
 	// CABundlePath is the path to a CA certificate bundle for server verification.
-	CABundlePath string `json:"ca_bundle_path,omitempty"`
+	CABundlePath string `json:"ca_bundle_path,omitempty" yaml:"ca_bundle_path,omitempty"`
 	// ClientCertPath is the path to a client certificate for mTLS.
-	ClientCertPath string `json:"client_cert_path,omitempty"`
+	ClientCertPath string `json:"client_cert_path,omitempty" yaml:"client_cert_path,omitempty"`
 	// ClientKeyPath is the path to a client key for mTLS.
-	ClientKeyPath string `json:"client_key_path,omitempty"`
+	ClientKeyPath string `json:"client_key_path,omitempty" yaml:"client_key_path,omitempty"`
 	// InsecureSkipVerify disables server certificate verification.
 	// WARNING: This should only be used for development/testing.
-	InsecureSkipVerify bool `json:"insecure_skip_verify,omitempty"`
+	InsecureSkipVerify bool `json:"insecure_skip_verify,omitempty" yaml:"insecure_skip_verify,omitempty"`
 }
 
 // Config holds the configuration for a single webhook.
@@ -100,7 +100,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("webhook failure_policy must be %q or %q, got %q",
 			FailurePolicyFail, FailurePolicyIgnore, c.FailurePolicy)
 	}
-	if c.Timeout < MinTimeout {
+	if c.Timeout != 0 && c.Timeout < MinTimeout {
 		return fmt.Errorf("webhook timeout must be between %v and %v", MinTimeout, MaxTimeout)
 	}
 	if c.Timeout > MaxTimeout {
@@ -138,6 +138,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 
 	if len(raw.Timeout) == 0 || string(raw.Timeout) == "null" {
+		c.Timeout = DefaultTimeout
 		return nil
 	}
 

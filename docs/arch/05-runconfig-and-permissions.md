@@ -24,7 +24,7 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 
 **Key field categories:**
 - **Identity**: `name`, `containerName`, `baseName` - Workload identifiers
-- **What to run**: `image` or `remoteUrl` - Container image or remote endpoint
+- **What to run**: `image` or `remoteURL` - Container image or remote endpoint
 - **Transport**: `transport`, `host`, `port`, `targetPort`, `proxyMode` - Communication configuration
 - **Execution**: `cmdArgs`, `envVars` - Runtime parameters
 - **Security**: `permissionProfile`, `isolateNetwork` - Permission boundaries

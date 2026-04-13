@@ -144,7 +144,7 @@ Middleware applied in reverse configuration order. Requests flow through: Audit*
 - **Customization**: `envVars`, `volumes`, `toolsFilter`, `toolsOverride`, `ignoreConfig`
 - **Organization**: `group`, `containerLabels`
 - **Middleware**: `middlewareConfigs` - Dynamic middleware chain configuration
-- **Remote servers**: `remoteUrl`, `remoteAuthConfig`
+- **Remote servers**: `remoteURL`, `remoteAuthConfig`
 - **Kubernetes**: `k8sPodTemplatePatch`
 
 See `pkg/runner/config.go` for complete field reference.

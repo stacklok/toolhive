@@ -48,6 +48,7 @@ type MCPRemoteProxyReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
@@ -124,6 +125,16 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
 		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPToolConfig error")
+		}
+		return err
+	}
+
+	// Handle MCPTelemetryConfig
+	if err := r.handleTelemetryConfig(ctx, proxy); err != nil {
+		ctxLogger.Error(err, "Failed to handle MCPTelemetryConfig")
+		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
+		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPTelemetryConfig error")
 		}
 		return err
 	}
@@ -635,6 +646,97 @@ func (r *MCPRemoteProxyReconciler) handleToolConfig(ctx context.Context, proxy *
 		proxy.Status.ToolConfigHash = toolConfig.Status.ConfigHash
 		if err := r.Status().Update(ctx, proxy); err != nil {
 			return fmt.Errorf("failed to update MCPToolConfig hash in status: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// handleTelemetryConfig validates and tracks the hash of the referenced MCPTelemetryConfig.
+// It updates the MCPRemoteProxy status when the telemetry configuration changes.
+func (r *MCPRemoteProxyReconciler) handleTelemetryConfig(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	ctxLogger := log.FromContext(ctx)
+
+	if proxy.Spec.TelemetryConfigRef == nil {
+		// No MCPTelemetryConfig referenced, clear any stored hash and condition.
+		condType := mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated
+		condRemoved := meta.FindStatusCondition(proxy.Status.Conditions, condType) != nil
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, condType)
+		if condRemoved || proxy.Status.TelemetryConfigHash != "" {
+			proxy.Status.TelemetryConfigHash = ""
+			if err := r.Status().Update(ctx, proxy); err != nil {
+				return fmt.Errorf("failed to clear MCPTelemetryConfig hash from status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	// Get the referenced MCPTelemetryConfig
+	telemetryConfig, err := ctrlutil.GetTelemetryConfigForMCPRemoteProxy(ctx, r.Client, proxy)
+	if err != nil {
+		// Transient API error (not a NotFound)
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyTelemetryConfigRefFetchError,
+			Message:            err.Error(),
+			ObservedGeneration: proxy.Generation,
+		})
+		return err
+	}
+
+	if telemetryConfig == nil {
+		// Resource genuinely does not exist
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyTelemetryConfigRefNotFound,
+			Message:            fmt.Sprintf("MCPTelemetryConfig %s not found", proxy.Spec.TelemetryConfigRef.Name),
+			ObservedGeneration: proxy.Generation,
+		})
+		return fmt.Errorf("MCPTelemetryConfig %s not found", proxy.Spec.TelemetryConfigRef.Name)
+	}
+
+	// Validate that the MCPTelemetryConfig is valid (has Valid=True condition)
+	if err := telemetryConfig.Validate(); err != nil {
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyTelemetryConfigRefInvalid,
+			Message:            fmt.Sprintf("MCPTelemetryConfig %s is invalid: %v", proxy.Spec.TelemetryConfigRef.Name, err),
+			ObservedGeneration: proxy.Generation,
+		})
+		return fmt.Errorf("MCPTelemetryConfig %s is invalid: %w", proxy.Spec.TelemetryConfigRef.Name, err)
+	}
+
+	// Detect whether the condition is transitioning to True (e.g. recovering from
+	// a transient error). Without this check the status update is skipped when the
+	// hash is unchanged, leaving a stale False condition.
+	condType := mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated
+	prevCondition := meta.FindStatusCondition(proxy.Status.Conditions, condType)
+	needsUpdate := prevCondition == nil || prevCondition.Status != metav1.ConditionTrue
+
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyTelemetryConfigRefValid,
+		Message:            fmt.Sprintf("MCPTelemetryConfig %s is valid", proxy.Spec.TelemetryConfigRef.Name),
+		ObservedGeneration: proxy.Generation,
+	})
+
+	if proxy.Status.TelemetryConfigHash != telemetryConfig.Status.ConfigHash {
+		ctxLogger.Info("MCPTelemetryConfig has changed, updating MCPRemoteProxy",
+			"proxy", proxy.Name,
+			"telemetryConfig", telemetryConfig.Name,
+			"oldHash", proxy.Status.TelemetryConfigHash,
+			"newHash", telemetryConfig.Status.ConfigHash)
+		proxy.Status.TelemetryConfigHash = telemetryConfig.Status.ConfigHash
+		needsUpdate = true
+	}
+
+	if needsUpdate {
+		if err := r.Status().Update(ctx, proxy); err != nil {
+			return fmt.Errorf("failed to update MCPTelemetryConfig status: %w", err)
 		}
 	}
 
@@ -1390,6 +1492,37 @@ func (r *MCPRemoteProxyReconciler) mapOIDCConfigToMCPRemoteProxy(
 	return requests
 }
 
+// mapTelemetryConfigToMCPRemoteProxy maps MCPTelemetryConfig changes to MCPRemoteProxy reconciliation requests.
+func (r *MCPRemoteProxyReconciler) mapTelemetryConfigToMCPRemoteProxy(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	telemetryConfig, ok := obj.(*mcpv1alpha1.MCPTelemetryConfig)
+	if !ok {
+		return nil
+	}
+
+	proxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	if err := r.List(ctx, proxyList, client.InNamespace(telemetryConfig.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPRemoteProxies for MCPTelemetryConfig watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, proxy := range proxyList.Items {
+		if proxy.Spec.TelemetryConfigRef != nil &&
+			proxy.Spec.TelemetryConfigRef.Name == telemetryConfig.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      proxy.Name,
+					Namespace: proxy.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
 // SetupWithManager sets up the controller with the Manager
 func (r *MCPRemoteProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPRemoteProxy reconciliation requests
@@ -1469,6 +1602,10 @@ func (r *MCPRemoteProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&mcpv1alpha1.MCPOIDCConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.mapOIDCConfigToMCPRemoteProxy),
+		).
+		Watches(
+			&mcpv1alpha1.MCPTelemetryConfig{},
+			handler.EnqueueRequestsFromMapFunc(r.mapTelemetryConfigToMCPRemoteProxy),
 		).
 		Complete(r)
 }

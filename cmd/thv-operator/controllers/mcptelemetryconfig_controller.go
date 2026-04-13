@@ -193,7 +193,57 @@ func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPTelemetryConfig{}).
 		Watches(&mcpv1alpha1.MCPServer{}, mcpServerHandler).
+		Watches(
+			&mcpv1alpha1.MCPRemoteProxy{},
+			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToTelemetryConfig),
+		).
 		Complete(r)
+}
+
+// mapMCPRemoteProxyToTelemetryConfig enqueues MCPTelemetryConfig reconcile requests
+// when an MCPRemoteProxy changes. Handles both the currently-referenced config and
+// any config that still lists this proxy in ReferencingWorkloads (ref-removal case).
+func (r *MCPTelemetryConfigReconciler) mapMCPRemoteProxyToTelemetryConfig(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	proxy, ok := obj.(*mcpv1alpha1.MCPRemoteProxy)
+	if !ok {
+		return nil
+	}
+
+	seen := make(map[types.NamespacedName]struct{})
+	var requests []reconcile.Request
+
+	if proxy.Spec.TelemetryConfigRef != nil {
+		nn := types.NamespacedName{
+			Name:      proxy.Spec.TelemetryConfigRef.Name,
+			Namespace: proxy.Namespace,
+		}
+		seen[nn] = struct{}{}
+		requests = append(requests, reconcile.Request{NamespacedName: nn})
+	}
+
+	// Also enqueue any MCPTelemetryConfig that still lists this proxy in
+	// ReferencingWorkloads — handles ref-removal and proxy-deletion cases.
+	telemetryConfigList := &mcpv1alpha1.MCPTelemetryConfigList{}
+	if err := r.List(ctx, telemetryConfigList, client.InNamespace(proxy.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPTelemetryConfigs for MCPRemoteProxy watch")
+		return requests
+	}
+	for _, cfg := range telemetryConfigList.Items {
+		nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
+		if _, already := seen[nn]; already {
+			continue
+		}
+		for _, ref := range cfg.Status.ReferencingWorkloads {
+			if ref.Kind == mcpv1alpha1.WorkloadKindMCPRemoteProxy && ref.Name == proxy.Name {
+				requests = append(requests, reconcile.Request{NamespacedName: nn})
+				break
+			}
+		}
+	}
+
+	return requests
 }
 
 // calculateConfigHash calculates a hash of the MCPTelemetryConfig spec using Kubernetes utilities
@@ -256,11 +306,33 @@ func (r *MCPTelemetryConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	telemetryConfig *mcpv1alpha1.MCPTelemetryConfig,
 ) ([]mcpv1alpha1.WorkloadReference, error) {
-	return ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, telemetryConfig.Namespace, telemetryConfig.Name,
+	serverRefs, err := ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, telemetryConfig.Namespace, telemetryConfig.Name,
 		func(server *mcpv1alpha1.MCPServer) *string {
 			if server.Spec.TelemetryConfigRef != nil {
 				return &server.Spec.TelemetryConfigRef.Name
 			}
 			return nil
 		})
+	if err != nil {
+		return nil, err
+	}
+
+	proxies, err := ctrlutil.FindReferencingMCPRemoteProxies(ctx, r.Client, telemetryConfig.Namespace, telemetryConfig.Name,
+		func(proxy *mcpv1alpha1.MCPRemoteProxy) *string {
+			if proxy.Spec.TelemetryConfigRef != nil {
+				return &proxy.Spec.TelemetryConfigRef.Name
+			}
+			return nil
+		})
+	if err != nil {
+		return nil, err
+	}
+
+	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(serverRefs)+len(proxies))
+	refs = append(refs, serverRefs...)
+	for _, proxy := range proxies {
+		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxy.Name})
+	}
+	ctrlutil.SortWorkloadRefs(refs)
+	return refs, nil
 }

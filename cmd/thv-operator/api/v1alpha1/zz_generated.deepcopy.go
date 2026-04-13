@@ -1303,6 +1303,11 @@ func (in *MCPRemoteProxySpec) DeepCopyInto(out *MCPRemoteProxySpec) {
 		*out = new(ToolConfigRef)
 		**out = **in
 	}
+	if in.TelemetryConfigRef != nil {
+		in, out := &in.TelemetryConfigRef, &out.TelemetryConfigRef
+		*out = new(MCPTelemetryConfigReference)
+		**out = **in
+	}
 	if in.Telemetry != nil {
 		in, out := &in.Telemetry, &out.Telemetry
 		*out = new(TelemetryConfig)

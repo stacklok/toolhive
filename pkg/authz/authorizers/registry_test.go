@@ -18,6 +18,8 @@ type mockFactory struct {
 	authorizer  Authorizer
 }
 
+func (*mockFactory) ConfigKey() string { return "mock" }
+
 func (f *mockFactory) ValidateConfig(_ json.RawMessage) error {
 	return f.validateErr
 }

@@ -294,6 +294,14 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		return fmt.Errorf("unable to create controller MCPOIDCConfig: %w", err)
 	}
 
+	// Set up MCPAuthzConfig controller
+	if err := (&controllers.MCPAuthzConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller MCPAuthzConfig: %w", err)
+	}
+
 	// Set up MCPTelemetryConfig controller
 	if err := (&controllers.MCPTelemetryConfigReconciler{
 		Client: mgr.GetClient(),

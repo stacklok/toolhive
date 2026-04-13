@@ -133,10 +133,17 @@ type IncomingAuthConfig struct {
 	// +optional
 	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
-	// AuthzConfig defines authorization policy configuration
-	// Reuses MCPServer authz patterns
+	// AuthzConfig defines authorization policy configuration.
+	// Deprecated: Use AuthzConfigRef to reference a shared MCPAuthzConfig resource instead.
+	// AuthzConfig and AuthzConfigRef are mutually exclusive.
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
+
+	// AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+	// The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
+	// Mutually exclusive with authzConfig.
+	// +optional
+	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 }
 
 // OutgoingAuthConfig configures authentication from Virtual MCP to backend MCPServers

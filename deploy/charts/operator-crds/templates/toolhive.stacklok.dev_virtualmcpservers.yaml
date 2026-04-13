@@ -1796,8 +1796,9 @@ spec:
                 properties:
                   authzConfig:
                     description: |-
-                      AuthzConfig defines authorization policy configuration
-                      Reuses MCPServer authz patterns
+                      AuthzConfig defines authorization policy configuration.
+                      Deprecated: Use AuthzConfigRef to reference a shared MCPAuthzConfig resource instead.
+                      AuthzConfig and AuthzConfigRef are mutually exclusive.
                     properties:
                       configMap:
                         description: |-
@@ -1852,6 +1853,20 @@ spec:
                     - message: inline must be set when type is 'inline', and must
                         not be set otherwise
                       rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+                  authzConfigRef:
+                    description: |-
+                      AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                      The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
+                      Mutually exclusive with authzConfig.
+                    properties:
+                      name:
+                        description: Name is the name of the MCPAuthzConfig resource
+                          in the same namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
                   oidcConfig:
                     description: |-
                       OIDCConfig defines OIDC authentication configuration.

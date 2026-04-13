@@ -478,17 +478,6 @@ kubectl get deployment my-registry-api
 # - Configuration errors
 ```
 
-**Image Validation Errors**:
-```bash
-# Check MCPServer events
-kubectl describe mcpserver problematic-server
-
-# Common causes:
-# - Image not in registry
-# - Registry not synced
-# - Typo in image name
-```
-
 ### Debug Commands
 
 ```bash
@@ -510,7 +499,6 @@ kubectl annotate mcpregistry my-registry toolhive.stacklok.dev/manual-sync="$(da
 Operator logs show:
 - Sync operations and results
 - API deployment status
-- Image validation attempts
 - Error details with context
 
 Filter for specific registry:

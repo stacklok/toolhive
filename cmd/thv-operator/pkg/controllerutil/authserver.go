@@ -61,6 +61,15 @@ const (
 
 	// DefaultSentinelPort is the default Redis Sentinel port
 	DefaultSentinelPort = 26379
+
+	// UpstreamCABundleVolumePrefix is the prefix for upstream CA bundle volume names
+	UpstreamCABundleVolumePrefix = "upstream-ca-"
+
+	// UpstreamCABundleMountBasePath is the base path where upstream CA bundles are mounted
+	UpstreamCABundleMountBasePath = "/etc/toolhive/authserver/upstream-ca"
+
+	// UpstreamCABundleDefaultKey is the default ConfigMap key for upstream CA bundles
+	UpstreamCABundleDefaultKey = "ca.crt"
 )
 
 // upstreamSecretBinding binds an upstream provider to its env var name for the
@@ -260,6 +269,47 @@ func GenerateAuthServerVolumes(
 				ReadOnly:  true,
 			})
 		}
+	}
+
+	// Generate volumes for upstream OIDC trust CA bundles
+	for _, provider := range authConfig.UpstreamProviders {
+		if provider.Type != mcpv1beta1.UpstreamProviderTypeOIDCTrust {
+			continue
+		}
+		if provider.OIDCConfig == nil || provider.OIDCConfig.CABundleConfigMapRef == nil {
+			continue
+		}
+		ref := provider.OIDCConfig.CABundleConfigMapRef
+		if ref.ConfigMapRef == nil {
+			continue
+		}
+
+		key := ref.ConfigMapRef.Key
+		if key == "" {
+			key = UpstreamCABundleDefaultKey
+		}
+		volumeName := fmt.Sprintf("%s%s", UpstreamCABundleVolumePrefix, provider.Name)
+		mountFile := fmt.Sprintf("%s/%s/%s", UpstreamCABundleMountBasePath, provider.Name, key)
+
+		volumes = append(volumes, corev1.Volume{
+			Name: volumeName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: ref.ConfigMapRef.LocalObjectReference,
+					Items: []corev1.KeyToPath{{
+						Key:  key,
+						Path: key,
+					}},
+					DefaultMode: k8sptr.To(int32(0400)),
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      volumeName,
+			MountPath: mountFile,
+			SubPath:   key,
+			ReadOnly:  true,
+		})
 	}
 
 	return volumes, volumeMounts
@@ -726,12 +776,22 @@ func buildUpstreamRunConfig(
 			}
 		}
 	case mcpv1beta1.UpstreamProviderTypeOIDCTrust:
-		// oidc-trust reuses the OIDC config but only needs issuer and clientID.
+		// oidc-trust reuses the OIDC config but only needs issuer, clientID, and optional CA bundle.
 		// No client secret, redirect URI, or scopes are required.
 		if provider.OIDCConfig != nil {
+			var caBundlePath string
+			if provider.OIDCConfig.CABundleConfigMapRef != nil && provider.OIDCConfig.CABundleConfigMapRef.ConfigMapRef != nil {
+				ref := provider.OIDCConfig.CABundleConfigMapRef
+				key := ref.ConfigMapRef.Key
+				if key == "" {
+					key = UpstreamCABundleDefaultKey
+				}
+				caBundlePath = fmt.Sprintf("%s/%s/%s", UpstreamCABundleMountBasePath, provider.Name, key)
+			}
 			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
-				IssuerURL: provider.OIDCConfig.IssuerURL,
-				ClientID:  provider.OIDCConfig.ClientID,
+				IssuerURL:    provider.OIDCConfig.IssuerURL,
+				ClientID:     provider.OIDCConfig.ClientID,
+				CABundlePath: caBundlePath,
 			}
 		}
 	}

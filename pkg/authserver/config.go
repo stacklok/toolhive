@@ -208,6 +208,11 @@ type OIDCUpstreamRunConfig struct {
 	// Google's access_type=offline.
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
+
+	// CABundlePath is the filesystem path to a CA certificate bundle for verifying
+	// the OIDC issuer's TLS certificate. Used by oidc-trust providers when the issuer
+	// uses a non-public CA. When empty, the system trust store is used.
+	CABundlePath string `json:"ca_bundle_path,omitempty" yaml:"ca_bundle_path,omitempty"`
 }
 
 // OAuth2UpstreamRunConfig contains configuration for pure OAuth 2.0 providers.

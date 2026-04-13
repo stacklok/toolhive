@@ -414,7 +414,8 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig) (*authserver.Upstream
 				CommonOAuthConfig: upstream.CommonOAuthConfig{
 					ClientID: rc.OIDCConfig.ClientID,
 				},
-				Issuer: rc.OIDCConfig.IssuerURL,
+				Issuer:       rc.OIDCConfig.IssuerURL,
+				CABundlePath: rc.OIDCConfig.CABundlePath,
 			},
 		}, nil
 

@@ -354,6 +354,13 @@ type OIDCUpstreamConfig struct {
 	// +kubebuilder:validation:MaxProperties=16
 	// +optional
 	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
+
+	// CABundleConfigMapRef references a ConfigMap containing the CA certificate
+	// for verifying the OIDC issuer's TLS certificate. Used for oidc-trust
+	// providers where the issuer uses a non-public CA (e.g., internal PKI).
+	// When nil, the system trust store is used (sufficient for public CAs).
+	// +optional
+	CABundleConfigMapRef *CABundleSource `json:"caBundleConfigMapRef,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
@@ -964,29 +971,25 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *UpstreamProviderConfig) error {
 	prefix := fmt.Sprintf("upstreamProviders[%d]", index)
 
-	switch provider.Type {
-	case UpstreamProviderTypeOIDC:
-		if provider.OIDCConfig == nil {
-			return fmt.Errorf("%s: oidcConfig must be set when type is 'oidc'", prefix)
-		}
-		if provider.OAuth2Config != nil {
-			return fmt.Errorf("%s: oauth2Config must not be set when type is 'oidc'", prefix)
-		}
-	case UpstreamProviderTypeOAuth2:
-		if provider.OAuth2Config == nil {
-			return fmt.Errorf("%s: oauth2Config must be set when type is 'oauth2'", prefix)
-		}
-		if provider.OIDCConfig != nil {
-			return fmt.Errorf("%s: oidcConfig must not be set when type is 'oauth2'", prefix)
-		}
-	case UpstreamProviderTypeOIDCTrust:
+	// oidc-trust providers require OIDCConfig and must not have OAuth2Config set.
+	// All other provider types use the standard XOR rules below.
+	if provider.Type == UpstreamProviderTypeOIDCTrust {
 		if provider.OIDCConfig == nil {
 			return fmt.Errorf("%s: oidcConfig must be set when type is 'oidc-trust'", prefix)
 		}
 		if provider.OAuth2Config != nil {
 			return fmt.Errorf("%s: oauth2Config must not be set when type is 'oidc-trust'", prefix)
 		}
-	default:
+		return ValidateAdditionalAuthorizationParams(prefix, provider.AdditionalAuthorizationParams())
+	}
+
+	if (provider.OIDCConfig == nil) == (provider.Type == UpstreamProviderTypeOIDC) {
+		return fmt.Errorf("%s: oidcConfig must be set when type is 'oidc' and must not be set otherwise", prefix)
+	}
+	if (provider.OAuth2Config == nil) == (provider.Type == UpstreamProviderTypeOAuth2) {
+		return fmt.Errorf("%s: oauth2Config must be set when type is 'oauth2' and must not be set otherwise", prefix)
+	}
+	if provider.Type != UpstreamProviderTypeOIDC && provider.Type != UpstreamProviderTypeOAuth2 {
 		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
 	}
 

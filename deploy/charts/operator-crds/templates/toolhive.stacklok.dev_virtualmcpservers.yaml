@@ -1980,8 +1980,10 @@ spec:
                           jwksAllowPrivateIP:
                             default: false
                             description: |-
-                              JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
-                              Use with caution - only enable for trusted internal IDPs
+                              JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses.
+                              Use with caution - only enable for trusted internal IDPs.
+                              Note: at runtime, if either JWKSAllowPrivateIP or ProtectedResourceAllowPrivateIP
+                              is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
                             type: boolean
                           jwksAuthTokenPath:
                             description: |-
@@ -1994,8 +1996,10 @@ spec:
                           protectedResourceAllowPrivateIP:
                             default: false
                             description: |-
-                              ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
-                              Use with caution - only enable for trusted internal IDPs or testing
+                              ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses.
+                              Use with caution - only enable for trusted internal IDPs or testing.
+                              Note: at runtime, if either ProtectedResourceAllowPrivateIP or JWKSAllowPrivateIP
+                              is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
                             type: boolean
                           scopes:
                             description: |-

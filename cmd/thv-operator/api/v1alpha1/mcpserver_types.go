@@ -86,6 +86,23 @@ const (
 	ConditionReasonOIDCConfigRefError = "OIDCConfigRefError"
 )
 
+// Condition type for MCPAuthzConfig reference validation
+const (
+	// ConditionAuthzConfigRefValidated indicates whether the AuthzConfigRef is valid
+	ConditionAuthzConfigRefValidated = "AuthzConfigRefValidated"
+)
+
+const (
+	// ConditionReasonAuthzConfigRefValid indicates the referenced MCPAuthzConfig is valid and ready
+	ConditionReasonAuthzConfigRefValid = "AuthzConfigRefValid"
+
+	// ConditionReasonAuthzConfigRefNotFound indicates the referenced MCPAuthzConfig was not found
+	ConditionReasonAuthzConfigRefNotFound = "AuthzConfigRefNotFound"
+
+	// ConditionReasonAuthzConfigRefNotValid indicates the referenced MCPAuthzConfig is not valid
+	ConditionReasonAuthzConfigRefNotValid = "AuthzConfigRefNotValid"
+)
+
 const (
 	// ConditionReasonCABundleRefValid indicates the CABundleRef is valid and the ConfigMap exists
 	ConditionReasonCABundleRefValid = "CABundleRefValid"
@@ -190,6 +207,7 @@ const SessionStorageProviderRedis = "redis"
 // MCPServerSpec defines the desired state of MCPServer
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+// +kubebuilder:validation:XValidation:rule="!(has(self.authzConfig) && has(self.authzConfigRef))",message="authzConfig and authzConfigRef are mutually exclusive; use authzConfigRef to reference a shared MCPAuthzConfig"
 // +kubebuilder:validation:XValidation:rule="!(has(self.telemetry) && has(self.telemetryConfigRef))",message="telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="rateLimiting requires sessionStorage with provider 'redis'"
 // +kubebuilder:validation:XValidation:rule="!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) || has(self.oidcConfig) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="rateLimiting.perUser requires authentication (oidcConfig, oidcConfigRef, or externalAuthConfigRef)"
@@ -1068,6 +1086,10 @@ type MCPServerStatus struct {
 	// TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection
 	// +optional
 	TelemetryConfigHash string `json:"telemetryConfigHash,omitempty"`
+
+	// AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection
+	// +optional
+	AuthzConfigHash string `json:"authzConfigHash,omitempty"`
 
 	// URL is the URL where the MCP server can be accessed
 	// +optional

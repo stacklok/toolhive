@@ -135,9 +135,8 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	runconfig.AddTelemetryConfigOptions(ctx, &options, proxy.Spec.Telemetry, proxy.Name)
 
 	// Add authorization configuration if specified
-
-	if err := ctrlutil.AddAuthzConfigOptions(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig, &options); err != nil {
-		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
+	if err := r.addAuthzOptions(ctx, proxy, &options); err != nil {
+		return nil, err
 	}
 
 	// Add OIDC configuration (required for proxy mode)
@@ -319,4 +318,21 @@ func addHeaderForwardConfigOptions(proxy *mcpv1alpha1.MCPRemoteProxy, options *[
 		}
 		*options = append(*options, runner.WithHeaderForwardSecrets(headerSecrets))
 	}
+}
+
+// addAuthzOptions resolves authorization configuration from either an MCPAuthzConfig
+// reference or the deprecated inline AuthzConfig and adds it to the builder options.
+func (r *MCPRemoteProxyReconciler) addAuthzOptions(
+	ctx context.Context,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	if proxy.Spec.AuthzConfigRef != nil {
+		authzCfg, err := ctrlutil.GetAuthzConfigForWorkload(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfigRef)
+		if err != nil {
+			return fmt.Errorf("failed to get MCPAuthzConfig: %w", err)
+		}
+		return ctrlutil.AddAuthzConfigRefOptions(authzCfg, options)
+	}
+	return ctrlutil.AddAuthzConfigOptions(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig, options)
 }

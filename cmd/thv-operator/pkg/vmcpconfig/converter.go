@@ -6,6 +6,7 @@ package vmcpconfig
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -182,7 +183,13 @@ func (c *Converter) convertIncomingAuth(
 	}
 
 	// Convert authorization configuration
-	if vmcp.Spec.IncomingAuth.AuthzConfig != nil {
+	if vmcp.Spec.IncomingAuth.AuthzConfigRef != nil {
+		authzCfg, err := c.resolveAuthzConfigRef(ctx, vmcp)
+		if err != nil {
+			return nil, err
+		}
+		incoming.Authz = authzCfg
+	} else if vmcp.Spec.IncomingAuth.AuthzConfig != nil {
 		// Map Kubernetes API types to vmcp config types
 		// API "inline" maps to vmcp "cedar"
 		authzType := vmcp.Spec.IncomingAuth.AuthzConfig.Type
@@ -202,6 +209,48 @@ func (c *Converter) convertIncomingAuth(
 	}
 
 	return incoming, nil
+}
+
+// resolveAuthzConfigRef resolves authorization configuration from an MCPAuthzConfig reference.
+// Currently supports Cedar-type configs by extracting policies from the MCPAuthzConfig spec.
+// Non-Cedar types are not yet supported in the VirtualMCPServer runtime config
+// (vmcpconfig.AuthzConfig is Cedar-specific).
+func (c *Converter) resolveAuthzConfigRef(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) (*vmcpconfig.AuthzConfig, error) {
+	ref := vmcp.Spec.IncomingAuth.AuthzConfigRef
+
+	authzConfig, err := controllerutil.GetAuthzConfigForWorkload(ctx, c.k8sClient, vmcp.Namespace, ref)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPAuthzConfig %s: %w", ref.Name, err)
+	}
+
+	if err := controllerutil.ValidateAuthzConfigReady(authzConfig); err != nil {
+		return nil, err
+	}
+
+	// For Cedar-type configs, extract policies from the raw config
+	if authzConfig.Spec.Type == "cedarv1" {
+		var cedarOpts struct {
+			Policies                []string `json:"policies"`
+			PrimaryUpstreamProvider string   `json:"primary_upstream_provider"`
+		}
+		if err := json.Unmarshal(authzConfig.Spec.Config.Raw, &cedarOpts); err != nil {
+			return nil, fmt.Errorf("failed to parse Cedar config from MCPAuthzConfig %s: %w", ref.Name, err)
+		}
+		return &vmcpconfig.AuthzConfig{
+			Type:                    "cedar",
+			Policies:                cedarOpts.Policies,
+			PrimaryUpstreamProvider: cedarOpts.PrimaryUpstreamProvider,
+		}, nil
+	}
+
+	// Non-Cedar types: vmcpconfig.AuthzConfig is Cedar-specific, so we can only
+	// set the type. Full support for other backends is a follow-up.
+	return &vmcpconfig.AuthzConfig{
+		Type: authzConfig.Spec.Type,
+	}, nil
 }
 
 // resolveOIDCConfig resolves OIDC configuration from either an MCPOIDCConfig reference

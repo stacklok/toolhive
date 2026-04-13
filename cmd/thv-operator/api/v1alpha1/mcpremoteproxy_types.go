@@ -38,6 +38,7 @@ type HeaderFromSecret struct {
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+// +kubebuilder:validation:XValidation:rule="!(has(self.authzConfig) && has(self.authzConfigRef))",message="authzConfig and authzConfigRef are mutually exclusive; use authzConfigRef to reference a shared MCPAuthzConfig"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPRemoteProxySpec struct {
@@ -194,6 +195,10 @@ type MCPRemoteProxyStatus struct {
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
 	// +optional
 	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
+
+	// AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection
+	// +optional
+	AuthzConfigHash string `json:"authzConfigHash,omitempty"`
 
 	// Message provides additional information about the current phase
 	// +optional

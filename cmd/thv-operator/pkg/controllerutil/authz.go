@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -20,6 +21,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -268,4 +270,169 @@ func AddAuthzConfigOptions(
 		// Unknown type
 		return fmt.Errorf("unknown authz config type: %s", authzRef.Type)
 	}
+}
+
+// GetAuthzConfigForWorkload fetches the MCPAuthzConfig referenced by a workload.
+// Returns nil if the ref is nil.
+func GetAuthzConfigForWorkload(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	ref *mcpv1alpha1.MCPAuthzConfigReference,
+) (*mcpv1alpha1.MCPAuthzConfig, error) {
+	if ref == nil {
+		return nil, nil
+	}
+
+	authzConfig := &mcpv1alpha1.MCPAuthzConfig{}
+	if err := c.Get(ctx, types.NamespacedName{
+		Name:      ref.Name,
+		Namespace: namespace,
+	}, authzConfig); err != nil {
+		return nil, fmt.Errorf("failed to get MCPAuthzConfig %s/%s: %w", namespace, ref.Name, err)
+	}
+
+	return authzConfig, nil
+}
+
+// ValidateAuthzConfigReady checks that the MCPAuthzConfig has a Valid=True condition.
+// Returns an error if the config is not ready.
+func ValidateAuthzConfigReady(authzConfig *mcpv1alpha1.MCPAuthzConfig) error {
+	validCondition := meta.FindStatusCondition(authzConfig.Status.Conditions, mcpv1alpha1.ConditionTypeAuthzConfigValid)
+	if validCondition == nil || validCondition.Status != metav1.ConditionTrue {
+		msg := fmt.Sprintf("MCPAuthzConfig %s is not valid", authzConfig.Name)
+		if validCondition != nil {
+			msg = fmt.Sprintf("MCPAuthzConfig %s is not valid: %s", authzConfig.Name, validCondition.Message)
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
+}
+
+// GenerateAuthzVolumeConfigFromRef generates volume mount and volume for an MCPAuthzConfig
+// reference. It creates volumes that mount a ConfigMap named "{resourceName}-authzref" containing
+// the reconstructed full authorization config at /etc/toolhive/authz/authz.json.
+func GenerateAuthzVolumeConfigFromRef(resourceName string) (*corev1.VolumeMount, *corev1.Volume) {
+	configMapName := fmt.Sprintf("%s-authzref", resourceName)
+
+	volumeMount := &corev1.VolumeMount{
+		Name:      "authz-config",
+		MountPath: "/etc/toolhive/authz",
+		ReadOnly:  true,
+	}
+
+	volume := &corev1.Volume{
+		Name: "authz-config",
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: configMapName,
+				},
+				Items: []corev1.KeyToPath{
+					{
+						Key:  DefaultAuthzKey,
+						Path: DefaultAuthzKey,
+					},
+				},
+			},
+		},
+	}
+
+	return volumeMount, volume
+}
+
+// EnsureAuthzConfigMapFromRef creates or updates a ConfigMap containing the reconstructed
+// full authorization config JSON from an MCPAuthzConfig reference.
+func EnsureAuthzConfigMapFromRef(
+	ctx context.Context,
+	c client.Client,
+	scheme *runtime.Scheme,
+	owner client.Object,
+	namespace string,
+	resourceName string,
+	authzConfig *mcpv1alpha1.MCPAuthzConfig,
+	labels map[string]string,
+) error {
+	fullConfigJSON, err := BuildFullAuthzConfigJSON(authzConfig.Spec)
+	if err != nil {
+		return fmt.Errorf("failed to build full authz config JSON: %w", err)
+	}
+
+	configMapName := fmt.Sprintf("%s-authzref", resourceName)
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName,
+			Namespace: namespace,
+			Labels:    labels,
+		},
+		Data: map[string]string{
+			DefaultAuthzKey: string(fullConfigJSON),
+		},
+	}
+
+	configMapsClient := configmaps.NewClient(c, scheme)
+	if _, err := configMapsClient.UpsertWithOwnerReference(ctx, configMap, owner); err != nil {
+		return fmt.Errorf("failed to upsert authzref ConfigMap: %w", err)
+	}
+
+	return nil
+}
+
+// BuildFullAuthzConfigJSON reconstructs the full authorizer config JSON from a
+// MCPAuthzConfig spec. Extracted here so both the MCPAuthzConfig controller and
+// workload controllers can use it.
+func BuildFullAuthzConfigJSON(spec mcpv1alpha1.MCPAuthzConfigSpec) ([]byte, error) {
+	factory := authorizers.GetFactory(spec.Type)
+	if factory == nil {
+		return nil, fmt.Errorf("unsupported authorizer type: %s (registered types: %v)",
+			spec.Type, authorizers.RegisteredTypes())
+	}
+
+	configKey := factory.ConfigKey()
+
+	fullConfig := map[string]json.RawMessage{
+		"version": mustMarshalJSON(authzConfigVersion),
+		"type":    mustMarshalJSON(spec.Type),
+		configKey: spec.Config.Raw,
+	}
+
+	result, err := json.Marshal(fullConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal full authz config: %w", err)
+	}
+	return result, nil
+}
+
+const authzConfigVersion = "1.0"
+
+func mustMarshalJSON(v string) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(fmt.Sprintf("failed to marshal %q: %v", v, err))
+	}
+	return b
+}
+
+// AddAuthzConfigRefOptions resolves an MCPAuthzConfig reference and adds the
+// authorization configuration to builder options.
+func AddAuthzConfigRefOptions(
+	authzConfig *mcpv1alpha1.MCPAuthzConfig,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	fullConfigJSON, err := BuildFullAuthzConfigJSON(authzConfig.Spec)
+	if err != nil {
+		return fmt.Errorf("failed to build full authz config: %w", err)
+	}
+
+	var cfg authz.Config
+	if err := json.Unmarshal(fullConfigJSON, &cfg); err != nil {
+		return fmt.Errorf("failed to parse authz config: %w", err)
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid authz config from MCPAuthzConfig %s: %w", authzConfig.Name, err)
+	}
+
+	*options = append(*options, runner.WithAuthzConfig(&cfg))
+	return nil
 }

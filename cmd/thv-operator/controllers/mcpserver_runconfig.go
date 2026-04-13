@@ -200,8 +200,15 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	}
 
 	// Add authorization configuration if specified
-
-	if err := ctrlutil.AddAuthzConfigOptions(ctx, r.Client, m.Namespace, m.Spec.AuthzConfig, &options); err != nil {
+	if m.Spec.AuthzConfigRef != nil {
+		authzCfg, err := ctrlutil.GetAuthzConfigForWorkload(ctx, r.Client, m.Namespace, m.Spec.AuthzConfigRef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get MCPAuthzConfig: %w", err)
+		}
+		if err := ctrlutil.AddAuthzConfigRefOptions(authzCfg, &options); err != nil {
+			return nil, fmt.Errorf("failed to process AuthzConfigRef: %w", err)
+		}
+	} else if err := ctrlutil.AddAuthzConfigOptions(ctx, r.Client, m.Namespace, m.Spec.AuthzConfig, &options); err != nil {
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 

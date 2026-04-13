@@ -753,6 +753,9 @@ spec:
             - message: oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef
                 to reference a shared MCPOIDCConfig
               rule: '!(has(self.oidcConfig) && has(self.oidcConfigRef))'
+            - message: authzConfig and authzConfigRef are mutually exclusive; use
+                authzConfigRef to reference a shared MCPAuthzConfig
+              rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
           status:
             description: MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
             properties:
@@ -760,6 +763,10 @@ spec:
                 description: |-
                   AuthServerConfigHash is the hash of the referenced authServerRef spec,
                   used to detect configuration changes and trigger reconciliation.
+                type: string
+              authzConfigHash:
+                description: AuthzConfigHash is the hash of the referenced MCPAuthzConfig
+                  spec for change detection
                 type: string
               conditions:
                 description: Conditions represent the latest available observations

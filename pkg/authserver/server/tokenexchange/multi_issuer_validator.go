@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -119,18 +120,44 @@ func (v *MultiIssuerTokenValidator) Validate(ctx context.Context, rawToken strin
 		return nil, fmt.Errorf("failed to determine token issuer: %w", err)
 	}
 
+	slog.Debug("multi-issuer validator: routing token",
+		"issuer", issuer,
+		"self_issuer", v.selfIssuer,
+		"trusted_issuers_count", len(v.issuers),
+	)
+
 	// Self-issued tokens are delegated to the existing validator.
 	if issuer == v.selfIssuer {
+		slog.Debug("multi-issuer validator: routing to self-issued validator")
 		return v.selfValidator.Validate(ctx, rawToken)
 	}
 
 	// Look up the external issuer configuration.
 	issuerConfig, ok := v.issuers[issuer]
 	if !ok {
+		knownIssuers := make([]string, 0, len(v.issuers))
+		for k := range v.issuers {
+			knownIssuers = append(knownIssuers, k)
+		}
+		slog.Debug("multi-issuer validator: issuer not trusted",
+			"issuer", issuer,
+			"known_issuers", knownIssuers,
+		)
 		return nil, fmt.Errorf("untrusted issuer: %q", issuer)
 	}
 
-	return v.validateExternalToken(ctx, rawToken, issuerConfig)
+	slog.Debug("multi-issuer validator: routing to external validator",
+		"issuer", issuer,
+		"expected_audience", issuerConfig.ExpectedAudience,
+	)
+	result, err := v.validateExternalToken(ctx, rawToken, issuerConfig)
+	if err != nil {
+		slog.Debug("multi-issuer validator: external validation failed",
+			"issuer", issuer,
+			"error", err,
+		)
+	}
+	return result, err
 }
 
 // validateExternalToken verifies a JWT from a trusted external issuer by

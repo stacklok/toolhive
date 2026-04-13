@@ -361,6 +361,12 @@ type OIDCUpstreamConfig struct {
 	// When nil, the system trust store is used (sufficient for public CAs).
 	// +optional
 	CABundleConfigMapRef *CABundleSource `json:"caBundleConfigMapRef,omitempty"`
+
+	// AllowPrivateIP allows OIDC discovery and JWKS endpoints to resolve to
+	// private IP addresses. Required for in-cluster OIDC issuers (e.g., Keycloak)
+	// where service DNS resolves to cluster-internal IPs. Default: false.
+	// +optional
+	AllowPrivateIP bool `json:"allowPrivateIP,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.

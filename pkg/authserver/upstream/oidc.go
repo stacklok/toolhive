@@ -36,6 +36,9 @@ type OIDCConfig struct {
 	// the issuer's TLS certificate. Used by oidc-trust providers when the issuer
 	// uses a non-public CA (e.g., SPIFFE CA in a kind cluster).
 	CABundlePath string
+
+	// AllowPrivateIP allows connecting to OIDC endpoints on private IP addresses.
+	AllowPrivateIP bool
 }
 
 // Validate checks that OIDCConfig has all required fields and valid values.

@@ -254,7 +254,7 @@ For examples, see [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](..
 Defines a proxy for remote MCP servers with authentication, authorization, audit logging, and tool filtering.
 
 **Key fields:**
-- `remoteURL` - URL of the remote MCP server to proxy
+- `remoteUrl` - URL of the remote MCP server to proxy
 - `oidcConfigRef` - Reference to shared MCPOIDCConfig (preferred, with per-server `audience` and `scopes`)
 - `oidcConfig` - Inline OIDC authentication (deprecated, use `oidcConfigRef` instead)
 - `externalAuthConfigRef` - Token exchange for remote service authentication
@@ -272,7 +272,7 @@ Defines a proxy for remote MCP servers with authentication, authorization, audit
 Declares a remote MCP endpoint as a zero-infrastructure catalog entry. Unlike MCPServer and MCPRemoteProxy, MCPServerEntry never creates a Deployment, Service, or Pod. vMCP connects directly to the declared remote URL.
 
 **Key fields:**
-- `remoteURL` - URL of the remote MCP server (required)
+- `remoteUrl` - URL of the remote MCP server (required)
 - `groupRef` - MCPGroup membership for discovery by VirtualMCPServer
 - `externalAuthConfigRef` - Token exchange for remote service authentication
 - `caBundleRef` - Reference to a ConfigMap containing CA certificate data for TLS verification

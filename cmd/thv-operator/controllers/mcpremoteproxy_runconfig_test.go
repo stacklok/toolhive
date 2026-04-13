@@ -791,7 +791,7 @@ func TestValidateRunConfigForRemoteProxy(t *testing.T) {
 				Host:      "0.0.0.0",
 			},
 			expectErr: true,
-			errMsg:    "remoteURL is required",
+			errMsg:    "remoteUrl is required",
 		},
 		{
 			name: "missing name",

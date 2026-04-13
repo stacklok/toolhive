@@ -23,7 +23,7 @@ metadata:
   name: internal-mcp
   namespace: toolhive-system
 spec:
-  remoteURL: https://internal-mcp.corp:8443/mcp
+  remoteUrl: https://internal-mcp.corp:8443/mcp
   transport: streamable-http
   groupRef: remote-tools
   caBundleRef:

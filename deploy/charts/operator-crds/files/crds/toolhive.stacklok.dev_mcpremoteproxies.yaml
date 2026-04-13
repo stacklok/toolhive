@@ -23,7 +23,7 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .spec.remoteURL
+    - jsonPath: .spec.remoteUrl
       name: Remote URL
       type: string
     - jsonPath: .status.url
@@ -478,7 +478,7 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
-              remoteURL:
+              remoteUrl:
                 description: RemoteURL is the URL of the remote MCP server to proxy
                 pattern: ^https?://
                 type: string
@@ -728,7 +728,7 @@ spec:
                   and X-Forwarded-Prefix headers to construct endpoint URLs
                 type: boolean
             required:
-            - remoteURL
+            - remoteUrl
             type: object
             x-kubernetes-validations:
             - message: oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef
@@ -807,7 +807,7 @@ spec:
                 description: ExternalAuthConfigHash is the hash of the referenced
                   MCPExternalAuthConfig spec
                 type: string
-              externalURL:
+              externalUrl:
                 description: ExternalURL is the external URL where the proxy can be
                   accessed (if exposed externally)
                 type: string

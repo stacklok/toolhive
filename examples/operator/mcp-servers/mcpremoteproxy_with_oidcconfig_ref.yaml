@@ -22,7 +22,7 @@ metadata:
   name: github-proxy
   namespace: toolhive-system
 spec:
-  remoteURL: "https://api.github.com/mcp"
+  remoteUrl: "https://api.github.com/mcp"
   transport: streamable-http
   oidcConfigRef:
     name: proxy-idp

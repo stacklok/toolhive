@@ -492,7 +492,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			host,
 			int(mcpServer.GetProxyPort()),
 			mcpServer.Name,
-			"", // empty remoteURL for MCPServer (not remote proxy)
+			"", // empty remoteUrl for MCPServer (not remote proxy)
 		)
 		err = r.Status().Update(ctx, mcpServer)
 		if err != nil {

@@ -33,7 +33,7 @@ metadata:
   name: context7
   namespace: toolhive-system
 spec:
-  remoteURL: https://mcp.context7.com/mcp
+  remoteUrl: https://mcp.context7.com/mcp
   transport: streamable-http
   groupRef: engineering-team
 

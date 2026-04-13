@@ -36,7 +36,7 @@ metadata:
   name: api-proxy
   namespace: default
 spec:
-  remoteURL: "https://mcp.example.com/api"
+  remoteUrl: "https://mcp.example.com/api"
   proxyPort: 8080
   transport: streamable-http
 

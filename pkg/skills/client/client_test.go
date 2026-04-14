@@ -12,13 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
-
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 )
 
 // newTestClient returns a *Client pointed at the given test server.
@@ -571,10 +570,10 @@ func TestGetContent(t *testing.T) {
 			statusCode: http.StatusOK,
 		},
 		{
-			name:      "success with OCI reference",
-			opts:      skills.ContentOptions{Reference: "ghcr.io/org/my-skill:v1"},
-			wantQuery: "ghcr.io/org/my-skill:v1",
-			response:  response,
+			name:       "success with OCI reference",
+			opts:       skills.ContentOptions{Reference: "ghcr.io/org/my-skill:v1"},
+			wantQuery:  "ghcr.io/org/my-skill:v1",
+			response:   response,
 			statusCode: http.StatusOK,
 		},
 		{

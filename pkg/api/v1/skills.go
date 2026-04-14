@@ -327,7 +327,8 @@ func (s *SkillsRoutes) deleteBuild(w http.ResponseWriter, r *http.Request) error
 // getSkillContent retrieves the SKILL.md body and file listing from an OCI artifact.
 //
 //	@Summary		Get skill content
-//	@Description	Retrieve the SKILL.md body and file listing from an OCI artifact without installing it. Works for both remote registry references (e.g. ghcr.io/org/skill:v1) and local build tags.
+//	@Description	Retrieve the SKILL.md body and file listing from an artifact
+//	@Description	without installing it. Accepts OCI refs, git refs, or local tags.
 //	@Tags			skills
 //	@Produce		json
 //	@Param			ref	query		string	true	"OCI reference or local build tag"

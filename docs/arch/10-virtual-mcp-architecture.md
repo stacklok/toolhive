@@ -12,6 +12,7 @@ vMCP solves the problem of **MCP server sprawl**. As organizations deploy more s
 - **Composite workflows** - Create new tools that orchestrate multiple backends
 - **Centralized security** - Single authentication and authorization point
 - **Token management** - Exchange and cache tokens for backend access
+- **Shared telemetry** - Reference an MCPTelemetryConfig via `telemetryConfigRef` for fleet-wide OpenTelemetry settings
 
 ## Architecture
 

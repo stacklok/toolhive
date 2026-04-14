@@ -304,3 +304,53 @@ func TestStatusCollector_RemoveConditionsWithPrefix(t *testing.T) {
 	assert.True(t, foundBackend1, "backend-1 condition should remain")
 	assert.True(t, foundReady, "Ready condition should remain")
 }
+
+func TestStatusCollector_SetTelemetryConfigHash(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetTelemetryConfigHash("tel-hash-456")
+
+	status := &mcpv1alpha1.VirtualMCPServerStatus{}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Equal(t, "tel-hash-456", status.TelemetryConfigHash)
+}
+
+func TestStatusCollector_SetTelemetryConfigHash_Clear(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetTelemetryConfigHash("")
+
+	status := &mcpv1alpha1.VirtualMCPServerStatus{TelemetryConfigHash: "old-hash"}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Empty(t, status.TelemetryConfigHash)
+}
+
+func TestStatusCollector_SetTelemetryConfigRefValidatedCondition(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetTelemetryConfigRefValidatedCondition(
+		"TelemetryConfigRefValid", "MCPTelemetryConfig is valid", metav1.ConditionTrue)
+
+	status := &mcpv1alpha1.VirtualMCPServerStatus{}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Len(t, status.Conditions, 1)
+	assert.Equal(t, mcpv1alpha1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated, status.Conditions[0].Type)
+	assert.Equal(t, metav1.ConditionTrue, status.Conditions[0].Status)
+	assert.Equal(t, "TelemetryConfigRefValid", status.Conditions[0].Reason)
+	assert.Equal(t, "MCPTelemetryConfig is valid", status.Conditions[0].Message)
+}

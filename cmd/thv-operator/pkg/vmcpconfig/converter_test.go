@@ -1427,31 +1427,10 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 	}
 }
 
-// TestConverter_TelemetryConfigPreserved tests that all telemetry config fields are preserved during conversion.
-// This is a regression test for https://github.com/stacklok/toolhive/issues/XXX where
-// CustomAttributes, ServiceVersion, and EnvironmentVariables were being dropped.
-func TestConverter_TelemetryConfigPreserved(t *testing.T) {
+// TestConverter_InlineTelemetryIgnored verifies that the operator-side converter
+// ignores Config.Telemetry (the standalone CLI field) and only uses TelemetryConfigRef.
+func TestConverter_InlineTelemetryIgnored(t *testing.T) {
 	t.Parallel()
-
-	inputTelemetry := &telemetry.Config{
-		Endpoint:                    "otlp-collector:4317",
-		EnablePrometheusMetricsPath: true,
-		ServiceName:                 "custom-service-name",
-		ServiceVersion:              "v1.2.3",
-		TracingEnabled:              true,
-		MetricsEnabled:              true,
-		SamplingRate:                "0.1",
-		CustomAttributes: map[string]string{
-			"environment":  "production",
-			"region":       "us-west-2",
-			"cluster_name": "main-cluster",
-		},
-		EnvironmentVariables: []string{"PATH", "HOME", "USER"},
-		Headers: map[string]string{
-			"Authorization": "Bearer token123",
-		},
-		Insecure: true,
-	}
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1463,8 +1442,11 @@ func TestConverter_TelemetryConfigPreserved(t *testing.T) {
 				Type: "anonymous",
 			},
 			Config: vmcpconfig.Config{
-				Group:     "test-group",
-				Telemetry: inputTelemetry,
+				Group: "test-group",
+				Telemetry: &telemetry.Config{
+					Endpoint:    "otlp-collector:4317",
+					ServiceName: "should-be-ignored",
+				},
 			},
 		},
 	}
@@ -1475,113 +1457,7 @@ func TestConverter_TelemetryConfigPreserved(t *testing.T) {
 	config, _, err := converter.Convert(ctx, vmcp, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
-
-	// Verify telemetry config is preserved exactly (all fields)
-	require.Equal(t, inputTelemetry, config.Telemetry, "All telemetry config fields should be preserved")
-}
-
-// TestConverter_TelemetryDefaults tests the default behavior for telemetry config.
-// This documents the behavior that was previously enforced by spectoconfig.ConvertTelemetryConfig:
-// - ServiceName defaults to VirtualMCPServer name when not specified
-// - ServiceVersion defaults to ServiceName when not specified
-func TestConverter_TelemetryDefaults(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name              string
-		inputTelemetry    *telemetry.Config
-		expectedTelemetry *telemetry.Config
-	}{
-		{
-			name: "defaults ServiceName to vmcp name, ServiceVersion left for runtime",
-			inputTelemetry: &telemetry.Config{
-				Endpoint:                    "localhost:4317",
-				EnablePrometheusMetricsPath: true,
-				ServiceName:                 "",
-				ServiceVersion:              "",
-			},
-			expectedTelemetry: &telemetry.Config{
-				Endpoint:                    "localhost:4317",
-				EnablePrometheusMetricsPath: true,
-				ServiceName:                 "my-vmcp-server",
-			},
-		},
-		{
-			name: "ServiceVersion left for runtime when ServiceName is specified",
-			inputTelemetry: &telemetry.Config{
-				Endpoint:                    "localhost:4317",
-				EnablePrometheusMetricsPath: true,
-				ServiceName:                 "custom-service",
-				ServiceVersion:              "",
-			},
-			expectedTelemetry: &telemetry.Config{
-				Endpoint:                    "localhost:4317",
-				EnablePrometheusMetricsPath: true,
-				ServiceName:                 "custom-service",
-			},
-		},
-		{
-			name: "preserves both when explicitly set",
-			inputTelemetry: &telemetry.Config{
-				Endpoint:                    "localhost:4317",
-				EnablePrometheusMetricsPath: true,
-				ServiceName:                 "my-service",
-				ServiceVersion:              "v2.0.0",
-			},
-			expectedTelemetry: &telemetry.Config{
-				Endpoint:                    "localhost:4317",
-				EnablePrometheusMetricsPath: true,
-				ServiceName:                 "my-service",
-				ServiceVersion:              "v2.0.0",
-			},
-		},
-		{
-			name: "defaults ServiceName when only ServiceVersion is set",
-			inputTelemetry: &telemetry.Config{
-				Endpoint:                    "localhost:4317",
-				EnablePrometheusMetricsPath: true,
-				ServiceName:                 "",
-				ServiceVersion:              "v1.0.0",
-			},
-			expectedTelemetry: &telemetry.Config{
-				Endpoint:                    "localhost:4317",
-				EnablePrometheusMetricsPath: true,
-				ServiceName:                 "my-vmcp-server",
-				ServiceVersion:              "v1.0.0",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			vmcp := &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "my-vmcp-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "anonymous",
-					},
-					Config: vmcpconfig.Config{
-						Group:     "test-group",
-						Telemetry: tt.inputTelemetry,
-					},
-				},
-			}
-
-			converter := newTestConverter(t, newNoOpMockResolver(t))
-			ctx := log.IntoContext(context.Background(), logr.Discard())
-
-			config, _, err := converter.Convert(ctx, vmcp, nil)
-			require.NoError(t, err)
-			require.NotNil(t, config)
-
-			require.Equal(t, tt.expectedTelemetry, config.Telemetry, "Telemetry config should match expected defaults")
-		})
-	}
+	assert.Nil(t, config.Telemetry, "Config.Telemetry should be ignored by the operator; use TelemetryConfigRef")
 }
 
 // TestConverter_TelemetryNil tests that nil telemetry config is handled correctly.
@@ -1611,76 +1487,6 @@ func TestConverter_TelemetryNil(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	assert.Nil(t, config.Telemetry, "Telemetry should be nil when not configured")
-}
-
-// TestConverter_TelemetryEndpointPrefixStripping tests that http:// and https:// prefixes
-// are stripped from the endpoint, as the OTLP client expects host:port format.
-// This matches the behavior of spectoconfig.ConvertTelemetryConfig.
-func TestConverter_TelemetryEndpointPrefixStripping(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name             string
-		inputEndpoint    string
-		expectedEndpoint string
-	}{
-		{
-			name:             "strips https:// prefix",
-			inputEndpoint:    "https://otlp-collector:4317",
-			expectedEndpoint: "otlp-collector:4317",
-		},
-		{
-			name:             "strips http:// prefix",
-			inputEndpoint:    "http://localhost:4317",
-			expectedEndpoint: "localhost:4317",
-		},
-		{
-			name:             "preserves endpoint without prefix",
-			inputEndpoint:    "otlp-collector:4317",
-			expectedEndpoint: "otlp-collector:4317",
-		},
-		{
-			name:             "preserves localhost without prefix",
-			inputEndpoint:    "localhost:4317",
-			expectedEndpoint: "localhost:4317",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			vmcp := &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "anonymous",
-					},
-					Config: vmcpconfig.Config{
-						Group: "test-group",
-						Telemetry: &telemetry.Config{
-							Endpoint:                    tt.inputEndpoint,
-							EnablePrometheusMetricsPath: true,
-						},
-					},
-				},
-			}
-
-			converter := newTestConverter(t, newNoOpMockResolver(t))
-			ctx := log.IntoContext(context.Background(), logr.Discard())
-
-			config, _, err := converter.Convert(ctx, vmcp, nil)
-			require.NoError(t, err)
-			require.NotNil(t, config)
-			require.NotNil(t, config.Telemetry)
-
-			assert.Equal(t, tt.expectedEndpoint, config.Telemetry.Endpoint,
-				"Endpoint should have http:// or https:// prefix stripped")
-		})
-	}
 }
 
 func TestConverter_SessionStorage(t *testing.T) {

@@ -173,12 +173,6 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 ) []corev1.EnvVar {
 	env := []corev1.EnvVar{}
 
-	// Add OpenTelemetry environment variables
-	if proxy.Spec.Telemetry != nil && proxy.Spec.Telemetry.OpenTelemetry != nil {
-		otelEnvVars := ctrlutil.GenerateOpenTelemetryEnvVars(proxy.Spec.Telemetry, proxy.Name, proxy.Namespace)
-		env = append(env, otelEnvVars...)
-	}
-
 	// Add token exchange environment variables
 	// Note: Embedded auth server env vars are added separately in deploymentForMCPRemoteProxy
 	// to avoid duplicate API calls.

@@ -176,7 +176,6 @@ const SessionStorageProviderRedis = "redis"
 // MCPServerSpec defines the desired state of MCPServer
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
-// +kubebuilder:validation:XValidation:rule="!(has(self.telemetry) && has(self.telemetryConfigRef))",message="telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="rateLimiting requires sessionStorage with provider 'redis'"
 // +kubebuilder:validation:XValidation:rule="!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) || has(self.oidcConfig) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="rateLimiting.perUser requires authentication (oidcConfig, oidcConfigRef, or externalAuthConfigRef)"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t, !has(t.perUser)) || has(self.oidcConfig) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="per-tool perUser rate limiting requires authentication (oidcConfig, oidcConfigRef, or externalAuthConfigRef)"
@@ -304,16 +303,8 @@ type MCPServerSpec struct {
 	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
 	// The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.
 	// Cross-namespace references are not supported for security and isolation reasons.
-	// Mutually exclusive with the deprecated inline Telemetry field.
 	// +optional
 	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
-
-	// Telemetry defines inline observability configuration for the MCP server.
-	// Deprecated: Use TelemetryConfigRef to reference a shared MCPTelemetryConfig resource instead.
-	// This field will be removed in a future release. Setting both telemetry and telemetryConfigRef
-	// is rejected by CEL validation.
-	// +optional
-	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	// When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,
@@ -949,60 +940,6 @@ type AuditConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
-}
-
-// TelemetryConfig defines observability configuration for the MCP server
-type TelemetryConfig struct {
-	// OpenTelemetry defines OpenTelemetry configuration
-	// +optional
-	OpenTelemetry *OpenTelemetryConfig `json:"openTelemetry,omitempty"`
-
-	// Prometheus defines Prometheus-specific configuration
-	// +optional
-	Prometheus *PrometheusConfig `json:"prometheus,omitempty"`
-}
-
-// OpenTelemetryConfig defines pure OpenTelemetry configuration
-type OpenTelemetryConfig struct {
-	// Enabled controls whether OpenTelemetry is enabled
-	// +kubebuilder:default=false
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
-	// Endpoint is the OTLP endpoint URL for tracing and metrics
-	// +optional
-	Endpoint string `json:"endpoint,omitempty"`
-
-	// ServiceName is the service name for telemetry
-	// If not specified, defaults to the MCPServer name
-	// +optional
-	ServiceName string `json:"serviceName,omitempty"`
-
-	// Headers contains authentication headers for the OTLP endpoint
-	// Specified as key=value pairs
-	// +listType=atomic
-	// +optional
-	Headers []string `json:"headers,omitempty"`
-
-	// Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint
-	// +kubebuilder:default=false
-	// +optional
-	Insecure bool `json:"insecure,omitempty"`
-
-	// Metrics defines OpenTelemetry metrics-specific configuration
-	// +optional
-	Metrics *OpenTelemetryMetricsConfig `json:"metrics,omitempty"`
-
-	// Tracing defines OpenTelemetry tracing configuration
-	// +optional
-	Tracing *OpenTelemetryTracingConfig `json:"tracing,omitempty"`
-
-	// UseLegacyAttributes controls whether legacy attribute names are emitted alongside
-	// the new MCP OTEL semantic convention names. Defaults to true for backward compatibility.
-	// This will change to false in a future release and eventually be removed.
-	// +kubebuilder:default=true
-	// +optional
-	UseLegacyAttributes bool `json:"useLegacyAttributes"`
 }
 
 // PrometheusConfig defines Prometheus-specific configuration

@@ -124,7 +124,7 @@ func (c *Converter) Convert(
 	config.Operational = vmcp.Spec.Config.Operational
 
 	// Normalize telemetry config: prefer TelemetryConfigRef (shared MCPTelemetryConfig resource),
-	// fall back to inline config.telemetry. These are mutually exclusive (enforced by CEL validation).
+	// The inline config.telemetry field is no longer read by the operator.
 	normalizedTelemetry := c.normalizeTelemetry(ctx, vmcp, telemetryCfg)
 	config.Telemetry = normalizedTelemetry
 
@@ -327,12 +327,12 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 	return config
 }
 
-// normalizeTelemetry resolves and normalizes the telemetry config from either
-// a pre-fetched MCPTelemetryConfig or the inline config.telemetry field.
-// telemetryCfg is the already-validated MCPTelemetryConfig passed in by the controller
-// (nil when TelemetryConfigRef is not set or the resource was not found).
+// normalizeTelemetry resolves and normalizes the telemetry config from a
+// pre-fetched MCPTelemetryConfig. Returns nil when TelemetryConfigRef is not set.
+// The Config.Telemetry field is still valid for standalone CLI deployments but is
+// no longer read by the operator — use TelemetryConfigRef instead.
 func (*Converter) normalizeTelemetry(
-	ctx context.Context,
+	_ context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 ) *telemetry.Config {
@@ -340,15 +340,7 @@ func (*Converter) normalizeTelemetry(
 		return spectoconfig.NormalizeMCPTelemetryConfig(
 			&telemetryCfg.Spec, vmcp.Spec.TelemetryConfigRef.ServiceName, vmcp.Name)
 	}
-	// Deprecated inline path: config.telemetry is deprecated in favor of spec.telemetryConfigRef.
-	// Log at debug level to avoid log flooding on every reconcile.
-	if vmcp.Spec.Config.Telemetry != nil {
-		log.FromContext(ctx).V(1).Info(
-			"config.telemetry is deprecated; migrate to spec.telemetryConfigRef",
-			"vmcp", vmcp.Name,
-		)
-	}
-	return spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name)
+	return nil
 }
 
 // convertSessionStorage populates SessionStorage from the VirtualMCPServer spec.

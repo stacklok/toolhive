@@ -250,26 +250,13 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	// Determine outcome based on status code
 	outcome := a.determineOutcome(rw.statusCode)
 
-	// When HTTP status indicates success, check the response body for
-	// JSON-RPC errors (e.g., expired tokens wrapped inside HTTP 200).
-	// Reuse rw.body when IncludeResponseData is on to avoid double-buffering.
+	// When HTTP status indicates success, check for JSON-RPC errors
+	// hidden inside HTTP 200 responses.
 	var mcpResponse *mcp.ParsedMCPResponse
 	if outcome == OutcomeSuccess && a.config.ShouldDetectApplicationErrors() {
-		var prefix []byte
-		if rw.body != nil && rw.body.Len() > 0 {
-			prefix = rw.body.Bytes()
-			if len(prefix) > errorDetectionBufferSize {
-				prefix = prefix[:errorDetectionBufferSize]
-			}
-		} else if rw.errorDetectionBody != nil && rw.errorDetectionBody.Len() > 0 {
-			prefix = rw.errorDetectionBody.Bytes()
-		}
-		// Only attempt JSON parse if the prefix looks like a JSON object
-		if len(prefix) > 0 && prefix[0] == '{' {
-			mcpResponse = mcp.ParseMCPResponse(prefix)
-			if mcpResponse.HasError {
-				outcome = OutcomeApplicationError
-			}
+		mcpResponse = a.detectApplicationError(rw)
+		if mcpResponse != nil && mcpResponse.HasError {
+			outcome = OutcomeApplicationError
 		}
 	}
 

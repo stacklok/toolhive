@@ -89,6 +89,12 @@ func testSkillClientIntegrations() []clientAppConfig {
 			SkillsProjectPath: []string{".agents", "skills"},
 		},
 		{
+			ClientType:        Kiro,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".kiro", "skills"},
+			SkillsProjectPath: []string{".kiro", "skills"},
+		},
+		{
 			ClientType: Windsurf,
 			// SupportsSkills defaults to false
 		},
@@ -126,6 +132,7 @@ func TestSupportsSkills(t *testing.T) {
 		{name: "Goose supports skills", client: Goose, expected: true},
 		{name: "GeminiCli supports skills", client: GeminiCli, expected: true},
 		{name: "AmpCli supports skills", client: AmpCli, expected: true},
+		{name: "Kiro supports skills", client: Kiro, expected: true},
 		{name: "Windsurf does not support skills", client: Windsurf, expected: false},
 		{name: "unknown client returns false", client: ClientApp("nonexistent"), expected: false},
 	}
@@ -143,8 +150,8 @@ func TestListSkillSupportingClients(t *testing.T) {
 	cm := newTestSkillManager()
 	clients := cm.ListSkillSupportingClients()
 
-	// Should include AmpCli, ClaudeCode, Codex, Cursor, Factory, GeminiCli, Goose, KimiCli, OpenCode, VSCode, VSCodeInsider, and our test-only no-paths-client
-	require.Len(t, clients, 12, "unexpected number of skill-supporting clients: %v", clients)
+	// Should include AmpCli, ClaudeCode, Codex, Cursor, Factory, GeminiCli, Goose, Kiro, KimiCli, OpenCode, VSCode, VSCodeInsider, and our test-only no-paths-client
+	require.Len(t, clients, 13, "unexpected number of skill-supporting clients: %v", clients)
 
 	// Verify sorted order
 	for i := 1; i < len(clients); i++ {
@@ -360,6 +367,21 @@ func TestGetSkillPath(t *testing.T) {
 			scope:       skills.ScopeProject,
 			projectRoot: "/tmp/myproject",
 			wantPath:    filepath.Join("/tmp/myproject", ".agents", "skills", "my-skill"),
+		},
+		{
+			name:      "ScopeUser Kiro",
+			client:    Kiro,
+			skillName: "my-skill",
+			scope:     skills.ScopeUser,
+			wantPath:  filepath.Join(testHomeDir, ".kiro", "skills", "my-skill"),
+		},
+		{
+			name:        "ScopeProject Kiro with explicit root",
+			client:      Kiro,
+			skillName:   "my-skill",
+			scope:       skills.ScopeProject,
+			projectRoot: "/tmp/myproject",
+			wantPath:    filepath.Join("/tmp/myproject", ".kiro", "skills", "my-skill"),
 		},
 		{
 			name:      "client that does not support skills",

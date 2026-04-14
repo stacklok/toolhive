@@ -410,6 +410,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", "skills"},
+		SkillsProjectPath: []string{".agents", "skills"},
 	},
 	{
 		ClientType:           AmpVSCode,
@@ -556,6 +559,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			"timeout":     60,
 			"description": "",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", "skills"},
+		SkillsProjectPath: []string{".agents", "skills"},
 	},
 	{
 		ClientType:           Trae,
@@ -697,6 +703,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "httpUrl",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", "skills"},
+		SkillsProjectPath: []string{".agents", "skills"},
 	},
 	{
 		ClientType:   VSCodeServer,

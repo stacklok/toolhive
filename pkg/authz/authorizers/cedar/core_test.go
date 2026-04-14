@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	cedar "github.com/cedar-policy/cedar-go"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1924,6 +1925,17 @@ func TestResolveNestedClaim(t *testing.T) {
 			path: "a..b",
 			want: nil,
 		},
+		{
+			name: "exact_match_wins_over_dot_traversal",
+			claims: jwt.MapClaims{
+				"realm_access.roles": []interface{}{"literal-match"},
+				"realm_access": map[string]interface{}{
+					"roles": []interface{}{"nested-match"},
+				},
+			},
+			path: "realm_access.roles",
+			want: []interface{}{"literal-match"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -2189,6 +2201,50 @@ func TestAuthorizeWithJWTClaims_DualClaim(t *testing.T) {
 			},
 			wantAuthorize: true,
 		},
+		{
+			name:       "same_claim_for_both_dedup",
+			groupClaim: "groups",
+			roleClaim:  "groups",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []interface{}{"platform", "devs"},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name:       "group_claim_missing_from_jwt_role_claim_matches",
+			groupClaim: "groups",
+			roleClaim:  "roles",
+			claims: jwt.MapClaims{
+				"sub":   "user1",
+				"roles": []interface{}{"platform"},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name:       "non_array_group_claim_role_claim_still_works",
+			groupClaim: "groups",
+			roleClaim:  "roles",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": "not-an-array",
+				"roles":  []interface{}{"platform"},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name:       "both_claims_use_dot_notation",
+			groupClaim: "custom.groups",
+			roleClaim:  "custom.roles",
+			claims: jwt.MapClaims{
+				"sub": "user1",
+				"custom": map[string]interface{}{
+					"groups": []interface{}{"devs"},
+					"roles":  []interface{}{"platform"},
+				},
+			},
+			wantAuthorize: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2301,6 +2357,368 @@ func TestAuthorizeWithJWTClaims_BackwardCompat(t *testing.T) {
 			assert.Equal(t, tt.wantAuth, authorized)
 		})
 	}
+}
+
+// TestParseCedarEntityID tests the parseCedarEntityID helper function.
+func TestParseCedarEntityID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		wantType string
+		wantID   string
+		wantErr  bool
+	}{
+		{
+			name:     "valid_client",
+			input:    "Client::user123",
+			wantType: "Client",
+			wantID:   "user123",
+		},
+		{
+			name:     "valid_action",
+			input:    "Action::call_tool",
+			wantType: "Action",
+			wantID:   "call_tool",
+		},
+		{
+			name:     "valid_thvgroup",
+			input:    "THVGroup::engineering",
+			wantType: "THVGroup",
+			wantID:   "engineering",
+		},
+		{
+			name:     "id_contains_double_colon",
+			input:    "A::B::C",
+			wantType: "A",
+			wantID:   "B::C",
+		},
+		{
+			name:    "no_separator",
+			input:   "nodoublecolon",
+			wantErr: true,
+		},
+		{
+			name:    "empty_string",
+			input:   "",
+			wantErr: true,
+		},
+		{
+			name:     "empty_type",
+			input:    "::id",
+			wantType: "",
+			wantID:   "id",
+		},
+		{
+			name:     "empty_id",
+			input:    "Type::",
+			wantType: "Type",
+			wantID:   "",
+		},
+		{
+			name:    "single_colon_no_match",
+			input:   "Type:ID",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotType, gotID, err := parseCedarEntityID(tt.input)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantType, gotType)
+			assert.Equal(t, tt.wantID, gotID)
+		})
+	}
+}
+
+// TestSanitizeURIForCedar tests the sanitizeURIForCedar helper function.
+func TestSanitizeURIForCedar(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "empty_string", input: "", want: ""},
+		{name: "already_clean", input: "simple_resource", want: "simple_resource"},
+		{name: "colon", input: "a:b", want: "a_b"},
+		{name: "forward_slash", input: "a/b", want: "a_b"},
+		{name: "backslash", input: `a\b`, want: "a_b"},
+		{name: "question_mark", input: "a?b", want: "a_b"},
+		{name: "ampersand", input: "a&b", want: "a_b"},
+		{name: "equals", input: "a=b", want: "a_b"},
+		{name: "hash", input: "a#b", want: "a_b"},
+		{name: "space", input: "a b", want: "a_b"},
+		{name: "dot", input: "a.b", want: "a_b"},
+		{
+			name:  "complex_uri",
+			input: "https://api.example.com/v1/data?key=val&other=123#fragment",
+			want:  "https___api_example_com_v1_data_key_val_other_123_fragment",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := sanitizeURIForCedar(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestExtractClientIDFromClaims tests the extractClientIDFromClaims helper.
+func TestExtractClientIDFromClaims(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		claims jwt.MapClaims
+		wantID string
+		wantOK bool
+	}{
+		{
+			name:   "valid_sub",
+			claims: jwt.MapClaims{"sub": "user123"},
+			wantID: "user123",
+			wantOK: true,
+		},
+		{
+			name:   "empty_sub",
+			claims: jwt.MapClaims{"sub": ""},
+			wantID: "",
+			wantOK: false,
+		},
+		{
+			name:   "missing_sub",
+			claims: jwt.MapClaims{"name": "John"},
+			wantID: "",
+			wantOK: false,
+		},
+		{
+			name:   "empty_claims",
+			claims: jwt.MapClaims{},
+			wantID: "",
+			wantOK: false,
+		},
+		{
+			name:   "non_string_sub",
+			claims: jwt.MapClaims{"sub": 42},
+			wantID: "",
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			id, ok := extractClientIDFromClaims(tt.claims)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.wantID, id)
+		})
+	}
+}
+
+// TestPreprocessClaims tests the preprocessClaims helper.
+func TestPreprocessClaims(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		claims jwt.MapClaims
+		want   map[string]interface{}
+	}{
+		{
+			name:   "standard_claims_get_prefix",
+			claims: jwt.MapClaims{"sub": "user1", "role": "admin"},
+			want:   map[string]interface{}{"claim_sub": "user1", "claim_role": "admin"},
+		},
+		{
+			name:   "empty_map",
+			claims: jwt.MapClaims{},
+			want:   map[string]interface{}{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := preprocessClaims(tt.claims)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestPreprocessArguments tests the preprocessArguments helper.
+func TestPreprocessArguments(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args map[string]interface{}
+		want map[string]interface{}
+	}{
+		{
+			name: "simple_types_get_prefix",
+			args: map[string]interface{}{"name": "test", "count": 5, "flag": true},
+			want: map[string]interface{}{"arg_name": "test", "arg_count": 5, "arg_flag": true},
+		},
+		{
+			name: "complex_type_gets_present_marker",
+			args: map[string]interface{}{"data": map[string]interface{}{"nested": true}},
+			want: map[string]interface{}{"arg_data_present": true},
+		},
+		{
+			name: "nil_input_returns_nil",
+			args: nil,
+			want: nil,
+		},
+		{
+			name: "float_preserved",
+			args: map[string]interface{}{"score": float64(9.5)},
+			want: map[string]interface{}{"arg_score": float64(9.5)},
+		},
+		{
+			name: "int64_preserved",
+			args: map[string]interface{}{"id": int64(42)},
+			want: map[string]interface{}{"arg_id": int64(42)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := preprocessArguments(tt.args)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestMergeContexts tests the mergeContexts helper.
+func TestMergeContexts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		maps []map[string]interface{}
+		want map[string]interface{}
+	}{
+		{
+			name: "non_overlapping_merge",
+			maps: []map[string]interface{}{
+				{"a": 1},
+				{"b": 2},
+			},
+			want: map[string]interface{}{"a": 1, "b": 2},
+		},
+		{
+			name: "overlapping_later_wins",
+			maps: []map[string]interface{}{
+				{"a": 1, "b": 2},
+				{"b": 3, "c": 4},
+			},
+			want: map[string]interface{}{"a": 1, "b": 3, "c": 4},
+		},
+		{
+			name: "nil_maps_skipped",
+			maps: []map[string]interface{}{
+				{"a": 1},
+				nil,
+				{"b": 2},
+			},
+			want: map[string]interface{}{"a": 1, "b": 2},
+		},
+		{
+			name: "all_nil_returns_empty",
+			maps: []map[string]interface{}{nil, nil},
+			want: map[string]interface{}{},
+		},
+		{
+			name: "single_map",
+			maps: []map[string]interface{}{{"a": 1}},
+			want: map[string]interface{}{"a": 1},
+		},
+		{
+			name: "no_maps",
+			maps: []map[string]interface{}{},
+			want: map[string]interface{}{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := mergeContexts(tt.maps...)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestIsAuthorized_EntityMergePriority verifies that when a request entity has
+// the same UID as a global entity, the request entity wins. This documents the
+// merge contract: request entities are applied after global entities in the merge.
+func TestIsAuthorized_EntityMergePriority(t *testing.T) {
+	t.Parallel()
+
+	// Policy: permit only when resource.tier == "silver".
+	policy := `
+		permit(
+			principal,
+			action == Action::"call_tool",
+			resource == Tool::"weather"
+		)
+		when {
+			resource.tier == "silver"
+		};
+	`
+
+	// Global entity has tier = "gold" — policy should deny with global entity alone.
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{
+		Policies: []string{policy},
+		EntitiesJSON: `[
+			{"uid": {"type": "Tool", "id": "weather"}, "attrs": {"tier": "gold"}, "parents": []},
+			{"uid": {"type": "Client", "id": "user1"}, "attrs": {}, "parents": []},
+			{"uid": {"type": "Action", "id": "call_tool"}, "attrs": {}, "parents": []}
+		]`,
+	}, "")
+	require.NoError(t, err)
+
+	cedarAuthz, ok := authorizer.(*Authorizer)
+	require.True(t, ok)
+
+	// Verify global entity alone denies (tier = "gold" != "silver").
+	denied, err := cedarAuthz.IsAuthorized(
+		"Client::user1", "Action::call_tool", "Tool::weather", nil,
+	)
+	require.NoError(t, err)
+	assert.False(t, denied, "global entity tier=gold should not match policy requiring tier=silver")
+
+	// Request entity: same UID but tier = "silver".
+	requestEntities := make(cedar.EntityMap)
+	uid := cedar.NewEntityUID("Tool", cedar.String("weather"))
+	requestEntities[uid] = cedar.Entity{
+		UID: uid,
+		Attributes: cedar.NewRecord(cedar.RecordMap{
+			cedar.String("tier"): cedar.String("silver"),
+		}),
+		Parents: cedar.NewEntityUIDSet(),
+		Tags:    cedar.NewRecord(cedar.RecordMap{}),
+	}
+
+	// Request entity should overwrite global entity → policy matches.
+	allowed, err := cedarAuthz.IsAuthorized(
+		"Client::user1", "Action::call_tool", "Tool::weather",
+		nil, requestEntities,
+	)
+	require.NoError(t, err)
+	assert.True(t, allowed, "request entity (tier=silver) must overwrite global entity (tier=gold)")
 }
 
 // TestConfigOptionsRoleClaimNameJSON verifies JSON marshal/unmarshal of the

@@ -176,130 +176,78 @@ func TestTokenHandler_Success(t *testing.T) {
 	assert.Contains(t, body, "expires_in")
 }
 
-func TestTokenHandler_ResourceParameter(t *testing.T) {
+func TestTokenHandler_AudienceClaim(t *testing.T) {
 	t.Parallel()
-	handler, storState, _ := handlerTestSetup(t)
 
-	// Simulate authorize flow
-	authorizeCode := simulateAuthorizeFlow(t, handler, storState)
+	// ptr is a helper to take the address of a string literal.
+	ptr := func(s string) *string { return &s }
 
-	// Exchange code with RFC 8707 resource parameter
-	form := url.Values{
-		"grant_type":    {"authorization_code"},
-		"client_id":     {testAuthClientID},
-		"redirect_uri":  {testAuthRedirectURI},
-		"code":          {authorizeCode},
-		"code_verifier": {testPKCEVerifier},
-		"resource":      {"https://api.example.com"},
+	tests := []struct {
+		name     string
+		resource *string // nil = omit parameter; non-nil = include (possibly empty)
+		wantAud  string
+	}{
+		{
+			name:     "explicit resource grants matching audience",
+			resource: ptr("https://api.example.com"),
+			wantAud:  "https://api.example.com",
+		},
+		{
+			name:     "absent resource defaults to sole AllowedAudience",
+			resource: nil,
+			wantAud:  "https://api.example.com",
+		},
+		{
+			name:     "explicit empty resource defaults to sole AllowedAudience",
+			resource: ptr(""),
+			wantAud:  "https://api.example.com",
+		},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
 
-	handler.TokenHandler(rec, req)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			handler, storState, _ := handlerTestSetup(t)
+			authorizeCode := simulateAuthorizeFlow(t, handler, storState)
 
-	require.Equal(t, http.StatusOK, rec.Code, "expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+			form := url.Values{
+				"grant_type":    {"authorization_code"},
+				"client_id":     {testAuthClientID},
+				"redirect_uri":  {testAuthRedirectURI},
+				"code":          {authorizeCode},
+				"code_verifier": {testPKCEVerifier},
+			}
+			if tc.resource != nil {
+				form.Set("resource", *tc.resource)
+			}
 
-	// The resource parameter should be granted as audience in the JWT
-	// We can't easily verify the JWT contents here without decoding,
-	// but we verify the request succeeded
-	body := rec.Body.String()
-	assert.Contains(t, body, "access_token")
-}
+			req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
 
-func TestTokenHandler_DefaultsAudienceWhenNoResourceParam(t *testing.T) {
-	t.Parallel()
-	handler, storState, _ := handlerTestSetup(t)
+			handler.TokenHandler(rec, req)
 
-	// Simulate the authorize/callback flow to obtain a valid authorization code.
-	// baseTestSetup sets AllowedAudiences to []string{"https://api.example.com"}.
-	authorizeCode := simulateAuthorizeFlow(t, handler, storState)
+			require.Equal(t, http.StatusOK, rec.Code, "got %d: %s", rec.Code, rec.Body.String())
 
-	// Exchange the code WITHOUT a resource parameter.
-	form := url.Values{
-		"grant_type":    {"authorization_code"},
-		"client_id":     {testAuthClientID},
-		"redirect_uri":  {testAuthRedirectURI},
-		"code":          {authorizeCode},
-		"code_verifier": {testPKCEVerifier},
-		// Intentionally no "resource" parameter.
+			var tokenResp map[string]any
+			require.NoError(t, json.NewDecoder(rec.Body).Decode(&tokenResp))
+
+			accessToken, ok := tokenResp["access_token"].(string)
+			require.True(t, ok, "access_token should be a string")
+			require.NotEmpty(t, accessToken)
+
+			parsedToken, err := josejwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+			require.NoError(t, err)
+
+			var claims map[string]any
+			require.NoError(t, parsedToken.UnsafeClaimsWithoutVerification(&claims))
+
+			aud, ok := claims["aud"].([]any)
+			require.True(t, ok, "aud claim should be an array, got: %T %v", claims["aud"], claims["aud"])
+			require.Len(t, aud, 1)
+			assert.Equal(t, tc.wantAud, aud[0])
+		})
 	}
-	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-
-	handler.TokenHandler(rec, req)
-
-	require.Equal(t, http.StatusOK, rec.Code, "expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
-
-	// Decode the token response JSON to extract the access_token.
-	var tokenResp map[string]any
-	err := json.NewDecoder(rec.Body).Decode(&tokenResp)
-	require.NoError(t, err, "response body should be valid JSON")
-
-	accessToken, ok := tokenResp["access_token"].(string)
-	require.True(t, ok, "access_token should be a non-empty string")
-	require.NotEmpty(t, accessToken, "access_token should not be empty")
-
-	// Parse the JWT payload without signature verification to inspect claims.
-	parsedToken, err := josejwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
-	require.NoError(t, err, "access_token should be a parseable JWT")
-
-	var claims map[string]any
-	err = parsedToken.UnsafeClaimsWithoutVerification(&claims)
-	require.NoError(t, err, "should be able to extract JWT claims without verification")
-
-	// The sole AllowedAudience should have been granted automatically.
-	aud, ok := claims["aud"].([]any)
-	require.True(t, ok, "aud claim should be an array, got: %T %v", claims["aud"], claims["aud"])
-	require.Len(t, aud, 1, "aud claim should contain exactly one entry")
-	assert.Equal(t, "https://api.example.com", aud[0], "aud should default to the sole AllowedAudience")
-}
-
-func TestTokenHandler_EmptyResourceParamDefaultsAudience(t *testing.T) {
-	t.Parallel()
-	handler, storState, _ := handlerTestSetup(t)
-
-	authorizeCode := simulateAuthorizeFlow(t, handler, storState)
-
-	// Exchange the code with an explicit but empty resource parameter.
-	// This should be treated the same as omitting resource entirely and
-	// default to the sole AllowedAudience rather than granting aud:[\""].
-	form := url.Values{
-		"grant_type":    {"authorization_code"},
-		"client_id":     {testAuthClientID},
-		"redirect_uri":  {testAuthRedirectURI},
-		"code":          {authorizeCode},
-		"code_verifier": {testPKCEVerifier},
-		"resource":      {""}, // explicit empty value
-	}
-	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-
-	handler.TokenHandler(rec, req)
-
-	require.Equal(t, http.StatusOK, rec.Code, "expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
-
-	var tokenResp map[string]any
-	err := json.NewDecoder(rec.Body).Decode(&tokenResp)
-	require.NoError(t, err, "response body should be valid JSON")
-
-	accessToken, ok := tokenResp["access_token"].(string)
-	require.True(t, ok, "access_token should be a string")
-	require.NotEmpty(t, accessToken)
-
-	parsedToken, err := josejwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
-	require.NoError(t, err)
-
-	var claims map[string]any
-	err = parsedToken.UnsafeClaimsWithoutVerification(&claims)
-	require.NoError(t, err)
-
-	aud, ok := claims["aud"].([]any)
-	require.True(t, ok, "aud claim should be an array, got: %T %v", claims["aud"], claims["aud"])
-	require.Len(t, aud, 1)
-	assert.Equal(t, "https://api.example.com", aud[0], "explicit empty resource should default to sole AllowedAudience")
 }
 
 func TestTokenHandler_RouteRegistered(t *testing.T) {

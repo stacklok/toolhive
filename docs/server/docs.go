@@ -495,6 +495,10 @@ const docTemplate = `{
                         "description": "AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint\nin the OAuth discovery document. When set, the discovery document will advertise\n` + "`" + `{authorization_endpoint_base_url}/oauth/authorize` + "`" + ` instead of ` + "`" + `{issuer}/oauth/authorize` + "`" + `.\nAll other endpoints remain derived from the issuer.",
                         "type": "string"
                     },
+                    "disable_upstream_token_injection": {
+                        "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients but does not\ninject upstream IdP tokens into requests forwarded to the backend MCP server.",
+                        "type": "boolean"
+                    },
                     "hmac_secret_files": {
                         "description": "HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes\nand refresh tokens (opaque tokens).\nFirst file is the current secret (must be at least 32 bytes), subsequent files\nare for rotation/verification of existing tokens.\nIf empty, an ephemeral secret will be auto-generated (development only).",
                         "items": {

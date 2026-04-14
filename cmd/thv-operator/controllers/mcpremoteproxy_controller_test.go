@@ -89,8 +89,20 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 			expectError: true,
 			errContains: "remote URL must not be empty",
 		},
-		// Note: "missing OIDC config" test removed - OIDCConfig is now a required value type
-		// with kubebuilder:validation:Required, so the API server prevents resources without it
+		{
+			name: "valid spec without OIDC config (anonymous access)",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "anon-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://docs.example.com/mcp",
+					ProxyPort: 8080,
+				},
+			},
+			expectError: false,
+		},
 		{
 			name: "with valid external auth config",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{

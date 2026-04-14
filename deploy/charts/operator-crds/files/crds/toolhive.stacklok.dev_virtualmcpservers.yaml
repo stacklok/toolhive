@@ -638,11 +638,9 @@ spec:
                 type: object
               config:
                 description: |-
-                  Config is the Virtual MCP server configuration
-                  The only field currently required within config is `config.groupRef`.
-                  GroupRef references an existing MCPGroup that defines backend workloads.
-                  The referenced MCPGroup must exist in the same namespace.
+                  Config is the Virtual MCP server configuration.
                   The audit config from here is also supported, but not required.
+                  Note: config.groupRef is deprecated in favor of spec.groupRef.
                   Note: config.telemetry is deprecated — use spec.telemetryConfigRef to reference
                   a shared MCPTelemetryConfig resource instead.
                 properties:
@@ -1174,6 +1172,7 @@ spec:
                     description: |-
                       Group references an existing MCPGroup that defines backend workloads.
                       In Kubernetes, the referenced MCPGroup must exist in the same namespace.
+                      Deprecated: Use spec.groupRef on VirtualMCPServerSpec instead.
                     type: string
                   incomingAuth:
                     description: |-
@@ -1771,8 +1770,6 @@ spec:
                           Currently defaults to true; this will change to false in a future release.
                         type: boolean
                     type: object
-                required:
-                - groupRef
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               embeddingServerRef:
@@ -1784,6 +1781,20 @@ spec:
                 properties:
                   name:
                     description: Name is the name of the EmbeddingServer resource
+                    type: string
+                required:
+                - name
+                type: object
+              groupRef:
+                description: |-
+                  GroupRef references the MCPGroup that defines backend workloads.
+                  The referenced MCPGroup must exist in the same namespace.
+                  This field takes precedence over config.groupRef and should be preferred.
+                properties:
+                  name:
+                    description: Name is the name of the MCPGroup resource in the
+                      same namespace
+                    minLength: 1
                     type: string
                 required:
                 - name

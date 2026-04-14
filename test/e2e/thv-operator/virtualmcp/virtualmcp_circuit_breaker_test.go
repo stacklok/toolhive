@@ -52,7 +52,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
@@ -71,7 +71,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,

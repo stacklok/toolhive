@@ -293,11 +293,11 @@ Logically groups MCPServer resources together for organizational purposes.
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpgroup_types.go`
 
-MCPGroup resources allow grouping related MCP servers. Servers reference their group using the `groupRef` field in MCPServer spec. The group tracks member servers in its status.
+MCPGroup resources allow grouping related MCP servers. Servers reference their group using the `groupRef` typed struct (`MCPGroupRef`) in MCPServer spec. The group tracks member servers in its status.
 
 **Status fields** include phase (Ready, Pending, Failed), list of server names, and server count.
 
-**Referenced by MCPServer** using `spec.groupRef`.
+**Referenced by MCPServer** using `spec.groupRef.name`.
 
 **Controller**: `cmd/thv-operator/controllers/mcpgroup_controller.go`
 
@@ -351,7 +351,7 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 - Backend count
 - Detailed conditions for validation, discovery, and readiness
 
-**References**: MCPGroup (via `spec.config.groupRef`)
+**References**: MCPGroup (via `spec.groupRef.name`)
 
 **Controller**: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
 

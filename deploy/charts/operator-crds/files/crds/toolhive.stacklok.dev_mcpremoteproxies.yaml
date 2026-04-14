@@ -170,9 +170,17 @@ spec:
                 type: object
               groupRef:
                 description: |-
-                  GroupRef is the name of the MCPGroup this proxy belongs to
-                  Must reference an existing MCPGroup in the same namespace
-                type: string
+                  GroupRef references the MCPGroup this proxy belongs to.
+                  The referenced MCPGroup must be in the same namespace.
+                properties:
+                  name:
+                    description: Name is the name of the MCPGroup resource in the
+                      same namespace
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               headerForward:
                 description: |-
                   HeaderForward configures headers to inject into requests to the remote MCP server.

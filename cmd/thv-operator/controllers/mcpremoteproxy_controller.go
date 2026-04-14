@@ -1088,7 +1088,7 @@ func (r *MCPRemoteProxyReconciler) updateOIDCConfigReferencingWorkloads(
 // This function only sets conditions on the proxy object - the caller is responsible
 // for persisting the status update to avoid multiple conflicting status updates.
 func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) {
-	if proxy.Spec.GroupRef == "" {
+	if proxy.Spec.GroupRef == nil {
 		// No group reference - remove any existing GroupRefValidated condition
 		// to avoid showing stale info from a previous reconciliation
 		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated)
@@ -1096,16 +1096,17 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 	}
 
 	ctxLogger := log.FromContext(ctx)
+	groupName := proxy.Spec.GroupRef.Name
 
 	// Find the referenced MCPGroup
 	group := &mcpv1alpha1.MCPGroup{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: proxy.Namespace, Name: proxy.Spec.GroupRef}, group); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: proxy.Namespace, Name: groupName}, group); err != nil {
 		ctxLogger.Error(err, "Failed to validate GroupRef")
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefNotFound,
-			Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", proxy.Spec.GroupRef, proxy.Namespace),
+			Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", groupName, proxy.Namespace),
 			ObservedGeneration: proxy.Generation,
 		})
 	} else if group.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
@@ -1113,7 +1114,7 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefNotReady,
-			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", proxy.Spec.GroupRef, group.Status.Phase),
+			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", groupName, group.Status.Phase),
 			ObservedGeneration: proxy.Generation,
 		})
 	} else {
@@ -1121,7 +1122,7 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 			Status:             metav1.ConditionTrue,
 			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefValidated,
-			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", proxy.Spec.GroupRef),
+			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", groupName),
 			ObservedGeneration: proxy.Generation,
 		})
 	}

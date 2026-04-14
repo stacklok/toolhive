@@ -23,7 +23,8 @@ metadata:
 spec:
   image: ghcr.io/github/mcp-server:latest
   transport: streamable-http
-  groupRef: engineering-team
+  groupRef:
+    name: engineering-team
 
 ---
 # Remote MCP server (no pods deployed)
@@ -35,7 +36,8 @@ metadata:
 spec:
   remoteUrl: https://mcp.context7.com/mcp
   transport: streamable-http
-  groupRef: engineering-team
+  groupRef:
+    name: engineering-team
 
 ---
 # VirtualMCPServer aggregates both backends
@@ -49,8 +51,9 @@ spec:
     type: anonymous
   outgoingAuth:
     source: inline
+  groupRef:
+    name: engineering-team
   config:
-    groupRef: engineering-team
     aggregation:
       conflictResolution: prefix
       conflictResolutionConfig:

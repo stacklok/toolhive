@@ -63,11 +63,15 @@ type VirtualMCPServerSpec struct {
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
 
-	// Config is the Virtual MCP server configuration
-	// The only field currently required within config is `config.groupRef`.
-	// GroupRef references an existing MCPGroup that defines backend workloads.
+	// GroupRef references the MCPGroup that defines backend workloads.
 	// The referenced MCPGroup must exist in the same namespace.
+	// This field takes precedence over config.groupRef and should be preferred.
+	// +optional
+	GroupRef *MCPGroupRef `json:"groupRef,omitempty"`
+
+	// Config is the Virtual MCP server configuration.
 	// The audit config from here is also supported, but not required.
+	// Note: config.groupRef is deprecated in favor of spec.groupRef.
 	// Note: config.telemetry is deprecated — use spec.telemetryConfigRef to reference
 	// a shared MCPTelemetryConfig resource instead.
 	// +optional
@@ -447,13 +451,22 @@ func (*VirtualMCPServer) GetProxyPort() int32 {
 	return 4483
 }
 
+// ResolveGroupName returns the effective group name, preferring spec.groupRef
+// over the deprecated config.groupRef string.
+func (r *VirtualMCPServer) ResolveGroupName() string {
+	if name := r.Spec.GroupRef.GetName(); name != "" {
+		return name
+	}
+	return r.Spec.Config.Group
+}
+
 // Validate performs validation for VirtualMCPServer
 // This method is called by the controller during reconciliation
 func (r *VirtualMCPServer) Validate() error {
-	// Validate Group is set (required field)
+	// Validate Group is set — prefer spec.groupRef, fall back to config.groupRef
 	// Note: CEL cannot validate embedded types from other packages
-	if r.Spec.Config.Group == "" {
-		return fmt.Errorf("spec.config.groupRef is required")
+	if r.Spec.GroupRef.GetName() == "" && r.Spec.Config.Group == "" {
+		return fmt.Errorf("either spec.groupRef.name or config.groupRef must be set")
 	}
 
 	// Note: IncomingAuth validation is handled by kubebuilder markers and CEL rules

@@ -25,7 +25,8 @@ metadata:
 spec:
   remoteUrl: https://internal-mcp.corp:8443/mcp
   transport: streamable-http
-  groupRef: remote-tools
+  groupRef:
+    name: remote-tools
   caBundleRef:
     configMapRef:
       name: corp-ca-bundle

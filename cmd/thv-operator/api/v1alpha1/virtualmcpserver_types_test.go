@@ -535,3 +535,71 @@ func TestVirtualMCPServerSpecScalingFieldsJSONRoundtrip(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPGroupRef_GetName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ref  *MCPGroupRef
+		want string
+	}{
+		{name: "nil receiver", ref: nil, want: ""},
+		{name: "empty name", ref: &MCPGroupRef{Name: ""}, want: ""},
+		{name: "non-empty name", ref: &MCPGroupRef{Name: "my-group"}, want: "my-group"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.ref.GetName())
+		})
+	}
+}
+
+func TestVirtualMCPServer_ResolveGroupName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		groupRef *MCPGroupRef
+		cfgGroup string
+		want     string
+	}{
+		{
+			name:     "spec.groupRef takes precedence over config.groupRef",
+			groupRef: &MCPGroupRef{Name: "from-spec"},
+			cfgGroup: "from-config",
+			want:     "from-spec",
+		},
+		{
+			name:     "falls back to config.groupRef when spec.groupRef is nil",
+			groupRef: nil,
+			cfgGroup: "from-config",
+			want:     "from-config",
+		},
+		{
+			name:     "only spec.groupRef set",
+			groupRef: &MCPGroupRef{Name: "from-spec"},
+			cfgGroup: "",
+			want:     "from-spec",
+		},
+		{
+			name:     "neither set returns empty",
+			groupRef: nil,
+			cfgGroup: "",
+			want:     "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vmcp := &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: tt.groupRef,
+					Config:   config.Config{Group: tt.cfgGroup},
+				},
+			}
+			assert.Equal(t, tt.want, vmcp.ResolveGroupName())
+		})
+	}
+}

@@ -145,7 +145,7 @@ func (rb *RemoteProxyBuilder) WithToolConfigRef(name string) *RemoteProxyBuilder
 
 // WithGroupRef sets the GroupRef for the proxy
 func (rb *RemoteProxyBuilder) WithGroupRef(name string) *RemoteProxyBuilder {
-	rb.proxy.Spec.GroupRef = name
+	rb.proxy.Spec.GroupRef = &mcpv1alpha1.MCPGroupRef{Name: name}
 	return rb
 }
 

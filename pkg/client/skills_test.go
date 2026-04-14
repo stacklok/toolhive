@@ -53,6 +53,12 @@ func testSkillClientIntegrations() []clientAppConfig {
 			SkillsProjectPath: []string{".kimi", "skills"},
 		},
 		{
+			ClientType:        Factory,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".factory", "skills"},
+			SkillsProjectPath: []string{".factory", "skills"},
+		},
+		{
 			ClientType:        VSCode,
 			SupportsSkills:    true,
 			SkillsGlobalPath:  []string{".copilot", "skills"},
@@ -98,6 +104,7 @@ func TestSupportsSkills(t *testing.T) {
 		{name: "KimiCli supports skills", client: KimiCli, expected: true},
 		{name: "VSCode supports skills", client: VSCode, expected: true},
 		{name: "VSCodeInsider supports skills", client: VSCodeInsider, expected: true},
+		{name: "Factory supports skills", client: Factory, expected: true},
 		{name: "Windsurf does not support skills", client: Windsurf, expected: false},
 		{name: "unknown client returns false", client: ClientApp("nonexistent"), expected: false},
 	}
@@ -115,8 +122,8 @@ func TestListSkillSupportingClients(t *testing.T) {
 	cm := newTestSkillManager()
 	clients := cm.ListSkillSupportingClients()
 
-	// Should include ClaudeCode, Codex, Cursor, KimiCli, OpenCode, VSCode, VSCodeInsider, and our test-only no-paths-client
-	require.Len(t, clients, 8, "unexpected number of skill-supporting clients: %v", clients)
+	// Should include ClaudeCode, Codex, Cursor, Factory, KimiCli, OpenCode, VSCode, VSCodeInsider, and our test-only no-paths-client
+	require.Len(t, clients, 9, "unexpected number of skill-supporting clients: %v", clients)
 
 	// Verify sorted order
 	for i := 1; i < len(clients); i++ {
@@ -242,6 +249,21 @@ func TestGetSkillPath(t *testing.T) {
 			scope:       skills.ScopeProject,
 			projectRoot: "/tmp/myproject",
 			wantPath:    filepath.Join("/tmp/myproject", ".kimi", "skills", "my-skill"),
+		},
+		{
+			name:      "ScopeUser Factory",
+			client:    Factory,
+			skillName: "my-skill",
+			scope:     skills.ScopeUser,
+			wantPath:  filepath.Join(testHomeDir, ".factory", "skills", "my-skill"),
+		},
+		{
+			name:        "ScopeProject Factory with explicit root",
+			client:      Factory,
+			skillName:   "my-skill",
+			scope:       skills.ScopeProject,
+			projectRoot: "/tmp/myproject",
+			wantPath:    filepath.Join("/tmp/myproject", ".factory", "skills", "my-skill"),
 		},
 		{
 			name:      "ScopeUser VSCode",

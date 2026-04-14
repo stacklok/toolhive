@@ -175,10 +175,9 @@ const SessionStorageProviderRedis = "redis"
 
 // MCPServerSpec defines the desired state of MCPServer
 //
-// +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="rateLimiting requires sessionStorage with provider 'redis'"
-// +kubebuilder:validation:XValidation:rule="!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) || has(self.oidcConfig) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="rateLimiting.perUser requires authentication (oidcConfig, oidcConfigRef, or externalAuthConfigRef)"
-// +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t, !has(t.perUser)) || has(self.oidcConfig) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="per-tool perUser rate limiting requires authentication (oidcConfig, oidcConfigRef, or externalAuthConfigRef)"
+// +kubebuilder:validation:XValidation:rule="!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="rateLimiting.perUser requires authentication (oidcConfigRef or externalAuthConfigRef)"
+// +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t, !has(t.perUser)) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="per-tool perUser rate limiting requires authentication (oidcConfigRef or externalAuthConfigRef)"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPServerSpec struct {
@@ -262,16 +261,10 @@ type MCPServerSpec struct {
 	// +optional
 	ResourceOverrides *ResourceOverrides `json:"resourceOverrides,omitempty"`
 
-	// OIDCConfig defines OIDC authentication configuration for the MCP server.
-	// Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
-	// This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
-	// +optional
-	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
-
 	// OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
 	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.
 	// Per-server overrides (audience, scopes) are specified here; shared provider config
-	// lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig.
+	// lives in the MCPOIDCConfig resource.
 	// +optional
 	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
@@ -1078,11 +1071,6 @@ func (m *MCPServer) GetName() string {
 // GetNamespace returns the namespace of the MCPServer
 func (m *MCPServer) GetNamespace() string {
 	return m.Namespace
-}
-
-// GetOIDCConfig returns the OIDC configuration reference
-func (m *MCPServer) GetOIDCConfig() *OIDCConfigRef {
-	return m.Spec.OIDCConfig
 }
 
 // GetProxyPort returns the proxy port of the MCPServer

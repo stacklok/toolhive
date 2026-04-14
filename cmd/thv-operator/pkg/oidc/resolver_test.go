@@ -17,27 +17,36 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
+// testResource is a minimal OIDCConfigurable implementation for testing.
+type testResource struct {
+	name       string
+	namespace  string
+	proxyPort  int32
+	oidcConfig *mcpv1alpha1.OIDCConfigRef
+}
+
+func (t *testResource) GetName() string                           { return t.name }
+func (t *testResource) GetNamespace() string                      { return t.namespace }
+func (t *testResource) GetProxyPort() int32                       { return t.proxyPort }
+func (t *testResource) GetOIDCConfig() *mcpv1alpha1.OIDCConfigRef { return t.oidcConfig }
+
 func TestResolve_KubernetesType(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		mcpServer *mcpv1alpha1.MCPServer
-		expected  *OIDCConfig
+		name     string
+		resource *testResource
+		expected *OIDCConfig
 	}{
 		{
 			name: "kubernetes with defaults",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type:       mcpv1alpha1.OIDCConfigTypeKubernetes,
-						Kubernetes: nil, // nil config should use defaults
-					},
+			resource: &testResource{
+				name:      "test-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type:       mcpv1alpha1.OIDCConfigTypeKubernetes,
+					Kubernetes: nil, // nil config should use defaults
 				},
 			},
 			expected: &OIDCConfig{
@@ -51,23 +60,19 @@ func TestResolve_KubernetesType(t *testing.T) {
 		},
 		{
 			name: "kubernetes with custom values",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "custom-server",
-					Namespace: "custom-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 9090,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type:        mcpv1alpha1.OIDCConfigTypeKubernetes,
-						ResourceURL: "https://custom-resource.example.com",
-						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
-							Issuer:           "https://custom-issuer.example.com",
-							Audience:         "custom-audience",
-							JWKSURL:          "https://custom-issuer.example.com/.well-known/jwks.json",
-							IntrospectionURL: "https://custom-issuer.example.com/introspect",
-							UseClusterAuth:   func(b bool) *bool { return &b }(true),
-						},
+			resource: &testResource{
+				name:      "custom-server",
+				namespace: "custom-ns",
+				proxyPort: 9090,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type:        mcpv1alpha1.OIDCConfigTypeKubernetes,
+					ResourceURL: "https://custom-resource.example.com",
+					Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
+						Issuer:           "https://custom-issuer.example.com",
+						Audience:         "custom-audience",
+						JWKSURL:          "https://custom-issuer.example.com/.well-known/jwks.json",
+						IntrospectionURL: "https://custom-issuer.example.com/introspect",
+						UseClusterAuth:   func(b bool) *bool { return &b }(true),
 					},
 				},
 			},
@@ -84,18 +89,14 @@ func TestResolve_KubernetesType(t *testing.T) {
 		},
 		{
 			name: "kubernetes with UseClusterAuth false",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "no-cluster-auth-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeKubernetes,
-						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
-							UseClusterAuth: func(b bool) *bool { return &b }(false),
-						},
+			resource: &testResource{
+				name:      "no-cluster-auth-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeKubernetes,
+					Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
+						UseClusterAuth: func(b bool) *bool { return &b }(false),
 					},
 				},
 			},
@@ -111,14 +112,10 @@ func TestResolve_KubernetesType(t *testing.T) {
 		},
 		{
 			name: "nil oidc config returns nil",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					OIDCConfig: nil,
-				},
+			resource: &testResource{
+				name:       "test-server",
+				namespace:  "test-ns",
+				oidcConfig: nil,
 			},
 			expected: nil,
 		},
@@ -128,7 +125,7 @@ func TestResolve_KubernetesType(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			resolver := NewResolver(nil)
-			config, err := resolver.Resolve(context.Background(), tt.mcpServer)
+			config, err := resolver.Resolve(context.Background(), tt.resource)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, config)
 		})
@@ -140,25 +137,21 @@ func TestResolve_ConfigMapType(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		mcpServer *mcpv1alpha1.MCPServer
+		resource  *testResource
 		configMap *corev1.ConfigMap
 		expected  *OIDCConfig
 		expectErr bool
 	}{
 		{
 			name: "configmap with all values",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
-							Name: "oidc-config",
-						},
+			resource: &testResource{
+				name:      "test-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+					ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+						Name: "oidc-config",
 					},
 				},
 			},
@@ -196,18 +189,14 @@ func TestResolve_ConfigMapType(t *testing.T) {
 		},
 		{
 			name: "configmap with partial values",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "partial-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type:        mcpv1alpha1.OIDCConfigTypeConfigMap,
-						ResourceURL: "https://custom-resource.example.com",
-						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
-							Name: "partial-config",
-						},
+			resource: &testResource{
+				name:      "partial-server",
+				namespace: "test-ns",
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type:        mcpv1alpha1.OIDCConfigTypeConfigMap,
+					ResourceURL: "https://custom-resource.example.com",
+					ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+						Name: "partial-config",
 					},
 				},
 			},
@@ -231,18 +220,14 @@ func TestResolve_ConfigMapType(t *testing.T) {
 		},
 		{
 			name: "configmap with jwksAllowPrivateIP independent of protectedResourceAllowPrivateIP",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "independent-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
-							Name: "independent-config",
-						},
+			resource: &testResource{
+				name:      "independent-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+					ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+						Name: "independent-config",
 					},
 				},
 			},
@@ -268,18 +253,14 @@ func TestResolve_ConfigMapType(t *testing.T) {
 		},
 		{
 			name: "configmap with insecureAllowHTTP enabled",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "insecure-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
-							Name: "insecure-config",
-						},
+			resource: &testResource{
+				name:      "insecure-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+					ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+						Name: "insecure-config",
 					},
 				},
 			},
@@ -305,18 +286,14 @@ func TestResolve_ConfigMapType(t *testing.T) {
 		},
 		{
 			name: "configmap with scopes",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "scopes-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
-							Name: "scopes-config",
-						},
+			resource: &testResource{
+				name:      "scopes-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+					ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+						Name: "scopes-config",
 					},
 				},
 			},
@@ -343,18 +320,14 @@ func TestResolve_ConfigMapType(t *testing.T) {
 		},
 		{
 			name: "configmap with scopes containing whitespace",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "whitespace-scopes-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
-							Name: "whitespace-scopes-config",
-						},
+			resource: &testResource{
+				name:      "whitespace-scopes-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+					ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+						Name: "whitespace-scopes-config",
 					},
 				},
 			},
@@ -378,18 +351,14 @@ func TestResolve_ConfigMapType(t *testing.T) {
 		},
 		{
 			name: "configmap with empty scopes",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "empty-scopes-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
-							Name: "empty-scopes-config",
-						},
+			resource: &testResource{
+				name:      "empty-scopes-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+					ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+						Name: "empty-scopes-config",
 					},
 				},
 			},
@@ -413,17 +382,13 @@ func TestResolve_ConfigMapType(t *testing.T) {
 		},
 		{
 			name: "configmap not found",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
-							Name: "missing-config",
-						},
+			resource: &testResource{
+				name:      "test-server",
+				namespace: "test-ns",
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+					ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+						Name: "missing-config",
 					},
 				},
 			},
@@ -431,37 +396,29 @@ func TestResolve_ConfigMapType(t *testing.T) {
 		},
 		{
 			name: "nil configmap ref returns nil",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type:      mcpv1alpha1.OIDCConfigTypeConfigMap,
-						ConfigMap: nil,
-					},
+			resource: &testResource{
+				name:      "test-server",
+				namespace: "test-ns",
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type:      mcpv1alpha1.OIDCConfigTypeConfigMap,
+					ConfigMap: nil,
 				},
 			},
 			expected: nil,
 		},
 		{
 			name: "configmap with caBundleRef",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
-							Name: "oidc-config",
-							CABundleRef: &mcpv1alpha1.CABundleSource{
-								ConfigMapRef: &corev1.ConfigMapKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: "ca-bundle"},
-								},
+			resource: &testResource{
+				name:      "test-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+					ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+						Name: "oidc-config",
+						CABundleRef: &mcpv1alpha1.CABundleSource{
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-bundle"},
 							},
 						},
 					},
@@ -506,7 +463,7 @@ func TestResolve_ConfigMapType(t *testing.T) {
 				Build()
 
 			resolver := NewResolver(fakeClient)
-			config, err := resolver.Resolve(context.Background(), tt.mcpServer)
+			config, err := resolver.Resolve(context.Background(), tt.resource)
 
 			if tt.expectErr {
 				assert.Error(t, err)
@@ -522,40 +479,36 @@ func TestResolve_InlineType(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		mcpServer *mcpv1alpha1.MCPServer
-		expected  *OIDCConfig
+		name     string
+		resource *testResource
+		expected *OIDCConfig
 	}{
 		{
 			name: "inline with all values",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:           "https://inline.example.com",
-							Audience:         "inline-audience",
-							JWKSURL:          "https://inline.example.com/.well-known/jwks.json",
-							IntrospectionURL: "https://inline.example.com/introspect",
-							ClientID:         "inline-client",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-								Name: "inline-secret",
-								Key:  "client-secret",
-							},
-							CABundleRef: &mcpv1alpha1.CABundleSource{
-								ConfigMapRef: &corev1.ConfigMapKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: "inline-ca"},
-								},
-							},
-							JWKSAuthTokenPath:               "/etc/auth/inline-token",
-							JWKSAllowPrivateIP:              true,
-							ProtectedResourceAllowPrivateIP: true,
+			resource: &testResource{
+				name:      "test-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:           "https://inline.example.com",
+						Audience:         "inline-audience",
+						JWKSURL:          "https://inline.example.com/.well-known/jwks.json",
+						IntrospectionURL: "https://inline.example.com/introspect",
+						ClientID:         "inline-client",
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "inline-secret",
+							Key:  "client-secret",
 						},
+						CABundleRef: &mcpv1alpha1.CABundleSource{
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "inline-ca"},
+							},
+						},
+						JWKSAuthTokenPath:               "/etc/auth/inline-token",
+						JWKSAllowPrivateIP:              true,
+						ProtectedResourceAllowPrivateIP: true,
 					},
 				},
 			},
@@ -574,20 +527,16 @@ func TestResolve_InlineType(t *testing.T) {
 		},
 		{
 			name: "inline with custom resource URL",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "custom-server",
-					Namespace: "custom-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 9090,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type:        mcpv1alpha1.OIDCConfigTypeInline,
-						ResourceURL: "https://custom-resource.example.com",
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://inline.example.com",
-							Audience: "inline-audience",
-						},
+			resource: &testResource{
+				name:      "custom-server",
+				namespace: "custom-ns",
+				proxyPort: 9090,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type:        mcpv1alpha1.OIDCConfigTypeInline,
+					ResourceURL: "https://custom-resource.example.com",
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:   "https://inline.example.com",
+						Audience: "inline-audience",
 					},
 				},
 			},
@@ -599,22 +548,18 @@ func TestResolve_InlineType(t *testing.T) {
 		},
 		{
 			name: "inline with insecureAllowHTTP enabled",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "insecure-inline-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:             "http://localhost:8080/realms/test",
-							Audience:           "test-audience",
-							JWKSURL:            "http://localhost:8080/realms/test/protocol/openid-connect/certs",
-							JWKSAllowPrivateIP: true,
-							InsecureAllowHTTP:  true,
-						},
+			resource: &testResource{
+				name:      "insecure-inline-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:             "http://localhost:8080/realms/test",
+						Audience:           "test-audience",
+						JWKSURL:            "http://localhost:8080/realms/test/protocol/openid-connect/certs",
+						JWKSAllowPrivateIP: true,
+						InsecureAllowHTTP:  true,
 					},
 				},
 			},
@@ -629,21 +574,17 @@ func TestResolve_InlineType(t *testing.T) {
 		},
 		{
 			name: "inline with protectedResourceAllowPrivateIP independent of jwksAllowPrivateIP",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "protected-resource-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:                          "https://auth.example.com",
-							Audience:                        "test-audience",
-							ProtectedResourceAllowPrivateIP: true,
-							JWKSAllowPrivateIP:              false,
-						},
+			resource: &testResource{
+				name:      "protected-resource-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:                          "https://auth.example.com",
+						Audience:                        "test-audience",
+						ProtectedResourceAllowPrivateIP: true,
+						JWKSAllowPrivateIP:              false,
 					},
 				},
 			},
@@ -657,20 +598,16 @@ func TestResolve_InlineType(t *testing.T) {
 		},
 		{
 			name: "inline with scopes",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "scopes-inline-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "test-audience",
-							Scopes:   []string{"openid", "profile", "email"},
-						},
+			resource: &testResource{
+				name:      "scopes-inline-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:   "https://auth.example.com",
+						Audience: "test-audience",
+						Scopes:   []string{"openid", "profile", "email"},
 					},
 				},
 			},
@@ -683,16 +620,12 @@ func TestResolve_InlineType(t *testing.T) {
 		},
 		{
 			name: "nil inline config returns nil",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type:   mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: nil,
-					},
+			resource: &testResource{
+				name:      "test-server",
+				namespace: "test-ns",
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type:   mcpv1alpha1.OIDCConfigTypeInline,
+					Inline: nil,
 				},
 			},
 			expected: nil,
@@ -703,7 +636,7 @@ func TestResolve_InlineType(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			resolver := NewResolver(nil)
-			config, err := resolver.Resolve(context.Background(), tt.mcpServer)
+			config, err := resolver.Resolve(context.Background(), tt.resource)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, config)
 		})
@@ -713,20 +646,16 @@ func TestResolve_InlineType(t *testing.T) {
 func TestResolve_UnknownType(t *testing.T) {
 	t.Parallel()
 
-	mcpServer := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server",
-			Namespace: "test-ns",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-				Type: "unknown-type",
-			},
+	res := &testResource{
+		name:      "test-server",
+		namespace: "test-ns",
+		oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+			Type: "unknown-type",
 		},
 	}
 
 	resolver := NewResolver(nil)
-	config, err := resolver.Resolve(context.Background(), mcpServer)
+	config, err := resolver.Resolve(context.Background(), res)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown OIDC config type")
@@ -736,23 +665,19 @@ func TestResolve_UnknownType(t *testing.T) {
 func TestResolve_NoClientForConfigMap(t *testing.T) {
 	t.Parallel()
 
-	mcpServer := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server",
-			Namespace: "test-ns",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-				Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
-				ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
-					Name: "test-config",
-				},
+	res := &testResource{
+		name:      "test-server",
+		namespace: "test-ns",
+		oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+			Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+			ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+				Name: "test-config",
 			},
 		},
 	}
 
 	resolver := NewResolver(nil) // No client provided
-	config, err := resolver.Resolve(context.Background(), mcpServer)
+	config, err := resolver.Resolve(context.Background(), res)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "kubernetes client is required")
@@ -763,29 +688,25 @@ func TestResolve_InlineWithClientSecretRef(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		mcpServer *mcpv1alpha1.MCPServer
-		expected  *OIDCConfig
+		name     string
+		resource *testResource
+		expected *OIDCConfig
 	}{
 		{
 			name: "clientSecretRef set - clientSecret should be empty",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://example.com",
-							Audience: "test-audience",
-							ClientID: "test-client",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-								Name: "oidc-secret",
-								Key:  "client-secret",
-							},
+			resource: &testResource{
+				name:      "test-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:   "https://example.com",
+						Audience: "test-audience",
+						ClientID: "test-client",
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "oidc-secret",
+							Key:  "client-secret",
 						},
 					},
 				},
@@ -800,23 +721,19 @@ func TestResolve_InlineWithClientSecretRef(t *testing.T) {
 		},
 		{
 			name: "clientSecretRef with clientID - clientSecret not in resolved config",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://example.com",
-							Audience: "test-audience",
-							ClientID: "test-client",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-								Name: "oidc-secret",
-								Key:  "client-secret",
-							},
+			resource: &testResource{
+				name:      "test-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:   "https://example.com",
+						Audience: "test-audience",
+						ClientID: "test-client",
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "oidc-secret",
+							Key:  "client-secret",
 						},
 					},
 				},
@@ -830,20 +747,16 @@ func TestResolve_InlineWithClientSecretRef(t *testing.T) {
 		},
 		{
 			name: "no clientSecretRef - clientSecret empty in resolved config",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://example.com",
-							Audience: "test-audience",
-							ClientID: "test-client",
-						},
+			resource: &testResource{
+				name:      "test-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:   "https://example.com",
+						Audience: "test-audience",
+						ClientID: "test-client",
 					},
 				},
 			},
@@ -860,7 +773,7 @@ func TestResolve_InlineWithClientSecretRef(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			resolver := NewResolver(nil)
-			config, err := resolver.Resolve(context.Background(), tt.mcpServer)
+			config, err := resolver.Resolve(context.Background(), tt.resource)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, config)
 		})
@@ -872,29 +785,25 @@ func TestResolve_InlineWithCABundleRef(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		mcpServer *mcpv1alpha1.MCPServer
+		resource  *testResource
 		expected  *OIDCConfig
 		expectErr bool
 		errMsg    string
 	}{
 		{
 			name: "valid caBundleRef",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://example.com",
-							Audience: "test-audience",
-							CABundleRef: &mcpv1alpha1.CABundleSource{
-								ConfigMapRef: &corev1.ConfigMapKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: "ca-bundle"},
-								},
+			resource: &testResource{
+				name:      "test-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:   "https://example.com",
+						Audience: "test-audience",
+						CABundleRef: &mcpv1alpha1.CABundleSource{
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-bundle"},
 							},
 						},
 					},
@@ -909,20 +818,16 @@ func TestResolve_InlineWithCABundleRef(t *testing.T) {
 		},
 		{
 			name: "caBundleRef without configMapRef fails",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:      "https://example.com",
-							Audience:    "test-audience",
-							CABundleRef: &mcpv1alpha1.CABundleSource{},
-						},
+			resource: &testResource{
+				name:      "test-server",
+				namespace: "test-ns",
+				proxyPort: 8080,
+				oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: mcpv1alpha1.OIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:      "https://example.com",
+						Audience:    "test-audience",
+						CABundleRef: &mcpv1alpha1.CABundleSource{},
 					},
 				},
 			},
@@ -935,7 +840,7 @@ func TestResolve_InlineWithCABundleRef(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			resolver := NewResolver(nil)
-			config, err := resolver.Resolve(context.Background(), tt.mcpServer)
+			config, err := resolver.Resolve(context.Background(), tt.resource)
 
 			if tt.expectErr {
 				require.Error(t, err)

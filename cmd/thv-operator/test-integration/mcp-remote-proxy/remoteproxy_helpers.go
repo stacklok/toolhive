@@ -87,15 +87,6 @@ func (h *MCPRemoteProxyTestHelper) NewRemoteProxyBuilder(name string) *RemotePro
 				RemoteURL: "https://remote.example.com/mcp",
 				ProxyPort: 8080,
 				Transport: "streamable-http",
-				// Default OIDC config for tests - override with WithInlineOIDCConfig if testing OIDC
-				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-					Type: "inline",
-					Inline: &mcpv1alpha1.InlineOIDCConfig{
-						Issuer:   "https://auth.example.com",
-						Audience: "test-audience",
-						ClientID: "test-client",
-					},
-				},
 			},
 		},
 	}
@@ -124,10 +115,8 @@ func (rb *RemoteProxyBuilder) WithAuthServerRef(name string) *RemoteProxyBuilder
 	return rb
 }
 
-// WithOIDCConfigRef sets the OIDCConfigRef for the proxy and clears
-// the inline OIDCConfig since they are mutually exclusive.
+// WithOIDCConfigRef sets the OIDCConfigRef for the proxy.
 func (rb *RemoteProxyBuilder) WithOIDCConfigRef(name, audience string) *RemoteProxyBuilder {
-	rb.proxy.Spec.OIDCConfig = nil
 	rb.proxy.Spec.OIDCConfigRef = &mcpv1alpha1.MCPOIDCConfigReference{
 		Name:     name,
 		Audience: audience,
@@ -149,37 +138,9 @@ func (rb *RemoteProxyBuilder) WithGroupRef(name string) *RemoteProxyBuilder {
 	return rb
 }
 
-// WithInlineOIDCConfig sets an inline OIDC config for the proxy
-func (rb *RemoteProxyBuilder) WithInlineOIDCConfig(issuer, audience string, insecureAllowHTTP bool) *RemoteProxyBuilder {
-	rb.proxy.Spec.OIDCConfig = &mcpv1alpha1.OIDCConfigRef{
-		Type: "inline",
-		Inline: &mcpv1alpha1.InlineOIDCConfig{
-			Issuer:            issuer,
-			Audience:          audience,
-			InsecureAllowHTTP: insecureAllowHTTP,
-		},
-	}
-	return rb
-}
-
 // WithRemoteURL overrides the default remote URL
 func (rb *RemoteProxyBuilder) WithRemoteURL(url string) *RemoteProxyBuilder {
 	rb.proxy.Spec.RemoteURL = url
-	return rb
-}
-
-// WithInlineOIDCConfigAndJWKS sets an inline OIDC config with a custom JWKS URL
-func (rb *RemoteProxyBuilder) WithInlineOIDCConfigAndJWKS(
-	issuer, audience, jwksURL string,
-) *RemoteProxyBuilder {
-	rb.proxy.Spec.OIDCConfig = &mcpv1alpha1.OIDCConfigRef{
-		Type: mcpv1alpha1.OIDCConfigTypeInline,
-		Inline: &mcpv1alpha1.InlineOIDCConfig{
-			Issuer:   issuer,
-			Audience: audience,
-			JWKSURL:  jwksURL,
-		},
-	}
 	return rb
 }
 

@@ -808,17 +808,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Image:     "auth/mcp-server:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: "inline",
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:             "https://auth.example.com",
-							Audience:           "toolhive-api",
-							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
-							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
-							ClientID:           "toolhive-client",
-							JWKSAllowPrivateIP: true,
-						},
-					},
 				},
 			}
 

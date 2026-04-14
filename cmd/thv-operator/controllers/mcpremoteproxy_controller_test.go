@@ -57,13 +57,6 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.salesforce.com",
 					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://login.salesforce.com",
-							Audience: "mcp.salesforce.com",
-						},
-					},
 				},
 			},
 			expectError: false,
@@ -77,13 +70,6 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
 				},
 			},
 			expectError: true,
@@ -101,13 +87,6 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.company.com",
-							Audience: "mcp-proxy",
-						},
-					},
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "exchange-config",
 					},
@@ -159,13 +138,6 @@ func TestMCPRemoteProxyReconcile_CreateResources(t *testing.T) {
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.salesforce.com",
 			ProxyPort: 8080,
-			OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-				Type: mcpv1alpha1.OIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCConfig{
-					Issuer:   "https://login.salesforce.com",
-					Audience: "mcp.salesforce.com",
-				},
-			},
 		},
 	}
 

@@ -36,10 +36,6 @@ type HeaderFromSecret struct {
 }
 
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
-//
-// +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
-//
-//nolint:lll // CEL validation rules exceed line length limit
 type MCPRemoteProxySpec struct {
 	// RemoteURL is the URL of the remote MCP server to proxy
 	// +kubebuilder:validation:Required
@@ -56,12 +52,6 @@ type MCPRemoteProxySpec struct {
 	// +kubebuilder:validation:Enum=sse;streamable-http
 	// +kubebuilder:default=streamable-http
 	Transport string `json:"transport,omitempty"`
-
-	// OIDCConfig defines OIDC authentication configuration for the proxy.
-	// Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
-	// This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
-	// +optional
-	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
 
 	// OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
 	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.
@@ -395,11 +385,6 @@ func (m *MCPRemoteProxy) GetName() string {
 // GetNamespace returns the namespace of the MCPRemoteProxy
 func (m *MCPRemoteProxy) GetNamespace() string {
 	return m.Namespace
-}
-
-// GetOIDCConfig returns the OIDC configuration reference
-func (m *MCPRemoteProxy) GetOIDCConfig() *OIDCConfigRef {
-	return m.Spec.OIDCConfig
 }
 
 // GetProxyPort returns the proxy port of the MCPRemoteProxy

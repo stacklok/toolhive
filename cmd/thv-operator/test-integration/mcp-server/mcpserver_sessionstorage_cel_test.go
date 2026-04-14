@@ -88,14 +88,14 @@ var _ = Describe("CEL Validation for SessionStorageConfig on MCPServer",
 
 		Context("replicas fields", func() {
 			It("should accept nil replicas (HPA-compatible)", func() {
-				server := newMinimalMCPServer("mcp-nil-replicas", nil, nil)
+				server := newMinimalMCPServer("mcp-nil-replicas", nil)
 				err := k8sClient.Create(ctx, server)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
 			It("should accept explicit replicas value", func() {
 				replicas := int32(3)
-				server := newMinimalMCPServer("mcp-explicit-replicas", nil, nil)
+				server := newMinimalMCPServer("mcp-explicit-replicas", nil)
 				server.Spec.Replicas = &replicas
 				err := k8sClient.Create(ctx, server)
 				Expect(err).NotTo(HaveOccurred())
@@ -103,7 +103,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on MCPServer",
 
 			It("should reject negative replicas", func() {
 				replicas := int32(-1)
-				server := newMinimalMCPServer("mcp-neg-replicas", nil, nil)
+				server := newMinimalMCPServer("mcp-neg-replicas", nil)
 				server.Spec.Replicas = &replicas
 				err := k8sClient.Create(ctx, server)
 				Expect(err).To(HaveOccurred())
@@ -111,7 +111,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on MCPServer",
 
 			It("should reject negative backendReplicas", func() {
 				backendReplicas := int32(-1)
-				server := newMinimalMCPServer("mcp-neg-backend-replicas", nil, nil)
+				server := newMinimalMCPServer("mcp-neg-backend-replicas", nil)
 				server.Spec.BackendReplicas = &backendReplicas
 				err := k8sClient.Create(ctx, server)
 				Expect(err).To(HaveOccurred())

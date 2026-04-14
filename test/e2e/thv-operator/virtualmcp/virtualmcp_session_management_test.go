@@ -380,7 +380,6 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			backendName  string
 			vmcpNodePort int32
 			oidcNodePort int32
-			oidcIssuer   string
 			oidcCleanup  func()
 		)
 
@@ -425,7 +424,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			backendName = fmt.Sprintf("e2e-yardstick-hijack-%d", timestamp)
 
 			// ---- Deploy parameterized mock OIDC server ----
-			oidcIssuer, oidcNodePort, oidcCleanup = DeployParameterizedOIDCServer(
+			_, oidcNodePort, oidcCleanup = DeployParameterizedOIDCServer(
 				ctx, k8sClient, oidcServiceName, defaultNamespace, 3*time.Minute, pollInterval,
 			)
 
@@ -460,15 +459,9 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 					},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
-						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-							Type: "inline",
-							Inline: &mcpv1alpha1.InlineOIDCConfig{
-								Issuer:                          oidcIssuer,
-								Audience:                        "vmcp-audience",
-								InsecureAllowHTTP:               true,
-								JWKSAllowPrivateIP:              true,
-								ProtectedResourceAllowPrivateIP: true,
-							},
+						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+							Name:     "session-oidc-config",
+							Audience: "vmcp-audience",
 						},
 					},
 					ServiceType: "NodePort",

@@ -842,20 +842,9 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				// vMCP will validate tokens and then exchange them for backend-specific tokens
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "oidc",
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: "inline",
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   fmt.Sprintf("http://mock-oidc-server.%s.svc.cluster.local", testNamespace),
-							ClientID: "vmcp-client",
-							Audience: "vmcp-audience",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-								Name: oidcClientSecretName,
-								Key:  "client-secret",
-							},
-							InsecureAllowHTTP:               true,
-							JWKSAllowPrivateIP:              true,
-							ProtectedResourceAllowPrivateIP: true,
-						},
+					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+						Name:     "discovery-oidc-config",
+						Audience: "vmcp-audience",
 					},
 				},
 				// DISCOVERED MODE: vMCP will discover outgoing auth from backend MCPServers

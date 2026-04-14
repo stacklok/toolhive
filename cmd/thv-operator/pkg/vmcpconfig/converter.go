@@ -192,8 +192,8 @@ func (c *Converter) convertIncomingAuth(
 	return incoming, nil
 }
 
-// resolveOIDCConfig resolves OIDC configuration from either an MCPOIDCConfig reference
-// or legacy inline OIDCConfig. Returns nil when no OIDC config is present.
+// resolveOIDCConfig resolves OIDC configuration from an MCPOIDCConfig reference.
+// Returns nil when no OIDC config is present.
 // Fails closed: returns an error when OIDC is configured but resolution fails,
 // preventing deployment without authentication when OIDC is explicitly requested.
 func (c *Converter) resolveOIDCConfig(
@@ -206,7 +206,7 @@ func (c *Converter) resolveOIDCConfig(
 
 	ctxLogger := log.FromContext(ctx)
 
-	// New path: resolve from MCPOIDCConfig reference (preferred over legacy inline OIDCConfig)
+	// Resolve from MCPOIDCConfig reference
 	if vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
 		oidcCfg, err := controllerutil.GetOIDCConfigForServer(
 			ctx, c.k8sClient, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
@@ -228,68 +228,7 @@ func (c *Converter) resolveOIDCConfig(
 		return mapResolvedOIDCToVmcpConfigFromRef(resolved, oidcCfg), nil
 	}
 
-	// Legacy path: resolve from inline OIDCConfig
-	if vmcp.Spec.IncomingAuth.OIDCConfig != nil {
-		resolved, err := c.oidcResolver.Resolve(ctx, vmcp)
-		if err != nil {
-			ctxLogger.Error(err, "failed to resolve OIDC config",
-				"vmcp", vmcp.Name,
-				"namespace", vmcp.Namespace,
-				"oidcType", vmcp.Spec.IncomingAuth.OIDCConfig.Type)
-			return nil, fmt.Errorf("OIDC resolution failed for type %q: %w",
-				vmcp.Spec.IncomingAuth.OIDCConfig.Type, err)
-		}
-		return mapResolvedOIDCToVmcpConfig(resolved, vmcp.Spec.IncomingAuth.OIDCConfig), nil
-	}
-
 	return nil, nil
-}
-
-// mapResolvedOIDCToVmcpConfig maps from oidc.OIDCConfig (resolved by the OIDC resolver)
-// to vmcpconfig.OIDCConfig (used by the vmcp runtime).
-// This keeps the vmcp config types separate from the operator's OIDC resolver types,
-// maintaining clean architectural boundaries while enabling unified OIDC resolution.
-func mapResolvedOIDCToVmcpConfig(
-	resolved *oidc.OIDCConfig,
-	oidcConfigRef *mcpv1alpha1.OIDCConfigRef,
-) *vmcpconfig.OIDCConfig {
-	if resolved == nil {
-		return nil
-	}
-
-	config := &vmcpconfig.OIDCConfig{
-		Issuer:                          resolved.Issuer,
-		ClientID:                        resolved.ClientID,
-		Audience:                        resolved.Audience,
-		Resource:                        resolved.ResourceURL,
-		JWKSURL:                         resolved.JWKSURL,
-		IntrospectionURL:                resolved.IntrospectionURL,
-		ProtectedResourceAllowPrivateIP: resolved.ProtectedResourceAllowPrivateIP,
-		JwksAllowPrivateIP:              resolved.JWKSAllowPrivateIP,
-		InsecureAllowHTTP:               resolved.InsecureAllowHTTP,
-		Scopes:                          resolved.Scopes,
-	}
-
-	// Handle client secret - the deployment controller mounts secrets as environment variables
-	// We need to set ClientSecretEnv for all OIDC config types that may have a client secret
-	if oidcConfigRef != nil {
-		switch oidcConfigRef.Type {
-		case mcpv1alpha1.OIDCConfigTypeInline:
-			// Inline config: check if ClientSecretRef is set
-			if oidcConfigRef.Inline != nil && oidcConfigRef.Inline.ClientSecretRef != nil {
-				config.ClientSecretEnv = vmcpOIDCClientSecretEnvVar
-			}
-		case mcpv1alpha1.OIDCConfigTypeConfigMap:
-			// ConfigMap config: check if the resolved config has a client secret
-			// Note: Storing secrets in ConfigMaps is not recommended; use inline with SecretRef instead
-			if resolved.ClientSecret != "" {
-				config.ClientSecretEnv = vmcpOIDCClientSecretEnvVar
-			}
-			// OIDCConfigTypeKubernetes does not use client secrets (uses service account tokens)
-		}
-	}
-
-	return config
 }
 
 // mapResolvedOIDCToVmcpConfigFromRef maps from oidc.OIDCConfig (resolved by the OIDC resolver)

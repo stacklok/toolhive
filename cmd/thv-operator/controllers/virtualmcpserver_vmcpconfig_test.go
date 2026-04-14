@@ -2104,15 +2104,8 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			Config: vmcpconfig.Config{Group: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "oidc",
-				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-					Type: mcpv1alpha1.OIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCConfig{
-						Issuer:   incomingIssuer,
-						Audience: audience,
-						ClientID: clientID,
-					},
-				},
+				Type:          "oidc",
+				OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: audience},
 			},
 			AuthServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
 				Issuer: authServerIssuer,
@@ -2141,13 +2134,24 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 		Spec: mcpv1alpha1.MCPGroupSpec{},
 	}
 
+	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Issuer:   incomingIssuer,
+				ClientID: clientID,
+			},
+		},
+	}
+
 	scheme := runtime.NewScheme()
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(testVmcp, mcpGroup).
+		WithObjects(testVmcp, mcpGroup, oidcConfig).
 		Build()
 
 	r := &VirtualMCPServerReconciler{

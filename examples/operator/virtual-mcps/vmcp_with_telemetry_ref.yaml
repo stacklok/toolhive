@@ -61,7 +61,8 @@ metadata:
   name: yardstick-telemetry
   namespace: toolhive-system
 spec:
-  groupRef: telemetry-demo
+  groupRef:
+    name: telemetry-demo
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: stdio
   proxyPort: 8080
@@ -88,9 +89,11 @@ spec:
     name: shared-otel
     serviceName: telemetry-demo-vmcp
 
+  groupRef:
+    name: telemetry-demo
+
   # vMCP configuration
   config:
-    groupRef: telemetry-demo
     aggregation:
       conflictResolution: prefix
       conflictResolutionConfig:

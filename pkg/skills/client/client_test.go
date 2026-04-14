@@ -542,6 +542,84 @@ func TestPush(t *testing.T) {
 	}
 }
 
+func TestGetContent(t *testing.T) {
+	t.Parallel()
+
+	response := skills.SkillContent{
+		Name:        "my-skill",
+		Description: "A test skill",
+		Version:     "1.0.0",
+		License:     "Apache-2.0",
+		Body:        "# My Skill\nDoes things.",
+		Files:       []skills.SkillFileEntry{{Path: "SKILL.md", Size: 42}},
+	}
+
+	tests := []struct {
+		name       string
+		opts       skills.ContentOptions
+		wantQuery  string
+		response   skills.SkillContent
+		statusCode int
+		wantErr    bool
+		wantCode   int
+	}{
+		{
+			name:       "success with local tag",
+			opts:       skills.ContentOptions{Reference: "my-skill"},
+			wantQuery:  "my-skill",
+			response:   response,
+			statusCode: http.StatusOK,
+		},
+		{
+			name:      "success with OCI reference",
+			opts:      skills.ContentOptions{Reference: "ghcr.io/org/my-skill:v1"},
+			wantQuery: "ghcr.io/org/my-skill:v1",
+			response:  response,
+			statusCode: http.StatusOK,
+		},
+		{
+			name:       "server error propagates",
+			opts:       skills.ContentOptions{Reference: "missing"},
+			statusCode: http.StatusBadRequest,
+			wantErr:    true,
+			wantCode:   http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodGet, r.Method)
+				assert.Equal(t, skillsBasePath+"/content", r.URL.Path)
+				if tt.wantQuery != "" {
+					assert.Equal(t, tt.wantQuery, r.URL.Query().Get("ref"))
+				}
+
+				if tt.statusCode >= http.StatusBadRequest {
+					http.Error(w, "bad request", tt.statusCode)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				require.NoError(t, json.NewEncoder(w).Encode(tt.response))
+			}))
+			defer srv.Close()
+
+			c := newTestClient(t, srv)
+			got, err := c.GetContent(t.Context(), tt.opts)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Equal(t, tt.wantCode, httperr.Code(err))
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.response, *got)
+		})
+	}
+}
+
 func TestConnectionError(t *testing.T) {
 	t.Parallel()
 

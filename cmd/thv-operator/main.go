@@ -32,6 +32,10 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	// Import authorizer backends so they register with the factory registry.
+	// Placed here (not in the controller) to keep the controller backend-agnostic.
+	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/http"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
 )
 
@@ -282,6 +286,14 @@ func setupServerControllers(mgr ctrl.Manager) error {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPOIDCConfig: %w", err)
+	}
+
+	// Set up MCPAuthzConfig controller
+	if err := (&controllers.MCPAuthzConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller MCPAuthzConfig: %w", err)
 	}
 
 	// Set up MCPTelemetryConfig controller

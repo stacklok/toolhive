@@ -21,6 +21,9 @@ func init() {
 // Factory implements the authorizers.AuthorizerFactory interface for HTTP PDPs.
 type Factory struct{}
 
+// ConfigKey returns the JSON key for HTTP PDP-specific configuration ("pdp").
+func (*Factory) ConfigKey() string { return "pdp" }
+
 // ValidateConfig validates the HTTP PDP configuration.
 func (*Factory) ValidateConfig(rawConfig json.RawMessage) error {
 	config, err := parseConfig(rawConfig)

@@ -735,6 +735,8 @@ _Appears in:_
 ### Resource Types
 - [api.v1alpha1.EmbeddingServer](#apiv1alpha1embeddingserver)
 - [api.v1alpha1.EmbeddingServerList](#apiv1alpha1embeddingserverlist)
+- [api.v1alpha1.MCPAuthzConfig](#apiv1alpha1mcpauthzconfig)
+- [api.v1alpha1.MCPAuthzConfigList](#apiv1alpha1mcpauthzconfiglist)
 - [api.v1alpha1.MCPExternalAuthConfig](#apiv1alpha1mcpexternalauthconfig)
 - [api.v1alpha1.MCPExternalAuthConfigList](#apiv1alpha1mcpexternalauthconfiglist)
 - [api.v1alpha1.MCPGroup](#apiv1alpha1mcpgroup)
@@ -1286,7 +1288,8 @@ _Appears in:_
 | `type` _string_ | Type defines the authentication type: anonymous or oidc<br />When no authentication is required, explicitly set this to "anonymous" |  | Enum: [anonymous oidc] <br />Required: \{\} <br /> |
 | `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration.<br />Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.<br />This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
 | `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig. |  | Optional: \{\} <br /> |
-| `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration<br />Reuses MCPServer authz patterns |  | Optional: \{\} <br /> |
+| `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration.<br />Deprecated: Use AuthzConfigRef to reference a shared MCPAuthzConfig resource instead.<br />AuthzConfig and AuthzConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
+| `authzConfigRef` _[api.v1alpha1.MCPAuthzConfigReference](#apiv1alpha1mcpauthzconfigreference)_ | AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.<br />The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.<br />Mutually exclusive with authzConfig. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.InlineAuthzConfig
@@ -1402,6 +1405,108 @@ _Appears in:_
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from.<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL. |  | Optional: \{\} <br /> |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint.<br />If empty, OIDC discovery will be used to automatically determine the introspection URL. |  | Optional: \{\} <br /> |
 | `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token.<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication.<br />Defaults to true if not specified. |  | Optional: \{\} <br /> |
+
+
+#### api.v1alpha1.MCPAuthzConfig
+
+
+
+MCPAuthzConfig is the Schema for the mcpauthzconfigs API.
+MCPAuthzConfig resources are namespace-scoped and can only be referenced by
+MCPServer, MCPRemoteProxy, or VirtualMCPServer resources within the same namespace.
+Cross-namespace references are not supported for security and isolation reasons.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPAuthzConfigList](#apiv1alpha1mcpauthzconfiglist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPAuthzConfig` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1alpha1.MCPAuthzConfigSpec](#apiv1alpha1mcpauthzconfigspec)_ |  |  |  |
+| `status` _[api.v1alpha1.MCPAuthzConfigStatus](#apiv1alpha1mcpauthzconfigstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPAuthzConfigList
+
+
+
+MCPAuthzConfigList contains a list of MCPAuthzConfig
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPAuthzConfigList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPAuthzConfig](#apiv1alpha1mcpauthzconfig) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPAuthzConfigReference
+
+
+
+MCPAuthzConfigReference references a shared MCPAuthzConfig resource.
+The referenced MCPAuthzConfig must be in the same namespace as the referencing workload.
+
+
+
+_Appears in:_
+- [api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)
+- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
+- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the MCPAuthzConfig resource in the same namespace. |  | MinLength: 1 <br />Required: \{\} <br /> |
+
+
+#### api.v1alpha1.MCPAuthzConfigSpec
+
+
+
+MCPAuthzConfigSpec defines the desired state of MCPAuthzConfig.
+MCPAuthzConfig resources are namespace-scoped and can only be referenced by
+MCPServer, MCPRemoteProxy, or VirtualMCPServer resources in the same namespace.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPAuthzConfig](#apiv1alpha1mcpauthzconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type identifies the authorizer backend (e.g., "cedarv1", "httpv1").<br />Must match a registered authorizer type in the factory registry. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `config` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Config contains the backend-specific authorization configuration.<br />The structure depends on the Type field:<br />  - cedarv1: policies ([]string), entities_json (string), primary_upstream_provider (string), group_claim_name (string)<br />  - httpv1: http (\{url, timeout, insecure_skip_verify\}), context (\{include_args, include_operation\}), claim_mapping (string) |  | Type: object <br /> |
+
+
+#### api.v1alpha1.MCPAuthzConfigStatus
+
+
+
+MCPAuthzConfigStatus defines the observed state of MCPAuthzConfig
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPAuthzConfig](#apiv1alpha1mcpauthzconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPAuthzConfig's state |  | Optional: \{\} <br /> |
+| `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPAuthzConfig. |  | Optional: \{\} <br /> |
+| `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
+| `referencingWorkloads` _[api.v1alpha1.WorkloadReference](#apiv1alpha1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPAuthzConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPExternalAuthConfig
@@ -1903,7 +2008,8 @@ _Appears in:_
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.<br />When specified, the proxy will exchange validated incoming tokens for remote service tokens.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy. |  | Optional: \{\} <br /> |
 | `authServerRef` _[api.v1alpha1.AuthServerRef](#apiv1alpha1authserverref)_ | AuthServerRef optionally references a resource that configures an embedded<br />OAuth 2.0/OIDC authorization server to authenticate MCP clients.<br />Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer). |  | Optional: \{\} <br /> |
 | `headerForward` _[api.v1alpha1.HeaderForwardConfig](#apiv1alpha1headerforwardconfig)_ | HeaderForward configures headers to inject into requests to the remote MCP server.<br />Use this to add custom headers like X-Tenant-ID or correlation IDs. |  | Optional: \{\} <br /> |
-| `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the proxy |  | Optional: \{\} <br /> |
+| `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the proxy.<br />Deprecated: Use AuthzConfigRef to reference a shared MCPAuthzConfig resource instead.<br />AuthzConfig and AuthzConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
+| `authzConfigRef` _[api.v1alpha1.MCPAuthzConfigReference](#apiv1alpha1mcpauthzconfigreference)_ | AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.<br />The referenced MCPAuthzConfig must exist in the same namespace as this MCPRemoteProxy.<br />Mutually exclusive with authzConfig. |  | Optional: \{\} <br /> |
 | `audit` _[api.v1alpha1.AuditConfig](#apiv1alpha1auditconfig)_ | Audit defines audit logging configuration for the proxy |  | Optional: \{\} <br /> |
 | `toolConfigRef` _[api.v1alpha1.ToolConfigRef](#apiv1alpha1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this allows filtering and overriding tools from the remote MCP server. |  | Optional: \{\} <br /> |
 | `telemetryConfigRef` _[api.v1alpha1.MCPTelemetryConfigReference](#apiv1alpha1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />Mutually exclusive with the deprecated inline Telemetry field. |  | Optional: \{\} <br /> |
@@ -2139,7 +2245,8 @@ _Appears in:_
 | `resourceOverrides` _[api.v1alpha1.ResourceOverrides](#apiv1alpha1resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  | Optional: \{\} <br /> |
 | `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the MCP server.<br />Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.<br />This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
 | `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig. |  | Optional: \{\} <br /> |
-| `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server |  | Optional: \{\} <br /> |
+| `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server.<br />Deprecated: Use AuthzConfigRef to reference a shared MCPAuthzConfig resource instead.<br />AuthzConfig and AuthzConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
+| `authzConfigRef` _[api.v1alpha1.MCPAuthzConfigReference](#apiv1alpha1mcpauthzconfigreference)_ | AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.<br />The referenced MCPAuthzConfig must exist in the same namespace as this MCPServer.<br />Mutually exclusive with authzConfig. |  | Optional: \{\} <br /> |
 | `audit` _[api.v1alpha1.AuditConfig](#apiv1alpha1auditconfig)_ | Audit defines audit logging configuration for the MCP server |  | Optional: \{\} <br /> |
 | `toolConfigRef` _[api.v1alpha1.ToolConfigRef](#apiv1alpha1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer. |  | Optional: \{\} <br /> |
@@ -3479,6 +3586,7 @@ Namespace is implicit — cross-namespace references are not supported.
 
 
 _Appears in:_
+- [api.v1alpha1.MCPAuthzConfigStatus](#apiv1alpha1mcpauthzconfigstatus)
 - [api.v1alpha1.MCPExternalAuthConfigStatus](#apiv1alpha1mcpexternalauthconfigstatus)
 - [api.v1alpha1.MCPOIDCConfigStatus](#apiv1alpha1mcpoidcconfigstatus)
 - [api.v1alpha1.MCPTelemetryConfigStatus](#apiv1alpha1mcptelemetryconfigstatus)

@@ -98,6 +98,9 @@ func InjectUpstreamProvider(src *authorizers.Config, providerName string) (*auth
 // Factory implements the authorizers.AuthorizerFactory interface for Cedar.
 type Factory struct{}
 
+// ConfigKey returns the JSON key for Cedar-specific configuration ("cedar").
+func (*Factory) ConfigKey() string { return "cedar" }
+
 // ValidateConfig validates the Cedar-specific configuration.
 // It receives the full raw config and extracts the Cedar-specific portion.
 func (*Factory) ValidateConfig(rawConfig json.RawMessage) error {

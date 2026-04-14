@@ -38,6 +38,7 @@ type HeaderFromSecret struct {
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+// +kubebuilder:validation:XValidation:rule="!(has(self.authzConfig) && has(self.authzConfigRef))",message="authzConfig and authzConfigRef are mutually exclusive; use authzConfigRef to reference a shared MCPAuthzConfig"
 // +kubebuilder:validation:XValidation:rule="!(has(self.telemetry) && has(self.telemetryConfigRef))",message="telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
 //
 //nolint:lll // CEL validation rules exceed line length limit
@@ -88,9 +89,17 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	HeaderForward *HeaderForwardConfig `json:"headerForward,omitempty"`
 
-	// AuthzConfig defines authorization policy configuration for the proxy
+	// AuthzConfig defines authorization policy configuration for the proxy.
+	// Deprecated: Use AuthzConfigRef to reference a shared MCPAuthzConfig resource instead.
+	// AuthzConfig and AuthzConfigRef are mutually exclusive.
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
+
+	// AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+	// The referenced MCPAuthzConfig must exist in the same namespace as this MCPRemoteProxy.
+	// Mutually exclusive with authzConfig.
+	// +optional
+	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 
 	// Audit defines audit logging configuration for the proxy
 	// +optional

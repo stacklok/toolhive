@@ -13,12 +13,6 @@ A Helm chart for deploying the ToolHive Operator into Kubernetes.
 helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-operator -n toolhive-system --create-namespace
 ```
 
-Or for a custom values file:
-
-```consoleCustom
-helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-operator -n toolhive-system --create-namespace --values values-openshift.yaml
-```
-
 ## Prerequisites
 
 - Kubernetes 1.25+

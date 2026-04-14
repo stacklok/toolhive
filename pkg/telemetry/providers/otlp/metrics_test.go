@@ -37,13 +37,13 @@ func TestCreateMetricExporter(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "error creating metrics exporter due to malformed endpoint",
+			name: "endpoint with custom path",
 			config: Config{
-				Endpoint: "malformed//:4318",
+				Endpoint: "cloud.langfuse.com/api/public/otel",
+				Headers:  map[string]string{"Authorization": "Basic abc123"},
 				Insecure: false,
 			},
-			wantErr: true,
-			errMsg:  "invalid URL escape",
+			wantErr: false,
 		},
 	}
 
@@ -109,17 +109,13 @@ func TestNewMetricReader(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "expect error creating metrics exporter due to malformed endpoint",
+			name: "endpoint with custom path",
 			config: Config{
-				Endpoint: "malformed//:4318",
-				Headers: map[string]string{
-					"x-api-key": "secret",
-					"x-env":     "production",
-				},
+				Endpoint: "cloud.langfuse.com/api/public/otel",
+				Headers:  map[string]string{"Authorization": "Basic abc123"},
 				Insecure: false,
 			},
-			wantErr: true,
-			errMsg:  "invalid URL escape",
+			wantErr: false,
 		},
 	}
 

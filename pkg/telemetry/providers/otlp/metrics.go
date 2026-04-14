@@ -27,8 +27,13 @@ func NewMetricReader(ctx context.Context, config Config) (sdkmetric.Reader, erro
 }
 
 func createMetricExporter(ctx context.Context, config Config) (sdkmetric.Exporter, error) {
+	host, basePath := splitEndpointPath(config.Endpoint)
 	opts := []otlpmetrichttp.Option{
-		otlpmetrichttp.WithEndpoint(config.Endpoint),
+		otlpmetrichttp.WithEndpoint(host),
+	}
+
+	if basePath != "" {
+		opts = append(opts, otlpmetrichttp.WithURLPath(basePath+"/v1/metrics"))
 	}
 
 	if len(config.Headers) > 0 {

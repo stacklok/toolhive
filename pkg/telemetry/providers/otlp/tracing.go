@@ -15,8 +15,13 @@ import (
 )
 
 func createTraceExporter(ctx context.Context, config Config) (sdktrace.SpanExporter, error) {
+	host, basePath := splitEndpointPath(config.Endpoint)
 	opts := []otlptracehttp.Option{
-		otlptracehttp.WithEndpoint(config.Endpoint),
+		otlptracehttp.WithEndpoint(host),
+	}
+
+	if basePath != "" {
+		opts = append(opts, otlptracehttp.WithURLPath(basePath+"/v1/traces"))
 	}
 
 	if len(config.Headers) > 0 {

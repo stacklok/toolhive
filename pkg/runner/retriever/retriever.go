@@ -218,62 +218,18 @@ func handleProtocolScheme(
 	return generatedImage, nil
 }
 
-// handleGroupLookup handles the group lookup case
+// handleGroupLookup returns an error because registry-based groups are no longer supported.
+// Groups were a ToolHive-specific concept embedded in registry data that has been removed.
+// Workload grouping is managed separately via the thv group commands.
 func handleGroupLookup(
 	_ context.Context,
-	serverOrImage string,
+	_ string,
 	groupName string,
 ) (string, *types.ImageMetadata, types.ServerMetadata, error) {
-	var imageMetadata *types.ImageMetadata
-	var imageToUse string
-
-	provider, err := registry.GetDefaultProvider()
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to get registry provider: %w", err)
-	}
-
-	reg, err := provider.GetRegistry()
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to get registry: %w", err)
-	}
-
-	group, exists := reg.GetGroupByName(groupName)
-	if !exists {
-		return "", nil, nil, fmt.Errorf("group '%s' not found in registry", groupName)
-	}
-
-	// First check if the server exists and whether it's remote
-	var server types.ServerMetadata
-	var serverFound bool
-	if containerServer, exists := group.Servers[serverOrImage]; exists {
-		server = containerServer
-		serverFound = true
-	} else if remoteServer, exists := group.RemoteServers[serverOrImage]; exists {
-		server = remoteServer
-		serverFound = true
-	}
-
-	if serverFound {
-		// Server found, check if it's remote
-		if server.IsRemote() {
-			return serverOrImage, nil, server, nil
-		}
-		// It's a container server, get the ImageMetadata
-		if imgMetadata, ok := server.(*types.ImageMetadata); ok {
-			imageMetadata = imgMetadata
-			slog.Debug("Found imageMetadata in group", "server", serverOrImage, "metadata", imageMetadata)
-			imageToUse = imageMetadata.Image
-		} else {
-			// This shouldn't happen since we just found it, but handle it anyway
-			slog.Debug("ImageMetadata not found in group: could not cast", "server", serverOrImage)
-			imageToUse = serverOrImage
-		}
-	} else {
-		// Server not found in group - fail explicitly
-		return "", nil, nil, fmt.Errorf("server '%s' not found in group '%s'", serverOrImage, groupName)
-	}
-
-	return imageToUse, imageMetadata, nil, nil
+	return "", nil, nil, fmt.Errorf(
+		"registry-based group '%s' is no longer supported; use 'thv group' commands to manage workload groups",
+		groupName,
+	)
 }
 
 // handleRegistryLookup handles the standard registry lookup case

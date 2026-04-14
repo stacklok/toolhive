@@ -126,6 +126,7 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers/status,verbs=get
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -157,11 +158,11 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, nil
 	}
 
-	// Validate MCPOIDCConfigRef if referenced (before resource creation).
-	// handleOIDCConfig is a no-op when OIDCConfigRef is nil.
-	if err := r.handleOIDCConfig(ctx, vmcp, statusManager); err != nil {
+	// Validate shared config references (OIDC, Telemetry) before resource creation.
+	// Each handler is a no-op when its respective ref is nil.
+	if err := r.handleConfigRefs(ctx, vmcp, statusManager); err != nil {
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
-			ctxLogger.Error(applyErr, "Failed to apply status updates after MCPOIDCConfig validation error")
+			ctxLogger.Error(applyErr, "Failed to apply status updates after config ref validation error")
 		}
 		return ctrl.Result{}, err
 	}
@@ -2227,6 +2228,12 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&mcpv1alpha1.MCPOIDCConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.mapOIDCConfigToVirtualMCPServer),
 		).
+		// Watch referenced MCPTelemetryConfigs so that validity/hash changes
+		// trigger VirtualMCPServer reconciliation.
+		Watches(
+			&mcpv1alpha1.MCPTelemetryConfig{},
+			handler.EnqueueRequestsFromMapFunc(r.mapTelemetryConfigToVirtualMCPServer),
+		).
 		Complete(r)
 }
 
@@ -2874,6 +2881,19 @@ func generateHMACSecret() (string, error) {
 
 	// Encode as base64 for safe storage and environment variable use
 	return base64.StdEncoding.EncodeToString(secret), nil
+}
+
+// handleConfigRefs validates shared config references (OIDC, Telemetry) before resource creation.
+// Each handler is a no-op when its respective ref is nil.
+func (r *VirtualMCPServerReconciler) handleConfigRefs(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	if err := r.handleOIDCConfig(ctx, vmcp, statusManager); err != nil {
+		return err
+	}
+	return r.handleTelemetryConfig(ctx, vmcp, statusManager)
 }
 
 // handleOIDCConfig validates and tracks the hash of the referenced MCPOIDCConfig.

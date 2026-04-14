@@ -151,6 +151,18 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	volumes = append(volumes, caVolumes...)
 	volumeMounts = append(volumeMounts, caMounts...)
 
+	// Add telemetry CA bundle volumes when TelemetryConfigRef is set
+	if vmcp.Spec.TelemetryConfigRef != nil {
+		telemetryCfg, telErr := ctrlutil.GetTelemetryConfigForVirtualMCPServer(ctx, r.Client, vmcp)
+		if telErr != nil {
+			log.FromContext(ctx).Error(telErr, "Failed to get MCPTelemetryConfig for CA bundle volumes")
+		} else if telemetryCfg != nil {
+			telVolumes, telMounts := ctrlutil.AddTelemetryCABundleVolumes(telemetryCfg)
+			volumes = append(volumes, telVolumes...)
+			volumeMounts = append(volumeMounts, telMounts...)
+		}
+	}
+
 	// Add embedded auth server volumes and env vars if configured (inline config)
 	if vmcp.Spec.AuthServerConfig != nil {
 		authServerVolumes, authServerMounts := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
@@ -345,6 +357,18 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 
 	// Mount Redis password secret when session storage provider is Redis.
 	env = append(env, r.buildRedisPasswordEnvVar(vmcp)...)
+
+	// Mount OpenTelemetry env vars (resource attributes, sensitive headers) when TelemetryConfigRef is set
+	if vmcp.Spec.TelemetryConfigRef != nil {
+		telemetryCfg, telErr := ctrlutil.GetTelemetryConfigForVirtualMCPServer(ctx, r.Client, vmcp)
+		if telErr != nil {
+			log.FromContext(ctx).Error(telErr, "Failed to get MCPTelemetryConfig for env vars")
+		} else if telemetryCfg != nil {
+			otelEnv := ctrlutil.GenerateOpenTelemetryEnvVarsFromRef(
+				telemetryCfg, vmcp.Spec.TelemetryConfigRef, vmcp.Name, vmcp.Namespace)
+			env = append(env, otelEnv...)
+		}
+	}
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env), nil
 }

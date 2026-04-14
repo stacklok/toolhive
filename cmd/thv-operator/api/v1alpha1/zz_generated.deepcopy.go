@@ -3104,6 +3104,11 @@ func (in *VirtualMCPServerSpec) DeepCopyInto(out *VirtualMCPServerSpec) {
 		(*in).DeepCopyInto(*out)
 	}
 	in.Config.DeepCopyInto(&out.Config)
+	if in.TelemetryConfigRef != nil {
+		in, out := &in.TelemetryConfigRef, &out.TelemetryConfigRef
+		*out = new(MCPTelemetryConfigReference)
+		**out = **in
+	}
 	if in.EmbeddingServerRef != nil {
 		in, out := &in.EmbeddingServerRef, &out.EmbeddingServerRef
 		*out = new(EmbeddingServerRef)

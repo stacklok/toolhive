@@ -1947,3 +1947,54 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 	assert.Equal(t, controllerutil.UpstreamClientSecretEnvVar+"_CORP_IDP",
 		runConfig.Upstreams[0].OIDCConfig.ClientSecretEnvVar)
 }
+
+// TestConverter_TelemetryConfigRef tests that Convert uses MCPTelemetryConfig when TelemetryConfigRef is set.
+func TestConverter_TelemetryConfigRef(t *testing.T) {
+	t.Parallel()
+
+	telemetryCfg := &mcpv1alpha1.MCPTelemetryConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared-telemetry", Namespace: "default"},
+		Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
+			OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+				Enabled:  true,
+				Endpoint: "https://otel-collector:4317",
+				Tracing: &mcpv1alpha1.OpenTelemetryTracingConfig{
+					Enabled:      true,
+					SamplingRate: "0.5",
+				},
+				Metrics: &mcpv1alpha1.OpenTelemetryMetricsConfig{
+					Enabled: true,
+				},
+			},
+		},
+	}
+
+	k8sClient := newTestK8sClient(t, telemetryCfg)
+	converter, err := NewConverter(newNoOpMockResolver(t), k8sClient)
+	require.NoError(t, err)
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
+			Config:       vmcpconfig.Config{Group: "test-group"},
+			TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+				Name:        "shared-telemetry",
+				ServiceName: "custom-svc",
+			},
+		},
+	}
+
+	ctx := log.IntoContext(context.Background(), logr.Discard())
+	config, _, err := converter.Convert(ctx, vmcp)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	require.NotNil(t, config.Telemetry)
+
+	assert.Equal(t, "custom-svc", config.Telemetry.ServiceName,
+		"ServiceName should come from TelemetryConfigRef.ServiceName override")
+	assert.Equal(t, "otel-collector:4317", config.Telemetry.Endpoint,
+		"Endpoint should be normalized (https:// prefix stripped)")
+	assert.True(t, config.Telemetry.TracingEnabled, "Tracing should be enabled from MCPTelemetryConfig")
+	assert.True(t, config.Telemetry.MetricsEnabled, "Metrics should be enabled from MCPTelemetryConfig")
+}

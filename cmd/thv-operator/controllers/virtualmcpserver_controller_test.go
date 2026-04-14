@@ -67,7 +67,6 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					Config:   vmcpconfig.Config{Group: testGroupName},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -114,7 +113,6 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "missing-group"},
-					Config:   vmcpconfig.Config{Group: "missing-group"},
 				},
 			},
 			expectError:    true,
@@ -130,7 +128,6 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "pending-group"},
-					Config:   vmcpconfig.Config{Group: "pending-group"},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -223,7 +220,6 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -303,7 +299,6 @@ func TestVirtualMCPServerEnsureRBACResources_Update(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			Config:   vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 
@@ -387,7 +382,6 @@ func TestVirtualMCPServerEnsureRBACResources_Idempotency(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			Config:   vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 
@@ -451,7 +445,6 @@ func TestVirtualMCPServerEnsureRBACResources_InlineMode(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			Config:   vmcpconfig.Config{Group: "test-group"},
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 				Source: "inline",
 			},
@@ -522,7 +515,6 @@ func TestVirtualMCPServerEnsureRBACResources_DiscoveredMode(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			Config:   vmcpconfig.Config{Group: "test-group"},
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 				Source: "discovered",
 			},
@@ -591,7 +583,6 @@ func TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount(t *testing.T) 
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef:       &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			Config:         vmcpconfig.Config{Group: "test-group"},
 			ServiceAccount: &customSA,
 		},
 	}
@@ -651,7 +642,6 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -735,7 +725,6 @@ func TestVirtualMCPServerEnsureService(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -815,7 +804,6 @@ func TestVirtualMCPServerServiceType(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef:    &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					Config:      vmcpconfig.Config{Group: testGroupName},
 					ServiceType: tt.serviceType,
 				},
 			}
@@ -847,7 +835,6 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef:    &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:      vmcpconfig.Config{Group: testGroupName},
 			ServiceType: "ClusterIP",
 		},
 	}
@@ -1171,7 +1158,6 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					Config:   vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
@@ -1192,7 +1178,6 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					Config:   vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type:          "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
@@ -1228,7 +1213,6 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					Config:   vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type:          "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
@@ -1273,7 +1257,6 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					Config:   vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type:          "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
@@ -1412,7 +1395,6 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
 						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-						Config:   vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1436,7 +1418,6 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
 						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-						Config:   vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1457,7 +1438,6 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
 						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-						Config:   vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1542,7 +1522,6 @@ func TestVirtualMCPServerApplyStatusUpdates_ResourceNotFound(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -1585,7 +1564,6 @@ func TestVirtualMCPServerEnsureAllResources_Errors(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
 						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-						Config:   vmcpconfig.Config{Group: testGroupName},
 					},
 				}
 			},
@@ -1659,7 +1637,6 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2144,7 +2121,6 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2317,7 +2293,6 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2451,7 +2426,6 @@ func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "nonexistent-group"},
-			Config:   vmcpconfig.Config{Group: "nonexistent-group"},
 		},
 	}
 
@@ -2508,7 +2482,6 @@ func TestVirtualMCPServerReconcile_GroupNotReady(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2603,7 +2576,6 @@ func TestVirtualMCPServerEnsureDeployment_ConfigMapNotFound(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2640,7 +2612,6 @@ func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2698,7 +2669,6 @@ func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2782,7 +2752,6 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2869,7 +2838,6 @@ func TestVirtualMCPServerEnsureService_CreateService(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -2912,7 +2880,6 @@ func TestVirtualMCPServerEnsureService_UpdateService(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef:    &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:      vmcpconfig.Config{Group: testGroupName},
 			ServiceType: "LoadBalancer",
 		},
 	}
@@ -2975,7 +2942,6 @@ func TestVirtualMCPServerEnsureService_NoUpdateNeeded(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 		},
 	}
 
@@ -3038,7 +3004,6 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					Config:   vmcpconfig.Config{Group: testGroupName},
 				},
 			},
 			expectError: false,
@@ -3052,7 +3017,6 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					Config:   vmcpconfig.Config{Group: testGroupName},
 					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
 						Name: "shared-embedding",
 					},
@@ -3079,7 +3043,6 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					Config:   vmcpconfig.Config{Group: testGroupName},
 					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
 						Name: "missing-embedding",
 					},
@@ -3098,7 +3061,6 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					Config:   vmcpconfig.Config{Group: testGroupName},
 					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
 						Name: "pending-embedding",
 					},
@@ -3125,7 +3087,6 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					Config:   vmcpconfig.Config{Group: testGroupName},
 					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
 						Name: "no-replicas-embedding",
 					},
@@ -3212,7 +3173,6 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_SpecDriven(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 			Replicas: &specReplicas,
 		},
 	}
@@ -3292,7 +3252,6 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_NilPassthrough(t *testing.
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-			Config:   vmcpconfig.Config{Group: testGroupName},
 			Replicas: nil, // HPA manages replicas
 		},
 	}

@@ -146,8 +146,8 @@ func TestVirtualMCPServerDefaultValues(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: VirtualMCPServerSpec{
+			GroupRef: &MCPGroupRef{Name: "test-group"},
 			Config: config.Config{
-				Group: "test-group",
 				Aggregation: &config.AggregationConfig{
 					ConflictResolution: "", // Should default to "prefix"
 				},
@@ -174,7 +174,7 @@ func TestVirtualMCPServerNamespaceIsolation(t *testing.T) {
 			Namespace: "team-a",
 		},
 		Spec: VirtualMCPServerSpec{
-			Config: config.Config{Group: "backend-group"}, // Must be in team-a namespace
+			GroupRef: &MCPGroupRef{Name: "backend-group"},
 		},
 	}
 
@@ -185,7 +185,7 @@ func TestVirtualMCPServerNamespaceIsolation(t *testing.T) {
 			Namespace: "team-b",
 		},
 		Spec: VirtualMCPServerSpec{
-			Config: config.Config{Group: "backend-group"}, // Different group in team-b namespace
+			GroupRef: &MCPGroupRef{Name: "backend-group"},
 		},
 	}
 
@@ -195,8 +195,8 @@ func TestVirtualMCPServerNamespaceIsolation(t *testing.T) {
 	assert.NotEqual(t, vmcpTeamA.Namespace, vmcpTeamB.Namespace)
 
 	// Group names can be the same but refer to different groups in different namespaces
-	assert.Equal(t, "backend-group", vmcpTeamA.Spec.Config.Group)
-	assert.Equal(t, "backend-group", vmcpTeamB.Spec.Config.Group)
+	assert.Equal(t, "backend-group", vmcpTeamA.ResolveGroupName())
+	assert.Equal(t, "backend-group", vmcpTeamB.ResolveGroupName())
 }
 
 func TestConflictResolutionStrategies(t *testing.T) {
@@ -552,6 +552,52 @@ func TestMCPGroupRef_GetName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tt.want, tt.ref.GetName())
+		})
+	}
+}
+
+func TestVirtualMCPServer_Validate_RequiresGroupRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		groupRef  *MCPGroupRef
+		expectErr bool
+		errMsg    string
+	}{
+		{
+			name:      "valid with groupRef set",
+			groupRef:  &MCPGroupRef{Name: "my-group"},
+			expectErr: false,
+		},
+		{
+			name:      "rejected when groupRef is nil",
+			groupRef:  nil,
+			expectErr: true,
+			errMsg:    "spec.groupRef.name is required",
+		},
+		{
+			name:      "rejected when groupRef name is empty",
+			groupRef:  &MCPGroupRef{Name: ""},
+			expectErr: true,
+			errMsg:    "spec.groupRef.name is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vmcp := &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: tt.groupRef,
+				},
+			}
+			err := vmcp.Validate()
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }

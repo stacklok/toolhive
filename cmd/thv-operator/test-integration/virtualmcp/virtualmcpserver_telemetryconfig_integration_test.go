@@ -5,6 +5,7 @@
 package controllers
 
 import (
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -13,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/yaml"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	telemetryconfig "github.com/stacklok/toolhive/pkg/telemetry"
@@ -140,6 +142,33 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 					return false
 				}, timeout, interval).Should(BeTrue())
 			})
+
+			It("should produce a ConfigMap with telemetry config from the MCPTelemetryConfig", func() {
+				configMapName := fmt.Sprintf("%s-vmcp-config", virtualMCPServer.Name)
+				Eventually(func() bool {
+					cm := &corev1.ConfigMap{}
+					err := k8sClient.Get(ctx, types.NamespacedName{
+						Name:      configMapName,
+						Namespace: namespace,
+					}, cm)
+					if err != nil {
+						return false
+					}
+					configYAML, ok := cm.Data["config.yaml"]
+					if !ok || configYAML == "" {
+						return false
+					}
+					// Parse the config and verify telemetry fields match the MCPTelemetryConfig
+					var config vmcpconfig.Config
+					if err := yaml.Unmarshal([]byte(configYAML), &config); err != nil {
+						return false
+					}
+					return config.Telemetry != nil &&
+						config.Telemetry.Endpoint == "otel-collector:4317" && // NormalizeTelemetryConfig strips https://
+						config.Telemetry.TracingEnabled &&
+						config.Telemetry.MetricsEnabled
+				}, timeout, interval).Should(BeTrue())
+			})
 		})
 
 		Context("VirtualMCPServer should update when MCPTelemetryConfig spec changes", Ordered, func() {
@@ -252,6 +281,26 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 					}
 					return fetched.Status.TelemetryConfigHash != "" &&
 						fetched.Status.TelemetryConfigHash != initialHash
+				}, timeout, interval).Should(BeTrue())
+
+				// Verify the ConfigMap reflects the new endpoint
+				configMapName := fmt.Sprintf("%s-vmcp-config", virtualMCPServer.Name)
+				Eventually(func() bool {
+					cm := &corev1.ConfigMap{}
+					err := k8sClient.Get(ctx, types.NamespacedName{
+						Name:      configMapName,
+						Namespace: namespace,
+					}, cm)
+					if err != nil {
+						return false
+					}
+					var config vmcpconfig.Config
+					if err := yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &config); err != nil {
+						return false
+					}
+					// NormalizeTelemetryConfig strips https:// prefix
+					return config.Telemetry != nil &&
+						config.Telemetry.Endpoint == "new-collector:4317"
 				}, timeout, interval).Should(BeTrue())
 			})
 		})

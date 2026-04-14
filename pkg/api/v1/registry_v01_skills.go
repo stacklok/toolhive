@@ -77,6 +77,19 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 }
 
 // listSkillsV01 handles GET /registry/{registryName}/v0.1/x/dev.toolhive/skills
+//
+//	@Summary		List available registry skills
+//	@Description	Get a paginated list of skills from the registry. Supports optional full-text search and pagination.
+//	@Tags			registry-skills
+//	@Produce		json
+//	@Param			registryName	path		string	true	"Registry name (currently ignored, uses the default provider)"
+//	@Param			q				query		string	false	"Search filter — matches against skill name, namespace, and description"
+//	@Param			page			query		integer	false	"Page number, 1-based (default: 1)"
+//	@Param			limit			query		integer	false	"Items per page, max 200 (default: 50)"
+//	@Success		200				{object}	skillsV01Response
+//	@Failure		500				{object}	registryErrorResponse	"Internal server error"
+//	@Failure		503				{object}	registryErrorResponse	"Registry authentication required or upstream registry unavailable"
+//	@Router			/registry/{registryName}/v0.1/x/dev.toolhive/skills [get]
 func listSkillsV01(w http.ResponseWriter, r *http.Request) {
 	provider, ok := getSkillsProvider(w)
 	if !ok {
@@ -124,6 +137,19 @@ func listSkillsV01(w http.ResponseWriter, r *http.Request) {
 }
 
 // getSkillV01 handles GET /registry/{registryName}/v0.1/x/dev.toolhive/skills/{namespace}/{skillName}
+//
+//	@Summary		Get a registry skill
+//	@Description	Retrieve a single skill by its namespace and name from the registry.
+//	@Tags			registry-skills
+//	@Produce		json
+//	@Param			registryName	path		string	true	"Registry name (currently ignored, uses the default provider)"
+//	@Param			namespace		path		string	true	"Skill namespace in reverse-DNS format (e.g. io.github.stacklok)"
+//	@Param			skillName		path		string	true	"Skill name"
+//	@Success		200				{object}	types.Skill
+//	@Failure		404				{object}	registryErrorResponse	"Skill not found"
+//	@Failure		500				{object}	registryErrorResponse	"Internal server error"
+//	@Failure		503				{object}	registryErrorResponse	"Registry authentication required or upstream registry unavailable"
+//	@Router			/registry/{registryName}/v0.1/x/dev.toolhive/skills/{namespace}/{skillName} [get]
 func getSkillV01(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	skillName := chi.URLParam(r, "skillName")
@@ -191,13 +217,24 @@ func parseSkillsPagination(r *http.Request) (page, limit int) {
 	return page, limit
 }
 
+// skillsV01Response is the response body for the v0.1 skills list endpoint.
+//
+//	@Description	Paginated list of skills from the registry
 type skillsV01Response struct {
-	Skills   []types.Skill     `json:"skills"`
+	// Skills is the list of skills on the current page
+	Skills []types.Skill `json:"skills"`
+	// Metadata contains pagination information
 	Metadata skillsV01Metadata `json:"metadata"`
 }
 
+// skillsV01Metadata holds pagination metadata for the v0.1 skills list response.
+//
+//	@Description	Pagination metadata for a skills list response
 type skillsV01Metadata struct {
+	// Total is the total number of skills matching the query
 	Total int `json:"total"`
-	Page  int `json:"page"`
+	// Page is the current page number (1-based)
+	Page int `json:"page"`
+	// Limit is the maximum number of skills per page
 	Limit int `json:"limit"`
 }

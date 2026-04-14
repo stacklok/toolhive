@@ -185,7 +185,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
 
-	// Add telemetry configuration: prefer TelemetryConfigRef over deprecated inline Telemetry
+	// Add telemetry configuration from TelemetryConfigRef
 	if m.Spec.TelemetryConfigRef != nil {
 		telCfg, err := getTelemetryConfigForMCPServer(ctx, r.Client, m)
 		if err != nil {
@@ -195,8 +195,6 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 			caPath := ctrlutil.TelemetryCABundleFilePath(telCfg)
 			runconfig.AddMCPTelemetryConfigRefOptions(&options, &telCfg.Spec, m.Spec.TelemetryConfigRef.ServiceName, m.Name, caPath)
 		}
-	} else {
-		runconfig.AddTelemetryConfigOptions(ctx, &options, m.Spec.Telemetry, m.Name)
 	}
 
 	// Add authorization configuration if specified

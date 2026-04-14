@@ -337,7 +337,6 @@ func (r *MCPRemoteProxyReconciler) resolveToolConfig(
 }
 
 // addTelemetryOptions resolves telemetry configuration for the RunConfig.
-// Prefers TelemetryConfigRef over the deprecated inline Telemetry field.
 func (r *MCPRemoteProxyReconciler) addTelemetryOptions(
 	ctx context.Context,
 	proxy *mcpv1alpha1.MCPRemoteProxy,
@@ -353,8 +352,6 @@ func (r *MCPRemoteProxyReconciler) addTelemetryOptions(
 			svcName := proxy.Spec.TelemetryConfigRef.ServiceName
 			runconfig.AddMCPTelemetryConfigRefOptions(options, &telCfg.Spec, svcName, proxy.Name, caPath)
 		}
-		return nil
 	}
-	runconfig.AddTelemetryConfigOptions(ctx, options, proxy.Spec.Telemetry, proxy.Name)
 	return nil
 }

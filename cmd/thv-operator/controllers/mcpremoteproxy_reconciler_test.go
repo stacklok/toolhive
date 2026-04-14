@@ -158,12 +158,6 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 					Audit: &mcpv1alpha1.AuditConfig{
 						Enabled: true,
 					},
-					Telemetry: &mcpv1alpha1.TelemetryConfig{
-						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
-							Enabled:     true,
-							ServiceName: "full-proxy",
-						},
-					},
 				},
 			},
 			toolConfig: &mcpv1alpha1.MCPToolConfig{
@@ -551,23 +545,6 @@ func TestCommonHelpers(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.Equal(t, "test-auth", result.Name)
-	})
-
-	t.Run("GenerateOpenTelemetryEnvVars", func(t *testing.T) {
-		t.Parallel()
-
-		telemetryConfig := &mcpv1alpha1.TelemetryConfig{
-			OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
-				Enabled:     true,
-				ServiceName: "test-service",
-			},
-		}
-
-		envVars := ctrlutil.GenerateOpenTelemetryEnvVars(telemetryConfig, "test-resource", "test-ns")
-		require.Len(t, envVars, 1)
-		assert.Equal(t, "OTEL_RESOURCE_ATTRIBUTES", envVars[0].Name)
-		assert.Contains(t, envVars[0].Value, "service.name=test-service")
-		assert.Contains(t, envVars[0].Value, "service.namespace=test-ns")
 	})
 
 	t.Run("GenerateAuthzVolumeConfig - ConfigMap", func(t *testing.T) {

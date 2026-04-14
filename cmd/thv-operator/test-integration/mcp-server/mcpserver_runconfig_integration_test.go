@@ -453,79 +453,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 	})
 
 	Context("When creating MCPServer with complex configurations", func() {
-		It("Should handle MCPServer with telemetry configuration", func() {
-			namespace := "telemetry-test-ns"
-			mcpServerName := "telemetry-server"
-			configMapName := mcpServerName + "-runconfig"
-
-			// Create namespace
-			ns := &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: namespace,
-				},
-			}
-			_ = k8sClient.Create(ctx, ns)
-
-			// Create MCPServer with telemetry configuration
-			mcpServer := &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      mcpServerName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "telemetry/mcp-server:latest",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					Telemetry: &mcpv1alpha1.TelemetryConfig{
-						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
-							Enabled:     true,
-							Endpoint:    "http://otel-collector:4317",
-							ServiceName: "test-service",
-							Insecure:    true,
-							Tracing: &mcpv1alpha1.OpenTelemetryTracingConfig{
-								Enabled:      true,
-								SamplingRate: "0.1",
-							},
-							Metrics: &mcpv1alpha1.OpenTelemetryMetricsConfig{
-								Enabled: true,
-							},
-						},
-						Prometheus: &mcpv1alpha1.PrometheusConfig{
-							Enabled: true,
-						},
-					},
-				},
-			}
-
-			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
-			defer k8sClient.Delete(ctx, mcpServer)
-
-			// Wait for ConfigMap to be created
-			configMap := &corev1.ConfigMap{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configMapName,
-					Namespace: namespace,
-				}, configMap)
-			}, timeout, interval).Should(Succeed())
-
-			// Parse RunConfig and verify telemetry configuration
-			var runConfig runner.RunConfig
-			err := json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
-			Expect(err).NotTo(HaveOccurred())
-
-			// Verify telemetry configuration
-			Expect(runConfig.TelemetryConfig).NotTo(BeNil())
-			Expect(runConfig.TelemetryConfig.Endpoint).To(Equal("otel-collector:4317"))
-			Expect(runConfig.TelemetryConfig.ServiceName).To(Equal("test-service"))
-			Expect(runConfig.TelemetryConfig.Insecure).To(BeTrue())
-			Expect(runConfig.TelemetryConfig.TracingEnabled).To(BeTrue())
-			Expect(runConfig.TelemetryConfig.MetricsEnabled).To(BeTrue())
-			Expect(runConfig.TelemetryConfig.SamplingRate).To(Equal("0.1"))
-			Expect(runConfig.TelemetryConfig.EnablePrometheusMetricsPath).To(BeTrue())
-		})
-
-		It("Should handle MCPServer with telemetryConfigRef producing same RunConfig as inline telemetry", func() {
+		It("Should handle MCPServer with telemetryConfigRef", func() {
 			namespace := "telemetry-ref-test-ns"
 			mcpServerName := "telemetry-ref-server"
 			configMapName := mcpServerName + "-runconfig"
@@ -538,8 +466,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			}
 			_ = k8sClient.Create(ctx, ns)
 
-			// Create the MCPTelemetryConfig resource with the same settings
-			// as the inline telemetry test above
+			// Create the MCPTelemetryConfig resource
 			telCfg := &mcpv1alpha1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "shared-otel-config",
@@ -568,8 +495,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				return err == nil && fetched.Status.ConfigHash != ""
 			}, timeout, interval).Should(BeTrue())
 
-			// Create MCPServer with telemetryConfigRef (NOT inline telemetry)
-			// Use ServiceName override to match what the inline test sets
+			// Create MCPServer with telemetryConfigRef
 			mcpServer := &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
@@ -598,8 +524,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				}, configMap)
 			}, timeout, interval).Should(Succeed())
 
-			// Parse RunConfig and verify telemetry configuration matches the
-			// inline telemetry test expectations
+			// Parse RunConfig and verify telemetry configuration
 			var runConfig runner.RunConfig
 			err := json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
 			Expect(err).NotTo(HaveOccurred())

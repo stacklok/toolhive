@@ -327,26 +327,18 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 	return config
 }
 
-// normalizeTelemetry resolves and normalizes the telemetry config from either
-// a pre-fetched MCPTelemetryConfig or the inline config.telemetry field.
+// normalizeTelemetry resolves and normalizes the telemetry config from a
+// pre-fetched MCPTelemetryConfig.
 // telemetryCfg is the already-validated MCPTelemetryConfig passed in by the controller
 // (nil when TelemetryConfigRef is not set or the resource was not found).
 func (*Converter) normalizeTelemetry(
-	ctx context.Context,
+	_ context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 ) *telemetry.Config {
 	if vmcp.Spec.TelemetryConfigRef != nil && telemetryCfg != nil {
 		return spectoconfig.NormalizeMCPTelemetryConfig(
 			&telemetryCfg.Spec, vmcp.Spec.TelemetryConfigRef.ServiceName, vmcp.Name)
-	}
-	// Deprecated inline path: config.telemetry is deprecated in favor of spec.telemetryConfigRef.
-	// Log at debug level to avoid log flooding on every reconcile.
-	if vmcp.Spec.Config.Telemetry != nil {
-		log.FromContext(ctx).V(1).Info(
-			"config.telemetry is deprecated; migrate to spec.telemetryConfigRef",
-			"vmcp", vmcp.Name,
-		)
 	}
 	return spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name)
 }

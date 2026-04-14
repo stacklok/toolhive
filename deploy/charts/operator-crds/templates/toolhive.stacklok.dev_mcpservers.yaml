@@ -880,90 +880,11 @@ spec:
                 x-kubernetes-validations:
                 - message: address is required
                   rule: 'self.provider == ''redis'' ? has(self.address) : true'
-              telemetry:
-                description: |-
-                  Telemetry defines inline observability configuration for the MCP server.
-                  Deprecated: Use TelemetryConfigRef to reference a shared MCPTelemetryConfig resource instead.
-                  This field will be removed in a future release. Setting both telemetry and telemetryConfigRef
-                  is rejected by CEL validation.
-                properties:
-                  openTelemetry:
-                    description: OpenTelemetry defines OpenTelemetry configuration
-                    properties:
-                      enabled:
-                        default: false
-                        description: Enabled controls whether OpenTelemetry is enabled
-                        type: boolean
-                      endpoint:
-                        description: Endpoint is the OTLP endpoint URL for tracing
-                          and metrics
-                        type: string
-                      headers:
-                        description: |-
-                          Headers contains authentication headers for the OTLP endpoint
-                          Specified as key=value pairs
-                        items:
-                          type: string
-                        type: array
-                        x-kubernetes-list-type: atomic
-                      insecure:
-                        default: false
-                        description: Insecure indicates whether to use HTTP instead
-                          of HTTPS for the OTLP endpoint
-                        type: boolean
-                      metrics:
-                        description: Metrics defines OpenTelemetry metrics-specific
-                          configuration
-                        properties:
-                          enabled:
-                            default: false
-                            description: Enabled controls whether OTLP metrics are
-                              sent
-                            type: boolean
-                        type: object
-                      serviceName:
-                        description: |-
-                          ServiceName is the service name for telemetry
-                          If not specified, defaults to the MCPServer name
-                        type: string
-                      tracing:
-                        description: Tracing defines OpenTelemetry tracing configuration
-                        properties:
-                          enabled:
-                            default: false
-                            description: Enabled controls whether OTLP tracing is
-                              sent
-                            type: boolean
-                          samplingRate:
-                            default: "0.05"
-                            description: SamplingRate is the trace sampling rate (0.0-1.0)
-                            pattern: ^(0(\.\d+)?|1(\.0+)?)$
-                            type: string
-                        type: object
-                      useLegacyAttributes:
-                        default: true
-                        description: |-
-                          UseLegacyAttributes controls whether legacy attribute names are emitted alongside
-                          the new MCP OTEL semantic convention names. Defaults to true for backward compatibility.
-                          This will change to false in a future release and eventually be removed.
-                        type: boolean
-                    type: object
-                  prometheus:
-                    description: Prometheus defines Prometheus-specific configuration
-                    properties:
-                      enabled:
-                        default: false
-                        description: Enabled controls whether Prometheus metrics endpoint
-                          is exposed
-                        type: boolean
-                    type: object
-                type: object
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
                   The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.
                   Cross-namespace references are not supported for security and isolation reasons.
-                  Mutually exclusive with the deprecated inline Telemetry field.
                 properties:
                   name:
                     description: Name is the name of the MCPTelemetryConfig resource
@@ -1044,9 +965,6 @@ spec:
             - message: oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef
                 to reference a shared MCPOIDCConfig
               rule: '!(has(self.oidcConfig) && has(self.oidcConfigRef))'
-            - message: telemetry and telemetryConfigRef are mutually exclusive; migrate
-                to telemetryConfigRef
-              rule: '!(has(self.telemetry) && has(self.telemetryConfigRef))'
             - message: rateLimiting requires sessionStorage with provider 'redis'
               rule: '!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider
                 == ''redis'')'

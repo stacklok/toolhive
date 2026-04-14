@@ -38,7 +38,6 @@ type HeaderFromSecret struct {
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
-// +kubebuilder:validation:XValidation:rule="!(has(self.telemetry) && has(self.telemetryConfigRef))",message="telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPRemoteProxySpec struct {
@@ -106,16 +105,8 @@ type MCPRemoteProxySpec struct {
 	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
 	// The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.
 	// Cross-namespace references are not supported for security and isolation reasons.
-	// Mutually exclusive with the deprecated inline Telemetry field.
 	// +optional
 	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
-
-	// Telemetry defines inline observability configuration for the proxy.
-	// Deprecated: Use TelemetryConfigRef to reference a shared MCPTelemetryConfig resource instead.
-	// This field will be removed in a future release. Setting both telemetry and telemetryConfigRef
-	// is rejected by CEL validation.
-	// +optional
-	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 
 	// Resources defines the resource requirements for the proxy container
 	// +optional

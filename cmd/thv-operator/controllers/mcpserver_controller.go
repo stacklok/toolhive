@@ -1034,9 +1034,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		} else if telCfg != nil {
 			env = append(env, ctrlutil.GenerateOpenTelemetryEnvVarsFromRef(telCfg, m.Spec.TelemetryConfigRef, m.Name, m.Namespace)...)
 		}
-	} else if m.Spec.Telemetry != nil && m.Spec.Telemetry.OpenTelemetry != nil {
-		otelEnvVars := ctrlutil.GenerateOpenTelemetryEnvVars(m.Spec.Telemetry, m.Name, m.Namespace)
-		env = append(env, otelEnvVars...)
 	}
 
 	// Add token exchange environment variables
@@ -1645,9 +1642,6 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 				)
 				expectedProxyEnv = append(expectedProxyEnv, otelEnvVars...)
 			}
-		} else if mcpServer.Spec.Telemetry != nil && mcpServer.Spec.Telemetry.OpenTelemetry != nil {
-			otelEnvVars := ctrlutil.GenerateOpenTelemetryEnvVars(mcpServer.Spec.Telemetry, mcpServer.Name, mcpServer.Namespace)
-			expectedProxyEnv = append(expectedProxyEnv, otelEnvVars...)
 		}
 
 		// Add token exchange environment variables

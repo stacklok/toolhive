@@ -248,6 +248,17 @@ func (c *Client) DeleteBuild(ctx context.Context, tag string) error {
 	return c.doJSONRequest(ctx, http.MethodDelete, "/builds/"+url.PathEscape(tag), nil, nil, nil)
 }
 
+// GetContent retrieves the SKILL.md body and file listing from an OCI artifact without installing it.
+func (c *Client) GetContent(ctx context.Context, opts skills.ContentOptions) (*skills.SkillContent, error) {
+	q := url.Values{}
+	q.Set("ref", opts.Reference)
+	var content skills.SkillContent
+	if err := c.doJSONRequest(ctx, http.MethodGet, "/content", q, nil, &content); err != nil {
+		return nil, err
+	}
+	return &content, nil
+}
+
 // --- internal helpers ---
 
 func (c *Client) buildURL(path string, query url.Values) string {

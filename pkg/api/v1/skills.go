@@ -36,6 +36,7 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 	r.Post("/push", apierrors.ErrorHandler(routes.pushSkill))
 	r.Get("/builds", apierrors.ErrorHandler(routes.listBuilds))
 	r.Delete("/builds/{tag}", apierrors.ErrorHandler(routes.deleteBuild))
+	r.Get("/content", apierrors.ErrorHandler(routes.getSkillContent))
 
 	return r
 }
@@ -321,4 +322,35 @@ func (s *SkillsRoutes) deleteBuild(w http.ResponseWriter, r *http.Request) error
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil
+}
+
+// getSkillContent retrieves the SKILL.md body and file listing from an OCI artifact.
+//
+//	@Summary		Get skill content
+//	@Description	Retrieve the SKILL.md body and file listing from an OCI artifact without installing it. Works for both remote registry references (e.g. ghcr.io/org/skill:v1) and local build tags.
+//	@Tags			skills
+//	@Produce		json
+//	@Param			ref	query		string	true	"OCI reference or local build tag"
+//	@Success		200	{object}	skills.SkillContent
+//	@Failure		400	{string}	string	"Bad Request"
+//	@Failure		500	{string}	string	"Internal Server Error"
+//	@Router			/api/v1beta/skills/content [get]
+func (s *SkillsRoutes) getSkillContent(w http.ResponseWriter, r *http.Request) error {
+	ref := r.URL.Query().Get("ref")
+	if ref == "" {
+		return httperr.WithCode(
+			fmt.Errorf("ref query parameter is required"),
+			http.StatusBadRequest,
+		)
+	}
+
+	content, err := s.skillService.GetContent(r.Context(), skills.ContentOptions{
+		Reference: ref,
+	})
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(content)
 }

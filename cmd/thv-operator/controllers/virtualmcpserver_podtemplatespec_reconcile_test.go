@@ -64,6 +64,7 @@ func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef:        &mcpv1alpha1.MCPGroupRef{Name: groupName},
 			Config:          vmcpconfig.Config{Group: groupName},
 			PodTemplateSpec: podTemplateSpecToRawExtension(t, podTemplate),
 		},
@@ -138,7 +139,8 @@ func TestVirtualMCPServerPodTemplateSpecPreservesContainer(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: groupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+			Config:   vmcpconfig.Config{Group: groupName},
 			PodTemplateSpec: &runtime.RawExtension{
 				Raw: []byte(`{"spec":{"nodeSelector":{"disktype":"ssd"}}}`),
 			},
@@ -273,6 +275,7 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 					Namespace: testPodTemplateNamespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef:        &mcpv1alpha1.MCPGroupRef{Name: testPodTemplateGroupName},
 					Config:          vmcpconfig.Config{Group: testPodTemplateGroupName},
 					PodTemplateSpec: tt.newPodTemplateSpec,
 				},
@@ -316,7 +319,8 @@ func TestVirtualMCPServerPodTemplateSpecResourceOverride(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: groupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+			Config:   vmcpconfig.Config{Group: groupName},
 			PodTemplateSpec: &runtime.RawExtension{
 				Raw: []byte(`{"spec":{"containers":[{"name":"vmcp","resources":{"requests":{"cpu":"200m","memory":"256Mi"},"limits":{"cpu":"1","memory":"1Gi"}}}]}}`),
 			},

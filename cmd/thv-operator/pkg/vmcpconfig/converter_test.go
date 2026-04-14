@@ -62,7 +62,7 @@ func newTestVMCPServer(oidcConfigRef *mcpv1alpha1.MCPOIDCConfigReference) *mcpv1
 	return &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config:       vmcpconfig.Config{Group: "test-group"},
+			GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "oidc", OIDCConfigRef: oidcConfigRef},
 		},
 	}
@@ -233,8 +233,8 @@ func TestConverter_CompositeToolsPassThrough(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Config: vmcpconfig.Config{
-				Group: "test-group",
 				CompositeTools: []vmcpconfig.CompositeToolConfig{
 					{
 						Name:        "test-composite-tool",
@@ -400,7 +400,7 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config:       vmcpconfig.Config{Group: "test-group"},
+					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					IncomingAuth: tt.incomingAuth,
 				},
 			}
@@ -482,8 +482,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
 							{Name: "referenced-tool"},
 						},
@@ -530,8 +530,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						CompositeTools: []vmcpconfig.CompositeToolConfig{
 							{
 								Name:        "inline-tool",
@@ -593,8 +593,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
 							{Name: "non-existent-tool"},
 						},
@@ -613,8 +613,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						CompositeTools: []vmcpconfig.CompositeToolConfig{
 							{
 								Name:        "duplicate-tool",
@@ -666,7 +666,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 				},
 			},
 			compositeDefs: []*mcpv1alpha1.VirtualMCPCompositeToolDefinition{},
@@ -682,8 +682,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
 							{Name: "tool1"},
 							{Name: "tool2"},
@@ -751,8 +751,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
 							{Name: "referenced-tool"},
 						},
@@ -927,8 +927,8 @@ func TestConverter_CompositeToolDefinitionFieldsPreserved(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Config: vmcpconfig.Config{
-				Group: "test-group",
 				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
 					{Name: "comprehensive-tool"},
 				},
@@ -1387,8 +1387,8 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						Aggregation: &vmcpconfig.AggregationConfig{
 							Tools: []*vmcpconfig.WorkloadToolConfig{{
 								Workload:      "backend1",
@@ -1407,8 +1407,8 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						Aggregation: &vmcpconfig.AggregationConfig{
 							Tools: []*vmcpconfig.WorkloadToolConfig{{
 								Workload:      "backend1",
@@ -1426,7 +1426,7 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 				},
 			},
 			existingConfig: nil,
@@ -1474,11 +1474,11 @@ func TestConverter_InlineTelemetryIgnored(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
 			Config: vmcpconfig.Config{
-				Group: "test-group",
 				Telemetry: &telemetry.Config{
 					Endpoint:    "otlp-collector:4317",
 					ServiceName: "should-be-ignored",
@@ -1506,11 +1506,11 @@ func TestConverter_TelemetryNil(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
 			Config: vmcpconfig.Config{
-				Group:     "test-group",
 				Telemetry: nil, // No telemetry config
 			},
 		},
@@ -1582,8 +1582,8 @@ func TestConverter_SessionStorage(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group:          "test-group",
 						SessionStorage: tt.inlineConfig,
 					},
 					SessionStorage: tt.sessionStorage,
@@ -1738,7 +1738,7 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type:          "oidc",
 				OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "https://my-vmcp.example.com"},
@@ -1818,8 +1818,8 @@ func TestConverter_TelemetryConfigRef(t *testing.T) {
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
-			Config:       vmcpconfig.Config{Group: "test-group"},
 			TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
 				Name:        "shared-telemetry",
 				ServiceName: "custom-svc",

@@ -63,13 +63,11 @@ type VirtualMCPServerSpec struct {
 
 	// GroupRef references the MCPGroup that defines backend workloads.
 	// The referenced MCPGroup must exist in the same namespace.
-	// This field takes precedence over config.groupRef and should be preferred.
 	// +optional
 	GroupRef *MCPGroupRef `json:"groupRef,omitempty"`
 
 	// Config is the Virtual MCP server configuration.
 	// The audit config from here is also supported, but not required.
-	// Note: config.groupRef is deprecated in favor of spec.groupRef.
 	// +optional
 	Config config.Config `json:"config,omitempty"`
 
@@ -167,12 +165,12 @@ type OutgoingAuthConfig struct {
 // BackendAuthConfig defines authentication configuration for a backend MCPServer
 type BackendAuthConfig struct {
 	// Type defines the authentication type
-	// +kubebuilder:validation:Enum=discovered;externalAuthConfigRef;external_auth_config_ref
+	// +kubebuilder:validation:Enum=discovered;externalAuthConfigRef
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
 	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-	// Only used when Type is "externalAuthConfigRef" (or deprecated "external_auth_config_ref")
+	// Only used when Type is "externalAuthConfigRef"
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
 }
@@ -367,10 +365,6 @@ const (
 
 	// BackendAuthTypeExternalAuthConfigRef references an MCPExternalAuthConfig resource
 	BackendAuthTypeExternalAuthConfigRef = "externalAuthConfigRef"
-
-	// DeprecatedBackendAuthTypeExternalAuthConfigRef is the old snake_case value.
-	// Deprecated: Use BackendAuthTypeExternalAuthConfigRef ("externalAuthConfigRef") instead.
-	DeprecatedBackendAuthTypeExternalAuthConfigRef = "external_auth_config_ref"
 )
 
 // Workflow step types
@@ -428,22 +422,18 @@ func (*VirtualMCPServer) GetProxyPort() int32 {
 	return 4483
 }
 
-// ResolveGroupName returns the effective group name, preferring spec.groupRef
-// over the deprecated config.groupRef string.
+// ResolveGroupName returns the group name from spec.groupRef.
 func (r *VirtualMCPServer) ResolveGroupName() string {
-	if name := r.Spec.GroupRef.GetName(); name != "" {
-		return name
-	}
-	return r.Spec.Config.Group
+	return r.Spec.GroupRef.GetName()
 }
 
 // Validate performs validation for VirtualMCPServer
 // This method is called by the controller during reconciliation
 func (r *VirtualMCPServer) Validate() error {
-	// Validate Group is set — prefer spec.groupRef, fall back to config.groupRef
+	// Validate Group is set — spec.groupRef.name is required
 	// Note: CEL cannot validate embedded types from other packages
-	if r.Spec.GroupRef.GetName() == "" && r.Spec.Config.Group == "" {
-		return fmt.Errorf("either spec.groupRef.name or config.groupRef must be set")
+	if r.Spec.GroupRef.GetName() == "" {
+		return fmt.Errorf("spec.groupRef.name is required")
 	}
 
 	// Note: IncomingAuth validation is handled by kubebuilder markers and CEL rules
@@ -522,7 +512,7 @@ func (*VirtualMCPServer) validateBackendAuth(backendName string, auth BackendAut
 
 	// Validate type-specific configurations
 	switch auth.Type {
-	case BackendAuthTypeExternalAuthConfigRef, DeprecatedBackendAuthTypeExternalAuthConfigRef:
+	case BackendAuthTypeExternalAuthConfigRef:
 		if auth.ExternalAuthConfigRef == nil {
 			return fmt.Errorf(
 				"spec.outgoingAuth.backends[%s].externalAuthConfigRef is required when type is externalAuthConfigRef",

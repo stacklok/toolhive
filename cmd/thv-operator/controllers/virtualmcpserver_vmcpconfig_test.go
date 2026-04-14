@@ -71,7 +71,8 @@ func TestCreateVmcpConfigFromVirtualMCPServer(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+					Config:   vmcpconfig.Config{Group: "test-group"},
 				},
 			},
 			expectedName:     "test-vmcp",
@@ -150,6 +151,7 @@ func TestConvertOutgoingAuth(t *testing.T) {
 
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config:       vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: tt.outgoingAuth,
 				},
@@ -212,7 +214,8 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+					Config:   vmcpconfig.Config{Group: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Default: tt.authConfig,
 					},
@@ -333,6 +336,7 @@ func TestConvertAggregation(t *testing.T) {
 
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
 						Group:       "test-group",
 						Aggregation: tt.aggregation,
@@ -426,6 +430,7 @@ func TestConvertCompositeTools(t *testing.T) {
 
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
 						Group:          "test-group",
 						CompositeTools: tt.compositeTools,
@@ -459,7 +464,8 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+			Config:   vmcpconfig.Config{Group: "test-group"},
 		},
 	}
 
@@ -1012,6 +1018,7 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Config: vmcpconfig.Config{
 				Group: "test-group",
 				// Aggregation with tool overrides (map)
@@ -1163,6 +1170,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Config: vmcpconfig.Config{
 				Group: "test-group",
 				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
@@ -1277,6 +1285,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Config: vmcpconfig.Config{
 				Group: "test-group",
 				CompositeTools: []vmcpconfig.CompositeToolConfig{
@@ -1374,6 +1383,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_NotFound(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Config: vmcpconfig.Config{
 				Group: "test-group",
 				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
@@ -1437,7 +1447,8 @@ func TestConfigMapContent_DynamicMode(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+			Config:   vmcpconfig.Config{Group: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
@@ -1538,7 +1549,8 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+			Config:   vmcpconfig.Config{Group: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
@@ -1658,7 +1670,8 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+			Config:   vmcpconfig.Config{Group: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
@@ -1835,6 +1848,7 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroup},
 					Config: vmcpconfig.Config{
 						Group:     testGroup,
 						Optimizer: &vmcpconfig.OptimizerConfig{},
@@ -1856,6 +1870,7 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroup},
 					Config: vmcpconfig.Config{
 						Group: testGroup,
 						// No Optimizer — validation auto-populates it when ref is set
@@ -2038,6 +2053,7 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp-session", Namespace: testNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef:       &mcpv1alpha1.MCPGroupRef{Name: testGroup},
 					Config:         vmcpconfig.Config{Group: testGroup},
 					SessionStorage: tt.sessionStorage,
 				},
@@ -2102,7 +2118,8 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 			Generation: 3,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+			Config:   vmcpconfig.Config{Group: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type:          "oidc",
 				OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: audience},

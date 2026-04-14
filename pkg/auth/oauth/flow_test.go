@@ -270,8 +270,9 @@ func TestBuildAuthURL(t *testing.T) {
 				require.NoError(t, err)
 
 				query := parsedURL.Query()
-				// Standard "scope" should be cleared
-				assert.Empty(t, query.Get("scope"))
+				// Standard "scope" parameter should be absent, not empty
+				_, hasScope := query["scope"]
+				assert.False(t, hasScope, "scope parameter should be absent, not empty")
 				// Scopes should appear under the custom parameter name
 				assert.Contains(t, query.Get("user_scope"), "search:read")
 				assert.Contains(t, query.Get("user_scope"), "chat:write")

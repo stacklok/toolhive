@@ -652,7 +652,7 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 
 	// Fall back to OIDC discovery
 	slog.Debug("Using OIDC discovery")
-	return oauth.CreateOAuthConfigFromOIDC(
+	cfg, err := oauth.CreateOAuthConfigFromOIDC(
 		ctx,
 		issuer,
 		config.ClientID,
@@ -662,6 +662,11 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 		config.CallbackPort,
 		config.Resource,
 	)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ScopeParamName = config.ScopeParamName
+	return cfg, nil
 }
 
 func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthFlowConfig) (*OAuthFlowResult, error) {

@@ -278,12 +278,16 @@ func (f *Flow) buildAuthURL() string {
 	// When a custom scope parameter name is configured, move scopes from the
 	// standard "scope" parameter to the custom one. This supports OAuth providers
 	// that use non-standard parameter names (e.g., Slack's "user_scope").
-	// The standard "scope" is cleared by setting it to empty; oauth2Config.Scopes
-	// is preserved so token refresh requests still include scopes correctly.
+	// We temporarily nil out oauth2Config.Scopes so the library omits the standard
+	// "scope" parameter entirely (an empty scope= would violate RFC 6749 §3.3).
+	// Scopes are restored via defer so token refresh requests still work correctly.
 	if f.config.ScopeParamName != "" && len(f.oauth2Config.Scopes) > 0 {
+		scopeValue := strings.Join(f.oauth2Config.Scopes, " ")
+		savedScopes := f.oauth2Config.Scopes
+		f.oauth2Config.Scopes = nil
+		defer func() { f.oauth2Config.Scopes = savedScopes }()
 		opts = append(opts,
-			oauth2.SetAuthURLParam("scope", ""),
-			oauth2.SetAuthURLParam(f.config.ScopeParamName, strings.Join(f.oauth2Config.Scopes, " ")),
+			oauth2.SetAuthURLParam(f.config.ScopeParamName, scopeValue),
 		)
 	}
 

@@ -75,6 +75,18 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 			"resource", resource,
 		)
 		accessRequest.GrantAudience(resource)
+	} else if accessRequest.GetGrantTypes().ExactOne("authorization_code") && len(h.config.AllowedAudiences) == 1 {
+		// No resource parameter provided during an authorization_code exchange; default to the
+		// sole allowed audience. AllowedAudiences is always non-empty (enforced at config
+		// validation time), and when there is exactly one entry the intended audience is
+		// unambiguous. We restrict this defaulting to authorization_code grants: for
+		// refresh_token grants, fosite already carries the originally-granted audience forward
+		// through the session, so re-granting here would conflict with fosite's audience
+		// matching strategy.
+		slog.Debug("no resource parameter, defaulting to sole allowed audience",
+			"audience", h.config.AllowedAudiences[0],
+		)
+		accessRequest.GrantAudience(h.config.AllowedAudiences[0])
 	}
 
 	// Generate the access response (tokens)

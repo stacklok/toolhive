@@ -146,6 +146,13 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
+	// Register the MCPTelemetryConfig controller (required for telemetryConfigRef tests)
+	err = (&controllers.MCPTelemetryConfigReconciler{
+		Client: k8sManager.GetClient(),
+		Scheme: k8sManager.GetScheme(),
+	}).SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
 	// Register the VirtualMCPServer controller
 	err = (&controllers.VirtualMCPServerReconciler{
 		Client:           k8sManager.GetClient(),

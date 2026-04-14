@@ -1522,7 +1522,7 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef:  "test-group",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Transport: "sse", // Required for backend discovery
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
@@ -1639,7 +1639,7 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef:  "test-group",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Transport: "sse", // Required for static mode backend discovery
 			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 				Name: "test-auth-config",
@@ -2327,7 +2327,7 @@ func TestBuildCABundlePathMap(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -2344,7 +2344,7 @@ func TestBuildCABundlePathMap(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						CABundleRef: &mcpv1alpha1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
@@ -2368,7 +2368,7 @@ func TestBuildCABundlePathMap(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						CABundleRef: &mcpv1alpha1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
@@ -2393,7 +2393,7 @@ func TestBuildCABundlePathMap(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						CABundleRef: &mcpv1alpha1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
@@ -2406,7 +2406,7 @@ func TestBuildCABundlePathMap(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp2.example.com",
 						Transport: "sse",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},

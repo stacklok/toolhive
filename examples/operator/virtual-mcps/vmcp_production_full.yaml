@@ -64,7 +64,8 @@ metadata:
   labels:
     environment: production
 spec:
-  groupRef: production-services
+  groupRef:
+    name: production-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: streamable-http
   env:
@@ -90,7 +91,8 @@ metadata:
   labels:
     environment: production
 spec:
-  groupRef: production-services
+  groupRef:
+    name: production-services
   image: ghcr.io/stackloklabs/gofetch/server
   transport: streamable-http
   proxyPort: 8080
@@ -113,7 +115,8 @@ metadata:
   labels:
     environment: production
 spec:
-  groupRef: production-services
+  groupRef:
+    name: production-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: sse
   env:
@@ -140,8 +143,9 @@ metadata:
     environment: production
 spec:
   # Reference to the MCPGroup containing backend MCPServers
+  groupRef:
+    name: production-services
   config:
-    groupRef: production-services
     # Aggregation configuration with priority conflict resolution
     aggregation:
       conflictResolution: priority

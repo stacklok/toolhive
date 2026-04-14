@@ -107,10 +107,10 @@ var _ = BeforeSuite(func() {
 		"spec.groupRef",
 		func(obj client.Object) []string {
 			mcpServer := obj.(*mcpv1alpha1.MCPServer)
-			if mcpServer.Spec.GroupRef == "" {
+			if mcpServer.Spec.GroupRef == nil {
 				return nil
 			}
-			return []string{mcpServer.Spec.GroupRef}
+			return []string{mcpServer.Spec.GroupRef.GetName()}
 		},
 	)
 	Expect(err).ToNot(HaveOccurred())
@@ -122,10 +122,10 @@ var _ = BeforeSuite(func() {
 		"spec.groupRef",
 		func(obj client.Object) []string {
 			mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-			if mcpRemoteProxy.Spec.GroupRef == "" {
+			if mcpRemoteProxy.Spec.GroupRef == nil {
 				return nil
 			}
-			return []string{mcpRemoteProxy.Spec.GroupRef}
+			return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
 		},
 	)
 	Expect(err).ToNot(HaveOccurred())
@@ -137,10 +137,10 @@ var _ = BeforeSuite(func() {
 		"spec.groupRef",
 		func(obj client.Object) []string {
 			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
-			if mcpServerEntry.Spec.GroupRef == "" {
+			if mcpServerEntry.Spec.GroupRef == nil {
 				return nil
 			}
-			return []string{mcpServerEntry.Spec.GroupRef}
+			return []string{mcpServerEntry.Spec.GroupRef.GetName()}
 		},
 	)
 	Expect(err).ToNot(HaveOccurred())

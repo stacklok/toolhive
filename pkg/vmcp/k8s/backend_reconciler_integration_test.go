@@ -172,7 +172,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  testGroupRef,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
 					Image:     "test-image:latest",
 					Transport: "streamable-http",
 				},
@@ -200,7 +200,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  "different-group", // Does NOT match testGroupRef
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "different-group"}, // Does NOT match testGroupRef
 					Image:     "test-image:latest",
 					Transport: "streamable-http",
 				},
@@ -225,7 +225,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  testGroupRef,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
 					Image:     "test-image:latest",
 					Transport: "streamable-http",
 				},
@@ -260,7 +260,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					GroupRef:  testGroupRef,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
 					RemoteURL: "https://example.com/mcp",
 				},
 			}
@@ -285,7 +285,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					GroupRef:  "other-group",
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "other-group"},
 					RemoteURL: "https://example.com/mcp",
 				},
 			}
@@ -313,7 +313,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef: testGroupRef,
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
 					Image:    "test-image:latest",
 					Transport: "streamable-http",
 				},
@@ -346,7 +346,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerEntrySpec{
 					RemoteURL: "https://mcp.example.com/mcp",
 					Transport: "streamable-http",
-					GroupRef:  testGroupRef,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
 				},
 			}
 
@@ -381,7 +381,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerEntrySpec{
 					RemoteURL: "https://mcp.example.com/mcp",
 					Transport: "streamable-http",
-					GroupRef:  "other-group",
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "other-group"},
 				},
 			}
 
@@ -407,7 +407,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerEntrySpec{
 					RemoteURL: "https://mcp.example.com/mcp",
 					Transport: "streamable-http",
-					GroupRef:  testGroupRef,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
 				},
 			}
 
@@ -441,7 +441,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerEntrySpec{
 					RemoteURL: "https://mcp.example.com/mcp",
 					Transport: "streamable-http",
-					GroupRef:  testGroupRef,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
 				},
 			}
 

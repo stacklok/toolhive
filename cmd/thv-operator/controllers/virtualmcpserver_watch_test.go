@@ -899,7 +899,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
-						GroupRef: "test-group",
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 							Name: "test-auth",
 						},
@@ -946,7 +946,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
-						GroupRef: "test-group",
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 							Name: "other-auth",
 						},
@@ -993,7 +993,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPRemoteProxySpec{
-						GroupRef: "test-group",
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 							Name: "test-auth",
 						},
@@ -1040,7 +1040,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPRemoteProxySpec{
-						GroupRef: "test-group",
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 							Name: "other-auth",
 						},
@@ -1082,17 +1082,17 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 				WithObjects(objs...).
 				WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpServer := obj.(*mcpv1alpha1.MCPServer)
-					if mcpServer.Spec.GroupRef == "" {
+					if mcpServer.Spec.GroupRef == nil {
 						return nil
 					}
-					return []string{mcpServer.Spec.GroupRef}
+					return []string{mcpServer.Spec.GroupRef.GetName()}
 				}).
 				WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-					if mcpRemoteProxy.Spec.GroupRef == "" {
+					if mcpRemoteProxy.Spec.GroupRef == nil {
 						return nil
 					}
-					return []string{mcpRemoteProxy.Spec.GroupRef}
+					return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
 				}).
 				Build()
 
@@ -1528,7 +1528,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
-						GroupRef: "test-group",
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 							Name: "test-auth",
 						},
@@ -1567,7 +1567,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
-						GroupRef: "test-group",
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 							Name: "other-auth",
 						},
@@ -1623,7 +1623,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
-						GroupRef: "test-group",
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 							Name: "other-auth",
 						},
@@ -1635,7 +1635,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
-						GroupRef: "test-group",
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 							Name: "test-auth",
 						},
@@ -1647,7 +1647,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
-						GroupRef: "test-group",
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -1683,7 +1683,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPRemoteProxySpec{
-						GroupRef: "test-group",
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 							Name: "test-auth",
 						},
@@ -1722,7 +1722,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPRemoteProxySpec{
-						GroupRef: "test-group",
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 							Name: "other-auth",
 						},
@@ -1764,17 +1764,17 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 				WithObjects(objs...).
 				WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpServer := obj.(*mcpv1alpha1.MCPServer)
-					if mcpServer.Spec.GroupRef == "" {
+					if mcpServer.Spec.GroupRef == nil {
 						return nil
 					}
-					return []string{mcpServer.Spec.GroupRef}
+					return []string{mcpServer.Spec.GroupRef.GetName()}
 				}).
 				WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-					if mcpRemoteProxy.Spec.GroupRef == "" {
+					if mcpRemoteProxy.Spec.GroupRef == nil {
 						return nil
 					}
-					return []string{mcpRemoteProxy.Spec.GroupRef}
+					return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
 				}).
 				Build()
 

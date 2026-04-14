@@ -328,10 +328,10 @@ type MCPServerSpec struct {
 	// +optional
 	EndpointPrefix string `json:"endpointPrefix,omitempty"`
 
-	// GroupRef is the name of the MCPGroup this server belongs to
-	// Must reference an existing MCPGroup in the same namespace
+	// GroupRef references the MCPGroup this server belongs to.
+	// The referenced MCPGroup must be in the same namespace.
 	// +optional
-	GroupRef string `json:"groupRef,omitempty"`
+	GroupRef *MCPGroupRef `json:"groupRef,omitempty"`
 
 	// SessionAffinity controls whether the Service routes repeated client connections to the same pod.
 	// MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
@@ -909,6 +909,23 @@ type ToolConfigRef struct {
 	// Name is the name of the MCPToolConfig resource in the same namespace
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
+}
+
+// MCPGroupRef defines a reference to an MCPGroup resource.
+// The referenced MCPGroup must be in the same namespace.
+type MCPGroupRef struct {
+	// Name is the name of the MCPGroup resource in the same namespace
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
+// GetName returns the name, or empty string if the receiver is nil.
+func (r *MCPGroupRef) GetName() string {
+	if r == nil {
+		return ""
+	}
+	return r.Name
 }
 
 // InlineAuthzConfig contains direct authorization configuration

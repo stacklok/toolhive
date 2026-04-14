@@ -722,7 +722,7 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -740,7 +740,7 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						CABundleRef: &mcpv1alpha1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "my-ca-configmap"},
@@ -776,7 +776,7 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						CABundleRef: &mcpv1alpha1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "custom-ca"},
@@ -806,7 +806,7 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						CABundleRef: &mcpv1alpha1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
@@ -819,7 +819,7 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp2.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},

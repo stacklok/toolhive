@@ -143,10 +143,10 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	ResourceOverrides *ResourceOverrides `json:"resourceOverrides,omitempty"`
 
-	// GroupRef is the name of the MCPGroup this proxy belongs to
-	// Must reference an existing MCPGroup in the same namespace
+	// GroupRef references the MCPGroup this proxy belongs to.
+	// The referenced MCPGroup must be in the same namespace.
 	// +optional
-	GroupRef string `json:"groupRef,omitempty"`
+	GroupRef *MCPGroupRef `json:"groupRef,omitempty"`
 
 	// SessionAffinity controls whether the Service routes repeated client connections to the same pod.
 	// MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.

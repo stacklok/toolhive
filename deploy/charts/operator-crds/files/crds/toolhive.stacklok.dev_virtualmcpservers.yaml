@@ -638,11 +638,9 @@ spec:
                 type: object
               config:
                 description: |-
-                  Config is the Virtual MCP server configuration
-                  The only field currently required within config is `config.groupRef`.
-                  GroupRef references an existing MCPGroup that defines backend workloads.
-                  The referenced MCPGroup must exist in the same namespace.
-                  The telemetry and audit config from here are also supported, but not required.
+                  Config is the Virtual MCP server configuration.
+                  The telemetry and audit config from here are supported, but not required.
+                  Note: config.groupRef is deprecated in favor of spec.groupRef.
                 properties:
                   aggregation:
                     description: |-
@@ -1779,6 +1777,20 @@ spec:
                 properties:
                   name:
                     description: Name is the name of the EmbeddingServer resource
+                    type: string
+                required:
+                - name
+                type: object
+              groupRef:
+                description: |-
+                  GroupRef references the MCPGroup that defines backend workloads.
+                  The referenced MCPGroup must exist in the same namespace.
+                  This field takes precedence over config.groupRef and should be preferred.
+                properties:
+                  name:
+                    description: Name is the name of the MCPGroup resource in the
+                      same namespace
+                    minLength: 1
                     type: string
                 required:
                 - name

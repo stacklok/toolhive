@@ -161,8 +161,9 @@ func (r *MCPServerEntryReconciler) validateGroupRef(
 	entry *mcpv1alpha1.MCPServerEntry,
 ) (bool, error) {
 	ctxLogger := log.FromContext(ctx)
+	groupName := entry.Spec.GroupRef.Name
 	group := &mcpv1alpha1.MCPGroup{}
-	groupKey := types.NamespacedName{Namespace: entry.Namespace, Name: entry.Spec.GroupRef}
+	groupKey := types.NamespacedName{Namespace: entry.Namespace, Name: groupName}
 
 	if err := r.Get(ctx, groupKey, group); err != nil {
 		if errors.IsNotFound(err) {
@@ -170,7 +171,7 @@ func (r *MCPServerEntryReconciler) validateGroupRef(
 				Type:               mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated,
 				Status:             metav1.ConditionFalse,
 				Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefNotFound,
-				Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", entry.Spec.GroupRef, entry.Namespace),
+				Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", groupName, entry.Namespace),
 				ObservedGeneration: entry.Generation,
 			})
 			return false, nil
@@ -185,7 +186,7 @@ func (r *MCPServerEntryReconciler) validateGroupRef(
 			Type:               mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefNotReady,
-			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", entry.Spec.GroupRef, group.Status.Phase),
+			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", groupName, group.Status.Phase),
 			ObservedGeneration: entry.Generation,
 		})
 		return false, nil

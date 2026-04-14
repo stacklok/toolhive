@@ -29,6 +29,18 @@ spec:
       key: token
 
 ---
+# Shared OIDC configuration for incoming client authentication
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPOIDCConfig
+metadata:
+  name: api-proxy-oidc
+  namespace: default
+spec:
+  type: inline
+  inline:
+    issuer: "https://auth.example.com"
+
+---
 # MCPRemoteProxy that uses bearer token authentication for outgoing requests
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPRemoteProxy
@@ -41,11 +53,9 @@ spec:
   transport: streamable-http
 
   # OIDC configuration for incoming authentication (validates tokens from clients)
-  oidcConfig:
-    type: inline
-    inline:
-      issuer: "https://auth.example.com"
-      audience: "mcp-api"
+  oidcConfigRef:
+    name: api-proxy-oidc
+    audience: "mcp-api"
 
   # Reference to external auth configuration (bearer token)
   externalAuthConfigRef:

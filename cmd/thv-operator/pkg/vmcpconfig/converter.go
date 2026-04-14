@@ -124,7 +124,7 @@ func (c *Converter) Convert(
 	config.Operational = vmcp.Spec.Config.Operational
 
 	// Normalize telemetry config: prefer TelemetryConfigRef (shared MCPTelemetryConfig resource),
-	// over the inline config.telemetry field. When both are set, TelemetryConfigRef takes precedence.
+	// The inline config.telemetry field is no longer read by the operator.
 	normalizedTelemetry := c.normalizeTelemetry(ctx, vmcp, telemetryCfg)
 	config.Telemetry = normalizedTelemetry
 
@@ -328,10 +328,9 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 }
 
 // normalizeTelemetry resolves and normalizes the telemetry config from a
-// pre-fetched MCPTelemetryConfig, falling back to the standalone config.telemetry
-// field (used by CLI deployments) when TelemetryConfigRef is not set.
-// telemetryCfg is the already-validated MCPTelemetryConfig passed in by the controller
-// (nil when TelemetryConfigRef is not set or the resource was not found).
+// pre-fetched MCPTelemetryConfig. Returns nil when TelemetryConfigRef is not set.
+// The Config.Telemetry field is still valid for standalone CLI deployments but is
+// no longer read by the operator — use TelemetryConfigRef instead.
 func (*Converter) normalizeTelemetry(
 	_ context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -341,7 +340,7 @@ func (*Converter) normalizeTelemetry(
 		return spectoconfig.NormalizeMCPTelemetryConfig(
 			&telemetryCfg.Spec, vmcp.Spec.TelemetryConfigRef.ServiceName, vmcp.Name)
 	}
-	return spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name)
+	return nil
 }
 
 // convertSessionStorage populates SessionStorage from the VirtualMCPServer spec.

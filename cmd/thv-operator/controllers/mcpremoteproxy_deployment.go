@@ -171,7 +171,7 @@ func (r *MCPRemoteProxyReconciler) addTelemetryCABundleVolumes(
 func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
 ) []corev1.EnvVar {
-	env := []corev1.EnvVar{}
+	env := r.buildOIDCClientSecretEnvVars(ctx, proxy)
 
 	// Add token exchange environment variables
 	// Note: Embedded auth server env vars are added separately in deploymentForMCPRemoteProxy
@@ -232,6 +232,33 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 	}
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
+}
+
+// buildOIDCClientSecretEnvVars returns OIDC client secret env vars when the proxy
+// references an MCPOIDCConfig with an inline client secret. Returns nil otherwise.
+func (r *MCPRemoteProxyReconciler) buildOIDCClientSecretEnvVars(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) []corev1.EnvVar {
+	if proxy.Spec.OIDCConfigRef == nil {
+		return nil
+	}
+	oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
+	if err != nil || oidcCfg == nil ||
+		oidcCfg.Spec.Type != mcpv1alpha1.MCPOIDCConfigTypeInline ||
+		oidcCfg.Spec.Inline == nil {
+		return nil
+	}
+	envVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
+		ctx, r.Client, proxy.Namespace, oidcCfg.Spec.Inline.ClientSecretRef,
+	)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to generate OIDC client secret environment variable")
+		return nil
+	}
+	if envVar == nil {
+		return nil
+	}
+	return []corev1.EnvVar{*envVar}
 }
 
 // buildHeaderForwardSecretEnvVars builds environment variables for header forward secrets.

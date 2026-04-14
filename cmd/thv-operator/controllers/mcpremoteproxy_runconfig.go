@@ -199,6 +199,9 @@ func (r *MCPRemoteProxyReconciler) resolveAndAddOIDCConfig(
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve OIDC config from MCPOIDCConfig ref: %w", err)
 	}
+	if resolved == nil {
+		return nil, nil
+	}
 	*options = append(*options, runner.WithOIDCConfig(
 		resolved.Issuer,
 		resolved.Audience,

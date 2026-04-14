@@ -102,6 +102,12 @@ func exportCmdFunc(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "Create an MCPTelemetryConfig resource and add a telemetryConfigRef to the exported MCPServer.\n")
 		}
 
+		// Warn if OIDC config is present but cannot be exported inline
+		if runConfig.OIDCConfig != nil {
+			fmt.Fprintf(os.Stderr, "Warning: OIDC configuration detected but not exported.\n")
+			fmt.Fprintf(os.Stderr, "Create an MCPOIDCConfig resource and add an oidcConfigRef to the exported MCPServer.\n")
+		}
+
 		if err := export.WriteK8sManifest(runConfig, outputFile); err != nil {
 			return fmt.Errorf("failed to write Kubernetes manifest: %w", err)
 		}

@@ -2336,7 +2336,7 @@ func (r *MCPServerReconciler) validateRateLimitConfig(ctx context.Context, mcpSe
 	if hasPerUser && !authEnabled {
 		setRateLimitConfigCondition(mcpServer, metav1.ConditionFalse,
 			mcpv1alpha1.ConditionReasonRateLimitPerUserRequiresAuth,
-			"perUser rate limiting requires authentication to be enabled (oidcConfig, oidcConfigRef, or externalAuthConfigRef)")
+			"perUser rate limiting requires authentication to be enabled (oidcConfigRef or externalAuthConfigRef)")
 	} else {
 		setRateLimitConfigCondition(mcpServer, metav1.ConditionTrue,
 			mcpv1alpha1.ConditionReasonRateLimitConfigValid,

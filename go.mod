@@ -83,6 +83,8 @@ require github.com/hashicorp/golang-lru/v2 v2.0.7
 
 require github.com/oklog/ulid/v2 v2.1.1 // indirect
 
+require go.starlark.net v0.0.0-20260326113308-fadfc96def35
+
 require (
 	cel.dev/expr v0.25.1 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect

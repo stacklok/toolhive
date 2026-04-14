@@ -84,6 +84,8 @@ const (
 	Codex ClientApp = "codex"
 	// KimiCli represents the Kimi Code CLI.
 	KimiCli ClientApp = "kimi-cli"
+	// Factory represents the Factory.ai Droid CLI.
+	Factory ClientApp = "factory"
 )
 
 // Extension is extension of the client config file.
@@ -769,6 +771,28 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".kimi", "skills"},
 		SkillsProjectPath: []string{".kimi", "skills"},
+	},
+	{
+		ClientType:           Factory,
+		Description:          "Factory.ai Droid CLI",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".factory"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "http",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".factory", "skills"},
+		SkillsProjectPath: []string{".factory", "skills"},
 	},
 }
 

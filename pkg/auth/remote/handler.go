@@ -146,16 +146,17 @@ func (h *Handler) performOAuthFlow(
 // buildOAuthFlowConfig creates the OAuth flow configuration
 func (h *Handler) buildOAuthFlowConfig(scopes []string, authServerInfo *discovery.AuthServerInfo) *discovery.OAuthFlowConfig {
 	flowConfig := &discovery.OAuthFlowConfig{
-		ClientID:     h.config.ClientID,
-		ClientSecret: h.config.ClientSecret,
-		AuthorizeURL: h.config.AuthorizeURL,
-		TokenURL:     h.config.TokenURL,
-		Scopes:       scopes,
-		CallbackPort: h.config.CallbackPort,
-		Timeout:      h.config.Timeout,
-		SkipBrowser:  h.config.SkipBrowser,
-		Resource:     h.config.Resource,
-		OAuthParams:  h.config.OAuthParams,
+		ClientID:       h.config.ClientID,
+		ClientSecret:   h.config.ClientSecret,
+		AuthorizeURL:   h.config.AuthorizeURL,
+		TokenURL:       h.config.TokenURL,
+		Scopes:         scopes,
+		CallbackPort:   h.config.CallbackPort,
+		Timeout:        h.config.Timeout,
+		SkipBrowser:    h.config.SkipBrowser,
+		Resource:       h.config.Resource,
+		OAuthParams:    h.config.OAuthParams,
+		ScopeParamName: h.config.ScopeParamName,
 	}
 
 	// If we have discovered endpoints from the authorization server metadata,

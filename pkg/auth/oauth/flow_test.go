@@ -255,6 +255,49 @@ func TestBuildAuthURL(t *testing.T) {
 				assert.Equal(t, "S256", query.Get("code_challenge_method"))
 			},
 		},
+		{
+			name: "auth URL with custom scope parameter name",
+			config: &Config{
+				ClientID:       "test-client",
+				AuthURL:        "https://example.com/auth",
+				TokenURL:       "https://example.com/token",
+				Scopes:         []string{"search:read", "chat:write"},
+				ScopeParamName: "user_scope",
+			},
+			validate: func(t *testing.T, authURL string, _ *Flow) {
+				t.Helper()
+				parsedURL, err := url.Parse(authURL)
+				require.NoError(t, err)
+
+				query := parsedURL.Query()
+				// Standard "scope" parameter should be absent, not empty
+				_, hasScope := query["scope"]
+				assert.False(t, hasScope, "scope parameter should be absent, not empty")
+				// Scopes should appear under the custom parameter name
+				assert.Contains(t, query.Get("user_scope"), "search:read")
+				assert.Contains(t, query.Get("user_scope"), "chat:write")
+			},
+		},
+		{
+			name: "auth URL with scope param name but no scopes",
+			config: &Config{
+				ClientID:       "test-client",
+				AuthURL:        "https://example.com/auth",
+				TokenURL:       "https://example.com/token",
+				Scopes:         []string{},
+				ScopeParamName: "user_scope",
+			},
+			validate: func(t *testing.T, authURL string, _ *Flow) {
+				t.Helper()
+				parsedURL, err := url.Parse(authURL)
+				require.NoError(t, err)
+
+				query := parsedURL.Query()
+				// Neither scope nor user_scope should be present
+				assert.Empty(t, query.Get("scope"))
+				assert.Empty(t, query.Get("user_scope"))
+			},
+		},
 	}
 
 	for _, tt := range tests {

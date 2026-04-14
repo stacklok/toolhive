@@ -58,6 +58,7 @@ type MCPAuthzConfigStatus struct {
 	// ReferencingWorkloads is a list of workload resources that reference this MCPAuthzConfig.
 	// Each entry identifies the workload by kind and name.
 	// +listType=map
+	// +listMapKey=kind
 	// +listMapKey=name
 	// +optional
 	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`

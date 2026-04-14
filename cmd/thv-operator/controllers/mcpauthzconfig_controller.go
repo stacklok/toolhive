@@ -24,9 +24,6 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
-	// Import authorizer backends so they register with the factory registry.
-	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
-	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/http"
 )
 
 const (
@@ -53,6 +50,9 @@ type MCPAuthzConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpauthzconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpauthzconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpauthzconfigs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -114,36 +114,31 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Calculate the hash of the current configuration
 	configHash := ctrlutil.CalculateConfigHash(authzConfig.Spec)
 
-	// Check if the hash has changed
+	// Track referencing workloads
+	referencingWorkloads, err := r.findReferencingWorkloads(ctx, authzConfig)
+	if err != nil {
+		logger.Error(err, "Failed to find referencing workloads")
+		return ctrl.Result{}, err
+	}
+
+	// Check what changed
 	hashChanged := authzConfig.Status.ConfigHash != configHash
+	refsChanged := !ctrlutil.WorkloadRefsEqual(authzConfig.Status.ReferencingWorkloads, referencingWorkloads)
+	needsUpdate := hashChanged || refsChanged || conditionChanged
+
 	if hashChanged {
 		logger.Info("MCPAuthzConfig configuration changed",
 			"oldHash", authzConfig.Status.ConfigHash,
 			"newHash", configHash)
+	}
 
+	if needsUpdate {
 		authzConfig.Status.ConfigHash = configHash
 		authzConfig.Status.ObservedGeneration = authzConfig.Generation
+		authzConfig.Status.ReferencingWorkloads = referencingWorkloads
 
 		if err := r.Status().Update(ctx, authzConfig); err != nil {
 			logger.Error(err, "Failed to update MCPAuthzConfig status")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// Refresh ReferencingWorkloads list
-	referencingWorkloads, err := r.findReferencingWorkloads(ctx, authzConfig)
-	if err != nil {
-		logger.Error(err, "Failed to find referencing workloads")
-	} else if !ctrlutil.WorkloadRefsEqual(authzConfig.Status.ReferencingWorkloads, referencingWorkloads) {
-		authzConfig.Status.ReferencingWorkloads = referencingWorkloads
-		conditionChanged = true
-	}
-
-	// Update condition if it changed (even without hash change)
-	if conditionChanged {
-		if err := r.Status().Update(ctx, authzConfig); err != nil {
-			logger.Error(err, "Failed to update MCPAuthzConfig status after condition change")
 			return ctrl.Result{}, err
 		}
 	}
@@ -153,6 +148,9 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 // validateAuthzConfigSpec validates the MCPAuthzConfig spec by reconstructing the
 // full authorizer config and delegating to the factory's ValidateConfig method.
+// Unlike other config CRDs (MCPOIDCConfig, MCPTelemetryConfig), validation lives here
+// rather than as a Validate() method on the type because it requires the authorizer
+// factory registry — an external dependency that the API types package should not import.
 func validateAuthzConfigSpec(spec mcpv1alpha1.MCPAuthzConfigSpec) error {
 	fullConfigJSON, err := BuildFullAuthzConfigJSON(spec)
 	if err != nil {
@@ -195,9 +193,22 @@ func BuildFullAuthzConfigJSON(spec mcpv1alpha1.MCPAuthzConfigSpec) ([]byte, erro
 
 	configKey := factory.ConfigKey()
 
+	if len(spec.Config.Raw) == 0 {
+		return nil, fmt.Errorf("config field is empty")
+	}
+
+	versionJSON, err := marshalJSON(authzConfigVersion)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal version: %w", err)
+	}
+	typeJSON, err := marshalJSON(spec.Type)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal type: %w", err)
+	}
+
 	fullConfig := map[string]json.RawMessage{
-		"version": mustMarshalJSON(authzConfigVersion),
-		"type":    mustMarshalJSON(spec.Type),
+		"version": versionJSON,
+		"type":    typeJSON,
 		configKey: spec.Config.Raw,
 	}
 
@@ -208,13 +219,13 @@ func BuildFullAuthzConfigJSON(spec mcpv1alpha1.MCPAuthzConfigSpec) ([]byte, erro
 	return result, nil
 }
 
-// mustMarshalJSON marshals a value to JSON or panics. Only for simple string values.
-func mustMarshalJSON(v string) json.RawMessage {
+// marshalJSON marshals a string value to JSON, returning an error instead of panicking.
+func marshalJSON(v string) (json.RawMessage, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		panic(fmt.Sprintf("failed to marshal %q: %v", v, err))
+		return nil, fmt.Errorf("failed to marshal %q: %w", v, err)
 	}
-	return b
+	return b, nil
 }
 
 // handleDeletion handles the deletion of a MCPAuthzConfig.

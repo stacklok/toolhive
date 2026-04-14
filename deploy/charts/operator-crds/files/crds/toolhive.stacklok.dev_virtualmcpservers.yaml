@@ -2136,6 +2136,9 @@ spec:
                 - message: oidcConfig and oidcConfigRef are mutually exclusive; use
                     oidcConfigRef to reference a shared MCPOIDCConfig
                   rule: '!(has(self.oidcConfig) && has(self.oidcConfigRef))'
+                - message: authzConfig and authzConfigRef are mutually exclusive;
+                    use authzConfigRef to reference a shared MCPAuthzConfig
+                  rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.

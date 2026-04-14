@@ -180,6 +180,7 @@ spec:
                   type: object
                 type: array
                 x-kubernetes-list-map-keys:
+                - kind
                 - name
                 x-kubernetes-list-type: map
             type: object

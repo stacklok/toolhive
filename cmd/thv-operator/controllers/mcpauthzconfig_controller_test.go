@@ -399,6 +399,75 @@ func TestMCPAuthzConfigReconciler_handleDeletion(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
+						Image: "example/mcp:latest",
+						AuthzConfigRef: &mcpv1alpha1.MCPAuthzConfigReference{
+							Name: "test-config",
+						},
+					},
+				},
+			},
+			expectFinalizerRemoved: false,
+			expectRequeue:          true,
+		},
+		{
+			name: "referencing VirtualMCPServer blocks deletion",
+			authzConfig: &mcpv1alpha1.MCPAuthzConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-config",
+					Namespace:  "default",
+					Finalizers: []string{AuthzConfigFinalizerName},
+					DeletionTimestamp: &metav1.Time{
+						Time: time.Now(),
+					},
+				},
+				Spec: mcpv1alpha1.MCPAuthzConfigSpec{
+					Type:   "cedarv1",
+					Config: validCedarConfig(),
+				},
+			},
+			existingWorkloads: []client.Object{
+				&mcpv1alpha1.VirtualMCPServer{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "referencing-vmcp",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+							Type: "anonymous",
+							AuthzConfigRef: &mcpv1alpha1.MCPAuthzConfigReference{
+								Name: "test-config",
+							},
+						},
+					},
+				},
+			},
+			expectFinalizerRemoved: false,
+			expectRequeue:          true,
+		},
+		{
+			name: "referencing MCPRemoteProxy blocks deletion",
+			authzConfig: &mcpv1alpha1.MCPAuthzConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-config",
+					Namespace:  "default",
+					Finalizers: []string{AuthzConfigFinalizerName},
+					DeletionTimestamp: &metav1.Time{
+						Time: time.Now(),
+					},
+				},
+				Spec: mcpv1alpha1.MCPAuthzConfigSpec{
+					Type:   "cedarv1",
+					Config: validCedarConfig(),
+				},
+			},
+			existingWorkloads: []client.Object{
+				&mcpv1alpha1.MCPRemoteProxy{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "referencing-proxy",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPRemoteProxySpec{
+						RemoteURL: "https://example.com",
 						AuthzConfigRef: &mcpv1alpha1.MCPAuthzConfigReference{
 							Name: "test-config",
 						},
@@ -613,4 +682,156 @@ func TestMCPAuthzConfigReconciler_ValidationRecovery(t *testing.T) {
 	}
 	assert.True(t, foundTrue, "Should have Valid=True condition after fix")
 	assert.NotEmpty(t, recoveredConfig.Status.ConfigHash, "Hash should be set after recovery")
+}
+
+func TestMCPAuthzConfigReconciler_findReferencingWorkloads(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		authzConfigName   string
+		existingWorkloads []client.Object
+		expectedRefs      []mcpv1alpha1.WorkloadReference
+		expectEmpty       bool
+	}{
+		{
+			name:            "all three workload types referencing the same config",
+			authzConfigName: "shared-config",
+			existingWorkloads: []client.Object{
+				&mcpv1alpha1.MCPServer{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-server",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPServerSpec{
+						Image: "example/mcp:latest",
+						AuthzConfigRef: &mcpv1alpha1.MCPAuthzConfigReference{
+							Name: "shared-config",
+						},
+					},
+				},
+				&mcpv1alpha1.VirtualMCPServer{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-vmcp",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+							Type: "anonymous",
+							AuthzConfigRef: &mcpv1alpha1.MCPAuthzConfigReference{
+								Name: "shared-config",
+							},
+						},
+					},
+				},
+				&mcpv1alpha1.MCPRemoteProxy{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-proxy",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPRemoteProxySpec{
+						RemoteURL: "https://example.com",
+						AuthzConfigRef: &mcpv1alpha1.MCPAuthzConfigReference{
+							Name: "shared-config",
+						},
+					},
+				},
+			},
+			expectedRefs: []mcpv1alpha1.WorkloadReference{
+				{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: "my-proxy"},
+				{Kind: mcpv1alpha1.WorkloadKindMCPServer, Name: "my-server"},
+				{Kind: mcpv1alpha1.WorkloadKindVirtualMCPServer, Name: "my-vmcp"},
+			},
+		},
+		{
+			name:            "no workloads reference the config",
+			authzConfigName: "unused-config",
+			existingWorkloads: []client.Object{
+				&mcpv1alpha1.MCPServer{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "unrelated-server",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPServerSpec{
+						Image: "example/mcp:latest",
+						AuthzConfigRef: &mcpv1alpha1.MCPAuthzConfigReference{
+							Name: "other-config",
+						},
+					},
+				},
+				&mcpv1alpha1.VirtualMCPServer{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "unrelated-vmcp",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+							Type: "anonymous",
+						},
+					},
+				},
+				&mcpv1alpha1.MCPRemoteProxy{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "unrelated-proxy",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPRemoteProxySpec{
+						RemoteURL: "https://example.com",
+					},
+				},
+			},
+			expectEmpty: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.existingWorkloads...).
+				Build()
+
+			r := &MCPAuthzConfigReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			authzConfig := &mcpv1alpha1.MCPAuthzConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      tt.authzConfigName,
+					Namespace: "default",
+				},
+			}
+
+			refs, err := r.findReferencingWorkloads(ctx, authzConfig)
+			require.NoError(t, err)
+
+			if tt.expectEmpty {
+				assert.Empty(t, refs)
+			} else {
+				assert.Equal(t, tt.expectedRefs, refs)
+			}
+		})
+	}
+}
+
+func TestBuildFullAuthzConfigJSON_EmptyConfigRaw(t *testing.T) {
+	t.Parallel()
+
+	spec := mcpv1alpha1.MCPAuthzConfigSpec{
+		Type:   "cedarv1",
+		Config: runtime.RawExtension{Raw: []byte{}},
+	}
+
+	result, err := BuildFullAuthzConfigJSON(spec)
+	require.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "config field is empty")
 }

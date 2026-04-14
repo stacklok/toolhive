@@ -774,6 +774,9 @@ spec:
             - message: oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef
                 to reference a shared MCPOIDCConfig
               rule: '!(has(self.oidcConfig) && has(self.oidcConfigRef))'
+            - message: authzConfig and authzConfigRef are mutually exclusive; use
+                authzConfigRef to reference a shared MCPAuthzConfig
+              rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
             - message: telemetry and telemetryConfigRef are mutually exclusive; migrate
                 to telemetryConfigRef
               rule: '!(has(self.telemetry) && has(self.telemetryConfigRef))'

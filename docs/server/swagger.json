@@ -2499,6 +2499,17 @@
                 },
                 "type": "object"
             },
+            "pkg_api_v1.registryErrorResponse": {
+                "properties": {
+                    "code": {
+                        "type": "string"
+                    },
+                    "message": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.registryInfo": {
                 "description": "Basic information about a registry",
                 "properties": {
@@ -2661,6 +2672,41 @@
                         "description": "List of installed skills",
                         "items": {
                             "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.InstalledSkill"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.skillsV01Metadata": {
+                "description": "Metadata contains pagination information",
+                "properties": {
+                    "limit": {
+                        "description": "Limit is the maximum number of skills per page",
+                        "type": "integer"
+                    },
+                    "page": {
+                        "description": "Page is the current page number (1-based)",
+                        "type": "integer"
+                    },
+                    "total": {
+                        "description": "Total is the total number of skills matching the query",
+                        "type": "integer"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.skillsV01Response": {
+                "description": "Paginated list of skills from the registry",
+                "properties": {
+                    "metadata": {
+                        "$ref": "#/components/schemas/pkg_api_v1.skillsV01Metadata"
+                    },
+                    "skills": {
+                        "description": "Skills is the list of skills on the current page",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.Skill"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -3261,6 +3307,152 @@
                     },
                     "url": {
                         "description": "URL is the endpoint URL for the remote MCP server (e.g., https://api.example.com/mcp)",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "registry.Skill": {
+                "properties": {
+                    "_meta": {
+                        "additionalProperties": {},
+                        "description": "Meta is an opaque payload with extended meta data details of the skill.",
+                        "type": "object"
+                    },
+                    "allowedTools": {
+                        "description": "AllowedTools is the list of tools that the skill is compatible with.\nThis is experimental.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "compatibility": {
+                        "description": "Compatibility is the environment requirements of the skill.",
+                        "type": "string"
+                    },
+                    "description": {
+                        "description": "Description is the description of the skill.",
+                        "type": "string"
+                    },
+                    "icons": {
+                        "description": "Icons is the list of icons for the skill.",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.SkillIcon"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "license": {
+                        "description": "License is the SPDX license identifier of the skill.",
+                        "type": "string"
+                    },
+                    "metadata": {
+                        "additionalProperties": {},
+                        "description": "Metadata is the official metadata of the skill as reported in the\nSKILL.md file.",
+                        "type": "object"
+                    },
+                    "name": {
+                        "description": "Name is the name of the skill.\nThe format is that of identifiers, e.g. \"my-skill\".",
+                        "type": "string"
+                    },
+                    "namespace": {
+                        "description": "Namespace is the namespace of the skill.\nThe format is reverse-DNS, e.g. \"io.github.user\".",
+                        "type": "string"
+                    },
+                    "packages": {
+                        "description": "Packages is the list of packages for the skill.",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.SkillPackage"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "repository": {
+                        "$ref": "#/components/schemas/registry.SkillRepository"
+                    },
+                    "status": {
+                        "description": "Status is the status of the skill.\nCan be one of \"active\", \"deprecated\", or \"archived\".",
+                        "type": "string"
+                    },
+                    "title": {
+                        "description": "Title is the title of the skill.\nThis is for human consumption, not an identifier.",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the version of the skill.\nAny non-empty string is valid, but ideally it should be either a\nsemantic version or a commit hash.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "registry.SkillIcon": {
+                "properties": {
+                    "label": {
+                        "description": "Label is the label of the icon.",
+                        "type": "string"
+                    },
+                    "size": {
+                        "description": "Size is the size of the icon.",
+                        "type": "string"
+                    },
+                    "src": {
+                        "description": "Src is the source of the icon.",
+                        "type": "string"
+                    },
+                    "type": {
+                        "description": "Type is the type of the icon.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "registry.SkillPackage": {
+                "properties": {
+                    "commit": {
+                        "description": "Commit is the commit of the package.",
+                        "type": "string"
+                    },
+                    "digest": {
+                        "description": "Digest is the digest of the package.",
+                        "type": "string"
+                    },
+                    "identifier": {
+                        "description": "Identifier is the OCI identifier of the package.",
+                        "type": "string"
+                    },
+                    "mediaType": {
+                        "description": "MediaType is the media type of the package.",
+                        "type": "string"
+                    },
+                    "ref": {
+                        "description": "Ref is the reference of the package.",
+                        "type": "string"
+                    },
+                    "registryType": {
+                        "description": "RegistryType is the type of registry the package is from.\nCan be \"oci\" or \"git\".",
+                        "type": "string"
+                    },
+                    "subfolder": {
+                        "description": "Subfolder is the subfolder of the package.",
+                        "type": "string"
+                    },
+                    "url": {
+                        "description": "URL is the URL of the package.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "registry.SkillRepository": {
+                "description": "Repository is the source repository of the skill.",
+                "properties": {
+                    "type": {
+                        "description": "Type is the type of the repository.",
+                        "type": "string"
+                    },
+                    "url": {
+                        "description": "URL is the URL of the repository.",
                         "type": "string"
                     }
                 },
@@ -5959,6 +6151,162 @@
                 "summary": "Health check",
                 "tags": [
                     "system"
+                ]
+            }
+        },
+        "/registry/{registryName}/v0.1/x/dev.toolhive/skills": {
+            "get": {
+                "description": "Get a paginated list of skills from the registry. Supports optional full-text search and pagination.",
+                "parameters": [
+                    {
+                        "description": "Registry name (currently ignored, uses the default provider)",
+                        "in": "path",
+                        "name": "registryName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Search filter — matches against skill name, namespace, and description",
+                        "in": "query",
+                        "name": "q",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Page number, 1-based (default: 1)",
+                        "in": "query",
+                        "name": "page",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Items per page, max 200 (default: 50)",
+                        "in": "query",
+                        "name": "limit",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.skillsV01Response"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "List available registry skills",
+                "tags": [
+                    "registry-skills"
+                ]
+            }
+        },
+        "/registry/{registryName}/v0.1/x/dev.toolhive/skills/{namespace}/{skillName}": {
+            "get": {
+                "description": "Retrieve a single skill by its namespace and name from the registry.",
+                "parameters": [
+                    {
+                        "description": "Registry name (currently ignored, uses the default provider)",
+                        "in": "path",
+                        "name": "registryName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Skill namespace in reverse-DNS format (e.g. io.github.stacklok)",
+                        "in": "path",
+                        "name": "namespace",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Skill name",
+                        "in": "path",
+                        "name": "skillName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/registry.Skill"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Skill not found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "Get a registry skill",
+                "tags": [
+                    "registry-skills"
                 ]
             }
         }

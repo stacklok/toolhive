@@ -419,7 +419,8 @@ func (s *service) Info(ctx context.Context, opts skills.InfoOptions) (*skills.Sk
 //   - A git:// reference (e.g. "git://github.com/org/repo#path/to/skill")
 //   - An https:// URL (converted to git:// internally)
 //
-// Resolution order: local store → git → OCI registry.
+// Resolution order: git (git:// and https://) → OCI (local store, then remote
+// pull) → registry catalog lookup.
 func (s *service) GetContent(ctx context.Context, opts skills.ContentOptions) (*skills.SkillContent, error) {
 	ref := opts.Reference
 	if ref == "" {
@@ -453,6 +454,11 @@ func (s *service) GetContent(ctx context.Context, opts skills.ContentOptions) (*
 
 	// OCI failed — try resolving via registry name lookup (e.g. "skill-creator"
 	// or "io.github.stacklok/skill-creator" from the catalog index).
+	// Skip for refs that are clearly OCI references (contain : or @) to avoid
+	// a wasted network round-trip searching for e.g. "skill:v1".
+	if strings.ContainsAny(ref, ":@") {
+		return nil, ociErr
+	}
 	resolved, regErr := s.resolveFromRegistry(ref)
 	if regErr != nil {
 		return nil, regErr

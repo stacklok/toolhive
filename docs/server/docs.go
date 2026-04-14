@@ -5198,6 +5198,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "Internal Server Error"
+                    },
+                    "502": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Gateway"
                     }
                 },
                 "summary": "Get skill content",

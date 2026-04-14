@@ -334,6 +334,7 @@ func (s *SkillsRoutes) deleteBuild(w http.ResponseWriter, r *http.Request) error
 //	@Param			ref	query		string	true	"OCI reference or local build tag"
 //	@Success		200	{object}	skills.SkillContent
 //	@Failure		400	{string}	string	"Bad Request"
+//	@Failure		502	{string}	string	"Bad Gateway"
 //	@Failure		500	{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/skills/content [get]
 func (s *SkillsRoutes) getSkillContent(w http.ResponseWriter, r *http.Request) error {

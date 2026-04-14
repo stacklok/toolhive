@@ -309,6 +309,10 @@
                         "description": "Resource is the OAuth 2.0 resource indicator (RFC 8707).",
                         "type": "string"
                     },
+                    "scope_param_name": {
+                        "description": "ScopeParamName overrides the query parameter name used to send scopes in the\nauthorization URL. When empty, the standard \"scope\" parameter is used.\nSome providers require a non-standard name (e.g., Slack uses \"user_scope\").",
+                        "type": "string"
+                    },
                     "scopes": {
                         "items": {
                             "type": "string"

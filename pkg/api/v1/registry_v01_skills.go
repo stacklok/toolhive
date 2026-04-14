@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -209,8 +210,15 @@ func parseSkillsPagination(r *http.Request) (page, limit int) {
 			page = v
 		}
 	}
+	// Cap page so (page-1)*limit cannot overflow int in the caller.
+	if maxPage := math.MaxInt / limit; page > maxPage {
+		page = maxPage
+	}
 	if l := r.URL.Query().Get("limit"); l != "" {
-		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= skillsMaxLimit {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 {
+			if v > skillsMaxLimit {
+				v = skillsMaxLimit
+			}
 			limit = v
 		}
 	}
@@ -228,8 +236,6 @@ type skillsV01Response struct {
 }
 
 // skillsV01Metadata holds pagination metadata for the v0.1 skills list response.
-//
-//	@Description	Pagination metadata for a skills list response
 type skillsV01Metadata struct {
 	// Total is the total number of skills matching the query
 	Total int `json:"total"`

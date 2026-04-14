@@ -139,6 +139,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		ResponseTypes: []string{"code"},
 		GrantTypes:    []string{"authorization_code", "refresh_token"},
 		Scopes:        options.scopes,
+		Audience:      []string{testAudience},
 		Public:        true,
 	})
 	require.NoError(t, err)

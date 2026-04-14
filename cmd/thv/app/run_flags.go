@@ -962,6 +962,9 @@ func getRemoteAuthFromRemoteServerMetadata(
 		authCfg.OAuthParams = oc.OAuthParams
 	}
 
+	// ScopeParamName: from CLI flag only (not yet supported in registry metadata)
+	authCfg.ScopeParamName = f.RemoteAuthScopeParamName
+
 	// Resolve bearer token from multiple sources (flag, file, environment variable)
 	resolvedBearerToken, err := resolveSecret(
 		f.RemoteAuthBearerToken,
@@ -1023,6 +1026,7 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 		ClientID:        runFlags.RemoteAuthFlags.RemoteAuthClientID,
 		ClientSecret:    clientSecret,
 		Scopes:          runFlags.RemoteAuthFlags.RemoteAuthScopes,
+		ScopeParamName:  runFlags.RemoteAuthFlags.RemoteAuthScopeParamName,
 		SkipBrowser:     runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
 		Timeout:         runFlags.RemoteAuthFlags.RemoteAuthTimeout,
 		CallbackPort:    runFlags.RemoteAuthFlags.RemoteAuthCallbackPort,

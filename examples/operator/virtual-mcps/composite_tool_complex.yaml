@@ -38,7 +38,8 @@ metadata:
   name: fetch
   namespace: default
 spec:
-  groupRef: data-processing-services
+  groupRef:
+    name: data-processing-services
   image: ghcr.io/stackloklabs/gofetch/server
   transport: streamable-http
   proxyPort: 8080
@@ -59,7 +60,8 @@ metadata:
   name: yardstick-sse
   namespace: default
 spec:
-  groupRef: data-processing-services
+  groupRef:
+    name: data-processing-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: sse
   env:
@@ -83,7 +85,8 @@ metadata:
   name: yardstick-streamable
   namespace: default
 spec:
-  groupRef: data-processing-services
+  groupRef:
+    name: data-processing-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: streamable-http
   env:
@@ -288,8 +291,9 @@ metadata:
   name: vmcp-data-processor
   namespace: default
 spec:
+  groupRef:
+    name: data-processing-services
   config:
-    groupRef: data-processing-services
     # Conflict resolution for backend tools
     aggregation:
       conflictResolution: prefix

@@ -74,7 +74,7 @@ func newMCPServerEntry(
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL:             "https://example.com/mcp",
 			Transport:             "sse",
-			GroupRef:              groupRef,
+			GroupRef:              &mcpv1alpha1.MCPGroupRef{Name: groupRef},
 			ExternalAuthConfigRef: authConfigRef,
 			CABundleRef:           caBundleRef,
 		},
@@ -408,11 +408,11 @@ func TestMCPGroupReconciler_MCPServerEntryIntegration(t *testing.T) {
 	}
 	entry1 := &mcpv1alpha1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "entry1", Namespace: testEntryNS},
-		Spec:       mcpv1alpha1.MCPServerEntrySpec{RemoteURL: "https://a.example.com", Transport: "sse", GroupRef: testEntryGroupRef},
+		Spec:       mcpv1alpha1.MCPServerEntrySpec{RemoteURL: "https://a.example.com", Transport: "sse", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testEntryGroupRef}},
 	}
 	entry2 := &mcpv1alpha1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "entry2", Namespace: testEntryNS},
-		Spec:       mcpv1alpha1.MCPServerEntrySpec{RemoteURL: "https://b.example.com", Transport: "sse", GroupRef: testEntryGroupRef},
+		Spec:       mcpv1alpha1.MCPServerEntrySpec{RemoteURL: "https://b.example.com", Transport: "sse", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testEntryGroupRef}},
 	}
 
 	fakeClient := fake.NewClientBuilder().
@@ -421,24 +421,24 @@ func TestMCPGroupReconciler_MCPServerEntryIntegration(t *testing.T) {
 		WithStatusSubresource(&mcpv1alpha1.MCPGroup{}, &mcpv1alpha1.MCPServerEntry{}).
 		WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 			s := obj.(*mcpv1alpha1.MCPServer)
-			if s.Spec.GroupRef == "" {
+			if s.Spec.GroupRef.GetName() == "" {
 				return nil
 			}
-			return []string{s.Spec.GroupRef}
+			return []string{s.Spec.GroupRef.GetName()}
 		}).
 		WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 			p := obj.(*mcpv1alpha1.MCPRemoteProxy)
-			if p.Spec.GroupRef == "" {
+			if p.Spec.GroupRef.GetName() == "" {
 				return nil
 			}
-			return []string{p.Spec.GroupRef}
+			return []string{p.Spec.GroupRef.GetName()}
 		}).
 		WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
 			e := obj.(*mcpv1alpha1.MCPServerEntry)
-			if e.Spec.GroupRef == "" {
+			if e.Spec.GroupRef.GetName() == "" {
 				return nil
 			}
-			return []string{e.Spec.GroupRef}
+			return []string{e.Spec.GroupRef.GetName()}
 		}).
 		Build()
 
@@ -480,11 +480,11 @@ func TestMCPGroupReconciler_EntryDeletionHandler(t *testing.T) {
 
 	entry1 := &mcpv1alpha1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "entry1", Namespace: testEntryNS},
-		Spec:       mcpv1alpha1.MCPServerEntrySpec{RemoteURL: "https://a.example.com", Transport: "sse", GroupRef: testEntryGroupRef},
+		Spec:       mcpv1alpha1.MCPServerEntrySpec{RemoteURL: "https://a.example.com", Transport: "sse", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testEntryGroupRef}},
 	}
 	entry2 := &mcpv1alpha1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "entry2", Namespace: testEntryNS},
-		Spec:       mcpv1alpha1.MCPServerEntrySpec{RemoteURL: "https://b.example.com", Transport: "sse", GroupRef: testEntryGroupRef},
+		Spec:       mcpv1alpha1.MCPServerEntrySpec{RemoteURL: "https://b.example.com", Transport: "sse", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testEntryGroupRef}},
 	}
 
 	fakeClient := fake.NewClientBuilder().

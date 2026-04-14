@@ -85,7 +85,7 @@ func TestCreateVmcpConfigFromVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			converter := newTestConverter(t, newNoOpMockResolver(t))
-			config, _, err := converter.Convert(context.Background(), tt.vmcp)
+			config, _, err := converter.Convert(context.Background(), tt.vmcp, nil)
 
 			require.NoError(t, err)
 			assert.NotNil(t, config)
@@ -156,7 +156,7 @@ func TestConvertOutgoingAuth(t *testing.T) {
 			}
 
 			converter := newTestConverter(t, newNoOpMockResolver(t))
-			config, _, err := converter.Convert(context.Background(), vmcpServer)
+			config, _, err := converter.Convert(context.Background(), vmcpServer, nil)
 			require.NoError(t, err)
 
 			require.NotNil(t, config.OutgoingAuth)
@@ -247,7 +247,7 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 				converter = newTestConverter(t, newNoOpMockResolver(t))
 			}
 
-			config, _, err := converter.Convert(context.Background(), vmcpServer)
+			config, _, err := converter.Convert(context.Background(), vmcpServer, nil)
 			require.NoError(t, err)
 
 			require.NotNil(t, config.OutgoingAuth)
@@ -341,7 +341,7 @@ func TestConvertAggregation(t *testing.T) {
 			}
 
 			converter := newTestConverter(t, newNoOpMockResolver(t))
-			config, _, err := converter.Convert(context.Background(), vmcpServer)
+			config, _, err := converter.Convert(context.Background(), vmcpServer, nil)
 			require.NoError(t, err)
 
 			require.NotNil(t, config.Aggregation)
@@ -434,7 +434,7 @@ func TestConvertCompositeTools(t *testing.T) {
 			}
 
 			converter := newTestConverter(t, newNoOpMockResolver(t))
-			config, _, err := converter.Convert(context.Background(), vmcpServer)
+			config, _, err := converter.Convert(context.Background(), vmcpServer, nil)
 			require.NoError(t, err)
 
 			tools := config.CompositeTools
@@ -495,7 +495,7 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	// Create a status collector (we don't validate status in this test)
 	statusCollector := virtualmcpserverstatus.NewStatusManager(testVmcp)
 
-	err = r.ensureVmcpConfigConfigMap(ctx, testVmcp, workloadNames, statusCollector)
+	err = r.ensureVmcpConfigConfigMap(ctx, testVmcp, workloadNames, nil, statusCollector)
 	require.NoError(t, err)
 
 	// Verify ConfigMap was created
@@ -1074,7 +1074,7 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 	results := make([]string, iterations)
 
 	for i := 0; i < iterations; i++ {
-		cfg, _, err := converter.Convert(context.Background(), testVmcp)
+		cfg, _, err := converter.Convert(context.Background(), testVmcp, nil)
 		require.NoError(t, err)
 
 		// Marshal the Config to YAML.
@@ -1194,7 +1194,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 
 	// Test the ensureVmcpConfigConfigMap function
 	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
-	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusCollector)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
 	require.NoError(t, err, "should successfully create ConfigMap with referenced composite tool")
 
 	// Verify ConfigMap was created
@@ -1321,7 +1321,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 
 	// Test the ensureVmcpConfigConfigMap function
 	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
-	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusCollector)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
 	require.NoError(t, err, "should successfully merge inline and referenced tools")
 
 	// Verify ConfigMap was created
@@ -1405,7 +1405,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_NotFound(t *testing.T) {
 
 	// Test should fail with not found error
 	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
-	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusCollector)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
 	require.Error(t, err, "should fail when referenced tool doesn't exist")
 	assert.Contains(t, err.Error(), "not found", "error should mention not found")
 }
@@ -1464,7 +1464,7 @@ func TestConfigMapContent_DynamicMode(t *testing.T) {
 
 	// Create ConfigMap
 	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
-	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusCollector)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
 	require.NoError(t, err)
 
 	// Verify ConfigMap was created
@@ -1522,7 +1522,7 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef:  "test-group",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Transport: "sse", // Required for backend discovery
 		},
 		Status: mcpv1alpha1.MCPServerStatus{
@@ -1571,7 +1571,7 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 
 	// Create ConfigMap
 	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
-	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusCollector)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
 	require.NoError(t, err)
 
 	// Verify ConfigMap was created
@@ -1639,7 +1639,7 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef:  "test-group",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Transport: "sse", // Required for static mode backend discovery
 			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 				Name: "test-auth-config",
@@ -1687,7 +1687,7 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 
 	// Create ConfigMap
 	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
-	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusCollector)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
 	require.NoError(t, err)
 
 	// Verify ConfigMap was created
@@ -1931,7 +1931,7 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 			require.NoError(t, err)
 
 			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
-			err = reconciler.ensureVmcpConfigConfigMap(ctx, tt.vmcp, workloadNames, statusManager)
+			err = reconciler.ensureVmcpConfigConfigMap(ctx, tt.vmcp, workloadNames, nil, statusManager)
 			require.NoError(t, err)
 
 			// Read back the ConfigMap and parse the config
@@ -2055,7 +2055,7 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 			require.NoError(t, err)
 
 			statusManager := virtualmcpserverstatus.NewStatusManager(vmcpServer)
-			err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, statusManager)
+			err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusManager)
 			require.NoError(t, err)
 
 			configMap := &corev1.ConfigMap{}
@@ -2181,7 +2181,7 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 	).Times(1)
 	mockStatus.EXPECT().SetObservedGeneration(testVmcp.Generation).Times(1)
 
-	err = r.ensureVmcpConfigConfigMap(ctx, testVmcp, workloadNames, mockStatus)
+	err = r.ensureVmcpConfigConfigMap(ctx, testVmcp, workloadNames, nil, mockStatus)
 
 	// Verify the error is a SpecValidationError with the expected message.
 	var specErr *SpecValidationError
@@ -2327,7 +2327,7 @@ func TestBuildCABundlePathMap(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -2344,7 +2344,7 @@ func TestBuildCABundlePathMap(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						CABundleRef: &mcpv1alpha1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
@@ -2368,7 +2368,7 @@ func TestBuildCABundlePathMap(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						CABundleRef: &mcpv1alpha1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
@@ -2393,7 +2393,7 @@ func TestBuildCABundlePathMap(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						CABundleRef: &mcpv1alpha1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
@@ -2406,7 +2406,7 @@ func TestBuildCABundlePathMap(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp2.example.com",
 						Transport: "sse",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},

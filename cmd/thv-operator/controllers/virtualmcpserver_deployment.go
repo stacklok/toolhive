@@ -120,11 +120,14 @@ var vmcpDiscoveredRBACRules = []rbacv1.PolicyRule{
 	},
 }
 
-// deploymentForVirtualMCPServer returns a VirtualMCPServer Deployment object
+// deploymentForVirtualMCPServer returns a VirtualMCPServer Deployment object.
+// telemetryCfg is the already-fetched MCPTelemetryConfig (nil when not referenced),
+// used for CA bundle volumes and OpenTelemetry env vars without redundant API calls.
 func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) *appsv1.Deployment {
 	ls := labelsForVirtualMCPServer(vmcp.Name)
@@ -136,7 +139,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		log.FromContext(ctx).Error(err, "Failed to build volumes for VirtualMCPServer")
 		return nil
 	}
-	env, err := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
+	env, err := r.buildEnvVarsForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
 	if err != nil {
 		log.FromContext(ctx).Error(err, "Failed to build env vars for VirtualMCPServer")
 		return nil
@@ -150,6 +153,13 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	}
 	volumes = append(volumes, caVolumes...)
 	volumeMounts = append(volumeMounts, caMounts...)
+
+	// Add telemetry CA bundle volumes from the pre-fetched MCPTelemetryConfig
+	if telemetryCfg != nil {
+		telVolumes, telMounts := ctrlutil.AddTelemetryCABundleVolumes(telemetryCfg)
+		volumes = append(volumes, telVolumes...)
+		volumeMounts = append(volumeMounts, telMounts...)
+	}
 
 	// Add embedded auth server volumes and env vars if configured (inline config)
 	if vmcp.Spec.AuthServerConfig != nil {
@@ -311,10 +321,12 @@ func (r *VirtualMCPServerReconciler) buildVolumesForVmcp(
 	return volumeMounts, volumes, nil
 }
 
-// buildEnvVarsForVmcp builds environment variables for the vmcp container
+// buildEnvVarsForVmcp builds environment variables for the vmcp container.
+// telemetryCfg is the already-fetched MCPTelemetryConfig (nil when not referenced).
 func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) ([]corev1.EnvVar, error) {
 	env := []corev1.EnvVar{}
@@ -345,6 +357,13 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 
 	// Mount Redis password secret when session storage provider is Redis.
 	env = append(env, r.buildRedisPasswordEnvVar(vmcp)...)
+
+	// Mount OpenTelemetry env vars (resource attributes, sensitive headers) from the pre-fetched MCPTelemetryConfig
+	if telemetryCfg != nil && vmcp.Spec.TelemetryConfigRef != nil {
+		otelEnv := ctrlutil.GenerateOpenTelemetryEnvVarsFromRef(
+			telemetryCfg, vmcp.Spec.TelemetryConfigRef, vmcp.Name, vmcp.Namespace)
+		env = append(env, otelEnv...)
+	}
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env), nil
 }

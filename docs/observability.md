@@ -127,10 +127,10 @@ CLI flags take precedence over configuration file values when explicitly set.
 
 **MCPTelemetryConfig (preferred)**: Define telemetry settings in a shared
 `MCPTelemetryConfig` resource and reference it via `spec.telemetryConfigRef`
-in MCPServer. This eliminates duplication when managing multiple servers.
-Each server provides a unique `serviceName` override. Sensitive headers
-(API keys, bearer tokens) are stored in Kubernetes Secrets via
-`sensitiveHeaders[].secretKeyRef`.
+in MCPServer, MCPRemoteProxy, or VirtualMCPServer. This eliminates duplication
+when managing multiple servers. Each server provides a unique `serviceName`
+override. Sensitive headers (API keys, bearer tokens) are stored in Kubernetes
+Secrets via `sensitiveHeaders[].secretKeyRef`.
 
 ```yaml
 apiVersion: toolhive.stacklok.dev/v1alpha1
@@ -162,10 +162,11 @@ spec:
 See [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](./examples/operator/mcp-servers/mcpserver_fetch_otel.yaml)
 for a complete example.
 
-**Inline (deprecated)**: The inline `spec.openTelemetry` (MCPServer) and
-`spec.config.telemetry` (VirtualMCPServer) fields still work but are
+**Inline (deprecated)**: The inline `spec.telemetry` (MCPServer, MCPRemoteProxy)
+and `spec.config.telemetry` (VirtualMCPServer) fields still work but are
 deprecated and will be removed in v1beta1. They are mutually exclusive with
-`telemetryConfigRef` (CEL enforced).
+`telemetryConfigRef` (CEL enforced). All three resource types now support
+`spec.telemetryConfigRef`.
 
 For VirtualMCPServer telemetry, see the
 [vMCP observability docs](./operator/virtualmcpserver-observability.md).

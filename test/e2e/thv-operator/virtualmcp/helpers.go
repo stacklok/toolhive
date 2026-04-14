@@ -188,7 +188,7 @@ func GetMCPGroupBackends(ctx context.Context, c client.Client, groupName, namesp
 	// Filter MCPServers that reference this group
 	var backends []mcpv1alpha1.MCPServer
 	for _, mcpServer := range mcpServerList.Items {
-		if mcpServer.Spec.GroupRef == groupName {
+		if mcpServer.Spec.GroupRef.GetName() == groupName {
 			backends = append(backends, mcpServer)
 		}
 	}
@@ -667,7 +667,7 @@ func CreateMCPServerAndWait(
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef:  groupRef,
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: groupRef},
 			Image:     image,
 			Transport: "streamable-http",
 			ProxyPort: 8080,
@@ -757,7 +757,7 @@ func CreateMultipleMCPServersInParallel(
 				Namespace: backends[idx].Namespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:              backends[idx].GroupRef,
+				GroupRef:              &mcpv1alpha1.MCPGroupRef{Name: backends[idx].GroupRef},
 				Image:                 backends[idx].Image,
 				Transport:             backendTransport,
 				ProxyPort:             8080,

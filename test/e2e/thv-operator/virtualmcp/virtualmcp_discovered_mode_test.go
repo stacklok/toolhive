@@ -55,7 +55,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
@@ -71,7 +71,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.OSVMCPServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
@@ -478,7 +478,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  mcpGroupName,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.GofetchServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,

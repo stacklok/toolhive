@@ -493,22 +493,23 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
-	if mcpServer.Spec.GroupRef == "" {
+	if mcpServer.Spec.GroupRef == nil {
 		// No group reference, nothing to validate
 		return
 	}
 
 	ctxLogger := log.FromContext(ctx)
+	groupName := mcpServer.Spec.GroupRef.Name
 
 	// Find the referenced MCPGroup
 	group := &mcpv1alpha1.MCPGroup{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: mcpServer.Namespace, Name: mcpServer.Spec.GroupRef}, group); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: mcpServer.Namespace, Name: groupName}, group); err != nil {
 		ctxLogger.Error(err, "Failed to validate GroupRef")
 		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
 			Type:               mcpv1alpha1.ConditionGroupRefValidated,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotFound,
-			Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", mcpServer.Spec.GroupRef, mcpServer.Namespace),
+			Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", groupName, mcpServer.Namespace),
 			ObservedGeneration: mcpServer.Generation,
 		})
 	} else if group.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
@@ -516,7 +517,7 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 			Type:               mcpv1alpha1.ConditionGroupRefValidated,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotReady,
-			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", mcpServer.Spec.GroupRef, group.Status.Phase),
+			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", groupName, group.Status.Phase),
 			ObservedGeneration: mcpServer.Generation,
 		})
 	} else {
@@ -524,7 +525,7 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 			Type:               mcpv1alpha1.ConditionGroupRefValidated,
 			Status:             metav1.ConditionTrue,
 			Reason:             mcpv1alpha1.ConditionReasonGroupRefValidated,
-			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", mcpServer.Spec.GroupRef),
+			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", groupName),
 			ObservedGeneration: mcpServer.Generation,
 		})
 	}

@@ -95,7 +95,43 @@ func testSkillClientIntegrations() []clientAppConfig {
 			SkillsProjectPath: []string{".kiro", "skills"},
 		},
 		{
-			ClientType: Windsurf,
+			ClientType:        RooCode,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".roo", "skills"},
+			SkillsProjectPath: []string{".roo", "skills"},
+		},
+		{
+			ClientType:        Cline,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".cline", "skills"},
+			SkillsProjectPath: []string{".cline", "skills"},
+		},
+		{
+			ClientType:        Windsurf,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".codeium", "windsurf", "skills"},
+			SkillsProjectPath: []string{".windsurf", "skills"},
+		},
+		{
+			ClientType:        MistralVibe,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".vibe", "skills"},
+			SkillsProjectPath: []string{".vibe", "skills"},
+		},
+		{
+			ClientType:        Trae,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".agents", "skills"},
+			SkillsProjectPath: []string{".agents", "skills"},
+		},
+		{
+			ClientType:        Antigravity,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".agents", "skills"},
+			SkillsProjectPath: []string{".agents", "skills"},
+		},
+		{
+			ClientType: Zed,
 			// SupportsSkills defaults to false
 		},
 		{
@@ -133,7 +169,13 @@ func TestSupportsSkills(t *testing.T) {
 		{name: "GeminiCli supports skills", client: GeminiCli, expected: true},
 		{name: "AmpCli supports skills", client: AmpCli, expected: true},
 		{name: "Kiro supports skills", client: Kiro, expected: true},
-		{name: "Windsurf does not support skills", client: Windsurf, expected: false},
+		{name: "RooCode supports skills", client: RooCode, expected: true},
+		{name: "Cline supports skills", client: Cline, expected: true},
+		{name: "Windsurf supports skills", client: Windsurf, expected: true},
+		{name: "MistralVibe supports skills", client: MistralVibe, expected: true},
+		{name: "Trae supports skills", client: Trae, expected: true},
+		{name: "Antigravity supports skills", client: Antigravity, expected: true},
+		{name: "Zed does not support skills", client: Zed, expected: false},
 		{name: "unknown client returns false", client: ClientApp("nonexistent"), expected: false},
 	}
 
@@ -150,8 +192,9 @@ func TestListSkillSupportingClients(t *testing.T) {
 	cm := newTestSkillManager()
 	clients := cm.ListSkillSupportingClients()
 
-	// Should include AmpCli, ClaudeCode, Codex, Cursor, Factory, GeminiCli, Goose, Kiro, KimiCli, OpenCode, VSCode, VSCodeInsider, and our test-only no-paths-client
-	require.Len(t, clients, 13, "unexpected number of skill-supporting clients: %v", clients)
+	// Should include AmpCli, Antigravity, ClaudeCode, Cline, Codex, Cursor, Factory, GeminiCli, Goose, Kiro, KimiCli,
+	// MistralVibe, OpenCode, RooCode, Trae, VSCode, VSCodeInsider, Windsurf, and our test-only no-paths-client
+	require.Len(t, clients, 19, "unexpected number of skill-supporting clients: %v", clients)
 
 	// Verify sorted order
 	for i := 1; i < len(clients); i++ {
@@ -384,8 +427,98 @@ func TestGetSkillPath(t *testing.T) {
 			wantPath:    filepath.Join("/tmp/myproject", ".kiro", "skills", "my-skill"),
 		},
 		{
-			name:      "client that does not support skills",
+			name:      "ScopeUser RooCode",
+			client:    RooCode,
+			skillName: "my-skill",
+			scope:     skills.ScopeUser,
+			wantPath:  filepath.Join(testHomeDir, ".roo", "skills", "my-skill"),
+		},
+		{
+			name:        "ScopeProject RooCode with explicit root",
+			client:      RooCode,
+			skillName:   "my-skill",
+			scope:       skills.ScopeProject,
+			projectRoot: "/tmp/myproject",
+			wantPath:    filepath.Join("/tmp/myproject", ".roo", "skills", "my-skill"),
+		},
+		{
+			name:      "ScopeUser Cline",
+			client:    Cline,
+			skillName: "my-skill",
+			scope:     skills.ScopeUser,
+			wantPath:  filepath.Join(testHomeDir, ".cline", "skills", "my-skill"),
+		},
+		{
+			name:        "ScopeProject Cline with explicit root",
+			client:      Cline,
+			skillName:   "my-skill",
+			scope:       skills.ScopeProject,
+			projectRoot: "/tmp/myproject",
+			wantPath:    filepath.Join("/tmp/myproject", ".cline", "skills", "my-skill"),
+		},
+		{
+			name:      "ScopeUser Windsurf",
 			client:    Windsurf,
+			skillName: "my-skill",
+			scope:     skills.ScopeUser,
+			wantPath:  filepath.Join(testHomeDir, ".codeium", "windsurf", "skills", "my-skill"),
+		},
+		{
+			name:        "ScopeProject Windsurf with explicit root",
+			client:      Windsurf,
+			skillName:   "my-skill",
+			scope:       skills.ScopeProject,
+			projectRoot: "/tmp/myproject",
+			wantPath:    filepath.Join("/tmp/myproject", ".windsurf", "skills", "my-skill"),
+		},
+		{
+			name:      "ScopeUser MistralVibe",
+			client:    MistralVibe,
+			skillName: "my-skill",
+			scope:     skills.ScopeUser,
+			wantPath:  filepath.Join(testHomeDir, ".vibe", "skills", "my-skill"),
+		},
+		{
+			name:        "ScopeProject MistralVibe with explicit root",
+			client:      MistralVibe,
+			skillName:   "my-skill",
+			scope:       skills.ScopeProject,
+			projectRoot: "/tmp/myproject",
+			wantPath:    filepath.Join("/tmp/myproject", ".vibe", "skills", "my-skill"),
+		},
+		{
+			name:      "ScopeUser Trae",
+			client:    Trae,
+			skillName: "my-skill",
+			scope:     skills.ScopeUser,
+			wantPath:  filepath.Join(testHomeDir, ".agents", "skills", "my-skill"),
+		},
+		{
+			name:        "ScopeProject Trae with explicit root",
+			client:      Trae,
+			skillName:   "my-skill",
+			scope:       skills.ScopeProject,
+			projectRoot: "/tmp/myproject",
+			wantPath:    filepath.Join("/tmp/myproject", ".agents", "skills", "my-skill"),
+		},
+		{
+			name:      "ScopeUser Antigravity",
+			client:    Antigravity,
+			skillName: "my-skill",
+			scope:     skills.ScopeUser,
+			wantPath:  filepath.Join(testHomeDir, ".agents", "skills", "my-skill"),
+		},
+		{
+			name:        "ScopeProject Antigravity with explicit root",
+			client:      Antigravity,
+			skillName:   "my-skill",
+			scope:       skills.ScopeProject,
+			projectRoot: "/tmp/myproject",
+			wantPath:    filepath.Join("/tmp/myproject", ".agents", "skills", "my-skill"),
+		},
+		{
+			name:      "client that does not support skills",
+			client:    Zed,
 			skillName: "my-skill",
 			scope:     skills.ScopeUser,
 			wantErr:   ErrSkillsNotSupported,

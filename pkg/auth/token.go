@@ -641,7 +641,13 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 			"issuer", config.Issuer,
 		)
 	} else if jwksURL == "" && config.Issuer != "" {
-		slog.Debug("OIDC discovery deferred - will discover on first validation request", "issuer", config.Issuer)
+		if o.keyProvider != nil {
+			slog.Debug("OIDC discovery deferred - failure non-fatal with local key provider",
+				"issuer", config.Issuer)
+		} else {
+			slog.Debug("OIDC discovery deferred - will discover on first validation request",
+				"issuer", config.Issuer)
+		}
 	}
 
 	// Ensure we have either an explicit JWKS URL, an issuer to discover from,
@@ -892,9 +898,15 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 	}
 
 	// Fall through to HTTP-based JWKS lookup.
-	// Defensive check: JWKS URL must be set before calling this function.
-	// This invariant is normally guaranteed by ValidateToken calling ensureOIDCDiscovered first.
+	// When a local key provider is present, OIDC discovery may have been
+	// skipped entirely, so jwksURL can legitimately be empty.
 	if v.jwksURL == "" {
+		if v.keyProvider != nil {
+			return nil, fmt.Errorf(
+				"local key provider could not resolve key and no JWKS URL is available: %w",
+				ErrMissingJWKSURL,
+			)
+		}
 		return nil, ErrMissingJWKSURL
 	}
 
@@ -1041,10 +1053,20 @@ func (v *TokenValidator) introspectOpaqueToken(ctx context.Context, tokenStr str
 
 // ValidateToken validates a token.
 func (v *TokenValidator) ValidateToken(ctx context.Context, tokenString string) (jwt.MapClaims, error) {
-	// Ensure OIDC discovery is complete (lazy discovery with retry)
-	// This is a no-op if discovery was already performed or if JWKS URL was provided directly
+	// Ensure OIDC discovery is complete (lazy discovery with retry).
+	// When a local key provider is configured (embedded auth server),
+	// discovery failure is non-fatal — signing keys can be resolved
+	// in-process and the issuer URL may not be reachable from within
+	// the cluster. Mark discovery as done to avoid per-request retries.
 	if err := v.ensureOIDCDiscovered(ctx); err != nil {
-		return nil, fmt.Errorf("OIDC discovery failed: %w", err)
+		if v.keyProvider == nil {
+			return nil, fmt.Errorf("OIDC discovery failed: %w", err)
+		}
+		slog.Warn("OIDC discovery failed, proceeding with local key provider",
+			"issuer", v.issuer, "error", err)
+		v.oidcDiscoveryMu.Lock()
+		v.oidcDiscovered = true
+		v.oidcDiscoveryMu.Unlock()
 	}
 
 	// Parse the token

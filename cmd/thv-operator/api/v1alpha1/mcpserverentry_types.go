@@ -24,11 +24,10 @@ type MCPServerEntrySpec struct {
 	// +kubebuilder:validation:Enum=sse;streamable-http
 	Transport string `json:"transport"`
 
-	// GroupRef is the name of the MCPGroup this entry belongs to.
+	// GroupRef references the MCPGroup this entry belongs to.
 	// Required — every MCPServerEntry must be part of a group for vMCP discovery.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	GroupRef string `json:"groupRef"`
+	GroupRef *MCPGroupRef `json:"groupRef"`
 
 	// ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange
 	// when connecting to the remote MCP server. The referenced MCPExternalAuthConfig must
@@ -155,7 +154,7 @@ const (
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Transport",type="string",JSONPath=".spec.transport"
 //+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteUrl"
-//+kubebuilder:printcolumn:name="Group",type="string",JSONPath=".spec.groupRef"
+//+kubebuilder:printcolumn:name="Group",type="string",JSONPath=".spec.groupRef.name"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // MCPServerEntry is the Schema for the mcpserverentries API.

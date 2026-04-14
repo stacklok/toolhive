@@ -98,7 +98,7 @@ func (d *k8sDiscoverer) ListWorkloadsInGroup(ctx context.Context, groupName stri
 
 	for i := range mcpServerList.Items {
 		mcpServer := &mcpServerList.Items[i]
-		if mcpServer.Spec.GroupRef == groupName {
+		if mcpServer.Spec.GroupRef.GetName() == groupName {
 			groupWorkloads = append(groupWorkloads, TypedWorkload{
 				Name: mcpServer.Name,
 				Type: WorkloadTypeMCPServer,
@@ -114,7 +114,7 @@ func (d *k8sDiscoverer) ListWorkloadsInGroup(ctx context.Context, groupName stri
 
 	for i := range mcpRemoteProxyList.Items {
 		mcpRemoteProxy := &mcpRemoteProxyList.Items[i]
-		if mcpRemoteProxy.Spec.GroupRef == groupName {
+		if mcpRemoteProxy.Spec.GroupRef.GetName() == groupName {
 			groupWorkloads = append(groupWorkloads, TypedWorkload{
 				Name: mcpRemoteProxy.Name,
 				Type: WorkloadTypeMCPRemoteProxy,
@@ -130,7 +130,7 @@ func (d *k8sDiscoverer) ListWorkloadsInGroup(ctx context.Context, groupName stri
 
 	for i := range mcpServerEntryList.Items {
 		mcpServerEntry := &mcpServerEntryList.Items[i]
-		if mcpServerEntry.Spec.GroupRef == groupName {
+		if mcpServerEntry.Spec.GroupRef.GetName() == groupName {
 			groupWorkloads = append(groupWorkloads, TypedWorkload{
 				Name: mcpServerEntry.Name,
 				Type: WorkloadTypeMCPServerEntry,

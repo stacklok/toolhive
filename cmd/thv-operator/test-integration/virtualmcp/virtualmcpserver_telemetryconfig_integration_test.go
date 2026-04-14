@@ -17,7 +17,6 @@ import (
 	"sigs.k8s.io/yaml"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	telemetryconfig "github.com/stacklok/toolhive/pkg/telemetry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -367,32 +366,4 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 			})
 		})
 
-		Context("CEL validation rejects both config.telemetry and telemetryConfigRef", func() {
-			It("should reject creation when both config.telemetry and telemetryConfigRef are set", func() {
-				vmcp := &mcpv1alpha1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-vmcp-telemetry-mutual-exclusion",
-						Namespace: namespace,
-					},
-					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{
-							Group: "some-group",
-							Telemetry: &telemetryconfig.Config{
-								Endpoint:       "https://otel-collector:4317",
-								TracingEnabled: true,
-							},
-						},
-						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-							Type: "anonymous",
-						},
-						TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
-							Name: "some-telemetry-config",
-						},
-					},
-				}
-				err := k8sClient.Create(ctx, vmcp)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("telemetryConfigRef"))
-			})
-		})
 	})

@@ -787,6 +787,49 @@ func TestIntegration_FullPKCEFlow(t *testing.T) {
 	assert.ElementsMatch(t, requestedScopes, scopeStrings, "granted scopes should match requested scopes")
 }
 
+// TestIntegration_FullPKCEFlow_DefaultAudience verifies that omitting the
+// RFC 8707 resource parameter still produces a token with the correct aud
+// claim when the server has exactly one allowed audience.
+func TestIntegration_FullPKCEFlow_DefaultAudience(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "default-aud-state",
+		Challenge:    challenge,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+
+	// Exchange code WITHOUT a resource parameter — the server should default
+	// to the sole allowed audience (testAudience = "https://mcp.example.com").
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, "")
+
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	require.NotEmpty(t, accessToken)
+
+	// Verify JWT signature and parse claims
+	parsedToken, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err, "should be able to parse JWT")
+
+	var claims map[string]interface{}
+	err = parsedToken.Claims(ts.PrivateKey.Public(), &claims)
+	require.NoError(t, err, "JWT signature should be valid")
+
+	// The sole AllowedAudience should have been granted automatically.
+	aud, ok := claims["aud"].([]interface{})
+	require.True(t, ok, "aud claim should be an array")
+	require.Len(t, aud, 1, "aud should have exactly one audience")
+	assert.Equal(t, testAudience, aud[0], "audience should default to sole AllowedAudience")
+}
+
 // ============================================================================
 // OIDC Provider Integration Tests (OIDCProviderImpl via defaultUpstreamFactory)
 // ============================================================================

@@ -61,7 +61,8 @@ var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func()
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
-							Name: "authserver-oidc-config",
+							Name:     "authserver-oidc-config",
+							Audience: "authserver-test",
 						},
 					},
 					Config: vmcpconfig.Config{Group: mcpGroupName},

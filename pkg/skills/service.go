@@ -27,4 +27,7 @@ type SkillService interface {
 	ListBuilds(ctx context.Context) ([]LocalBuild, error)
 	// DeleteBuild removes a locally-built OCI skill artifact from the local store.
 	DeleteBuild(ctx context.Context, tag string) error
+	// GetContent retrieves the SKILL.md body and file listing from an OCI artifact
+	// without installing it. Works for both remote registry references and local build tags.
+	GetContent(ctx context.Context, opts ContentOptions) (*SkillContent, error)
 }

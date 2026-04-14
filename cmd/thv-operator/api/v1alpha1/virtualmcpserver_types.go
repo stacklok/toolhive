@@ -466,7 +466,7 @@ func (r *VirtualMCPServer) Validate() error {
 	// Validate Group is set — prefer spec.groupRef, fall back to config.groupRef
 	// Note: CEL cannot validate embedded types from other packages
 	if r.Spec.GroupRef.GetName() == "" && r.Spec.Config.Group == "" {
-		return fmt.Errorf("spec.groupRef is required")
+		return fmt.Errorf("either spec.groupRef.name or config.groupRef must be set")
 	}
 
 	// Note: IncomingAuth validation is handled by kubebuilder markers and CEL rules

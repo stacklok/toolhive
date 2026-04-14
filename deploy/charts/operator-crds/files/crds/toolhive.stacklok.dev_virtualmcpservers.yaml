@@ -1172,6 +1172,7 @@ spec:
                     description: |-
                       Group references an existing MCPGroup that defines backend workloads.
                       In Kubernetes, the referenced MCPGroup must exist in the same namespace.
+                      Deprecated: Use spec.groupRef on VirtualMCPServerSpec instead.
                     type: string
                   incomingAuth:
                     description: |-
@@ -1769,8 +1770,6 @@ spec:
                           Currently defaults to true; this will change to false in a future release.
                         type: boolean
                     type: object
-                required:
-                - groupRef
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               embeddingServerRef:

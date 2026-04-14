@@ -104,10 +104,11 @@ var _ = BeforeSuite(func() {
 	// Set up field indexing for MCPServer.Spec.GroupRef (required by VirtualMCPServer controller)
 	if err := k8sManager.GetFieldIndexer().IndexField(ctx, &mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 		mcpServer := obj.(*mcpv1alpha1.MCPServer)
-		if mcpServer.Spec.GroupRef == nil {
+		name := mcpServer.Spec.GroupRef.GetName()
+		if name == "" {
 			return nil
 		}
-		return []string{mcpServer.Spec.GroupRef.GetName()}
+		return []string{name}
 	}); err != nil {
 		Expect(err).ToNot(HaveOccurred())
 	}
@@ -115,10 +116,11 @@ var _ = BeforeSuite(func() {
 	// Set up field indexing for MCPRemoteProxy.Spec.GroupRef (required by VirtualMCPServer controller)
 	if err := k8sManager.GetFieldIndexer().IndexField(ctx, &mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 		mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-		if mcpRemoteProxy.Spec.GroupRef == nil {
+		name := mcpRemoteProxy.Spec.GroupRef.GetName()
+		if name == "" {
 			return nil
 		}
-		return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
+		return []string{name}
 	}); err != nil {
 		Expect(err).ToNot(HaveOccurred())
 	}
@@ -130,10 +132,11 @@ var _ = BeforeSuite(func() {
 		"spec.groupRef",
 		func(obj client.Object) []string {
 			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
-			if mcpServerEntry.Spec.GroupRef == nil {
+			name := mcpServerEntry.Spec.GroupRef.GetName()
+			if name == "" {
 				return nil
 			}
-			return []string{mcpServerEntry.Spec.GroupRef.GetName()}
+			return []string{name}
 		},
 	)
 	Expect(err).ToNot(HaveOccurred())

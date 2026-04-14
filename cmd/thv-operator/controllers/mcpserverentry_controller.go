@@ -161,7 +161,7 @@ func (r *MCPServerEntryReconciler) validateGroupRef(
 	entry *mcpv1alpha1.MCPServerEntry,
 ) (bool, error) {
 	ctxLogger := log.FromContext(ctx)
-	groupName := entry.Spec.GroupRef.Name
+	groupName := entry.Spec.GroupRef.GetName()
 	group := &mcpv1alpha1.MCPGroup{}
 	groupKey := types.NamespacedName{Namespace: entry.Namespace, Name: groupName}
 

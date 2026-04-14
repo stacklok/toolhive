@@ -125,20 +125,9 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 		}
 	}
 
-	// Convert OIDC config
-	if config.OIDCConfig != nil {
-		mcpServer.Spec.OIDCConfig = &v1alpha1.OIDCConfigRef{
-			Type: v1alpha1.OIDCConfigTypeInline,
-			Inline: &v1alpha1.InlineOIDCConfig{
-				Issuer:   config.OIDCConfig.Issuer,
-				Audience: config.OIDCConfig.Audience,
-			},
-		}
-
-		if config.OIDCConfig.JWKSURL != "" {
-			mcpServer.Spec.OIDCConfig.Inline.JWKSURL = config.OIDCConfig.JWKSURL
-		}
-	}
+	// Note: OIDC authentication requires a separate MCPOIDCConfig resource
+	// and an oidcConfigRef on the MCPServer. This export does not generate
+	// the MCPOIDCConfig resource — create it manually and reference it.
 
 	// Convert authz config
 	if config.AuthzConfig != nil && len(config.AuthzConfig.RawConfig()) > 0 {

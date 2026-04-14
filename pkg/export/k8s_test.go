@@ -15,7 +15,6 @@ import (
 	"github.com/stacklok/toolhive-core/permissions"
 	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/audit"
-	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -147,29 +146,6 @@ func TestWriteK8sManifest(t *testing.T) {
 				require.NotNil(t, mcpServer.Spec.PermissionProfile)
 				assert.Equal(t, v1alpha1.PermissionProfileTypeBuiltin, mcpServer.Spec.PermissionProfile.Type)
 				assert.Equal(t, "none", mcpServer.Spec.PermissionProfile.Name)
-			},
-		},
-		{
-			name: "config with OIDC",
-			config: &runner.RunConfig{
-				Image:     "ghcr.io/stacklok/mcp-server:latest",
-				Name:      "test",
-				BaseName:  "test",
-				Transport: types.TransportTypeStdio,
-				OIDCConfig: &auth.TokenValidatorConfig{
-					Issuer:   "https://accounts.google.com",
-					Audience: "my-client-id",
-					JWKSURL:  "https://accounts.google.com/.well-known/jwks.json",
-				},
-			},
-			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
-				t.Helper()
-				require.NotNil(t, mcpServer.Spec.OIDCConfig)
-				assert.Equal(t, v1alpha1.OIDCConfigTypeInline, mcpServer.Spec.OIDCConfig.Type)
-				require.NotNil(t, mcpServer.Spec.OIDCConfig.Inline)
-				assert.Equal(t, "https://accounts.google.com", mcpServer.Spec.OIDCConfig.Inline.Issuer)
-				assert.Equal(t, "my-client-id", mcpServer.Spec.OIDCConfig.Inline.Audience)
-				assert.Equal(t, "https://accounts.google.com/.well-known/jwks.json", mcpServer.Spec.OIDCConfig.Inline.JWKSURL)
 			},
 		},
 		{

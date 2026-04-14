@@ -1009,7 +1009,7 @@ func TestRateLimitConfigValidation(t *testing.T) {
 					Provider: mcpv1alpha1.SessionStorageProviderRedis,
 					Address:  "redis:6379",
 				},
-				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{Type: "kubernetes"},
+				OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test"},
 				RateLimiting: &mcpv1alpha1.RateLimitConfig{
 					PerUser: &mcpv1alpha1.RateLimitBucket{
 						MaxTokens:    100,
@@ -1103,11 +1103,39 @@ func TestRateLimitConfigValidation(t *testing.T) {
 			}
 
 			testScheme := createTestScheme()
-			fakeClient := fake.NewClientBuilder().
+			clientBuilder := fake.NewClientBuilder().
 				WithScheme(testScheme).
 				WithObjects(mcpServer).
-				WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
-				Build()
+				WithStatusSubresource(&mcpv1alpha1.MCPServer{})
+
+			// Add referenced MCPOIDCConfig to fake client if spec references one
+			if mcpServer.Spec.OIDCConfigRef != nil {
+				oidcCfg := &mcpv1alpha1.MCPOIDCConfig{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      mcpServer.Spec.OIDCConfigRef.Name,
+						Namespace: namespace,
+					},
+					Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+						Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+							Issuer: "https://auth.example.com",
+						},
+					},
+				}
+				oidcCfg.Status.Conditions = []metav1.Condition{
+					{
+						Type:               mcpv1alpha1.ConditionTypeValid,
+						Status:             metav1.ConditionTrue,
+						Reason:             "Valid",
+						LastTransitionTime: metav1.Now(),
+					},
+				}
+				clientBuilder = clientBuilder.
+					WithObjects(oidcCfg).
+					WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{})
+			}
+
+			fakeClient := clientBuilder.Build()
 
 			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
 

@@ -1,4 +1,19 @@
 apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPOIDCConfig
+metadata:
+  name: keycloak-oidc
+  namespace: toolhive-system
+spec:
+  type: inline
+  inline:
+    # Keycloak issuer URL for the toolhive realm
+    issuer: http://keycloak:8080/realms/toolhive
+    # Explicit JWKS URL to avoid OIDC discovery issues
+    jwksUrl: http://keycloak-dev-service.keycloak.svc.cluster.local:8080/realms/toolhive/protocol/openid-connect/certs
+    # Optional: Allow private IP addresses for development
+    jwksAllowPrivateIP: true
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
   name: fetch-server-keycloak
@@ -17,18 +32,11 @@ spec:
   mcpPort: 9090
   env:
 
-  # OIDC authentication with Keycloak
-  oidcConfig:
-    type: inline
-    inline:
-      # Keycloak issuer URL for the toolhive realm
-      issuer: http://keycloak:8080/realms/toolhive
-      # Explicit JWKS URL to avoid OIDC discovery issues
-      jwksUrl: http://keycloak-dev-service.keycloak.svc.cluster.local:8080/realms/toolhive/protocol/openid-connect/certs
-      # MCP server client ID - tokens must have this in their audience claim
-      audience: mcp-server
-      # Optional: Allow private IP addresses for development
-      jwksAllowPrivateIP: true
+  # OIDC authentication with Keycloak via shared MCPOIDCConfig
+  oidcConfigRef:
+    name: keycloak-oidc
+    # MCP server client ID - tokens must have this in their audience claim
+    audience: mcp-server
 
   # Basic permission profile allowing network access
   permissionProfile:

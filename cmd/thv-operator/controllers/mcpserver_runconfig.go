@@ -235,19 +235,6 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 				resolvedOIDCConfig.Scopes,
 			))
 		}
-	} else {
-		// Legacy path: resolve from inline OIDCConfig
-		if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, m, &options); err != nil {
-			return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
-		}
-		if m.Spec.OIDCConfig != nil {
-			resolver := oidc.NewResolver(r.Client)
-			var err error
-			resolvedOIDCConfig, err = resolver.Resolve(ctx, m)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve OIDC config: %w", err)
-			}
-		}
 	}
 
 	// Add external auth configuration if specified (updated call)

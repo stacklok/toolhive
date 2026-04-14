@@ -1918,7 +1918,6 @@ _Appears in:_
 | `remoteUrl` _string_ | RemoteURL is the URL of the remote MCP server to proxy |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
 | `proxyPort` _integer_ | ProxyPort is the port to expose the MCP proxy on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `transport` _string_ | Transport is the transport method for the remote proxy (sse or streamable-http) | streamable-http | Enum: [sse streamable-http] <br /> |
-| `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the proxy.<br />Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.<br />This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
 | `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.<br />When specified, the proxy will exchange validated incoming tokens for remote service tokens.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy. |  | Optional: \{\} <br /> |
 | `authServerRef` _[api.v1alpha1.AuthServerRef](#apiv1alpha1authserverref)_ | AuthServerRef optionally references a resource that configures an embedded<br />OAuth 2.0/OIDC authorization server to authenticate MCP clients.<br />Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer). |  | Optional: \{\} <br /> |
@@ -2156,8 +2155,7 @@ _Appears in:_
 | `permissionProfile` _[api.v1alpha1.PermissionProfileRef](#apiv1alpha1permissionprofileref)_ | PermissionProfile defines the permission profile to use |  | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the MCP server runs in, you must specify<br />the `mcp` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
 | `resourceOverrides` _[api.v1alpha1.ResourceOverrides](#apiv1alpha1resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  | Optional: \{\} <br /> |
-| `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the MCP server.<br />Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.<br />This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
-| `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig. |  | Optional: \{\} <br /> |
+| `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
 | `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server |  | Optional: \{\} <br /> |
 | `audit` _[api.v1alpha1.AuditConfig](#apiv1alpha1auditconfig)_ | Audit defines audit logging configuration for the MCP server |  | Optional: \{\} <br /> |
 | `toolConfigRef` _[api.v1alpha1.ToolConfigRef](#apiv1alpha1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
@@ -2487,8 +2485,6 @@ OIDCConfigRef defines a reference to OIDC configuration
 
 _Appears in:_
 - [api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |

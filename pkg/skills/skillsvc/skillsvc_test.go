@@ -20,6 +20,10 @@ import (
 	godigest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	ocimocks "github.com/stacklok/toolhive-core/oci/skills/mocks"
@@ -34,9 +38,6 @@ import (
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
 	"github.com/stacklok/toolhive/pkg/storage"
 	storemocks "github.com/stacklok/toolhive/pkg/storage/mocks"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 )
 
 const testCommitHash = "abcdef1234567890abcdef1234567890abcdef12"

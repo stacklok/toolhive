@@ -12,12 +12,13 @@ import (
 	"testing"
 	"time"
 
-	envmocks "github.com/stacklok/toolhive-core/env/mocks"
-	"github.com/stacklok/toolhive-core/httperr"
-	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+
+	envmocks "github.com/stacklok/toolhive-core/env/mocks"
+	"github.com/stacklok/toolhive-core/httperr"
+	"github.com/stacklok/toolhive/pkg/skills"
 )
 
 // newTestClient returns a *Client pointed at the given test server.

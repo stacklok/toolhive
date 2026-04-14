@@ -268,6 +268,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".copilot", "skills"},
+		SkillsProjectPath: []string{".github", "skills"},
 	},
 	{
 		ClientType:   VSCode,
@@ -294,6 +297,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".copilot", "skills"},
+		SkillsProjectPath: []string{".github", "skills"},
 	},
 	{
 		ClientType:           Cursor,

@@ -792,8 +792,10 @@ func (s *service) applyGitInstallExisting(
 		if err != nil {
 			return nil, err
 		}
+		// Deduplicate so clients sharing the same directory don't conflict.
+		dirsToWrite := uniqueDirClients(allClients, allDirs, nil)
 		return s.gitWriteMultiAndPersist(ctx, opts, scope, allClients, allDirs, files,
-			allClients, nil, true, true)
+			dirsToWrite, nil, true, true)
 	}
 	clientsExplicit := len(opts.Clients) > 0
 	if clientsContainAll(existing.Clients, clientTypes) ||
@@ -804,7 +806,13 @@ func (s *service) applyGitInstallExisting(
 	if len(toWrite) == 0 {
 		return &skills.InstallResult{Skill: existing}, nil
 	}
-	for _, ct := range toWrite {
+	// Deduplicate and skip directories already owned by existing clients.
+	dirsToWrite := uniqueDirClients(toWrite, clientDirs, existingClientDirs(existing.Clients, clientDirs))
+	if len(dirsToWrite) == 0 {
+		return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files,
+			nil, existing.Clients, true, false)
+	}
+	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(clientDirs[ct])
 		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
 			return nil, httperr.WithCode(
@@ -814,7 +822,7 @@ func (s *service) applyGitInstallExisting(
 		}
 	}
 	return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files,
-		toWrite, existing.Clients, true, false)
+		dirsToWrite, existing.Clients, true, false)
 }
 
 func missingClients(existing, requested []string) []string {
@@ -835,7 +843,9 @@ func (s *service) applyGitInstallFresh(
 	clientDirs map[string]string,
 	files []gitresolver.FileEntry,
 ) (*skills.InstallResult, error) {
-	for _, ct := range clientTypes {
+	// Deduplicate so clients sharing the same directory don't conflict.
+	dirsToCheck := uniqueDirClients(clientTypes, clientDirs, nil)
+	for _, ct := range dirsToCheck {
 		dir := filepath.Clean(clientDirs[ct])
 		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
 			return nil, httperr.WithCode(
@@ -845,7 +855,7 @@ func (s *service) applyGitInstallFresh(
 		}
 	}
 	return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files,
-		clientTypes, nil, false, false)
+		dirsToCheck, nil, false, false)
 }
 
 // gitWriteMultiAndPersist writes git files to the given client directories,
@@ -1412,8 +1422,18 @@ func (s *service) installExtractionSameDigestNewClients(
 	if len(toWrite) == 0 {
 		return &skills.InstallResult{Skill: existing}, nil
 	}
+	// Deduplicate and skip directories already owned by existing clients.
+	dirsToWrite := uniqueDirClients(toWrite, clientDirs, existingClientDirs(existing.Clients, clientDirs))
+	if len(dirsToWrite) == 0 {
+		// All new clients share directories with existing ones — no-op.
+		sk := buildInstalledSkill(opts, scope, clientTypes, existing.Clients)
+		if err := s.store.Update(ctx, sk); err != nil {
+			return nil, err
+		}
+		return &skills.InstallResult{Skill: sk}, nil
+	}
 	var written []string
-	for _, ct := range toWrite {
+	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(clientDirs[ct])
 		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
 			removeSkillDirs(s.installer, clientDirs, written)
@@ -1442,6 +1462,45 @@ func removeSkillDirs(inst skills.Installer, clientDirs map[string]string, client
 	}
 }
 
+// uniqueDirClients returns the subset of clients whose resolved directory is
+// unique. When multiple clients share the same path (e.g. vscode and
+// vscode-insider both using ~/.copilot/skills), only the first is returned.
+// This prevents double-extraction while still recording all clients in the DB.
+//
+// occupiedDirs is pre-seeded into the seen set so that new clients whose
+// directory is already owned by an existing installed client are also skipped.
+// Pass nil when there are no pre-existing directories to exclude.
+func uniqueDirClients(clients []string, clientDirs map[string]string, occupiedDirs map[string]struct{}) []string {
+	seen := make(map[string]struct{}, len(clients)+len(occupiedDirs))
+	for dir := range occupiedDirs {
+		seen[dir] = struct{}{}
+	}
+	out := make([]string, 0, len(clients))
+	for _, ct := range clients {
+		dir := filepath.Clean(clientDirs[ct])
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+		seen[dir] = struct{}{}
+		out = append(out, ct)
+	}
+	return out
+}
+
+// existingClientDirs builds the set of directories already occupied by the
+// given installed clients. Used to seed uniqueDirClients so that new clients
+// sharing a directory with an existing client are skipped rather than
+// triggering a false "directory exists" conflict.
+func existingClientDirs(existing []string, clientDirs map[string]string) map[string]struct{} {
+	dirs := make(map[string]struct{}, len(existing))
+	for _, ct := range existing {
+		if dir, ok := clientDirs[ct]; ok {
+			dirs[filepath.Clean(dir)] = struct{}{}
+		}
+	}
+	return dirs
+}
+
 func (s *service) installExtractionUpgradeDigest(
 	ctx context.Context,
 	opts skills.InstallOptions,
@@ -1455,8 +1514,10 @@ func (s *service) installExtractionUpgradeDigest(
 	if err != nil {
 		return nil, err
 	}
+	// Deduplicate so clients sharing the same directory don't conflict.
+	dirsToWrite := uniqueDirClients(allClients, allDirs, nil)
 	var written []string
-	for _, ct := range allClients {
+	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(allDirs[ct])
 		if _, exErr := s.installer.Extract(opts.LayerData, dir, true); exErr != nil {
 			removeSkillDirs(s.installer, allDirs, written)
@@ -1466,7 +1527,7 @@ func (s *service) installExtractionUpgradeDigest(
 	}
 	sk := buildInstalledSkill(opts, scope, allClients, nil)
 	if err := s.store.Update(ctx, sk); err != nil {
-		removeSkillDirs(s.installer, allDirs, allClients)
+		removeSkillDirs(s.installer, allDirs, dirsToWrite)
 		return nil, err
 	}
 	return &skills.InstallResult{Skill: sk}, nil
@@ -1479,7 +1540,10 @@ func (s *service) installExtractionFresh(
 	clientTypes []string,
 	clientDirs map[string]string,
 ) (*skills.InstallResult, error) {
-	for _, ct := range clientTypes {
+	// Deduplicate so clients sharing the same directory don't conflict.
+	dirsToWrite := uniqueDirClients(clientTypes, clientDirs, nil)
+
+	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(clientDirs[ct])
 		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
 			return nil, httperr.WithCode(
@@ -1489,7 +1553,7 @@ func (s *service) installExtractionFresh(
 		}
 	}
 	var written []string
-	for _, ct := range clientTypes {
+	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(clientDirs[ct])
 		if _, exErr := s.installer.Extract(opts.LayerData, dir, opts.Force); exErr != nil {
 			removeSkillDirs(s.installer, clientDirs, written)
@@ -1499,9 +1563,7 @@ func (s *service) installExtractionFresh(
 	}
 	sk := buildInstalledSkill(opts, scope, clientTypes, nil)
 	if err := s.store.Create(ctx, sk); err != nil {
-		for _, ct := range clientTypes {
-			_ = s.installer.Remove(filepath.Clean(clientDirs[ct]))
-		}
+		removeSkillDirs(s.installer, clientDirs, dirsToWrite)
 		return nil, err
 	}
 	return &skills.InstallResult{Skill: sk}, nil

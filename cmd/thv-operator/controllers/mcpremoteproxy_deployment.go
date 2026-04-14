@@ -243,7 +243,11 @@ func (r *MCPRemoteProxyReconciler) buildOIDCClientSecretEnvVars(
 		return nil
 	}
 	oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
-	if err != nil || oidcCfg == nil ||
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to fetch MCPOIDCConfig for client secret")
+		return nil
+	}
+	if oidcCfg == nil ||
 		oidcCfg.Spec.Type != mcpv1alpha1.MCPOIDCConfigTypeInline ||
 		oidcCfg.Spec.Inline == nil {
 		return nil

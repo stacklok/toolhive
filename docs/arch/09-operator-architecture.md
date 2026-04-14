@@ -160,8 +160,6 @@ MCPServer supports referencing shared configuration CRDs:
 - `oidcConfigRef` — references an MCPOIDCConfig for shared OIDC settings
 - `telemetryConfigRef` — references an MCPTelemetryConfig for shared telemetry settings
 
-Both ref fields are mutually exclusive with their inline counterparts (enforced by CEL validation).
-
 **Status fields** include phase (Ready, Pending, Failed, Terminating), the accessible URL, and config hashes (`oidcConfigHash`, `telemetryConfigHash`) for change detection on referenced CRDs.
 
 For examples, see:

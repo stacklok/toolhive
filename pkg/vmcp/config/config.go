@@ -173,6 +173,13 @@ type Config struct {
 	// the THV_SESSION_REDIS_PASSWORD environment variable.
 	// +optional
 	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty" yaml:"sessionStorage,omitempty"`
+
+	// ScriptEngine configures the Starlark script execution engine ("code mode").
+	// When enabled, clients can call the execute_tool_script virtual tool to
+	// run server-side scripts that orchestrate multiple tool calls in a single
+	// round-trip, reducing context bloat and inference cycles.
+	// +optional
+	ScriptEngine *ScriptEngineConfig `json:"scriptEngine,omitempty" yaml:"scriptEngine,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.
@@ -930,6 +937,27 @@ type SessionStorageConfig struct {
 	// KeyPrefix is an optional prefix for all Redis keys used by ToolHive.
 	// +optional
 	KeyPrefix string `json:"keyPrefix,omitempty" yaml:"keyPrefix,omitempty"`
+}
+
+// ScriptEngineConfig configures the Starlark script execution engine ("code mode").
+// +kubebuilder:object:generate=true
+// +gendoc
+type ScriptEngineConfig struct {
+	// Enabled controls whether the execute_tool_script virtual tool is available.
+	// When false (default), the tool does not appear in tools/list responses.
+	// +optional
+	Enabled bool `json:"enabled" yaml:"enabled"`
+
+	// StepLimit is the maximum number of Starlark execution steps per script.
+	// Prevents infinite loops and runaway computation.
+	// Defaults to 100,000 if not specified or zero.
+	// +optional
+	StepLimit uint64 `json:"stepLimit,omitempty" yaml:"stepLimit,omitempty"`
+
+	// ParallelMax is the maximum number of concurrent worker goroutines that
+	// parallel() can use. Zero means the worker count matches the task count.
+	// +optional
+	ParallelMax int `json:"parallelMax,omitempty" yaml:"parallelMax,omitempty"`
 }
 
 // Validator validates configuration.

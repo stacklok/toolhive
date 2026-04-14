@@ -67,7 +67,8 @@ var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func()
 							Audience: fmt.Sprintf("http://%s.%s.svc.cluster.local:4483", vmcpName, testNamespace),
 						},
 					},
-					Config: vmcpconfig.Config{Group: mcpGroupName},
+					GroupRef:         &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+					Config:           vmcpconfig.Config{Group: mcpGroupName},
 					AuthServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
 						Issuer: "http://localhost:9090",
 						UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{

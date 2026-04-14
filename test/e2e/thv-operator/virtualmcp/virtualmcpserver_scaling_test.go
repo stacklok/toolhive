@@ -87,6 +87,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Config:       vmcpconfig.Config{Group: mcpGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
 					Replicas:     &replicas,
@@ -187,6 +188,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Config:       vmcpconfig.Config{Group: mcpGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
 					Replicas:     &replicas,

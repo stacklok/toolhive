@@ -127,12 +127,16 @@ type InlineOIDCSharedConfig struct {
 	// +optional
 	JWKSAuthTokenPath string `json:"jwksAuthTokenPath,omitempty"`
 
-	// JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+	// JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses.
+	// Note: at runtime, if either JWKSAllowPrivateIP or ProtectedResourceAllowPrivateIP
+	// is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
 	// +kubebuilder:default=false
 	// +optional
 	JWKSAllowPrivateIP bool `json:"jwksAllowPrivateIP"`
 
-	// ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
+	// ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses.
+	// Note: at runtime, if either ProtectedResourceAllowPrivateIP or JWKSAllowPrivateIP
+	// is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
 	// +kubebuilder:default=false
 	// +optional
 	ProtectedResourceAllowPrivateIP bool `json:"protectedResourceAllowPrivateIP"`

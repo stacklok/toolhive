@@ -155,6 +155,31 @@ func TestResolveFromConfigRef_InlineType(t *testing.T) {
 			},
 		},
 		{
+			name: "protectedResourceAllowPrivateIP propagated from shared inline config",
+			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+				Name: "i", Audience: "inline-aud",
+			},
+			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+						Issuer:                          "https://accounts.google.com",
+						ClientID:                        "gid",
+						ProtectedResourceAllowPrivateIP: true,
+						JWKSAllowPrivateIP:              false,
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer:                          "https://accounts.google.com",
+				Audience:                        "inline-aud",
+				ClientID:                        "gid",
+				ResourceURL:                     "http://srv.default.svc.cluster.local:8080",
+				ProtectedResourceAllowPrivateIP: true,
+				JWKSAllowPrivateIP:              false,
+			},
+		},
+		{
 			name: "nil inline config returns nil",
 			ref: &mcpv1alpha1.MCPOIDCConfigReference{
 				Name: "i", Audience: "aud",

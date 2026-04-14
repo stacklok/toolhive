@@ -276,7 +276,8 @@ func mapResolvedOIDCToVmcpConfig(
 		Resource:                        resolved.ResourceURL,
 		JWKSURL:                         resolved.JWKSURL,
 		IntrospectionURL:                resolved.IntrospectionURL,
-		ProtectedResourceAllowPrivateIP: resolved.JWKSAllowPrivateIP,
+		ProtectedResourceAllowPrivateIP: resolved.ProtectedResourceAllowPrivateIP,
+		JwksAllowPrivateIP:              resolved.JWKSAllowPrivateIP,
 		InsecureAllowHTTP:               resolved.InsecureAllowHTTP,
 		Scopes:                          resolved.Scopes,
 	}
@@ -319,7 +320,10 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 		ClientID:                        resolved.ClientID,
 		Audience:                        resolved.Audience,
 		Resource:                        resolved.ResourceURL,
-		ProtectedResourceAllowPrivateIP: resolved.JWKSAllowPrivateIP,
+		JWKSURL:                         resolved.JWKSURL,
+		IntrospectionURL:                resolved.IntrospectionURL,
+		ProtectedResourceAllowPrivateIP: resolved.ProtectedResourceAllowPrivateIP,
+		JwksAllowPrivateIP:              resolved.JWKSAllowPrivateIP,
 		InsecureAllowHTTP:               resolved.InsecureAllowHTTP,
 		Scopes:                          resolved.Scopes,
 	}

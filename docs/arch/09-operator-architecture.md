@@ -129,6 +129,7 @@ graph TB
     VMCP -->|groupRef| Group
     VMCP -->|compositeToolRefs| CTD
     VMCP -.->|oidcConfigRef| OIDCCfg
+    VMCP -.->|telemetryConfigRef| TelCfg
 
     Server -->|groupRef| Group
     Server -.->|externalAuthConfigRef| ExtAuth
@@ -140,6 +141,7 @@ graph TB
     Proxy -.->|externalAuthConfigRef| ExtAuth
     Proxy -.->|toolConfigRef| ToolCfg
     Proxy -.->|oidcConfigRef| OIDCCfg
+    Proxy -.->|telemetryConfigRef| TelCfg
 
     Entry -->|groupRef| Group
     Entry -.->|externalAuthConfigRef| ExtAuth
@@ -243,7 +245,7 @@ MCPTelemetryConfig centralises telemetry infrastructure settings (collector endp
 
 **Status fields** include a `Ready` condition, `configHash` for change detection, and `referencingWorkloads` tracking.
 
-**Referenced by**: MCPServer (via `telemetryConfigRef`)
+**Referenced by**: MCPServer, VirtualMCPServer, MCPRemoteProxy (via `telemetryConfigRef`)
 
 **Controller**: `cmd/thv-operator/controllers/mcptelemetryconfig_controller.go`
 

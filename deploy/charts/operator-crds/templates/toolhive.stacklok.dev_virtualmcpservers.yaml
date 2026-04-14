@@ -642,8 +642,10 @@ spec:
               config:
                 description: |-
                   Config is the Virtual MCP server configuration.
-                  The telemetry and audit config from here are supported, but not required.
+                  The audit config from here is also supported, but not required.
                   Note: config.groupRef is deprecated in favor of spec.groupRef.
+                  Note: config.telemetry is deprecated — use spec.telemetryConfigRef to reference
+                  a shared MCPTelemetryConfig resource instead.
                 properties:
                   aggregation:
                     description: |-
@@ -1683,6 +1685,9 @@ spec:
                     description: |-
                       Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
                       including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.
+                      Deprecated (Kubernetes operator only): When deploying via the operator, use
+                      VirtualMCPServer.spec.telemetryConfigRef to reference a shared MCPTelemetryConfig
+                      resource instead. This field remains valid for standalone (non-operator) deployments.
                     properties:
                       caCertPath:
                         description: |-
@@ -2305,9 +2310,34 @@ spec:
                 x-kubernetes-validations:
                 - message: address is required
                   rule: 'self.provider == ''redis'' ? has(self.address) : true'
+              telemetryConfigRef:
+                description: |-
+                  TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
+                  The referenced MCPTelemetryConfig must exist in the same namespace as this VirtualMCPServer.
+                  Cross-namespace references are not supported for security and isolation reasons.
+                  Mutually exclusive with the deprecated inline config.telemetry field.
+                properties:
+                  name:
+                    description: Name is the name of the MCPTelemetryConfig resource
+                    minLength: 1
+                    type: string
+                  serviceName:
+                    description: |-
+                      ServiceName overrides the telemetry service name for this specific server.
+                      This MUST be unique per server for proper observability (e.g., distinguishing
+                      traces and metrics from different servers sharing the same collector).
+                      If empty, defaults to the server name with "thv-" prefix at runtime.
+                    type: string
+                required:
+                - name
+                type: object
             required:
             - incomingAuth
             type: object
+            x-kubernetes-validations:
+            - message: config.telemetry and telemetryConfigRef are mutually exclusive;
+                migrate to telemetryConfigRef
+              rule: '!(has(self.config.telemetry) && has(self.telemetryConfigRef))'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
@@ -2462,6 +2492,11 @@ spec:
                 - Ready
                 - Degraded
                 - Failed
+                type: string
+              telemetryConfigHash:
+                description: |-
+                  TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection.
+                  Only populated when TelemetryConfigRef is set.
                 type: string
               url:
                 description: URL is the URL where the Virtual MCP server can be accessed

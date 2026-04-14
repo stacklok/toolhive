@@ -686,7 +686,7 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	result, err := r.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
+	result, err := r.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 
@@ -1303,7 +1303,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			}
 
 			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
-			_, err := r.ensureAllResources(context.Background(), tt.vmcp, statusManager)
+			_, err := r.ensureAllResources(context.Background(), tt.vmcp, nil, statusManager)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -1597,7 +1597,7 @@ func TestVirtualMCPServerEnsureAllResources_Errors(t *testing.T) {
 
 			collector := virtualmcpserverstatus.NewStatusManager(vmcp)
 
-			_, err := reconciler.ensureAllResources(context.Background(), vmcp, collector)
+			_, err := reconciler.ensureAllResources(context.Background(), vmcp, nil, collector)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -1868,7 +1868,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			needsUpdate := reconciler.containerNeedsUpdate(context.Background(), tt.deployment, tt.vmcp, []workloads.TypedWorkload{})
+			needsUpdate := reconciler.containerNeedsUpdate(context.Background(), tt.deployment, tt.vmcp, nil, []workloads.TypedWorkload{})
 			assert.Equal(t, tt.expectedUpdate, needsUpdate)
 		})
 	}
@@ -2259,7 +2259,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			needsUpdate := reconciler.deploymentNeedsUpdate(context.Background(), tt.deployment, vmcp, vmcpConfigChecksum, []workloads.TypedWorkload{})
+			needsUpdate := reconciler.deploymentNeedsUpdate(context.Background(), tt.deployment, vmcp, vmcpConfigChecksum, nil, []workloads.TypedWorkload{})
 			assert.Equal(t, tt.expectedUpdate, needsUpdate)
 		})
 	}
@@ -2579,7 +2579,7 @@ func TestVirtualMCPServerEnsureDeployment_ConfigMapNotFound(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
 
 	// Should requeue after 5 seconds when ConfigMap not found
 	assert.NoError(t, err)
@@ -2628,7 +2628,7 @@ func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
 
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -2711,7 +2711,7 @@ func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
 
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -2807,7 +2807,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 
 	reconciler.Client = k8sClient
 
-	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
 
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -3216,7 +3216,7 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_SpecDriven(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	result, err := r.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
+	result, err := r.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 
@@ -3295,7 +3295,7 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_NilPassthrough(t *testing.
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	result, err := r.ensureDeployment(context.Background(), vmcp, []workloads.TypedWorkload{})
+	result, err := r.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 
@@ -3312,7 +3312,7 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_NilPassthrough(t *testing.
 // mustBuildEnvVarsForVmcp is a test helper that calls buildEnvVarsForVmcp and panics on error.
 // All test VirtualMCPServers use anonymous auth (no OIDCConfigRef), so the error path is unreachable.
 func mustBuildEnvVarsForVmcp(r *VirtualMCPServerReconciler, vmcp *mcpv1alpha1.VirtualMCPServer) []corev1.EnvVar {
-	env, err := r.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{})
+	env, err := r.buildEnvVarsForVmcp(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
 	if err != nil {
 		panic("mustBuildEnvVarsForVmcp: " + err.Error())
 	}

@@ -218,6 +218,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".roo", "skills"},
+		SkillsProjectPath: []string{".roo", "skills"},
 	},
 	{
 		ClientType:   Cline,
@@ -244,6 +247,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".cline", "skills"},
+		SkillsProjectPath: []string{".cline", "skills"},
 	},
 	{
 		ClientType:   VSCodeInsider,
@@ -367,6 +373,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "serverUrl",
 			types.TransportTypeStreamableHTTP: "serverUrl",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".codeium", "windsurf", "skills"},
+		SkillsProjectPath: []string{".windsurf", "skills"},
 	},
 	{
 		ClientType:           WindsurfJetBrains,
@@ -586,6 +595,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", "skills"},
+		SkillsProjectPath: []string{".agents", "skills"},
 	},
 	{
 		ClientType:           Continue,
@@ -670,6 +682,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "serverUrl",
 			types.TransportTypeStreamableHTTP: "serverUrl",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", "skills"},
+		SkillsProjectPath: []string{".agents", "skills"},
 	},
 	{
 		ClientType:           Zed,
@@ -744,7 +759,10 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeStreamableHTTP: "url",
 		},
 		// TOML configuration: uses array-of-tables format [[mcp_servers]]
-		TOMLStorageType: TOMLStorageTypeArray,
+		TOMLStorageType:   TOMLStorageTypeArray,
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".vibe", "skills"},
+		SkillsProjectPath: []string{".vibe", "skills"},
 	},
 	{
 		ClientType:           Codex,

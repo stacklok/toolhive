@@ -58,7 +58,7 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []workloads.TypedWorkload{})
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
 
 	require.NotNil(t, deployment)
 	assert.Equal(t, vmcp.Name, deployment.Name)
@@ -121,7 +121,7 @@ func TestDeploymentForVirtualMCPServer_WithRedisPassword(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []workloads.TypedWorkload{})
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
 	require.NotNil(t, deployment)
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 
@@ -239,7 +239,7 @@ func TestBuildEnvVarsForVmcp(t *testing.T) {
 	}
 
 	r := &VirtualMCPServerReconciler{}
-	env, err := r.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{})
+	env, err := r.buildEnvVarsForVmcp(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
 	require.NoError(t, err)
 
 	// Should have VMCP_NAME and VMCP_NAMESPACE
@@ -536,7 +536,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	}
 
 	// Test nil inputs
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", []workloads.TypedWorkload{}))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", nil, []workloads.TypedWorkload{}))
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -546,7 +546,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	}
 
 	// Test with nil deployment
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum", []workloads.TypedWorkload{}))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum", nil, []workloads.TypedWorkload{}))
 }
 
 // TestServiceNeedsUpdate tests service update detection

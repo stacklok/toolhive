@@ -14,6 +14,10 @@ import (
 )
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.config.telemetry) && has(self.telemetryConfigRef))",message="config.telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type VirtualMCPServerSpec struct {
 	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
 	// Must be explicitly set - use "anonymous" type when no authentication is required.
@@ -66,10 +70,19 @@ type VirtualMCPServerSpec struct {
 	GroupRef *MCPGroupRef `json:"groupRef,omitempty"`
 
 	// Config is the Virtual MCP server configuration.
-	// The telemetry and audit config from here are supported, but not required.
+	// The audit config from here is also supported, but not required.
 	// Note: config.groupRef is deprecated in favor of spec.groupRef.
+	// Note: config.telemetry is deprecated — use spec.telemetryConfigRef to reference
+	// a shared MCPTelemetryConfig resource instead.
 	// +optional
 	Config config.Config `json:"config,omitempty"`
+
+	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
+	// The referenced MCPTelemetryConfig must exist in the same namespace as this VirtualMCPServer.
+	// Cross-namespace references are not supported for security and isolation reasons.
+	// Mutually exclusive with the deprecated inline config.telemetry field.
+	// +optional
+	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
 
 	// EmbeddingServerRef references an existing EmbeddingServer resource by name.
 	// When the optimizer is enabled, this field is required to point to a ready EmbeddingServer
@@ -232,6 +245,11 @@ type VirtualMCPServerStatus struct {
 	// Only populated when IncomingAuth.OIDCConfigRef is set.
 	// +optional
 	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
+
+	// TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection.
+	// Only populated when TelemetryConfigRef is set.
+	// +optional
+	TelemetryConfigHash string `json:"telemetryConfigHash,omitempty"`
 }
 
 // VirtualMCPServerPhase represents the lifecycle phase of a VirtualMCPServer
@@ -274,6 +292,9 @@ const (
 
 	// ConditionTypeAuthServerConfigValidated indicates whether the AuthServerConfig has been validated
 	ConditionTypeAuthServerConfigValidated = "AuthServerConfigValidated"
+
+	// ConditionTypeVirtualMCPServerTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
+	ConditionTypeVirtualMCPServerTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
 )
 
 // Condition reasons for VirtualMCPServer
@@ -337,6 +358,18 @@ const (
 
 	// ConditionReasonAuthServerConfigInvalid indicates the AuthServerConfig is invalid
 	ConditionReasonAuthServerConfigInvalid = "AuthServerConfigInvalid"
+
+	// ConditionReasonVirtualMCPServerTelemetryConfigRefValid indicates the referenced MCPTelemetryConfig is valid
+	ConditionReasonVirtualMCPServerTelemetryConfigRefValid = "TelemetryConfigRefValid"
+
+	// ConditionReasonVirtualMCPServerTelemetryConfigRefNotFound indicates the referenced MCPTelemetryConfig was not found
+	ConditionReasonVirtualMCPServerTelemetryConfigRefNotFound = "TelemetryConfigRefNotFound"
+
+	// ConditionReasonVirtualMCPServerTelemetryConfigRefInvalid indicates the referenced MCPTelemetryConfig is not valid
+	ConditionReasonVirtualMCPServerTelemetryConfigRefInvalid = "TelemetryConfigRefInvalid"
+
+	// ConditionReasonVirtualMCPServerTelemetryConfigRefFetchError indicates a transient error occurred fetching the config
+	ConditionReasonVirtualMCPServerTelemetryConfigRefFetchError = "TelemetryConfigRefFetchError"
 )
 
 // Backend authentication types

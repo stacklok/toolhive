@@ -154,11 +154,56 @@ backends that support it.
 
 ## Configuration
 
-Configure telemetry in the `VirtualMCPServer` resource using the `spec.config.telemetry`
-field. The telemetry configuration uses the `telemetry.Config` type which provides
-flat configuration for OpenTelemetry and Prometheus settings.
+**MCPTelemetryConfig (preferred)**: Define telemetry settings in a shared
+`MCPTelemetryConfig` resource and reference it via `spec.telemetryConfigRef`
+in VirtualMCPServer. This eliminates duplication when managing multiple servers
+and keeps telemetry configuration consistent across MCPServer, MCPRemoteProxy,
+and VirtualMCPServer resources.
 
 ```yaml
+# Shared telemetry configuration
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPTelemetryConfig
+metadata:
+  name: shared-otel
+spec:
+  openTelemetry:
+    enabled: true
+    endpoint: otel-collector:4318
+    insecure: true
+    tracing:
+      enabled: true
+      samplingRate: "0.1"
+    metrics:
+      enabled: true
+  prometheus:
+    enabled: true
+---
+# VirtualMCPServer referencing shared telemetry config
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: my-vmcp
+spec:
+  telemetryConfigRef:
+    name: shared-otel
+    serviceName: my-vmcp
+  config:
+    groupRef: my-group
+  incomingAuth:
+    type: anonymous
+```
+
+See [`examples/operator/virtual-mcps/vmcp_with_telemetry_ref.yaml`](../../examples/operator/virtual-mcps/vmcp_with_telemetry_ref.yaml)
+for a complete example with an MCPGroup and backend MCPServer.
+
+**Inline (deprecated)**: The inline `spec.config.telemetry` field still works
+but is deprecated and will be removed in v1beta1. It is mutually exclusive with
+`telemetryConfigRef` (CEL enforced). Migrate to `telemetryConfigRef` to use the
+shared MCPTelemetryConfig pattern.
+
+```yaml
+# Deprecated — use telemetryConfigRef instead
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: VirtualMCPServer
 metadata:

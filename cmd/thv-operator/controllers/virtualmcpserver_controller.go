@@ -126,6 +126,7 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers/status,verbs=get
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -157,17 +158,20 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, nil
 	}
 
-	// Validate MCPOIDCConfigRef if referenced (before resource creation).
-	// handleOIDCConfig is a no-op when OIDCConfigRef is nil.
-	if err := r.handleOIDCConfig(ctx, vmcp, statusManager); err != nil {
+	// Validate shared config references (OIDC, Telemetry) before resource creation.
+	// Each handler is a no-op when its respective ref is nil.
+	// telemetryCfg is the fetched MCPTelemetryConfig (nil when not referenced),
+	// threaded through to downstream functions to avoid redundant API calls.
+	telemetryCfg, err := r.handleConfigRefs(ctx, vmcp, statusManager)
+	if err != nil {
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
-			ctxLogger.Error(applyErr, "Failed to apply status updates after MCPOIDCConfig validation error")
+			ctxLogger.Error(applyErr, "Failed to apply status updates after config ref validation error")
 		}
 		return ctrl.Result{}, err
 	}
 
 	// Ensure all resources
-	if result, err := r.ensureAllResources(ctx, vmcp, statusManager); err != nil {
+	if result, err := r.ensureAllResources(ctx, vmcp, telemetryCfg, statusManager); err != nil {
 		// Apply status changes before returning error
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 			ctxLogger.Error(applyErr, "Failed to apply status updates after resource reconciliation error")
@@ -658,11 +662,14 @@ func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 }
 
 // ensureAllResources ensures all Kubernetes resources for the VirtualMCPServer.
+// telemetryCfg is the already-fetched MCPTelemetryConfig (nil when not referenced),
+// passed through from handleConfigRefs to avoid redundant API calls.
 // Returns a ctrl.Result with RequeueAfter when the controller should retry later
 // (e.g., waiting for EmbeddingServer readiness), and an error for failures.
 func (r *VirtualMCPServerReconciler) ensureAllResources(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
@@ -726,7 +733,8 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	// Ensure vmcp Config ConfigMap.
 	// handleSpecValidationError converts SpecValidationError to nil (no requeue)
 	// after applying status conditions, while passing through transient errors.
-	if specValidationErr := r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames, statusManager); specValidationErr != nil {
+	specValidationErr := r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames, telemetryCfg, statusManager)
+	if specValidationErr != nil {
 		if err := r.handleSpecValidationError(ctx, vmcp, statusManager, specValidationErr); err != nil {
 			ctxLogger.Error(err, "Failed to ensure vmcp Config ConfigMap")
 			return ctrl.Result{}, err
@@ -737,7 +745,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	}
 
 	// Ensure Deployment
-	if result, err := r.ensureDeployment(ctx, vmcp, workloadNames); err != nil {
+	if result, err := r.ensureDeployment(ctx, vmcp, telemetryCfg, workloadNames); err != nil {
 		return ctrl.Result{}, err
 	} else if result.RequeueAfter > 0 {
 		return result, nil
@@ -1028,6 +1036,7 @@ func (r *VirtualMCPServerReconciler) getVmcpConfigChecksum(
 func (r *VirtualMCPServerReconciler) ensureDeployment(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
@@ -1048,7 +1057,7 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 	err = r.Get(ctx, types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, deployment)
 
 	if errors.IsNotFound(err) {
-		dep := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, typedWorkloads)
+		dep := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, telemetryCfg, typedWorkloads)
 		if dep == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
 		}
@@ -1077,8 +1086,8 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 
 	// Deployment exists - check if it needs to be updated
 	// deploymentNeedsUpdate performs a detailed comparison to avoid unnecessary updates
-	if r.deploymentNeedsUpdate(ctx, deployment, vmcp, vmcpConfigChecksum, typedWorkloads) {
-		newDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, typedWorkloads)
+	if r.deploymentNeedsUpdate(ctx, deployment, vmcp, vmcpConfigChecksum, telemetryCfg, typedWorkloads) {
+		newDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, telemetryCfg, typedWorkloads)
 		if newDeployment == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
 		}
@@ -1215,6 +1224,7 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) bool {
 	if deployment == nil || vmcp == nil {
@@ -1225,7 +1235,7 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	if r.containerNeedsUpdate(ctx, deployment, vmcp, typedWorkloads) {
+	if r.containerNeedsUpdate(ctx, deployment, vmcp, telemetryCfg, typedWorkloads) {
 		return true
 	}
 
@@ -1257,6 +1267,7 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) bool {
 	if deployment == nil || vmcp == nil || len(deployment.Spec.Template.Spec.Containers) == 0 {
@@ -1283,7 +1294,7 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	}
 
 	// Check if environment variables have changed
-	expectedEnv, err := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
+	expectedEnv, err := r.buildEnvVarsForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
 	if err != nil {
 		return true // Trigger update to surface the error
 	}
@@ -2227,6 +2238,12 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&mcpv1alpha1.MCPOIDCConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.mapOIDCConfigToVirtualMCPServer),
 		).
+		// Watch referenced MCPTelemetryConfigs so that validity/hash changes
+		// trigger VirtualMCPServer reconciliation.
+		Watches(
+			&mcpv1alpha1.MCPTelemetryConfig{},
+			handler.EnqueueRequestsFromMapFunc(r.mapTelemetryConfigToVirtualMCPServer),
+		).
 		Complete(r)
 }
 
@@ -2874,6 +2891,21 @@ func generateHMACSecret() (string, error) {
 
 	// Encode as base64 for safe storage and environment variable use
 	return base64.StdEncoding.EncodeToString(secret), nil
+}
+
+// handleConfigRefs validates shared config references (OIDC, Telemetry) before resource creation.
+// Each handler is a no-op when its respective ref is nil.
+// Returns the fetched MCPTelemetryConfig (may be nil) so callers can thread it through
+// to downstream functions without redundant API calls.
+func (r *VirtualMCPServerReconciler) handleConfigRefs(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) (*mcpv1alpha1.MCPTelemetryConfig, error) {
+	if err := r.handleOIDCConfig(ctx, vmcp, statusManager); err != nil {
+		return nil, err
+	}
+	return r.handleTelemetryConfig(ctx, vmcp, statusManager)
 }
 
 // handleOIDCConfig validates and tracks the hash of the referenced MCPOIDCConfig.

@@ -6,6 +6,7 @@ package v1
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 	"golang.org/x/sync/errgroup"
 
@@ -267,9 +269,7 @@ func TestCreateWorkload(t *testing.T) {
 
 			mockRetriever := makeMockRetriever(t,
 				expectedServerOrImage,
-				"test-image",
 				&regtypes.ImageMetadata{Image: "test-image"},
-				nil,
 				tt.expectedRuntimeConfig,
 			)
 
@@ -489,9 +489,7 @@ func TestUpdateWorkload(t *testing.T) {
 
 			mockRetriever := makeMockRetriever(t,
 				"test-image",
-				"test-image",
 				&regtypes.ImageMetadata{Image: "test-image"},
-				nil,
 				nil,
 			)
 
@@ -559,26 +557,6 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 			description:    "When proxy_port is 0, the existing port should be reused",
 		},
 		{
-			name:         "Edit with explicit port should use that port",
-			workloadName: "test-workload",
-			requestBody:  `{"image": "test-image", "proxy_port": 9090}`,
-			existingPort: 8080,
-			setupMock: func(t *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
-				t.Helper()
-				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
-					Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
-				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
-				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
-					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
-						assert.Equal(t, 9090, runConfig.Port, "Port should be set to explicitly requested port")
-						return &errgroup.Group{}, nil
-					})
-			},
-			expectedStatus: http.StatusOK,
-			expectedBody:   "test-workload",
-			description:    "When an explicit port is provided, it should be used instead of reusing",
-		},
-		{
 			name:         "Edit with same port should skip validation",
 			workloadName: "test-workload",
 			requestBody:  `{"image": "test-image", "proxy_port": 8080}`,
@@ -634,9 +612,7 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 
 			mockRetriever := makeMockRetriever(t,
 				"test-image",
-				"test-image",
 				&regtypes.ImageMetadata{Image: "test-image"},
-				nil,
 				nil,
 			)
 
@@ -670,14 +646,78 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 			assert.Contains(t, w.Body.String(), tt.expectedBody, tt.description)
 		})
 	}
+
+	// This sub-test must allocate a free port at runtime; it cannot use a
+	// hardcoded port number because the port availability check makes a real
+	// network bind and an in-use port causes a spurious 400 response.
+	t.Run("Edit with explicit port should use that port", func(t *testing.T) {
+		t.Parallel()
+
+		// Obtain a free port, then release it so the port-availability check
+		// inside config.WithPorts can bind it immediately afterward.
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err, "should be able to listen on a free port")
+		freePort := ln.Addr().(*net.TCPAddr).Port
+		require.NoError(t, ln.Close(), "should be able to release the free port")
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
+		mockRuntime := runtimemocks.NewMockRuntime(ctrl)
+		mockGroupManager := groupsmocks.NewMockManager(ctrl)
+
+		mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+			Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
+		mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+		mockWorkloadManager.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+			DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+				assert.Equal(t, freePort, runConfig.Port, "Port should be set to explicitly requested port")
+				return &errgroup.Group{}, nil
+			})
+
+		mockRetriever := makeMockRetriever(t,
+			"test-image",
+			&regtypes.ImageMetadata{Image: "test-image"},
+			nil,
+		)
+
+		routes := &WorkloadRoutes{
+			workloadManager:  mockWorkloadManager,
+			containerRuntime: mockRuntime,
+			groupManager:     mockGroupManager,
+			debugMode:        false,
+			workloadService: &WorkloadService{
+				groupManager:     mockGroupManager,
+				workloadManager:  mockWorkloadManager,
+				containerRuntime: mockRuntime,
+				imageRetriever:   mockRetriever,
+				imagePuller:      func(_ context.Context, _ string) error { return nil },
+				configProvider:   config.NewDefaultProvider(),
+			},
+		}
+
+		body := fmt.Sprintf(`{"image": "test-image", "proxy_port": %d}`, freePort)
+		req := httptest.NewRequest("POST", "/api/v1beta/workloads/test-workload/edit",
+			strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("name", "test-workload")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		apierrors.ErrorHandler(routes.updateWorkload).ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code, "When an explicit port is provided, it should be used instead of reusing")
+		assert.Contains(t, w.Body.String(), "test-workload", "When an explicit port is provided, it should be used instead of reusing")
+	})
 }
 
 func makeMockRetriever(
 	t *testing.T,
 	expectedServerOrImage string,
-	returnedImage string,
 	returnedServerMetadata regtypes.ServerMetadata,
-	returnedError error,
 	expectedRuntimeConfig *templates.RuntimeConfig,
 ) retriever.Retriever {
 	t.Helper()
@@ -686,6 +726,6 @@ func makeMockRetriever(
 		assert.Equal(t, expectedServerOrImage, serverOrImage)
 		assert.Equal(t, retriever.VerifyImageWarn, verificationType)
 		assert.Equal(t, expectedRuntimeConfig, runtimeConfig)
-		return returnedImage, returnedServerMetadata, returnedError
+		return "test-image", returnedServerMetadata, nil
 	}
 }

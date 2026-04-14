@@ -40,8 +40,9 @@ metadata:
   name: shared-auth-vmcp
   namespace: default
 spec:
+  groupRef:
+    name: my-services
   config:
-    groupRef: my-services
     aggregation:
       conflictResolution: prefix
       conflictResolutionConfig:

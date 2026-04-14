@@ -32,6 +32,7 @@ metadata:
 spec:
   remoteUrl: https://mcp.salesforce.com/v1
   transport: streamable-http
-  groupRef: remote-tools
+  groupRef:
+    name: remote-tools
   externalAuthConfigRef:
     name: salesforce-auth

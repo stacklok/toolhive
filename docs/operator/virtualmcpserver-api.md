@@ -24,17 +24,20 @@ The `VirtualMCPServer` CRD enables aggregation of multiple backend MCPServers in
 
 ## Spec Fields
 
-### `.spec.config.groupRef` (required)
+### `.spec.groupRef` (required)
 
 References an existing `MCPGroup` that defines the backend workloads to aggregate.
+The referenced MCPGroup must exist in the same namespace.
 
-**Type**: `string`
+**Type**: `MCPGroupRef` (object with `name` field)
+
+> **Note**: `spec.config.groupRef` (bare string) is deprecated. Use `spec.groupRef` instead.
 
 **Example**:
 ```yaml
 spec:
-  config:
-    groupRef: engineering-team
+  groupRef:
+    name: engineering-team
 ```
 
 ### Backend Types
@@ -62,7 +65,8 @@ metadata:
 spec:
   remoteUrl: https://mcp.context7.com/mcp
   transport: streamable-http
-  groupRef: engineering-team
+  groupRef:
+    name: engineering-team
   # No externalAuthConfigRef — public endpoint, no auth needed
 ```
 
@@ -202,8 +206,8 @@ Defines tool aggregation and conflict resolution strategies.
 **Example (prefix strategy)**:
 ```yaml
 spec:
-  config:
-    groupRef: my-services
+  groupRef:
+    name: my-services
   aggregation:
     conflictResolution: prefix
     conflictResolutionConfig:
@@ -219,8 +223,8 @@ spec:
 **Example (priority strategy)**:
 ```yaml
 spec:
-  config:
-    groupRef: my-services
+  groupRef:
+    name: my-services
   aggregation:
     conflictResolution: priority
     conflictResolutionConfig:
@@ -230,8 +234,8 @@ spec:
 **Example (manual strategy)**:
 ```yaml
 spec:
-  config:
-    groupRef: my-services
+  groupRef:
+    name: my-services
   aggregation:
     conflictResolution: manual
     tools:
@@ -374,8 +378,9 @@ Configures OpenTelemetry-based observability for the Virtual MCP server, includi
 **Example**:
 ```yaml
 spec:
+  groupRef:
+    name: my-group
   config:
-    groupRef: my-group
     telemetry:
       endpoint: "otel-collector:4317"
       serviceName: "my-vmcp"
@@ -473,10 +478,11 @@ metadata:
   name: engineering-vmcp
   namespace: default
 spec:
-  # Reference to MCPGroup defining backend workloads and tool aggregation
+  # Reference to MCPGroup defining backend workloads
+  groupRef:
+    name: engineering-team
+  # Tool aggregation
   config:
-    groupRef: engineering-team
-    # Tool aggregation
     aggregation:
       conflictResolution: prefix
       conflictResolutionConfig:
@@ -608,9 +614,9 @@ status:
 The VirtualMCPServer CRD includes comprehensive validation:
 
 1. **Required Fields**:
-   - `spec.config.groupRef` must be specified
+   - `spec.groupRef.name` must be specified (or `spec.config.groupRef` for backwards compatibility)
    - `spec.incomingAuth.type` must be explicitly specified (use `anonymous` when no auth is needed)
-2. **Reference Validation**: All references (config.groupRef, authConfigRef, toolConfigRef) must be valid
+2. **Reference Validation**: All references (groupRef, authConfigRef, toolConfigRef) must be valid
 3. **Conflict Resolution**: Priority strategy requires `priorityOrder` configuration
 4. **Composite Tools**: Must have unique names, valid steps with IDs, and proper dependencies
 5. **Token Cache**: Redis provider requires valid address configuration

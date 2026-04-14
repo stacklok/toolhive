@@ -26,8 +26,8 @@ spec:
                 incomingAuth:
                   type: oidc  # Requires oidcConfig but it's missing
                 serviceType: ClusterIP
-                config:
-                  groupRef: test-group
+                groupRef:
+                  name: test-group
             expect:
               - check:
                   ($error != null): true
@@ -47,8 +47,8 @@ spec:
                 incomingAuth:
                   type: anonymous
                 serviceType: ClusterIP
-                config:
-                  groupRef: test-group
+                groupRef:
+                  name: test-group
         - assert:
             resource:
               apiVersion: toolhive.stacklok.dev/v1alpha1

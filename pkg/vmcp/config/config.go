@@ -99,8 +99,9 @@ type Config struct {
 
 	// Group references an existing MCPGroup that defines backend workloads.
 	// In Kubernetes, the referenced MCPGroup must exist in the same namespace.
-	// +kubebuilder:validation:Required
-	Group string `json:"groupRef" yaml:"groupRef"`
+	// Deprecated: Use spec.groupRef on VirtualMCPServerSpec instead.
+	// +optional
+	Group string `json:"groupRef,omitempty" yaml:"groupRef,omitempty"`
 
 	// Backends defines pre-configured backend servers for static mode.
 	// When OutgoingAuth.Source is "inline", this field contains the full list of backend

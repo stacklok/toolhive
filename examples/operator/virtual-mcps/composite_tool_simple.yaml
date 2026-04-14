@@ -31,7 +31,8 @@ metadata:
   name: fetch
   namespace: default
 spec:
-  groupRef: my-services
+  groupRef:
+    name: my-services
   image: ghcr.io/stackloklabs/gofetch/server
   transport: streamable-http
   proxyPort: 8080
@@ -52,7 +53,8 @@ metadata:
   name: yardstick-sse
   namespace: default
 spec:
-  groupRef: my-services
+  groupRef:
+    name: my-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: sse
   env:
@@ -146,8 +148,9 @@ metadata:
   name: vmcp-simple-composite
   namespace: default
 spec:
+  groupRef:
+    name: my-services
   config:
-    groupRef: my-services
     # Conflict resolution for backend tools
     aggregation:
       conflictResolution: prefix

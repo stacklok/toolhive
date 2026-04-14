@@ -31,7 +31,8 @@ metadata:
   name: yardstick-sse
   namespace: default
 spec:
-  groupRef: my-services
+  groupRef:
+    name: my-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: sse
   env:
@@ -54,7 +55,8 @@ metadata:
   name: fetch
   namespace: default
 spec:
-  groupRef: my-services
+  groupRef:
+    name: my-services
   image: ghcr.io/stackloklabs/gofetch/server
   transport: streamable-http
   proxyPort: 8080
@@ -74,7 +76,8 @@ metadata:
   name: yardstick-streamable
   namespace: default
 spec:
-  groupRef: my-services
+  groupRef:
+    name: my-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: streamable-http
   env:
@@ -100,8 +103,9 @@ metadata:
   name: vmcp-prefix-strategy
   namespace: default
 spec:
+  groupRef:
+    name: my-services
   config:
-    groupRef: my-services
     # Prefix strategy configuration
     aggregation:
       conflictResolution: prefix
@@ -140,8 +144,9 @@ metadata:
   name: vmcp-priority-strategy
   namespace: default
 spec:
+  groupRef:
+    name: my-services
   config:
-    groupRef: my-services
     # Priority strategy configuration
     aggregation:
       conflictResolution: priority
@@ -183,8 +188,9 @@ metadata:
   name: vmcp-manual-strategy
   namespace: default
 spec:
+  groupRef:
+    name: my-services
   config:
-    groupRef: my-services
     # Manual strategy configuration
     # Manual strategy validates conflicts at runtime and requires
     # per-workload tool configuration to resolve them

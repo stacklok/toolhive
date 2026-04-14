@@ -221,7 +221,7 @@ func (r *VirtualMCPServerReconciler) discoverBackendsWithMetadata(
 	// Build auth config if OutgoingAuth is configured
 	var authConfig *vmcpconfig.OutgoingAuthConfig
 	if vmcp.Spec.OutgoingAuth != nil {
-		typedWorkloads, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.Config.Group)
+		typedWorkloads, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.ResolveGroupName())
 		if err != nil {
 			return nil, fmt.Errorf("failed to list workloads in group: %w", err)
 		}
@@ -233,7 +233,7 @@ func (r *VirtualMCPServerReconciler) discoverBackendsWithMetadata(
 	}
 
 	backendDiscoverer := aggregator.NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig)
-	backends, err := backendDiscoverer.Discover(ctx, vmcp.Spec.Config.Group)
+	backends, err := backendDiscoverer.Discover(ctx, vmcp.ResolveGroupName())
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover backends: %w", err)
 	}

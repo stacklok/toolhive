@@ -198,10 +198,11 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 		"spec.groupRef",
 		func(obj client.Object) []string {
 			mcpServer := obj.(*mcpv1alpha1.MCPServer)
-			if mcpServer.Spec.GroupRef == "" {
+			name := mcpServer.Spec.GroupRef.GetName()
+			if name == "" {
 				return nil
 			}
-			return []string{mcpServer.Spec.GroupRef}
+			return []string{name}
 		},
 	); err != nil {
 		return fmt.Errorf("unable to create field index for MCPServer spec.groupRef: %w", err)
@@ -214,10 +215,11 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 		"spec.groupRef",
 		func(obj client.Object) []string {
 			mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-			if mcpRemoteProxy.Spec.GroupRef == "" {
+			name := mcpRemoteProxy.Spec.GroupRef.GetName()
+			if name == "" {
 				return nil
 			}
-			return []string{mcpRemoteProxy.Spec.GroupRef}
+			return []string{name}
 		},
 	); err != nil {
 		return fmt.Errorf("unable to create field index for MCPRemoteProxy spec.groupRef: %w", err)
@@ -230,10 +232,11 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 		"spec.groupRef",
 		func(obj client.Object) []string {
 			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
-			if mcpServerEntry.Spec.GroupRef == "" {
+			name := mcpServerEntry.Spec.GroupRef.GetName()
+			if name == "" {
 				return nil
 			}
-			return []string{mcpServerEntry.Spec.GroupRef}
+			return []string{name}
 		},
 	); err != nil {
 		return fmt.Errorf("unable to create field index for MCPServerEntry spec.groupRef: %w", err)

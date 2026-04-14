@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -142,6 +143,16 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 func (s *WorkloadService) BuildFullRunConfig(
 	ctx context.Context, req *createRequest, existingPort int,
 ) (*runner.RunConfig, error) {
+	// If registry+server specified, resolve from registry and fill defaults
+	if req.Registry != "" && req.Server != "" {
+		if err := resolveRegistryServer(req); err != nil {
+			return nil, fmt.Errorf("failed to resolve server from registry: %w", err)
+		}
+	}
+	if (req.Registry != "" && req.Server == "") || (req.Registry == "" && req.Server != "") {
+		return nil, fmt.Errorf("both registry and server must be specified together")
+	}
+
 	// Default proxy mode to streamable-http if not specified (SSE is deprecated)
 	if !types.IsValidProxyMode(req.ProxyMode) {
 		if req.ProxyMode == "" {
@@ -556,4 +567,75 @@ func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req b
 	}
 
 	return workloadNames, nil
+}
+
+// resolveRegistryServer resolves a server from the registry and fills in
+// default values on the request. User-provided fields are not overwritten.
+func resolveRegistryServer(req *createRequest) error {
+	provider, err := registry.GetDefaultProviderWithConfig(
+		config.NewProvider(),
+		registry.WithInteractive(false),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get registry provider: %w", err)
+	}
+
+	metadata, err := provider.GetServer(req.Server)
+	if err != nil {
+		return fmt.Errorf("server %q not found in registry: %w", req.Server, err)
+	}
+
+	applyRegistryDefaults(req, metadata)
+	return nil
+}
+
+func applyRegistryDefaults(req *createRequest, metadata regtypes.ServerMetadata) {
+	if req.Transport == "" {
+		req.Transport = metadata.GetTransport()
+	}
+	if req.Name == "" {
+		req.Name = metadata.GetName()
+	}
+
+	switch md := metadata.(type) {
+	case *regtypes.ImageMetadata:
+		applyImageDefaults(req, md)
+	case *regtypes.RemoteServerMetadata:
+		applyRemoteDefaults(req, md)
+	}
+}
+
+func applyImageDefaults(req *createRequest, md *regtypes.ImageMetadata) {
+	if req.Image == "" {
+		req.Image = md.Image
+	}
+	if req.TargetPort == 0 && md.TargetPort != 0 {
+		req.TargetPort = md.TargetPort
+	}
+	if len(req.CmdArguments) == 0 && len(md.Args) > 0 {
+		req.CmdArguments = md.Args
+	}
+	if req.PermissionProfile == nil && md.Permissions != nil {
+		req.PermissionProfile = md.Permissions
+	}
+	// Merge env vars: registry defaults first, user overrides take precedence
+	if req.EnvVars == nil {
+		req.EnvVars = make(map[string]string)
+	}
+	for _, ev := range md.EnvVars {
+		if ev.Default != "" {
+			if _, userSet := req.EnvVars[ev.Name]; !userSet {
+				req.EnvVars[ev.Name] = ev.Default
+			}
+		}
+	}
+}
+
+func applyRemoteDefaults(req *createRequest, md *regtypes.RemoteServerMetadata) {
+	if req.URL == "" {
+		req.URL = md.URL
+	}
+	if len(req.Headers) == 0 && len(md.Headers) > 0 {
+		req.Headers = md.Headers
+	}
 }

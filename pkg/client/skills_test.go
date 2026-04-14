@@ -71,6 +71,24 @@ func testSkillClientIntegrations() []clientAppConfig {
 			SkillsProjectPath: []string{".github", "skills"},
 		},
 		{
+			ClientType:        Goose,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".agents", "skills"},
+			SkillsProjectPath: []string{".agents", "skills"},
+		},
+		{
+			ClientType:        GeminiCli,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".agents", "skills"},
+			SkillsProjectPath: []string{".agents", "skills"},
+		},
+		{
+			ClientType:        AmpCli,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".agents", "skills"},
+			SkillsProjectPath: []string{".agents", "skills"},
+		},
+		{
 			ClientType: Windsurf,
 			// SupportsSkills defaults to false
 		},
@@ -105,6 +123,9 @@ func TestSupportsSkills(t *testing.T) {
 		{name: "VSCode supports skills", client: VSCode, expected: true},
 		{name: "VSCodeInsider supports skills", client: VSCodeInsider, expected: true},
 		{name: "Factory supports skills", client: Factory, expected: true},
+		{name: "Goose supports skills", client: Goose, expected: true},
+		{name: "GeminiCli supports skills", client: GeminiCli, expected: true},
+		{name: "AmpCli supports skills", client: AmpCli, expected: true},
 		{name: "Windsurf does not support skills", client: Windsurf, expected: false},
 		{name: "unknown client returns false", client: ClientApp("nonexistent"), expected: false},
 	}
@@ -122,8 +143,8 @@ func TestListSkillSupportingClients(t *testing.T) {
 	cm := newTestSkillManager()
 	clients := cm.ListSkillSupportingClients()
 
-	// Should include ClaudeCode, Codex, Cursor, Factory, KimiCli, OpenCode, VSCode, VSCodeInsider, and our test-only no-paths-client
-	require.Len(t, clients, 9, "unexpected number of skill-supporting clients: %v", clients)
+	// Should include AmpCli, ClaudeCode, Codex, Cursor, Factory, GeminiCli, Goose, KimiCli, OpenCode, VSCode, VSCodeInsider, and our test-only no-paths-client
+	require.Len(t, clients, 12, "unexpected number of skill-supporting clients: %v", clients)
 
 	// Verify sorted order
 	for i := 1; i < len(clients); i++ {
@@ -294,6 +315,51 @@ func TestGetSkillPath(t *testing.T) {
 			scope:       skills.ScopeProject,
 			projectRoot: "/tmp/myproject",
 			wantPath:    filepath.Join("/tmp/myproject", ".github", "skills", "my-skill"),
+		},
+		{
+			name:      "ScopeUser Goose",
+			client:    Goose,
+			skillName: "my-skill",
+			scope:     skills.ScopeUser,
+			wantPath:  filepath.Join(testHomeDir, ".agents", "skills", "my-skill"),
+		},
+		{
+			name:        "ScopeProject Goose with explicit root",
+			client:      Goose,
+			skillName:   "my-skill",
+			scope:       skills.ScopeProject,
+			projectRoot: "/tmp/myproject",
+			wantPath:    filepath.Join("/tmp/myproject", ".agents", "skills", "my-skill"),
+		},
+		{
+			name:      "ScopeUser GeminiCli",
+			client:    GeminiCli,
+			skillName: "my-skill",
+			scope:     skills.ScopeUser,
+			wantPath:  filepath.Join(testHomeDir, ".agents", "skills", "my-skill"),
+		},
+		{
+			name:        "ScopeProject GeminiCli with explicit root",
+			client:      GeminiCli,
+			skillName:   "my-skill",
+			scope:       skills.ScopeProject,
+			projectRoot: "/tmp/myproject",
+			wantPath:    filepath.Join("/tmp/myproject", ".agents", "skills", "my-skill"),
+		},
+		{
+			name:      "ScopeUser AmpCli",
+			client:    AmpCli,
+			skillName: "my-skill",
+			scope:     skills.ScopeUser,
+			wantPath:  filepath.Join(testHomeDir, ".agents", "skills", "my-skill"),
+		},
+		{
+			name:        "ScopeProject AmpCli with explicit root",
+			client:      AmpCli,
+			skillName:   "my-skill",
+			scope:       skills.ScopeProject,
+			projectRoot: "/tmp/myproject",
+			wantPath:    filepath.Join("/tmp/myproject", ".agents", "skills", "my-skill"),
 		},
 		{
 			name:      "client that does not support skills",

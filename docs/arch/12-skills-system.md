@@ -137,11 +137,11 @@ Skills install to one of two scopes:
 Skills can be installed for multiple AI clients simultaneously. Each client has its own skill directory structure, so installing a skill for `claude-code` places files differently than for `cursor`.
 
 ```bash
-# Install for default client (first skill-supporting client)
+# Install for all skill-supporting clients (default)
 thv skill install code-review
 
-# Install for specific client
-thv skill install code-review --client claude-code
+# Install for specific clients
+thv skill install code-review --clients claude-code
 ```
 
 The `PathResolver` interface maps (client, skill-name, scope, project-root) to the correct filesystem path for each client.
@@ -244,7 +244,7 @@ flowchart TD
 
 3. **Supply chain validation**: For OCI installs, the skill name in the artifact must match the repository name in the reference.
 
-4. **Client targeting**: When no `--client` flag is provided, the first skill-supporting client is used by default. Specify `--client claude-code` to target a particular client.
+4. **Client targeting**: When no `--clients` flag is provided, all skill-supporting clients are targeted by default. Specify `--clients claude-code` to target a particular client.
 
 **Implementation:** `pkg/skills/skillsvc/skillsvc.go` (Install)
 

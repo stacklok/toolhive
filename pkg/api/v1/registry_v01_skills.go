@@ -7,75 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"math"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	types "github.com/stacklok/toolhive-core/registry/types"
-	"github.com/stacklok/toolhive/pkg/config"
-	regpkg "github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/registry/api"
-	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
-
-const (
-	skillsDefaultLimit = 50
-	skillsMaxLimit     = 200
-)
-
-// RegistryV01SkillsRouter creates a router for the v0.1 skills extension API.
-// Skills live under the x/dev.toolhive extension namespace, matching the
-// registry server's route structure: /registry/{name}/v0.1/x/dev.toolhive/skills
-// The {registryName} path param is currently ignored (always uses default provider).
-func RegistryV01SkillsRouter() http.Handler {
-	r := chi.NewRouter()
-	r.Route("/{registryName}/v0.1/x/dev.toolhive", func(r chi.Router) {
-		r.Get("/skills", listSkillsV01)
-		r.Get("/skills/{namespace}/{skillName}", getSkillV01)
-	})
-	return r
-}
-
-// getSkillsProvider returns the default registry provider configured for
-// non-interactive (serve) mode to prevent browser-based OAuth flows from
-// HTTP request handlers. Returns false and writes a structured JSON error
-// response if the provider cannot be obtained.
-func getSkillsProvider(w http.ResponseWriter) (regpkg.Provider, bool) {
-	provider, err := regpkg.GetDefaultProviderWithConfig(
-		config.NewProvider(),
-		regpkg.WithInteractive(false),
-	)
-	if err != nil {
-		if errors.Is(err, auth.ErrRegistryAuthRequired) {
-			writeRegistryAuthRequiredError(w)
-			return nil, false
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
-			return nil, false
-		}
-		writeJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to get registry provider")
-		slog.Error("failed to get registry provider", "error", err)
-		return nil, false
-	}
-	return provider, true
-}
-
-// writeJSONError writes a structured JSON error response matching the
-// registryErrorResponse format used by other registry endpoints.
-func writeJSONError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(registryErrorResponse{
-		Code:    code,
-		Message: message,
-	})
-}
 
 // listSkillsV01 handles GET /registry/{registryName}/v0.1/x/dev.toolhive/skills
 //
@@ -92,7 +31,7 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 //	@Failure		503				{object}	registryErrorResponse	"Registry authentication required or upstream registry unavailable"
 //	@Router			/registry/{registryName}/v0.1/x/dev.toolhive/skills [get]
 func listSkillsV01(w http.ResponseWriter, r *http.Request) {
-	provider, ok := getSkillsProvider(w)
+	provider, ok := getRegistryProvider(w)
 	if !ok {
 		return
 	}
@@ -113,21 +52,14 @@ func listSkillsV01(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Paginate
-	page, limit := parseSkillsPagination(r)
+	page, limit := parsePaginationV01(r)
 	total := len(skills)
-	start := (page - 1) * limit
-	if start > total {
-		start = total
-	}
-	end := start + limit
-	if end > total {
-		end = total
-	}
+	start, end := paginateSlice(total, page, limit)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(skillsV01Response{
 		Skills: skills[start:end],
-		Metadata: skillsV01Metadata{
+		Metadata: paginationV01Metadata{
 			Total: total,
 			Page:  page,
 			Limit: limit,
@@ -155,7 +87,7 @@ func getSkillV01(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	skillName := chi.URLParam(r, "skillName")
 
-	provider, ok := getSkillsProvider(w)
+	provider, ok := getRegistryProvider(w)
 	if !ok {
 		return
 	}
@@ -202,29 +134,6 @@ func filterSkillsV01(skills []types.Skill, query string) []types.Skill {
 	return result
 }
 
-func parseSkillsPagination(r *http.Request) (page, limit int) {
-	page = 1
-	limit = skillsDefaultLimit
-	if p := r.URL.Query().Get("page"); p != "" {
-		if v, err := strconv.Atoi(p); err == nil && v > 0 {
-			page = v
-		}
-	}
-	// Cap page so (page-1)*limit cannot overflow int in the caller.
-	if maxPage := math.MaxInt / limit; page > maxPage {
-		page = maxPage
-	}
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if v, err := strconv.Atoi(l); err == nil && v > 0 {
-			if v > skillsMaxLimit {
-				v = skillsMaxLimit
-			}
-			limit = v
-		}
-	}
-	return page, limit
-}
-
 // skillsV01Response is the response body for the v0.1 skills list endpoint.
 //
 //	@Description	Paginated list of skills from the registry
@@ -232,15 +141,5 @@ type skillsV01Response struct {
 	// Skills is the list of skills on the current page
 	Skills []types.Skill `json:"skills"`
 	// Metadata contains pagination information
-	Metadata skillsV01Metadata `json:"metadata"`
-}
-
-// skillsV01Metadata holds pagination metadata for the v0.1 skills list response.
-type skillsV01Metadata struct {
-	// Total is the total number of skills matching the query
-	Total int `json:"total"`
-	// Page is the current page number (1-based)
-	Page int `json:"page"`
-	// Limit is the maximum number of skills per page
-	Limit int `json:"limit"`
+	Metadata paginationV01Metadata `json:"metadata"`
 }

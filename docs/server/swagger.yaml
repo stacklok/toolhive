@@ -801,6 +801,7 @@ components:
       - mistral-vibe
       - codex
       - kimi-cli
+      - factory
       type: string
       x-enum-varnames:
       - RooCode
@@ -829,6 +830,7 @@ components:
       - MistralVibe
       - Codex
       - KimiCli
+      - Factory
     github_com_stacklok_toolhive_pkg_client.ClientAppStatus:
       properties:
         client_type:

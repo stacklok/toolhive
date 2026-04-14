@@ -828,7 +828,8 @@ const docTemplate = `{
                     "vscode-server",
                     "mistral-vibe",
                     "codex",
-                    "kimi-cli"
+                    "kimi-cli",
+                    "factory"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -857,7 +858,8 @@ const docTemplate = `{
                     "VSCodeServer",
                     "MistralVibe",
                     "Codex",
-                    "KimiCli"
+                    "KimiCli",
+                    "Factory"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {

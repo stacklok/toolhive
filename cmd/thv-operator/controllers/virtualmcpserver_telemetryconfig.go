@@ -21,20 +21,24 @@ import (
 // handleTelemetryConfig validates and tracks the hash of the referenced MCPTelemetryConfig.
 // It sets the TelemetryConfigRefValidated condition and triggers reconciliation when
 // the telemetry configuration changes.
+// Returns the fetched MCPTelemetryConfig so callers can pass it to downstream functions
+// (converter, deployment builder) without redundant API calls.
 // Uses the batched statusManager pattern instead of direct r.Status().Update().
 func (r *VirtualMCPServerReconciler) handleTelemetryConfig(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
-) error {
+) (*mcpv1alpha1.MCPTelemetryConfig, error) {
 	ctxLogger := log.FromContext(ctx)
 
 	if vmcp.Spec.TelemetryConfigRef == nil {
-		// No MCPTelemetryConfig referenced, clear any stored hash
+		// No MCPTelemetryConfig referenced, clear any stored hash and remove stale condition.
 		if vmcp.Status.TelemetryConfigHash != "" {
 			statusManager.SetTelemetryConfigHash("")
 		}
-		return nil
+		statusManager.RemoveConditionsWithPrefix(
+			mcpv1alpha1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated, []string{})
+		return nil, nil
 	}
 
 	// Get the referenced MCPTelemetryConfig
@@ -46,7 +50,7 @@ func (r *VirtualMCPServerReconciler) handleTelemetryConfig(
 			err.Error(),
 			metav1.ConditionFalse,
 		)
-		return err
+		return nil, err
 	}
 
 	if telemetryConfig == nil {
@@ -56,7 +60,7 @@ func (r *VirtualMCPServerReconciler) handleTelemetryConfig(
 			fmt.Sprintf("MCPTelemetryConfig %s not found", vmcp.Spec.TelemetryConfigRef.Name),
 			metav1.ConditionFalse,
 		)
-		return fmt.Errorf("MCPTelemetryConfig %s not found", vmcp.Spec.TelemetryConfigRef.Name)
+		return nil, fmt.Errorf("MCPTelemetryConfig %s not found", vmcp.Spec.TelemetryConfigRef.Name)
 	}
 
 	// Validate that the MCPTelemetryConfig is valid (has Valid=True condition)
@@ -66,7 +70,7 @@ func (r *VirtualMCPServerReconciler) handleTelemetryConfig(
 			fmt.Sprintf("MCPTelemetryConfig %s is invalid: %v", vmcp.Spec.TelemetryConfigRef.Name, err),
 			metav1.ConditionFalse,
 		)
-		return fmt.Errorf("MCPTelemetryConfig %s is invalid: %w", vmcp.Spec.TelemetryConfigRef.Name, err)
+		return nil, fmt.Errorf("MCPTelemetryConfig %s is invalid: %w", vmcp.Spec.TelemetryConfigRef.Name, err)
 	}
 
 	// Set valid condition
@@ -87,7 +91,7 @@ func (r *VirtualMCPServerReconciler) handleTelemetryConfig(
 		statusManager.SetTelemetryConfigHash(telemetryConfig.Status.ConfigHash)
 	}
 
-	return nil
+	return telemetryConfig, nil
 }
 
 // mapTelemetryConfigToVirtualMCPServer maps MCPTelemetryConfig changes to VirtualMCPServer reconciliation requests.

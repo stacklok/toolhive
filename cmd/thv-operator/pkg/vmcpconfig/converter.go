@@ -69,11 +69,16 @@ func NewConverter(oidcResolver oidc.Resolver, k8sClient client.Client) (*Convert
 // passed through without explicit mapping. Only fields that require special handling
 // (auth, aggregation, composite tools, telemetry) are explicitly converted below.
 //
+// telemetryCfg is the already-fetched MCPTelemetryConfig (nil when not referenced).
+// It is passed in by the controller to avoid redundant API calls; normalizeTelemetry
+// uses it directly instead of re-fetching.
+//
 // The returned Config is the serializable vMCP config. The RunConfig is non-nil only
 // when AuthServerConfig is set on the VirtualMCPServer spec.
 func (c *Converter) Convert(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 ) (*vmcpconfig.Config, *authserver.RunConfig, error) {
 	// Start with a deep copy of the embedded config for automatic field passthrough.
 	// This ensures new fields added to config.Config are automatically included
@@ -120,11 +125,8 @@ func (c *Converter) Convert(
 
 	// Normalize telemetry config: prefer TelemetryConfigRef (shared MCPTelemetryConfig resource),
 	// fall back to inline config.telemetry. These are mutually exclusive (enforced by CEL validation).
-	telemetryCfg, err := c.normalizeTelemetry(ctx, vmcp)
-	if err != nil {
-		return nil, nil, err
-	}
-	config.Telemetry = telemetryCfg
+	normalizedTelemetry := c.normalizeTelemetry(ctx, vmcp, telemetryCfg)
+	config.Telemetry = normalizedTelemetry
 
 	if vmcp.Spec.Config.Audit != nil && vmcp.Spec.Config.Audit.Enabled {
 		config.Audit = vmcp.Spec.Config.Audit
@@ -326,32 +328,27 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 }
 
 // normalizeTelemetry resolves and normalizes the telemetry config from either
-// a shared MCPTelemetryConfig reference or the inline config.telemetry field.
-func (c *Converter) normalizeTelemetry(
+// a pre-fetched MCPTelemetryConfig or the inline config.telemetry field.
+// telemetryCfg is the already-validated MCPTelemetryConfig passed in by the controller
+// (nil when TelemetryConfigRef is not set or the resource was not found).
+func (*Converter) normalizeTelemetry(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) (*telemetry.Config, error) {
-	if vmcp.Spec.TelemetryConfigRef != nil {
-		telemetryCfg, err := controllerutil.GetTelemetryConfigForVirtualMCPServer(ctx, c.k8sClient, vmcp)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get MCPTelemetryConfig %s: %w",
-				vmcp.Spec.TelemetryConfigRef.Name, err)
-		}
-		if telemetryCfg != nil {
-			return spectoconfig.NormalizeMCPTelemetryConfig(
-				&telemetryCfg.Spec, vmcp.Spec.TelemetryConfigRef.ServiceName, vmcp.Name), nil
-		}
-		return nil, nil
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
+) *telemetry.Config {
+	if vmcp.Spec.TelemetryConfigRef != nil && telemetryCfg != nil {
+		return spectoconfig.NormalizeMCPTelemetryConfig(
+			&telemetryCfg.Spec, vmcp.Spec.TelemetryConfigRef.ServiceName, vmcp.Name)
 	}
 	// Deprecated inline path: config.telemetry is deprecated in favor of spec.telemetryConfigRef.
-	// Log a warning when inline telemetry is actively configured so operators notice.
+	// Log at debug level to avoid log flooding on every reconcile.
 	if vmcp.Spec.Config.Telemetry != nil {
-		log.FromContext(ctx).Info(
+		log.FromContext(ctx).V(1).Info(
 			"config.telemetry is deprecated; migrate to spec.telemetryConfigRef",
 			"vmcp", vmcp.Name,
 		)
 	}
-	return spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name), nil
+	return spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name)
 }
 
 // convertSessionStorage populates SessionStorage from the VirtualMCPServer spec.

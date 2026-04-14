@@ -193,7 +193,7 @@ func TestConverter_OIDCResolution(t *testing.T) {
 
 			converter := newTestConverter(t, mockResolver)
 			ctx := log.IntoContext(context.Background(), logr.Discard())
-			config, _, err := converter.Convert(ctx, newTestVMCPServer(tt.oidcConfig))
+			config, _, err := converter.Convert(ctx, newTestVMCPServer(tt.oidcConfig), nil)
 
 			tt.validate(t, config, err)
 		})
@@ -240,7 +240,7 @@ func TestConverter_CompositeToolsPassThrough(t *testing.T) {
 
 	converter := newTestConverter(t, newNoOpMockResolver(t))
 	ctx := log.IntoContext(context.Background(), logr.Discard())
-	config, _, err := converter.Convert(ctx, vmcpServer)
+	config, _, err := converter.Convert(ctx, vmcpServer, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, config)
@@ -392,7 +392,7 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 
 			converter := newTestConverter(t, mockResolver)
 			ctx := log.IntoContext(context.Background(), logr.Discard())
-			config, _, err := converter.Convert(ctx, vmcpServer)
+			config, _, err := converter.Convert(ctx, vmcpServer, nil)
 
 			require.NoError(t, err, tt.description)
 			require.NotNil(t, config, tt.description)
@@ -801,7 +801,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 			require.NoError(t, err)
 
 			ctx := log.IntoContext(context.Background(), logr.Discard())
-			config, _, err := converter.Convert(ctx, tt.vmcp)
+			config, _, err := converter.Convert(ctx, tt.vmcp, nil)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -912,7 +912,7 @@ func TestConverter_CompositeToolDefinitionFieldsPreserved(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := log.IntoContext(context.Background(), logr.Discard())
-	cfg, _, err := converter.Convert(ctx, vmcpServer)
+	cfg, _, err := converter.Convert(ctx, vmcpServer, nil)
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	require.Len(t, cfg.CompositeTools, 1)
@@ -1413,7 +1413,7 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			converter.k8sClient = k8sClient
 
-			config, _, err := converter.Convert(ctx, tt.vmcp)
+			config, _, err := converter.Convert(ctx, tt.vmcp, nil)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -1472,7 +1472,7 @@ func TestConverter_TelemetryConfigPreserved(t *testing.T) {
 	converter := newTestConverter(t, newNoOpMockResolver(t))
 	ctx := log.IntoContext(context.Background(), logr.Discard())
 
-	config, _, err := converter.Convert(ctx, vmcp)
+	config, _, err := converter.Convert(ctx, vmcp, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 
@@ -1575,7 +1575,7 @@ func TestConverter_TelemetryDefaults(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 
-			config, _, err := converter.Convert(ctx, vmcp)
+			config, _, err := converter.Convert(ctx, vmcp, nil)
 			require.NoError(t, err)
 			require.NotNil(t, config)
 
@@ -1607,7 +1607,7 @@ func TestConverter_TelemetryNil(t *testing.T) {
 	converter := newTestConverter(t, newNoOpMockResolver(t))
 	ctx := log.IntoContext(context.Background(), logr.Discard())
 
-	config, _, err := converter.Convert(ctx, vmcp)
+	config, _, err := converter.Convert(ctx, vmcp, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	assert.Nil(t, config.Telemetry, "Telemetry should be nil when not configured")
@@ -1672,7 +1672,7 @@ func TestConverter_TelemetryEndpointPrefixStripping(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 
-			config, _, err := converter.Convert(ctx, vmcp)
+			config, _, err := converter.Convert(ctx, vmcp, nil)
 			require.NoError(t, err)
 			require.NotNil(t, config)
 			require.NotNil(t, config.Telemetry)
@@ -1751,7 +1751,7 @@ func TestConverter_SessionStorage(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 
-			config, _, err := converter.Convert(ctx, vmcpServer)
+			config, _, err := converter.Convert(ctx, vmcpServer, nil)
 			require.NoError(t, err)
 			require.NotNil(t, config)
 
@@ -1926,7 +1926,7 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 	}
 
 	ctx := log.IntoContext(context.Background(), logr.Discard())
-	config, runConfig, err := converter.Convert(ctx, vmcp)
+	config, runConfig, err := converter.Convert(ctx, vmcp, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, config)
@@ -1949,6 +1949,7 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 }
 
 // TestConverter_TelemetryConfigRef tests that Convert uses MCPTelemetryConfig when TelemetryConfigRef is set.
+// The telemetry config is now passed directly by the controller (no longer fetched by the converter).
 func TestConverter_TelemetryConfigRef(t *testing.T) {
 	t.Parallel()
 
@@ -1969,7 +1970,7 @@ func TestConverter_TelemetryConfigRef(t *testing.T) {
 		},
 	}
 
-	k8sClient := newTestK8sClient(t, telemetryCfg)
+	k8sClient := newTestK8sClient(t)
 	converter, err := NewConverter(newNoOpMockResolver(t), k8sClient)
 	require.NoError(t, err)
 
@@ -1986,7 +1987,7 @@ func TestConverter_TelemetryConfigRef(t *testing.T) {
 	}
 
 	ctx := log.IntoContext(context.Background(), logr.Discard())
-	config, _, err := converter.Convert(ctx, vmcp)
+	config, _, err := converter.Convert(ctx, vmcp, telemetryCfg)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	require.NotNil(t, config.Telemetry)

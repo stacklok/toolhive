@@ -28,23 +28,34 @@ func TestHandleTelemetryConfig_VirtualMCPServer(t *testing.T) {
 		vmcp               *mcpv1alpha1.VirtualMCPServer
 		telemetryConfig    *mcpv1alpha1.MCPTelemetryConfig
 		expectError        bool
+		expectTelCfgNil    bool
 		expectedHash       string
 		expectedCondType   string
 		expectedCondStatus metav1.ConditionStatus
 		expectedCondReason string
 		expectHashCleared  bool
+		expectCondRemoved  bool
 	}{
 		{
-			name: "nil ref clears hash",
+			name: "nil ref clears hash and removes condition",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec:       mcpv1alpha1.VirtualMCPServerSpec{TelemetryConfigRef: nil},
 				Status: mcpv1alpha1.VirtualMCPServerStatus{
 					TelemetryConfigHash: "old-hash",
+					Conditions: []metav1.Condition{
+						{
+							Type:   mcpv1alpha1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated,
+							Status: metav1.ConditionTrue,
+							Reason: mcpv1alpha1.ConditionReasonVirtualMCPServerTelemetryConfigRefValid,
+						},
+					},
 				},
 			},
 			expectError:       false,
+			expectTelCfgNil:   true,
 			expectHashCleared: true,
+			expectCondRemoved: true,
 		},
 		{
 			name: "valid ref sets condition true and updates hash",
@@ -148,12 +159,17 @@ func TestHandleTelemetryConfig_VirtualMCPServer(t *testing.T) {
 			}
 
 			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
-			err := reconciler.handleTelemetryConfig(ctx, tt.vmcp, statusManager)
+			telCfg, err := reconciler.handleTelemetryConfig(ctx, tt.vmcp, statusManager)
 
 			if tt.expectError {
 				require.Error(t, err)
+				assert.Nil(t, telCfg, "telemetry config should be nil on error")
 			} else {
 				require.NoError(t, err)
+			}
+
+			if tt.expectTelCfgNil {
+				assert.Nil(t, telCfg, "telemetry config should be nil")
 			}
 
 			// Apply collected status changes to check assertions
@@ -162,6 +178,14 @@ func TestHandleTelemetryConfig_VirtualMCPServer(t *testing.T) {
 
 			if tt.expectHashCleared {
 				assert.Empty(t, status.TelemetryConfigHash, "hash should be cleared")
+			}
+
+			if tt.expectCondRemoved {
+				for _, c := range status.Conditions {
+					assert.NotEqual(t,
+						mcpv1alpha1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated,
+						c.Type, "stale TelemetryConfigRefValidated condition should be removed")
+				}
 			}
 
 			if tt.expectedCondType != "" {

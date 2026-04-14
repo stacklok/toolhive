@@ -39,6 +39,18 @@ var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func()
 		const vmcpName = "auth-server-valid-vmcp"
 
 		BeforeAll(func() {
+			By("Creating MCPOIDCConfig for auth server test")
+			Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPOIDCConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "authserver-oidc-config", Namespace: testNamespace},
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+						Issuer:            "http://localhost:9090",
+						InsecureAllowHTTP: true,
+					},
+				},
+			})).To(Succeed())
+
 			By("Creating VirtualMCPServer with valid inline AuthServerConfig")
 			vmcp := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{

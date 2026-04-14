@@ -74,7 +74,7 @@ spec:
                   AuthServerConfig configures an embedded OAuth authorization server.
                   When set, the vMCP server acts as an OIDC issuer, drives users through
                   upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the
-                  IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfig
+                  IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfigRef
                   so that tokens it issues are accepted by the vMCP's incoming auth middleware.
                   When nil, IncomingAuth uses an external IDP and behavior is unchanged.
                 properties:

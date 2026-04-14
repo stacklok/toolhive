@@ -793,7 +793,7 @@ func (s *service) applyGitInstallExisting(
 			return nil, err
 		}
 		// Deduplicate so clients sharing the same directory don't conflict.
-		dirsToWrite := uniqueDirClients(allClients, allDirs)
+		dirsToWrite := uniqueDirClients(allClients, allDirs, nil)
 		return s.gitWriteMultiAndPersist(ctx, opts, scope, allClients, allDirs, files,
 			dirsToWrite, nil, true, true)
 	}
@@ -806,8 +806,12 @@ func (s *service) applyGitInstallExisting(
 	if len(toWrite) == 0 {
 		return &skills.InstallResult{Skill: existing}, nil
 	}
-	// Deduplicate so clients sharing the same directory don't conflict.
-	dirsToWrite := uniqueDirClients(toWrite, clientDirs)
+	// Deduplicate and skip directories already owned by existing clients.
+	dirsToWrite := uniqueDirClients(toWrite, clientDirs, existingClientDirs(existing.Clients, clientDirs))
+	if len(dirsToWrite) == 0 {
+		return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files,
+			nil, existing.Clients, true, false)
+	}
 	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(clientDirs[ct])
 		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
@@ -840,7 +844,7 @@ func (s *service) applyGitInstallFresh(
 	files []gitresolver.FileEntry,
 ) (*skills.InstallResult, error) {
 	// Deduplicate so clients sharing the same directory don't conflict.
-	dirsToCheck := uniqueDirClients(clientTypes, clientDirs)
+	dirsToCheck := uniqueDirClients(clientTypes, clientDirs, nil)
 	for _, ct := range dirsToCheck {
 		dir := filepath.Clean(clientDirs[ct])
 		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
@@ -1418,8 +1422,16 @@ func (s *service) installExtractionSameDigestNewClients(
 	if len(toWrite) == 0 {
 		return &skills.InstallResult{Skill: existing}, nil
 	}
-	// Deduplicate so clients sharing the same directory don't conflict.
-	dirsToWrite := uniqueDirClients(toWrite, clientDirs)
+	// Deduplicate and skip directories already owned by existing clients.
+	dirsToWrite := uniqueDirClients(toWrite, clientDirs, existingClientDirs(existing.Clients, clientDirs))
+	if len(dirsToWrite) == 0 {
+		// All new clients share directories with existing ones — no-op.
+		sk := buildInstalledSkill(opts, scope, clientTypes, existing.Clients)
+		if err := s.store.Update(ctx, sk); err != nil {
+			return nil, err
+		}
+		return &skills.InstallResult{Skill: sk}, nil
+	}
 	var written []string
 	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(clientDirs[ct])
@@ -1454,8 +1466,15 @@ func removeSkillDirs(inst skills.Installer, clientDirs map[string]string, client
 // unique. When multiple clients share the same path (e.g. vscode and
 // vscode-insider both using ~/.copilot/skills), only the first is returned.
 // This prevents double-extraction while still recording all clients in the DB.
-func uniqueDirClients(clients []string, clientDirs map[string]string) []string {
-	seen := make(map[string]struct{}, len(clients))
+//
+// occupiedDirs is pre-seeded into the seen set so that new clients whose
+// directory is already owned by an existing installed client are also skipped.
+// Pass nil when there are no pre-existing directories to exclude.
+func uniqueDirClients(clients []string, clientDirs map[string]string, occupiedDirs map[string]struct{}) []string {
+	seen := make(map[string]struct{}, len(clients)+len(occupiedDirs))
+	for dir := range occupiedDirs {
+		seen[dir] = struct{}{}
+	}
 	out := make([]string, 0, len(clients))
 	for _, ct := range clients {
 		dir := filepath.Clean(clientDirs[ct])
@@ -1466,6 +1485,20 @@ func uniqueDirClients(clients []string, clientDirs map[string]string) []string {
 		out = append(out, ct)
 	}
 	return out
+}
+
+// existingClientDirs builds the set of directories already occupied by the
+// given installed clients. Used to seed uniqueDirClients so that new clients
+// sharing a directory with an existing client are skipped rather than
+// triggering a false "directory exists" conflict.
+func existingClientDirs(existing []string, clientDirs map[string]string) map[string]struct{} {
+	dirs := make(map[string]struct{}, len(existing))
+	for _, ct := range existing {
+		if dir, ok := clientDirs[ct]; ok {
+			dirs[filepath.Clean(dir)] = struct{}{}
+		}
+	}
+	return dirs
 }
 
 func (s *service) installExtractionUpgradeDigest(
@@ -1482,7 +1515,7 @@ func (s *service) installExtractionUpgradeDigest(
 		return nil, err
 	}
 	// Deduplicate so clients sharing the same directory don't conflict.
-	dirsToWrite := uniqueDirClients(allClients, allDirs)
+	dirsToWrite := uniqueDirClients(allClients, allDirs, nil)
 	var written []string
 	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(allDirs[ct])
@@ -1508,7 +1541,7 @@ func (s *service) installExtractionFresh(
 	clientDirs map[string]string,
 ) (*skills.InstallResult, error) {
 	// Deduplicate so clients sharing the same directory don't conflict.
-	dirsToWrite := uniqueDirClients(clientTypes, clientDirs)
+	dirsToWrite := uniqueDirClients(clientTypes, clientDirs, nil)
 
 	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(clientDirs[ct])

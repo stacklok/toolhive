@@ -147,6 +147,9 @@ type Config struct {
 
 	// Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
 	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.
+	// Deprecated (Kubernetes operator only): When deploying via the operator, use
+	// VirtualMCPServer.spec.telemetryConfigRef to reference a shared MCPTelemetryConfig
+	// resource instead. This field remains valid for standalone (non-operator) deployments.
 	// +optional
 	Telemetry *telemetry.Config `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 

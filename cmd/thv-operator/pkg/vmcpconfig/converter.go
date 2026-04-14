@@ -343,8 +343,14 @@ func (c *Converter) normalizeTelemetry(
 		}
 		return nil, nil
 	}
-	// Inline path: normalize the inline telemetry config using shared spectoconfig normalization logic.
-	// This applies runtime defaults and normalization (endpoint prefix stripping, service name defaults).
+	// Deprecated inline path: config.telemetry is deprecated in favor of spec.telemetryConfigRef.
+	// Log a warning when inline telemetry is actively configured so operators notice.
+	if vmcp.Spec.Config.Telemetry != nil {
+		log.FromContext(ctx).Info(
+			"config.telemetry is deprecated; migrate to spec.telemetryConfigRef",
+			"vmcp", vmcp.Name,
+		)
+	}
 	return spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name), nil
 }
 

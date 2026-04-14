@@ -2511,11 +2511,14 @@ const docTemplate = `{
                 "type": "object"
             },
             "pkg_api_v1.registryErrorResponse": {
+                "description": "Structured error response returned by registry endpoints",
                 "properties": {
                     "code": {
+                        "description": "Code is a machine-readable error code (e.g. \"not_found\", \"registry_auth_required\")",
                         "type": "string"
                     },
                     "message": {
+                        "description": "Message is a human-readable description of the error",
                         "type": "string"
                     }
                 },

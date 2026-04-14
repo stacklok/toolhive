@@ -5,6 +5,8 @@ package v1
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -60,7 +62,9 @@ func TestParseSkillsPagination(t *testing.T) {
 		{"custom limit", "limit=10", 1, 10},
 		{"both", "page=2&limit=25", 2, 25},
 		{"invalid page", "page=-1", 1, skillsDefaultLimit},
-		{"limit over max", "limit=999", 1, skillsDefaultLimit},
+		{"limit over max", "limit=999", 1, skillsMaxLimit},
+		{"limit at max", "limit=200", 1, skillsMaxLimit},
+		{"page overflow", fmt.Sprintf("page=%d", math.MaxInt), math.MaxInt / skillsDefaultLimit, skillsDefaultLimit},
 		{"non-numeric", "page=abc&limit=xyz", 1, skillsDefaultLimit},
 	}
 

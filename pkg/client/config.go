@@ -653,6 +653,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".kiro", "skills"},
+		SkillsProjectPath: []string{".kiro", "skills"},
 	},
 	{
 		ClientType:                    Antigravity,

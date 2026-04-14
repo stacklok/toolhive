@@ -677,7 +677,10 @@ func (a *Authorizer) authorizeFeatureList(
 	// Action is to list a feature
 	action := fmt.Sprintf("Action::list_%ss", feature)
 
-	// Resource is the feature type
+	// Resource is the feature type. When serverName is set, the resource
+	// entity gets an MCP parent via CreateEntitiesForRequest so that
+	// server-scoped policies (resource in MCP::"<server>") still match
+	// without overwriting the static MCP entity from entities_json.
 	resource := fmt.Sprintf("FeatureType::%s", feature)
 
 	// Create attributes for the entities

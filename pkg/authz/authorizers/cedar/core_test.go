@@ -441,6 +441,164 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 	}
 }
 
+// TestListAuthorizationWithServerName verifies that authorizeFeatureList keeps
+// FeatureType::<feature> as the resource and adds MCP::<serverName> as a parent
+// when serverName is configured, so both FeatureType and MCP policies match.
+func TestListAuthorizationWithServerName(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name             string
+		serverName       string
+		policy           string
+		feature          authorizers.MCPFeature
+		expectAuthorized bool
+	}{
+		{
+			name:       "MCP policy grants list_tools when serverName is set",
+			serverName: "github",
+			policy: `
+			permit(
+				principal,
+				action == Action::"list_tools",
+				resource in MCP::"github"
+			);
+			`,
+			feature:          authorizers.MCPFeatureTool,
+			expectAuthorized: true,
+		},
+		{
+			name:       "MCP policy grants list_prompts when serverName is set",
+			serverName: "github",
+			policy: `
+			permit(
+				principal,
+				action == Action::"list_prompts",
+				resource in MCP::"github"
+			);
+			`,
+			feature:          authorizers.MCPFeaturePrompt,
+			expectAuthorized: true,
+		},
+		{
+			name:       "MCP policy grants list_resources when serverName is set",
+			serverName: "github",
+			policy: `
+			permit(
+				principal,
+				action == Action::"list_resources",
+				resource in MCP::"github"
+			);
+			`,
+			feature:          authorizers.MCPFeatureResource,
+			expectAuthorized: true,
+		},
+		{
+			name:       "FeatureType policy still works when serverName is set",
+			serverName: "github",
+			policy: `
+			permit(
+				principal,
+				action == Action::"list_tools",
+				resource == FeatureType::"tool"
+			);
+			`,
+			feature:          authorizers.MCPFeatureTool,
+			expectAuthorized: true,
+		},
+		{
+			name:       "FeatureType policy grants list_tools when serverName is empty",
+			serverName: "",
+			policy: `
+			permit(
+				principal,
+				action == Action::"list_tools",
+				resource == FeatureType::"tool"
+			);
+			`,
+			feature:          authorizers.MCPFeatureTool,
+			expectAuthorized: true,
+		},
+		{
+			name:       "FeatureType policy grants list_prompts when serverName is empty",
+			serverName: "",
+			policy: `
+			permit(
+				principal,
+				action == Action::"list_prompts",
+				resource == FeatureType::"prompt"
+			);
+			`,
+			feature:          authorizers.MCPFeaturePrompt,
+			expectAuthorized: true,
+		},
+		{
+			name:       "FeatureType policy grants list_resources when serverName is empty",
+			serverName: "",
+			policy: `
+			permit(
+				principal,
+				action == Action::"list_resources",
+				resource == FeatureType::"resource"
+			);
+			`,
+			feature:          authorizers.MCPFeatureResource,
+			expectAuthorized: true,
+		},
+		{
+			name:       "Special characters in serverName",
+			serverName: "my-server.example.com",
+			policy: `
+			permit(
+				principal,
+				action == Action::"list_tools",
+				resource in MCP::"my-server.example.com"
+			);
+			`,
+			feature:          authorizers.MCPFeatureTool,
+			expectAuthorized: true,
+		},
+		{
+			name:       "MCP policy for different server denies list_tools",
+			serverName: "github",
+			policy: `
+			permit(
+				principal,
+				action == Action::"list_tools",
+				resource in MCP::"atlassian"
+			);
+			`,
+			feature:          authorizers.MCPFeatureTool,
+			expectAuthorized: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:     []string{tc.policy},
+				EntitiesJSON: `[]`,
+			}, tc.serverName)
+			require.NoError(t, err)
+
+			claims := jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			}
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "test-user", Claims: claims}}
+			claimsCtx := auth.WithIdentity(ctx, identity)
+
+			authorized, err := authorizer.AuthorizeWithJWTClaims(claimsCtx, tc.feature, authorizers.MCPOperationList, "", nil)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectAuthorized, authorized, "Authorization result does not match expectation")
+		})
+	}
+}
+
 // TestAuthorizeWithJWTClaimsErrors tests error cases for AuthorizeWithJWTClaims.
 func TestAuthorizeWithJWTClaimsErrors(t *testing.T) {
 	t.Parallel()

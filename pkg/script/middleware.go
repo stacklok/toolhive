@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -394,14 +393,4 @@ func copyHeaders(w http.ResponseWriter, capture *responseCapture) {
 	for k, v := range capture.header {
 		w.Header()[k] = v
 	}
-}
-
-// readBody reads the full request body and restores it for downstream handlers.
-func readBody(r *http.Request) ([]byte, error) {
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		return nil, err
-	}
-	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-	return bodyBytes, nil
 }

@@ -6,6 +6,7 @@ package sessionmanager
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -2094,8 +2095,9 @@ func TestNotifyBackendExpired(t *testing.T) {
 
 	// seedBackendMetadata stores backend metadata directly in storage so that
 	// NotifyBackendExpired has something to operate on. This simulates what
-	// populateBackendMetadata writes during session creation.
-	seedBackendMetadata := func(t *testing.T, storage transportsession.DataStorage, sessionID string, ids []string, sessionIDs map[string]string) {
+	// populateBackendMetadata writes during session creation. It returns the
+	// metadata map so callers can pass it directly to NotifyBackendExpired.
+	seedBackendMetadata := func(t *testing.T, storage transportsession.DataStorage, sessionID string, ids []string, sessionIDs map[string]string) map[string]string {
 		t.Helper()
 		meta := map[string]string{
 			vmcpsession.MetadataKeyBackendIDs: strings.Join(ids, ","),
@@ -2104,6 +2106,7 @@ func TestNotifyBackendExpired(t *testing.T) {
 			meta[vmcpsession.MetadataKeyBackendSessionPrefix+workloadID] = sessID
 		}
 		require.NoError(t, storage.Upsert(context.Background(), sessionID, meta))
+		return meta
 	}
 
 	t.Run("clears backend session key and removes from MetadataKeyBackendIDs", func(t *testing.T) {
@@ -2120,12 +2123,14 @@ func TestNotifyBackendExpired(t *testing.T) {
 		_, err := sm.CreateSession(t.Context(), sessionID)
 		require.NoError(t, err)
 
-		seedBackendMetadata(t, storage, sessionID,
+		meta := seedBackendMetadata(t, storage, sessionID,
 			[]string{"workload-a", "workload-b"},
 			map[string]string{"workload-a": "sess-a", "workload-b": "sess-b"},
 		)
 
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		metaBefore := maps.Clone(meta)
+		sm.NotifyBackendExpired(sessionID, "workload-a", meta)
+		assert.Equal(t, metaBefore, meta, "NotifyBackendExpired must not mutate the caller's metadata map")
 
 		got, loadErr := storage.Load(context.Background(), sessionID)
 		require.NoError(t, loadErr)
@@ -2150,12 +2155,14 @@ func TestNotifyBackendExpired(t *testing.T) {
 		_, err := sm.CreateSession(t.Context(), sessionID)
 		require.NoError(t, err)
 
-		seedBackendMetadata(t, storage, sessionID,
+		meta := seedBackendMetadata(t, storage, sessionID,
 			[]string{"workload-a"},
 			map[string]string{"workload-a": "sess-a"},
 		)
 
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		metaBefore := maps.Clone(meta)
+		sm.NotifyBackendExpired(sessionID, "workload-a", meta)
+		assert.Equal(t, metaBefore, meta, "NotifyBackendExpired must not mutate the caller's metadata map")
 
 		got, loadErr := storage.Load(context.Background(), sessionID)
 		require.NoError(t, loadErr)
@@ -2176,12 +2183,15 @@ func TestNotifyBackendExpired(t *testing.T) {
 		sessionID := sm.Generate()
 		// Seed metadata that is missing MetadataKeyBackendIDs — simulates
 		// corrupted or partially-written storage.
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+		corruptedMeta := map[string]string{
 			vmcpsession.MetadataKeyBackendSessionPrefix + "workload-a": "sess-a",
 			// MetadataKeyBackendIDs intentionally absent
-		}))
+		}
+		require.NoError(t, storage.Upsert(context.Background(), sessionID, corruptedMeta))
 
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		corruptedMetaBefore := maps.Clone(corruptedMeta)
+		sm.NotifyBackendExpired(sessionID, "workload-a", corruptedMeta)
+		assert.Equal(t, corruptedMetaBefore, corruptedMeta, "NotifyBackendExpired must not mutate the caller's metadata map")
 
 		// Storage must be unchanged — clobbering with "" would drop all backends.
 		got, loadErr := storage.Load(context.Background(), sessionID)
@@ -2199,7 +2209,7 @@ func TestNotifyBackendExpired(t *testing.T) {
 		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 		sm, _ := newTestSessionManager(t, factory, newFakeRegistry())
 
-		sm.NotifyBackendExpired("nonexistent-session", "workload-a") // must not panic
+		sm.NotifyBackendExpired("nonexistent-session", "workload-a", nil) // must not panic
 	})
 
 	t.Run("placeholder session (no backend IDs) is a no-op", func(t *testing.T) {
@@ -2211,7 +2221,7 @@ func TestNotifyBackendExpired(t *testing.T) {
 
 		// Generate creates a placeholder with empty metadata.
 		sessionID := sm.Generate()
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		sm.NotifyBackendExpired(sessionID, "workload-a", map[string]string{})
 
 		// Placeholder must still exist and be unmodified.
 		got, loadErr := storage.Load(context.Background(), sessionID)
@@ -2242,7 +2252,11 @@ func TestNotifyBackendExpired(t *testing.T) {
 		_, err = sm.Terminate(sessionID)
 		require.NoError(t, err)
 
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		// Caller holds the metadata it observed before termination; updateMetadata's
+		// SET XX is a no-op because Terminate already deleted the key.
+		sm.NotifyBackendExpired(sessionID, "workload-a", map[string]string{
+			vmcpsession.MetadataKeyBackendIDs: "workload-a",
+		})
 
 		// Session must remain absent — Load after Terminate deletes from storage.
 		_, loadErr := storage.Load(context.Background(), sessionID)
@@ -2268,7 +2282,7 @@ func TestNotifyBackendExpired(t *testing.T) {
 		_, err := sm.CreateSession(t.Context(), sessionID)
 		require.NoError(t, err)
 
-		seedBackendMetadata(t, storage, sessionID,
+		meta := seedBackendMetadata(t, storage, sessionID,
 			[]string{"workload-a"},
 			map[string]string{"workload-a": "sess-a"},
 		)
@@ -2279,7 +2293,9 @@ func TestNotifyBackendExpired(t *testing.T) {
 		// storage.Update (SET XX) in updateMetadata returns (false, nil) because
 		// the key no longer exists — NotifyBackendExpired must bail without
 		// recreating the record.
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		metaBefore := maps.Clone(meta)
+		sm.NotifyBackendExpired(sessionID, "workload-a", meta)
+		assert.Equal(t, metaBefore, meta, "NotifyBackendExpired must not mutate the caller's metadata map")
 
 		_, loadErr := storage.Load(context.Background(), sessionID)
 		assert.ErrorIs(t, loadErr, transportsession.ErrSessionNotFound,
@@ -2300,19 +2316,20 @@ func TestNotifyBackendExpired(t *testing.T) {
 		_, err := sm.CreateSession(t.Context(), sessionID)
 		require.NoError(t, err)
 
-		seedBackendMetadata(t, storage, sessionID,
+		meta := seedBackendMetadata(t, storage, sessionID,
 			[]string{"workload-a"},
 			map[string]string{"workload-a": "sess-a"},
 		)
 
 		// Simulate cross-pod termination: another pod called storage.Delete while
-		// this pod was inside NotifyBackendExpired (after the Load, before the
-		// Upsert). We delete the key here to represent that state.
+		// this pod was inside NotifyBackendExpired (before the Upsert).
+		// We delete the key here to represent that state.
 		require.NoError(t, storage.Delete(context.Background(), sessionID))
 
-		// updateMetadata must re-check storage before upserting; seeing
-		// ErrSessionNotFound it must bail without recreating the record.
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		// updateMetadata's SET XX sees the absent key and bails without recreating.
+		metaBefore := maps.Clone(meta)
+		sm.NotifyBackendExpired(sessionID, "workload-a", meta)
+		assert.Equal(t, metaBefore, meta, "NotifyBackendExpired must not mutate the caller's metadata map")
 
 		_, loadErr := storage.Load(context.Background(), sessionID)
 		assert.ErrorIs(t, loadErr, transportsession.ErrSessionNotFound,
@@ -2336,12 +2353,14 @@ func TestNotifyBackendExpired(t *testing.T) {
 		// Session must be in cache after CreateSession.
 		assert.Equal(t, 1, sm.sessions.Len(), "session must be in node-local cache after CreateSession")
 
-		seedBackendMetadata(t, storage, sessionID,
+		meta := seedBackendMetadata(t, storage, sessionID,
 			[]string{"workload-a"},
 			map[string]string{"workload-a": "sess-a"},
 		)
 
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		metaBefore := maps.Clone(meta)
+		sm.NotifyBackendExpired(sessionID, "workload-a", meta)
+		assert.Equal(t, metaBefore, meta, "NotifyBackendExpired must not mutate the caller's metadata map")
 
 		// With lazy eviction, session is still in cache immediately after NotifyBackendExpired.
 		// checkSession detects drift on the next GetMultiSession call.

@@ -206,11 +206,9 @@ const terminateTimeout = 5 * time.Second
 // performs a single Redis SET. 5 s is consistent with terminateTimeout.
 const decorateTimeout = 5 * time.Second
 
-// notifyBackendExpiredTimeout bounds each individual storage operation inside
-// NotifyBackendExpired() — one Load and one Upsert, each capped independently.
-// Each is a single-key Redis operation, so 5 s per call is consistent with
-// terminateTimeout and decorateTimeout. Worst-case wall-clock for the function
-// is 2 × 5 s = 10 s.
+// notifyBackendExpiredTimeout bounds the storage.Update call inside
+// NotifyBackendExpired() — a single-key Redis operation, consistent with
+// terminateTimeout and decorateTimeout.
 const notifyBackendExpiredTimeout = 5 * time.Second
 
 // Generate implements the SDK's SessionIdManager.Generate().
@@ -521,26 +519,21 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 // cross-pod RestoreSession call does not attempt to reconnect to the expired
 // backend session.
 //
+// The caller supplies the session metadata it already holds (e.g. from
+// MultiSession.GetMetadata). Passing nil metadata is treated as "no metadata
+// available" and is a silent no-op, avoiding a redundant storage round-trip.
+//
 // After a successful storage update, the cached entry is not immediately evicted.
 // On the next GetMultiSession call, checkSession detects that the stored
 // MetadataKeyBackendIDs differs from the cached session's value, evicts the stale
 // entry via onEvict, and triggers RestoreSession with the updated metadata.
 // On storage error, no eviction occurs and the caller retries on the next access.
 //
-// This is a best-effort operation. If the session is absent from storage (not
-// found or terminated) the call is a silent no-op. Storage errors are logged
-// but not returned.
-func (sm *Manager) NotifyBackendExpired(sessionID, workloadID string) {
-	loadCtx, loadCancel := context.WithTimeout(context.Background(), notifyBackendExpiredTimeout)
-	defer loadCancel()
-	metadata, err := sm.storage.Load(loadCtx, sessionID)
-	if err != nil {
-		if !errors.Is(err, transportsession.ErrSessionNotFound) {
-			slog.Warn("NotifyBackendExpired: failed to load session from storage",
-				"session_id", sessionID,
-				"workload_id", workloadID,
-				"error", err)
-		}
+// This is a best-effort operation. If the session key is absent from storage
+// (terminated or expired), updateMetadata's SET XX is a no-op. Storage errors
+// are logged but not returned.
+func (sm *Manager) NotifyBackendExpired(sessionID, workloadID string, metadata map[string]string) {
+	if metadata == nil {
 		return
 	}
 	if metadata[MetadataKeyTerminated] == MetadataValTrue {
@@ -563,16 +556,26 @@ func (sm *Manager) NotifyBackendExpired(sessionID, workloadID string) {
 	// populateBackendMetadata, which uses key presence to distinguish an
 	// explicit zero-backend state from absent/corrupted metadata in
 	// RestoreSession. Trim spaces and drop empty parts for robustness.
-	delete(metadata, vmcpsession.MetadataKeyBackendSessionPrefix+workloadID)
+	//
+	// Copy before mutating so the caller's map is not modified. Mutating the
+	// caller's map would silently corrupt the in-memory session state, which
+	// would defeat lazy eviction: checkSession compares stored vs cached
+	// MetadataKeyBackendIDs to detect drift, so the values must differ after
+	// this update for eviction to trigger on the next GetMultiSession call.
+	updated := make(map[string]string, len(metadata))
+	for k, v := range metadata {
+		updated[k] = v
+	}
+	delete(updated, vmcpsession.MetadataKeyBackendSessionPrefix+workloadID)
 	var remaining []string
 	for _, p := range strings.Split(backendIDs, ",") {
 		if t := strings.TrimSpace(p); t != "" && t != workloadID {
 			remaining = append(remaining, t)
 		}
 	}
-	metadata[vmcpsession.MetadataKeyBackendIDs] = strings.Join(remaining, ",")
+	updated[vmcpsession.MetadataKeyBackendIDs] = strings.Join(remaining, ",")
 
-	if err := sm.updateMetadata(sessionID, metadata); err != nil {
+	if err := sm.updateMetadata(sessionID, updated); err != nil {
 		slog.Warn("NotifyBackendExpired: failed to persist backend expiry to storage",
 			"session_id", sessionID,
 			"workload_id", workloadID,

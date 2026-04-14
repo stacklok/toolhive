@@ -1687,6 +1687,31 @@ spec:
                     required:
                     - source
                     type: object
+                  scriptEngine:
+                    description: |-
+                      ScriptEngine configures the Starlark script execution engine ("code mode").
+                      When enabled, clients can call the execute_tool_script virtual tool to
+                      run server-side scripts that orchestrate multiple tool calls in a single
+                      round-trip, reducing context bloat and inference cycles.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled controls whether the execute_tool_script virtual tool is available.
+                          When false (default), the tool does not appear in tools/list responses.
+                        type: boolean
+                      parallelMax:
+                        description: |-
+                          ParallelMax is the maximum number of concurrent worker goroutines that
+                          parallel() can use. Zero means the worker count matches the task count.
+                        type: integer
+                      stepLimit:
+                        description: |-
+                          StepLimit is the maximum number of Starlark execution steps per script.
+                          Prevents infinite loops and runaway computation.
+                          Defaults to 100,000 if not specified or zero.
+                        format: int64
+                        type: integer
+                    type: object
                   sessionStorage:
                     description: |-
                       SessionStorage configures session storage for stateful horizontal scaling.

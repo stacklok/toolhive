@@ -321,7 +321,7 @@ func TestHorizontalScaling_BackendExpiry_SkipsExpiredOnRestore(t *testing.T) {
 
 	// NotifyBackendExpired updates Redis to remove backend-beta; the node-local cache
 	// entry is evicted lazily on the next GetMultiSession when checkSession detects drift.
-	smA.NotifyBackendExpired(sessionID, backendB.ID)
+	smA.NotifyBackendExpired(sessionID, backendB.ID, sessA.GetMetadata())
 
 	// Pod C: fresh Manager, same storage and both backends in registry.
 	// (backendB is still running — we're testing that RestoreSession filters

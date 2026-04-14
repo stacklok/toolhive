@@ -658,11 +658,12 @@ func (sm *Manager) checkSession(sessionID string, sess vmcpsession.MultiSession)
 	//
 	// We intentionally compare only MetadataKeyBackendIDs rather than the full
 	// metadata map. Per-backend session IDs (MetadataKeyBackendSessionPrefix+*)
-	// are local connection values that change on every RestoreSession call — a
-	// cross-pod restored session will always have different per-backend session IDs
-	// from what is stored in Redis (established by a different pod). Comparing
-	// the full map would cause the session to be evicted on every cache hit after
-	// a cross-pod restore, preventing tools from ever being served.
+	// are the session IDs negotiated by the restoring pod's backend connections.
+	// RestoreSession sends the stored IDs as Mcp-Session-Id hints, so a backend
+	// that honors session resumption will return the same ID — but not all backends
+	// do (e.g. SSE transports have no session ID at all). Comparing the full map
+	// would evict on every cross-pod cache hit whenever any backend assigns a
+	// fresh ID, preventing tools from ever being served.
 	sessBackendIDs := sess.GetMetadata()[vmcpsession.MetadataKeyBackendIDs]
 	if sessBackendIDs != metadata[vmcpsession.MetadataKeyBackendIDs] {
 		return cache.ErrExpired

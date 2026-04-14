@@ -6,9 +6,11 @@ package virtualmcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os/exec"
+	"strings"
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
@@ -16,6 +18,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	"github.com/redis/go-redis/v9"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -178,6 +181,64 @@ func portForwardToPod(podName string, containerPort int32) (int, func(), error) 
 
 	cleanup()
 	return 0, nil, fmt.Errorf("port-forward to %s never became ready on localhost:%d", podName, localPort)
+}
+
+// readRedisSessionBackendIDs port-forwards to the Redis pod with label app=redisName,
+// reads the session key keyPrefix+sessionID, and returns only the per-backend session
+// ID entries (keys prefixed with "vmcp.backend.session.").
+func readRedisSessionBackendIDs(redisName, keyPrefix, sessionID string) (map[string]string, error) {
+	// Find the Redis pod.
+	podList := &corev1.PodList{}
+	if err := k8sClient.List(ctx, podList,
+		client.InNamespace(defaultNamespace),
+		client.MatchingLabels{"app": redisName},
+	); err != nil {
+		return nil, fmt.Errorf("listing Redis pods: %w", err)
+	}
+	var redisPodName string
+	for _, pod := range podList.Items {
+		if pod.Status.Phase == corev1.PodRunning {
+			redisPodName = pod.Name
+			break
+		}
+	}
+	if redisPodName == "" {
+		return nil, fmt.Errorf("no running Redis pod found for app=%s", redisName)
+	}
+
+	// Port-forward to Redis.
+	localPort, cleanup, err := portForwardToPod(redisPodName, 6379)
+	if err != nil {
+		return nil, fmt.Errorf("port-forward to Redis pod %s: %w", redisPodName, err)
+	}
+	defer cleanup()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: fmt.Sprintf("localhost:%d", localPort),
+	})
+	defer rdb.Close()
+
+	readCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	raw, err := rdb.Get(readCtx, keyPrefix+sessionID).Bytes()
+	if err != nil {
+		return nil, fmt.Errorf("Redis GET %s%s: %w", keyPrefix, sessionID, err)
+	}
+
+	var all map[string]string
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return nil, fmt.Errorf("unmarshal session metadata: %w", err)
+	}
+
+	const backendSessionPrefix = "vmcp.backend.session."
+	result := make(map[string]string)
+	for k, v := range all {
+		if strings.HasPrefix(k, backendSessionPrefix) {
+			result[k] = v
+		}
+	}
+	return result, nil
 }
 
 var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", func() {

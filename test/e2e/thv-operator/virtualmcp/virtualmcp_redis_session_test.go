@@ -291,6 +291,12 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(toolsA.Tools).NotTo(gomega.BeEmpty(), "pod A must return tools")
 
+			ginkgo.By("Verifying pod A stored backend session IDs in Redis")
+			backendIDsBeforeRestore, err := readRedisSessionBackendIDs(redisName, "thv:vmcp:e2e:", sessionID)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Expect(backendIDsBeforeRestore).NotTo(gomega.BeEmpty(),
+				"pod A must have written per-backend session IDs to Redis so pod B can use them as hints")
+
 			ginkgo.By(fmt.Sprintf("Connecting to pod B (%s) with the same session ID", podB.Name))
 			serverURLB := fmt.Sprintf("http://localhost:%d/mcp", localPortB)
 			clientB, err := mcpclient.NewStreamableHttpClient(serverURLB, transport.WithSession(sessionID))
@@ -307,6 +313,13 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			toolsB, err := clientB.ListTools(listCtx, mcp.ListToolsRequest{})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(toolsB.Tools).NotTo(gomega.BeEmpty(), "pod B must return tools via Redis-reconstructed session")
+
+			ginkgo.By("Verifying backend session IDs in Redis are the same hints pod B received")
+			backendIDsAfterRestore, err := readRedisSessionBackendIDs(redisName, "thv:vmcp:e2e:", sessionID)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			gomega.Expect(backendIDsAfterRestore).To(gomega.Equal(backendIDsBeforeRestore),
+				"RestoreSession must not overwrite the backend session IDs stored by pod A — "+
+					"pod B used them as hints and the IDs must be stable")
 
 			ginkgo.By("Verifying both pods return the same tool count")
 			gomega.Expect(toolsB.Tools).To(gomega.HaveLen(len(toolsA.Tools)),
@@ -655,8 +668,8 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			defer func() { _ = clientB.Close() }()
 
 			startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer startCancel()
 			gomega.Expect(clientB.Start(startCtx)).To(gomega.Succeed())
-			startCancel()
 
 			listCtxB, listCancelB := context.WithTimeout(context.Background(), 30*time.Second)
 			toolsB, err := clientB.ListTools(listCtxB, mcp.ListToolsRequest{})

@@ -4,6 +4,7 @@
 package virtualmcp
 
 import (
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -61,8 +62,9 @@ var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func()
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
-							Name:     "authserver-oidc-config",
-							Audience: "authserver-test",
+							Name: "authserver-oidc-config",
+							// Audience must match the auth server's allowed audience (the vMCP service URL)
+							Audience: fmt.Sprintf("http://%s.%s.svc.cluster.local:4483", vmcpName, testNamespace),
 						},
 					},
 					Config: vmcpconfig.Config{Group: mcpGroupName},

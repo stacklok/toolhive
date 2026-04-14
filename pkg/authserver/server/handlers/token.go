@@ -49,7 +49,7 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 			server.ErrInvalidTarget.WithHint("Multiple resource parameters are not supported"))
 		return
 	}
-	if len(resources) == 1 {
+	if len(resources) == 1 && resources[0] != "" {
 		resource := resources[0]
 		// Validate URI format per RFC 8707
 		if err := server.ValidateAudienceURI(resource); err != nil {
@@ -76,13 +76,12 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		)
 		accessRequest.GrantAudience(resource)
 	} else if accessRequest.GetGrantTypes().ExactOne("authorization_code") && len(h.config.AllowedAudiences) == 1 {
-		// No resource parameter provided during an authorization_code exchange; default to the
-		// sole allowed audience. AllowedAudiences is always non-empty (enforced at config
-		// validation time), and when there is exactly one entry the intended audience is
-		// unambiguous. We restrict this defaulting to authorization_code grants: for
-		// refresh_token grants, fosite already carries the originally-granted audience forward
-		// through the session, so re-granting here would conflict with fosite's audience
-		// matching strategy.
+		// No resource parameter provided (or provided as empty) during an authorization_code
+		// exchange; default to the sole allowed audience. The len == 1 guard makes the
+		// intended audience unambiguous and the index access safe. We restrict this defaulting
+		// to authorization_code grants: for refresh_token grants, fosite already carries the
+		// originally-granted audience forward through the session, so re-granting here would
+		// conflict with fosite's audience matching strategy.
 		slog.Debug("no resource parameter, defaulting to sole allowed audience",
 			"audience", h.config.AllowedAudiences[0],
 		)

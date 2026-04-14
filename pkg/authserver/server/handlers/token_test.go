@@ -256,6 +256,52 @@ func TestTokenHandler_DefaultsAudienceWhenNoResourceParam(t *testing.T) {
 	assert.Equal(t, "https://api.example.com", aud[0], "aud should default to the sole AllowedAudience")
 }
 
+func TestTokenHandler_EmptyResourceParamDefaultsAudience(t *testing.T) {
+	t.Parallel()
+	handler, storState, _ := handlerTestSetup(t)
+
+	authorizeCode := simulateAuthorizeFlow(t, handler, storState)
+
+	// Exchange the code with an explicit but empty resource parameter.
+	// This should be treated the same as omitting resource entirely and
+	// default to the sole AllowedAudience rather than granting aud:[\""].
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {testAuthClientID},
+		"redirect_uri":  {testAuthRedirectURI},
+		"code":          {authorizeCode},
+		"code_verifier": {testPKCEVerifier},
+		"resource":      {""}, // explicit empty value
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	handler.TokenHandler(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+
+	var tokenResp map[string]any
+	err := json.NewDecoder(rec.Body).Decode(&tokenResp)
+	require.NoError(t, err, "response body should be valid JSON")
+
+	accessToken, ok := tokenResp["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	require.NotEmpty(t, accessToken)
+
+	parsedToken, err := josejwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+
+	var claims map[string]any
+	err = parsedToken.UnsafeClaimsWithoutVerification(&claims)
+	require.NoError(t, err)
+
+	aud, ok := claims["aud"].([]any)
+	require.True(t, ok, "aud claim should be an array, got: %T %v", claims["aud"], claims["aud"])
+	require.Len(t, aud, 1)
+	assert.Equal(t, "https://api.example.com", aud[0], "explicit empty resource should default to sole AllowedAudience")
+}
+
 func TestTokenHandler_RouteRegistered(t *testing.T) {
 	t.Parallel()
 	handler, _, _ := handlerTestSetup(t)

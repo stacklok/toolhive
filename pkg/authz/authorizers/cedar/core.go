@@ -567,7 +567,9 @@ func (a *Authorizer) authorizeToolCall(
 	})
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(
+		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -604,7 +606,9 @@ func (a *Authorizer) authorizePromptGet(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(
+		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -644,7 +648,9 @@ func (a *Authorizer) authorizeResourceRead(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(
+		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -682,7 +688,9 @@ func (a *Authorizer) authorizeFeatureList(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(
+		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}

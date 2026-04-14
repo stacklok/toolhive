@@ -270,6 +270,7 @@ func TestCreateEntitiesForRequest_GroupsAsParents(t *testing.T) {
 				map[string]interface{}{"sub": "user1"},
 				map[string]interface{}{"name": "weather"},
 				tt.groups,
+				"",
 			)
 			require.NoError(t, err)
 			require.NotNil(t, entities)
@@ -387,7 +388,7 @@ func TestCreateCedarEntities(t *testing.T) {
 			factory := NewEntityFactory()
 
 			// Create Cedar entities (no groups for these test cases)
-			entities, err := factory.CreateEntitiesForRequest(tc.principal, tc.action, tc.resource, tc.claimsMap, tc.attributes, nil)
+			entities, err := factory.CreateEntitiesForRequest(tc.principal, tc.action, tc.resource, tc.claimsMap, tc.attributes, nil, "")
 
 			// Check error expectations
 			if tc.expectErr {
@@ -459,6 +460,97 @@ func TestCreateCedarEntities(t *testing.T) {
 						}
 					}
 				}
+			}
+		})
+	}
+}
+
+// TestCreateEntitiesForRequest_MCPParent verifies that CreateEntitiesForRequest
+// sets an MCP parent UID on the resource entity when serverName is non-empty,
+// and leaves the resource parentless when serverName is empty.
+func TestCreateEntitiesForRequest_MCPParent(t *testing.T) {
+	t.Parallel()
+
+	factory := NewEntityFactory()
+
+	tests := []struct {
+		name            string
+		resource        string
+		serverName      string
+		wantParentCount int
+		wantMCPParentID string
+	}{
+		{
+			name:            "empty_serverName_no_parent",
+			resource:        "Tool::weather",
+			serverName:      "",
+			wantParentCount: 0,
+		},
+		{
+			name:            "serverName_sets_MCP_parent_on_Tool",
+			resource:        "Tool::weather",
+			serverName:      "github",
+			wantParentCount: 1,
+			wantMCPParentID: "github",
+		},
+		{
+			name:            "serverName_sets_MCP_parent_on_Prompt",
+			resource:        "Prompt::greeting",
+			serverName:      "github",
+			wantParentCount: 1,
+			wantMCPParentID: "github",
+		},
+		{
+			name:            "serverName_sets_MCP_parent_on_Resource",
+			resource:        "Resource::readme",
+			serverName:      "github",
+			wantParentCount: 1,
+			wantMCPParentID: "github",
+		},
+		{
+			name:            "serverName_with_special_characters",
+			resource:        "Tool::weather",
+			serverName:      "my-server.example.com",
+			wantParentCount: 1,
+			wantMCPParentID: "my-server.example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			entities, err := factory.CreateEntitiesForRequest(
+				"Client::user1",
+				"Action::call_tool",
+				tt.resource,
+				map[string]interface{}{"sub": "user1"},
+				map[string]interface{}{},
+				nil,
+				tt.serverName,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, entities)
+
+			// Find the resource entity by scanning for a non-Client, non-Action UID.
+			var resourceEntity cedar.Entity
+			var found bool
+			for uid, ent := range entities {
+				if string(uid.Type) != "Client" && string(uid.Type) != "Action" {
+					resourceEntity = ent
+					found = true
+					break
+				}
+			}
+			require.True(t, found, "resource entity not found in map")
+
+			assert.Equal(t, tt.wantParentCount, resourceEntity.Parents.Len(),
+				"unexpected number of parents on resource entity")
+
+			if tt.wantMCPParentID != "" {
+				mcpUID := cedar.NewEntityUID("MCP", cedar.String(tt.wantMCPParentID))
+				assert.True(t, resourceEntity.Parents.Contains(mcpUID),
+					"expected MCP::%q in resource.Parents", tt.wantMCPParentID)
 			}
 		})
 	}

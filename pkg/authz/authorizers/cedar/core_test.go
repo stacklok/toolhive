@@ -1053,6 +1053,7 @@ func TestIsAuthorizedWithEntities(t *testing.T) {
 		map[string]interface{}{"name": "Test User"},
 		map[string]interface{}{"name": "weather"},
 		nil,
+		"",
 	)
 	require.NoError(t, err)
 
@@ -1066,6 +1067,67 @@ func TestIsAuthorizedWithEntities(t *testing.T) {
 	)
 	assert.NoError(t, err)
 	assert.True(t, authorized)
+}
+
+// TestServerScopedPolicyWithMCPParent verifies end-to-end Cedar evaluation
+// with a server-scoped policy. When the authorizer has a serverName, resource
+// entities get an MCP parent and `resource in MCP::"<server>"` matches.
+// When serverName is empty, the same policy denies because there is no parent.
+func TestServerScopedPolicyWithMCPParent(t *testing.T) {
+	t.Parallel()
+
+	policy := `permit(
+		principal,
+		action == Action::"call_tool",
+		resource in MCP::"test-server"
+	);`
+
+	// The MCP entity must be present in the entity store for Cedar's `in`
+	// operator to traverse the parent chain. In production this comes from
+	// entities_json managed by the enterprise controller.
+	mcpEntity := `[{"uid":{"type":"MCP","id":"test-server"},"parents":[],"attrs":{}}]`
+
+	tests := []struct {
+		name       string
+		serverName string
+		wantAllow  bool
+	}{
+		{
+			name:       "serverName_matches_policy_permits",
+			serverName: "test-server",
+			wantAllow:  true,
+		},
+		{
+			name:       "empty_serverName_policy_denies",
+			serverName: "",
+			wantAllow:  false,
+		},
+		{
+			name:       "wrong_serverName_policy_denies",
+			serverName: "other-server",
+			wantAllow:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:     []string{policy},
+				EntitiesJSON: mcpEntity,
+			}, tt.serverName)
+			require.NoError(t, err)
+
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "testuser", Claims: map[string]interface{}{"sub": "testuser"}}}
+			ctx := auth.WithIdentity(context.Background(), identity)
+
+			authorized, err := authorizer.AuthorizeWithJWTClaims(ctx, authorizers.MCPFeatureTool, authorizers.MCPOperationCall, "weather", nil)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantAllow, authorized,
+				"serverName=%q: expected allow=%v", tt.serverName, tt.wantAllow)
+		})
+	}
 }
 
 // TestParseUpstreamJWTClaims tests the parseUpstreamJWTClaims helper.

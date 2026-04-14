@@ -42,20 +42,6 @@ type LocalSessionDataStorage struct {
 	stopOnce sync.Once
 }
 
-// Upsert creates or updates session metadata.
-func (s *LocalSessionDataStorage) Upsert(_ context.Context, id string, metadata map[string]string) error {
-	if id == "" {
-		return fmt.Errorf("cannot write session data with empty ID")
-	}
-	if metadata == nil {
-		metadata = make(map[string]string)
-	}
-	s.mu.Lock()
-	s.sessions[id] = newLocalDataEntry(maps.Clone(metadata))
-	s.mu.Unlock()
-	return nil
-}
-
 // Load retrieves session metadata and refreshes its last-access timestamp.
 // Returns ErrSessionNotFound if the session does not exist.
 func (s *LocalSessionDataStorage) Load(_ context.Context, id string) (map[string]string, error) {

@@ -478,7 +478,7 @@ spec:
                 is set”
               rule: ”!has(self.oidcConfigRef) || has(self.authServerRef) || has(self.externalAuthConfigRef)
                 || (has(self.oidcConfigRef.audience) && self.oidcConfigRef.audience
-                != '')”
+                != ”)”
           status:
             description: MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
             properties:

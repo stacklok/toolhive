@@ -2101,11 +2101,11 @@ spec:
             - incomingAuth
             type: object
             x-kubernetes-validations:
-            - message: incomingAuth.oidcConfigRef.audience is required when authServerConfig
-                is not set
-              rule: '!has(self.incomingAuth.oidcConfigRef) || has(self.authServerConfig)
-                || (has(self.incomingAuth.oidcConfigRef.audience) && self.incomingAuth.oidcConfigRef.audience
-                != ”)'
+            - message: ”incomingAuth.oidcConfigRef.audience is required when authServerConfig
+                is not set”
+              rule: ”!has(self.incomingAuth.oidcConfigRef) || has(self.authServerConfig)
+                || (has(self.incomingAuth.oidcConfigRef.audience) && size(self.incomingAuth.oidcConfigRef.audience)
+                > 0)”
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:

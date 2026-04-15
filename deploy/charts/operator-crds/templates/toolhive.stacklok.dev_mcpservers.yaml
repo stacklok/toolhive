@@ -760,7 +760,7 @@ spec:
                 is set”
               rule: ”!has(self.oidcConfigRef) || has(self.authServerRef) || has(self.externalAuthConfigRef)
                 || (has(self.oidcConfigRef.audience) && self.oidcConfigRef.audience
-                != '')”
+                != ”)”
           status:
             description: MCPServerStatus defines the observed state of MCPServer
             properties:

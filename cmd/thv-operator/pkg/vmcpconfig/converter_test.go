@@ -220,6 +220,90 @@ func TestConverter_OIDCResolution(t *testing.T) {
 	}
 }
 
+// TestConverter_AudienceOverrideWithAuthServerConfig verifies the audience override
+// logic in resolveOIDCConfig: when AuthServerConfig is set and the resolved OIDC
+// config has a non-empty Resource, the Audience is overridden to match Resource.
+func TestConverter_AudienceOverrideWithAuthServerConfig(t *testing.T) {
+	t.Parallel()
+
+	const oidcConfigName = "test-oidc"
+
+	tests := []struct {
+		name             string
+		authServerConfig *mcpv1alpha1.EmbeddedAuthServerConfig
+		mockReturn       *oidc.OIDCConfig
+		expectedAudience string
+		expectedResource string
+	}{
+		{
+			name:             "AuthServerConfig set with non-empty Resource overrides audience",
+			authServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{},
+			mockReturn: &oidc.OIDCConfig{
+				Issuer:      "https://issuer.example.com",
+				Audience:    "user-specified-audience",
+				ResourceURL: "https://service.example.com",
+			},
+			expectedAudience: "https://service.example.com",
+			expectedResource: "https://service.example.com",
+		},
+		{
+			name:             "AuthServerConfig nil preserves user-specified audience",
+			authServerConfig: nil,
+			mockReturn: &oidc.OIDCConfig{
+				Issuer:      "https://issuer.example.com",
+				Audience:    "user-specified-audience",
+				ResourceURL: "https://service.example.com",
+			},
+			expectedAudience: "user-specified-audience",
+			expectedResource: "https://service.example.com",
+		},
+		{
+			name:             "AuthServerConfig set with empty Resource preserves user-specified audience",
+			authServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{},
+			mockReturn: &oidc.OIDCConfig{
+				Issuer:      "https://issuer.example.com",
+				Audience:    "user-specified-audience",
+				ResourceURL: "",
+			},
+			expectedAudience: "user-specified-audience",
+			expectedResource: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockResolver := oidcmocks.NewMockResolver(ctrl)
+			mockResolver.EXPECT().ResolveFromConfigRef(
+				gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
+			).Return(tt.mockReturn, nil)
+
+			oidcConfig := newTestMCPOIDCConfig(mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount)
+			converter := newTestConverterWithObjects(t, mockResolver, oidcConfig)
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+
+			vmcp := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef:         &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+					IncomingAuth:     &mcpv1alpha1.IncomingAuthConfig{Type: "oidc", OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "user-specified-audience"}},
+					AuthServerConfig: tt.authServerConfig,
+				},
+			}
+
+			config, _, err := converter.Convert(ctx, vmcp, nil)
+
+			require.NoError(t, err)
+			require.NotNil(t, config.IncomingAuth)
+			require.NotNil(t, config.IncomingAuth.OIDC)
+			assert.Equal(t, tt.expectedAudience, config.IncomingAuth.OIDC.Audience)
+			assert.Equal(t, tt.expectedResource, config.IncomingAuth.OIDC.Resource)
+		})
+	}
+}
+
 // TestConverter_CompositeToolsPassThrough verifies that CompositeTools from spec.config.CompositeTools
 // are correctly passed through during conversion and not dropped.
 // It also verifies that Duration fields serialize to human-readable formats (e.g., "30s").

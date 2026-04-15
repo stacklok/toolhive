@@ -15,7 +15,7 @@ import (
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 //
-// +kubebuilder:validation:XValidation:rule="!has(self.incomingAuth.oidcConfigRef) || has(self.authServerConfig) || (has(self.incomingAuth.oidcConfigRef.audience) && self.incomingAuth.oidcConfigRef.audience != ”)",message="incomingAuth.oidcConfigRef.audience is required when authServerConfig is not set"
+// +kubebuilder:validation:XValidation:rule=”!has(self.incomingAuth.oidcConfigRef) || has(self.authServerConfig) || (has(self.incomingAuth.oidcConfigRef.audience) && size(self.incomingAuth.oidcConfigRef.audience) > 0)”,message=”incomingAuth.oidcConfigRef.audience is required when authServerConfig is not set”
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type VirtualMCPServerSpec struct {

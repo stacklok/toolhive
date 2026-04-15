@@ -157,7 +157,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			}, timeout, interval).Should(BeTrue())
 		})
 
-		It("should produce a ConfigMap with OIDC config from the MCPOIDCConfig", func() {
+		It("should produce a ConfigMap with all OIDC fields from the MCPOIDCConfig and ref", func() {
 			configMapName := vmcpName + "-vmcp-config"
 			configMap := &corev1.ConfigMap{}
 			Eventually(func() error {
@@ -173,8 +173,19 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 
 			Expect(config.IncomingAuth).NotTo(BeNil())
 			Expect(config.IncomingAuth.OIDC).NotTo(BeNil(), "OIDC config from MCPOIDCConfig should be present in ConfigMap")
+
+			// Shared config fields from MCPOIDCConfig
 			Expect(config.IncomingAuth.OIDC.Issuer).To(Equal("https://accounts.google.com"))
+			Expect(config.IncomingAuth.OIDC.ClientID).To(Equal("test-client"))
+
+			// Per-server fields from MCPOIDCConfigReference
 			Expect(config.IncomingAuth.OIDC.Audience).To(Equal("test-vmcp-audience"))
+			Expect(config.IncomingAuth.OIDC.Scopes).To(Equal([]string{"openid"}))
+
+			// Resource URL: no resourceUrl set on the ref, so falls back to internal service URL
+			Expect(config.IncomingAuth.OIDC.Resource).To(
+				MatchRegexp(`^http://test-vmcp-server\..*\.svc\.cluster\.local:\d+$`),
+				"resource should be the derived internal service URL when resourceUrl is not set on the ref")
 		})
 
 		It("should track VirtualMCPServer in MCPOIDCConfig ReferencingWorkloads", func() {
@@ -822,7 +833,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
 		})
 
-		It("should produce a ConfigMap with the explicit resourceUrl instead of internal service URL", func() {
+		It("should produce a ConfigMap with the explicit resourceUrl overriding internal service URL", func() {
 			configMapName := vmcpName + "-vmcp-config"
 			configMap := &corev1.ConfigMap{}
 			Eventually(func() error {
@@ -838,8 +849,18 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 
 			Expect(config.IncomingAuth).NotTo(BeNil())
 			Expect(config.IncomingAuth.OIDC).NotTo(BeNil())
+
+			// Shared config fields from MCPOIDCConfig
+			Expect(config.IncomingAuth.OIDC.Issuer).To(Equal("https://accounts.google.com"))
+			Expect(config.IncomingAuth.OIDC.ClientID).To(Equal("test-client"))
+
+			// Per-server fields from MCPOIDCConfigReference
+			Expect(config.IncomingAuth.OIDC.Audience).To(Equal("test-vmcp-audience"))
+			Expect(config.IncomingAuth.OIDC.Scopes).To(Equal([]string{"openid"}))
+
+			// Resource URL: explicit resourceUrl on the ref overrides the internal service URL
 			Expect(config.IncomingAuth.OIDC.Resource).To(Equal("https://mcp-gateway.example.com/mcp"),
-				"ConfigMap should contain the explicit resourceUrl, not the internal service URL")
+				"resource should be the explicit resourceUrl, not the internal service URL")
 		})
 	})
 })

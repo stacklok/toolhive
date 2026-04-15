@@ -96,6 +96,9 @@ type TransparentProxy struct {
 	// Callback when health check fails (for remote servers)
 	onHealthCheckFailed types.HealthCheckFailedCallback
 
+	// Callback when health check recovers after a failure (for remote servers)
+	onHealthCheckRecovered types.HealthCheckRecoveredCallback
+
 	// Callback when 401 Unauthorized response is received (for bearer token authentication)
 	onUnauthorizedResponse types.UnauthorizedResponseCallback
 
@@ -332,6 +335,7 @@ func NewTransparentProxy(
 		isRemote,
 		transportType,
 		onHealthCheckFailed,
+		nil, // onHealthCheckRecovered
 		onUnauthorizedResponse,
 		endpointPrefix,
 		trustProxyHeaders,
@@ -411,6 +415,7 @@ func NewTransparentProxyWithOptions(
 	isRemote bool,
 	transportType string,
 	onHealthCheckFailed types.HealthCheckFailedCallback,
+	onHealthCheckRecovered types.HealthCheckRecoveredCallback,
 	onUnauthorizedResponse types.UnauthorizedResponseCallback,
 	endpointPrefix string,
 	trustProxyHeaders bool,
@@ -430,6 +435,7 @@ func NewTransparentProxyWithOptions(
 		isRemote:                    isRemote,
 		transportType:               transportType,
 		onHealthCheckFailed:         onHealthCheckFailed,
+		onHealthCheckRecovered:      onHealthCheckRecovered,
 		onUnauthorizedResponse:      onUnauthorizedResponse,
 		endpointPrefix:              endpointPrefix,
 		trustProxyHeaders:           trustProxyHeaders,
@@ -1227,13 +1233,23 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 		return consecutiveFailures, true
 	}
 
-	// All retries exhausted, initiate shutdown
+	// Threshold reached — notify the status manager.
 	//nolint:gosec // G706: logging target URI from config
-	slog.Error("health check failed after consecutive attempts; initiating proxy shutdown",
+	slog.Error("health check failed after consecutive attempts",
 		"target", p.targetURI, "attempts", p.healthCheckFailureThreshold)
 	if p.onHealthCheckFailed != nil {
 		p.onHealthCheckFailed()
 	}
+
+	if p.isRemote {
+		// For remote workloads ToolHive does not own the server lifecycle.
+		// Stay in degraded mode and keep monitoring so auto-recovery is possible
+		// (e.g. scale-to-zero backends that come back after a cold start).
+		// Reset the counter so the threshold applies fresh on the next outage window.
+		return 0, true
+	}
+
+	// Local container: ToolHive controls the lifecycle — stop the proxy.
 	if err := p.Stop(ctx); err != nil {
 		slog.Error("failed to stop proxy",
 			"target", p.targetURI, "error", err)
@@ -1258,13 +1274,16 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			slog.Debug("shutdown initiated, stopping health monitor", "target", p.targetURI)
 			return
 		case <-ticker.C:
-			if !p.serverInitialized() {
+			// For local container workloads, skip health checks until the MCP server
+			// has completed initialization (i.e. a successful initialize response was
+			// observed). This avoids false-positive unhealthy transitions during slow
+			// container startup. Remote workloads never call setServerInitialized() on
+			// 500 responses, so we always check them regardless of init state.
+			if !p.isRemote && !p.serverInitialized() {
 				//nolint:gosec // G706: logging target URI from config
-				slog.Debug("mcp server not initialized yet, skipping health check",
-					"target", p.targetURI)
+				slog.Debug("mcp server not initialized yet, skipping health check", "target", p.targetURI)
 				continue
 			}
-
 			alive := p.healthChecker.CheckHealth(parentCtx)
 			if alive.Status != healthcheck.StatusHealthy {
 				var shouldContinue bool
@@ -1276,7 +1295,15 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			}
 
 			// Reset failure count on successful health check
-			if consecutiveFailures > 0 {
+			if consecutiveFailures >= p.healthCheckFailureThreshold {
+				// Recovered from a degraded state — notify the status manager.
+				//nolint:gosec // G706: logging target URI from config
+				slog.Info("health check recovered after failures",
+					"target", p.targetURI, "previous_failures", consecutiveFailures)
+				if p.onHealthCheckRecovered != nil {
+					p.onHealthCheckRecovered()
+				}
+			} else if consecutiveFailures > 0 {
 				//nolint:gosec // G706: logging target URI from config
 				slog.Debug("health check recovered",
 					"target", p.targetURI, "previous_failures", consecutiveFailures)

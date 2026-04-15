@@ -1601,8 +1601,10 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 			continue
 		}
 
-		// Apply listAll filter - only include running workloads unless listAll is true
-		if !listAll && workloadStatus.Status != rt.WorkloadStatusRunning {
+		// Apply listAll filter - only include running, unhealthy, or unauthenticated workloads unless listAll is true
+		if !listAll && workloadStatus.Status != rt.WorkloadStatusRunning &&
+			workloadStatus.Status != rt.WorkloadStatusUnhealthy &&
+			workloadStatus.Status != rt.WorkloadStatusUnauthenticated {
 			continue
 		}
 
@@ -1630,6 +1632,7 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 			Name:          name,
 			Package:       "remote",
 			Status:        workloadStatus.Status,
+			StatusContext: workloadStatus.StatusContext,
 			URL:           proxyURL,
 			Port:          runConfig.Port,
 			TransportType: transportType,

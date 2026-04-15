@@ -1122,6 +1122,7 @@ func newMinimalProxy(options ...Option) *TransparentProxy {
 		false, // isRemote
 		"sse", // transportType
 		nil,   // onHealthCheckFailed
+		nil,   // onHealthCheckRecovered
 		nil,   // onUnauthorizedResponse
 		"",    // endpointPrefix
 		false, // trustProxyHeaders
@@ -1151,9 +1152,9 @@ func (ct *callbackTracker) isInvoked() bool {
 	return ct.invoked
 }
 
-// waitForShutdown waits for both the callback to be invoked and the proxy to stop,
+// waitForShutdown waits for the callback to be invoked and returns true if it was.
 // or returns false if the timeout expires.
-func waitForShutdown(t *testing.T, tracker *callbackTracker, proxy *TransparentProxy, timeout time.Duration) (callbackInvoked, proxyStopped bool) {
+func waitForShutdown(t *testing.T, tracker *callbackTracker, proxy *TransparentProxy, timeout time.Duration) bool {
 	t.Helper()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -1161,19 +1162,11 @@ func waitForShutdown(t *testing.T, tracker *callbackTracker, proxy *TransparentP
 	// Wait for callback
 	select {
 	case <-tracker.done:
-		callbackInvoked = true
 	case <-timer.C:
-		return false, false
+		return false
 	}
 
-	// Wait for proxy shutdown
-	select {
-	case <-proxy.shutdownCh:
-		proxyStopped = true
-	case <-timer.C:
-	}
-
-	return callbackInvoked, proxyStopped
+	return true
 }
 
 // setupRemoteProxyTest creates a proxy with health check enabled for remote servers
@@ -1199,6 +1192,7 @@ func setupRemoteProxyTestWithTimeout(t *testing.T, serverURL string, callback ty
 		true, // isRemote
 		"sse",
 		callback,
+		nil, // onHealthCheckRecovered
 		nil,
 		"",
 		false,
@@ -1246,10 +1240,47 @@ func TestTransparentProxy_RemoteServerFailure_ConnectionRefused(t *testing.T) {
 	// - Retry: T=150ms → fails instantly → continue (consecutiveFailures stays 2)
 	// - Third ticker: T=200ms (next interval) → fails instantly → consecutiveFailures=3 → shutdown
 	// Total time: ~200ms for 3 consecutive ticker failures with instant failures
-	callbackInvoked, proxyStopped := waitForShutdown(t, tracker, proxy, 2*time.Second)
+	callbackInvoked := waitForShutdown(t, tracker, proxy, 2*time.Second)
 
 	assert.True(t, callbackInvoked, "Callback should be invoked when connection is refused after 3 consecutive failures")
-	assert.True(t, proxyStopped, "Proxy should stop after connection failure")
+	// Remote proxies stay alive for auto-recovery
+	running, err := proxy.IsRunning()
+	assert.NoError(t, err)
+	assert.True(t, running, "Proxy should stay running for remote workloads (auto-recovery)")
+}
+
+// TestTransparentProxy_RemoteServerFailure_HTTP500 tests that remote servers returning HTTP 500
+// are marked unhealthy even before the proxy sees a successful initialize response,
+// and that the proxy stays alive for auto-recovery (does not stop).
+func TestTransparentProxy_RemoteServerFailure_HTTP500(t *testing.T) {
+	t.Parallel()
+
+	tracker, callback := newCallbackTracker()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	proxy, ctx, cancel := setupRemoteProxyTest(t, server.URL, callback)
+	defer cancel()
+	defer func() { _ = proxy.Stop(ctx) }()
+
+	// Do not call proxy.setServerInitialized(). Health checks must fire before initialization.
+	// Wait for the callback to be invoked (unhealthy threshold reached).
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-tracker.done:
+	case <-timer.C:
+		t.Fatal("timed out waiting for health check failure callback")
+	}
+
+	assert.True(t, tracker.isInvoked(), "onHealthCheckFailed callback should be invoked when remote server returns HTTP 500")
+	// Remote proxies must NOT stop — they stay alive for auto-recovery.
+	running, err := proxy.IsRunning()
+	assert.NoError(t, err)
+	assert.True(t, running, "Proxy should remain running for remote workloads to allow auto-recovery")
 }
 
 // TestTransparentProxy_RemoteServerFailure_Timeout tests that timeouts
@@ -1295,10 +1326,13 @@ func TestTransparentProxy_RemoteServerFailure_Timeout(t *testing.T) {
 
 	proxy.setServerInitialized()
 
-	callbackInvoked, proxyStopped := waitForShutdown(t, tracker, proxy, 2*time.Second)
+	callbackInvoked := waitForShutdown(t, tracker, proxy, 2*time.Second)
 
 	assert.True(t, callbackInvoked, "Callback should be invoked on timeout after 3 consecutive failures")
-	assert.True(t, proxyStopped, "Proxy should stop after timeout")
+	// Remote proxies stay alive for auto-recovery
+	running, err := proxy.IsRunning()
+	assert.NoError(t, err)
+	assert.True(t, running, "Proxy should stay running for remote workloads (auto-recovery)")
 }
 
 // TestTransparentProxy_RemoteServerFailure_BecomesUnavailable tests that a server
@@ -1333,8 +1367,9 @@ func TestTransparentProxy_RemoteServerFailure_BecomesUnavailable(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 	assert.True(t, tracker.isInvoked(), "Callback should be invoked after server becomes unavailable (3 consecutive failures)")
 
+	// Remote proxies stay alive for auto-recovery
 	running, _ := proxy.IsRunning()
-	assert.False(t, running, "Proxy should stop after server becomes unavailable")
+	assert.True(t, running, "Proxy should stay running for remote workloads (auto-recovery)")
 }
 
 // TestTransparentProxy_RemoteServerStatusCodes tests various HTTP status codes
@@ -1349,33 +1384,33 @@ func TestTransparentProxy_RemoteServerStatusCodes(t *testing.T) {
 		expectRunning  bool
 		description    string
 	}{
-		// 5xx codes should trigger callback and stop proxy
+		// 5xx codes should trigger callback but proxy stays alive for remote workloads
 		{
 			name:           "500 Internal Server Error",
 			statusCode:     http.StatusInternalServerError,
 			expectCallback: true,
-			expectRunning:  false,
+			expectRunning:  true,
 			description:    "5xx codes should trigger callback",
 		},
 		{
 			name:           "502 Bad Gateway",
 			statusCode:     http.StatusBadGateway,
 			expectCallback: true,
-			expectRunning:  false,
+			expectRunning:  true,
 			description:    "5xx codes should trigger callback",
 		},
 		{
 			name:           "503 Service Unavailable",
 			statusCode:     http.StatusServiceUnavailable,
 			expectCallback: true,
-			expectRunning:  false,
+			expectRunning:  true,
 			description:    "5xx codes should trigger callback",
 		},
 		{
 			name:           "504 Gateway Timeout",
 			statusCode:     http.StatusGatewayTimeout,
 			expectCallback: true,
-			expectRunning:  false,
+			expectRunning:  true,
 			description:    "5xx codes should trigger callback",
 		},
 		// 4xx codes should NOT trigger callback (considered healthy)
@@ -1438,7 +1473,7 @@ func TestTransparentProxy_RemoteServerStatusCodes(t *testing.T) {
 }
 
 // TestTransparentProxy_HealthCheckNotRunBeforeInitialization tests that health checks
-// are skipped until the server is initialized
+// are skipped until the server is initialized for local (non-remote) proxies
 func TestTransparentProxy_HealthCheckNotRunBeforeInitialization(t *testing.T) {
 	t.Parallel()
 
@@ -1450,15 +1485,31 @@ func TestTransparentProxy_HealthCheckNotRunBeforeInitialization(t *testing.T) {
 	}))
 	defer failingServer.Close()
 
-	proxy, ctx, cancel := setupRemoteProxyTest(t, failingServer.URL, callback)
+	// Use a local (non-remote) proxy — init guard only applies to local workloads
+	proxy := NewTransparentProxyWithOptions(
+		"127.0.0.1", 0, failingServer.URL,
+		nil, nil, nil,
+		true,  // enableHealthCheck
+		false, // isRemote (local proxy)
+		"sse",
+		callback, nil, nil,
+		"", false,
+		nil,
+		withHealthCheckInterval(100*time.Millisecond),
+		withHealthCheckPingTimeout(100*time.Millisecond),
+		withHealthCheckFailureThreshold(3),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
 	defer func() { _ = proxy.Stop(ctx) }()
 
-	// Do NOT mark server as initialized - health checks should be skipped
+	// Do NOT mark server as initialized - health checks should be skipped for local proxy
 
 	// Wait for health check cycle (should be skipped since server is not initialized)
 	time.Sleep(150 * time.Millisecond)
-	assert.False(t, tracker.isInvoked(), "Callback should NOT be invoked before server initialization")
+	assert.False(t, tracker.isInvoked(), "Callback should NOT be invoked before server initialization for local proxy")
 
 	// Proxy should still be running
 	running, _ := proxy.IsRunning()
@@ -1486,9 +1537,9 @@ func TestTransparentProxy_HealthCheckFailureWithNilCallback(t *testing.T) {
 	// Total time: ~200ms for 3 consecutive ticker failures with instant failures
 	time.Sleep(400 * time.Millisecond)
 
-	// Proxy should stop even without callback
+	// Remote proxies stay alive for auto-recovery even without a callback
 	running, _ := proxy.IsRunning()
-	assert.False(t, running, "Proxy should stop after health check failure even with nil callback")
+	assert.True(t, running, "Proxy should stay running for remote workloads even with nil callback")
 }
 
 // TestPrefixHandlers_MountingAndRouting tests that prefix handlers are correctly mounted
@@ -1944,7 +1995,7 @@ func TestTransparentProxy_IsRunningDoesNotBlockDuringStop(t *testing.T) {
 		"127.0.0.1", 0, backend.URL,
 		nil, nil, nil,
 		false, // no health check
-		false, "sse", nil, nil, "", false, nil,
+		false, "sse", nil, nil, nil, "", false, nil,
 		// Use a long shutdown timeout so Stop() blocks on the SSE connection
 		withShutdownTimeout(10*time.Second),
 	)
@@ -2027,7 +2078,7 @@ func TestTransparentProxy_StopForcesCloseAfterTimeout(t *testing.T) {
 		"127.0.0.1", 0, backend.URL,
 		nil, nil, nil,
 		false, // no health check
-		false, "sse", nil, nil, "", false, nil,
+		false, "sse", nil, nil, nil, "", false, nil,
 		// Use a very short timeout to test the force-close path
 		withShutdownTimeout(500*time.Millisecond),
 	)
@@ -2067,7 +2118,7 @@ func TestTransparentProxy_ServerHasIdleTimeout(t *testing.T) {
 	proxy := NewTransparentProxyWithOptions(
 		"127.0.0.1", 0, "http://localhost:9999",
 		nil, nil, nil,
-		false, false, "sse", nil, nil, "", false, nil,
+		false, false, "sse", nil, nil, nil, "", false, nil,
 	)
 
 	ctx := t.Context()
@@ -2088,7 +2139,7 @@ func TestWithSessionStorage(t *testing.T) {
 		"localhost", 0, "http://localhost:9090",
 		nil, nil, nil,
 		false, false, "sse",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		nil,
 		WithSessionStorage(storage),
 	)

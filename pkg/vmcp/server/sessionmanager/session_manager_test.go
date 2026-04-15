@@ -616,12 +616,16 @@ func TestSessionManager_Terminate(t *testing.T) {
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
 
-		// Upgrade to full MultiSession; CreateSession writes tokenHashMeta to storage.
 		_, err := sm.CreateSession(context.Background(), sessionID)
 		require.NoError(t, err)
 		require.NotNil(t, createdSess)
 
-		// Terminate deletes from storage; cache entry remains until next Get.
+		// CreateSession already persists tokenHashMeta via sess.GetMetadata(),
+		// so Terminate will take the Phase 2 path (storage.Delete) without
+		// any additional seeding.
+
+		// Terminate deletes from storage; the cache entry is evicted lazily on
+		// the next GetMultiSession call when checkSession detects ErrSessionNotFound.
 		isNotAllowed, err := sm.Terminate(sessionID)
 		require.NoError(t, err)
 		assert.False(t, isNotAllowed)

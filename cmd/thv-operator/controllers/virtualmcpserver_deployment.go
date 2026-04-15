@@ -207,7 +207,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 							vmcpLivenessInitialDelay, vmcpLivenessPeriod, vmcpLivenessTimeout, vmcpLivenessFailures,
 						),
 						ReadinessProbe: ctrlutil.BuildHealthProbe(
-							"/health", "http",
+							"/readyz", "http",
 							vmcpReadinessInitialDelay, vmcpReadinessPeriod, vmcpReadinessTimeout, vmcpReadinessFailures,
 						),
 						SecurityContext: containerSecurityContext,

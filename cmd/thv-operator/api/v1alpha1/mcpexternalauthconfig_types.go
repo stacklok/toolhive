@@ -9,6 +9,21 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// reservedAuthorizationParams are OAuth2 parameters managed by the framework
+// that must not be set via AdditionalAuthorizationParams. This list mirrors
+// the runtime validation in pkg/authserver/upstream/oauth2.go to provide
+// early rejection at admission time.
+var reservedAuthorizationParams = map[string]bool{
+	"response_type":         true,
+	"client_id":             true,
+	"redirect_uri":          true,
+	"scope":                 true,
+	"state":                 true,
+	"code_challenge":        true,
+	"code_challenge_method": true,
+	"nonce":                 true,
+}
+
 // External auth configuration types
 const (
 	// ExternalAuthTypeTokenExchange is the type for RFC-8693 token exchange
@@ -322,6 +337,9 @@ type OIDCUpstreamConfig struct {
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	// If not specified, defaults to ["openid", "offline_access"].
+	// When using additionalAuthorizationParams with provider-specific refresh token
+	// mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
+	// sending both offline_access and the provider-specific parameter.
 	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
@@ -337,6 +355,8 @@ type OIDCUpstreamConfig struct {
 	// authorization requests sent to the upstream provider.
 	// This is useful for providers that require custom parameters, such as
 	// Google's access_type=offline for obtaining refresh tokens.
+	// Note: when using access_type=offline, also set explicit scopes to avoid
+	// the default offline_access scope being sent alongside it.
 	// Framework-managed parameters (response_type, client_id, redirect_uri,
 	// scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
 	// +kubebuilder:validation:MaxProperties=16
@@ -907,6 +927,27 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
 	}
 
+	// Validate additionalAuthorizationParams does not contain reserved keys
+	var params map[string]string
+	if provider.OIDCConfig != nil {
+		params = provider.OIDCConfig.AdditionalAuthorizationParams
+	} else if provider.OAuth2Config != nil {
+		params = provider.OAuth2Config.AdditionalAuthorizationParams
+	}
+	return ValidateAdditionalAuthorizationParams(prefix, params)
+}
+
+// ValidateAdditionalAuthorizationParams checks that no reserved OAuth2 parameters
+// are present in the additional authorization params map.
+func ValidateAdditionalAuthorizationParams(prefix string, params map[string]string) error {
+	for k := range params {
+		if reservedAuthorizationParams[k] {
+			return fmt.Errorf(
+				"%s.additionalAuthorizationParams: reserved parameter %q is managed by the framework",
+				prefix, k,
+			)
+		}
+	}
 	return nil
 }
 

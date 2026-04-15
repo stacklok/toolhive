@@ -439,6 +439,29 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		return fmt.Errorf("%s", message)
 	}
 
+	// Validate additionalAuthorizationParams on each upstream provider
+	for i, provider := range cfg.UpstreamProviders {
+		prefix := fmt.Sprintf("spec.authServerConfig.upstreamProviders[%d]", i)
+		var params map[string]string
+		if provider.OIDCConfig != nil {
+			params = provider.OIDCConfig.AdditionalAuthorizationParams
+		} else if provider.OAuth2Config != nil {
+			params = provider.OAuth2Config.AdditionalAuthorizationParams
+		}
+		if err := mcpv1alpha1.ValidateAdditionalAuthorizationParams(prefix, params); err != nil {
+			message := err.Error()
+			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetAuthServerConfigValidatedCondition(
+				mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+				message,
+				metav1.ConditionFalse,
+			)
+			statusManager.SetObservedGeneration(vmcp.Generation)
+			return fmt.Errorf("%s", message)
+		}
+	}
+
 	// AuthServerConfig is valid
 	statusManager.SetAuthServerConfigValidatedCondition(
 		mcpv1alpha1.ConditionReasonAuthServerConfigValid,

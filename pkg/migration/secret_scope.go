@@ -58,8 +58,9 @@ func CheckAndPerformSecretScopeMigration() {
 			}
 		}
 
-		if err := config.UpdateConfig(func(c *config.Config) {
+		if err := config.UpdateConfig(func(c *config.Config) error {
 			c.SecretScopeMigration = true
+			return nil
 		}); err != nil {
 			slog.Error("failed to update config after secret scope migration", "error", err)
 		}

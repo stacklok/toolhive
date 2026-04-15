@@ -21,21 +21,21 @@ import (
 func TestMiddleware(t *testing.T) {
 	t.Parallel()
 
-	// Mock backend that serves tools/list and tools/call
-	backend := mockBackend(map[string]func(map[string]interface{}) string{
-		"echo": func(args map[string]interface{}) string {
+	backend := mockBackend(map[string]mockTool{
+		"echo": {fn: func(args map[string]interface{}) string {
 			b, _ := json.Marshal(args)
 			return string(b)
-		},
-		"greet": func(args map[string]interface{}) string {
+		}},
+		"greet": {fn: func(args map[string]interface{}) string {
 			return fmt.Sprintf(`"Hello, %v!"`, args["name"])
-		},
+		}},
 	})
 
 	tests := []struct {
 		name    string
 		method  string
 		params  map[string]interface{}
+		headers map[string]string
 		check   func(t *testing.T, body map[string]interface{})
 		wantErr string
 	}{
@@ -112,7 +112,16 @@ return {"echo": result, "greeting": greeting}
 			wantErr: "script argument must be a string",
 		},
 		{
-			name:   "script syntax error returns error",
+			name:   "non-object data argument returns error",
+			method: "tools/call",
+			params: map[string]interface{}{
+				"name":      ExecuteToolScriptName,
+				"arguments": map[string]interface{}{"script": "return 1", "data": "not-an-object"},
+			},
+			wantErr: "data argument must be an object",
+		},
+		{
+			name:   "script execution error returns generic message",
 			method: "tools/call",
 			params: map[string]interface{}{
 				"name":      ExecuteToolScriptName,
@@ -126,7 +135,6 @@ return {"echo": result, "greeting": greeting}
 			params: map[string]interface{}{},
 			check: func(t *testing.T, body map[string]interface{}) {
 				t.Helper()
-				// Should see the passthrough response from mock backend
 				require.Contains(t, body, "result")
 			},
 		},
@@ -136,12 +144,10 @@ return {"echo": result, "greeting": greeting}
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Build middleware chain: parser → script → backend
-			handler := mcpparser.ParsingMiddleware(
-				NewMiddleware(nil)(backend),
-			)
+			// Script middleware composes its own parsing — no external parser needed
+			handler := NewMiddleware(nil)(backend)
 
-			body := sendJSONRPC(t, handler, tt.method, tt.params)
+			body := sendJSONRPCWithHeaders(t, handler, tt.method, tt.params, tt.headers)
 
 			if tt.wantErr != "" {
 				errObj, ok := body["error"].(map[string]interface{})
@@ -159,13 +165,13 @@ return {"echo": result, "greeting": greeting}
 func TestMiddleware_ConfigToggle(t *testing.T) {
 	t.Parallel()
 
-	backend := mockBackend(map[string]func(map[string]interface{}) string{
-		"echo": func(_ map[string]interface{}) string { return `"ok"` },
+	backend := mockBackend(map[string]mockTool{
+		"echo": {fn: func(_ map[string]interface{}) string { return `"ok"` }},
 	})
 
 	t.Run("disabled by default", func(t *testing.T) {
 		t.Parallel()
-		// No script middleware — just parser + backend
+		// No script middleware — just backend (with parsing for the test)
 		handler := mcpparser.ParsingMiddleware(backend)
 		body := sendJSONRPC(t, handler, "tools/list", map[string]interface{}{})
 		result := body["result"].(map[string]interface{})
@@ -176,9 +182,7 @@ func TestMiddleware_ConfigToggle(t *testing.T) {
 
 	t.Run("enabled with middleware", func(t *testing.T) {
 		t.Parallel()
-		handler := mcpparser.ParsingMiddleware(
-			NewMiddleware(nil)(backend),
-		)
+		handler := NewMiddleware(nil)(backend)
 		body := sendJSONRPC(t, handler, "tools/list", map[string]interface{}{})
 		result := body["result"].(map[string]interface{})
 		tools := result["tools"].([]interface{})
@@ -187,149 +191,23 @@ func TestMiddleware_ConfigToggle(t *testing.T) {
 	})
 }
 
-// mockBackend creates an HTTP handler that simulates an MCP backend.
-func mockBackend(tools map[string]func(map[string]interface{}) string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bodyBytes, _ := io.ReadAll(r.Body)
-		var req struct {
-			JSONRPC string           `json:"jsonrpc"`
-			ID      json.RawMessage  `json:"id"`
-			Method  string           `json:"method"`
-			Params  *json.RawMessage `json:"params,omitempty"`
-		}
-		if err := json.Unmarshal(bodyBytes, &req); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-
-		switch req.Method {
-		case "tools/list":
-			toolList := make([]map[string]interface{}, 0, len(tools))
-			for name := range tools {
-				toolList = append(toolList, map[string]interface{}{
-					"name":        name,
-					"description": "Mock tool: " + name,
-					"inputSchema": map[string]interface{}{
-						"type":       "object",
-						"properties": map[string]interface{}{},
-					},
-				})
-			}
-			result, _ := json.Marshal(map[string]interface{}{"tools": toolList})
-			raw := json.RawMessage(result)
-			resp := map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      req.ID,
-				"result":  &raw,
-			}
-			//nolint:errcheck,gosec // test helper
-			json.NewEncoder(w).Encode(resp)
-
-		case "tools/call":
-			var params struct {
-				Name      string                 `json:"name"`
-				Arguments map[string]interface{} `json:"arguments"`
-			}
-			if req.Params != nil {
-				_ = json.Unmarshal(*req.Params, &params)
-			}
-			fn, ok := tools[params.Name]
-			if !ok {
-				writeTestError(w, req.ID, -32601, fmt.Sprintf("unknown tool: %s", params.Name))
-				return
-			}
-			text := fn(params.Arguments)
-			result, _ := json.Marshal(map[string]interface{}{
-				"content": []map[string]interface{}{
-					{"type": "text", "text": text},
-				},
-			})
-			raw := json.RawMessage(result)
-			resp := map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      req.ID,
-				"result":  &raw,
-			}
-			//nolint:errcheck,gosec // test helper
-			json.NewEncoder(w).Encode(resp)
-
-		default:
-			result, _ := json.Marshal(map[string]interface{}{"status": "ok"})
-			raw := json.RawMessage(result)
-			resp := map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      req.ID,
-				"result":  &raw,
-			}
-			//nolint:errcheck,gosec // test helper
-			json.NewEncoder(w).Encode(resp)
-		}
-	})
-}
-
-func writeTestError(w http.ResponseWriter, id json.RawMessage, code int, msg string) {
-	errObj, _ := json.Marshal(map[string]interface{}{"code": code, "message": msg})
-	raw := json.RawMessage(errObj)
-	resp := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"error":   &raw,
-	}
-	//nolint:errcheck,gosec // test helper
-	json.NewEncoder(w).Encode(resp)
-}
-
-func sendJSONRPC(t *testing.T, handler http.Handler, method string, params interface{}) map[string]interface{} {
-	t.Helper()
-	body := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  method,
-		"params":  params,
-	}
-	bodyBytes, err := json.Marshal(body)
-	require.NoError(t, err)
-
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(string(bodyBytes)))
-	require.NoError(t, err)
-	req.Header.Set("Content-Type", "application/json")
-
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	return resp
-}
-
 func TestMiddleware_InnerToolCallParsedRequest(t *testing.T) {
 	t.Parallel()
 
-	// Track the ParsedMCPRequest seen by the backend on inner tool calls
 	var capturedParsed *mcpparser.ParsedMCPRequest
-	backend := mockBackendWithHook(
-		map[string]func(map[string]interface{}) string{
-			"target-tool": func(args map[string]interface{}) string {
+	backend := mockBackend(map[string]mockTool{
+		"target-tool": {
+			fn: func(args map[string]interface{}) string {
 				b, _ := json.Marshal(args)
 				return string(b)
 			},
-		},
-		func(r *http.Request, toolName string) {
-			if toolName == "target-tool" {
+			onCall: func(r *http.Request, _ string) {
 				capturedParsed = mcpparser.GetParsedMCPRequest(r.Context())
-			}
+			},
 		},
-	)
+	})
 
-	// parser → script middleware → parser → backend
-	// The inner parser re-parses the synthetic request
-	handler := mcpparser.ParsingMiddleware(
-		NewMiddleware(nil)(
-			mcpparser.ParsingMiddleware(backend),
-		),
-	)
+	handler := NewMiddleware(nil)(backend)
 
 	body := sendJSONRPC(t, handler, "tools/call", map[string]interface{}{
 		"name": ExecuteToolScriptName,
@@ -349,22 +227,16 @@ func TestMiddleware_InnerToolCallPreservesAuthHeaders(t *testing.T) {
 	t.Parallel()
 
 	var capturedAuthHeader string
-	backend := mockBackendWithHook(
-		map[string]func(map[string]interface{}) string{
-			"secured-tool": func(_ map[string]interface{}) string { return `"ok"` },
-		},
-		func(r *http.Request, toolName string) {
-			if toolName == "secured-tool" {
+	backend := mockBackend(map[string]mockTool{
+		"secured-tool": {
+			fn: func(_ map[string]interface{}) string { return `"ok"` },
+			onCall: func(r *http.Request, _ string) {
 				capturedAuthHeader = r.Header.Get("Authorization")
-			}
+			},
 		},
-	)
+	})
 
-	handler := mcpparser.ParsingMiddleware(
-		NewMiddleware(nil)(
-			mcpparser.ParsingMiddleware(backend),
-		),
-	)
+	handler := NewMiddleware(nil)(backend)
 
 	body := sendJSONRPCWithHeaders(t, handler, "tools/call", map[string]interface{}{
 		"name": ExecuteToolScriptName,
@@ -380,11 +252,16 @@ func TestMiddleware_InnerToolCallPreservesAuthHeaders(t *testing.T) {
 		"inner tool call should preserve Authorization header from original request")
 }
 
-// mockBackendWithHook is like mockBackend but calls onToolCall for each tools/call.
-func mockBackendWithHook(
-	tools map[string]func(map[string]interface{}) string,
-	onToolCall func(r *http.Request, toolName string),
-) http.Handler {
+// mockTool defines a tool's behavior and optional request inspection hook.
+type mockTool struct {
+	fn     func(map[string]interface{}) string
+	onCall func(r *http.Request, toolName string) // nil = no-op
+}
+
+// mockBackend creates an HTTP handler that simulates an MCP backend.
+// Each tool has a response function and an optional onCall hook for
+// inspecting the request during dispatch.
+func mockBackend(tools map[string]mockTool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bodyBytes, _ := io.ReadAll(r.Body)
 		var req struct {
@@ -428,15 +305,15 @@ func mockBackendWithHook(
 			if req.Params != nil {
 				_ = json.Unmarshal(*req.Params, &params)
 			}
-			if onToolCall != nil {
-				onToolCall(r, params.Name)
-			}
-			fn, ok := tools[params.Name]
+			tool, ok := tools[params.Name]
 			if !ok {
 				writeTestError(w, req.ID, -32601, fmt.Sprintf("unknown tool: %s", params.Name))
 				return
 			}
-			text := fn(params.Arguments)
+			if tool.onCall != nil {
+				tool.onCall(r, params.Name)
+			}
+			text := tool.fn(params.Arguments)
 			result, _ := json.Marshal(map[string]interface{}{
 				"content": []map[string]interface{}{
 					{"type": "text", "text": text},
@@ -457,6 +334,20 @@ func mockBackendWithHook(
 			})
 		}
 	})
+}
+
+func writeTestError(w http.ResponseWriter, id json.RawMessage, code int, msg string) {
+	errObj, _ := json.Marshal(map[string]interface{}{"code": code, "message": msg})
+	raw := json.RawMessage(errObj)
+	//nolint:errcheck,gosec // test helper
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"jsonrpc": "2.0", "id": id, "error": &raw,
+	})
+}
+
+func sendJSONRPC(t *testing.T, handler http.Handler, method string, params interface{}) map[string]interface{} {
+	t.Helper()
+	return sendJSONRPCWithHeaders(t, handler, method, params, nil)
 }
 
 func sendJSONRPCWithHeaders(

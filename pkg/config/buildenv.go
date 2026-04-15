@@ -125,11 +125,12 @@ func setBuildEnv(p Provider, key, value string) error {
 		return err
 	}
 
-	return p.UpdateConfig(func(c *Config) {
+	return p.UpdateConfig(func(c *Config) error {
 		if c.BuildEnv == nil {
 			c.BuildEnv = make(map[string]string)
 		}
 		c.BuildEnv[key] = value
+		return nil
 	})
 }
 
@@ -159,17 +160,19 @@ func getAllBuildEnv(p Provider) map[string]string {
 
 // unsetBuildEnv is a helper function that removes a specific build environment variable.
 func unsetBuildEnv(p Provider, key string) error {
-	return p.UpdateConfig(func(c *Config) {
+	return p.UpdateConfig(func(c *Config) error {
 		if c.BuildEnv != nil {
 			delete(c.BuildEnv, key)
 		}
+		return nil
 	})
 }
 
 // unsetAllBuildEnv is a helper function that removes all build environment variables.
 func unsetAllBuildEnv(p Provider) error {
-	return p.UpdateConfig(func(c *Config) {
+	return p.UpdateConfig(func(c *Config) error {
 		c.BuildEnv = nil
+		return nil
 	})
 }
 
@@ -185,11 +188,12 @@ func setBuildEnvFromSecret(p Provider, key, secretName string) error {
 		return err
 	}
 
-	return p.UpdateConfig(func(c *Config) {
+	return p.UpdateConfig(func(c *Config) error {
 		if c.BuildEnvFromSecrets == nil {
 			c.BuildEnvFromSecrets = make(map[string]string)
 		}
 		c.BuildEnvFromSecrets[key] = secretName
+		return nil
 	})
 }
 
@@ -218,10 +222,11 @@ func getAllBuildEnvFromSecrets(p Provider) map[string]string {
 
 // unsetBuildEnvFromSecret removes a secret reference.
 func unsetBuildEnvFromSecret(p Provider, key string) error {
-	return p.UpdateConfig(func(c *Config) {
+	return p.UpdateConfig(func(c *Config) error {
 		if c.BuildEnvFromSecrets != nil {
 			delete(c.BuildEnvFromSecrets, key)
 		}
+		return nil
 	})
 }
 
@@ -242,8 +247,9 @@ func setBuildEnvFromShell(p Provider, key string) error {
 		return err
 	}
 
-	return p.UpdateConfig(func(c *Config) {
+	return p.UpdateConfig(func(c *Config) error {
 		c.BuildEnvFromShell = append(c.BuildEnvFromShell, key)
+		return nil
 	})
 }
 
@@ -292,9 +298,9 @@ func getAllBuildEnvFromShell(p Provider) []string {
 
 // unsetBuildEnvFromShell removes a key from shell environment list.
 func unsetBuildEnvFromShell(p Provider, key string) error {
-	return p.UpdateConfig(func(c *Config) {
+	return p.UpdateConfig(func(c *Config) error {
 		if c.BuildEnvFromShell == nil {
-			return
+			return nil
 		}
 		newList := make([]string, 0, len(c.BuildEnvFromShell))
 		for _, k := range c.BuildEnvFromShell {
@@ -303,5 +309,6 @@ func unsetBuildEnvFromShell(p Provider, key string) error {
 			}
 		}
 		c.BuildEnvFromShell = newList
+		return nil
 	})
 }

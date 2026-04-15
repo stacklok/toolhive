@@ -82,7 +82,10 @@ func (r *resolver) ResolveFromConfigRef(
 		return nil, nil
 	}
 
-	resourceURL := createServiceURL(serverName, namespace, proxyPort)
+	resourceURL := ref.ResourceURL
+	if resourceURL == "" {
+		resourceURL = createServiceURL(serverName, namespace, proxyPort)
+	}
 
 	switch oidcCfg.Spec.Type {
 	case mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount:

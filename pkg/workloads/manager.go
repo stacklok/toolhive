@@ -1091,6 +1091,9 @@ func (d *DefaultManager) restartSingleWorkload(ctx context.Context, name string,
 	// Check policy gates before restarting — the loaded RunConfig carries the same
 	// fields (RegistryAPIURL, RegistryURL, RemoteURL) that the gate evaluates on create.
 	if err := runner.EagerCheckCreateServer(ctx, runConfig); err != nil {
+		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusPolicyStopped, err.Error()); statusErr != nil {
+			slog.Warn("Failed to set workload status to policy_stopped", "workload", name, "error", statusErr)
+		}
 		return fmt.Errorf("server restart blocked by policy: %w", err)
 	}
 
@@ -1307,6 +1310,9 @@ func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name s
 	// could not load state via the original name but we resolved the canonical name
 	// from container labels above, so the check must happen here.
 	if err := runner.EagerCheckCreateServer(ctx, mcpRunner.Config); err != nil {
+		if statusErr := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusPolicyStopped, err.Error()); statusErr != nil {
+			slog.Warn("Failed to set workload status to policy_stopped", "workload", workloadName, "error", statusErr)
+		}
 		return "", nil, fmt.Errorf("server restart blocked by policy: %w", err)
 	}
 

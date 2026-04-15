@@ -1,17 +1,11 @@
 ---
 paths:
   - "**/*.go"
-  - "**/go.mod"
 ---
 
 # Go Style Rules
 
 Applies to all Go files in the project.
-
-## Go Module (`go.mod`) Conventions
-
-- **Never specify a patch version in the `go` directive** — use `go 1.23` not `go 1.23.4`. The patch version is irrelevant to module compatibility and creates unnecessary churn in diffs when toolchains update.
-- If a toolchain directive is needed, it goes on a separate `toolchain` line, not embedded in the `go` line.
 
 ## File Organization
 - Public methods in the top half of files, private methods in the bottom half

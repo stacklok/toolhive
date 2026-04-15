@@ -60,7 +60,7 @@ var groupRmCmd = &cobra.Command{
 
 var groupRunCmd = &cobra.Command{
 	Use:   "run [group-name]",
-	Short: "Deploy all MCP servers from a registry group (deprecated)",
+	Short: "Deploy all MCP servers from a registry group (removed)",
 	Long: `Registry-based groups are no longer supported.
 Use 'thv group create' to create runtime groups and 'thv run --group' to add servers.`,
 	Args: cobra.ExactArgs(1),

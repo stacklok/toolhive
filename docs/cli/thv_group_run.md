@@ -11,7 +11,7 @@ mdx:
 
 ## thv group run
 
-Deploy all MCP servers from a registry group (deprecated)
+Deploy all MCP servers from a registry group (removed)
 
 ### Synopsis
 

@@ -71,6 +71,29 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 			},
 		},
 		{
+			name: "empty resourceUrl falls back to derived service URL",
+			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+				Name: "k", Audience: "my-aud", Scopes: []string{"openid"},
+				ResourceURL: "",
+			},
+			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+						Issuer: "https://kubernetes.default.svc",
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer: "https://kubernetes.default.svc", Audience: "my-aud",
+				Scopes:             []string{"openid"},
+				ResourceURL:        "http://srv.default.svc.cluster.local:8080",
+				ThvCABundlePath:    defaultK8sCABundlePath,
+				JWKSAuthTokenPath:  defaultK8sTokenPath,
+				JWKSAllowPrivateIP: true,
+			},
+		},
+		{
 			name: "nil KSA config falls back to all defaults",
 			ref: &mcpv1alpha1.MCPOIDCConfigReference{
 				Name: "k", Audience: "aud",

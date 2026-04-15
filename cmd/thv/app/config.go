@@ -344,8 +344,9 @@ func usageMetricsCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid argument: %s (expected 'enable' or 'disable')", action)
 	}
 
-	err := config.UpdateConfig(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) error {
 		c.DisableUsageMetrics = disable
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)

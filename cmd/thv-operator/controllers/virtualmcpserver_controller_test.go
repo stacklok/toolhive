@@ -66,7 +66,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: testGroupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -112,7 +112,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "missing-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "missing-group"},
 				},
 			},
 			expectError:    true,
@@ -127,7 +127,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "pending-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "pending-group"},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -219,7 +219,7 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -298,7 +298,7 @@ func TestVirtualMCPServerEnsureRBACResources_Update(t *testing.T) {
 			UID:       "test-uid",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -381,7 +381,7 @@ func TestVirtualMCPServerEnsureRBACResources_Idempotency(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -444,7 +444,7 @@ func TestVirtualMCPServerEnsureRBACResources_InlineMode(t *testing.T) {
 			UID:       "test-uid",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 				Source: "inline",
 			},
@@ -514,7 +514,7 @@ func TestVirtualMCPServerEnsureRBACResources_DiscoveredMode(t *testing.T) {
 			UID:       "test-uid",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 				Source: "discovered",
 			},
@@ -582,7 +582,7 @@ func TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount(t *testing.T) 
 			UID:       "test-uid",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config:         vmcpconfig.Config{Group: "test-group"},
+			GroupRef:       &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			ServiceAccount: &customSA,
 		},
 	}
@@ -641,7 +641,7 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -724,7 +724,7 @@ func TestVirtualMCPServerEnsureService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -803,7 +803,7 @@ func TestVirtualMCPServerServiceType(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config:      vmcpconfig.Config{Group: testGroupName},
+					GroupRef:    &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					ServiceType: tt.serviceType,
 				},
 			}
@@ -834,7 +834,7 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config:      vmcpconfig.Config{Group: testGroupName},
+			GroupRef:    &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 			ServiceType: "ClusterIP",
 		},
 	}
@@ -1157,7 +1157,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: testGroupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
@@ -1170,62 +1170,69 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			expectError:         false,
 		},
 		{
-			name: "OIDC with missing client secret",
+			name: "OIDC with missing client secret via MCPOIDCConfig",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: testGroupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "oidc",
-						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-							Type: "inline",
-							Inline: &mcpv1alpha1.InlineOIDCConfig{
-								Issuer:   "https://issuer.example.com",
-								Audience: "test-audience",
-								ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-									Name: "missing-secret",
-									Key:  "client-secret",
-								},
+						Type:          "oidc",
+						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
+					},
+				},
+			},
+			secrets: []client.Object{
+				&mcpv1alpha1.MCPOIDCConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+						Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+							Issuer: "https://issuer.example.com",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "missing-secret",
+								Key:  "client-secret",
 							},
 						},
 					},
 				},
 			},
-			secrets:             []client.Object{},
 			expectAuthCondition: true,
 			expectedAuthStatus:  metav1.ConditionFalse,
 			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthInvalid,
 			expectError:         true,
 		},
 		{
-			name: "OIDC with valid client secret",
+			name: "OIDC with valid client secret via MCPOIDCConfig",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: testGroupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "oidc",
-						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-							Type: "inline",
-							Inline: &mcpv1alpha1.InlineOIDCConfig{
-								Issuer:   "https://issuer.example.com",
-								Audience: "test-audience",
-								ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-									Name: "oidc-secret",
-									Key:  "client-secret",
-								},
-							},
-						},
+						Type:          "oidc",
+						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
 					},
 				},
 			},
 			secrets: []client.Object{
+				&mcpv1alpha1.MCPOIDCConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+						Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+							Issuer: "https://issuer.example.com",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "oidc-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+				},
 				&corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "oidc-secret",
@@ -1242,31 +1249,34 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			expectError:         false,
 		},
 		{
-			name: "OIDC secret exists but missing required key",
+			name: "OIDC secret exists but missing required key via MCPOIDCConfig",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: testGroupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "oidc",
-						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-							Type: "inline",
-							Inline: &mcpv1alpha1.InlineOIDCConfig{
-								Issuer:   "https://issuer.example.com",
-								Audience: "test-audience",
-								ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-									Name: "oidc-secret",
-									Key:  "client-secret",
-								},
-							},
-						},
+						Type:          "oidc",
+						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
 					},
 				},
 			},
 			secrets: []client.Object{
+				&mcpv1alpha1.MCPOIDCConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+						Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+							Issuer: "https://issuer.example.com",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "oidc-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+				},
 				&corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "oidc-secret",
@@ -1384,7 +1394,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: testGroupName},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 				}
 			},
@@ -1407,7 +1417,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: testGroupName},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 				}
 			},
@@ -1427,7 +1437,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: testGroupName},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 				}
 			},
@@ -1511,7 +1521,7 @@ func TestVirtualMCPServerApplyStatusUpdates_ResourceNotFound(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -1553,7 +1563,7 @@ func TestVirtualMCPServerEnsureAllResources_Errors(t *testing.T) {
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: testGroupName},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 				}
 			},
@@ -1626,7 +1636,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -1802,6 +1812,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					Config: vmcpconfig.Config{
 						Group: testGroupName,
 						Operational: &vmcpconfig.OperationalConfig{
@@ -2109,7 +2120,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2281,7 +2292,7 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2414,7 +2425,7 @@ func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "nonexistent-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "nonexistent-group"},
 		},
 	}
 
@@ -2470,7 +2481,7 @@ func TestVirtualMCPServerReconcile_GroupNotReady(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2564,7 +2575,7 @@ func TestVirtualMCPServerEnsureDeployment_ConfigMapNotFound(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2600,7 +2611,7 @@ func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2657,7 +2668,7 @@ func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2740,7 +2751,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2826,7 +2837,7 @@ func TestVirtualMCPServerEnsureService_CreateService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2868,7 +2879,7 @@ func TestVirtualMCPServerEnsureService_UpdateService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config:      vmcpconfig.Config{Group: testGroupName},
+			GroupRef:    &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 			ServiceType: "LoadBalancer",
 		},
 	}
@@ -2930,7 +2941,7 @@ func TestVirtualMCPServerEnsureService_NoUpdateNeeded(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2992,7 +3003,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: testGroupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 				},
 			},
 			expectError: false,
@@ -3005,7 +3016,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: testGroupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
 						Name: "shared-embedding",
 					},
@@ -3031,7 +3042,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: testGroupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
 						Name: "missing-embedding",
 					},
@@ -3049,7 +3060,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: testGroupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
 						Name: "pending-embedding",
 					},
@@ -3075,7 +3086,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: testGroupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
 						Name: "no-replicas-embedding",
 					},
@@ -3161,7 +3172,7 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_SpecDriven(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config:   vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 			Replicas: &specReplicas,
 		},
 	}
@@ -3240,7 +3251,7 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_NilPassthrough(t *testing.
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config:   vmcpconfig.Config{Group: testGroupName},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 			Replicas: nil, // HPA manages replicas
 		},
 	}

@@ -79,6 +79,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Config: vmcpconfig.Config{
 						Group: mcpGroupName,
 					},
@@ -308,7 +309,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config:       vmcpconfig.Config{Group: mcpGroupName},
+					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
 				},
 			})).To(gomega.Succeed())
@@ -449,26 +450,35 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 				},
 			})).To(gomega.Succeed())
 
-			// ---- Deploy VirtualMCPServer with OIDC incoming auth ----
+			// ---- Create MCPOIDCConfig for OIDC auth ----
+			ginkgo.By("Creating MCPOIDCConfig for OIDC incoming auth")
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPOIDCConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "session-oidc-config", Namespace: defaultNamespace},
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+						Issuer:                          oidcIssuer,
+						InsecureAllowHTTP:               true,
+						JWKSAllowPrivateIP:              true,
+						ProtectedResourceAllowPrivateIP: true,
+					},
+				},
+			})).To(gomega.Succeed())
 
+			// ---- Deploy VirtualMCPServer with OIDC incoming auth ----
 			ginkgo.By("Creating VirtualMCPServer with OIDC incoming auth")
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Config: vmcpconfig.Config{
 						Group: mcpGroupName,
 					},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
-						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-							Type: "inline",
-							Inline: &mcpv1alpha1.InlineOIDCConfig{
-								Issuer:                          oidcIssuer,
-								Audience:                        "vmcp-audience",
-								InsecureAllowHTTP:               true,
-								JWKSAllowPrivateIP:              true,
-								ProtectedResourceAllowPrivateIP: true,
-							},
+						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+							Name:     "session-oidc-config",
+							Audience: "vmcp-audience",
 						},
 					},
 					ServiceType: "NodePort",

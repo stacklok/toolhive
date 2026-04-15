@@ -55,7 +55,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -77,7 +77,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 				{
@@ -86,7 +86,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -108,7 +108,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "other-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "other-group"},
 					},
 				},
 			},
@@ -130,7 +130,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 				{
@@ -139,7 +139,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "other-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "other-group"},
 					},
 				},
 			},
@@ -257,7 +257,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -290,7 +290,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -323,7 +323,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "other-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "other-group"},
 					},
 				},
 			},
@@ -365,7 +365,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "group-1"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-1"},
 					},
 				},
 				{
@@ -374,7 +374,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "group-2"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-2"},
 					},
 				},
 				{
@@ -383,7 +383,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "group-3"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-3"},
 					},
 				},
 			},
@@ -507,7 +507,7 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -540,7 +540,7 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -573,7 +573,7 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "other-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "other-group"},
 					},
 				},
 			},
@@ -615,7 +615,7 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "group-1"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-1"},
 					},
 				},
 				{
@@ -624,7 +624,7 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "group-2"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-2"},
 					},
 				},
 				{
@@ -633,7 +633,7 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "group-3"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-3"},
 					},
 				},
 			},
@@ -877,7 +877,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 							Source: "discovered",
 						},
@@ -924,7 +924,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 							Source: "discovered",
 						},
@@ -971,7 +971,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 							Source: "discovered",
 						},
@@ -1018,7 +1018,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 							Source: "discovered",
 						},
@@ -1509,7 +1509,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -1548,7 +1548,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -1587,7 +1587,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "nonexistent-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "nonexistent-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -1604,7 +1604,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -1664,7 +1664,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -1703,7 +1703,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -1818,7 +1818,7 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config:             vmcpconfig.Config{Group: "test-group"},
+						GroupRef:           &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{Name: "shared-embedding"},
 					},
 				},
@@ -1841,7 +1841,7 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config:             vmcpconfig.Config{Group: "test-group"},
+						GroupRef:           &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{Name: "shared-embedding"},
 					},
 				},
@@ -1851,7 +1851,7 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config:             vmcpconfig.Config{Group: "test-group"},
+						GroupRef:           &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{Name: "shared-embedding"},
 					},
 				},
@@ -1874,7 +1874,7 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config:             vmcpconfig.Config{Group: "test-group"},
+						GroupRef:           &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{Name: "other-embedding"},
 					},
 				},

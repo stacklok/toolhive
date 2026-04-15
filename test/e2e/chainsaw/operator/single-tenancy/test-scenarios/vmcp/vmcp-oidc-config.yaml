@@ -1,0 +1,13 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPOIDCConfig
+metadata:
+  name: test-vmcp-oidc-config
+  namespace: toolhive-system
+spec:
+  type: inline
+  inline:
+    issuer: https://auth.example.com
+    clientID: test-client-id
+    clientSecretRef:
+      name: test-oidc-client-secret
+      key: clientSecret

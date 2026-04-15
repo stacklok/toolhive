@@ -4,6 +4,7 @@
 package virtualmcp
 
 import (
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -11,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func() {
@@ -39,6 +39,18 @@ var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func()
 		const vmcpName = "auth-server-valid-vmcp"
 
 		BeforeAll(func() {
+			By("Creating MCPOIDCConfig for auth server test")
+			Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPOIDCConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "authserver-oidc-config", Namespace: testNamespace},
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+						Issuer:            "http://localhost:9090",
+						InsecureAllowHTTP: true,
+					},
+				},
+			})).To(Succeed())
+
 			By("Creating VirtualMCPServer with valid inline AuthServerConfig")
 			vmcp := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -48,14 +60,13 @@ var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func()
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
-						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-							Type: "inline",
-							Inline: &mcpv1alpha1.InlineOIDCConfig{
-								Issuer: "http://localhost:9090",
-							},
+						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+							Name: "authserver-oidc-config",
+							// Audience must match the auth server's allowed audience (the vMCP service URL)
+							Audience: fmt.Sprintf("http://%s.%s.svc.cluster.local:4483", vmcpName, testNamespace),
 						},
 					},
-					Config: vmcpconfig.Config{Group: mcpGroupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					AuthServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
 						Issuer: "http://localhost:9090",
 						UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{

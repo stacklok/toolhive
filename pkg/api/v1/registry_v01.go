@@ -81,14 +81,12 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 func parsePaginationV01(r *http.Request) (page, limit int) {
 	page = 1
 	limit = v01DefaultLimit
+
+	// Parse both values before computing the overflow cap.
 	if p := r.URL.Query().Get("page"); p != "" {
 		if v, err := strconv.Atoi(p); err == nil && v > 0 {
 			page = v
 		}
-	}
-	// Cap page so (page-1)*limit cannot overflow int in the caller.
-	if maxPage := math.MaxInt / limit; page > maxPage {
-		page = maxPage
 	}
 	if l := r.URL.Query().Get("limit"); l != "" {
 		if v, err := strconv.Atoi(l); err == nil && v > 0 {
@@ -98,6 +96,12 @@ func parsePaginationV01(r *http.Request) (page, limit int) {
 			limit = v
 		}
 	}
+
+	// Cap page so (page-1)*limit cannot overflow int.
+	if maxPage := math.MaxInt / limit; page > maxPage {
+		page = maxPage
+	}
+
 	return page, limit
 }
 

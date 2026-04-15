@@ -62,7 +62,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  mcpGroupName,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
@@ -173,7 +173,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  mcpGroupName,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
@@ -357,7 +357,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  mcpGroupName,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
@@ -548,7 +548,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  mcpGroupName,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,

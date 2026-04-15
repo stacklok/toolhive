@@ -64,7 +64,21 @@ func TestCreateVmcpConfigFromVirtualMCPServer(t *testing.T) {
 		expectedGroupRef string
 	}{
 		{
-			name: "basic config",
+			name: "spec.groupRef only",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+				},
+			},
+			expectedName:     "test-vmcp",
+			expectedGroupRef: "test-group",
+		},
+		{
+			name: "deprecated config.groupRef fallback",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-vmcp",
@@ -489,7 +503,7 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	// Fetch workload names (matching production behavior)
 	ctx := context.Background()
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, testVmcp.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testVmcp.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testVmcp.ResolveGroupName())
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Create a status collector (we don't validate status in this test)
@@ -1189,7 +1203,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 
 	// Fetch workload names (matching production behavior)
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Test the ensureVmcpConfigConfigMap function
@@ -1316,7 +1330,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 
 	// Fetch workload names (matching production behavior)
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Test the ensureVmcpConfigConfigMap function
@@ -1400,7 +1414,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_NotFound(t *testing.T) {
 
 	// Fetch workload names (matching production behavior)
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Test should fail with not found error
@@ -1459,7 +1473,7 @@ func TestConfigMapContent_DynamicMode(t *testing.T) {
 
 	// Discover workloads
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
 	require.NoError(t, err)
 
 	// Create ConfigMap
@@ -1566,7 +1580,7 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 
 	// Discover workloads
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
 	require.NoError(t, err)
 
 	// Create ConfigMap
@@ -1681,7 +1695,7 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 
 	// Discover workloads
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
 	require.NoError(t, err)
 	require.NotEmpty(t, workloadNames, "should have discovered the MCPServer")
 
@@ -2157,7 +2171,7 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 
 	ctx := context.Background()
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, testVmcp.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testVmcp.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testVmcp.ResolveGroupName())
 	require.NoError(t, err)
 
 	// Use a mock StatusManager so we can verify the exact conditions set on failure.

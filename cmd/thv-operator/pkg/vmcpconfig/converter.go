@@ -88,6 +88,10 @@ func (c *Converter) Convert(
 	// Override name with the CR name (authoritative source)
 	config.Name = vmcp.Name
 
+	// Resolve groupRef: prefer spec.groupRef over the deprecated config.groupRef.
+	// ResolveGroupName handles the precedence logic.
+	config.Group = vmcp.ResolveGroupName()
+
 	// Convert IncomingAuth - required field, no defaults
 	if vmcp.Spec.IncomingAuth != nil {
 		incomingAuth, err := c.convertIncomingAuth(ctx, vmcp)

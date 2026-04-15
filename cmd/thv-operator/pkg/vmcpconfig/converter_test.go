@@ -73,6 +73,56 @@ func newTestVMCPServer(oidcConfig *mcpv1alpha1.OIDCConfigRef) *mcpv1alpha1.Virtu
 	}
 }
 
+func TestConvert_GroupRefResolution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		groupRef      *mcpv1alpha1.MCPGroupRef
+		configGroup   string
+		expectedGroup string
+	}{
+		{
+			name:          "spec.groupRef only (no config.groupRef)",
+			groupRef:      &mcpv1alpha1.MCPGroupRef{Name: "from-spec"},
+			configGroup:   "",
+			expectedGroup: "from-spec",
+		},
+		{
+			name:          "spec.groupRef takes precedence over config.groupRef",
+			groupRef:      &mcpv1alpha1.MCPGroupRef{Name: "from-spec"},
+			configGroup:   "from-config",
+			expectedGroup: "from-spec",
+		},
+		{
+			name:          "falls back to config.groupRef when spec.groupRef is nil",
+			groupRef:      nil,
+			configGroup:   "from-config",
+			expectedGroup: "from-config",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: tt.groupRef,
+					Config:   vmcpconfig.Config{Group: tt.configGroup},
+				},
+			}
+
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			config, _, err := converter.Convert(context.Background(), vmcp, nil)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedGroup, config.Group)
+		})
+	}
+}
+
 func TestConverter_OIDCResolution(t *testing.T) {
 	t.Parallel()
 

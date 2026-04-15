@@ -89,7 +89,7 @@ type VirtualMCPServerSpec struct {
 	// AuthServerConfig configures an embedded OAuth authorization server.
 	// When set, the vMCP server acts as an OIDC issuer, drives users through
 	// upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the
-	// IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfig
+	// IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfigRef
 	// so that tokens it issues are accepted by the vMCP's incoming auth middleware.
 	// When nil, IncomingAuth uses an external IDP and behavior is unchanged.
 	// +optional
@@ -121,8 +121,7 @@ type EmbeddingServerRef struct {
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
 //
-// +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? (has(self.oidcConfig) || has(self.oidcConfigRef)) : true",message="spec.incomingAuth.oidcConfig or oidcConfigRef is required when type is oidc"
-// +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+// +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? has(self.oidcConfigRef) : true",message="spec.incomingAuth.oidcConfigRef is required when type is oidc"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type IncomingAuthConfig struct {
@@ -132,16 +131,10 @@ type IncomingAuthConfig struct {
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
-	// OIDCConfig defines OIDC authentication configuration.
-	// Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
-	// This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
-	// +optional
-	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
-
 	// OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
 	// The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.
 	// Per-server overrides (audience, scopes) are specified here; shared provider config
-	// lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig.
+	// lives in the MCPOIDCConfig resource.
 	// +optional
 	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
@@ -429,18 +422,7 @@ type VirtualMCPServerList struct {
 	Items           []VirtualMCPServer `json:"items"`
 }
 
-// GetOIDCConfig returns the OIDC configuration reference for incoming auth.
-// This implements the OIDCConfigurable interface to allow the OIDC resolver
-// to resolve Kubernetes and ConfigMap OIDC configurations.
-func (v *VirtualMCPServer) GetOIDCConfig() *OIDCConfigRef {
-	if v.Spec.IncomingAuth == nil {
-		return nil
-	}
-	return v.Spec.IncomingAuth.OIDCConfig
-}
-
 // GetProxyPort returns the proxy port for the VirtualMCPServer.
-// This implements the OIDCConfigurable interface.
 // vMCP uses port 4483 by default.
 func (*VirtualMCPServer) GetProxyPort() int32 {
 	return 4483

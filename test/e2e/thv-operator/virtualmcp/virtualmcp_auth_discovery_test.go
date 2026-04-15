@@ -692,6 +692,26 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		}
 		Expect(k8sClient.Create(ctx, oidcClientSecret)).To(Succeed())
 
+		By("Creating MCPOIDCConfig for OIDC authentication")
+		oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "discovery-oidc-config",
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+				Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+				Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+					Issuer:                          fmt.Sprintf("http://mock-oidc-server.%s.svc.cluster.local", testNamespace),
+					ClientID:                        "vmcp-client",
+					ClientSecretRef:                 &mcpv1alpha1.SecretKeyRef{Name: oidcClientSecretName, Key: "client-secret"},
+					InsecureAllowHTTP:               true,
+					JWKSAllowPrivateIP:              true,
+					ProtectedResourceAllowPrivateIP: true,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, oidcConfig)).To(Succeed())
+
 		By("Creating MCPExternalAuthConfig for token exchange")
 		// Use the Kubernetes service URL for our mock auth server
 		tokenURL := fmt.Sprintf("http://mock-auth-server.%s.svc.cluster.local/token", testNamespace)
@@ -842,20 +862,9 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				// vMCP will validate tokens and then exchange them for backend-specific tokens
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "oidc",
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: "inline",
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   fmt.Sprintf("http://mock-oidc-server.%s.svc.cluster.local", testNamespace),
-							ClientID: "vmcp-client",
-							Audience: "vmcp-audience",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-								Name: oidcClientSecretName,
-								Key:  "client-secret",
-							},
-							InsecureAllowHTTP:               true,
-							JWKSAllowPrivateIP:              true,
-							ProtectedResourceAllowPrivateIP: true,
-						},
+					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+						Name:     "discovery-oidc-config",
+						Audience: "vmcp-audience",
 					},
 				},
 				// DISCOVERED MODE: vMCP will discover outgoing auth from backend MCPServers

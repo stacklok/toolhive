@@ -16,6 +16,19 @@ spec:
           spec:
             description: "Test group for VirtualMCPServer"
 
+  - name: create-mcpoidcconfig
+    try:
+    - apply:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: MCPOIDCConfig
+          metadata:
+            name: test-vmcp-oidc
+          spec:
+            type: inline
+            inline:
+              issuer: https://auth.example.com
+
   - name: create-virtualmcpserver
     try:
     - apply:
@@ -32,11 +45,9 @@ spec:
                 conflictResolution: prefix
             incomingAuth:
               type: oidc
-              oidcConfig:
-                type: inline
-                inline:
-                  issuer: https://auth.example.com
-                  audience: virtual-mcp
+              oidcConfigRef:
+                name: test-vmcp-oidc
+                audience: virtual-mcp
             outgoingAuth:
               source: discovered
     - assert:

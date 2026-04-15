@@ -1284,8 +1284,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `type` _string_ | Type defines the authentication type: anonymous or oidc<br />When no authentication is required, explicitly set this to "anonymous" |  | Enum: [anonymous oidc] <br />Required: \{\} <br /> |
-| `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration.<br />Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.<br />This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
-| `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig. |  | Optional: \{\} <br /> |
+| `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
 | `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration<br />Reuses MCPServer authz patterns |  | Optional: \{\} <br /> |
 
 
@@ -2475,24 +2474,6 @@ _Appears in:_
 | `tokenResponseMapping` _[api.v1alpha1.TokenResponseMapping](#apiv1alpha1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.OIDCConfigRef
-
-
-
-OIDCConfigRef defines a reference to OIDC configuration
-
-
-
-_Appears in:_
-- [api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `type` _string_ | Type is the type of OIDC configuration | kubernetes | Enum: [kubernetes configMap inline] <br /> |
-| `resourceUrl` _string_ | ResourceURL is the explicit resource URL for OAuth discovery endpoint (RFC 9728)<br />If not specified, defaults to the in-cluster Kubernetes service URL |  | Optional: \{\} <br /> |
-| `kubernetes` _[api.v1alpha1.KubernetesOIDCConfig](#apiv1alpha1kubernetesoidcconfig)_ | Kubernetes configures OIDC for Kubernetes service account token validation<br />Only used when Type is "kubernetes" |  | Optional: \{\} <br /> |
-| `configMap` _[api.v1alpha1.ConfigMapOIDCRef](#apiv1alpha1configmapoidcref)_ | ConfigMap references a ConfigMap containing OIDC configuration<br />Only used when Type is "configmap" |  | Optional: \{\} <br /> |
-| `inline` _[api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)_ | Inline contains direct OIDC configuration<br />Only used when Type is "inline" |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.OIDCUpstreamConfig
@@ -3395,7 +3376,7 @@ _Appears in:_
 | `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration.<br />The audit config from here is also supported, but not required.<br />Note: config.groupRef is deprecated in favor of spec.groupRef. |  | Type: object <br />Optional: \{\} <br /> |
 | `telemetryConfigRef` _[api.v1alpha1.MCPTelemetryConfigReference](#apiv1alpha1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this VirtualMCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
 | `embeddingServerRef` _[api.v1alpha1.EmbeddingServerRef](#apiv1alpha1embeddingserverref)_ | EmbeddingServerRef references an existing EmbeddingServer resource by name.<br />When the optimizer is enabled, this field is required to point to a ready EmbeddingServer<br />that provides embedding capabilities.<br />The referenced EmbeddingServer must exist in the same namespace and be ready. |  | Optional: \{\} <br /> |
-| `authServerConfig` _[api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)_ | AuthServerConfig configures an embedded OAuth authorization server.<br />When set, the vMCP server acts as an OIDC issuer, drives users through<br />upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the<br />IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfig<br />so that tokens it issues are accepted by the vMCP's incoming auth middleware.<br />When nil, IncomingAuth uses an external IDP and behavior is unchanged. |  | Optional: \{\} <br /> |
+| `authServerConfig` _[api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)_ | AuthServerConfig configures an embedded OAuth authorization server.<br />When set, the vMCP server acts as an OIDC issuer, drives users through<br />upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the<br />IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfigRef<br />so that tokens it issues are accepted by the vMCP's incoming auth middleware.<br />When nil, IncomingAuth uses an external IDP and behavior is unchanged. |  | Optional: \{\} <br /> |
 | `replicas` _integer_ | Replicas is the desired number of vMCP pod replicas.<br />VirtualMCPServer creates a single Deployment for the vMCP aggregator process,<br />so there is only one replicas field (unlike MCPServer which has separate<br />Replicas and BackendReplicas for its two Deployments).<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `sessionStorage` _[api.v1alpha1.SessionStorageConfig](#apiv1alpha1sessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When nil, no session storage is configured. |  | Optional: \{\} <br /> |
 

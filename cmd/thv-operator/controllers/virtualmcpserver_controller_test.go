@@ -1170,7 +1170,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			expectError:         false,
 		},
 		{
-			name: "OIDC with missing client secret",
+			name: "OIDC with missing client secret via MCPOIDCConfig",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
@@ -1179,29 +1179,33 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "oidc",
-						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-							Type: "inline",
-							Inline: &mcpv1alpha1.InlineOIDCConfig{
-								Issuer:   "https://issuer.example.com",
-								Audience: "test-audience",
-								ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-									Name: "missing-secret",
-									Key:  "client-secret",
-								},
+						Type:          "oidc",
+						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
+					},
+				},
+			},
+			secrets: []client.Object{
+				&mcpv1alpha1.MCPOIDCConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+						Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+							Issuer: "https://issuer.example.com",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "missing-secret",
+								Key:  "client-secret",
 							},
 						},
 					},
 				},
 			},
-			secrets:             []client.Object{},
 			expectAuthCondition: true,
 			expectedAuthStatus:  metav1.ConditionFalse,
 			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthInvalid,
 			expectError:         true,
 		},
 		{
-			name: "OIDC with valid client secret",
+			name: "OIDC with valid client secret via MCPOIDCConfig",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
@@ -1210,22 +1214,25 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "oidc",
-						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-							Type: "inline",
-							Inline: &mcpv1alpha1.InlineOIDCConfig{
-								Issuer:   "https://issuer.example.com",
-								Audience: "test-audience",
-								ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-									Name: "oidc-secret",
-									Key:  "client-secret",
-								},
-							},
-						},
+						Type:          "oidc",
+						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
 					},
 				},
 			},
 			secrets: []client.Object{
+				&mcpv1alpha1.MCPOIDCConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+						Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+							Issuer: "https://issuer.example.com",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "oidc-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+				},
 				&corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "oidc-secret",
@@ -1242,7 +1249,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			expectError:         false,
 		},
 		{
-			name: "OIDC secret exists but missing required key",
+			name: "OIDC secret exists but missing required key via MCPOIDCConfig",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
@@ -1251,22 +1258,25 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					Config: vmcpconfig.Config{Group: testGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "oidc",
-						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-							Type: "inline",
-							Inline: &mcpv1alpha1.InlineOIDCConfig{
-								Issuer:   "https://issuer.example.com",
-								Audience: "test-audience",
-								ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-									Name: "oidc-secret",
-									Key:  "client-secret",
-								},
-							},
-						},
+						Type:          "oidc",
+						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
 					},
 				},
 			},
 			secrets: []client.Object{
+				&mcpv1alpha1.MCPOIDCConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+						Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+							Issuer: "https://issuer.example.com",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "oidc-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+				},
 				&corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "oidc-secret",

@@ -304,6 +304,190 @@ func sendJSONRPC(t *testing.T, handler http.Handler, method string, params inter
 	return resp
 }
 
+func TestMiddleware_InnerToolCallParsedRequest(t *testing.T) {
+	t.Parallel()
+
+	// Track the ParsedMCPRequest seen by the backend on inner tool calls
+	var capturedParsed *mcpparser.ParsedMCPRequest
+	backend := mockBackendWithHook(
+		map[string]func(map[string]interface{}) string{
+			"target-tool": func(args map[string]interface{}) string {
+				b, _ := json.Marshal(args)
+				return string(b)
+			},
+		},
+		func(r *http.Request, toolName string) {
+			if toolName == "target-tool" {
+				capturedParsed = mcpparser.GetParsedMCPRequest(r.Context())
+			}
+		},
+	)
+
+	// parser → script middleware → parser → backend
+	// The inner parser re-parses the synthetic request
+	handler := mcpparser.ParsingMiddleware(
+		NewMiddleware(nil)(
+			mcpparser.ParsingMiddleware(backend),
+		),
+	)
+
+	body := sendJSONRPC(t, handler, "tools/call", map[string]interface{}{
+		"name": ExecuteToolScriptName,
+		"arguments": map[string]interface{}{
+			"script": `return target_tool(key="value", count=42)`,
+		},
+	})
+
+	require.NotContains(t, body, "error", "unexpected error: %v", body["error"])
+	require.NotNil(t, capturedParsed, "inner tool call should have a ParsedMCPRequest in context")
+	require.Equal(t, "tools/call", capturedParsed.Method)
+	require.Equal(t, "target-tool", capturedParsed.ResourceID)
+	require.Equal(t, "value", capturedParsed.Arguments["key"])
+}
+
+func TestMiddleware_InnerToolCallPreservesAuthHeaders(t *testing.T) {
+	t.Parallel()
+
+	var capturedAuthHeader string
+	backend := mockBackendWithHook(
+		map[string]func(map[string]interface{}) string{
+			"secured-tool": func(_ map[string]interface{}) string { return `"ok"` },
+		},
+		func(r *http.Request, toolName string) {
+			if toolName == "secured-tool" {
+				capturedAuthHeader = r.Header.Get("Authorization")
+			}
+		},
+	)
+
+	handler := mcpparser.ParsingMiddleware(
+		NewMiddleware(nil)(
+			mcpparser.ParsingMiddleware(backend),
+		),
+	)
+
+	body := sendJSONRPCWithHeaders(t, handler, "tools/call", map[string]interface{}{
+		"name": ExecuteToolScriptName,
+		"arguments": map[string]interface{}{
+			"script": `return secured_tool()`,
+		},
+	}, map[string]string{
+		"Authorization": "Bearer test-token-123",
+	})
+
+	require.NotContains(t, body, "error", "unexpected error: %v", body["error"])
+	require.Equal(t, "Bearer test-token-123", capturedAuthHeader,
+		"inner tool call should preserve Authorization header from original request")
+}
+
+// mockBackendWithHook is like mockBackend but calls onToolCall for each tools/call.
+func mockBackendWithHook(
+	tools map[string]func(map[string]interface{}) string,
+	onToolCall func(r *http.Request, toolName string),
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		var req struct {
+			JSONRPC string           `json:"jsonrpc"`
+			ID      json.RawMessage  `json:"id"`
+			Method  string           `json:"method"`
+			Params  *json.RawMessage `json:"params,omitempty"`
+		}
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		switch req.Method {
+		case "tools/list":
+			toolList := make([]map[string]interface{}, 0, len(tools))
+			for name := range tools {
+				toolList = append(toolList, map[string]interface{}{
+					"name":        name,
+					"description": "Mock tool: " + name,
+					"inputSchema": map[string]interface{}{
+						"type":       "object",
+						"properties": map[string]interface{}{},
+					},
+				})
+			}
+			result, _ := json.Marshal(map[string]interface{}{"tools": toolList})
+			raw := json.RawMessage(result)
+			//nolint:errcheck,gosec // test helper
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID, "result": &raw,
+			})
+
+		case "tools/call":
+			var params struct {
+				Name      string                 `json:"name"`
+				Arguments map[string]interface{} `json:"arguments"`
+			}
+			if req.Params != nil {
+				_ = json.Unmarshal(*req.Params, &params)
+			}
+			if onToolCall != nil {
+				onToolCall(r, params.Name)
+			}
+			fn, ok := tools[params.Name]
+			if !ok {
+				writeTestError(w, req.ID, -32601, fmt.Sprintf("unknown tool: %s", params.Name))
+				return
+			}
+			text := fn(params.Arguments)
+			result, _ := json.Marshal(map[string]interface{}{
+				"content": []map[string]interface{}{
+					{"type": "text", "text": text},
+				},
+			})
+			raw := json.RawMessage(result)
+			//nolint:errcheck,gosec // test helper
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID, "result": &raw,
+			})
+
+		default:
+			result, _ := json.Marshal(map[string]interface{}{"status": "ok"})
+			raw := json.RawMessage(result)
+			//nolint:errcheck,gosec // test helper
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID, "result": &raw,
+			})
+		}
+	})
+}
+
+func sendJSONRPCWithHeaders(
+	t *testing.T, handler http.Handler, method string,
+	params interface{}, headers map[string]string,
+) map[string]interface{} {
+	t.Helper()
+	body := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  method,
+		"params":  params,
+	}
+	bodyBytes, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(string(bodyBytes)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	return resp
+}
+
 func extractToolNames(tools []interface{}) []string {
 	names := make([]string, 0, len(tools))
 	for _, t := range tools {

@@ -143,14 +143,15 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 func (s *WorkloadService) BuildFullRunConfig(
 	ctx context.Context, req *createRequest, existingPort int,
 ) (*runner.RunConfig, error) {
+	// Validate registry+server pairing first (guard clause)
+	if (req.Registry != "" && req.Server == "") || (req.Registry == "" && req.Server != "") {
+		return nil, fmt.Errorf("both registry and server must be specified together")
+	}
 	// If registry+server specified, resolve from registry and fill defaults
 	if req.Registry != "" && req.Server != "" {
 		if err := resolveRegistryServer(req); err != nil {
 			return nil, fmt.Errorf("failed to resolve server from registry: %w", err)
 		}
-	}
-	if (req.Registry != "" && req.Server == "") || (req.Registry == "" && req.Server != "") {
-		return nil, fmt.Errorf("both registry and server must be specified together")
 	}
 
 	// Default proxy mode to streamable-http if not specified (SSE is deprecated)
@@ -572,6 +573,11 @@ func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req b
 // resolveRegistryServer resolves a server from the registry and fills in
 // default values on the request. User-provided fields are not overwritten.
 func resolveRegistryServer(req *createRequest) error {
+	// Only "default" registry is currently supported.
+	if req.Registry != "default" {
+		return fmt.Errorf("unknown registry %q; only \"default\" is currently supported", req.Registry)
+	}
+
 	provider, err := registry.GetDefaultProviderWithConfig(
 		config.NewProvider(),
 		registry.WithInteractive(false),

@@ -2961,8 +2961,8 @@ func TestInstallQualifiedNameOCIFallback(t *testing.T) {
 				indexDigest := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
 
 				reg := ocimocks.NewMockRegistryClient(ctrl)
-				// First Pull is for the raw "io.github.stacklok/my-skill" — fails.
-				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), gomock.Any()).
+				// First Pull is for the raw "io.github.stacklok/my-skill:latest" — fails.
+				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), "io.github.stacklok/my-skill:latest").
 					Return(godigest.Digest(""), fmt.Errorf("no such host")).
 					Times(1)
 				// Second Pull is after registry lookup resolves the real OCI ref.
@@ -3004,7 +3004,7 @@ func TestInstallQualifiedNameOCIFallback(t *testing.T) {
 				require.NoError(t, err)
 
 				reg := ocimocks.NewMockRegistryClient(ctrl)
-				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), gomock.Any()).
+				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), "io.github.stacklok/my-skill:latest").
 					Return(godigest.Digest(""), fmt.Errorf("no such host"))
 
 				lookup := regmocks.NewMockProvider(ctrl)
@@ -3073,7 +3073,7 @@ func TestInstallQualifiedNameOCIFallback(t *testing.T) {
 				require.NoError(t, err)
 
 				reg := ocimocks.NewMockRegistryClient(ctrl)
-				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), gomock.Any()).
+				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), "io.github.stacklok/my-skill:latest").
 					Return(godigest.Digest(""), fmt.Errorf("no such host"))
 
 				// pathResolver must be non-nil so installFromOCI proceeds past its
@@ -3088,6 +3088,78 @@ func TestInstallQualifiedNameOCIFallback(t *testing.T) {
 			},
 			wantCode: http.StatusBadRequest,
 			wantErr:  "no such host",
+		},
+		{
+			name: "digest ref does not fall back to registry on pull failure",
+			// A full 64-char SHA256 hex digest — required for nameref.ParseReference to accept it.
+			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), "ghcr.io/org/my-skill@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").
+					Return(godigest.Digest(""), fmt.Errorf("manifest unknown"))
+
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				store := storemocks.NewMockSkillStore(ctrl)
+				// No lookup mock — gomock will fail the test if SearchSkills is called.
+				return nil, reg, ociStore, nil, store, pr
+			},
+			wantCode: http.StatusBadRequest,
+			wantErr:  "manifest unknown",
+		},
+		{
+			name: "multi-segment OCI ref does not fall back to registry on pull failure",
+			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), "ghcr.io/org/my-skill:latest").
+					Return(godigest.Digest(""), fmt.Errorf("auth required"))
+
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				store := storemocks.NewMockSkillStore(ctrl)
+				// No lookup mock — gomock will fail if SearchSkills is called.
+				return nil, reg, ociStore, nil, store, pr
+			},
+			wantCode: http.StatusBadRequest,
+			wantErr:  "auth required",
+		},
+		{
+			name: "registry ambiguity error surfaced to caller",
+			// resolveFromRegistry returns a conflict error when multiple registry
+			// entries match the same name — the Install method must propagate it.
+			opts: skills.InstallOptions{Name: "io.github.stacklok/my-skill"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), "io.github.stacklok/my-skill:latest").
+					Return(godigest.Digest(""), fmt.Errorf("no such host"))
+
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+
+				// Return two results with the same namespace/name so that
+				// resolveFromRegistry treats this as an ambiguous match and
+				// returns a conflict error rather than nil.
+				lookup := regmocks.NewMockProvider(ctrl)
+				lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
+					{Namespace: "io.github.stacklok", Name: "my-skill", Packages: []regtypes.SkillPackage{{RegistryType: "git", URL: "https://github.com/a/my-skill"}}},
+					{Namespace: "io.github.stacklok", Name: "my-skill", Packages: []regtypes.SkillPackage{{RegistryType: "git", URL: "https://github.com/b/my-skill"}}},
+				}, nil)
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				return lookup, reg, ociStore, nil, store, pr
+			},
+			wantCode: http.StatusConflict,
+			wantErr:  "ambiguous",
 		},
 	}
 

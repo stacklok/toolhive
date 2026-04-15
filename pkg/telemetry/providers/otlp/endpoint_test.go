@@ -49,6 +49,30 @@ func TestSplitEndpointPath(t *testing.T) {
 			wantBasePath: "/api/public/otel",
 		},
 		{
+			name:         "host:port with trailing slash only",
+			endpoint:     "localhost:4318/",
+			wantHostPort: "localhost:4318",
+			wantBasePath: "",
+		},
+		{
+			name:         "https scheme stripped before splitting",
+			endpoint:     "https://cloud.langfuse.com/api/public/otel",
+			wantHostPort: "cloud.langfuse.com",
+			wantBasePath: "/api/public/otel",
+		},
+		{
+			name:         "http scheme stripped before splitting",
+			endpoint:     "http://localhost:4318",
+			wantHostPort: "localhost:4318",
+			wantBasePath: "",
+		},
+		{
+			name:         "https scheme with host only",
+			endpoint:     "https://api.honeycomb.io",
+			wantHostPort: "api.honeycomb.io",
+			wantBasePath: "",
+		},
+		{
 			name:         "empty string",
 			endpoint:     "",
 			wantHostPort: "",

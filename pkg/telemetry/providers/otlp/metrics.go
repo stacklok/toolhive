@@ -33,7 +33,7 @@ func createMetricExporter(ctx context.Context, config Config) (sdkmetric.Exporte
 	}
 
 	if basePath != "" {
-		opts = append(opts, otlpmetrichttp.WithURLPath(basePath+"/v1/metrics"))
+		opts = append(opts, otlpmetrichttp.WithURLPath(basePath+otlpMetricsPath))
 	}
 
 	if len(config.Headers) > 0 {

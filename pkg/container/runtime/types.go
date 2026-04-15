@@ -45,8 +45,7 @@ const (
 	// cannot authenticate with the remote MCP server (e.g., expired refresh token).
 	WorkloadStatusUnauthenticated WorkloadStatus = "unauthenticated"
 	// WorkloadStatusPolicyStopped indicates that the workload was stopped by
-	// enterprise policy enforcement. The StatusContext field carries the
-	// human-readable reason.
+	// policy enforcement. The StatusContext field carries the human-readable reason.
 	WorkloadStatusPolicyStopped WorkloadStatus = "policy_stopped"
 )
 

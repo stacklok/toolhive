@@ -325,12 +325,9 @@ func (a *Authorizer) GetEntityFactory() *EntityFactory {
 // - resource: The object being accessed (e.g., "Tool::weather")
 // - context: Additional information about the request
 //
-// Note: group-based Cedar policies (e.g. "principal in THVGroup::\"eng\"") only
-// work when entities are constructed via AuthorizeWithJWTClaims, which calls
-// CreateEntitiesForRequest with the extracted groups slice and adds THVGroup
-// parent entities. Callers that bypass AuthorizeWithJWTClaims and pass their
-// own entity map must include THVGroup entities manually for group policies to
-// evaluate correctly.
+// Note: group-based Cedar policies (e.g. "principal in THVGroup::\"eng\"") require
+// that THVGroup parent entities are included in the entity map. See #4768 for the
+// group parent wiring that will set these up via CreatePrincipalEntity.
 // - entities: Optional Cedar entity map with attributes
 func (a *Authorizer) IsAuthorized(
 	principal, action, resource string,

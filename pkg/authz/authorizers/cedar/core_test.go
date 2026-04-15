@@ -826,9 +826,9 @@ func TestEntityOperations(t *testing.T) {
 	require.NotNil(t, factory)
 
 	// Create a test entity using the factory
-	uid, entity, _ := factory.CreatePrincipalEntity("Client", "testuser", map[string]interface{}{
+	uid, entity := factory.CreatePrincipalEntity("Client", "testuser", map[string]interface{}{
 		"name": "Test User",
-	}, nil)
+	})
 
 	// Add entity
 	cedarAuthorizer.AddEntity(entity)
@@ -863,7 +863,7 @@ func TestGetEntityNotFound(t *testing.T) {
 
 	// Create a UID that doesn't exist
 	factory := cedarAuthorizer.GetEntityFactory()
-	uid, _, _ := factory.CreatePrincipalEntity("Client", "nonexistent", nil, nil)
+	uid, _ := factory.CreatePrincipalEntity("Client", "nonexistent", nil)
 
 	// Try to get it
 	_, found := cedarAuthorizer.GetEntity(uid)
@@ -1313,6 +1313,70 @@ func TestAuthorizeWithJWTClaims_GroupMembership(t *testing.T) {
 			assert.Equal(t, tt.wantAuthorize, authorized)
 		})
 	}
+}
+
+// TestAuthorizeWithJWTClaims_TransitiveHierarchyPreserved is a regression test
+// for the merge-order hazard fixed in 40119c8e. When entities_json defines a
+// THVGroup with a THVRole parent, the transitive policy "principal in THVRole"
+// must still evaluate correctly after the request entity merge in IsAuthorized.
+// Before the fix, CreateEntitiesForRequest inserted bare THVGroup entities that
+// overwrote the static ones (which carry THVRole parents), severing the hierarchy.
+func TestAuthorizeWithJWTClaims_TransitiveHierarchyPreserved(t *testing.T) {
+	t.Parallel()
+
+	// Policy: only members of THVRole::"developer" may call the deploy tool.
+	// The user is in THVGroup::"engineering" which is a child of THVRole::"developer"
+	// in entities_json — so this requires transitive "in" evaluation.
+	policy := `
+		permit(
+			principal in THVRole::"developer",
+			action == Action::"call_tool",
+			resource == Tool::"deploy"
+		);
+	`
+
+	// Static entities: THVGroup::"engineering" → THVRole::"developer".
+	entitiesJSON := `[
+		{
+			"uid": {"type": "THVGroup", "id": "engineering"},
+			"attrs": {},
+			"parents": [{"type": "THVRole", "id": "developer"}]
+		},
+		{
+			"uid": {"type": "THVRole", "id": "developer"},
+			"attrs": {},
+			"parents": []
+		}
+	]`
+
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{
+		Policies:     []string{policy},
+		EntitiesJSON: entitiesJSON,
+	}, "")
+	require.NoError(t, err)
+
+	// User belongs to "engineering" via JWT groups claim.
+	identity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user1",
+			Claims: map[string]any{
+				"sub":    "user1",
+				"groups": []interface{}{"engineering"},
+			},
+		},
+	}
+	ctx := auth.WithIdentity(context.Background(), identity)
+
+	authorized, err := authorizer.AuthorizeWithJWTClaims(
+		ctx,
+		authorizers.MCPFeatureTool,
+		authorizers.MCPOperationCall,
+		"deploy",
+		nil,
+	)
+	require.NoError(t, err)
+	assert.True(t, authorized,
+		"transitive hierarchy THVGroup→THVRole from entities_json must survive entity merge")
 }
 
 // TestAuthorizeWithJWTClaims_DoesNotMutateIdentity verifies that

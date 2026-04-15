@@ -90,6 +90,29 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 			},
 		},
 		{
+			name: "explicit resourceUrl overrides derived service URL",
+			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+				Name: "k", Audience: "my-aud", Scopes: []string{"openid"},
+				ResourceURL: "https://mcp-gateway.example.com/mcp",
+			},
+			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+						Issuer: "https://kubernetes.default.svc",
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer: "https://kubernetes.default.svc", Audience: "my-aud",
+				Scopes:             []string{"openid"},
+				ResourceURL:        "https://mcp-gateway.example.com/mcp",
+				ThvCABundlePath:    defaultK8sCABundlePath,
+				JWKSAuthTokenPath:  defaultK8sTokenPath,
+				JWKSAllowPrivateIP: true,
+			},
+		},
+		{
 			name: "UseClusterAuth false omits CA and token paths",
 			ref: &mcpv1alpha1.MCPOIDCConfigReference{
 				Name: "k", Audience: "aud",
@@ -177,6 +200,28 @@ func TestResolveFromConfigRef_InlineType(t *testing.T) {
 				ResourceURL:                     "http://srv.default.svc.cluster.local:8080",
 				ProtectedResourceAllowPrivateIP: true,
 				JWKSAllowPrivateIP:              false,
+			},
+		},
+		{
+			name: "explicit resourceUrl overrides derived service URL for inline config",
+			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+				Name: "i", Audience: "inline-aud", Scopes: []string{"openid"},
+				ResourceURL: "https://mcp.corp.internal/tools",
+			},
+			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+						Issuer:   "https://accounts.google.com",
+						ClientID: "gid",
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer: "https://accounts.google.com", Audience: "inline-aud",
+				ClientID:    "gid",
+				ResourceURL: "https://mcp.corp.internal/tools",
+				Scopes:      []string{"openid"},
 			},
 		},
 		{

@@ -1702,3 +1702,168 @@ func TestBaseOAuth2Provider_fetchUserInfo_FieldMapping(t *testing.T) {
 		assert.Contains(t, err.Error(), "missing required subject claim")
 	})
 }
+
+func TestValidateAdditionalAuthorizationParams(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		params      map[string]string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:   "nil map",
+			params: nil,
+		},
+		{
+			name:   "empty map",
+			params: map[string]string{},
+		},
+		{
+			name:   "valid single param",
+			params: map[string]string{"access_type": "offline"},
+		},
+		{
+			name:   "valid multiple params",
+			params: map[string]string{"access_type": "offline", "prompt": "consent"},
+		},
+		{
+			name:        "reserved: state",
+			params:      map[string]string{"state": "x"},
+			wantErr:     true,
+			errContains: "state",
+		},
+		{
+			name:        "reserved: nonce",
+			params:      map[string]string{"nonce": "x"},
+			wantErr:     true,
+			errContains: "nonce",
+		},
+		{
+			name:        "reserved: response_type",
+			params:      map[string]string{"response_type": "token"},
+			wantErr:     true,
+			errContains: "response_type",
+		},
+		{
+			name:        "reserved: code_challenge",
+			params:      map[string]string{"code_challenge": "x"},
+			wantErr:     true,
+			errContains: "code_challenge",
+		},
+		{
+			name:        "reserved: code_challenge_method",
+			params:      map[string]string{"code_challenge_method": "S256"},
+			wantErr:     true,
+			errContains: "code_challenge_method",
+		},
+		{
+			name:        "reserved: client_id",
+			params:      map[string]string{"client_id": "x"},
+			wantErr:     true,
+			errContains: "client_id",
+		},
+		{
+			name:        "reserved: redirect_uri",
+			params:      map[string]string{"redirect_uri": "http://evil.com"},
+			wantErr:     true,
+			errContains: "redirect_uri",
+		},
+		{
+			name:        "reserved: scope",
+			params:      map[string]string{"scope": "admin"},
+			wantErr:     true,
+			errContains: "scope",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			config := &CommonOAuthConfig{
+				ClientID:                      "test-client",
+				RedirectURI:                   "http://localhost:8080/callback",
+				AdditionalAuthorizationParams: tt.params,
+			}
+
+			err := config.Validate()
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestAuthorizationURL_AdditionalAuthorizationParams(t *testing.T) {
+	t.Parallel()
+
+	t.Run("config params appear on URL", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:8080/callback",
+				AdditionalAuthorizationParams: map[string]string{
+					"access_type": "offline",
+					"prompt":      "consent",
+				},
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		authURL, err := provider.AuthorizationURL("test-state", "test-challenge")
+		require.NoError(t, err)
+
+		parsed, err := url.Parse(authURL)
+		require.NoError(t, err)
+
+		query := parsed.Query()
+		assert.Equal(t, "offline", query.Get("access_type"))
+		assert.Equal(t, "consent", query.Get("prompt"))
+	})
+
+	t.Run("caller opts override config params", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:8080/callback",
+				AdditionalAuthorizationParams: map[string]string{
+					"custom": "config-value",
+				},
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		authURL, err := provider.AuthorizationURL("test-state", "",
+			WithAdditionalParams(map[string]string{"custom": "caller-value"}))
+		require.NoError(t, err)
+
+		parsed, err := url.Parse(authURL)
+		require.NoError(t, err)
+
+		assert.Equal(t, "caller-value", parsed.Query().Get("custom"))
+	})
+}

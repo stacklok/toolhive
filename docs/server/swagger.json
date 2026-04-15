@@ -1534,6 +1534,52 @@
                     "ScopeProject"
                 ]
             },
+            "github_com_stacklok_toolhive_pkg_skills.SkillContent": {
+                "properties": {
+                    "body": {
+                        "description": "Body is the raw SKILL.md markdown content.",
+                        "type": "string"
+                    },
+                    "description": {
+                        "description": "Description is the skill description from the OCI config labels.",
+                        "type": "string"
+                    },
+                    "files": {
+                        "description": "Files is the list of all files in the artifact with their sizes.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillFileEntry"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "license": {
+                        "description": "License is the SPDX license identifier from the OCI config labels.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the skill name from the OCI config labels.",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the skill version from the OCI config labels.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.SkillFileEntry": {
+                "properties": {
+                    "path": {
+                        "description": "Path is the file path within the artifact.",
+                        "type": "string"
+                    },
+                    "size": {
+                        "description": "Size is the uncompressed file size in bytes.",
+                        "type": "integer"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_skills.SkillInfo": {
                 "properties": {
                     "installed_skill": {
@@ -5103,6 +5149,68 @@
                     }
                 },
                 "summary": "Delete a locally-built skill artifact",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/content": {
+            "get": {
+                "description": "Retrieve the SKILL.md body and file listing from an artifact\nwithout installing it. Accepts OCI refs, git refs, or local tags.",
+                "parameters": [
+                    {
+                        "description": "OCI reference or local build tag",
+                        "in": "query",
+                        "name": "ref",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillContent"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "502": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Gateway"
+                    }
+                },
+                "summary": "Get skill content",
                 "tags": [
                     "skills"
                 ]

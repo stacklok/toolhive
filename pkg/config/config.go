@@ -376,7 +376,7 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config) error) error {
 
 	// Apply changes to the config file.
 	if err := updateFn(c); err != nil {
-		return fmt.Errorf("update function failed: %w", err)
+		return err
 	}
 
 	// Write the updated config to disk.

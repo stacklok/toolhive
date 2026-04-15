@@ -356,6 +356,45 @@ func TestBuildStatus_PhaseLogic(t *testing.T) {
 			expectedCount:   0,
 			expectedMessage: "Ready, no backends configured",
 		},
+		{
+			name: "all backends unauthenticated",
+			backendStates: map[string]vmcp.BackendHealthStatus{
+				"b1": vmcp.BackendUnauthenticated,
+				"b2": vmcp.BackendUnauthenticated,
+			},
+			expectedPhase:   vmcp.PhaseReady,
+			expectedCount:   2,
+			expectedMessage: "All 2 backends require authentication",
+		},
+		{
+			name: "mixed healthy and unauthenticated",
+			backendStates: map[string]vmcp.BackendHealthStatus{
+				"b1": vmcp.BackendHealthy,
+				"b2": vmcp.BackendUnauthenticated,
+			},
+			expectedPhase:   vmcp.PhaseReady,
+			expectedCount:   2,
+			expectedMessage: "1 backend healthy, 1 require authentication",
+		},
+		{
+			name: "mixed unauthenticated and unhealthy",
+			backendStates: map[string]vmcp.BackendHealthStatus{
+				"b1": vmcp.BackendUnauthenticated,
+				"b2": vmcp.BackendUnhealthy,
+			},
+			expectedPhase: vmcp.PhaseDegraded,
+			expectedCount: 1,
+		},
+		{
+			name: "mixed healthy unhealthy and unauthenticated",
+			backendStates: map[string]vmcp.BackendHealthStatus{
+				"b1": vmcp.BackendHealthy,
+				"b2": vmcp.BackendUnhealthy,
+				"b3": vmcp.BackendUnauthenticated,
+			},
+			expectedPhase: vmcp.PhaseDegraded,
+			expectedCount: 2,
+		},
 	}
 
 	for _, tt := range tests {

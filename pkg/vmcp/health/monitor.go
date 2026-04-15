@@ -547,6 +547,13 @@ type Summary struct {
 	Unauthenticated int
 }
 
+// Routable returns the number of backends that can serve traffic.
+// This includes healthy backends and unauthenticated backends (which are
+// reachable but require per-request user auth, e.g., upstream OAuth).
+func (s Summary) Routable() int {
+	return s.Healthy + s.Unauthenticated
+}
+
 // String returns a human-readable summary.
 func (s Summary) String() string {
 	return fmt.Sprintf("total=%d healthy=%d degraded=%d unhealthy=%d unknown=%d unauthenticated=%d",
@@ -557,11 +564,12 @@ func (s Summary) String() string {
 // This converts backend health information into the format needed for status reporting
 // to the Kubernetes API or CLI output.
 //
-// Phase determination:
-// - Ready: All backends healthy, or no backends configured (cold start)
+// Phase determination (unauthenticated backends are routable — they need per-request user auth
+// but are reachable and running):
+// - Ready: All backends healthy or unauthenticated, or no backends configured (cold start)
 // - Pending: Backends configured but no health check data yet (waiting for first check)
-// - Degraded: Some backends healthy, some degraded/unhealthy
-// - Failed: No healthy backends (and at least one backend exists)
+// - Degraded: Some backends routable (healthy/unauthenticated), some degraded/unhealthy
+// - Failed: No routable backends (and at least one backend exists)
 //
 // Returns a Status instance with current health information and discovered backends.
 //
@@ -592,16 +600,18 @@ func (m *Monitor) BuildStatus() *vmcp.Status {
 		Message:            message,
 		Conditions:         conditions,
 		DiscoveredBackends: discoveredBackends,
-		BackendCount:       int32(summary.Healthy), //nolint:gosec // healthy count is bounded by backend list size
+		BackendCount:       int32(summary.Routable()), //nolint:gosec // routable count is bounded by backend list size
 		Timestamp:          time.Now(),
 	}
 }
 
 // determinePhase determines the overall phase based on backend health.
+// Unauthenticated backends are treated as routable — they are reachable and running,
+// they just require per-request user auth (e.g., upstream OAuth).
 // Takes both the health summary and the count of configured backends to distinguish:
 // - No backends configured (configuredCount==0): Ready (cold start)
 // - Backends configured but no health data (configuredCount>0 && summary.Total==0): Pending
-// - Has health data: Ready/Degraded/Failed based on health status
+// - Has health data: Ready/Degraded/Failed based on routable (healthy + unauthenticated) count
 func determinePhase(summary Summary, configuredBackendCount int) vmcp.Phase {
 	if summary.Total == 0 {
 		// No health data yet - distinguish cold start from waiting for first check
@@ -610,10 +620,11 @@ func determinePhase(summary Summary, configuredBackendCount int) vmcp.Phase {
 		}
 		return vmcp.PhasePending // Backends configured but health checks not complete
 	}
-	if summary.Healthy == summary.Total {
+
+	if summary.Routable() == summary.Total {
 		return vmcp.PhaseReady
 	}
-	if summary.Healthy == 0 {
+	if summary.Routable() == 0 {
 		return vmcp.PhaseFailed
 	}
 	return vmcp.PhaseDegraded
@@ -629,18 +640,26 @@ func formatStatusMessage(summary Summary, phase vmcp.Phase, configuredBackendCou
 		return fmt.Sprintf("Waiting for initial health checks (%d backends configured)", configuredBackendCount)
 	}
 	if phase == vmcp.PhaseReady {
-		return fmt.Sprintf("All %d backends healthy", summary.Healthy)
+		if summary.Unauthenticated == 0 {
+			return fmt.Sprintf("All %d %s healthy", summary.Healthy, pluralBackend(summary.Healthy))
+		}
+		if summary.Healthy == 0 {
+			return fmt.Sprintf("All %d %s require authentication",
+				summary.Unauthenticated, pluralBackend(summary.Unauthenticated))
+		}
+		return fmt.Sprintf("%d %s healthy, %d require authentication",
+			summary.Healthy, pluralBackend(summary.Healthy), summary.Unauthenticated)
 	}
 
-	// Format unhealthy backend counts (shared by Failed and Degraded)
-	unhealthyDetails := fmt.Sprintf("%d degraded, %d unhealthy, %d unknown, %d unauthenticated",
-		summary.Degraded, summary.Unhealthy, summary.Unknown, summary.Unauthenticated)
+	// Format non-routable backend counts (shared by Failed and Degraded)
+	nonRoutableDetails := fmt.Sprintf("%d degraded, %d unhealthy, %d unknown",
+		summary.Degraded, summary.Unhealthy, summary.Unknown)
 
 	if phase == vmcp.PhaseFailed {
-		return fmt.Sprintf("No healthy backends (%s)", unhealthyDetails)
+		return fmt.Sprintf("No routable backends (%s)", nonRoutableDetails)
 	}
 	// Degraded
-	return fmt.Sprintf("%d/%d backends healthy (%s)", summary.Healthy, summary.Total, unhealthyDetails)
+	return fmt.Sprintf("%d/%d backends routable (%s)", summary.Routable(), summary.Total, nonRoutableDetails)
 }
 
 // convertToDiscoveredBackends converts backend health states to DiscoveredBackend format.
@@ -715,6 +734,14 @@ func extractAuthInfo(backend vmcp.Backend) (authConfigRef, authType string) {
 // formatBackendMessage creates a human-readable message for a backend's health state.
 // This returns generic error categories to avoid exposing sensitive error details in status.
 // Detailed errors are logged when they occur (in performHealthCheck) for debugging.
+// pluralBackend returns "backend" or "backends" based on count.
+func pluralBackend(n int) string {
+	if n == 1 {
+		return "backend"
+	}
+	return "backends"
+}
+
 func formatBackendMessage(state *State) string {
 	// Build base message
 	var baseMsg string
@@ -822,18 +849,25 @@ func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount i
 	case vmcp.PhaseReady:
 		readyCondition.Status = metav1.ConditionTrue
 		readyCondition.Reason = "AllBackendsHealthy"
-		// Distinguish cold start (no backends configured) from having healthy backends
+		// Distinguish cold start (no backends configured) from having routable backends
 		if summary.Total == 0 && configuredBackendCount == 0 {
 			readyCondition.Message = "Ready, no backends configured"
+		} else if summary.Unauthenticated == 0 {
+			readyCondition.Message = fmt.Sprintf("All %d %s are healthy",
+				summary.Healthy, pluralBackend(summary.Healthy))
+		} else if summary.Healthy == 0 {
+			readyCondition.Message = fmt.Sprintf("All %d %s require authentication",
+				summary.Unauthenticated, pluralBackend(summary.Unauthenticated))
 		} else {
-			readyCondition.Message = fmt.Sprintf("All %d backends are healthy", summary.Healthy)
+			readyCondition.Message = fmt.Sprintf("%d %s healthy, %d require authentication",
+				summary.Healthy, pluralBackend(summary.Healthy), summary.Unauthenticated)
 		}
 	case vmcp.PhaseDegraded:
 		readyCondition.Reason = "SomeBackendsUnhealthy"
-		readyCondition.Message = fmt.Sprintf("%d/%d backends healthy", summary.Healthy, summary.Total)
+		readyCondition.Message = fmt.Sprintf("%d/%d backends routable", summary.Routable(), summary.Total)
 	case vmcp.PhaseFailed:
 		readyCondition.Reason = "NoHealthyBackends"
-		readyCondition.Message = "No healthy backends available"
+		readyCondition.Message = "No routable backends available"
 	case vmcp.PhasePending:
 		readyCondition.Reason = "BackendsPending"
 		readyCondition.Message = fmt.Sprintf("Waiting for initial health checks (%d backends configured)", configuredBackendCount)

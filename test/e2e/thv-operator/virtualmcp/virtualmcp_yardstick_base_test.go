@@ -405,7 +405,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 					return fmt.Errorf("new backend %s not found in discovered backends: %v", backend3Name, backendNames)
 				}
 
-				// BackendCount only includes healthy backends, so check this separately
+				// BackendCount includes routable backends (healthy + unauthenticated), so check this separately
 				// We expect all backends to eventually become healthy
 				if status.BackendCount != 3 {
 					return fmt.Errorf("expected 3 healthy backends, got %d (discovered: %v)", status.BackendCount, backendNames)

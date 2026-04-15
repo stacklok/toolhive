@@ -119,7 +119,7 @@ func (*Factory) ValidateConfig(rawConfig json.RawMessage) error {
 
 // CreateAuthorizer creates a Cedar Authorizer from the configuration.
 // It receives the full raw config and extracts the Cedar-specific portion.
-func (*Factory) CreateAuthorizer(rawConfig json.RawMessage, _ string) (authorizers.Authorizer, error) {
+func (*Factory) CreateAuthorizer(rawConfig json.RawMessage, serverName string) (authorizers.Authorizer, error) {
 	var config Config
 	if err := json.Unmarshal(rawConfig, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse configuration: %w", err)
@@ -129,7 +129,7 @@ func (*Factory) CreateAuthorizer(rawConfig json.RawMessage, _ string) (authorize
 		return nil, fmt.Errorf("cedar configuration is required (missing 'cedar' field)")
 	}
 
-	return NewCedarAuthorizer(*config.Options)
+	return NewCedarAuthorizer(*config.Options, serverName)
 }
 
 // Common errors for Cedar authorization
@@ -167,6 +167,12 @@ type Authorizer struct {
 	// roleClaimName is the JWT claim key that contains role membership.
 	// When empty, no role extraction is performed (backward compatible).
 	roleClaimName string
+	// serverName is the identity of the MCP server this authorizer is scoped to.
+	// Used by downstream enterprise features for server-scoped Cedar policies
+	// (e.g. resource in MCP::"<server>"). When empty (standalone Cedar usage
+	// with no enterprise controller), the authorizer behaves identically to
+	// the unscoped case.
+	serverName string
 	// claimKeyLog rate-limits the diagnostic log of resolved JWT claim keys
 	// so it emits at most once per 30 seconds instead of once per authorization check.
 	claimKeyLog *syncutil.AtMost
@@ -201,7 +207,11 @@ type ConfigOptions struct {
 }
 
 // NewCedarAuthorizer creates a new Cedar authorizer.
-func NewCedarAuthorizer(options ConfigOptions) (authorizers.Authorizer, error) {
+// serverName is a runtime-injected value (not user-authored config) that
+// identifies which MCP server this authorizer is scoped to.
+// If a second runtime-injected value is needed, bundle both into a
+// RuntimeContext struct to keep the factory interface stable.
+func NewCedarAuthorizer(options ConfigOptions, serverName string) (authorizers.Authorizer, error) {
 	authorizer := &Authorizer{
 		policySet:               cedar.NewPolicySet(),
 		entities:                cedar.EntityMap{},
@@ -209,6 +219,7 @@ func NewCedarAuthorizer(options ConfigOptions) (authorizers.Authorizer, error) {
 		primaryUpstreamProvider: options.PrimaryUpstreamProvider,
 		groupClaimName:          options.GroupClaimName,
 		roleClaimName:           options.RoleClaimName,
+		serverName:              serverName,
 		claimKeyLog:             syncutil.NewAtMost(30 * time.Second),
 	}
 

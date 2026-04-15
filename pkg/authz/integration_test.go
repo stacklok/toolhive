@@ -48,7 +48,7 @@ func TestIntegrationListFiltering(t *testing.T) {
 			`permit(principal, action == Action::"read_resource", resource) when { principal.claim_role == "admin" };`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	testCases := []struct {
@@ -335,7 +335,7 @@ func TestIntegrationNonListOperations(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource) when { principal.claim_role == "admin" };`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	testCases := []struct {

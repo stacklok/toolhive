@@ -181,7 +181,7 @@ func TestFilterToolsByPolicy_WithCedarAuthorizer(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	t.Run("keeps only permitted tool", func(t *testing.T) {
@@ -222,7 +222,7 @@ func TestAuthorizeToolCall_WithCedarAuthorizer(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	t.Run("permits authorized tool", func(t *testing.T) {
@@ -252,7 +252,7 @@ func TestAuthorizeToolCall_WithArguments(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"deploy") when { context.arg_mode == "safe" };`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	t.Run("permits when arguments satisfy policy", func(t *testing.T) {

@@ -37,9 +37,11 @@ func TestNewCedarAuthorizer(t *testing.T) {
 		policies          []string
 		entitiesJSON      string
 		roleClaimName     string
+		serverName        string
 		expectError       bool
 		errorType         error
 		wantRoleClaimName string
+		wantServerName    string
 	}{
 		{
 			name:         "Valid policy and empty entities",
@@ -94,6 +96,14 @@ func TestNewCedarAuthorizer(t *testing.T) {
 			expectError:       false,
 			wantRoleClaimName: "https://example.com/roles",
 		},
+		{
+			name:           "Stores server name",
+			policies:       []string{`permit(principal, action, resource);`},
+			entitiesJSON:   `[]`,
+			serverName:     "my-mcp-server",
+			expectError:    false,
+			wantServerName: "my-mcp-server",
+		},
 	}
 
 	// Run test cases
@@ -105,7 +115,7 @@ func TestNewCedarAuthorizer(t *testing.T) {
 				Policies:      tc.policies,
 				EntitiesJSON:  tc.entitiesJSON,
 				RoleClaimName: tc.roleClaimName,
-			})
+			}, tc.serverName)
 
 			// Check error expectations
 			if tc.expectError {
@@ -121,6 +131,7 @@ func TestNewCedarAuthorizer(t *testing.T) {
 				cedarAuthz, ok := authorizer.(*Authorizer)
 				require.True(t, ok)
 				assert.Equal(t, tc.wantRoleClaimName, cedarAuthz.roleClaimName)
+				assert.Equal(t, tc.wantServerName, cedarAuthz.serverName)
 			}
 		})
 	}
@@ -351,7 +362,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			authorizer, err := NewCedarAuthorizer(ConfigOptions{
 				Policies:     []string{tc.policy},
 				EntitiesJSON: `[]`,
-			})
+			}, "")
 			require.NoError(t, err, "Failed to create Cedar authorizer")
 
 			// Create a context with JWT claims
@@ -376,7 +387,7 @@ func TestAuthorizeWithJWTClaimsErrors(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{`permit(principal, action, resource);`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Test cases
@@ -675,6 +686,10 @@ func TestFactoryCreateAuthorizer(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, authorizer)
+
+			cedarAuthz, ok := authorizer.(*Authorizer)
+			require.True(t, ok)
+			assert.Equal(t, "testServer", cedarAuthz.serverName)
 		})
 	}
 }
@@ -687,7 +702,7 @@ func TestUpdatePolicies(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{`permit(principal, action, resource);`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Cast to concrete type to access UpdatePolicies
@@ -748,7 +763,7 @@ func TestUpdateEntities(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{`permit(principal, action, resource);`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Cast to concrete type to access UpdateEntities
@@ -799,7 +814,7 @@ func TestEntityOperations(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{`permit(principal, action, resource);`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Cast to concrete type to access entity methods
@@ -839,7 +854,7 @@ func TestGetEntityNotFound(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{`permit(principal, action, resource);`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Cast to concrete type
@@ -863,7 +878,7 @@ func TestIsAuthorizedErrors(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{`permit(principal, action, resource);`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Cast to concrete type
@@ -958,7 +973,7 @@ func TestIsAuthorizedWithEntities(t *testing.T) {
 			);
 		`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Cast to concrete type
@@ -1097,7 +1112,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 		Policies:                []string{policy},
 		EntitiesJSON:            `[]`,
 		PrimaryUpstreamProvider: providerName,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	upstreamToken := makeUnsignedJWT(jwt.MapClaims{
@@ -1242,7 +1257,7 @@ func TestAuthorizeWithJWTClaims_GroupMembership(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{policy},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -1313,7 +1328,7 @@ func TestAuthorizeWithJWTClaims_DoesNotMutateIdentity(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{policy},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	identity := &auth.Identity{
@@ -1361,7 +1376,7 @@ func TestAuthorizeWithJWTClaims_CustomGroupClaimName(t *testing.T) {
 		Policies:       []string{policy},
 		EntitiesJSON:   `[]`,
 		GroupClaimName: "https://example.com/groups",
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// The custom claim holds "platform"; the well-known "groups" key holds other groups.
@@ -1410,7 +1425,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProviderWithGroups(t *testing.T) {
 		Policies:                []string{policy},
 		EntitiesJSON:            `[]`,
 		PrimaryUpstreamProvider: providerName,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	tests := []struct {

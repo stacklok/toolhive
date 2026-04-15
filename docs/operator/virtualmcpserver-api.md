@@ -116,27 +116,6 @@ spec:
             );
 ```
 
-**Example (OIDC auth with inline config — deprecated)**:
-```yaml
-spec:
-  incomingAuth:
-    type: oidc
-    oidcConfig:
-      type: kubernetes
-      kubernetes:
-        audience: vmcp
-    authzConfig:
-      type: inline
-      inline:
-        policies:
-          - |
-            permit(
-              principal,
-              action == Action::"tools/call",
-              resource
-            );
-```
-
 ### `.spec.outgoingAuth` (optional)
 
 Configures authentication from Virtual MCP to backend MCPServers.

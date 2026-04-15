@@ -17,6 +17,11 @@ import (
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
 
+const (
+	methodToolsCall = "tools/call"
+	methodToolsList = "tools/list"
+)
+
 // NewMiddleware returns an HTTP middleware function that intercepts
 // execute_tool_script tool calls and injects the virtual tool into
 // tools/list responses. The config controls execution parameters
@@ -35,9 +40,9 @@ func NewMiddleware(cfg *Config) func(http.Handler) http.Handler {
 			}
 
 			switch {
-			case parsed.Method == "tools/call" && parsed.ResourceID == ExecuteToolScriptName:
+			case parsed.Method == methodToolsCall && parsed.ResourceID == ExecuteToolScriptName:
 				handleScriptExecution(w, r, next, parsed, cfg)
-			case parsed.Method == "tools/list":
+			case parsed.Method == methodToolsList:
 				handleToolsListInjection(w, r, next, cfg)
 			default:
 				next.ServeHTTP(w, r)
@@ -200,7 +205,7 @@ func dispatchToolCall(
 	body := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
-		"method":  "tools/call",
+		"method":  methodToolsCall,
 		"params":  params,
 	}
 	bodyBytes, err := json.Marshal(body)
@@ -230,7 +235,7 @@ func dispatchToolCall(
 
 // fetchToolList sends a synthetic tools/list request through the chain.
 func fetchToolList(origReq *http.Request, next http.Handler) ([]toolInfo, error) {
-	listBody := `{"jsonrpc":"2.0","id":0,"method":"tools/list","params":{}}`
+	listBody := fmt.Sprintf(`{"jsonrpc":"2.0","id":0,"method":"%s","params":{}}`, methodToolsList)
 
 	ctx := context.WithValue(origReq.Context(), mcpparser.MCPRequestContextKey, nil)
 	innerReq, err := http.NewRequestWithContext(ctx, http.MethodPost, origReq.URL.String(), strings.NewReader(listBody))

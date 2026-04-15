@@ -576,18 +576,6 @@ const (
 	PermissionProfileTypeConfigMap = "configmap"
 )
 
-// OIDC configuration types
-const (
-	// OIDCConfigTypeKubernetes is the type for Kubernetes service account token validation
-	OIDCConfigTypeKubernetes = "kubernetes"
-
-	// OIDCConfigTypeConfigMap is the type for OIDC configuration stored in ConfigMaps
-	OIDCConfigTypeConfigMap = "configMap"
-
-	// OIDCConfigTypeInline is the type for inline OIDC configuration
-	OIDCConfigTypeInline = "inline"
-)
-
 // Authorization configuration types
 const (
 	// AuthzConfigTypeConfigMap is the type for authorization configuration stored in ConfigMaps
@@ -663,170 +651,12 @@ type OutboundNetworkPermissions struct {
 	AllowPort []int32 `json:"allowPort,omitempty"`
 }
 
-// OIDCConfigRef defines a reference to OIDC configuration
-//
-// +kubebuilder:validation:XValidation:rule="self.type == 'configMap' ? has(self.configMap) : !has(self.configMap)",message="configMap must be set when type is 'configMap', and must not be set otherwise"
-// +kubebuilder:validation:XValidation:rule="self.type == 'inline' ? has(self.inline) : !has(self.inline)",message="inline must be set when type is 'inline', and must not be set otherwise"
-// +kubebuilder:validation:XValidation:rule="self.type != 'kubernetes' ? !has(self.kubernetes) : true",message="kubernetes must not be set when type is not 'kubernetes'"
-//
-//nolint:lll // CEL validation rules exceed line length limit
-type OIDCConfigRef struct {
-	// Type is the type of OIDC configuration
-	// +kubebuilder:validation:Enum=kubernetes;configMap;inline
-	// +kubebuilder:default=kubernetes
-	Type string `json:"type"`
-
-	// ResourceURL is the explicit resource URL for OAuth discovery endpoint (RFC 9728)
-	// If not specified, defaults to the in-cluster Kubernetes service URL
-	// +optional
-	ResourceURL string `json:"resourceUrl,omitempty"`
-
-	// Kubernetes configures OIDC for Kubernetes service account token validation
-	// Only used when Type is "kubernetes"
-	// +optional
-	Kubernetes *KubernetesOIDCConfig `json:"kubernetes,omitempty"`
-
-	// ConfigMap references a ConfigMap containing OIDC configuration
-	// Only used when Type is "configmap"
-	// +optional
-	ConfigMap *ConfigMapOIDCRef `json:"configMap,omitempty"`
-
-	// Inline contains direct OIDC configuration
-	// Only used when Type is "inline"
-	// +optional
-	Inline *InlineOIDCConfig `json:"inline,omitempty"`
-}
-
-// KubernetesOIDCConfig configures OIDC for Kubernetes service account token validation
-type KubernetesOIDCConfig struct {
-	// ServiceAccount is the name of the service account to validate tokens for
-	// If empty, uses the pod's service account
-	// +optional
-	ServiceAccount string `json:"serviceAccount,omitempty"`
-
-	// Namespace is the namespace of the service account
-	// If empty, uses the MCPServer's namespace
-	// +optional
-	Namespace string `json:"namespace,omitempty"`
-
-	// Audience is the expected audience for the token
-	// +kubebuilder:default=toolhive
-	// +optional
-	Audience string `json:"audience,omitempty"`
-
-	// Issuer is the OIDC issuer URL
-	// +kubebuilder:default="https://kubernetes.default.svc"
-	// +optional
-	Issuer string `json:"issuer,omitempty"`
-
-	// JWKSURL is the URL to fetch the JWKS from
-	// If empty, OIDC discovery will be used to automatically determine the JWKS URL
-	// +optional
-	JWKSURL string `json:"jwksUrl,omitempty"`
-
-	// IntrospectionURL is the URL for token introspection endpoint
-	// If empty, OIDC discovery will be used to automatically determine the introspection URL
-	// +optional
-	IntrospectionURL string `json:"introspectionUrl,omitempty"`
-
-	// UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token
-	// When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification
-	// and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication
-	// Defaults to true if not specified
-	// +optional
-	UseClusterAuth *bool `json:"useClusterAuth"`
-}
-
-// ConfigMapOIDCRef references a ConfigMap containing OIDC configuration
-type ConfigMapOIDCRef struct {
-	// Name is the name of the ConfigMap
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
-
-	// Key is the key in the ConfigMap that contains the OIDC configuration
-	// +kubebuilder:default=oidc.json
-	// +optional
-	Key string `json:"key,omitempty"`
-
-	// CABundleRef references a ConfigMap containing the CA certificate bundle.
-	// When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.
-	// If the ConfigMap data contains an explicit thvCABundlePath key, it takes precedence.
-	// +optional
-	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
-}
-
 // CABundleSource defines a source for CA certificate bundles.
 type CABundleSource struct {
 	// ConfigMapRef references a ConfigMap containing the CA certificate bundle.
 	// If Key is not specified, it defaults to "ca.crt".
 	// +optional
 	ConfigMapRef *corev1.ConfigMapKeySelector `json:"configMapRef,omitempty"`
-}
-
-// InlineOIDCConfig contains direct OIDC configuration
-type InlineOIDCConfig struct {
-	// Issuer is the OIDC issuer URL
-	// +kubebuilder:validation:Required
-	Issuer string `json:"issuer"`
-
-	// Audience is the expected audience for the token
-	// +optional
-	Audience string `json:"audience,omitempty"`
-
-	// JWKSURL is the URL to fetch the JWKS from
-	// +optional
-	JWKSURL string `json:"jwksUrl,omitempty"`
-
-	// IntrospectionURL is the URL for token introspection endpoint
-	// +optional
-	IntrospectionURL string `json:"introspectionUrl,omitempty"`
-
-	// ClientID is the OIDC client ID
-	// +optional
-	ClientID string `json:"clientId,omitempty"`
-
-	// ClientSecretRef is a reference to a Kubernetes Secret containing the client secret
-	// +optional
-	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
-
-	// CABundleRef references a ConfigMap containing the CA certificate bundle.
-	// When specified, ToolHive auto-mounts the ConfigMap and auto-computes the CA bundle path.
-	// +optional
-	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
-
-	// JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests
-	// The file must be mounted into the pod (e.g., via Secret volume)
-	// +optional
-	JWKSAuthTokenPath string `json:"jwksAuthTokenPath,omitempty"`
-
-	// JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses.
-	// Use with caution - only enable for trusted internal IDPs.
-	// Note: at runtime, if either JWKSAllowPrivateIP or ProtectedResourceAllowPrivateIP
-	// is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
-	// +kubebuilder:default=false
-	// +optional
-	JWKSAllowPrivateIP bool `json:"jwksAllowPrivateIP"`
-
-	// ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses.
-	// Use with caution - only enable for trusted internal IDPs or testing.
-	// Note: at runtime, if either ProtectedResourceAllowPrivateIP or JWKSAllowPrivateIP
-	// is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
-	// +kubebuilder:default=false
-	// +optional
-	ProtectedResourceAllowPrivateIP bool `json:"protectedResourceAllowPrivateIP"`
-
-	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
-	// WARNING: This is insecure and should NEVER be used in production
-	// Only enable for local development, testing, or trusted internal networks
-	// +kubebuilder:default=false
-	// +optional
-	InsecureAllowHTTP bool `json:"insecureAllowHTTP"`
-
-	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
-	// If empty, defaults to ["openid"]
-	// +listType=atomic
-	// +optional
-	Scopes []string `json:"scopes,omitempty"`
 }
 
 // AuthzConfigRef defines a reference to authorization configuration

@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -391,20 +390,6 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonRemoteURLInvalid, err)
 	}
 
-	// Validate OIDC issuer URL scheme
-	if err := r.validateOIDCIssuerURL(proxy); err != nil {
-		reason := mcpv1alpha1.ConditionReasonOIDCIssuerInvalid
-		if strings.Contains(err.Error(), "HTTP scheme") {
-			reason = mcpv1alpha1.ConditionReasonOIDCIssuerInsecure
-		}
-		return r.failValidation(proxy, reason, err)
-	}
-
-	// Validate JWKS URL format
-	if err := r.validateJWKSURL(proxy); err != nil {
-		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonJWKSURLInvalid, err)
-	}
-
 	// Validate inline Cedar policy syntax
 	if err := r.validateAuthzPolicySyntax(proxy); err != nil {
 		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid, err)
@@ -451,47 +436,6 @@ func setConfigurationInvalidCondition(proxy *mcpv1alpha1.MCPRemoteProxy, reason,
 		Message:            message,
 		ObservedGeneration: proxy.Generation,
 	})
-}
-
-// validateOIDCIssuerURL validates the OIDC issuer URL scheme.
-func (*MCPRemoteProxyReconciler) validateOIDCIssuerURL(proxy *mcpv1alpha1.MCPRemoteProxy) error {
-	oidcConfig := proxy.Spec.OIDCConfig
-	if oidcConfig == nil {
-		return nil
-	}
-
-	switch oidcConfig.Type {
-	case mcpv1alpha1.OIDCConfigTypeInline:
-		if oidcConfig.Inline != nil {
-			return validation.ValidateOIDCIssuerURL(oidcConfig.Inline.Issuer, oidcConfig.Inline.InsecureAllowHTTP)
-		}
-	case mcpv1alpha1.OIDCConfigTypeKubernetes:
-		if oidcConfig.Kubernetes != nil && oidcConfig.Kubernetes.Issuer != "" {
-			// Kubernetes OIDC issuers must always use HTTPS
-			return validation.ValidateOIDCIssuerURL(oidcConfig.Kubernetes.Issuer, false)
-		}
-	}
-	return nil
-}
-
-// validateJWKSURL validates the JWKS URL scheme in the OIDC config.
-func (*MCPRemoteProxyReconciler) validateJWKSURL(proxy *mcpv1alpha1.MCPRemoteProxy) error {
-	oidcConfig := proxy.Spec.OIDCConfig
-	if oidcConfig == nil {
-		return nil
-	}
-
-	switch oidcConfig.Type {
-	case mcpv1alpha1.OIDCConfigTypeInline:
-		if oidcConfig.Inline != nil {
-			return validation.ValidateJWKSURL(oidcConfig.Inline.JWKSURL)
-		}
-	case mcpv1alpha1.OIDCConfigTypeKubernetes:
-		if oidcConfig.Kubernetes != nil {
-			return validation.ValidateJWKSURL(oidcConfig.Kubernetes.JWKSURL)
-		}
-	}
-	return nil
 }
 
 // validateAuthzPolicySyntax validates inline Cedar authorization policy syntax.

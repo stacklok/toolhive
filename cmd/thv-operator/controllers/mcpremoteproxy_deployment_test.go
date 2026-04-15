@@ -737,36 +737,6 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 			},
 		},
 		{
-			name: "with telemetry",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "telemetry-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					Telemetry: &mcpv1alpha1.TelemetryConfig{
-						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
-							Enabled:     true,
-							ServiceName: "my-proxy",
-						},
-					},
-				},
-			},
-			validate: func(t *testing.T, envVars []corev1.EnvVar) {
-				t.Helper()
-				found := false
-				for _, env := range envVars {
-					if env.Name == "OTEL_RESOURCE_ATTRIBUTES" {
-						assert.Contains(t, env.Value, "service.name=my-proxy")
-						found = true
-						break
-					}
-				}
-				assert.True(t, found, "OTEL_RESOURCE_ATTRIBUTES should be set")
-			},
-		},
-		{
 			name: "with token exchange",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
@@ -892,13 +862,6 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "bearer-config",
 					},

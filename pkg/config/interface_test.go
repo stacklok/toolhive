@@ -79,8 +79,9 @@ func TestDefaultProvider(t *testing.T) {
 		require.NoError(t, err)
 
 		// Update config
-		err = pathProvider.UpdateConfig(func(c *Config) {
+		err = pathProvider.UpdateConfig(func(c *Config) error {
 			c.RegistryUrl = "https://example.com"
+			return nil
 		})
 		assert.NoError(t, err)
 
@@ -165,8 +166,9 @@ func TestPathProvider(t *testing.T) {
 		require.NoError(t, err)
 
 		// Update config
-		err = provider.UpdateConfig(func(c *Config) {
+		err = provider.UpdateConfig(func(c *Config) error {
 			c.RegistryUrl = "https://updated.com"
+			return nil
 		})
 		assert.NoError(t, err)
 
@@ -203,8 +205,9 @@ func TestKubernetesProvider(t *testing.T) {
 
 	t.Run("UpdateConfig", func(t *testing.T) {
 		t.Parallel()
-		err := provider.UpdateConfig(func(c *Config) {
+		err := provider.UpdateConfig(func(c *Config) error {
 			c.RegistryUrl = "https://example.com"
+			return nil
 		})
 		assert.NoError(t, err) // Should be no-op
 	})

@@ -15,8 +15,6 @@ import (
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 //
-// +kubebuilder:validation:XValidation:rule="!(has(self.config.telemetry) && has(self.telemetryConfigRef))",message="config.telemetry and telemetryConfigRef are mutually exclusive; migrate to telemetryConfigRef"
-//
 //nolint:lll // CEL validation rules exceed line length limit
 type VirtualMCPServerSpec struct {
 	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
@@ -65,22 +63,17 @@ type VirtualMCPServerSpec struct {
 
 	// GroupRef references the MCPGroup that defines backend workloads.
 	// The referenced MCPGroup must exist in the same namespace.
-	// This field takes precedence over config.groupRef and should be preferred.
-	// +optional
-	GroupRef *MCPGroupRef `json:"groupRef,omitempty"`
+	// +kubebuilder:validation:Required
+	GroupRef *MCPGroupRef `json:"groupRef"`
 
 	// Config is the Virtual MCP server configuration.
 	// The audit config from here is also supported, but not required.
-	// Note: config.groupRef is deprecated in favor of spec.groupRef.
-	// Note: config.telemetry is deprecated — use spec.telemetryConfigRef to reference
-	// a shared MCPTelemetryConfig resource instead.
 	// +optional
 	Config config.Config `json:"config,omitempty"`
 
 	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
 	// The referenced MCPTelemetryConfig must exist in the same namespace as this VirtualMCPServer.
 	// Cross-namespace references are not supported for security and isolation reasons.
-	// Mutually exclusive with the deprecated inline config.telemetry field.
 	// +optional
 	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
 
@@ -94,7 +87,7 @@ type VirtualMCPServerSpec struct {
 	// AuthServerConfig configures an embedded OAuth authorization server.
 	// When set, the vMCP server acts as an OIDC issuer, drives users through
 	// upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the
-	// IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfig
+	// IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfigRef
 	// so that tokens it issues are accepted by the vMCP's incoming auth middleware.
 	// When nil, IncomingAuth uses an external IDP and behavior is unchanged.
 	// +optional
@@ -126,8 +119,7 @@ type EmbeddingServerRef struct {
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
 //
-// +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? (has(self.oidcConfig) || has(self.oidcConfigRef)) : true",message="spec.incomingAuth.oidcConfig or oidcConfigRef is required when type is oidc"
-// +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
+// +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? has(self.oidcConfigRef) : true",message="spec.incomingAuth.oidcConfigRef is required when type is oidc"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type IncomingAuthConfig struct {
@@ -137,16 +129,10 @@ type IncomingAuthConfig struct {
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
-	// OIDCConfig defines OIDC authentication configuration.
-	// Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
-	// This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
-	// +optional
-	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
-
 	// OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
 	// The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.
 	// Per-server overrides (audience, scopes) are specified here; shared provider config
-	// lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig.
+	// lives in the MCPOIDCConfig resource.
 	// +optional
 	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
@@ -179,12 +165,12 @@ type OutgoingAuthConfig struct {
 // BackendAuthConfig defines authentication configuration for a backend MCPServer
 type BackendAuthConfig struct {
 	// Type defines the authentication type
-	// +kubebuilder:validation:Enum=discovered;externalAuthConfigRef;external_auth_config_ref
+	// +kubebuilder:validation:Enum=discovered;externalAuthConfigRef
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
 	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-	// Only used when Type is "externalAuthConfigRef" (or deprecated "external_auth_config_ref")
+	// Only used when Type is "externalAuthConfigRef"
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
 }
@@ -379,10 +365,6 @@ const (
 
 	// BackendAuthTypeExternalAuthConfigRef references an MCPExternalAuthConfig resource
 	BackendAuthTypeExternalAuthConfigRef = "externalAuthConfigRef"
-
-	// DeprecatedBackendAuthTypeExternalAuthConfigRef is the old snake_case value.
-	// Deprecated: Use BackendAuthTypeExternalAuthConfigRef ("externalAuthConfigRef") instead.
-	DeprecatedBackendAuthTypeExternalAuthConfigRef = "external_auth_config_ref"
 )
 
 // Workflow step types
@@ -434,39 +416,24 @@ type VirtualMCPServerList struct {
 	Items           []VirtualMCPServer `json:"items"`
 }
 
-// GetOIDCConfig returns the OIDC configuration reference for incoming auth.
-// This implements the OIDCConfigurable interface to allow the OIDC resolver
-// to resolve Kubernetes and ConfigMap OIDC configurations.
-func (v *VirtualMCPServer) GetOIDCConfig() *OIDCConfigRef {
-	if v.Spec.IncomingAuth == nil {
-		return nil
-	}
-	return v.Spec.IncomingAuth.OIDCConfig
-}
-
 // GetProxyPort returns the proxy port for the VirtualMCPServer.
-// This implements the OIDCConfigurable interface.
 // vMCP uses port 4483 by default.
 func (*VirtualMCPServer) GetProxyPort() int32 {
 	return 4483
 }
 
-// ResolveGroupName returns the effective group name, preferring spec.groupRef
-// over the deprecated config.groupRef string.
+// ResolveGroupName returns the group name from spec.groupRef.
 func (r *VirtualMCPServer) ResolveGroupName() string {
-	if name := r.Spec.GroupRef.GetName(); name != "" {
-		return name
-	}
-	return r.Spec.Config.Group
+	return r.Spec.GroupRef.GetName()
 }
 
 // Validate performs validation for VirtualMCPServer
 // This method is called by the controller during reconciliation
 func (r *VirtualMCPServer) Validate() error {
-	// Validate Group is set — prefer spec.groupRef, fall back to config.groupRef
+	// Validate Group is set — spec.groupRef.name is required
 	// Note: CEL cannot validate embedded types from other packages
-	if r.Spec.GroupRef.GetName() == "" && r.Spec.Config.Group == "" {
-		return fmt.Errorf("either spec.groupRef.name or config.groupRef must be set")
+	if r.Spec.GroupRef.GetName() == "" {
+		return fmt.Errorf("spec.groupRef.name is required")
 	}
 
 	// Note: IncomingAuth validation is handled by kubebuilder markers and CEL rules
@@ -545,7 +512,7 @@ func (*VirtualMCPServer) validateBackendAuth(backendName string, auth BackendAut
 
 	// Validate type-specific configurations
 	switch auth.Type {
-	case BackendAuthTypeExternalAuthConfigRef, DeprecatedBackendAuthTypeExternalAuthConfigRef:
+	case BackendAuthTypeExternalAuthConfigRef:
 		if auth.ExternalAuthConfigRef == nil {
 			return fmt.Errorf(
 				"spec.outgoingAuth.backends[%s].externalAuthConfigRef is required when type is externalAuthConfigRef",

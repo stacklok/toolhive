@@ -23,11 +23,12 @@ import (
 // # Contract
 //
 //   - Create atomically creates metadata for id only if it does not already exist.
-//     Use this in preference to Load+Upsert to avoid TOCTOU races.
-//   - Upsert creates or overwrites the metadata for id, refreshing the TTL.
+//     Returns (true, nil) if created, (false, nil) if the key already existed.
 //   - Update overwrites metadata only if the key already exists (SET XX semantics).
 //     Returns (true, nil) if updated, (false, nil) if the session was not found.
-//     Use this instead of Load+Upsert to avoid TOCTOU resurrection races.
+//     Use this instead of Load→mutate→unconditional-write to avoid TOCTOU
+//     resurrection races (a concurrent Delete between Load and write would be
+//     silently undone by an unconditional write).
 //   - Load retrieves metadata and refreshes the TTL (sliding-window expiry).
 //     Returns ErrSessionNotFound if the session does not exist.
 //   - Delete removes the session. It is not an error if the session is absent.
@@ -39,26 +40,22 @@ import (
 //   - LocalSessionDataStorage (in-memory, single-process)
 //   - RedisSessionDataStorage (Redis/Valkey, multi-process)
 type DataStorage interface {
-	// Upsert creates or updates session metadata with a sliding TTL.
-	Upsert(ctx context.Context, id string, metadata map[string]string) error
+	// Create atomically creates session metadata only if the session ID
+	// does not already exist. Returns (true, nil) if the entry was created,
+	// (false, nil) if it already existed, or (false, err) on storage errors.
+	Create(ctx context.Context, id string, metadata map[string]string) (bool, error)
 
 	// Update overwrites session metadata only if the session ID already exists
 	// (conditional write, equivalent to Redis SET XX). Returns (true, nil) if
 	// the entry was updated, (false, nil) if it was not found, or (false, err)
-	// on storage errors. Use this instead of Load+Upsert to prevent resurrections
-	// after a concurrent Delete.
+	// on storage errors. Use this (SET XX) for writes that must not recreate a
+	// key that was concurrently deleted — an unconditional write would silently
+	// resurrect a session the caller intentionally terminated.
 	Update(ctx context.Context, id string, metadata map[string]string) (bool, error)
 
 	// Load retrieves session metadata and refreshes its TTL.
 	// Returns ErrSessionNotFound if the session does not exist.
 	Load(ctx context.Context, id string) (map[string]string, error)
-
-	// Create atomically creates session metadata only if the session ID
-	// does not already exist. Returns (true, nil) if the entry was created,
-	// (false, nil) if it already existed, or (false, err) on storage errors.
-	// Use this in preference to Load+Upsert to avoid TOCTOU races in
-	// multi-pod deployments.
-	Create(ctx context.Context, id string, metadata map[string]string) (bool, error)
 
 	// Delete removes session metadata. Not an error if absent.
 	Delete(ctx context.Context, id string) error

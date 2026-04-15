@@ -212,11 +212,12 @@ func (o *oauthTokenSource) createTokenPersister(refreshTokenKey string) remote.T
 
 // updateConfigTokenRef updates the config with the refresh token reference and expiry.
 func (*oauthTokenSource) updateConfigTokenRef(refreshTokenKey string, expiry time.Time) {
-	if err := config.UpdateConfig(func(cfg *config.Config) {
+	if err := config.UpdateConfig(func(cfg *config.Config) error {
 		if cfg.RegistryAuth.OAuth != nil {
 			cfg.RegistryAuth.OAuth.CachedRefreshTokenRef = refreshTokenKey
 			cfg.RegistryAuth.OAuth.CachedTokenExpiry = expiry
 		}
+		return nil
 	}); err != nil {
 		slog.Warn("Failed to update config with token reference", "error", err)
 	}

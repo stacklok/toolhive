@@ -43,12 +43,13 @@ func markBuildAuthFileConfigured(p Provider, name string) error {
 		return err
 	}
 
-	return p.UpdateConfig(func(c *Config) {
+	return p.UpdateConfig(func(c *Config) error {
 		if c.BuildAuthFiles == nil {
 			c.BuildAuthFiles = make(map[string]string)
 		}
 		// Store only a marker - actual content is in secrets
 		c.BuildAuthFiles[name] = "secret:" + BuildAuthFileSecretName(name)
+		return nil
 	})
 }
 
@@ -81,10 +82,11 @@ func getConfiguredBuildAuthFiles(p Provider) []string {
 // Note: This only removes the config marker. The caller should also delete
 // the corresponding secret from the secrets provider.
 func unsetBuildAuthFile(p Provider, name string) error {
-	return p.UpdateConfig(func(c *Config) {
+	return p.UpdateConfig(func(c *Config) error {
 		if c.BuildAuthFiles != nil {
 			delete(c.BuildAuthFiles, name)
 		}
+		return nil
 	})
 }
 
@@ -92,7 +94,8 @@ func unsetBuildAuthFile(p Provider, name string) error {
 // Note: This only removes the config markers. The caller should also delete
 // the corresponding secrets from the secrets provider.
 func unsetAllBuildAuthFiles(p Provider) error {
-	return p.UpdateConfig(func(c *Config) {
+	return p.UpdateConfig(func(c *Config) error {
 		c.BuildAuthFiles = nil
+		return nil
 	})
 }

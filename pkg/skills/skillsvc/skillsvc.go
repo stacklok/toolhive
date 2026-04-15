@@ -412,6 +412,199 @@ func (s *service) Info(ctx context.Context, opts skills.InfoOptions) (*skills.Sk
 	}, nil
 }
 
+// GetContent retrieves the SKILL.md body and file listing from a skill artifact
+// without installing it. The reference may be:
+//   - A local build tag (e.g. "my-skill")
+//   - A fully-qualified OCI reference (e.g. "ghcr.io/org/skill:v1")
+//   - A git:// reference (e.g. "git://github.com/org/repo#path/to/skill")
+//   - An https:// URL (converted to git:// internally)
+//
+// Resolution order: git (git:// and https://) → OCI (local store, then remote
+// pull) → registry catalog lookup.
+func (s *service) GetContent(ctx context.Context, opts skills.ContentOptions) (*skills.SkillContent, error) {
+	ref := opts.Reference
+	if ref == "" {
+		return nil, httperr.WithCode(
+			errors.New("reference is required"),
+			http.StatusBadRequest,
+		)
+	}
+
+	// Git references (git:// or https://) are dispatched first since their
+	// scheme prefix is unambiguous and cannot collide with OCI references.
+	if gitresolver.IsGitReference(ref) {
+		return s.getContentFromGit(ctx, ref)
+	}
+	if isHTTPURL(ref) {
+		gitURL, err := buildGitReferenceFromRegistryURL(ref)
+		if err != nil {
+			return nil, httperr.WithCode(
+				fmt.Errorf("invalid URL %q: %w", ref, err),
+				http.StatusBadRequest,
+			)
+		}
+		return s.getContentFromGit(ctx, gitURL)
+	}
+
+	// Try OCI resolution (local store + remote pull). If this succeeds, return.
+	content, ociErr := s.getContentFromOCI(ctx, ref)
+	if ociErr == nil {
+		return content, nil
+	}
+
+	// OCI failed — try resolving via registry name lookup (e.g. "skill-creator"
+	// or "io.github.stacklok/skill-creator" from the catalog index).
+	// Skip for refs that are clearly OCI references (contain : or @) to avoid
+	// a wasted network round-trip searching for e.g. "skill:v1".
+	if strings.ContainsAny(ref, ":@") {
+		return nil, ociErr
+	}
+	resolved, regErr := s.resolveFromRegistry(ref)
+	if regErr != nil {
+		return nil, regErr
+	}
+	if resolved != nil {
+		switch {
+		case resolved.OCIRef != nil:
+			return s.getContentFromOCI(ctx, resolved.OCIRef.String())
+		case resolved.GitURL != "":
+			return s.getContentFromGit(ctx, resolved.GitURL)
+		}
+	}
+
+	// Nothing matched — return the original OCI error.
+	return nil, ociErr
+}
+
+// getContentFromGit clones a git repository and extracts the SKILL.md content.
+func (s *service) getContentFromGit(ctx context.Context, ref string) (*skills.SkillContent, error) {
+	if s.gitResolver == nil {
+		return nil, httperr.WithCode(
+			errors.New("git resolver is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+
+	gitRef, err := gitresolver.ParseGitReference(ref)
+	if err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("invalid git reference: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	resolved, err := s.gitResolver.Resolve(ctx, gitRef)
+	if err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("resolving git skill: %w", err),
+			http.StatusBadGateway,
+		)
+	}
+
+	content := &skills.SkillContent{
+		Name:        resolved.SkillConfig.Name,
+		Description: resolved.SkillConfig.Description,
+		Version:     resolved.SkillConfig.Version,
+		License:     resolved.SkillConfig.License,
+		Body:        string(resolved.SkillConfig.Body),
+		Files:       make([]skills.SkillFileEntry, 0, len(resolved.Files)),
+	}
+
+	for _, f := range resolved.Files {
+		content.Files = append(content.Files, skills.SkillFileEntry{
+			Path: f.Path,
+			Size: len(f.Content),
+		})
+	}
+
+	return content, nil
+}
+
+// getContentFromOCI resolves a reference from the local OCI store or pulls it
+// from a remote registry, then extracts the SKILL.md content.
+func (s *service) getContentFromOCI(ctx context.Context, ref string) (*skills.SkillContent, error) {
+	if s.ociStore == nil {
+		return nil, httperr.WithCode(
+			errors.New("OCI store is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+
+	// Try the local store first (covers local builds by tag name and
+	// previously pulled remote refs tagged by Pull).
+	d, resolveErr := s.ociStore.Resolve(ctx, ref)
+	if resolveErr != nil {
+		if s.registry == nil {
+			return nil, httperr.WithCode(
+				fmt.Errorf("reference %q not found in local store and OCI registry is not configured", ref),
+				http.StatusBadRequest,
+			)
+		}
+
+		ociRef, isOCI, parseErr := parseOCIReference(ref)
+		if parseErr != nil {
+			return nil, httperr.WithCode(
+				fmt.Errorf("invalid reference %q: %w", ref, parseErr),
+				http.StatusBadRequest,
+			)
+		}
+		if !isOCI {
+			return nil, httperr.WithCode(
+				fmt.Errorf("reference %q not found in local store and is not a valid OCI reference", ref),
+				http.StatusBadRequest,
+			)
+		}
+
+		qualifiedRef := qualifiedOCIRef(ociRef)
+		pullCtx, cancel := context.WithTimeout(ctx, ociPullTimeout)
+		defer cancel()
+
+		var pullErr error
+		d, pullErr = s.registry.Pull(pullCtx, s.ociStore, qualifiedRef)
+		if pullErr != nil {
+			return nil, httperr.WithCode(
+				fmt.Errorf("pulling OCI artifact %q: %w", qualifiedRef, pullErr),
+				http.StatusBadRequest,
+			)
+		}
+	}
+
+	layerData, skillConfig, err := s.extractOCIContent(ctx, d)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := ociskills.DecompressTar(layerData)
+	if err != nil {
+		return nil, fmt.Errorf("decompressing skill layer: %w", err)
+	}
+
+	content := &skills.SkillContent{
+		Name:        skillConfig.Name,
+		Description: skillConfig.Description,
+		Version:     skillConfig.Version,
+		License:     skillConfig.License,
+		Files:       make([]skills.SkillFileEntry, 0, len(entries)),
+	}
+
+	for _, entry := range entries {
+		content.Files = append(content.Files, skills.SkillFileEntry{
+			Path: entry.Path,
+			Size: len(entry.Content),
+		})
+		if strings.EqualFold(filepath.Base(entry.Path), "SKILL.md") {
+			content.Body = string(entry.Content)
+		}
+	}
+
+	return content, nil
+}
+
+// isHTTPURL returns true if the reference starts with http:// or https://.
+func isHTTPURL(ref string) bool {
+	return strings.HasPrefix(ref, "https://") || strings.HasPrefix(ref, "http://")
+}
+
 // Validate checks whether a skill definition is valid.
 func (*service) Validate(_ context.Context, path string) (*skills.ValidationResult, error) {
 	if err := validateLocalPath(path); err != nil {
@@ -970,27 +1163,37 @@ type registryResolveResult struct {
 	GitURL string // raw git:// URL for installFromGit
 }
 
-// resolveFromRegistry attempts to resolve a plain skill name by querying the
-// configured skill registry/index. Returns (result, nil) on success, (nil, nil)
-// when no match is found or no lookup is configured, or (nil, err) on ambiguity.
+// resolveFromRegistry attempts to resolve a skill name by querying the
+// configured skill registry/index. Accepts either a plain name ("skill-creator")
+// or a qualified "namespace/name" ("io.github.stacklok/skill-creator").
+// Returns (result, nil) on success, (nil, nil) when no match is found or no
+// lookup is configured, or (nil, err) on ambiguity.
 func (s *service) resolveFromRegistry(name string) (*registryResolveResult, error) {
 	if s.skillLookup == nil {
 		return nil, nil
 	}
 
-	results, err := s.skillLookup.SearchSkills(name)
+	// Split qualified "namespace/name" if present. Use the last segment as
+	// the search query since SearchSkills matches on name substring.
+	wantNamespace, searchName := splitQualifiedName(name)
+
+	results, err := s.skillLookup.SearchSkills(searchName)
 	if err != nil {
 		slog.Warn("registry skill lookup failed, falling back to not-found", "name", name, "error", err)
 		return nil, nil
 	}
 
-	// Filter for exact name match. Case-insensitive because registry data
+	// Filter for exact match. Case-insensitive because registry data
 	// may not be normalized to lowercase even though local skill names are.
 	var matches []regtypes.Skill
 	for _, sk := range results {
-		if strings.EqualFold(sk.Name, name) {
-			matches = append(matches, sk)
+		if !strings.EqualFold(sk.Name, searchName) {
+			continue
 		}
+		if wantNamespace != "" && !strings.EqualFold(sk.Namespace, wantNamespace) {
+			continue
+		}
+		matches = append(matches, sk)
 	}
 
 	if len(matches) == 0 {
@@ -1016,6 +1219,16 @@ func (s *service) resolveFromRegistry(name string) (*registryResolveResult, erro
 	}
 
 	return resolveRegistryPackages(name, matches[0].Packages)
+}
+
+// splitQualifiedName splits "namespace/name" into (namespace, name).
+// If the input has no "/" it returns ("", name) unchanged.
+func splitQualifiedName(s string) (namespace, name string) {
+	idx := strings.LastIndex(s, "/")
+	if idx < 0 {
+		return "", s
+	}
+	return s[:idx], s[idx+1:]
 }
 
 // resolveRegistryPackages selects the best installable package from a registry
@@ -1046,6 +1259,9 @@ func resolveRegistryPackages(name string, packages []regtypes.SkillPackage) (*re
 					fmt.Errorf("registry skill %q has invalid git URL %q: %w", name, u, gitErr),
 					http.StatusUnprocessableEntity,
 				)
+			}
+			if pkg.Subfolder != "" {
+				gitURL += "#" + pkg.Subfolder
 			}
 			return &registryResolveResult{GitURL: gitURL}, nil
 		}

@@ -76,8 +76,9 @@ func (c *DefaultAuthManager) SetOAuthAuth(ctx context.Context, issuer, clientID,
 
 // UnsetAuth removes registry authentication configuration.
 func (c *DefaultAuthManager) UnsetAuth() error {
-	return c.provider.UpdateConfig(func(cfg *config.Config) {
+	return c.provider.UpdateConfig(func(cfg *config.Config) error {
 		cfg.RegistryAuth = config.RegistryAuth{}
+		return nil
 	})
 }
 

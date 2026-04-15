@@ -160,8 +160,9 @@ func TestRegistryURLConfig(t *testing.T) {
 
 		// Test setting a registry URL
 		testURL := "https://example.com/registry.json"
-		err := UpdateConfigAtPath(configPath, func(c *Config) {
+		err := UpdateConfigAtPath(configPath, func(c *Config) error {
 			c.RegistryUrl = testURL
+			return nil
 		})
 		require.NoError(t, err)
 
@@ -171,8 +172,9 @@ func TestRegistryURLConfig(t *testing.T) {
 		assert.Equal(t, testURL, config.RegistryUrl)
 
 		// Test unsetting the registry URL
-		err = UpdateConfigAtPath(configPath, func(c *Config) {
+		err = UpdateConfigAtPath(configPath, func(c *Config) error {
 			c.RegistryUrl = ""
+			return nil
 		})
 		require.NoError(t, err)
 
@@ -195,8 +197,9 @@ func TestRegistryURLConfig(t *testing.T) {
 		testURL := "https://custom-registry.example.com/registry.json"
 
 		// Set the registry URL
-		err := UpdateConfigAtPath(configPath, func(c *Config) {
+		err := UpdateConfigAtPath(configPath, func(c *Config) error {
 			c.RegistryUrl = testURL
+			return nil
 		})
 		require.NoError(t, err)
 
@@ -226,8 +229,9 @@ func TestRegistryURLConfig(t *testing.T) {
 		})
 
 		// Test enabling
-		err := UpdateConfigAtPath(configPath, func(c *Config) {
+		err := UpdateConfigAtPath(configPath, func(c *Config) error {
 			c.AllowPrivateRegistryIp = true
+			return nil
 		})
 		require.NoError(t, err)
 
@@ -237,8 +241,9 @@ func TestRegistryURLConfig(t *testing.T) {
 		assert.Equal(t, true, config.AllowPrivateRegistryIp)
 
 		// Test toggling setting to false
-		err = UpdateConfigAtPath(configPath, func(c *Config) {
+		err = UpdateConfigAtPath(configPath, func(c *Config) error {
 			c.AllowPrivateRegistryIp = false
+			return nil
 		})
 		require.NoError(t, err)
 

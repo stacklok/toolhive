@@ -2515,6 +2515,10 @@ const docTemplate = `{
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
                     },
+                    "registry": {
+                        "description": "Registry is the optional registry name to resolve the server from (e.g. \"default\").",
+                        "type": "string"
+                    },
                     "runtime_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
                     },
@@ -2525,6 +2529,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "server": {
+                        "description": "Server is the optional server name in the registry (e.g. \"io.github.stacklok/fetch\").\nWhen both Registry and Server are set, thv resolves the server metadata\nserver-side, filling in image, transport, env vars, permissions, etc.\nUser-provided fields always override registry defaults.",
+                        "type": "string"
                     },
                     "target_port": {
                         "description": "Port to expose from the container",

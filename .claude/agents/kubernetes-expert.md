@@ -3,6 +3,7 @@ name: kubernetes-expert
 description: Specialized in Kubernetes operator patterns, CRDs, controllers, and cloud-native architecture for ToolHive
 tools: [Read, Write, Edit, Glob, Grep, Bash, WebFetch]
 model: inherit
+color: blue
 ---
 
 # Kubernetes Expert Agent

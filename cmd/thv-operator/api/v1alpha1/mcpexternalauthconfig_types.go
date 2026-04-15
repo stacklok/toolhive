@@ -332,6 +332,16 @@ type OIDCUpstreamConfig struct {
 	// that return non-standard claim names in their UserInfo response.
 	// +optional
 	UserInfoOverride *UserInfoConfig `json:"userInfoOverride,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests sent to the upstream provider.
+	// This is useful for providers that require custom parameters, such as
+	// Google's access_type=offline for obtaining refresh tokens.
+	// Framework-managed parameters (response_type, client_id, redirect_uri,
+	// scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+	// +kubebuilder:validation:MaxProperties=16
+	// +optional
+	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
@@ -379,6 +389,16 @@ type OAuth2UpstreamConfig struct {
 	// If nil, standard OAuth 2.0 token response parsing is used.
 	// +optional
 	TokenResponseMapping *TokenResponseMapping `json:"tokenResponseMapping,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests sent to the upstream provider.
+	// This is useful for providers that require custom parameters, such as
+	// Google's access_type=offline for obtaining refresh tokens.
+	// Framework-managed parameters (response_type, client_id, redirect_uri,
+	// scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+	// +kubebuilder:validation:MaxProperties=16
+	// +optional
+	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
 }
 
 // TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields

@@ -1881,6 +1881,13 @@ spec:
                         description: Name is the name of the MCPOIDCConfig resource
                         minLength: 1
                         type: string
+                      resourceUrl:
+                        description: |-
+                          ResourceURL is the public URL for OAuth protected resource metadata (RFC 9728).
+                          When the server is exposed via Ingress or gateway, set this to the external
+                          URL that MCP clients connect to. If not specified, defaults to the internal
+                          Kubernetes service URL.
+                        type: string
                       scopes:
                         description: |-
                           Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728).

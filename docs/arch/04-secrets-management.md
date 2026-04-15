@@ -79,7 +79,7 @@ OAuth/OIDC client secrets are stored in Kubernetes Secrets and referenced using 
    - **Secret injection**: `cmd/thv-operator/pkg/controllerutil/tokenexchange.go`
 
 2. **OIDC Authentication (MCPOIDCConfig)**: OIDC client secrets for token introspection
-   - **CRD field**: `InlineOIDCSharedConfig.ClientID` in `cmd/thv-operator/api/v1alpha1/mcpoidcconfig_types.go`
+   - **CRD field**: `InlineOIDCSharedConfig.ClientSecretRef` in `cmd/thv-operator/api/v1alpha1/mcpoidcconfig_types.go`
    - **Secret injection**: `cmd/thv-operator/pkg/controllerutil/oidc.go`
    - **Runtime loading**: `pkg/auth/token.go` (via `TOOLHIVE_OIDC_CLIENT_SECRET` environment variable)
 

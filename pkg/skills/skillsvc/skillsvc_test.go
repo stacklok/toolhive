@@ -2931,6 +2931,208 @@ func TestInstallFromRegistryGitFallback(t *testing.T) {
 	}
 }
 
+// TestInstallQualifiedNameOCIFallback covers the scenario where Install
+// receives a "namespace/name" string, which is parsed as an OCI reference but
+// fails to pull because the namespace looks like a registry host. The service
+// must fall back to a registry catalogue lookup and complete the install from
+// the resolved package (OCI or git). Names that carry an explicit tag or digest
+// (unambiguously OCI) must NOT trigger a fallback.
+func TestInstallQualifiedNameOCIFallback(t *testing.T) {
+	t.Parallel()
+
+	commitHash := testCommitHash
+
+	tests := []struct {
+		name     string
+		opts     skills.InstallOptions
+		setup    func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver)
+		wantCode int
+		wantErr  string
+		wantName string
+	}{
+		{
+			name: "qualified namespace/name falls back to registry OCI package",
+			opts: skills.InstallOptions{Name: "io.github.stacklok/my-skill"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				indexDigest := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				// First Pull is for the raw "io.github.stacklok/my-skill" — fails.
+				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(godigest.Digest(""), fmt.Errorf("no such host")).
+					Times(1)
+				// Second Pull is after registry lookup resolves the real OCI ref.
+				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), "ghcr.io/stacklok/my-skill:v1.0.0").
+					Return(indexDigest, nil)
+
+				lookup := regmocks.NewMockProvider(ctrl)
+				lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
+					{
+						Namespace: "io.github.stacklok",
+						Name:      "my-skill",
+						Packages: []regtypes.SkillPackage{
+							{RegistryType: "oci", Identifier: "ghcr.io/stacklok/my-skill:v1.0.0"},
+						},
+					},
+				}, nil)
+
+				installBase := filepath.Join(tempDir(t), "installed")
+				require.NoError(t, os.MkdirAll(installBase, 0o755))
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
+
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(filepath.Join(installBase, "my-skill"), nil)
+				pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
+
+				return lookup, reg, ociStore, nil, store, pr
+			},
+			wantName: "my-skill",
+		},
+		{
+			name: "qualified namespace/name falls back to registry git package",
+			opts: skills.InstallOptions{Name: "io.github.stacklok/my-skill"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(godigest.Digest(""), fmt.Errorf("no such host"))
+
+				lookup := regmocks.NewMockProvider(ctrl)
+				lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
+					{
+						Namespace: "io.github.stacklok",
+						Name:      "my-skill",
+						Packages: []regtypes.SkillPackage{
+							{RegistryType: "git", URL: "https://github.com/stacklok/my-skill"},
+						},
+					},
+				}, nil)
+
+				gr := gitmocks.NewMockResolver(ctrl)
+				gr.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(&gitresolver.ResolveResult{
+					SkillConfig: &skills.ParseResult{Name: "my-skill", Version: "1.0.0"},
+					Files:       []gitresolver.FileEntry{{Path: "SKILL.md", Content: []byte("---\nname: my-skill\n---\n"), Mode: 0644}},
+					CommitHash:  commitHash,
+				}, nil)
+
+				installBase := filepath.Join(tempDir(t), "installed")
+				require.NoError(t, os.MkdirAll(installBase, 0o755))
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
+
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(filepath.Join(installBase, "my-skill"), nil)
+				pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
+
+				return lookup, reg, ociStore, gr, store, pr
+			},
+			wantName: "my-skill",
+		},
+		{
+			name: "explicit OCI tag does not fall back to registry on pull failure",
+			opts: skills.InstallOptions{Name: "ghcr.io/org/my-skill:v1"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), "ghcr.io/org/my-skill:v1").
+					Return(godigest.Digest(""), fmt.Errorf("auth required"))
+
+				// pathResolver must be non-nil so installFromOCI proceeds past its
+				// nil guard and reaches the Pull call.
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+
+				store := storemocks.NewMockSkillStore(ctrl)
+
+				// No lookup mock — gomock will fail the test if SearchSkills is called.
+				return nil, reg, ociStore, nil, store, pr
+			},
+			wantCode: http.StatusBadRequest,
+			wantErr:  "auth required",
+		},
+		{
+			name: "qualified name with no registry match returns original OCI error",
+			opts: skills.InstallOptions{Name: "io.github.stacklok/my-skill"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*regmocks.MockProvider, *ocimocks.MockRegistryClient, *ociskills.Store, *gitmocks.MockResolver, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				reg := ocimocks.NewMockRegistryClient(ctrl)
+				reg.EXPECT().Pull(gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(godigest.Digest(""), fmt.Errorf("no such host"))
+
+				// pathResolver must be non-nil so installFromOCI proceeds past its
+				// nil guard and reaches the Pull call.
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+
+				lookup := regmocks.NewMockProvider(ctrl)
+				lookup.EXPECT().SearchSkills("my-skill").Return(nil, nil)
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				return lookup, reg, ociStore, nil, store, pr
+			},
+			wantCode: http.StatusBadRequest,
+			wantErr:  "no such host",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			lookup, reg, ociStore, gr, store, pr := tt.setup(t, ctrl)
+
+			var opts []Option
+			if lookup != nil {
+				opts = append(opts, WithSkillLookup(lookup))
+			}
+			if reg != nil {
+				opts = append(opts, WithRegistryClient(reg))
+			}
+			if ociStore != nil {
+				opts = append(opts, WithOCIStore(ociStore))
+			}
+			if gr != nil {
+				opts = append(opts, WithGitResolver(gr))
+			}
+			if pr != nil {
+				opts = append(opts, WithPathResolver(pr))
+			}
+
+			svc := New(store, opts...)
+			result, err := svc.Install(t.Context(), tt.opts)
+
+			if tt.wantCode != 0 {
+				require.Error(t, err)
+				assert.Equal(t, tt.wantCode, httperr.Code(err))
+				if tt.wantErr != "" {
+					assert.Contains(t, err.Error(), tt.wantErr)
+				}
+				return
+			}
+			require.NoError(t, err)
+			if tt.wantName != "" {
+				assert.Equal(t, tt.wantName, result.Skill.Metadata.Name)
+			}
+		})
+	}
+}
+
 func TestUninstallRemovesSkillFromGroups(t *testing.T) {
 	t.Parallel()
 

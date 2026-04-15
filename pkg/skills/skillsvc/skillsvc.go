@@ -235,11 +235,25 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 		)
 	}
 	if isOCI {
-		result, err := s.installFromOCI(ctx, opts, scope, ref)
-		if err != nil {
-			return nil, err
+		result, ociErr := s.installFromOCI(ctx, opts, scope, ref)
+		if ociErr == nil {
+			return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
 		}
-		return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
+		// OCI pull failed — fall back to registry lookup for names that look
+		// like a qualified "namespace/name" (no ':' or '@'). Names with an
+		// explicit tag or digest are unambiguously OCI and should not trigger
+		// a registry search (e.g. "ghcr.io/org/skill:v1" should not fall back).
+		if strings.ContainsAny(opts.Name, ":@") {
+			return nil, ociErr
+		}
+		resolved, regErr := s.resolveFromRegistry(opts.Name)
+		if regErr != nil {
+			return nil, regErr
+		}
+		if resolved != nil {
+			return s.installFromResolvedRegistry(ctx, opts, scope, resolved)
+		}
+		return nil, ociErr
 	}
 
 	// Plain skill name — validate and proceed with existing flow.
@@ -309,24 +323,7 @@ func (s *service) installFromRegistryLookup(
 		return nil, regErr
 	}
 	if resolved != nil {
-		switch {
-		case resolved.OCIRef != nil:
-			slog.Info("resolved skill from registry (OCI)", "name", opts.Name, "oci_reference", resolved.OCIRef.String())
-			opts.Name = resolved.OCIRef.String()
-			result, ociErr := s.installFromOCI(ctx, opts, scope, resolved.OCIRef)
-			if ociErr != nil {
-				return nil, ociErr
-			}
-			return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
-		case resolved.GitURL != "":
-			slog.Info("resolved skill from registry (git)", "name", opts.Name, "git_url", resolved.GitURL)
-			opts.Name = resolved.GitURL
-			result, gitErr := s.installFromGit(ctx, opts, scope)
-			if gitErr != nil {
-				return nil, gitErr
-			}
-			return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
-		}
+		return s.installFromResolvedRegistry(ctx, opts, scope, resolved)
 	}
 
 	return nil, httperr.WithCode(
@@ -334,6 +331,38 @@ func (s *service) installFromRegistryLookup(
 			" install by OCI reference:\n  thv skill install ghcr.io/<namespace>/%s:<version>",
 			opts.Name, opts.Name),
 		http.StatusNotFound,
+	)
+}
+
+// installFromResolvedRegistry dispatches an install to the appropriate
+// backend (OCI or git) based on the result of a registry lookup.
+func (s *service) installFromResolvedRegistry(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+	resolved *registryResolveResult,
+) (*skills.InstallResult, error) {
+	switch {
+	case resolved.OCIRef != nil:
+		slog.Info("resolved skill from registry (OCI)", "name", opts.Name, "oci_reference", resolved.OCIRef.String())
+		opts.Name = resolved.OCIRef.String()
+		result, ociErr := s.installFromOCI(ctx, opts, scope, resolved.OCIRef)
+		if ociErr != nil {
+			return nil, ociErr
+		}
+		return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
+	case resolved.GitURL != "":
+		slog.Info("resolved skill from registry (git)", "name", opts.Name, "git_url", resolved.GitURL)
+		opts.Name = resolved.GitURL
+		result, gitErr := s.installFromGit(ctx, opts, scope)
+		if gitErr != nil {
+			return nil, gitErr
+		}
+		return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
+	}
+	return nil, httperr.WithCode(
+		fmt.Errorf("skill %q resolved from registry but has no installable package", opts.Name),
+		http.StatusUnprocessableEntity,
 	)
 }
 

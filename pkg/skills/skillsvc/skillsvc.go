@@ -240,12 +240,14 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 			return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
 		}
 		// OCI pull failed — fall back to registry lookup for names that look
-		// like a qualified "namespace/name" (no ':' or '@'). Names with an
-		// explicit tag or digest are unambiguously OCI and should not trigger
-		// a registry search (e.g. "ghcr.io/org/skill:v1" should not fall back).
-		if strings.ContainsAny(opts.Name, ":@") {
+		// like a qualified "namespace/name" (no ':' or '@', exactly one '/').
+		// Names with an explicit tag or digest, or with more than one '/'
+		// (e.g. "ghcr.io/org/skill" or "ghcr.io/org/skill:v1"), are
+		// unambiguously OCI refs and must not trigger a registry search.
+		if strings.ContainsAny(opts.Name, ":@") || strings.Count(opts.Name, "/") > 1 {
 			return nil, ociErr
 		}
+		slog.Debug("OCI pull failed, attempting registry fallback", "name", opts.Name, "error", ociErr)
 		resolved, regErr := s.resolveFromRegistry(opts.Name)
 		if regErr != nil {
 			return nil, regErr
@@ -350,7 +352,10 @@ func (s *service) installFromResolvedRegistry(
 		if ociErr != nil {
 			return nil, ociErr
 		}
-		return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
+		// Use the skill name extracted from the artifact, not opts.Name which
+		// holds the OCI ref string. installFromOCI mutates its own copy of opts
+		// (Go pass-by-value), so the caller never sees the updated name.
+		return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
 	case resolved.GitURL != "":
 		slog.Info("resolved skill from registry (git)", "name", opts.Name, "git_url", resolved.GitURL)
 		opts.Name = resolved.GitURL
@@ -495,9 +500,9 @@ func (s *service) GetContent(ctx context.Context, opts skills.ContentOptions) (*
 
 	// OCI failed — try resolving via registry name lookup (e.g. "skill-creator"
 	// or "io.github.stacklok/skill-creator" from the catalog index).
-	// Skip for refs that are clearly OCI references (contain : or @) to avoid
-	// a wasted network round-trip searching for e.g. "skill:v1".
-	if strings.ContainsAny(ref, ":@") {
+	// Skip for refs that are clearly OCI references (contain ':', '@', or more
+	// than one '/') to avoid a wasted network round-trip.
+	if strings.ContainsAny(ref, ":@") || strings.Count(ref, "/") > 1 {
 		return nil, ociErr
 	}
 	resolved, regErr := s.resolveFromRegistry(ref)

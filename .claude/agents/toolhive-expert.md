@@ -2,6 +2,7 @@
 name: toolhive-expert
 description: Codebase knowledge, navigation, and implementation guidance — use for understanding existing code and patterns
 tools: [Read, Glob, Grep, Bash]
+color: green
 model: inherit
 ---
 

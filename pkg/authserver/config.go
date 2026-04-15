@@ -185,6 +185,9 @@ type OIDCUpstreamRunConfig struct {
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	// If not specified, defaults to ["openid", "offline_access"].
+	// When using AdditionalAuthorizationParams with provider-specific refresh
+	// token mechanisms (e.g., Google's access_type=offline), set explicit scopes
+	// to avoid sending both offline_access and the provider-specific parameter.
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 
 	// UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.

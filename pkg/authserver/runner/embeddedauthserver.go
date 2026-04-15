@@ -344,7 +344,10 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 		return nil, fmt.Errorf("failed to resolve OIDC client secret: %w", err)
 	}
 
-	// Default scopes if not specified
+	// Default scopes if not specified. The default includes offline_access
+	// (standard OIDC mechanism for refresh tokens). Providers like Google that
+	// use access_type=offline instead should specify explicit scopes in their
+	// config to avoid sending both mechanisms.
 	scopes := oidc.Scopes
 	if len(scopes) == 0 {
 		scopes = []string{"openid", "offline_access"}

@@ -172,6 +172,10 @@ func printTextOutput(workloadList []core.Workload) {
 			status = "⚠️  " + status
 		case rt.WorkloadStatusPolicyStopped:
 			status = "🚫 " + status
+		case rt.WorkloadStatusRunning, rt.WorkloadStatusStopped, rt.WorkloadStatusError,
+			rt.WorkloadStatusStarting, rt.WorkloadStatusStopping, rt.WorkloadStatusUnhealthy,
+			rt.WorkloadStatusRemoving, rt.WorkloadStatusUnknown:
+			// no indicator for other statuses
 		}
 
 		// Print workload information

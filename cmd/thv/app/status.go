@@ -106,6 +106,10 @@ func printStatusTextOutput(workload core.Workload) {
 		status = "⚠️  " + status
 	case runtime.WorkloadStatusPolicyStopped:
 		status = "🚫 " + status
+	case runtime.WorkloadStatusRunning, runtime.WorkloadStatusStopped, runtime.WorkloadStatusError,
+		runtime.WorkloadStatusStarting, runtime.WorkloadStatusStopping, runtime.WorkloadStatusUnhealthy,
+		runtime.WorkloadStatusRemoving, runtime.WorkloadStatusUnknown:
+		// no indicator for other statuses
 	}
 
 	// Print workload information in key-value format

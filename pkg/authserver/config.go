@@ -190,6 +190,12 @@ type OIDCUpstreamRunConfig struct {
 	// UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.
 	// By default, the UserInfo endpoint is discovered automatically via OIDC discovery.
 	UserInfoOverride *UserInfoRunConfig `json:"userinfo_override,omitempty" yaml:"userinfo_override,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests. Useful for provider-specific parameters like
+	// Google's access_type=offline.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
 }
 
 // OAuth2UpstreamRunConfig contains configuration for pure OAuth 2.0 providers.
@@ -227,6 +233,12 @@ type OAuth2UpstreamRunConfig struct {
 	// the configured dot-notation paths.
 	//nolint:lll // field tags require full JSON+YAML names
 	TokenResponseMapping *TokenResponseMappingRunConfig `json:"token_response_mapping,omitempty" yaml:"token_response_mapping,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests. Useful for provider-specific parameters like
+	// Google's access_type=offline.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
 }
 
 // TokenResponseMappingRunConfig maps non-standard token response fields to standard fields.

@@ -58,9 +58,21 @@ tasks:
     cmds:
       - addlicense -f .github/license-header.txt -ignore '**/mocks/**' -ignore '**/testdata/**' -ignore 'vendor/**' -ignore '**/*.pb.go' -ignore '**/zz_generated*.go' $(find . -name '*.go' -type f)
 
+  check-go-mod-version:
+    desc: Ensure no go.mod file specifies a patch version in the go directive
+    cmds:
+      - |
+        found=$(grep -rE '^go [0-9]+\.[0-9]+\.[0-9]+' --include='go.mod' .)
+        if [ -n "$found" ]; then
+          echo "ERROR: patch version found in go directive (use 'go 1.X' not 'go 1.X.Y'):"
+          echo "$found"
+          exit 1
+        fi
+
   lint:
     desc: Run linting tools
     cmds:
+      - task: check-go-mod-version
       - golangci-lint run --allow-parallel-runners ./...
       - go vet ./...
 

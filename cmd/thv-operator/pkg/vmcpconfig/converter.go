@@ -233,6 +233,10 @@ func (c *Converter) resolveOIDCConfig(
 		// When an embedded auth server is active, the auto-computed Resource
 		// (service URL) is the canonical audience — override any user-specified
 		// value to prevent the mismatch described in #4860.
+		// Note: VirtualMCPServer uses AuthServerConfig directly (not authServerRef/
+		// externalAuthConfigRef like MCPServer/MCPRemoteProxy). If VirtualMCPServer
+		// gains an externalAuthConfigRef that can point to an embedded AS, this
+		// check must be updated to match IsEmbeddedAuthServerActive.
 		if oidcConfig != nil && vmcp.Spec.AuthServerConfig != nil && oidcConfig.Resource != "" {
 			oidcConfig.Audience = oidcConfig.Resource
 		}

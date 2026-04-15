@@ -875,6 +875,210 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 	}
 }
 
+// TestCreateRunConfigFromMCPServer_AudienceOverrideWithEmbeddedAuthServer tests that when
+// an embedded auth server is active, the controller overrides the OIDC audience with the
+// auto-computed ResourceURL — regardless of any user-specified audience value (#4860).
+func TestCreateRunConfigFromMCPServer_AudienceOverrideWithEmbeddedAuthServer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		mcpServer    *mcpv1alpha1.MCPServer
+		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
+		validate     func(*testing.T, *runner.RunConfig)
+	}{
+		{
+			name: "authServerRef with user-specified audience uses ResourceURL as audience",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "auth-server-audience",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "test:v1",
+					Transport: "stdio",
+					ProxyPort: 8080,
+					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+						Name:     "oidc-config",
+						Audience: "user-specified-audience",
+						Scopes:   []string{"openid"},
+					},
+					AuthServerRef: &mcpv1alpha1.AuthServerRef{
+						Kind: "MCPExternalAuthConfig",
+						Name: "embedded-auth",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "embedded-auth",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+							{Name: "signing-key", Key: "private.pem"},
+						},
+						HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+							{Name: "hmac-secret", Key: "hmac"},
+						},
+						UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+								OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "client-id",
+									RedirectURI: "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, config *runner.RunConfig) {
+				t.Helper()
+				require.NotNil(t, config.OIDCConfig, "OIDCConfig should be set")
+				// The audience must be the auto-computed ResourceURL, NOT the user-specified value.
+				expectedResourceURL := "http://auth-server-audience.default.svc.cluster.local:8080"
+				assert.Equal(t, expectedResourceURL, config.OIDCConfig.Audience,
+					"audience should be overridden to ResourceURL when embedded auth server is active")
+				assert.NotEqual(t, "user-specified-audience", config.OIDCConfig.Audience,
+					"user-specified audience must not be used when embedded auth server is active")
+			},
+		},
+		{
+			name: "authServerRef with empty audience uses ResourceURL as audience",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "auth-server-no-audience",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "test:v1",
+					Transport: "stdio",
+					ProxyPort: 8080,
+					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+						Name:   "oidc-config",
+						Scopes: []string{"openid"},
+						// Audience intentionally omitted (empty string)
+					},
+					AuthServerRef: &mcpv1alpha1.AuthServerRef{
+						Kind: "MCPExternalAuthConfig",
+						Name: "embedded-auth-empty",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "embedded-auth-empty",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+							{Name: "signing-key", Key: "private.pem"},
+						},
+						HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+							{Name: "hmac-secret", Key: "hmac"},
+						},
+						UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+							{
+								Name: "okta",
+								Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+								OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+									IssuerURL:   "https://okta.example.com",
+									ClientID:    "client-id",
+									RedirectURI: "https://auth.example.com/callback",
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, config *runner.RunConfig) {
+				t.Helper()
+				require.NotNil(t, config.OIDCConfig, "OIDCConfig should be set")
+				expectedResourceURL := "http://auth-server-no-audience.default.svc.cluster.local:8080"
+				assert.Equal(t, expectedResourceURL, config.OIDCConfig.Audience,
+					"audience should be auto-computed ResourceURL when audience is empty and embedded auth server is active")
+			},
+		},
+		{
+			name: "without authServerRef preserves user-specified audience",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-auth-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "test:v1",
+					Transport: "stdio",
+					ProxyPort: 8080,
+					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+						Name:     "oidc-config",
+						Audience: "my-custom-audience",
+						Scopes:   []string{"openid"},
+					},
+					// No AuthServerRef, no ExternalAuthConfigRef
+				},
+			},
+			validate: func(t *testing.T, config *runner.RunConfig) {
+				t.Helper()
+				require.NotNil(t, config.OIDCConfig, "OIDCConfig should be set")
+				assert.Equal(t, "my-custom-audience", config.OIDCConfig.Audience,
+					"user-specified audience should be preserved when no embedded auth server is active")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := createRunConfigTestScheme()
+			objects := []runtime.Object{tt.mcpServer}
+			if tt.externalAuth != nil {
+				objects = append(objects, tt.externalAuth)
+			}
+			// Add MCPOIDCConfig if the MCPServer references one
+			if tt.mcpServer.Spec.OIDCConfigRef != nil {
+				objects = append(objects, &mcpv1alpha1.MCPOIDCConfig{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      tt.mcpServer.Spec.OIDCConfigRef.Name,
+						Namespace: tt.mcpServer.Namespace,
+					},
+					Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+						Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+							Issuer: "https://kubernetes.default.svc",
+						},
+					},
+				})
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(objects...).
+				Build()
+
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+			runConfig, err := reconciler.createRunConfigFromMCPServer(tt.mcpServer)
+
+			require.NoError(t, err)
+			require.NotNil(t, runConfig)
+			if tt.validate != nil {
+				tt.validate(t, runConfig)
+			}
+		})
+	}
+}
+
 // TestGenerateTokenExchangeEnvVars tests the generateTokenExchangeEnvVars function
 func TestGenerateTokenExchangeEnvVars(t *testing.T) {
 	t.Parallel()

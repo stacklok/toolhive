@@ -37,7 +37,7 @@ type HeaderFromSecret struct {
 
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
 //
-// +kubebuilder:validation:XValidation:rule="!has(self.oidcConfigRef) || has(self.authServerRef) || (has(self.oidcConfigRef.audience) && self.oidcConfigRef.audience != ”)",message="oidcConfigRef.audience is required when authServerRef is not set"
+// +kubebuilder:validation:XValidation:rule=”!has(self.oidcConfigRef) || has(self.authServerRef) || has(self.externalAuthConfigRef) || (has(self.oidcConfigRef.audience) && self.oidcConfigRef.audience != ”)”,message=”oidcConfigRef.audience is required when no auth server reference is set”
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPRemoteProxySpec struct {

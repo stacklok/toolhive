@@ -136,7 +136,7 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 			},
 		},
 		{
-			name: "empty audience defaults to ResourceURL",
+			name: "empty audience preserved for controller-level override",
 			ref: &mcpv1alpha1.MCPOIDCConfigReference{
 				Name: "k", Audience: "", Scopes: []string{"openid"},
 			},
@@ -149,7 +149,7 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 				},
 			},
 			expected: &OIDCConfig{
-				Issuer: "https://kubernetes.default.svc", Audience: "http://srv.default.svc.cluster.local:8080",
+				Issuer: "https://kubernetes.default.svc", Audience: "",
 				Scopes:             []string{"openid"},
 				ResourceURL:        "http://srv.default.svc.cluster.local:8080",
 				ThvCABundlePath:    defaultK8sCABundlePath,
@@ -158,7 +158,7 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 			},
 		},
 		{
-			name: "empty audience with explicit resourceUrl defaults to that resourceUrl",
+			name: "empty audience with explicit resourceUrl preserved for controller-level override",
 			ref: &mcpv1alpha1.MCPOIDCConfigReference{
 				Name: "k", Audience: "",
 				ResourceURL: "https://mcp-gateway.example.com/mcp",
@@ -172,7 +172,7 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 				},
 			},
 			expected: &OIDCConfig{
-				Issuer: "https://kubernetes.default.svc", Audience: "https://mcp-gateway.example.com/mcp",
+				Issuer: "https://kubernetes.default.svc", Audience: "",
 				ResourceURL:        "https://mcp-gateway.example.com/mcp",
 				ThvCABundlePath:    defaultK8sCABundlePath,
 				JWKSAuthTokenPath:  defaultK8sTokenPath,
@@ -292,7 +292,7 @@ func TestResolveFromConfigRef_InlineType(t *testing.T) {
 			},
 		},
 		{
-			name: "empty audience defaults to ResourceURL",
+			name: "empty audience preserved for controller-level override",
 			ref: &mcpv1alpha1.MCPOIDCConfigReference{
 				Name: "i", Audience: "", Scopes: []string{"openid"},
 			},
@@ -306,14 +306,14 @@ func TestResolveFromConfigRef_InlineType(t *testing.T) {
 				},
 			},
 			expected: &OIDCConfig{
-				Issuer: "https://accounts.google.com", Audience: "http://srv.default.svc.cluster.local:8080",
+				Issuer: "https://accounts.google.com", Audience: "",
 				ClientID:    "gid",
 				ResourceURL: "http://srv.default.svc.cluster.local:8080",
 				Scopes:      []string{"openid"},
 			},
 		},
 		{
-			name: "empty audience with explicit resourceUrl defaults to that resourceUrl",
+			name: "empty audience with explicit resourceUrl preserved for controller-level override",
 			ref: &mcpv1alpha1.MCPOIDCConfigReference{
 				Name: "i", Audience: "",
 				ResourceURL: "https://mcp.corp.internal/tools",
@@ -328,7 +328,7 @@ func TestResolveFromConfigRef_InlineType(t *testing.T) {
 				},
 			},
 			expected: &OIDCConfig{
-				Issuer: "https://accounts.google.com", Audience: "https://mcp.corp.internal/tools",
+				Issuer: "https://accounts.google.com", Audience: "",
 				ClientID:    "gid",
 				ResourceURL: "https://mcp.corp.internal/tools",
 			},

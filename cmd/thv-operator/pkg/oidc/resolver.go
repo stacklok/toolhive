@@ -119,18 +119,13 @@ func (*resolver) resolveFromK8sServiceAccountConfig(
 		useClusterAuth = *config.UseClusterAuth
 	}
 
-	// Audience comes from the per-server reference. When empty (embedded auth
-	// server case), default to ResourceURL so the token validator's audience
-	// check matches the audience the auth server mints into tokens (#4860).
-	audience := ref.Audience
-	if audience == "" {
-		audience = resourceURL
-	}
-
 	result := &OIDCConfig{
 		ResourceURL: resourceURL,
-		Audience:    audience,
-		Scopes:      ref.Scopes,
+		// Audience comes from the per-server reference. May be empty when an
+		// embedded auth server is active — the controller overrides it to
+		// ResourceURL after detecting the embedded AS (#4860).
+		Audience: ref.Audience,
+		Scopes:   ref.Scopes,
 	}
 
 	result.Issuer = config.Issuer
@@ -165,17 +160,12 @@ func (*resolver) resolveFromInlineSharedConfig(
 		return nil, err
 	}
 
-	// Audience comes from the per-server reference. When empty (embedded auth
-	// server case), default to ResourceURL so the token validator's audience
-	// check matches the audience the auth server mints into tokens (#4860).
-	audience := ref.Audience
-	if audience == "" {
-		audience = resourceURL
-	}
-
 	return &OIDCConfig{
-		Issuer:                          config.Issuer,
-		Audience:                        audience,
+		Issuer: config.Issuer,
+		// Audience comes from the per-server reference. May be empty when an
+		// embedded auth server is active — the controller overrides it to
+		// ResourceURL after detecting the embedded AS (#4860).
+		Audience:                        ref.Audience,
 		JWKSURL:                         config.JWKSURL,
 		IntrospectionURL:                config.IntrospectionURL,
 		ClientID:                        config.ClientID,

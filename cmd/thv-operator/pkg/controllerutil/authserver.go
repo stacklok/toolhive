@@ -700,10 +700,7 @@ func IsEmbeddedAuthServerActive(
 	if externalAuthConfigRef != nil {
 		extConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, externalAuthConfigRef.Name)
 		if err != nil {
-			if apierrors.IsNotFound(err) {
-				return false, nil
-			}
-			return false, fmt.Errorf("failed to fetch externalAuthConfigRef: %w", err)
+			return false, fmt.Errorf("failed to fetch externalAuthConfigRef %q: %w", externalAuthConfigRef.Name, err)
 		}
 		return extConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer, nil
 	}

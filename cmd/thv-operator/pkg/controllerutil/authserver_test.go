@@ -1947,14 +1947,15 @@ func TestIsEmbeddedAuthServerActive(t *testing.T) {
 			wantErr:    false,
 		},
 		{
-			name:          "externalAuthConfigRef with resource not found returns false nil",
+			name:          "externalAuthConfigRef with resource not found returns error",
 			authServerRef: nil,
 			externalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 				Name: "nonexistent-config",
 			},
-			objects:    nil,
-			wantActive: false,
-			wantErr:    false,
+			objects:     nil,
+			wantActive:  false,
+			wantErr:     true,
+			errContains: "failed to fetch externalAuthConfigRef",
 		},
 		{
 			name:                  "both nil returns false",

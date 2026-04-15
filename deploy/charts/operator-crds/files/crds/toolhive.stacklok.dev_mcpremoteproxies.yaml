@@ -471,10 +471,11 @@ spec:
             - remoteUrl
             type: object
             x-kubernetes-validations:
-            - message: oidcConfigRef.audience is required when authServerRef is not
-                set
-              rule: '!has(self.oidcConfigRef) || has(self.authServerRef) || (has(self.oidcConfigRef.audience)
-                && self.oidcConfigRef.audience != ”)'
+            - message: ”oidcConfigRef.audience is required when no auth server reference
+                is set”
+              rule: ”!has(self.oidcConfigRef) || has(self.authServerRef) || has(self.externalAuthConfigRef)
+                || (has(self.oidcConfigRef.audience) && self.oidcConfigRef.audience
+                != '')”
           status:
             description: MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
             properties:

@@ -2108,7 +2108,7 @@ spec:
                 is not set
               rule: '!has(self.incomingAuth.oidcConfigRef) || has(self.authServerConfig)
                 || (has(self.incomingAuth.oidcConfigRef.audience) && self.incomingAuth.oidcConfigRef.audience
-                != '''')'
+                != ”)'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:

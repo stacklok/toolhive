@@ -147,7 +147,6 @@ func TestConvert_GroupRefResolution(t *testing.T) {
 	}
 }
 
-
 func TestConverter_OIDCResolution(t *testing.T) {
 	t.Parallel()
 

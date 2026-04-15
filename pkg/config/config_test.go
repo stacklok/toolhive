@@ -4,6 +4,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -258,6 +259,27 @@ func TestRegistryURLConfig(t *testing.T) {
 			}
 		})
 	})
+}
+
+func TestUpdateConfigAtPath_CallbackError(t *testing.T) {
+	t.Parallel()
+
+	_, configPath := SetupTestConfig(t, &Config{
+		RegistryUrl: "https://original.example.com",
+	})
+
+	cbErr := errors.New("validation failed")
+	err := UpdateConfigAtPath(configPath, func(c *Config) error {
+		c.RegistryUrl = "https://should-not-persist.example.com"
+		return cbErr
+	})
+	require.ErrorIs(t, err, cbErr)
+
+	// The config on disk must be unchanged.
+	config, err := LoadOrCreateConfigWithPath(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "https://original.example.com", config.RegistryUrl,
+		"config should not be written to disk when the callback returns an error")
 }
 
 func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {

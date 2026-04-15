@@ -5,7 +5,15 @@ package otlp
 
 import "strings"
 
-// OTLP HTTP signal path suffixes appended when the endpoint includes a custom base path.
+// Default URL path suffixes for the OTLP/HTTP protocol, as defined in the
+// OpenTelemetry specification:
+// https://opentelemetry.io/docs/specs/otlp/#otlphttp-request
+//
+// The Go OTLP SDK normally appends these automatically. However, when the user
+// provides a custom base path (e.g. "/api/public/otel" for Langfuse), we must
+// call WithURLPath which replaces the entire path. In that case we concatenate
+// the base path with the appropriate suffix ourselves (e.g.
+// "/api/public/otel" + "/v1/traces").
 const (
 	otlpTracesPath  = "/v1/traces"
 	otlpMetricsPath = "/v1/metrics"

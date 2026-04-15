@@ -47,3 +47,6 @@ coverage*
 crd-helm-wrapper
 cmd/vmcp/__debug_bin*
 /vmcp
+docs/arch/registry-v01-plan.md
+docs/registry-v01-architecture.svg
+cli-rework.patch

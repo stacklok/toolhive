@@ -11,12 +11,12 @@ mdx:
 
 ## thv group run
 
-Deploy all MCP servers from a registry group
+Deploy all MCP servers from a registry group (deprecated)
 
 ### Synopsis
 
-Deploy all MCP servers defined in a registry group.
-		 This creates a new runtime group and starts all MCP servers within it.
+Registry-based groups are no longer supported.
+Use 'thv group create' to create runtime groups and 'thv run --group' to add servers.
 
 ```
 thv group run [group-name] [flags]
@@ -25,9 +25,7 @@ thv group run [group-name] [flags]
 ### Options
 
 ```
-      --env stringArray      Environment variables to pass to an MCP server in the group (format: SERVER_NAME.KEY=VALUE)
-  -h, --help                 help for run
-      --secret stringArray   Secrets to be fetched from the secrets manager and set as environment variables (format: NAME,target=SERVER_NAME.TARGET)
+  -h, --help   help for run
 ```
 
 ### Options inherited from parent commands

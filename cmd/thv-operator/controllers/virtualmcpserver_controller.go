@@ -440,14 +440,9 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 	}
 
 	// Validate additionalAuthorizationParams on each upstream provider
-	for i, provider := range cfg.UpstreamProviders {
+	for i := range cfg.UpstreamProviders {
 		prefix := fmt.Sprintf("spec.authServerConfig.upstreamProviders[%d]", i)
-		var params map[string]string
-		if provider.OIDCConfig != nil {
-			params = provider.OIDCConfig.AdditionalAuthorizationParams
-		} else if provider.OAuth2Config != nil {
-			params = provider.OAuth2Config.AdditionalAuthorizationParams
-		}
+		params := cfg.UpstreamProviders[i].AdditionalAuthorizationParams()
 		if err := mcpv1alpha1.ValidateAdditionalAuthorizationParams(prefix, params); err != nil {
 			message := err.Error()
 			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)

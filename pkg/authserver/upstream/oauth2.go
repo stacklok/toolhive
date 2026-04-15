@@ -32,6 +32,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
@@ -44,19 +45,6 @@ const (
 	// This prevents memory exhaustion from malicious or malformed responses.
 	maxResponseSize = 1 << 20
 )
-
-// reservedAuthorizationParams are parameters managed by the OAuth2 framework
-// that must not be set via AdditionalAuthorizationParams.
-var reservedAuthorizationParams = map[string]bool{
-	"response_type":         true,
-	"client_id":             true,
-	"redirect_uri":          true,
-	"scope":                 true,
-	"state":                 true,
-	"code_challenge":        true,
-	"code_challenge_method": true,
-	"nonce":                 true,
-}
 
 // AuthorizationOption configures authorization URL generation.
 type AuthorizationOption func(*authorizationOptions)
@@ -142,7 +130,7 @@ func (c *CommonOAuthConfig) Validate() error {
 	if c.RedirectURI == "" {
 		return errors.New("redirect_uri is required")
 	}
-	if err := validateAdditionalAuthorizationParams(c.AdditionalAuthorizationParams); err != nil {
+	if err := oauthparams.Validate(c.AdditionalAuthorizationParams); err != nil {
 		return err
 	}
 	return validateRedirectURI(c.RedirectURI)
@@ -210,17 +198,6 @@ func (c *OAuth2Config) Validate() error {
 		}
 	}
 	return c.CommonOAuthConfig.Validate()
-}
-
-// validateAdditionalAuthorizationParams checks that no reserved OAuth2 parameters
-// are present in the additional authorization params map.
-func validateAdditionalAuthorizationParams(params map[string]string) error {
-	for k := range params {
-		if reservedAuthorizationParams[k] {
-			return fmt.Errorf("additional_authorization_params contains reserved parameter %q which is managed by the framework", k)
-		}
-	}
-	return nil
 }
 
 // validateRedirectURI validates an OAuth redirect URI per RFC 6749 and RFC 8252.

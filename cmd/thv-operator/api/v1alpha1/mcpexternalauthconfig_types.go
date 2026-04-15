@@ -7,22 +7,9 @@ import (
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
 
-// reservedAuthorizationParams are OAuth2 parameters managed by the framework
-// that must not be set via AdditionalAuthorizationParams. This list mirrors
-// the runtime validation in pkg/authserver/upstream/oauth2.go to provide
-// early rejection at admission time.
-var reservedAuthorizationParams = map[string]bool{
-	"response_type":         true,
-	"client_id":             true,
-	"redirect_uri":          true,
-	"scope":                 true,
-	"state":                 true,
-	"code_challenge":        true,
-	"code_challenge_method": true,
-	"nonce":                 true,
-}
+	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
+)
 
 // External auth configuration types
 const (
@@ -928,25 +915,26 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 	}
 
 	// Validate additionalAuthorizationParams does not contain reserved keys
-	var params map[string]string
-	if provider.OIDCConfig != nil {
-		params = provider.OIDCConfig.AdditionalAuthorizationParams
-	} else if provider.OAuth2Config != nil {
-		params = provider.OAuth2Config.AdditionalAuthorizationParams
+	return ValidateAdditionalAuthorizationParams(prefix, provider.AdditionalAuthorizationParams())
+}
+
+// AdditionalAuthorizationParams returns the additional authorization parameters
+// from whichever upstream config is set, or nil if none.
+func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]string {
+	if p.OIDCConfig != nil {
+		return p.OIDCConfig.AdditionalAuthorizationParams
 	}
-	return ValidateAdditionalAuthorizationParams(prefix, params)
+	if p.OAuth2Config != nil {
+		return p.OAuth2Config.AdditionalAuthorizationParams
+	}
+	return nil
 }
 
 // ValidateAdditionalAuthorizationParams checks that no reserved OAuth2 parameters
 // are present in the additional authorization params map.
 func ValidateAdditionalAuthorizationParams(prefix string, params map[string]string) error {
-	for k := range params {
-		if reservedAuthorizationParams[k] {
-			return fmt.Errorf(
-				"%s.additionalAuthorizationParams: reserved parameter %q is managed by the framework",
-				prefix, k,
-			)
-		}
+	if err := oauthparams.Validate(params); err != nil {
+		return fmt.Errorf("%s.additionalAuthorizationParams: %w", prefix, err)
 	}
 	return nil
 }

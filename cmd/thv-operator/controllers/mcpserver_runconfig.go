@@ -220,6 +220,19 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 			return nil, fmt.Errorf("failed to resolve OIDC config from MCPOIDCConfig: %w", err)
 		}
 		if resolvedOIDCConfig != nil {
+			// When an embedded auth server is active, the auto-computed ResourceURL
+			// is the canonical audience — override any user-specified value to
+			// prevent the mismatch described in #4860.
+			embeddedAS, err := ctrlutil.IsEmbeddedAuthServerActive(
+				ctx, r.Client, m.Namespace, m.Spec.AuthServerRef, m.Spec.ExternalAuthConfigRef,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("failed to check embedded auth server: %w", err)
+			}
+			if embeddedAS {
+				resolvedOIDCConfig.Audience = resolvedOIDCConfig.ResourceURL
+			}
+
 			options = append(options, runner.WithOIDCConfig(
 				resolvedOIDCConfig.Issuer,
 				resolvedOIDCConfig.Audience,

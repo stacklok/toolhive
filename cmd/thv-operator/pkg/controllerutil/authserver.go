@@ -681,6 +681,36 @@ func buildUserInfoRunConfig(
 	return config
 }
 
+// IsEmbeddedAuthServerActive returns true if either authServerRef or
+// externalAuthConfigRef points to an embedded auth server configuration.
+// This is used to determine whether the auto-computed ResourceURL should
+// override the user-specified Audience for token validation (#4860).
+func IsEmbeddedAuthServerActive(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	authServerRef *mcpv1alpha1.AuthServerRef,
+	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+) (bool, error) {
+	// authServerRef always points to an embedded auth server by validation
+	if authServerRef != nil {
+		return true, nil
+	}
+
+	if externalAuthConfigRef != nil {
+		extConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, externalAuthConfigRef.Name)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, nil
+			}
+			return false, fmt.Errorf("failed to fetch externalAuthConfigRef: %w", err)
+		}
+		return extConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer, nil
+	}
+
+	return false, nil
+}
+
 // ValidateAndAddAuthServerRefOptions performs conflict validation between authServerRef
 // and externalAuthConfigRef, then resolves authServerRef if present.
 // Returns error if both fields point to an embedded auth server configuration.

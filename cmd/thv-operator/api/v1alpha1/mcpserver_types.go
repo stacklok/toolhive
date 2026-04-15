@@ -178,6 +178,7 @@ const SessionStorageProviderRedis = "redis"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="rateLimiting requires sessionStorage with provider 'redis'"
 // +kubebuilder:validation:XValidation:rule="!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="rateLimiting.perUser requires authentication (oidcConfigRef or externalAuthConfigRef)"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t, !has(t.perUser)) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="per-tool perUser rate limiting requires authentication (oidcConfigRef or externalAuthConfigRef)"
+// +kubebuilder:validation:XValidation:rule="!has(self.oidcConfigRef) || has(self.authServerRef) || (has(self.oidcConfigRef.audience) && self.oidcConfigRef.audience != ”)",message="oidcConfigRef.audience is required when authServerRef is not set"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPServerSpec struct {

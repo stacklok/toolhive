@@ -228,7 +228,16 @@ func (c *Converter) resolveOIDCConfig(
 			return nil, fmt.Errorf("OIDC resolution failed from MCPOIDCConfig %q: %w",
 				vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
 		}
-		return mapResolvedOIDCToVmcpConfigFromRef(resolved, oidcCfg), nil
+		oidcConfig := mapResolvedOIDCToVmcpConfigFromRef(resolved, oidcCfg)
+
+		// When an embedded auth server is active, the auto-computed Resource
+		// (service URL) is the canonical audience — override any user-specified
+		// value to prevent the mismatch described in #4860.
+		if oidcConfig != nil && vmcp.Spec.AuthServerConfig != nil && oidcConfig.Resource != "" {
+			oidcConfig.Audience = oidcConfig.Resource
+		}
+
+		return oidcConfig, nil
 	}
 
 	return nil, nil

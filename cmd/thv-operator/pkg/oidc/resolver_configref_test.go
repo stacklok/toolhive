@@ -136,6 +136,50 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 			},
 		},
 		{
+			name: "empty audience defaults to ResourceURL",
+			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+				Name: "k", Audience: "", Scopes: []string{"openid"},
+			},
+			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+						Issuer: "https://kubernetes.default.svc",
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer: "https://kubernetes.default.svc", Audience: "http://srv.default.svc.cluster.local:8080",
+				Scopes:             []string{"openid"},
+				ResourceURL:        "http://srv.default.svc.cluster.local:8080",
+				ThvCABundlePath:    defaultK8sCABundlePath,
+				JWKSAuthTokenPath:  defaultK8sTokenPath,
+				JWKSAllowPrivateIP: true,
+			},
+		},
+		{
+			name: "empty audience with explicit resourceUrl defaults to that resourceUrl",
+			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+				Name: "k", Audience: "",
+				ResourceURL: "https://mcp-gateway.example.com/mcp",
+			},
+			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+						Issuer: "https://kubernetes.default.svc",
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer: "https://kubernetes.default.svc", Audience: "https://mcp-gateway.example.com/mcp",
+				ResourceURL:        "https://mcp-gateway.example.com/mcp",
+				ThvCABundlePath:    defaultK8sCABundlePath,
+				JWKSAuthTokenPath:  defaultK8sTokenPath,
+				JWKSAllowPrivateIP: true,
+			},
+		},
+		{
 			name: "UseClusterAuth false omits CA and token paths",
 			ref: &mcpv1alpha1.MCPOIDCConfigReference{
 				Name: "k", Audience: "aud",
@@ -245,6 +289,48 @@ func TestResolveFromConfigRef_InlineType(t *testing.T) {
 				ClientID:    "gid",
 				ResourceURL: "https://mcp.corp.internal/tools",
 				Scopes:      []string{"openid"},
+			},
+		},
+		{
+			name: "empty audience defaults to ResourceURL",
+			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+				Name: "i", Audience: "", Scopes: []string{"openid"},
+			},
+			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+						Issuer:   "https://accounts.google.com",
+						ClientID: "gid",
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer: "https://accounts.google.com", Audience: "http://srv.default.svc.cluster.local:8080",
+				ClientID:    "gid",
+				ResourceURL: "http://srv.default.svc.cluster.local:8080",
+				Scopes:      []string{"openid"},
+			},
+		},
+		{
+			name: "empty audience with explicit resourceUrl defaults to that resourceUrl",
+			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+				Name: "i", Audience: "",
+				ResourceURL: "https://mcp.corp.internal/tools",
+			},
+			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+						Issuer:   "https://accounts.google.com",
+						ClientID: "gid",
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer: "https://accounts.google.com", Audience: "https://mcp.corp.internal/tools",
+				ClientID:    "gid",
+				ResourceURL: "https://mcp.corp.internal/tools",
 			},
 		},
 		{

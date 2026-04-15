@@ -232,9 +232,11 @@ type MCPOIDCConfigReference struct {
 
 	// Audience is the expected audience for token validation.
 	// This MUST be unique per server to prevent token replay attacks.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	Audience string `json:"audience"`
+	// Required when no embedded auth server is active. When an embedded
+	// auth server is configured via authServerRef, this field is optional —
+	// the auto-computed service URL is used as the audience automatically.
+	// +optional
+	Audience string `json:"audience,omitempty"`
 
 	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728).
 	// If empty, defaults to ["openid"].

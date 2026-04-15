@@ -202,6 +202,20 @@ func (r *MCPRemoteProxyReconciler) resolveAndAddOIDCConfig(
 	if resolved == nil {
 		return nil, nil
 	}
+
+	// When an embedded auth server is active, the auto-computed ResourceURL
+	// is the canonical audience — override any user-specified value to
+	// prevent the mismatch described in #4860.
+	embeddedAS, err := ctrlutil.IsEmbeddedAuthServerActive(
+		ctx, r.Client, proxy.Namespace, proxy.Spec.AuthServerRef, proxy.Spec.ExternalAuthConfigRef,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check embedded auth server: %w", err)
+	}
+	if embeddedAS {
+		resolved.Audience = resolved.ResourceURL
+	}
+
 	*options = append(*options, runner.WithOIDCConfig(
 		resolved.Issuer,
 		resolved.Audience,

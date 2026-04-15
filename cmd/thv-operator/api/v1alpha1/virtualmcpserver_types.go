@@ -15,6 +15,8 @@ import (
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 //
+// +kubebuilder:validation:XValidation:rule="!has(self.incomingAuth.oidcConfigRef) || has(self.authServerConfig) || (has(self.incomingAuth.oidcConfigRef.audience) && self.incomingAuth.oidcConfigRef.audience != ”)",message="incomingAuth.oidcConfigRef.audience is required when authServerConfig is not set"
+//
 //nolint:lll // CEL validation rules exceed line length limit
 type VirtualMCPServerSpec struct {
 	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server.

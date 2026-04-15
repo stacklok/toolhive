@@ -240,7 +240,9 @@ spec:
                     description: |-
                       Audience is the expected audience for token validation.
                       This MUST be unique per server to prevent token replay attacks.
-                    minLength: 1
+                      Required when no embedded auth server is active. When an embedded
+                      auth server is configured via authServerRef, this field is optional —
+                      the auto-computed service URL is used as the audience automatically.
                     type: string
                   name:
                     description: Name is the name of the MCPOIDCConfig resource
@@ -262,7 +264,6 @@ spec:
                     type: array
                     x-kubernetes-list-type: atomic
                 required:
-                - audience
                 - name
                 type: object
               proxyPort:
@@ -469,6 +470,11 @@ spec:
             required:
             - remoteUrl
             type: object
+            x-kubernetes-validations:
+            - message: oidcConfigRef.audience is required when authServerRef is not
+                set
+              rule: '!has(self.oidcConfigRef) || has(self.authServerRef) || (has(self.oidcConfigRef.audience)
+                && self.oidcConfigRef.audience != ”)'
           status:
             description: MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
             properties:

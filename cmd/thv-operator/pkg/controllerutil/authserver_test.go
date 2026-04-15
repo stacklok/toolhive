@@ -1859,3 +1859,160 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestIsEmbeddedAuthServerActive(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	newEmbeddedConfig := func() *mcpv1alpha1.MCPExternalAuthConfig {
+		return &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "embedded-config",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+				EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+					Issuer:                       "https://auth.example.com",
+					AuthorizationEndpointBaseURL: "https://auth.example.com",
+					SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+						{Name: "signing-key", Key: "private.pem"},
+					},
+					HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+						{Name: "hmac-secret", Key: "hmac"},
+					},
+				},
+			},
+		}
+	}
+
+	newTokenExchangeConfig := func() *mcpv1alpha1.MCPExternalAuthConfig {
+		return &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "token-exchange-config",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+					TokenURL: "https://token.example.com/exchange",
+					ClientID: "my-client",
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name                  string
+		authServerRef         *mcpv1alpha1.AuthServerRef
+		externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef
+		objects               func() []runtime.Object
+		injectGetError        bool
+		wantActive            bool
+		wantErr               bool
+		errContains           string
+	}{
+		{
+			name: "authServerRef set returns true",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "embedded-config",
+			},
+			externalAuthConfigRef: nil,
+			objects:               nil,
+			wantActive:            true,
+			wantErr:               false,
+		},
+		{
+			name:          "externalAuthConfigRef with embedded type returns true",
+			authServerRef: nil,
+			externalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "embedded-config",
+			},
+			objects:    func() []runtime.Object { return []runtime.Object{newEmbeddedConfig()} },
+			wantActive: true,
+			wantErr:    false,
+		},
+		{
+			name:          "externalAuthConfigRef with non-embedded type returns false",
+			authServerRef: nil,
+			externalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "token-exchange-config",
+			},
+			objects:    func() []runtime.Object { return []runtime.Object{newTokenExchangeConfig()} },
+			wantActive: false,
+			wantErr:    false,
+		},
+		{
+			name:          "externalAuthConfigRef with resource not found returns false nil",
+			authServerRef: nil,
+			externalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "nonexistent-config",
+			},
+			objects:    nil,
+			wantActive: false,
+			wantErr:    false,
+		},
+		{
+			name:                  "both nil returns false",
+			authServerRef:         nil,
+			externalAuthConfigRef: nil,
+			objects:               nil,
+			wantActive:            false,
+			wantErr:               false,
+		},
+		{
+			name:          "externalAuthConfigRef with fetch error returns error",
+			authServerRef: nil,
+			externalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "will-error",
+			},
+			objects:        nil,
+			injectGetError: true,
+			wantActive:     false,
+			wantErr:        true,
+			errContains:    "failed to fetch externalAuthConfigRef",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			if tt.objects != nil {
+				builder = builder.WithRuntimeObjects(tt.objects()...)
+			}
+
+			if tt.injectGetError {
+				builder = builder.WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if key.Name == "will-error" {
+							return fmt.Errorf("transient API error")
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+				})
+			}
+
+			fakeClient := builder.Build()
+
+			active, err := IsEmbeddedAuthServerActive(
+				ctx, fakeClient, "default",
+				tt.authServerRef, tt.externalAuthConfigRef,
+			)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantActive, active)
+		})
+	}
+}

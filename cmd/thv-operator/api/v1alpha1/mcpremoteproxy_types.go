@@ -36,6 +36,10 @@ type HeaderFromSecret struct {
 }
 
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.oidcConfigRef) || has(self.authServerRef) || (has(self.oidcConfigRef.audience) && self.oidcConfigRef.audience != ”)",message="oidcConfigRef.audience is required when authServerRef is not set"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type MCPRemoteProxySpec struct {
 	// RemoteURL is the URL of the remote MCP server to proxy
 	// +kubebuilder:validation:Required

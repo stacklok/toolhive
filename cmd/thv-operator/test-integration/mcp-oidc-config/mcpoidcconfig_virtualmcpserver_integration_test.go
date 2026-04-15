@@ -720,4 +720,126 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			}, timeout, interval).Should(BeTrue())
 		})
 	})
+
+	Context("When VirtualMCPServer sets resourceUrl on oidcConfigRef", Ordered, func() {
+		var (
+			namespace  string
+			configName string
+			vmcpName   string
+			groupName  string
+			oidcConfig *mcpv1alpha1.MCPOIDCConfig
+			vmcpServer *mcpv1alpha1.VirtualMCPServer
+			mcpGroup   *mcpv1alpha1.MCPGroup
+			ns         *corev1.Namespace
+		)
+
+		BeforeAll(func() {
+			ns = &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "test-vmcp-oidcref-resurl-",
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
+			namespace = ns.Name
+
+			configName = testOIDCConfigName
+			vmcpName = testVMCPServerName
+			groupName = testVMCPGroupName
+
+			// Create MCPGroup (required by VirtualMCPServer)
+			mcpGroup = &mcpv1alpha1.MCPGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      groupName,
+					Namespace: namespace,
+				},
+			}
+			Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
+
+			// Create MCPOIDCConfig
+			oidcConfig = &mcpv1alpha1.MCPOIDCConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      configName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+						Issuer:   "https://accounts.google.com",
+						ClientID: "test-client",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, oidcConfig)).Should(Succeed())
+
+			// Wait for Valid condition and ConfigHash to be set
+			Eventually(func() bool {
+				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configName,
+					Namespace: namespace,
+				}, updated)
+				if err != nil {
+					return false
+				}
+				if updated.Status.ConfigHash == "" {
+					return false
+				}
+				for _, cond := range updated.Status.Conditions {
+					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+
+			// Create VirtualMCPServer with OIDCConfigRef that includes ResourceURL
+			vmcpServer = &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmcpName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+					Config:   vmcpconfig.Config{Group: groupName},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "oidc",
+						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+							Name:        configName,
+							Audience:    "test-vmcp-audience",
+							Scopes:      []string{"openid"},
+							ResourceURL: "https://mcp-gateway.example.com/mcp",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, vmcpServer)).Should(Succeed())
+		})
+
+		AfterAll(func() {
+			_ = k8sClient.Delete(ctx, vmcpServer)
+			_ = k8sClient.Delete(ctx, oidcConfig)
+			_ = k8sClient.Delete(ctx, mcpGroup)
+			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
+		})
+
+		It("should produce a ConfigMap with the explicit resourceUrl instead of internal service URL", func() {
+			configMapName := vmcpName + "-vmcp-config"
+			configMap := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			Expect(configMap.Data).To(HaveKey("config.yaml"))
+			var config vmcpconfig.Config
+			Expect(yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)).To(Succeed())
+
+			Expect(config.IncomingAuth).NotTo(BeNil())
+			Expect(config.IncomingAuth.OIDC).NotTo(BeNil())
+			Expect(config.IncomingAuth.OIDC.Resource).To(Equal("https://mcp-gateway.example.com/mcp"),
+				"ConfigMap should contain the explicit resourceUrl, not the internal service URL")
+		})
+	})
 })

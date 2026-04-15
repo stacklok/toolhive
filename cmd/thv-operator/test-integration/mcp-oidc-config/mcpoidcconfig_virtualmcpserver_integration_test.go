@@ -183,7 +183,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			Expect(config.IncomingAuth.OIDC.Audience).To(Equal("test-vmcp-audience"))
 			Expect(config.IncomingAuth.OIDC.Scopes).To(Equal([]string{"openid"}))
 
-			// Resource URL: no resourceUrl set on the ref, so falls back to internal service URL
+			// Resource URL: explicit resourceUrl on the ref overrides the internal service URL
 			Expect(config.IncomingAuth.OIDC.Resource).To(Equal("https://mcp-gateway.example.com/mcp"),
 				"resource should be the explicit resourceUrl, not the internal service URL")
 		})

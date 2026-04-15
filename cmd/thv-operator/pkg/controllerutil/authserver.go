@@ -616,10 +616,11 @@ func buildUpstreamRunConfig(
 	case mcpv1alpha1.UpstreamProviderTypeOIDC:
 		if provider.OIDCConfig != nil {
 			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
-				IssuerURL:   provider.OIDCConfig.IssuerURL,
-				ClientID:    provider.OIDCConfig.ClientID,
-				RedirectURI: provider.OIDCConfig.RedirectURI,
-				Scopes:      provider.OIDCConfig.Scopes,
+				IssuerURL:                     provider.OIDCConfig.IssuerURL,
+				ClientID:                      provider.OIDCConfig.ClientID,
+				RedirectURI:                   provider.OIDCConfig.RedirectURI,
+				Scopes:                        provider.OIDCConfig.Scopes,
+				AdditionalAuthorizationParams: provider.OIDCConfig.AdditionalAuthorizationParams,
 			}
 			// If client secret is configured, reference it via env var
 			if provider.OIDCConfig.ClientSecretRef != nil {
@@ -632,11 +633,12 @@ func buildUpstreamRunConfig(
 	case mcpv1alpha1.UpstreamProviderTypeOAuth2:
 		if provider.OAuth2Config != nil {
 			config.OAuth2Config = &authserver.OAuth2UpstreamRunConfig{
-				AuthorizationEndpoint: provider.OAuth2Config.AuthorizationEndpoint,
-				TokenEndpoint:         provider.OAuth2Config.TokenEndpoint,
-				ClientID:              provider.OAuth2Config.ClientID,
-				RedirectURI:           provider.OAuth2Config.RedirectURI,
-				Scopes:                provider.OAuth2Config.Scopes,
+				AuthorizationEndpoint:         provider.OAuth2Config.AuthorizationEndpoint,
+				TokenEndpoint:                 provider.OAuth2Config.TokenEndpoint,
+				ClientID:                      provider.OAuth2Config.ClientID,
+				RedirectURI:                   provider.OAuth2Config.RedirectURI,
+				Scopes:                        provider.OAuth2Config.Scopes,
+				AdditionalAuthorizationParams: provider.OAuth2Config.AdditionalAuthorizationParams,
 			}
 			// If client secret is configured, reference it via env var
 			if provider.OAuth2Config.ClientSecretRef != nil {

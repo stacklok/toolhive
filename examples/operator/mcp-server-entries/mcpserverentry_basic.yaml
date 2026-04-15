@@ -22,4 +22,5 @@ metadata:
 spec:
   remoteUrl: https://mcp.context7.com/mcp
   transport: streamable-http
-  groupRef: remote-tools
+  groupRef:
+    name: remote-tools

@@ -5,6 +5,7 @@
 package controllers
 
 import (
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -13,9 +14,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/yaml"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	telemetryconfig "github.com/stacklok/toolhive/pkg/telemetry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -84,7 +85,8 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 						Namespace: namespace,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group-telemetry-hash"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group-telemetry-hash"},
+						Config:   vmcpconfig.Config{Group: "test-group-telemetry-hash"},
 						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 							Type: "anonymous",
 						},
@@ -140,6 +142,33 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 					return false
 				}, timeout, interval).Should(BeTrue())
 			})
+
+			It("should produce a ConfigMap with telemetry config from the MCPTelemetryConfig", func() {
+				configMapName := fmt.Sprintf("%s-vmcp-config", virtualMCPServer.Name)
+				Eventually(func() bool {
+					cm := &corev1.ConfigMap{}
+					err := k8sClient.Get(ctx, types.NamespacedName{
+						Name:      configMapName,
+						Namespace: namespace,
+					}, cm)
+					if err != nil {
+						return false
+					}
+					configYAML, ok := cm.Data["config.yaml"]
+					if !ok || configYAML == "" {
+						return false
+					}
+					// Parse the config and verify telemetry fields match the MCPTelemetryConfig
+					var config vmcpconfig.Config
+					if err := yaml.Unmarshal([]byte(configYAML), &config); err != nil {
+						return false
+					}
+					return config.Telemetry != nil &&
+						config.Telemetry.Endpoint == "otel-collector:4317" && // NormalizeTelemetryConfig strips https://
+						config.Telemetry.TracingEnabled &&
+						config.Telemetry.MetricsEnabled
+				}, timeout, interval).Should(BeTrue())
+			})
 		})
 
 		Context("VirtualMCPServer should update when MCPTelemetryConfig spec changes", Ordered, func() {
@@ -191,7 +220,8 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 						Namespace: namespace,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group-telemetry-update"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group-telemetry-update"},
+						Config:   vmcpconfig.Config{Group: "test-group-telemetry-update"},
 						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 							Type: "anonymous",
 						},
@@ -253,6 +283,26 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 					return fetched.Status.TelemetryConfigHash != "" &&
 						fetched.Status.TelemetryConfigHash != initialHash
 				}, timeout, interval).Should(BeTrue())
+
+				// Verify the ConfigMap reflects the new endpoint
+				configMapName := fmt.Sprintf("%s-vmcp-config", virtualMCPServer.Name)
+				Eventually(func() bool {
+					cm := &corev1.ConfigMap{}
+					err := k8sClient.Get(ctx, types.NamespacedName{
+						Name:      configMapName,
+						Namespace: namespace,
+					}, cm)
+					if err != nil {
+						return false
+					}
+					var config vmcpconfig.Config
+					if err := yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &config); err != nil {
+						return false
+					}
+					// NormalizeTelemetryConfig strips https:// prefix
+					return config.Telemetry != nil &&
+						config.Telemetry.Endpoint == "new-collector:4317"
+				}, timeout, interval).Should(BeTrue())
 			})
 		})
 
@@ -280,7 +330,8 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 						Namespace: namespace,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group-telemetry-notfound"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group-telemetry-notfound"},
+						Config:   vmcpconfig.Config{Group: "test-group-telemetry-notfound"},
 						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 							Type: "anonymous",
 						},
@@ -318,32 +369,4 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 			})
 		})
 
-		Context("CEL validation rejects both config.telemetry and telemetryConfigRef", func() {
-			It("should reject creation when both config.telemetry and telemetryConfigRef are set", func() {
-				vmcp := &mcpv1alpha1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-vmcp-telemetry-mutual-exclusion",
-						Namespace: namespace,
-					},
-					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{
-							Group: "some-group",
-							Telemetry: &telemetryconfig.Config{
-								Endpoint:       "https://otel-collector:4317",
-								TracingEnabled: true,
-							},
-						},
-						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-							Type: "anonymous",
-						},
-						TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
-							Name: "some-telemetry-config",
-						},
-					},
-				}
-				err := k8sClient.Create(ctx, vmcp)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("telemetryConfigRef"))
-			})
-		})
 	})

@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/yaml"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -101,7 +102,8 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: groupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+					Config:   vmcpconfig.Config{Group: groupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
@@ -153,6 +155,26 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 				}
 				return updated.Status.OIDCConfigHash != ""
 			}, timeout, interval).Should(BeTrue())
+		})
+
+		It("should produce a ConfigMap with OIDC config from the MCPOIDCConfig", func() {
+			configMapName := vmcpName + "-vmcp-config"
+			configMap := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			Expect(configMap.Data).To(HaveKey("config.yaml"))
+			var config vmcpconfig.Config
+			Expect(yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)).To(Succeed())
+
+			Expect(config.IncomingAuth).NotTo(BeNil())
+			Expect(config.IncomingAuth.OIDC).NotTo(BeNil(), "OIDC config from MCPOIDCConfig should be present in ConfigMap")
+			Expect(config.IncomingAuth.OIDC.Issuer).To(Equal("https://accounts.google.com"))
+			Expect(config.IncomingAuth.OIDC.Audience).To(Equal("test-vmcp-audience"))
 		})
 
 		It("should track VirtualMCPServer in MCPOIDCConfig ReferencingWorkloads", func() {
@@ -247,7 +269,8 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: groupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+					Config:   vmcpconfig.Config{Group: groupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
@@ -382,7 +405,8 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: groupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+					Config:   vmcpconfig.Config{Group: groupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
@@ -507,7 +531,8 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: groupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+					Config:   vmcpconfig.Config{Group: groupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
@@ -646,7 +671,8 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: groupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+					Config:   vmcpconfig.Config{Group: groupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{

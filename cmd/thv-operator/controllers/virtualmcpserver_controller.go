@@ -482,12 +482,12 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 	// Validate GroupRef exists
 	mcpGroup := &mcpv1alpha1.MCPGroup{}
 	err := r.Get(ctx, types.NamespacedName{
-		Name:      vmcp.Spec.Config.Group,
+		Name:      vmcp.ResolveGroupName(),
 		Namespace: vmcp.Namespace,
 	}, mcpGroup)
 
 	if errors.IsNotFound(err) {
-		message := fmt.Sprintf("Referenced MCPGroup %s not found", vmcp.Spec.Config.Group)
+		message := fmt.Sprintf("Referenced MCPGroup %s not found", vmcp.ResolveGroupName())
 		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
 		statusManager.SetGroupRefValidatedCondition(
@@ -505,7 +505,7 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 	// Check if MCPGroup is ready
 	if mcpGroup.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
 		message := fmt.Sprintf("Referenced MCPGroup %s is not ready (phase: %s)",
-			vmcp.Spec.Config.Group, mcpGroup.Status.Phase)
+			vmcp.ResolveGroupName(), mcpGroup.Status.Phase)
 		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhasePending)
 		statusManager.SetMessage(message)
 		statusManager.SetGroupRefValidatedCondition(
@@ -515,13 +515,13 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 		)
 		statusManager.SetObservedGeneration(vmcp.Generation)
 		// Requeue to check again later
-		return fmt.Errorf("MCPGroup %s is not ready", vmcp.Spec.Config.Group)
+		return fmt.Errorf("MCPGroup %s is not ready", vmcp.ResolveGroupName())
 	}
 
 	// GroupRef is valid and ready
 	statusManager.SetGroupRefValidatedCondition(
 		mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefValid,
-		fmt.Sprintf("MCPGroup %s is valid and ready", vmcp.Spec.Config.Group),
+		fmt.Sprintf("MCPGroup %s is valid and ready", vmcp.ResolveGroupName()),
 		metav1.ConditionTrue,
 	)
 	statusManager.SetObservedGeneration(vmcp.Generation)
@@ -712,7 +712,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	// This ensures consistency - all functions use the same workload list
 	// rather than listing at different times which could yield different results
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(r.Client, vmcp.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.ResolveGroupName())
 	if err != nil {
 		ctxLogger.Error(err, "Failed to list workloads in group")
 		return ctrl.Result{}, fmt.Errorf("failed to list workloads in group: %w", err)
@@ -2262,7 +2262,7 @@ func (r *VirtualMCPServerReconciler) mapMCPGroupToVirtualMCPServer(ctx context.C
 
 	var requests []reconcile.Request
 	for _, vmcp := range vmcpList.Items {
-		if vmcp.Spec.Config.Group == mcpGroup.Name {
+		if vmcp.ResolveGroupName() == mcpGroup.Name {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      vmcp.Name,
@@ -2333,7 +2333,7 @@ func (r *VirtualMCPServerReconciler) mapMCPServerToVirtualMCPServer(ctx context.
 	var requests []reconcile.Request
 	for _, vmcp := range vmcpList.Items {
 		// Only reconcile if this VirtualMCPServer references an affected MCPGroup
-		if affectedGroups[vmcp.Spec.Config.Group] {
+		if affectedGroups[vmcp.ResolveGroupName()] {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      vmcp.Name,
@@ -2342,7 +2342,7 @@ func (r *VirtualMCPServerReconciler) mapMCPServerToVirtualMCPServer(ctx context.
 			})
 			ctxLogger.V(1).Info("Queuing VirtualMCPServer for reconciliation due to MCPServer change",
 				"virtualMCPServer", vmcp.Name,
-				"mcpGroup", vmcp.Spec.Config.Group,
+				"mcpGroup", vmcp.ResolveGroupName(),
 				"mcpServer", mcpServer.Name)
 		}
 	}
@@ -2414,7 +2414,7 @@ func (r *VirtualMCPServerReconciler) mapMCPRemoteProxyToVirtualMCPServer(
 	var requests []reconcile.Request
 	for _, vmcp := range vmcpList.Items {
 		// Only reconcile if this VirtualMCPServer references an affected MCPGroup
-		if affectedGroups[vmcp.Spec.Config.Group] {
+		if affectedGroups[vmcp.ResolveGroupName()] {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      vmcp.Name,
@@ -2423,7 +2423,7 @@ func (r *VirtualMCPServerReconciler) mapMCPRemoteProxyToVirtualMCPServer(
 			})
 			ctxLogger.V(1).Info("Queuing VirtualMCPServer for reconciliation due to MCPRemoteProxy change",
 				"virtualMCPServer", vmcp.Name,
-				"mcpGroup", vmcp.Spec.Config.Group,
+				"mcpGroup", vmcp.ResolveGroupName(),
 				"mcpRemoteProxy", mcpRemoteProxy.Name)
 		}
 	}
@@ -2490,7 +2490,7 @@ func (r *VirtualMCPServerReconciler) mapMCPServerEntryToVirtualMCPServer(
 
 	var requests []reconcile.Request
 	for _, vmcp := range vmcpList.Items {
-		if affectedGroups[vmcp.Spec.Config.Group] {
+		if affectedGroups[vmcp.ResolveGroupName()] {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      vmcp.Name,
@@ -2499,7 +2499,7 @@ func (r *VirtualMCPServerReconciler) mapMCPServerEntryToVirtualMCPServer(
 			})
 			ctxLogger.V(1).Info("Queuing VirtualMCPServer for reconciliation due to MCPServerEntry change",
 				"virtualMCPServer", vmcp.Name,
-				"mcpGroup", vmcp.Spec.Config.Group,
+				"mcpGroup", vmcp.ResolveGroupName(),
 				"mcpServerEntry", mcpServerEntry.Name)
 		}
 	}
@@ -2642,14 +2642,14 @@ func (r *VirtualMCPServerReconciler) mcpGroupBackendsReferenceExternalAuthConfig
 	// Get the MCPGroup to verify it exists
 	mcpGroup := &mcpv1alpha1.MCPGroup{}
 	err := r.Get(ctx, types.NamespacedName{
-		Name:      vmcp.Spec.Config.Group,
+		Name:      vmcp.ResolveGroupName(),
 		Namespace: vmcp.Namespace,
 	}, mcpGroup)
 	if err != nil {
 		// If we can't get the group, we can't determine if it references the auth config
 		// Return false to avoid false positives
 		ctxLogger.Error(err, "Failed to get MCPGroup for ExternalAuthConfig reference check",
-			"group", vmcp.Spec.Config.Group,
+			"group", vmcp.ResolveGroupName(),
 			"vmcp", vmcp.Name)
 		return false
 	}

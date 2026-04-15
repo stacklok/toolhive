@@ -156,7 +156,7 @@ func (r *BackendReconciler) fetchBackendResource(
 	if errServer == nil {
 		return &backendResourceInfo{
 			Name:     mcpServer.Name,
-			GroupRef: mcpServer.Spec.GroupRef,
+			GroupRef: mcpServer.Spec.GroupRef.GetName(),
 			Type:     workloads.WorkloadTypeMCPServer,
 		}, nil
 	}
@@ -168,7 +168,7 @@ func (r *BackendReconciler) fetchBackendResource(
 	if errProxy == nil {
 		return &backendResourceInfo{
 			Name:     mcpRemoteProxy.Name,
-			GroupRef: mcpRemoteProxy.Spec.GroupRef,
+			GroupRef: mcpRemoteProxy.Spec.GroupRef.GetName(),
 			Type:     workloads.WorkloadTypeMCPRemoteProxy,
 		}, nil
 	}
@@ -180,7 +180,7 @@ func (r *BackendReconciler) fetchBackendResource(
 	if errEntry == nil {
 		return &backendResourceInfo{
 			Name:     mcpServerEntry.Name,
-			GroupRef: mcpServerEntry.Spec.GroupRef,
+			GroupRef: mcpServerEntry.Spec.GroupRef.GetName(),
 			Type:     workloads.WorkloadTypeMCPServerEntry,
 		}, nil
 	}
@@ -220,7 +220,7 @@ func (r *BackendReconciler) MapAuthConfigToEntries(ctx context.Context, authConf
 
 	var requests []reconcile.Request
 	for _, entry := range entryList.Items {
-		if entry.Spec.GroupRef != r.GroupRef {
+		if entry.Spec.GroupRef.GetName() != r.GroupRef {
 			continue
 		}
 		if entry.Spec.ExternalAuthConfigRef != nil &&
@@ -346,7 +346,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 			for _, server := range mcpServerList.Items {
 				// Only reconcile if server matches our groupRef AND references this auth config
-				if server.Spec.GroupRef != r.GroupRef {
+				if server.Spec.GroupRef.GetName() != r.GroupRef {
 					continue
 				}
 
@@ -370,7 +370,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 			for _, proxy := range proxyList.Items {
 				// Only reconcile if proxy matches our groupRef AND references this auth config
-				if proxy.Spec.GroupRef != r.GroupRef {
+				if proxy.Spec.GroupRef.GetName() != r.GroupRef {
 					continue
 				}
 
@@ -402,7 +402,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 
 			// Only reconcile if matches groupRef (security + performance)
-			if server.Spec.GroupRef != r.GroupRef {
+			if server.Spec.GroupRef.GetName() != r.GroupRef {
 				return nil
 			}
 
@@ -427,7 +427,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 
 			// Only reconcile if matches groupRef (security + performance)
-			if proxy.Spec.GroupRef != r.GroupRef {
+			if proxy.Spec.GroupRef.GetName() != r.GroupRef {
 				return nil
 			}
 
@@ -452,7 +452,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 
 			// Only reconcile if matches groupRef (security + performance)
-			if entry.Spec.GroupRef != r.GroupRef {
+			if entry.Spec.GroupRef.GetName() != r.GroupRef {
 				return nil
 			}
 
@@ -488,7 +488,7 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 			var requests []reconcile.Request
 			for _, entry := range entryList.Items {
-				if entry.Spec.GroupRef != r.GroupRef {
+				if entry.Spec.GroupRef.GetName() != r.GroupRef {
 					continue
 				}
 				requests = append(requests, reconcile.Request{

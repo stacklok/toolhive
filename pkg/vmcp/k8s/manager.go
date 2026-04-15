@@ -190,7 +190,7 @@ func (w *BackendWatcher) Start(ctx context.Context) error {
 	slog.Info("watching backend resources", "namespace", w.namespace, "group", w.groupRef)
 
 	// Register backend watch controller to reconcile MCPServer/MCPRemoteProxy changes
-	err := w.addBackendWatchController()
+	err := w.addBackendWatchController(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to add backend watch controller: %w", err)
 	}
@@ -285,7 +285,7 @@ func (w *BackendWatcher) WaitForCacheSync(ctx context.Context) bool {
 // Returns:
 //   - nil: Reconciler registered successfully
 //   - error: Failed to create discoverer or register reconciler
-func (w *BackendWatcher) addBackendWatchController() error {
+func (w *BackendWatcher) addBackendWatchController(ctx context.Context) error {
 	// Create K8s discoverer for backend conversion
 	// This reuses the existing workloads package conversion logic
 	discoverer := workloads.NewK8SDiscovererWithClient(
@@ -300,6 +300,12 @@ func (w *BackendWatcher) addBackendWatchController() error {
 		GroupRef:   w.groupRef,
 		Registry:   w.registry,
 		Discoverer: discoverer,
+	}
+
+	// Register field indexes required by the reconciler's watch handlers.
+	// Must be called before SetupWithManager.
+	if err := reconciler.SetupIndexes(ctx, w.ctrlManager); err != nil {
+		return fmt.Errorf("failed to setup backend reconciler indexes: %w", err)
 	}
 
 	// Register reconciler with manager

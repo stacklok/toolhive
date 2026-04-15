@@ -28,7 +28,7 @@ spec:
     - jsonPath: .spec.remoteUrl
       name: Remote URL
       type: string
-    - jsonPath: .spec.groupRef
+    - jsonPath: .spec.groupRef.name
       name: Group
       type: string
     - jsonPath: .metadata.creationTimestamp
@@ -110,10 +110,17 @@ spec:
                 type: object
               groupRef:
                 description: |-
-                  GroupRef is the name of the MCPGroup this entry belongs to.
+                  GroupRef references the MCPGroup this entry belongs to.
                   Required — every MCPServerEntry must be part of a group for vMCP discovery.
-                minLength: 1
-                type: string
+                properties:
+                  name:
+                    description: Name is the name of the MCPGroup resource in the
+                      same namespace
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               headerForward:
                 description: |-
                   HeaderForward configures headers to inject into requests to the remote MCP server.

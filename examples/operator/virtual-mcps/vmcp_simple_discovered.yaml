@@ -32,7 +32,8 @@ metadata:
   name: yardstick-simple
   namespace: default
 spec:
-  groupRef: my-services
+  groupRef:
+    name: my-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: stdio
   proxyPort: 8080
@@ -53,8 +54,9 @@ metadata:
   namespace: default
 spec:
   # Reference to the MCPGroup containing backend MCPServers
+  groupRef:
+    name: my-services
   config:
-    groupRef: my-services
     # Aggregation configuration
     # Prefix strategy prevents tool name conflicts by adding workload name prefix
     aggregation:

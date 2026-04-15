@@ -80,14 +80,11 @@ func newMockFactoryWithError(t *testing.T, ctrl *gomock.Controller, err error) *
 	return factory
 }
 
-// alwaysFailDataStorage is a DataStorage whose Upsert/Create always return an
+// alwaysFailDataStorage is a DataStorage whose Create/Update always return an
 // error. It is used to exercise the Generate() double-failure path (UUID collision
 // simulation — both attempts to Create fail, so Generate() must return "").
 type alwaysFailDataStorage struct{}
 
-func (alwaysFailDataStorage) Upsert(_ context.Context, _ string, _ map[string]string) error {
-	return errors.New("storage unavailable")
-}
 func (alwaysFailDataStorage) Load(_ context.Context, _ string) (map[string]string, error) {
 	return nil, transportsession.ErrSessionNotFound
 }
@@ -105,20 +102,13 @@ func (alwaysFailDataStorage) Close() error                             { return 
 type configurableFailDataStorage struct {
 	transportsession.DataStorage
 	storeCallCount int
-	failStoreAfter int // fail Upsert/Create after this many successful calls (0 = never fail, -1 = always fail)
+	failStoreAfter int // fail Create/Update after this many successful calls (0 = never fail, -1 = always fail)
 	failDelete     bool
 }
 
 func (s *configurableFailDataStorage) shouldFail() bool {
 	s.storeCallCount++
 	return s.failStoreAfter == -1 || (s.failStoreAfter >= 0 && s.storeCallCount > s.failStoreAfter)
-}
-
-func (s *configurableFailDataStorage) Upsert(ctx context.Context, id string, metadata map[string]string) error {
-	if s.shouldFail() {
-		return errors.New("injected Upsert failure")
-	}
-	return s.DataStorage.Upsert(ctx, id, metadata)
 }
 
 func (s *configurableFailDataStorage) Create(ctx context.Context, id string, metadata map[string]string) (bool, error) {
@@ -616,12 +606,16 @@ func TestSessionManager_Terminate(t *testing.T) {
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
 
-		// Upgrade to full MultiSession; CreateSession writes tokenHashMeta to storage.
 		_, err := sm.CreateSession(context.Background(), sessionID)
 		require.NoError(t, err)
 		require.NotNil(t, createdSess)
 
-		// Terminate deletes from storage; cache entry remains until next Get.
+		// CreateSession already persists tokenHashMeta via sess.GetMetadata(),
+		// so Terminate will take the Phase 2 path (storage.Delete) without
+		// any additional seeding.
+
+		// Terminate deletes from storage; the cache entry is evicted lazily on
+		// the next GetMultiSession call when checkSession detects ErrSessionNotFound.
 		isNotAllowed, err := sm.Terminate(sessionID)
 		require.NoError(t, err)
 		assert.False(t, isNotAllowed)
@@ -658,9 +652,10 @@ func TestSessionManager_Terminate(t *testing.T) {
 
 		// Seed MetadataKeyTokenHash into storage so Terminate recognises this
 		// as a Phase 2 (full MultiSession) and deletes rather than marks terminated.
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+		_, err = storage.Update(context.Background(), sessionID, map[string]string{
 			sessiontypes.MetadataKeyTokenHash: "",
-		}))
+		})
+		require.NoError(t, err)
 
 		// Session must exist before termination.
 		_, loadErr := storage.Load(context.Background(), sessionID)
@@ -858,7 +853,8 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		sessionID := "restore-placeholder-session"
 		// Write placeholder metadata directly to storage, bypassing the cache.
 		// Generate() stores an empty map with no token hash.
-		require.NoError(t, sm.storage.Upsert(context.Background(), sessionID, map[string]string{}))
+		_, err := sm.storage.Create(context.Background(), sessionID, map[string]string{})
+		require.NoError(t, err)
 
 		// loadSession detects absent MetadataKeyTokenHash → ErrSessionNotFound.
 		multiSess, ok := sm.GetMultiSession(sessionID)
@@ -892,7 +888,8 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 			sessiontypes.MetadataKeyTokenHash: "", // anonymous sentinel — present but empty
 			vmcpsession.MetadataKeyBackendIDs: "", // always written; empty = zero backends
 		}
-		require.NoError(t, sm.storage.Upsert(context.Background(), sessionID, initializedMeta))
+		_, err := sm.storage.Create(context.Background(), sessionID, initializedMeta)
+		require.NoError(t, err)
 
 		// loadSession should call RestoreSession, not treat it as a placeholder.
 		multiSess, ok := sm.GetMultiSession(sessionID)
@@ -928,7 +925,8 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 			sessiontypes.MetadataKeyTokenHash: "", // Phase 2 completion marker
 			// MetadataKeyBackendIDs intentionally absent (legacy record)
 		}
-		require.NoError(t, sm.storage.Upsert(context.Background(), sessionID, legacyMeta))
+		_, err := sm.storage.Create(context.Background(), sessionID, legacyMeta)
+		require.NoError(t, err)
 
 		multiSess, ok := sm.GetMultiSession(sessionID)
 		require.True(t, ok, "legacy record without MetadataKeyBackendIDs must still be restorable")
@@ -1990,9 +1988,10 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		t.Parallel()
 		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 		sessionID := "alive-session"
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{}))
+		_, err := storage.Create(context.Background(), sessionID, map[string]string{})
+		require.NoError(t, err)
 
-		err := sm.checkSession(sessionID, makeEmptySess(t))
+		err = sm.checkSession(sessionID, makeEmptySess(t))
 		assert.NoError(t, err, "alive session must return nil")
 	})
 
@@ -2011,11 +2010,12 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		// so the cache evicts the entry and onEvict closes backend connections.
 		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 		sessionID := "terminated-session"
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+		_, err := storage.Create(context.Background(), sessionID, map[string]string{
 			MetadataKeyTerminated: MetadataValTrue,
-		}))
+		})
+		require.NoError(t, err)
 
-		err := sm.checkSession(sessionID, makeEmptySess(t))
+		err = sm.checkSession(sessionID, makeEmptySess(t))
 		assert.ErrorIs(t, err, cache.ErrExpired, "terminated session must return ErrExpired")
 	})
 
@@ -2029,9 +2029,10 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		sessionID := "stale-session"
 
 		// Seed storage with the up-to-date backend list (backend-a expired).
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+		_, err := storage.Create(context.Background(), sessionID, map[string]string{
 			vmcpsession.MetadataKeyBackendIDs: "backend-b",
-		}))
+		})
+		require.NoError(t, err)
 
 		// Inject a cached session whose metadata still lists both backends,
 		// simulating what this pod had before it learned about the expiry.
@@ -2042,7 +2043,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err := sm.checkSession(sessionID, cached)
+		err = sm.checkSession(sessionID, cached)
 		assert.ErrorIs(t, err, cache.ErrExpired,
 			"stale backend list must return ErrExpired to trigger cross-pod eviction")
 	})
@@ -2052,9 +2053,10 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 		sessionID := "fresh-session"
 
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+		_, err := storage.Create(context.Background(), sessionID, map[string]string{
 			vmcpsession.MetadataKeyBackendIDs: "backend-a",
-		}))
+		})
+		require.NoError(t, err)
 
 		ctrl := gomock.NewController(t)
 		cached := sessionmocks.NewMockMultiSession(ctrl)
@@ -2063,7 +2065,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err := sm.checkSession(sessionID, cached)
+		err = sm.checkSession(sessionID, cached)
 		assert.NoError(t, err, "matching backend list must return nil")
 	})
 
@@ -2074,14 +2076,15 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 		sessionID := "no-ids-session"
 
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{}))
+		_, err := storage.Create(context.Background(), sessionID, map[string]string{})
+		require.NoError(t, err)
 
 		ctrl := gomock.NewController(t)
 		cached := sessionmocks.NewMockMultiSession(ctrl)
 		cached.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err := sm.checkSession(sessionID, cached)
+		err = sm.checkSession(sessionID, cached)
 		assert.NoError(t, err, "matching empty metadata must not cause eviction")
 	})
 }
@@ -2105,7 +2108,9 @@ func TestNotifyBackendExpired(t *testing.T) {
 		for workloadID, sessID := range sessionIDs {
 			meta[vmcpsession.MetadataKeyBackendSessionPrefix+workloadID] = sessID
 		}
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, meta))
+		updated, err := storage.Update(context.Background(), sessionID, meta)
+		require.NoError(t, err)
+		require.True(t, updated, "session must exist before seeding backend metadata")
 		return meta
 	}
 
@@ -2187,7 +2192,8 @@ func TestNotifyBackendExpired(t *testing.T) {
 			vmcpsession.MetadataKeyBackendSessionPrefix + "workload-a": "sess-a",
 			// MetadataKeyBackendIDs intentionally absent
 		}
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, corruptedMeta))
+		_, err := storage.Update(context.Background(), sessionID, corruptedMeta)
+		require.NoError(t, err)
 
 		corruptedMetaBefore := maps.Clone(corruptedMeta)
 		sm.NotifyBackendExpired(sessionID, "workload-a", corruptedMeta)
@@ -2245,9 +2251,10 @@ func TestNotifyBackendExpired(t *testing.T) {
 
 		// Seed MetadataKeyTokenHash into storage so Terminate recognises this
 		// as a Phase 2 (full MultiSession) and deletes rather than marks terminated.
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+		_, err = storage.Update(context.Background(), sessionID, map[string]string{
 			sessiontypes.MetadataKeyTokenHash: "",
-		}))
+		})
+		require.NoError(t, err)
 
 		_, err = sm.Terminate(sessionID)
 		require.NoError(t, err)

@@ -157,10 +157,8 @@ Defines an MCP server deployment, including container images, transports, middle
 MCPServer resources support various transport types (stdio, SSE, streamable-http), permission profiles, OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets.
 
 MCPServer supports referencing shared configuration CRDs:
-- `oidcConfigRef` — references an MCPOIDCConfig for shared OIDC settings (replaces deprecated inline `oidcConfig`)
-- `telemetryConfigRef` — references an MCPTelemetryConfig for shared telemetry settings (replaces deprecated inline `telemetry`)
-
-Both ref fields are mutually exclusive with their inline counterparts (enforced by CEL validation).
+- `oidcConfigRef` — references an MCPOIDCConfig for shared OIDC settings
+- `telemetryConfigRef` — references an MCPTelemetryConfig for shared telemetry settings
 
 **Status fields** include phase (Ready, Pending, Failed, Terminating), the accessible URL, and config hashes (`oidcConfigHash`, `telemetryConfigHash`) for change detection on referenced CRDs.
 
@@ -257,13 +255,12 @@ Defines a proxy for remote MCP servers with authentication, authorization, audit
 
 **Key fields:**
 - `remoteUrl` - URL of the remote MCP server to proxy
-- `oidcConfigRef` - Reference to shared MCPOIDCConfig (preferred, with per-server `audience` and `scopes`)
-- `oidcConfig` - Inline OIDC authentication (deprecated, use `oidcConfigRef` instead)
+- `oidcConfigRef` - Reference to shared MCPOIDCConfig (with per-server `audience` and `scopes`)
 - `externalAuthConfigRef` - Token exchange for remote service authentication
 - `authzConfig` - Authorization policies
 - `toolConfigRef` - Tool filtering and renaming
 
-`oidcConfigRef` and `oidcConfig` are mutually exclusive (CEL enforced). OIDC is optional — omit both for unauthenticated proxies.
+OIDC is optional — omit `oidcConfigRef` for unauthenticated proxies.
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpremoteproxy_types.go`
 
@@ -293,11 +290,11 @@ Logically groups MCPServer resources together for organizational purposes.
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpgroup_types.go`
 
-MCPGroup resources allow grouping related MCP servers. Servers reference their group using the `groupRef` field in MCPServer spec. The group tracks member servers in its status.
+MCPGroup resources allow grouping related MCP servers. Servers reference their group using the `groupRef` typed struct (`MCPGroupRef`) in MCPServer spec. The group tracks member servers in its status.
 
 **Status fields** include phase (Ready, Pending, Failed), list of server names, and server count.
 
-**Referenced by MCPServer** using `spec.groupRef`.
+**Referenced by MCPServer** using `spec.groupRef.name`.
 
 **Controller**: `cmd/thv-operator/controllers/mcpgroup_controller.go`
 
@@ -351,7 +348,7 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 - Backend count
 - Detailed conditions for validation, discovery, and readiness
 
-**References**: MCPGroup (via `spec.config.groupRef`)
+**References**: MCPGroup (via `spec.groupRef.name`)
 
 **Controller**: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
 
@@ -657,29 +654,6 @@ spec:
   telemetryConfigRef:
     name: shared-otel
     serviceName: my-server   # per-server, must be unique
-```
-
-### Inline Configuration (Deprecated)
-
-The inline patterns below still work but are deprecated in favor of the shared CRD references above. They will be removed in v1beta1. The `oidcConfigRef` / `telemetryConfigRef` fields are mutually exclusive with their inline counterparts (enforced by CEL validation).
-
-**OIDC (inline — deprecated):**
-```yaml
-spec:
-  oidcConfig:
-    type: inline
-    inline:
-      issuer: https://auth.example.com
-      audience: my-app
-```
-
-**OIDC (configMap — deprecated):**
-```yaml
-spec:
-  oidcConfig:
-    type: configMap
-    configMap:
-      name: oidc-config
 ```
 
 **Authz policies:**

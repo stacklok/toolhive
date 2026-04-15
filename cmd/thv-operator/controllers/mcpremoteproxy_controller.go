@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -391,20 +390,6 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonRemoteURLInvalid, err)
 	}
 
-	// Validate OIDC issuer URL scheme
-	if err := r.validateOIDCIssuerURL(proxy); err != nil {
-		reason := mcpv1alpha1.ConditionReasonOIDCIssuerInvalid
-		if strings.Contains(err.Error(), "HTTP scheme") {
-			reason = mcpv1alpha1.ConditionReasonOIDCIssuerInsecure
-		}
-		return r.failValidation(proxy, reason, err)
-	}
-
-	// Validate JWKS URL format
-	if err := r.validateJWKSURL(proxy); err != nil {
-		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonJWKSURLInvalid, err)
-	}
-
 	// Validate inline Cedar policy syntax
 	if err := r.validateAuthzPolicySyntax(proxy); err != nil {
 		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid, err)
@@ -451,47 +436,6 @@ func setConfigurationInvalidCondition(proxy *mcpv1alpha1.MCPRemoteProxy, reason,
 		Message:            message,
 		ObservedGeneration: proxy.Generation,
 	})
-}
-
-// validateOIDCIssuerURL validates the OIDC issuer URL scheme.
-func (*MCPRemoteProxyReconciler) validateOIDCIssuerURL(proxy *mcpv1alpha1.MCPRemoteProxy) error {
-	oidcConfig := proxy.Spec.OIDCConfig
-	if oidcConfig == nil {
-		return nil
-	}
-
-	switch oidcConfig.Type {
-	case mcpv1alpha1.OIDCConfigTypeInline:
-		if oidcConfig.Inline != nil {
-			return validation.ValidateOIDCIssuerURL(oidcConfig.Inline.Issuer, oidcConfig.Inline.InsecureAllowHTTP)
-		}
-	case mcpv1alpha1.OIDCConfigTypeKubernetes:
-		if oidcConfig.Kubernetes != nil && oidcConfig.Kubernetes.Issuer != "" {
-			// Kubernetes OIDC issuers must always use HTTPS
-			return validation.ValidateOIDCIssuerURL(oidcConfig.Kubernetes.Issuer, false)
-		}
-	}
-	return nil
-}
-
-// validateJWKSURL validates the JWKS URL scheme in the OIDC config.
-func (*MCPRemoteProxyReconciler) validateJWKSURL(proxy *mcpv1alpha1.MCPRemoteProxy) error {
-	oidcConfig := proxy.Spec.OIDCConfig
-	if oidcConfig == nil {
-		return nil
-	}
-
-	switch oidcConfig.Type {
-	case mcpv1alpha1.OIDCConfigTypeInline:
-		if oidcConfig.Inline != nil {
-			return validation.ValidateJWKSURL(oidcConfig.Inline.JWKSURL)
-		}
-	case mcpv1alpha1.OIDCConfigTypeKubernetes:
-		if oidcConfig.Kubernetes != nil {
-			return validation.ValidateJWKSURL(oidcConfig.Kubernetes.JWKSURL)
-		}
-	}
-	return nil
 }
 
 // validateAuthzPolicySyntax validates inline Cedar authorization policy syntax.
@@ -1088,7 +1032,7 @@ func (r *MCPRemoteProxyReconciler) updateOIDCConfigReferencingWorkloads(
 // This function only sets conditions on the proxy object - the caller is responsible
 // for persisting the status update to avoid multiple conflicting status updates.
 func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) {
-	if proxy.Spec.GroupRef == "" {
+	if proxy.Spec.GroupRef == nil {
 		// No group reference - remove any existing GroupRefValidated condition
 		// to avoid showing stale info from a previous reconciliation
 		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated)
@@ -1096,16 +1040,17 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 	}
 
 	ctxLogger := log.FromContext(ctx)
+	groupName := proxy.Spec.GroupRef.Name
 
 	// Find the referenced MCPGroup
 	group := &mcpv1alpha1.MCPGroup{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: proxy.Namespace, Name: proxy.Spec.GroupRef}, group); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: proxy.Namespace, Name: groupName}, group); err != nil {
 		ctxLogger.Error(err, "Failed to validate GroupRef")
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefNotFound,
-			Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", proxy.Spec.GroupRef, proxy.Namespace),
+			Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", groupName, proxy.Namespace),
 			ObservedGeneration: proxy.Generation,
 		})
 	} else if group.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
@@ -1113,7 +1058,7 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefNotReady,
-			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", proxy.Spec.GroupRef, group.Status.Phase),
+			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", groupName, group.Status.Phase),
 			ObservedGeneration: proxy.Generation,
 		})
 	} else {
@@ -1121,7 +1066,7 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 			Status:             metav1.ConditionTrue,
 			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefValidated,
-			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", proxy.Spec.GroupRef),
+			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", groupName),
 			ObservedGeneration: proxy.Generation,
 		})
 	}

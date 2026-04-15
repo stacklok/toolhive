@@ -188,8 +188,8 @@ spec:
   telemetryConfigRef:
     name: shared-otel
     serviceName: my-vmcp
-  config:
-    groupRef: my-group
+  groupRef:
+    name: my-group
   incomingAuth:
     type: anonymous
 ```
@@ -209,8 +209,9 @@ kind: VirtualMCPServer
 metadata:
   name: my-vmcp
 spec:
+  groupRef:
+    name: my-group
   config:
-    groupRef: my-group
     telemetry:
       endpoint: "otel-collector:4317"
       serviceName: "my-vmcp"

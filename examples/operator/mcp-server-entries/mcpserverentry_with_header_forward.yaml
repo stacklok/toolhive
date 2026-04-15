@@ -12,7 +12,8 @@ metadata:
 spec:
   remoteUrl: https://internal-mcp.corp.example.com/mcp
   transport: sse
-  groupRef: remote-tools
+  groupRef:
+    name: remote-tools
   headerForward:
     addPlaintextHeaders:
       X-Tenant-ID: "tenant-123"

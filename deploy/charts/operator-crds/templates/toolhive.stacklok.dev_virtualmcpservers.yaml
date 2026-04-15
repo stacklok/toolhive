@@ -74,7 +74,7 @@ spec:
                   AuthServerConfig configures an embedded OAuth authorization server.
                   When set, the vMCP server acts as an OIDC issuer, drives users through
                   upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the
-                  IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfig
+                  IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfigRef
                   so that tokens it issues are accepted by the vMCP's incoming auth middleware.
                   When nil, IncomingAuth uses an external IDP and behavior is unchanged.
                 properties:
@@ -641,13 +641,8 @@ spec:
                 type: object
               config:
                 description: |-
-                  Config is the Virtual MCP server configuration
-                  The only field currently required within config is `config.groupRef`.
-                  GroupRef references an existing MCPGroup that defines backend workloads.
-                  The referenced MCPGroup must exist in the same namespace.
+                  Config is the Virtual MCP server configuration.
                   The audit config from here is also supported, but not required.
-                  Note: config.telemetry is deprecated — use spec.telemetryConfigRef to reference
-                  a shared MCPTelemetryConfig resource instead.
                 properties:
                   aggregation:
                     description: |-
@@ -1176,7 +1171,8 @@ spec:
                   groupRef:
                     description: |-
                       Group references an existing MCPGroup that defines backend workloads.
-                      In Kubernetes, the referenced MCPGroup must exist in the same namespace.
+                      In standalone CLI mode, this is set from the YAML config file.
+                      In Kubernetes, the operator populates this from spec.groupRef during conversion.
                     type: string
                   incomingAuth:
                     description: |-
@@ -1774,8 +1770,6 @@ spec:
                           Currently defaults to true; this will change to false in a future release.
                         type: boolean
                     type: object
-                required:
-                - groupRef
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               embeddingServerRef:
@@ -1787,6 +1781,19 @@ spec:
                 properties:
                   name:
                     description: Name is the name of the EmbeddingServer resource
+                    type: string
+                required:
+                - name
+                type: object
+              groupRef:
+                description: |-
+                  GroupRef references the MCPGroup that defines backend workloads.
+                  The referenced MCPGroup must exist in the same namespace.
+                properties:
+                  name:
+                    description: Name is the name of the MCPGroup resource in the
+                      same namespace
+                    minLength: 1
                     type: string
                 required:
                 - name
@@ -1857,240 +1864,12 @@ spec:
                     - message: inline must be set when type is 'inline', and must
                         not be set otherwise
                       rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
-                  oidcConfig:
-                    description: |-
-                      OIDCConfig defines OIDC authentication configuration.
-                      Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
-                      This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
-                    properties:
-                      configMap:
-                        description: |-
-                          ConfigMap references a ConfigMap containing OIDC configuration
-                          Only used when Type is "configmap"
-                        properties:
-                          caBundleRef:
-                            description: |-
-                              CABundleRef references a ConfigMap containing the CA certificate bundle.
-                              When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.
-                              If the ConfigMap data contains an explicit thvCABundlePath key, it takes precedence.
-                            properties:
-                              configMapRef:
-                                description: |-
-                                  ConfigMapRef references a ConfigMap containing the CA certificate bundle.
-                                  If Key is not specified, it defaults to "ca.crt".
-                                properties:
-                                  key:
-                                    description: The key to select.
-                                    type: string
-                                  name:
-                                    default: ""
-                                    description: |-
-                                      Name of the referent.
-                                      This field is effectively required, but due to backwards compatibility is
-                                      allowed to be empty. Instances of this type with an empty value here are
-                                      almost certainly wrong.
-                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                    type: string
-                                  optional:
-                                    description: Specify whether the ConfigMap or
-                                      its key must be defined
-                                    type: boolean
-                                required:
-                                - key
-                                type: object
-                                x-kubernetes-map-type: atomic
-                            type: object
-                          key:
-                            default: oidc.json
-                            description: Key is the key in the ConfigMap that contains
-                              the OIDC configuration
-                            type: string
-                          name:
-                            description: Name is the name of the ConfigMap
-                            type: string
-                        required:
-                        - name
-                        type: object
-                      inline:
-                        description: |-
-                          Inline contains direct OIDC configuration
-                          Only used when Type is "inline"
-                        properties:
-                          audience:
-                            description: Audience is the expected audience for the
-                              token
-                            type: string
-                          caBundleRef:
-                            description: |-
-                              CABundleRef references a ConfigMap containing the CA certificate bundle.
-                              When specified, ToolHive auto-mounts the ConfigMap and auto-computes the CA bundle path.
-                            properties:
-                              configMapRef:
-                                description: |-
-                                  ConfigMapRef references a ConfigMap containing the CA certificate bundle.
-                                  If Key is not specified, it defaults to "ca.crt".
-                                properties:
-                                  key:
-                                    description: The key to select.
-                                    type: string
-                                  name:
-                                    default: ""
-                                    description: |-
-                                      Name of the referent.
-                                      This field is effectively required, but due to backwards compatibility is
-                                      allowed to be empty. Instances of this type with an empty value here are
-                                      almost certainly wrong.
-                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                    type: string
-                                  optional:
-                                    description: Specify whether the ConfigMap or
-                                      its key must be defined
-                                    type: boolean
-                                required:
-                                - key
-                                type: object
-                                x-kubernetes-map-type: atomic
-                            type: object
-                          clientId:
-                            description: ClientID is the OIDC client ID
-                            type: string
-                          clientSecretRef:
-                            description: ClientSecretRef is a reference to a Kubernetes
-                              Secret containing the client secret
-                            properties:
-                              key:
-                                description: Key is the key within the secret
-                                type: string
-                              name:
-                                description: Name is the name of the secret
-                                type: string
-                            required:
-                            - key
-                            - name
-                            type: object
-                          insecureAllowHTTP:
-                            default: false
-                            description: |-
-                              InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
-                              WARNING: This is insecure and should NEVER be used in production
-                              Only enable for local development, testing, or trusted internal networks
-                            type: boolean
-                          introspectionUrl:
-                            description: IntrospectionURL is the URL for token introspection
-                              endpoint
-                            type: string
-                          issuer:
-                            description: Issuer is the OIDC issuer URL
-                            type: string
-                          jwksAllowPrivateIP:
-                            default: false
-                            description: |-
-                              JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses.
-                              Use with caution - only enable for trusted internal IDPs.
-                              Note: at runtime, if either JWKSAllowPrivateIP or ProtectedResourceAllowPrivateIP
-                              is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
-                            type: boolean
-                          jwksAuthTokenPath:
-                            description: |-
-                              JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests
-                              The file must be mounted into the pod (e.g., via Secret volume)
-                            type: string
-                          jwksUrl:
-                            description: JWKSURL is the URL to fetch the JWKS from
-                            type: string
-                          protectedResourceAllowPrivateIP:
-                            default: false
-                            description: |-
-                              ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses.
-                              Use with caution - only enable for trusted internal IDPs or testing.
-                              Note: at runtime, if either ProtectedResourceAllowPrivateIP or JWKSAllowPrivateIP
-                              is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
-                            type: boolean
-                          scopes:
-                            description: |-
-                              Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
-                              If empty, defaults to ["openid"]
-                            items:
-                              type: string
-                            type: array
-                            x-kubernetes-list-type: atomic
-                        required:
-                        - issuer
-                        type: object
-                      kubernetes:
-                        description: |-
-                          Kubernetes configures OIDC for Kubernetes service account token validation
-                          Only used when Type is "kubernetes"
-                        properties:
-                          audience:
-                            default: toolhive
-                            description: Audience is the expected audience for the
-                              token
-                            type: string
-                          introspectionUrl:
-                            description: |-
-                              IntrospectionURL is the URL for token introspection endpoint
-                              If empty, OIDC discovery will be used to automatically determine the introspection URL
-                            type: string
-                          issuer:
-                            default: https://kubernetes.default.svc
-                            description: Issuer is the OIDC issuer URL
-                            type: string
-                          jwksUrl:
-                            description: |-
-                              JWKSURL is the URL to fetch the JWKS from
-                              If empty, OIDC discovery will be used to automatically determine the JWKS URL
-                            type: string
-                          namespace:
-                            description: |-
-                              Namespace is the namespace of the service account
-                              If empty, uses the MCPServer's namespace
-                            type: string
-                          serviceAccount:
-                            description: |-
-                              ServiceAccount is the name of the service account to validate tokens for
-                              If empty, uses the pod's service account
-                            type: string
-                          useClusterAuth:
-                            description: |-
-                              UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token
-                              When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification
-                              and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication
-                              Defaults to true if not specified
-                            type: boolean
-                        type: object
-                      resourceUrl:
-                        description: |-
-                          ResourceURL is the explicit resource URL for OAuth discovery endpoint (RFC 9728)
-                          If not specified, defaults to the in-cluster Kubernetes service URL
-                        type: string
-                      type:
-                        default: kubernetes
-                        description: Type is the type of OIDC configuration
-                        enum:
-                        - kubernetes
-                        - configMap
-                        - inline
-                        type: string
-                    required:
-                    - type
-                    type: object
-                    x-kubernetes-validations:
-                    - message: configMap must be set when type is 'configMap', and
-                        must not be set otherwise
-                      rule: 'self.type == ''configMap'' ? has(self.configMap) : !has(self.configMap)'
-                    - message: inline must be set when type is 'inline', and must
-                        not be set otherwise
-                      rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
-                    - message: kubernetes must not be set when type is not 'kubernetes'
-                      rule: 'self.type != ''kubernetes'' ? !has(self.kubernetes) :
-                        true'
                   oidcConfigRef:
                     description: |-
                       OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
                       The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.
                       Per-server overrides (audience, scopes) are specified here; shared provider config
-                      lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig.
+                      lives in the MCPOIDCConfig resource.
                     properties:
                       audience:
                         description: |-
@@ -2126,13 +1905,9 @@ spec:
                 - type
                 type: object
                 x-kubernetes-validations:
-                - message: spec.incomingAuth.oidcConfig or oidcConfigRef is required
-                    when type is oidc
-                  rule: 'self.type == ''oidc'' ? (has(self.oidcConfig) || has(self.oidcConfigRef))
-                    : true'
-                - message: oidcConfig and oidcConfigRef are mutually exclusive; use
-                    oidcConfigRef to reference a shared MCPOIDCConfig
-                  rule: '!(has(self.oidcConfig) && has(self.oidcConfigRef))'
+                - message: spec.incomingAuth.oidcConfigRef is required when type is
+                    oidc
+                  rule: 'self.type == ''oidc'' ? has(self.oidcConfigRef) : true'
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
@@ -2148,7 +1923,7 @@ spec:
                         externalAuthConfigRef:
                           description: |-
                             ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-                            Only used when Type is "externalAuthConfigRef" (or deprecated "external_auth_config_ref")
+                            Only used when Type is "externalAuthConfigRef"
                           properties:
                             name:
                               description: Name is the name of the MCPExternalAuthConfig
@@ -2162,7 +1937,6 @@ spec:
                           enum:
                           - discovered
                           - externalAuthConfigRef
-                          - external_auth_config_ref
                           type: string
                       required:
                       - type
@@ -2178,7 +1952,7 @@ spec:
                       externalAuthConfigRef:
                         description: |-
                           ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-                          Only used when Type is "externalAuthConfigRef" (or deprecated "external_auth_config_ref")
+                          Only used when Type is "externalAuthConfigRef"
                         properties:
                           name:
                             description: Name is the name of the MCPExternalAuthConfig
@@ -2192,7 +1966,6 @@ spec:
                         enum:
                         - discovered
                         - externalAuthConfigRef
-                        - external_auth_config_ref
                         type: string
                     required:
                     - type
@@ -2303,7 +2076,6 @@ spec:
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
                   The referenced MCPTelemetryConfig must exist in the same namespace as this VirtualMCPServer.
                   Cross-namespace references are not supported for security and isolation reasons.
-                  Mutually exclusive with the deprecated inline config.telemetry field.
                 properties:
                   name:
                     description: Name is the name of the MCPTelemetryConfig resource
@@ -2320,12 +2092,9 @@ spec:
                 - name
                 type: object
             required:
+            - groupRef
             - incomingAuth
             type: object
-            x-kubernetes-validations:
-            - message: config.telemetry and telemetryConfigRef are mutually exclusive;
-                migrate to telemetryConfigRef
-              rule: '!(has(self.config.telemetry) && has(self.telemetryConfigRef))'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:

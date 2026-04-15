@@ -52,7 +52,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: mcpGroupName,
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, server1)).Should(Succeed())
@@ -64,7 +64,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: mcpGroupName,
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, server2)).Should(Succeed())
@@ -263,7 +263,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: mcpGroupName,
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, newServer)).Should(Succeed())
@@ -332,7 +332,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: mcpGroupName,
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, server1)).Should(Succeed())
@@ -344,7 +344,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: mcpGroupName,
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, server2)).Should(Succeed())
@@ -476,7 +476,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: mcpGroupName,
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, server1)).Should(Succeed())
@@ -488,7 +488,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: mcpGroupName,
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, server2)).Should(Succeed())
@@ -635,7 +635,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: mcpGroupName,
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, serverA)).Should(Succeed())
@@ -648,7 +648,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: mcpGroupName, // Same group name, different namespace
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName}, // Same group name, different namespace
 				},
 			}
 			Expect(k8sClient.Create(ctx, serverB)).Should(Succeed())

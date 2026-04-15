@@ -60,7 +60,8 @@ var _ = Describe("VirtualMCPServer Replicas Integration Tests",
 						Namespace: namespace,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group-replicas"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group-replicas"},
+						Config:   vmcpconfig.Config{Group: "test-group-replicas"},
 						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 							Type: "anonymous",
 						},
@@ -113,7 +114,8 @@ var _ = Describe("VirtualMCPServer Replicas Integration Tests",
 						Namespace: namespace,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group-nil-replicas"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group-nil-replicas"},
+						Config:   vmcpconfig.Config{Group: "test-group-nil-replicas"},
 						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 							Type: "anonymous",
 						},

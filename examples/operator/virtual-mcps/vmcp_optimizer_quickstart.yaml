@@ -89,7 +89,8 @@ metadata:
   name: yardstick
   namespace: default
 spec:
-  groupRef: optimizer-services
+  groupRef:
+    name: optimizer-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: streamable-http
   proxyPort: 8080
@@ -112,7 +113,8 @@ metadata:
   name: fetch
   namespace: default
 spec:
-  groupRef: optimizer-services
+  groupRef:
+    name: optimizer-services
   image: ghcr.io/stackloklabs/gofetch/server
   transport: streamable-http
   proxyPort: 8080
@@ -136,7 +138,8 @@ metadata:
   name: github
   namespace: default
 spec:
-  groupRef: optimizer-services
+  groupRef:
+    name: optimizer-services
   image: ghcr.io/github/github-mcp-server
   transport: stdio
   proxyPort: 8080
@@ -160,7 +163,8 @@ metadata:
   name: memory
   namespace: default
 spec:
-  groupRef: optimizer-services
+  groupRef:
+    name: optimizer-services
   image: docker.io/mcp/memory
   transport: stdio
   proxyPort: 8080
@@ -180,7 +184,8 @@ metadata:
   name: puppeteer
   namespace: default
 spec:
-  groupRef: optimizer-services
+  groupRef:
+    name: optimizer-services
   image: docker.io/mcp/puppeteer
   transport: stdio
   proxyPort: 8080
@@ -200,7 +205,8 @@ metadata:
   name: osv
   namespace: default
 spec:
-  groupRef: optimizer-services
+  groupRef:
+    name: optimizer-services
   image: ghcr.io/stackloklabs/osv-mcp/server:0.0.7
   transport: streamable-http
   proxyPort: 8080
@@ -220,7 +226,8 @@ metadata:
   name: terraform
   namespace: default
 spec:
-  groupRef: optimizer-services
+  groupRef:
+    name: optimizer-services
   image: docker.io/hashicorp/terraform-mcp-server:0.4.0
   transport: streamable-http
   proxyPort: 8080
@@ -245,7 +252,8 @@ metadata:
   name: playwright
   namespace: default
 spec:
-  groupRef: optimizer-services
+  groupRef:
+    name: optimizer-services
   image: mcr.microsoft.com/playwright/mcp:v0.0.68
   transport: stdio
   proxyPort: 8080
@@ -265,7 +273,8 @@ metadata:
   name: everything
   namespace: default
 spec:
-  groupRef: optimizer-services
+  groupRef:
+    name: optimizer-services
   image: docker.io/mcp/everything:latest
   transport: stdio
   proxyPort: 8080
@@ -285,7 +294,8 @@ metadata:
   name: ida-pro-mcp
   namespace: default
 spec:
-  groupRef: optimizer-services
+  groupRef:
+    name: optimizer-services
   image: ghcr.io/stacklok/dockyard/uvx/ida-pro-mcp:1.4.0
   transport: stdio
   proxyPort: 8080
@@ -308,7 +318,8 @@ metadata:
   name: pagerduty
   namespace: default
 spec:
-  groupRef: optimizer-services
+  groupRef:
+    name: optimizer-services
   image: ghcr.io/stacklok/dockyard/uvx/pagerduty-mcp:0.12.0
   transport: stdio
   proxyPort: 8080
@@ -350,9 +361,9 @@ metadata:
   name: optimizer-vmcp
   namespace: default
 spec:
+  groupRef:
+    name: optimizer-services
   config:
-    groupRef: optimizer-services
-
     # Aggregation: prefix strategy prevents tool name conflicts
     aggregation:
       conflictResolution: prefix

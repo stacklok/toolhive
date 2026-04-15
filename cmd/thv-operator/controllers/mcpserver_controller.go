@@ -493,22 +493,23 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
-	if mcpServer.Spec.GroupRef == "" {
+	if mcpServer.Spec.GroupRef == nil {
 		// No group reference, nothing to validate
 		return
 	}
 
 	ctxLogger := log.FromContext(ctx)
+	groupName := mcpServer.Spec.GroupRef.Name
 
 	// Find the referenced MCPGroup
 	group := &mcpv1alpha1.MCPGroup{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: mcpServer.Namespace, Name: mcpServer.Spec.GroupRef}, group); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: mcpServer.Namespace, Name: groupName}, group); err != nil {
 		ctxLogger.Error(err, "Failed to validate GroupRef")
 		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
 			Type:               mcpv1alpha1.ConditionGroupRefValidated,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotFound,
-			Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", mcpServer.Spec.GroupRef, mcpServer.Namespace),
+			Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", groupName, mcpServer.Namespace),
 			ObservedGeneration: mcpServer.Generation,
 		})
 	} else if group.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
@@ -516,7 +517,7 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 			Type:               mcpv1alpha1.ConditionGroupRefValidated,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotReady,
-			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", mcpServer.Spec.GroupRef, group.Status.Phase),
+			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", groupName, group.Status.Phase),
 			ObservedGeneration: mcpServer.Generation,
 		})
 	} else {
@@ -524,7 +525,7 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 			Type:               mcpv1alpha1.ConditionGroupRefValidated,
 			Status:             metav1.ConditionTrue,
 			Reason:             mcpv1alpha1.ConditionReasonGroupRefValidated,
-			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", mcpServer.Spec.GroupRef),
+			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", groupName),
 			ObservedGeneration: mcpServer.Generation,
 		})
 	}
@@ -533,24 +534,6 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 		ctxLogger.Error(err, "Failed to update MCPServer status after GroupRef validation")
 	}
 
-}
-
-// getCABundleRef extracts the CABundleRef from the OIDC configuration based on type
-func getCABundleRef(oidcConfig *mcpv1alpha1.OIDCConfigRef) *mcpv1alpha1.CABundleSource {
-	if oidcConfig == nil {
-		return nil
-	}
-	switch oidcConfig.Type {
-	case mcpv1alpha1.OIDCConfigTypeInline:
-		if oidcConfig.Inline != nil {
-			return oidcConfig.Inline.CABundleRef
-		}
-	case mcpv1alpha1.OIDCConfigTypeConfigMap:
-		if oidcConfig.ConfigMap != nil {
-			return oidcConfig.ConfigMap.CABundleRef
-		}
-	}
-	return nil
 }
 
 // setCABundleRefCondition sets the CA bundle validation status condition
@@ -565,12 +548,12 @@ func setCABundleRefCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.Con
 }
 
 // validateCABundleRef validates the CABundleRef ConfigMap reference if specified.
-// Checks both the legacy OIDCConfig path and the new MCPOIDCConfig path.
+// Checks the MCPOIDCConfig path for CA bundle references.
 func (r *MCPServerReconciler) validateCABundleRef(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
-	caBundleRef := getCABundleRef(mcpServer.Spec.OIDCConfig)
+	var caBundleRef *mcpv1alpha1.CABundleSource
 
-	// Also check MCPOIDCConfig inline CA bundle if using the new reference path
-	if caBundleRef == nil && mcpServer.Spec.OIDCConfigRef != nil {
+	// Check MCPOIDCConfig inline CA bundle if using the reference path
+	if mcpServer.Spec.OIDCConfigRef != nil {
 		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.OIDCConfigRef)
 		if err == nil && oidcCfg != nil &&
 			oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
@@ -1033,9 +1016,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		} else if telCfg != nil {
 			env = append(env, ctrlutil.GenerateOpenTelemetryEnvVarsFromRef(telCfg, m.Spec.TelemetryConfigRef, m.Name, m.Namespace)...)
 		}
-	} else if m.Spec.Telemetry != nil && m.Spec.Telemetry.OpenTelemetry != nil {
-		otelEnvVars := ctrlutil.GenerateOpenTelemetryEnvVars(m.Spec.Telemetry, m.Name, m.Namespace)
-		env = append(env, otelEnvVars...)
 	}
 
 	// Add token exchange environment variables
@@ -1051,19 +1031,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		}
 	}
 
-	// Add OIDC client secret environment variable if using inline config with secretRef
-	// Supports both legacy OIDCConfig and new MCPOIDCConfigRef paths
-	if m.Spec.OIDCConfig != nil && m.Spec.OIDCConfig.Inline != nil {
-		oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
-			ctx, r.Client, m.Namespace, m.Spec.OIDCConfig.Inline.ClientSecretRef,
-		)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to generate OIDC client secret environment variable")
-		} else if oidcClientSecretEnvVar != nil {
-			env = append(env, *oidcClientSecretEnvVar)
-		}
-	} else if m.Spec.OIDCConfigRef != nil {
+	// Add OIDC client secret environment variable if using MCPOIDCConfigRef with inline config
+	if m.Spec.OIDCConfigRef != nil {
 		// Check MCPOIDCConfig inline config for client secret
 		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, m.Namespace, m.Spec.OIDCConfigRef)
 		if err == nil && oidcCfg != nil &&
@@ -1136,12 +1105,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		volumes = append(volumes, *authzVolume)
 	}
 
-	// Add OIDC CA bundle volume if configured (supports both legacy and MCPOIDCConfig paths)
-	if m.Spec.OIDCConfig != nil {
-		caVolumes, caMounts := ctrlutil.AddOIDCCABundleVolumes(m.Spec.OIDCConfig)
-		volumes = append(volumes, caVolumes...)
-		volumeMounts = append(volumeMounts, caMounts...)
-	} else if m.Spec.OIDCConfigRef != nil {
+	// Add OIDC CA bundle volume if configured via MCPOIDCConfigRef
+	if m.Spec.OIDCConfigRef != nil {
 		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, m.Namespace, m.Spec.OIDCConfigRef)
 		if err == nil && oidcCfg != nil {
 			caVolumes, caMounts := ctrlutil.AddOIDCConfigRefCABundleVolumes(oidcCfg)
@@ -1644,9 +1609,6 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 				)
 				expectedProxyEnv = append(expectedProxyEnv, otelEnvVars...)
 			}
-		} else if mcpServer.Spec.Telemetry != nil && mcpServer.Spec.Telemetry.OpenTelemetry != nil {
-			otelEnvVars := ctrlutil.GenerateOpenTelemetryEnvVars(mcpServer.Spec.Telemetry, mcpServer.Name, mcpServer.Namespace)
-			expectedProxyEnv = append(expectedProxyEnv, otelEnvVars...)
 		}
 
 		// Add token exchange environment variables
@@ -1662,19 +1624,8 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			expectedProxyEnv = append(expectedProxyEnv, tokenExchangeEnvVars...)
 		}
 
-		// Add OIDC client secret environment variable if using inline config with secretRef
-		// Supports both legacy OIDCConfig and new MCPOIDCConfigRef paths
-		if mcpServer.Spec.OIDCConfig != nil && mcpServer.Spec.OIDCConfig.Inline != nil {
-			oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
-				ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.OIDCConfig.Inline.ClientSecretRef,
-			)
-			if err != nil {
-				return true
-			}
-			if oidcClientSecretEnvVar != nil {
-				expectedProxyEnv = append(expectedProxyEnv, *oidcClientSecretEnvVar)
-			}
-		} else if mcpServer.Spec.OIDCConfigRef != nil {
+		// Add OIDC client secret environment variable if using MCPOIDCConfigRef with inline config
+		if mcpServer.Spec.OIDCConfigRef != nil {
 			oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.OIDCConfigRef)
 			if err != nil {
 				return true
@@ -2369,8 +2320,7 @@ func (r *MCPServerReconciler) validateRateLimitConfig(ctx context.Context, mcpSe
 		return
 	}
 
-	authEnabled := mcpServer.Spec.OIDCConfig != nil ||
-		mcpServer.Spec.OIDCConfigRef != nil ||
+	authEnabled := mcpServer.Spec.OIDCConfigRef != nil ||
 		mcpServer.Spec.ExternalAuthConfigRef != nil
 
 	hasPerUser := rl.PerUser != nil
@@ -2386,7 +2336,7 @@ func (r *MCPServerReconciler) validateRateLimitConfig(ctx context.Context, mcpSe
 	if hasPerUser && !authEnabled {
 		setRateLimitConfigCondition(mcpServer, metav1.ConditionFalse,
 			mcpv1alpha1.ConditionReasonRateLimitPerUserRequiresAuth,
-			"perUser rate limiting requires authentication to be enabled (oidcConfig, oidcConfigRef, or externalAuthConfigRef)")
+			"perUser rate limiting requires authentication to be enabled (oidcConfigRef or externalAuthConfigRef)")
 	} else {
 		setRateLimitConfigCondition(mcpServer, metav1.ConditionTrue,
 			mcpv1alpha1.ConditionReasonRateLimitConfigValid,

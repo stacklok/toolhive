@@ -170,6 +170,10 @@ func printTextOutput(workloadList []core.Workload) {
 		if c.Status == rt.WorkloadStatusUnauthenticated {
 			status = "⚠️  " + status
 		}
+		// For unhealthy workloads, include the status context if available
+		if c.Status == rt.WorkloadStatusUnhealthy && c.StatusContext != "" {
+			status = status + " (" + c.StatusContext + ")"
+		}
 
 		// Print workload information
 		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",

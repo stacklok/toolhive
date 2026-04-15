@@ -27,12 +27,20 @@ const (
 // tools/list responses. The config controls execution parameters
 // (step limit, parallel concurrency).
 //
-// The middleware uses the ParsedMCPRequest from context (set by the
-// MCP parsing middleware earlier in the chain) to inspect requests
-// without re-reading the body.
+// The middleware composes its own MCP parsing middleware for both
+// inbound request detection and inner tool dispatch, so it does not
+// depend on any upstream parser in the middleware chain.
+//
+// Inner tool calls dispatched from scripts flow through next (which
+// includes authz, discovery, etc.) but NOT through this middleware,
+// so recursive execute_tool_script calls are naturally prevented.
 func NewMiddleware(cfg *Config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Wrap next with parsing so synthetic inner requests (tools/call,
+		// tools/list) get a fresh ParsedMCPRequest from their body.
+		parsingNext := mcpparser.ParsingMiddleware(next)
+
+		scriptHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			parsed := mcpparser.GetParsedMCPRequest(r.Context())
 			if parsed == nil || !parsed.IsRequest {
 				next.ServeHTTP(w, r)
@@ -41,13 +49,17 @@ func NewMiddleware(cfg *Config) func(http.Handler) http.Handler {
 
 			switch {
 			case parsed.Method == methodToolsCall && parsed.ResourceID == ExecuteToolScriptName:
-				handleScriptExecution(w, r, next, parsed, cfg)
+				handleScriptExecution(w, r, parsingNext, parsed, cfg)
 			case parsed.Method == methodToolsList:
 				handleToolsListInjection(w, r, next, cfg)
 			default:
 				next.ServeHTTP(w, r)
 			}
 		})
+
+		// Wrap the script handler with parsing so this middleware has a
+		// ParsedMCPRequest available regardless of upstream composition.
+		return mcpparser.ParsingMiddleware(scriptHandler)
 	}
 }
 
@@ -55,7 +67,7 @@ func NewMiddleware(cfg *Config) func(http.Handler) http.Handler {
 // constructs an Executor with tool bindings that route through the
 // middleware chain, and returns the script result.
 func handleScriptExecution(
-	w http.ResponseWriter, r *http.Request, next http.Handler,
+	w http.ResponseWriter, r *http.Request, parsingNext http.Handler,
 	parsed *mcpparser.ParsedMCPRequest, cfg *Config,
 ) {
 	scriptRaw, ok := parsed.Arguments["script"]
@@ -71,11 +83,16 @@ func handleScriptExecution(
 
 	var data map[string]interface{}
 	if dataRaw, exists := parsed.Arguments["data"]; exists {
-		data, _ = dataRaw.(map[string]interface{})
+		var dataOk bool
+		data, dataOk = dataRaw.(map[string]interface{})
+		if !dataOk {
+			writeJSONRPCError(w, parsed.ID, -32602, "data argument must be an object")
+			return
+		}
 	}
 
 	// Fetch the authorized tool list to build executor bindings
-	tools, err := fetchToolList(r, next)
+	tools, err := fetchToolList(r, parsingNext)
 	if err != nil {
 		slog.Error("failed to fetch tool list for script execution", "error", err)
 		writeJSONRPCError(w, parsed.ID, -32000, "failed to fetch available tools")
@@ -83,13 +100,14 @@ func handleScriptExecution(
 	}
 
 	// Build script.Tool wrappers that dispatch through the middleware chain
-	scriptTools := buildScriptTools(r, next, tools)
+	scriptTools := buildScriptTools(r, parsingNext, tools)
 
 	// Create and run executor
 	exec := New(scriptTools, cfg)
 	result, err := exec.Execute(r.Context(), scriptStr, data)
 	if err != nil {
-		writeJSONRPCError(w, parsed.ID, -32000, err.Error())
+		slog.Warn("script execution failed", "error", err)
+		writeJSONRPCError(w, parsed.ID, -32000, "script execution failed")
 		return
 	}
 
@@ -176,8 +194,9 @@ func handleToolsListInjection(
 }
 
 // buildScriptTools creates script.Tool wrappers for each discovered tool.
-// Each tool's Call closure dispatches through the middleware chain via next.
-func buildScriptTools(origReq *http.Request, next http.Handler, tools []toolInfo) []Tool {
+// Each tool's Call closure dispatches through parsingNext so the synthetic
+// request gets a fresh ParsedMCPRequest.
+func buildScriptTools(origReq *http.Request, parsingNext http.Handler, tools []toolInfo) []Tool {
 	scriptTools := make([]Tool, len(tools))
 	for i, t := range tools {
 		toolName := t.name
@@ -185,17 +204,18 @@ func buildScriptTools(origReq *http.Request, next http.Handler, tools []toolInfo
 			Name:        t.name,
 			Description: t.description,
 			Call: func(ctx context.Context, arguments map[string]interface{}) (*mcp.CallToolResult, error) {
-				return dispatchToolCall(ctx, origReq, next, toolName, arguments)
+				return dispatchToolCall(ctx, origReq, parsingNext, toolName, arguments)
 			},
 		}
 	}
 	return scriptTools
 }
 
-// dispatchToolCall sends a synthetic tools/call request through the middleware
-// chain and parses the response into a CallToolResult.
+// dispatchToolCall sends a synthetic tools/call request through parsingNext
+// and parses the response into a CallToolResult. The parsing middleware in
+// parsingNext ensures the synthetic request gets its own ParsedMCPRequest.
 func dispatchToolCall(
-	ctx context.Context, origReq *http.Request, next http.Handler,
+	ctx context.Context, origReq *http.Request, parsingNext http.Handler,
 	toolName string, arguments map[string]interface{},
 ) (*mcp.CallToolResult, error) {
 	params := map[string]interface{}{
@@ -213,8 +233,8 @@ func dispatchToolCall(
 		return nil, fmt.Errorf("failed to marshal tool call: %w", err)
 	}
 
-	// Clear parsed MCP request so the parser re-parses the synthetic request
-	innerCtx := context.WithValue(ctx, mcpparser.MCPRequestContextKey, nil)
+	// Clear the parsed MCP request so parsingNext re-parses the synthetic body.
+	innerCtx := mcpparser.ClearParsedMCPRequest(ctx)
 	innerReq, err := http.NewRequestWithContext(innerCtx, http.MethodPost, origReq.URL.String(), bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -224,7 +244,7 @@ func dispatchToolCall(
 	innerReq.ContentLength = int64(len(bodyBytes))
 
 	capture := newResponseCapture()
-	next.ServeHTTP(capture, innerReq)
+	parsingNext.ServeHTTP(capture, innerReq)
 
 	if capture.status != http.StatusOK {
 		return nil, fmt.Errorf("tool %q returned HTTP %d", toolName, capture.status)
@@ -233,12 +253,13 @@ func dispatchToolCall(
 	return parseToolCallResponse(capture.body.Bytes(), toolName)
 }
 
-// fetchToolList sends a synthetic tools/list request through the chain.
-func fetchToolList(origReq *http.Request, next http.Handler) ([]toolInfo, error) {
+// fetchToolList sends a synthetic tools/list request through parsingNext.
+func fetchToolList(origReq *http.Request, parsingNext http.Handler) ([]toolInfo, error) {
 	listBody := fmt.Sprintf(`{"jsonrpc":"2.0","id":0,"method":"%s","params":{}}`, methodToolsList)
 
-	ctx := context.WithValue(origReq.Context(), mcpparser.MCPRequestContextKey, nil)
-	innerReq, err := http.NewRequestWithContext(ctx, http.MethodPost, origReq.URL.String(), strings.NewReader(listBody))
+	// Clear the parsed MCP request so parsingNext re-parses the synthetic body.
+	innerCtx := mcpparser.ClearParsedMCPRequest(origReq.Context())
+	innerReq, err := http.NewRequestWithContext(innerCtx, http.MethodPost, origReq.URL.String(), strings.NewReader(listBody))
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +268,7 @@ func fetchToolList(origReq *http.Request, next http.Handler) ([]toolInfo, error)
 	innerReq.ContentLength = int64(len(listBody))
 
 	capture := newResponseCapture()
-	next.ServeHTTP(capture, innerReq)
+	parsingNext.ServeHTTP(capture, innerReq)
 
 	if capture.status != http.StatusOK {
 		return nil, fmt.Errorf("tools/list returned status %d", capture.status)

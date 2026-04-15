@@ -906,6 +906,7 @@
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "policy_stopped",
                     "running",
                     "stopped",
                     "error",
@@ -915,6 +916,7 @@
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "policy_stopped",
                     "running",
                     "stopped",
                     "error",
@@ -935,7 +937,8 @@
                     "WorkloadStatusUnhealthy",
                     "WorkloadStatusRemoving",
                     "WorkloadStatusUnknown",
-                    "WorkloadStatusUnauthenticated"
+                    "WorkloadStatusUnauthenticated",
+                    "WorkloadStatusPolicyStopped"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig": {

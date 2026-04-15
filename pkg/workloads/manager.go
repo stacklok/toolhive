@@ -243,6 +243,8 @@ func mapWorkloadStatusToVMCPHealth(status rt.WorkloadStatus) vmcp.BackendHealthS
 		return vmcp.BackendUnknown
 	case rt.WorkloadStatusUnauthenticated:
 		return vmcp.BackendUnauthenticated
+	case rt.WorkloadStatusPolicyStopped:
+		return vmcp.BackendUnhealthy
 	default:
 		return vmcp.BackendUnknown
 	}
@@ -1084,6 +1086,12 @@ func (d *DefaultManager) restartSingleWorkload(ctx context.Context, name string,
 		// If we can't load the state, it might be a container workload or the workload doesn't exist
 		// Try to restart it as a container workload
 		return d.restartContainerWorkload(ctx, name, foreground)
+	}
+
+	// Check policy gates before restarting — the loaded RunConfig carries the same
+	// fields (RegistryAPIURL, RegistryURL, RemoteURL) that the gate evaluates on create.
+	if err := runner.EagerCheckCreateServer(ctx, runConfig); err != nil {
+		return fmt.Errorf("server restart blocked by policy: %w", err)
 	}
 
 	// Check if this is a remote workload

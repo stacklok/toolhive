@@ -165,10 +165,13 @@ func printTextOutput(workloadList []core.Workload) {
 
 	// Print workload information
 	for _, c := range workloadList {
-		// Highlight unauthenticated workloads with a warning indicator
+		// Highlight unauthenticated and policy-stopped workloads with indicators
 		status := string(c.Status)
-		if c.Status == rt.WorkloadStatusUnauthenticated {
+		switch c.Status {
+		case rt.WorkloadStatusUnauthenticated:
 			status = "⚠️  " + status
+		case rt.WorkloadStatusPolicyStopped:
+			status = "🚫 " + status
 		}
 
 		// Print workload information

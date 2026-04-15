@@ -33,7 +33,7 @@ type Workload struct {
 	ProxyMode string `json:"proxy_mode,omitempty"`
 	// Status is the current status of the workload.
 	//nolint:lll // enums tag needed for swagger generation with --parseDependencyLevel
-	Status runtime.WorkloadStatus `json:"status" enums:"running,stopped,error,starting,stopping,unhealthy,removing,unknown,unauthenticated"`
+	Status runtime.WorkloadStatus `json:"status" enums:"running,stopped,error,starting,stopping,unhealthy,removing,unknown,unauthenticated,policy_stopped"`
 	// StatusContext provides additional context about the workload's status.
 	// The exact meaning is determined by the status and the underlying runtime.
 	StatusContext string `json:"status_context,omitempty"`

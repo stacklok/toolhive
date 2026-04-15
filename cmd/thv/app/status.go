@@ -101,8 +101,11 @@ func printStatusJSONOutput(workload core.Workload) error {
 func printStatusTextOutput(workload core.Workload) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	status := string(workload.Status)
-	if workload.Status == runtime.WorkloadStatusUnauthenticated {
+	switch workload.Status {
+	case runtime.WorkloadStatusUnauthenticated:
 		status = "⚠️  " + status
+	case runtime.WorkloadStatusPolicyStopped:
+		status = "🚫 " + status
 	}
 
 	// Print workload information in key-value format

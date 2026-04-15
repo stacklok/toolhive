@@ -913,6 +913,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "policy_stopped",
                     "running",
                     "stopped",
                     "error",
@@ -922,6 +923,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "policy_stopped",
                     "running",
                     "stopped",
                     "error",
@@ -942,7 +944,8 @@ const docTemplate = `{
                     "WorkloadStatusUnhealthy",
                     "WorkloadStatusRemoving",
                     "WorkloadStatusUnknown",
-                    "WorkloadStatusUnauthenticated"
+                    "WorkloadStatusUnauthenticated",
+                    "WorkloadStatusPolicyStopped"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig": {

@@ -406,6 +406,13 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig": {
                 "description": "OAuth2Config contains OAuth 2.0-specific configuration.\nRequired when Type is \"oauth2\", must be nil when Type is \"oidc\".",
                 "properties": {
+                    "additional_authorization_params": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
+                        "type": "object"
+                    },
                     "authorization_endpoint": {
                         "description": "AuthorizationEndpoint is the URL for the OAuth authorization endpoint.",
                         "type": "string"
@@ -450,6 +457,13 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_authserver.OIDCUpstreamRunConfig": {
                 "description": "OIDCConfig contains OIDC-specific configuration.\nRequired when Type is \"oidc\", must be nil when Type is \"oauth2\".",
                 "properties": {
+                    "additional_authorization_params": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
+                        "type": "object"
+                    },
                     "client_id": {
                         "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.",
                         "type": "string"
@@ -471,7 +485,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "scopes": {
-                        "description": "Scopes are the OAuth scopes to request from the upstream IDP.\nIf not specified, defaults to [\"openid\", \"offline_access\"].",
+                        "description": "Scopes are the OAuth scopes to request from the upstream IDP.\nIf not specified, defaults to [\"openid\", \"offline_access\"].\nWhen using AdditionalAuthorizationParams with provider-specific refresh\ntoken mechanisms (e.g., Google's access_type=offline), set explicit scopes\nto avoid sending both offline_access and the provider-specific parameter.",
                         "items": {
                             "type": "string"
                         },

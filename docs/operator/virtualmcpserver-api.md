@@ -80,11 +80,10 @@ Configures authentication for clients connecting to the Virtual MCP server. Reus
 - `type` (string, required): Authentication type. Must be explicitly specified.
   - `anonymous`: No authentication required (use this when no auth is needed)
   - `oidc`: OIDC/OAuth2 authentication
-- `oidcConfigRef` (MCPOIDCConfigReference, optional): Reference to a shared MCPOIDCConfig resource (preferred, required when type=oidc). Mutually exclusive with `oidcConfig`.
+- `oidcConfigRef` (MCPOIDCConfigReference, optional): Reference to a shared MCPOIDCConfig resource (required when type=oidc).
   - `name` (string, required): Name of the MCPOIDCConfig resource (same namespace)
   - `audience` (string, required): Must be unique per server to prevent token replay
   - `scopes` ([]string, optional): Defaults to `["openid"]`
-- `oidcConfig` (OIDCConfigRef, optional): Inline OIDC authentication configuration. **Deprecated**: use `oidcConfigRef` with an MCPOIDCConfig resource instead. Will be removed in v1beta1. Mutually exclusive with `oidcConfigRef` (CEL enforced).
 - `authzConfig` (AuthzConfigRef, optional): Authorization policy configuration
 
 **Important**: The `type` field must always be explicitly specified. When no authentication is required, use `type: anonymous`.

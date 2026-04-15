@@ -132,6 +132,39 @@ func (s *configurableFailDataStorage) Delete(ctx context.Context, id string) err
 	return s.DataStorage.Delete(ctx, id)
 }
 
+// deleteBeforeUpdateStorage wraps a real DataStorage and deletes the key
+// from the underlying store on the first Update call, simulating a concurrent
+// Terminate / TTL expiry that races with loadSession's metadata write-back.
+// The Update then returns (false, nil) because the key no longer exists.
+type deleteBeforeUpdateStorage struct {
+	transportsession.DataStorage
+	deleted bool
+}
+
+func (s *deleteBeforeUpdateStorage) Update(ctx context.Context, id string, metadata map[string]string) (bool, error) {
+	if !s.deleted {
+		s.deleted = true
+		_ = s.Delete(ctx, id)
+	}
+	return s.DataStorage.Update(ctx, id, metadata)
+}
+
+// errorOnUpdateStorage wraps a real DataStorage and returns an error on the
+// first Update call, simulating a transient Redis write failure during
+// loadSession's metadata write-back.
+type errorOnUpdateStorage struct {
+	transportsession.DataStorage
+	errored bool
+}
+
+func (s *errorOnUpdateStorage) Update(_ context.Context, _ string, _ map[string]string) (bool, error) {
+	if !s.errored {
+		s.errored = true
+		return false, errors.New("injected Update failure")
+	}
+	return true, nil
+}
+
 // fakeBackendRegistry is a simple BackendRegistry for tests.
 type fakeBackendRegistry struct {
 	backends []vmcp.Backend
@@ -931,6 +964,140 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		multiSess, ok := sm.GetMultiSession(sessionID)
 		require.True(t, ok, "legacy record without MetadataKeyBackendIDs must still be restorable")
 		require.NotNil(t, multiSess)
+		assert.Equal(t, sessionID, multiSess.ID())
+	})
+
+	t.Run("restore path: restored metadata is persisted back to storage", func(t *testing.T) {
+		t.Parallel()
+
+		// Simulate a backend that doesn't honor Mcp-Session-Id hints (e.g. SSE
+		// transport): RestoreSession assigns a fresh per-backend session ID.
+		// loadSession must write the restored session's metadata back to Redis so
+		// that stale per-backend session IDs do not persist indefinitely in storage.
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Times(0)
+
+		sessionID := "restore-metadata-persist-session"
+
+		// The restored session returns fresh per-backend session metadata.
+		freshMeta := map[string]string{
+			sessiontypes.MetadataKeyTokenHash:                         "",
+			vmcpsession.MetadataKeyBackendIDs:                         "backend-a",
+			vmcpsession.MetadataKeyBackendSessionPrefix + "backend-a": "fresh-session-id",
+		}
+		restored := sessionmocks.NewMockMultiSession(ctrl)
+		restored.EXPECT().ID().Return(sessionID).AnyTimes()
+		restored.EXPECT().GetMetadata().Return(freshMeta).AnyTimes()
+
+		factory.EXPECT().
+			RestoreSession(gomock.Any(), sessionID, gomock.Any(), gomock.Any()).
+			Return(restored, nil).Times(1)
+
+		sm, storage := newTestSessionManager(t, factory, newFakeRegistry())
+
+		// Seed storage with stale per-backend session ID.
+		staleMeta := map[string]string{
+			sessiontypes.MetadataKeyTokenHash:                         "",
+			vmcpsession.MetadataKeyBackendIDs:                         "backend-a",
+			vmcpsession.MetadataKeyBackendSessionPrefix + "backend-a": "stale-session-id",
+		}
+		_, err := sm.storage.Create(context.Background(), sessionID, staleMeta)
+		require.NoError(t, err)
+
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		require.True(t, ok, "session must be restored")
+		require.NotNil(t, multiSess)
+
+		// Verify storage now contains the fresh metadata written by loadSession.
+		storedMeta, loadErr := storage.Load(context.Background(), sessionID)
+		require.NoError(t, loadErr)
+		assert.Equal(t, freshMeta, storedMeta,
+			"loadSession must persist restored session metadata back to storage")
+	})
+
+	t.Run("restore path: concurrent delete between RestoreSession and Update returns ErrSessionNotFound", func(t *testing.T) {
+		t.Parallel()
+
+		// Simulate a Terminate / TTL expiry that races with loadSession's
+		// metadata write-back: deleteBeforeUpdateStorage deletes the key just
+		// before the first Update, so Update returns (false, nil).
+		// loadSession must treat this as ErrSessionNotFound and NOT cache the
+		// restored session.
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Times(0)
+
+		sessionID := "restore-concurrent-delete-session"
+		restored := sessionmocks.NewMockMultiSession(ctrl)
+		restored.EXPECT().ID().Return(sessionID).AnyTimes()
+		restored.EXPECT().GetMetadata().Return(map[string]string{
+			sessiontypes.MetadataKeyTokenHash: "",
+		}).AnyTimes()
+
+		factory.EXPECT().
+			RestoreSession(gomock.Any(), sessionID, gomock.Any(), gomock.Any()).
+			Return(restored, nil).Times(1)
+		// loadSession calls Close on the restored session when a concurrent
+		// delete is detected (Update returns false, nil).
+		restored.EXPECT().Close().Return(nil).Times(1)
+
+		// Build Manager with the wrapping storage.
+		innerStorage := newTestSessionDataStorage(t)
+		racyStorage := &deleteBeforeUpdateStorage{DataStorage: innerStorage}
+		sm, cleanup, err := New(racyStorage, &FactoryConfig{Base: factory, CacheCapacity: 1000}, newFakeRegistry())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = cleanup(context.Background()) })
+
+		// Seed the inner storage with a valid session record.
+		_, err = innerStorage.Create(context.Background(), sessionID, map[string]string{
+			sessiontypes.MetadataKeyTokenHash: "",
+		})
+		require.NoError(t, err)
+
+		// GetMultiSession triggers loadSession; the racing delete causes
+		// Update to return (false, nil) → ErrSessionNotFound → (nil, false).
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		assert.False(t, ok, "session deleted before metadata write-back must not be cached")
+		assert.Nil(t, multiSess)
+	})
+
+	t.Run("restore path: transient Update error is non-fatal, session is still returned", func(t *testing.T) {
+		t.Parallel()
+
+		// A transient Redis write failure during loadSession's metadata write-back
+		// must not prevent the restored session from being cached and served.
+		// The session is still usable on this pod; checkSession will detect any
+		// metadata drift on the next liveness check and evict if necessary.
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Times(0)
+
+		sessionID := "restore-update-error-session"
+		restored := newMockSession(t, ctrl, sessionID, nil)
+
+		factory.EXPECT().
+			RestoreSession(gomock.Any(), sessionID, gomock.Any(), gomock.Any()).
+			Return(restored, nil).Times(1)
+
+		innerStorage := newTestSessionDataStorage(t)
+		faultyStorage := &errorOnUpdateStorage{DataStorage: innerStorage}
+		sm, cleanup, err := New(faultyStorage, &FactoryConfig{Base: factory, CacheCapacity: 1000}, newFakeRegistry())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = cleanup(context.Background()) })
+
+		_, err = innerStorage.Create(context.Background(), sessionID, map[string]string{
+			sessiontypes.MetadataKeyTokenHash: "",
+		})
+		require.NoError(t, err)
+
+		// Write failure must be non-fatal: session is still returned and cached.
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		assert.True(t, ok, "transient Update error must not prevent session from being served")
+		assert.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
 	})
 }
@@ -2086,6 +2253,40 @@ func TestSessionManager_CheckSession(t *testing.T) {
 
 		err = sm.checkSession(sessionID, cached)
 		assert.NoError(t, err, "matching empty metadata must not cause eviction")
+	})
+
+	t.Run("differing per-backend session IDs do not evict", func(t *testing.T) {
+		t.Parallel()
+		// In multi-pod deployments, each pod's RestoreSession independently
+		// negotiates its own per-backend session IDs with backends that do not
+		// honor Mcp-Session-Id hints (e.g. SSE transports). Each pod then
+		// writes its own IDs back to Redis via loadSession. checkSession must
+		// NOT evict when only per-backend session IDs differ — only when the
+		// backend ID list (MetadataKeyBackendIDs) changes. Evicting on per-
+		// backend ID drift would cause each pod's write-back to invalidate all
+		// other pods' sessions, creating an infinite eviction storm.
+		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
+		sessionID := "multi-pod-per-backend-ids"
+
+		// Storage holds IDs written by another pod's RestoreSession.
+		_, err := storage.Create(context.Background(), sessionID, map[string]string{
+			vmcpsession.MetadataKeyBackendIDs:                         "backend-a",
+			vmcpsession.MetadataKeyBackendSessionPrefix + "backend-a": "pod-a-session-id",
+		})
+		require.NoError(t, err)
+
+		// This pod cached different per-backend IDs from its own RestoreSession.
+		ctrl := gomock.NewController(t)
+		cached := sessionmocks.NewMockMultiSession(ctrl)
+		cached.EXPECT().GetMetadata().Return(map[string]string{
+			vmcpsession.MetadataKeyBackendIDs:                         "backend-a",
+			vmcpsession.MetadataKeyBackendSessionPrefix + "backend-a": "pod-b-session-id",
+		}).AnyTimes()
+		sm.sessions.Set(sessionID, cached)
+
+		err = sm.checkSession(sessionID, cached)
+		assert.NoError(t, err,
+			"differing per-backend session IDs must not evict to avoid cross-pod eviction storms")
 	})
 }
 

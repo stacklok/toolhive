@@ -20,6 +20,7 @@ func newVirtualMCPServerWithSessionStorage(name string, ss *mcpv1alpha1.SessionS
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
 			},

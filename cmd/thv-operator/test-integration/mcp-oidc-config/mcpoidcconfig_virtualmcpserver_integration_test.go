@@ -102,7 +102,8 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: groupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+					Config:   vmcpconfig.Config{Group: groupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
@@ -268,7 +269,8 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: groupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+					Config:   vmcpconfig.Config{Group: groupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
@@ -403,7 +405,8 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: groupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+					Config:   vmcpconfig.Config{Group: groupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
@@ -528,7 +531,8 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: groupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+					Config:   vmcpconfig.Config{Group: groupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
@@ -667,7 +671,8 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: groupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+					Config:   vmcpconfig.Config{Group: groupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{

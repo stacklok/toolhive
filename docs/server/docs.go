@@ -932,7 +932,8 @@ const docTemplate = `{
                     "unhealthy",
                     "removing",
                     "unknown",
-                    "unauthenticated"
+                    "unauthenticated",
+                    "policy_stopped"
                 ],
                 "type": "string",
                 "x-enum-varnames": [

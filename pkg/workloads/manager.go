@@ -1303,6 +1303,13 @@ func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name s
 		return "", nil, fmt.Errorf("failed to load state for %s: %w", workloadName, err)
 	}
 
+	// Check policy gates before restarting. This covers the case where the caller
+	// could not load state via the original name but we resolved the canonical name
+	// from container labels above, so the check must happen here.
+	if err := runner.EagerCheckCreateServer(ctx, mcpRunner.Config); err != nil {
+		return "", nil, fmt.Errorf("server restart blocked by policy: %w", err)
+	}
+
 	// Set workload status to starting - use the workload name for status operations
 	if err := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStarting, ""); err != nil {
 		slog.Warn("Failed to set workload status to starting", "workload", workloadName, "error", err)

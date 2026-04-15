@@ -896,6 +896,7 @@ components:
       - removing
       - unknown
       - unauthenticated
+      - policy_stopped
       type: string
       x-enum-varnames:
       - WorkloadStatusRunning

@@ -37,13 +37,7 @@ jobs:
             ${{ runner.os }}-go-build-
 
       - name: Check go.mod version format
-        run: |
-          found=$(grep -rP '^go \d+\.\d+\.\d+' --include='go.mod' .)
-          if [ -n "$found" ]; then
-            echo "ERROR: patch version found in go directive (use 'go 1.X' not 'go 1.X.Y'):"
-            echo "$found"
-            exit 1
-          fi
+        run: bash scripts/check-go-mod-version.sh
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0

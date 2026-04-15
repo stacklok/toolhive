@@ -61,13 +61,7 @@ tasks:
   check-go-mod-version:
     desc: Ensure no go.mod file specifies a patch version in the go directive
     cmds:
-      - |
-        found=$(grep -rE '^go [0-9]+\.[0-9]+\.[0-9]+' --include='go.mod' .)
-        if [ -n "$found" ]; then
-          echo "ERROR: patch version found in go directive (use 'go 1.X' not 'go 1.X.Y'):"
-          echo "$found"
-          exit 1
-        fi
+      - bash scripts/check-go-mod-version.sh
 
   lint:
     desc: Run linting tools

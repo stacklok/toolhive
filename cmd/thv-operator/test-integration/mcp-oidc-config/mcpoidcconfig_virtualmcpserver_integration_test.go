@@ -107,9 +107,10 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
-							Name:     configName,
-							Audience: "test-vmcp-audience",
-							Scopes:   []string{"openid"},
+							Name:        configName,
+							Audience:    "test-vmcp-audience",
+							Scopes:      []string{"openid"},
+							ResourceURL: "https://mcp-gateway.example.com/mcp",
 						},
 					},
 				},
@@ -157,7 +158,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			}, timeout, interval).Should(BeTrue())
 		})
 
-		It("should produce a ConfigMap with OIDC config from the MCPOIDCConfig", func() {
+		It("should produce a ConfigMap with all OIDC fields from the MCPOIDCConfig and ref", func() {
 			configMapName := vmcpName + "-vmcp-config"
 			configMap := &corev1.ConfigMap{}
 			Eventually(func() error {
@@ -173,8 +174,18 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 
 			Expect(config.IncomingAuth).NotTo(BeNil())
 			Expect(config.IncomingAuth.OIDC).NotTo(BeNil(), "OIDC config from MCPOIDCConfig should be present in ConfigMap")
+
+			// Shared config fields from MCPOIDCConfig
 			Expect(config.IncomingAuth.OIDC.Issuer).To(Equal("https://accounts.google.com"))
+			Expect(config.IncomingAuth.OIDC.ClientID).To(Equal("test-client"))
+
+			// Per-server fields from MCPOIDCConfigReference
 			Expect(config.IncomingAuth.OIDC.Audience).To(Equal("test-vmcp-audience"))
+			Expect(config.IncomingAuth.OIDC.Scopes).To(Equal([]string{"openid"}))
+
+			// Resource URL: explicit resourceUrl on the ref overrides the internal service URL
+			Expect(config.IncomingAuth.OIDC.Resource).To(Equal("https://mcp-gateway.example.com/mcp"),
+				"resource should be the explicit resourceUrl, not the internal service URL")
 		})
 
 		It("should track VirtualMCPServer in MCPOIDCConfig ReferencingWorkloads", func() {

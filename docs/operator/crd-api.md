@@ -1607,6 +1607,7 @@ _Appears in:_
 | `name` _string_ | Name is the name of the MCPOIDCConfig resource |  | MinLength: 1 <br />Required: \{\} <br /> |
 | `audience` _string_ | Audience is the expected audience for token validation.<br />This MUST be unique per server to prevent token replay attacks. |  | MinLength: 1 <br />Required: \{\} <br /> |
 | `scopes` _string array_ | Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728).<br />If empty, defaults to ["openid"]. |  | Optional: \{\} <br /> |
+| `resourceUrl` _string_ | ResourceURL is the public URL for OAuth protected resource metadata (RFC 9728).<br />When the server is exposed via Ingress or gateway, set this to the external<br />URL that MCP clients connect to. If not specified, defaults to the internal<br />Kubernetes service URL. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPOIDCConfigSourceType

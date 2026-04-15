@@ -12,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func() {
@@ -67,7 +66,7 @@ var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func()
 							Audience: fmt.Sprintf("http://%s.%s.svc.cluster.local:4483", vmcpName, testNamespace),
 						},
 					},
-					Config: vmcpconfig.Config{Group: mcpGroupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					AuthServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
 						Issuer: "http://localhost:9090",
 						UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{

@@ -71,7 +71,7 @@ func TestCreateVmcpConfigFromVirtualMCPServer(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 				},
 			},
 			expectedName:     "test-vmcp",
@@ -150,7 +150,7 @@ func TestConvertOutgoingAuth(t *testing.T) {
 
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config:       vmcpconfig.Config{Group: "test-group"},
+					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: tt.outgoingAuth,
 				},
 			}
@@ -212,7 +212,7 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Default: tt.authConfig,
 					},
@@ -333,8 +333,8 @@ func TestConvertAggregation(t *testing.T) {
 
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group:       "test-group",
 						Aggregation: tt.aggregation,
 					},
 				},
@@ -426,8 +426,8 @@ func TestConvertCompositeTools(t *testing.T) {
 
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group:          "test-group",
 						CompositeTools: tt.compositeTools,
 					},
 				},
@@ -459,7 +459,7 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -489,7 +489,7 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	// Fetch workload names (matching production behavior)
 	ctx := context.Background()
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, testVmcp.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testVmcp.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testVmcp.ResolveGroupName())
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Create a status collector (we don't validate status in this test)
@@ -1012,8 +1012,8 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Config: vmcpconfig.Config{
-				Group: "test-group",
 				// Aggregation with tool overrides (map)
 				Aggregation: &vmcpconfig.AggregationConfig{
 					ConflictResolution: vmcp.ConflictStrategyPrefix,
@@ -1163,8 +1163,8 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Config: vmcpconfig.Config{
-				Group: "test-group",
 				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
 					{Name: "test-composite-tool"},
 				},
@@ -1189,7 +1189,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 
 	// Fetch workload names (matching production behavior)
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Test the ensureVmcpConfigConfigMap function
@@ -1277,8 +1277,8 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Config: vmcpconfig.Config{
-				Group: "test-group",
 				CompositeTools: []vmcpconfig.CompositeToolConfig{
 					{
 						Name:        "inline-tool",
@@ -1316,7 +1316,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 
 	// Fetch workload names (matching production behavior)
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Test the ensureVmcpConfigConfigMap function
@@ -1374,8 +1374,8 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_NotFound(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Config: vmcpconfig.Config{
-				Group: "test-group",
 				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
 					{Name: "non-existent-tool"},
 				},
@@ -1400,7 +1400,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_NotFound(t *testing.T) {
 
 	// Fetch workload names (matching production behavior)
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
 	require.NoError(t, err, "should successfully list workloads in group")
 
 	// Test should fail with not found error
@@ -1437,7 +1437,7 @@ func TestConfigMapContent_DynamicMode(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
@@ -1459,7 +1459,7 @@ func TestConfigMapContent_DynamicMode(t *testing.T) {
 
 	// Discover workloads
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
 	require.NoError(t, err)
 
 	// Create ConfigMap
@@ -1538,7 +1538,7 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
@@ -1566,7 +1566,7 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 
 	// Discover workloads
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
 	require.NoError(t, err)
 
 	// Create ConfigMap
@@ -1658,7 +1658,7 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
@@ -1681,7 +1681,7 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 
 	// Discover workloads
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
 	require.NoError(t, err)
 	require.NotEmpty(t, workloadNames, "should have discovered the MCPServer")
 
@@ -1835,8 +1835,8 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroup},
 					Config: vmcpconfig.Config{
-						Group:     testGroup,
 						Optimizer: &vmcpconfig.OptimizerConfig{},
 					},
 					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
@@ -1856,10 +1856,8 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{
-						Group: testGroup,
-						// No Optimizer — validation auto-populates it when ref is set
-					},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroup},
+					// No Optimizer — validation auto-populates it when ref is set
 					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
 						Name: "shared-embedding",
 					},
@@ -2038,7 +2036,7 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp-session", Namespace: testNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config:         vmcpconfig.Config{Group: testGroup},
+					GroupRef:       &mcpv1alpha1.MCPGroupRef{Name: testGroup},
 					SessionStorage: tt.sessionStorage,
 				},
 			}
@@ -2102,7 +2100,7 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 			Generation: 3,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type:          "oidc",
 				OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: audience},
@@ -2161,7 +2159,7 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 
 	ctx := context.Background()
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, testVmcp.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testVmcp.Spec.Config.Group)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testVmcp.ResolveGroupName())
 	require.NoError(t, err)
 
 	// Use a mock StatusManager so we can verify the exact conditions set on failure.

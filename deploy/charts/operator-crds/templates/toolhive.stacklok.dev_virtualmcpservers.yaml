@@ -643,7 +643,6 @@ spec:
                 description: |-
                   Config is the Virtual MCP server configuration.
                   The audit config from here is also supported, but not required.
-                  Note: config.groupRef is deprecated in favor of spec.groupRef.
                 properties:
                   aggregation:
                     description: |-
@@ -1172,8 +1171,8 @@ spec:
                   groupRef:
                     description: |-
                       Group references an existing MCPGroup that defines backend workloads.
-                      In Kubernetes, the referenced MCPGroup must exist in the same namespace.
-                      Deprecated: Use spec.groupRef on VirtualMCPServerSpec instead.
+                      In standalone CLI mode, this is set from the YAML config file.
+                      In Kubernetes, the operator populates this from spec.groupRef during conversion.
                     type: string
                   incomingAuth:
                     description: |-
@@ -1790,7 +1789,6 @@ spec:
                 description: |-
                   GroupRef references the MCPGroup that defines backend workloads.
                   The referenced MCPGroup must exist in the same namespace.
-                  This field takes precedence over config.groupRef and should be preferred.
                 properties:
                   name:
                     description: Name is the name of the MCPGroup resource in the
@@ -1925,7 +1923,7 @@ spec:
                         externalAuthConfigRef:
                           description: |-
                             ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-                            Only used when Type is "externalAuthConfigRef" (or deprecated "external_auth_config_ref")
+                            Only used when Type is "externalAuthConfigRef"
                           properties:
                             name:
                               description: Name is the name of the MCPExternalAuthConfig
@@ -1939,7 +1937,6 @@ spec:
                           enum:
                           - discovered
                           - externalAuthConfigRef
-                          - external_auth_config_ref
                           type: string
                       required:
                       - type
@@ -1955,7 +1952,7 @@ spec:
                       externalAuthConfigRef:
                         description: |-
                           ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-                          Only used when Type is "externalAuthConfigRef" (or deprecated "external_auth_config_ref")
+                          Only used when Type is "externalAuthConfigRef"
                         properties:
                           name:
                             description: Name is the name of the MCPExternalAuthConfig
@@ -1969,7 +1966,6 @@ spec:
                         enum:
                         - discovered
                         - externalAuthConfigRef
-                        - external_auth_config_ref
                         type: string
                     required:
                     - type
@@ -2096,6 +2092,7 @@ spec:
                 - name
                 type: object
             required:
+            - groupRef
             - incomingAuth
             type: object
           status:

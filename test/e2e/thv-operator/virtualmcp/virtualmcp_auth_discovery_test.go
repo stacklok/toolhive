@@ -851,6 +851,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					// No TokenCache configured - tokens should be fetched on each request
@@ -1521,7 +1522,7 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},

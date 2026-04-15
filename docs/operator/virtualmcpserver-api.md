@@ -31,8 +31,6 @@ The referenced MCPGroup must exist in the same namespace.
 
 **Type**: `MCPGroupRef` (object with `name` field)
 
-> **Note**: `spec.config.groupRef` (bare string) is deprecated. Use `spec.groupRef` instead.
-
 **Example**:
 ```yaml
 spec:
@@ -167,7 +165,7 @@ spec:
     source: inline
     backends:
       github:
-        type: external_auth_config_ref
+        type: externalAuthConfigRef
         externalAuthConfigRef:
           name: github-token-exchange
       slack:
@@ -185,8 +183,8 @@ spec:
 **Fields**:
 - `type` (string, required): Authentication type
   - `discovered`: Automatically discover from backend
-  - `external_auth_config_ref`: Reference an MCPExternalAuthConfig resource
-- `externalAuthConfigRef` (ExternalAuthConfigRef, optional): Auth config reference (when type=external_auth_config_ref)
+  - `externalAuthConfigRef`: Reference an MCPExternalAuthConfig resource
+- `externalAuthConfigRef` (ExternalAuthConfigRef, optional): Auth config reference (when type=externalAuthConfigRef)
 
 ### `.spec.config.aggregation` (optional)
 
@@ -614,7 +612,7 @@ status:
 The VirtualMCPServer CRD includes comprehensive validation:
 
 1. **Required Fields**:
-   - `spec.groupRef.name` must be specified (or `spec.config.groupRef` for backwards compatibility)
+   - `spec.groupRef.name` must be specified
    - `spec.incomingAuth.type` must be explicitly specified (use `anonymous` when no auth is needed)
 2. **Reference Validation**: All references (groupRef, authConfigRef, toolConfigRef) must be valid
 3. **Conflict Resolution**: Priority strategy requires `priorityOrder` configuration

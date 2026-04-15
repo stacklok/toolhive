@@ -88,6 +88,9 @@ func (c *Converter) Convert(
 	// Override name with the CR name (authoritative source)
 	config.Name = vmcp.Name
 
+	// Set group from spec.groupRef (authoritative source for operator)
+	config.Group = vmcp.ResolveGroupName()
+
 	// Convert IncomingAuth - required field, no defaults
 	if vmcp.Spec.IncomingAuth != nil {
 		incomingAuth, err := c.convertIncomingAuth(ctx, vmcp)
@@ -428,18 +431,8 @@ func (c *Converter) convertBackendAuthConfig(
 		}, nil
 	}
 
-	// Handle deprecated snake_case value
-	if crdConfig.Type == mcpv1alpha1.DeprecatedBackendAuthTypeExternalAuthConfigRef {
-		log.FromContext(ctx).Info(
-			"backend auth type \"external_auth_config_ref\" is deprecated,"+
-				" use \"externalAuthConfigRef\" instead",
-			"backend", backendName, "vmcp", vmcp.Name,
-		)
-	}
-
-	// If type is "externalAuthConfigRef" (or deprecated "external_auth_config_ref"), resolve the MCPExternalAuthConfig
-	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef ||
-		crdConfig.Type == mcpv1alpha1.DeprecatedBackendAuthTypeExternalAuthConfigRef {
+	// If type is "externalAuthConfigRef", resolve the MCPExternalAuthConfig
+	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef {
 		if crdConfig.ExternalAuthConfigRef == nil {
 			return nil, fmt.Errorf("backend %s: externalAuthConfigRef type requires externalAuthConfigRef field", backendName)
 		}

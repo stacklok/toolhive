@@ -79,6 +79,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Config: vmcpconfig.Config{
 						Group: mcpGroupName,
 					},
@@ -309,7 +310,6 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-					Config:       vmcpconfig.Config{Group: mcpGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
 				},
 			})).To(gomega.Succeed())
@@ -470,6 +470,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Config: vmcpconfig.Config{
 						Group: mcpGroupName,
 					},

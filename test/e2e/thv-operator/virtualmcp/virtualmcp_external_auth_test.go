@@ -102,7 +102,6 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-				Config:   vmcpconfig.Config{Group: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -274,7 +273,6 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-				Config:   vmcpconfig.Config{Group: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -455,7 +453,6 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-				Config:   vmcpconfig.Config{Group: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -675,7 +672,6 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-				Config:   vmcpconfig.Config{Group: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -871,6 +867,7 @@ var _ = Describe("VirtualMCPServer Health Check with HeaderInjection Auth", Orde
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Operational: &vmcpconfig.OperationalConfig{
@@ -1087,6 +1084,7 @@ var _ = Describe("VirtualMCPServer Health Check with TokenExchange Auth", Ordere
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Operational: &vmcpconfig.OperationalConfig{

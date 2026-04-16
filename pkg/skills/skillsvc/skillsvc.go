@@ -359,6 +359,14 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 		return err
 	}
 
+	// Determine the boundary directory for empty-parent cleanup.
+	stopDir := opts.ProjectRoot
+	if scope == skills.ScopeUser {
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			stopDir = homeDir
+		}
+	}
+
 	// Remove files for each client — best-effort: collect errors but don't
 	// abort on the first failure so we clean up as much as possible.
 	var cleanupErrs []error
@@ -371,6 +379,10 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 			}
 			if rmErr := s.installer.Remove(skillPath); rmErr != nil {
 				cleanupErrs = append(cleanupErrs, fmt.Errorf("removing files for client %q: %w", clientType, rmErr))
+				continue
+			}
+			if stopDir != "" {
+				skills.RemoveEmptyParents(filepath.Dir(skillPath), stopDir)
 			}
 		}
 	}

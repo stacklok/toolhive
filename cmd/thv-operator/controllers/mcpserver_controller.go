@@ -105,6 +105,9 @@ var remoteProxyRBACRules = []rbacv1.PolicyRule{
 // mcpContainerName is the name of the mcp container used in pod templates
 const mcpContainerName = "mcp"
 
+// MCPServerFinalizerName is the name of the finalizer for MCPServer
+const MCPServerFinalizerName = "mcpserver.toolhive.stacklok.dev/finalizer"
+
 // Restart annotation keys for triggering pod restart
 const (
 	RestartedAtAnnotationKey          = "mcpserver.toolhive.stacklok.dev/restarted-at"
@@ -182,14 +185,19 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Check if the MCPServer instance is marked to be deleted — do this before
 	// any validation or external API calls to avoid unnecessary work during deletion
 	if mcpServer.GetDeletionTimestamp() != nil {
-		if controllerutil.ContainsFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer") {
+		if controllerutil.ContainsFinalizer(mcpServer, MCPServerFinalizerName) {
 			if err := r.finalizeMCPServer(ctx, mcpServer); err != nil {
 				return ctrl.Result{}, err
 			}
 
-			controllerutil.RemoveFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer")
-			err := r.Update(ctx, mcpServer)
-			if err != nil {
+			// Use an optimistic-lock merge patch rather than Update so we do not
+			// silently overwrite spec fields (e.g. spec.authzConfig) that are owned
+			// by another controller. The resourceVersion is sent, so concurrent
+			// writers cause a 409 Conflict and a clean requeue.
+			original := mcpServer.DeepCopy()
+			controllerutil.RemoveFinalizer(mcpServer, MCPServerFinalizerName)
+			if err := r.Patch(ctx, mcpServer,
+				client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -197,10 +205,15 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Add finalizer for this CR
-	if !controllerutil.ContainsFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer") {
-		controllerutil.AddFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer")
-		err = r.Update(ctx, mcpServer)
-		if err != nil {
+	if !controllerutil.ContainsFinalizer(mcpServer, MCPServerFinalizerName) {
+		// Use an optimistic-lock merge patch rather than Update so we do not
+		// silently overwrite spec fields (e.g. spec.authzConfig) that are owned
+		// by another controller. The resourceVersion is sent, so concurrent
+		// writers cause a 409 Conflict and a clean requeue.
+		original := mcpServer.DeepCopy()
+		controllerutil.AddFinalizer(mcpServer, MCPServerFinalizerName)
+		if err := r.Patch(ctx, mcpServer,
+			client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -745,13 +758,18 @@ func (r *MCPServerReconciler) handleRestartAnnotation(ctx context.Context, mcpSe
 		return false, fmt.Errorf("failed to perform restart: %w", err)
 	}
 
-	// Update the last processed restart timestamp in annotations
+	// Update the last processed restart timestamp in annotations.
+	// Use an optimistic-lock merge patch rather than Update so we do not
+	// silently overwrite spec fields (e.g. spec.authzConfig) that are owned
+	// by another controller. The resourceVersion is sent, so concurrent
+	// writers cause a 409 Conflict and a clean requeue.
+	original := mcpServer.DeepCopy()
 	if mcpServer.Annotations == nil {
 		mcpServer.Annotations = make(map[string]string)
 	}
 	mcpServer.Annotations[LastProcessedRestartAnnotationKey] = currentRestartedAt
-	err = r.Update(ctx, mcpServer)
-	if err != nil {
+	if err := r.Patch(ctx, mcpServer,
+		client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
 		return false, fmt.Errorf("failed to update MCPServer with last processed restart annotation: %w", err)
 	}
 

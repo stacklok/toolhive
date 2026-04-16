@@ -25,6 +25,12 @@ var (
 	// The mutex is NOT needed for GetDefaultProviderWithConfig since
 	// sync.Once already provides thread-safety for initialization.
 	defaultProviderMu sync.Mutex
+
+	// OverrideTokenSource, if non-nil, is called before the built-in OAuth
+	// token source logic. Return a non-nil TokenSource to use it; return nil
+	// to fall through to the default behaviour. This allows external builds
+	// to inject a custom token source without modifying OSS code.
+	OverrideTokenSource func(cfg *config.Config) auth.TokenSource
 )
 
 // ProviderOption configures optional behavior for NewRegistryProvider.
@@ -120,6 +126,12 @@ func ResetDefaultProvider() {
 // resolveTokenSource creates a TokenSource from the config if registry auth is configured.
 // Returns nil if no auth is configured or if token source creation fails (logs warning).
 func resolveTokenSource(cfg *config.Config, interactive bool) auth.TokenSource {
+	if OverrideTokenSource != nil {
+		if ts := OverrideTokenSource(cfg); ts != nil {
+			return ts
+		}
+	}
+
 	if cfg == nil || cfg.RegistryAuth.Type != config.RegistryAuthTypeOAuth || cfg.RegistryAuth.OAuth == nil {
 		return nil
 	}

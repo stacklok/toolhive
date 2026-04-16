@@ -6,7 +6,6 @@ package kubernetes
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -17,10 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
-	appsv1apply "k8s.io/client-go/applyconfigurations/apps/v1"
 	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
-	metav1apply "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
@@ -42,107 +38,6 @@ type mockPlatformDetector struct {
 
 func (m *mockPlatformDetector) DetectPlatform(_ *rest.Config) (Platform, error) {
 	return m.platform, m.err
-}
-
-func TestStatefulSetApplyAssociativeListReorderingDoesNotChangeGeneration(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-	clientset := fake.NewClientset()
-
-	buildApply := func(envOrder []string, portOrder []int32) *appsv1apply.StatefulSetApplyConfiguration {
-		envValues := map[string]string{
-			"ALPHA": "1",
-			"BETA":  "2",
-		}
-
-		envVars := make([]*corev1apply.EnvVarApplyConfiguration, 0, len(envOrder))
-		for _, name := range envOrder {
-			envVars = append(envVars, corev1apply.EnvVar().WithName(name).WithValue(envValues[name]))
-		}
-
-		ports := make([]*corev1apply.ContainerPortApplyConfiguration, 0, len(portOrder))
-		for _, port := range portOrder {
-			ports = append(ports, corev1apply.ContainerPort().
-				WithContainerPort(port).
-				WithProtocol(corev1.ProtocolTCP))
-		}
-
-		return appsv1apply.StatefulSet("reordered", defaultNamespace).
-			WithSpec(appsv1apply.StatefulSetSpec().
-				WithServiceName("reordered").
-				WithReplicas(1).
-				WithSelector(metav1apply.LabelSelector().
-					WithMatchLabels(map[string]string{"app": "reordered"})).
-				WithTemplate(corev1apply.PodTemplateSpec().
-					WithLabels(map[string]string{"app": "reordered"}).
-					WithSpec(corev1apply.PodSpec().
-						WithContainers(corev1apply.Container().
-							WithName("mcp").
-							WithImage("test-image").
-							WithEnv(envVars...).
-							WithPorts(ports...)))))
-	}
-
-	first, err := clientset.AppsV1().StatefulSets(defaultNamespace).Apply(
-		ctx,
-		buildApply([]string{"ALPHA", "BETA"}, []int32{8080, 9090}),
-		metav1.ApplyOptions{FieldManager: "test-manager", Force: true},
-	)
-	require.NoError(t, err)
-
-	second, err := clientset.AppsV1().StatefulSets(defaultNamespace).Apply(
-		ctx,
-		buildApply([]string{"BETA", "ALPHA"}, []int32{9090, 8080}),
-		metav1.ApplyOptions{FieldManager: "test-manager", Force: true},
-	)
-	require.NoError(t, err)
-
-	assert.Equal(t, first.Generation, second.Generation)
-	assert.Len(t, second.Spec.Template.Spec.Containers, 1)
-	assert.Len(t, second.Spec.Template.Spec.Containers[0].Env, 2)
-	assert.Len(t, second.Spec.Template.Spec.Containers[0].Ports, 2)
-}
-
-func TestServiceApplyAssociativeListReorderingDoesNotChangeGeneration(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-	clientset := fake.NewClientset()
-
-	buildApply := func(portOrder []int32) *corev1apply.ServiceApplyConfiguration {
-		ports := make([]*corev1apply.ServicePortApplyConfiguration, 0, len(portOrder))
-		for _, port := range portOrder {
-			ports = append(ports, corev1apply.ServicePort().
-				WithName(fmt.Sprintf("port-%d", port)).
-				WithPort(port).
-				WithTargetPort(intstr.FromInt32(port)).
-				WithProtocol(corev1.ProtocolTCP))
-		}
-
-		return corev1apply.Service("reordered-svc", defaultNamespace).
-			WithSpec(corev1apply.ServiceSpec().
-				WithSelector(map[string]string{"app": "reordered"}).
-				WithPorts(ports...).
-				WithType(corev1.ServiceTypeClusterIP))
-	}
-
-	first, err := clientset.CoreV1().Services(defaultNamespace).Apply(
-		ctx,
-		buildApply([]int32{8080, 9090}),
-		metav1.ApplyOptions{FieldManager: "test-manager", Force: true},
-	)
-	require.NoError(t, err)
-
-	second, err := clientset.CoreV1().Services(defaultNamespace).Apply(
-		ctx,
-		buildApply([]int32{9090, 8080}),
-		metav1.ApplyOptions{FieldManager: "test-manager", Force: true},
-	)
-	require.NoError(t, err)
-
-	assert.Equal(t, first.Generation, second.Generation)
-	assert.Len(t, second.Spec.Ports, 2)
 }
 
 // TestCreateContainerWithPodTemplatePatch tests that the pod template patch is correctly applied

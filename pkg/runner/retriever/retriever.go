@@ -94,19 +94,15 @@ func ResolveMCPServer(
 		slog.Debug("No protocol scheme detected, attempting to retrieve image or registry server",
 			"server_or_image", serverOrImage)
 
-		// If group name is provided, look up server in the group first
+		// Registry-based group lookups are no longer supported.
 		if groupName != "" {
-			var err error
-			var server types.ServerMetadata
-			imageToUse, imageMetadata, server, err = handleGroupLookup(ctx, serverOrImage, groupName)
-			if err != nil {
-				return "", nil, err
-			}
-			// Handle remote servers early return
-			if server != nil && server.IsRemote() {
-				return serverOrImage, server, nil
-			}
-		} else {
+			return "", nil, fmt.Errorf(
+				"registry-based group %q is no longer supported; use 'thv group' commands to manage workload groups",
+				groupName,
+			)
+		}
+
+		{
 			var err error
 			var server types.ServerMetadata
 			imageToUse, imageMetadata, server, err = handleRegistryLookup(ctx, serverOrImage)
@@ -216,20 +212,6 @@ func handleProtocolScheme(
 	}
 	slog.Debug("Using built image", "image", generatedImage, "original", serverOrImage)
 	return generatedImage, nil
-}
-
-// handleGroupLookup returns an error because registry-based groups are no longer supported.
-// Groups were a ToolHive-specific concept embedded in registry data that has been removed.
-// Workload grouping is managed separately via the thv group commands.
-func handleGroupLookup(
-	_ context.Context,
-	_ string,
-	groupName string,
-) (string, *types.ImageMetadata, types.ServerMetadata, error) {
-	return "", nil, nil, fmt.Errorf(
-		"registry-based group '%s' is no longer supported; use 'thv group' commands to manage workload groups",
-		groupName,
-	)
 }
 
 // handleRegistryLookup handles the standard registry lookup case

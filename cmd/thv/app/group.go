@@ -59,11 +59,10 @@ var groupRmCmd = &cobra.Command{
 }
 
 var groupRunCmd = &cobra.Command{
-	Use:   "run [group-name]",
-	Short: "Deploy all MCP servers from a registry group (removed)",
-	Long: `Registry-based groups are no longer supported.
-Use 'thv group create' to create runtime groups and 'thv run --group' to add servers.`,
-	Args: cobra.ExactArgs(1),
+	Use:        "run [group-name]",
+	Short:      "Deploy all MCP servers from a registry group",
+	Deprecated: "registry-based groups are no longer supported; use 'thv group create' and 'thv run --group' instead",
+	Args:       cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("registry-based groups are no longer supported; use 'thv group create' and 'thv run --group <name>' instead")
 	},

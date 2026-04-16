@@ -141,19 +141,12 @@ spec:
         unhealthyThreshold: 3
         partialFailureMode: best_effort
 
-  # Incoming authentication - inline OIDC configuration
+  # Incoming authentication via shared MCPOIDCConfig
   incomingAuth:
     type: oidc
-    oidcConfig:
-      type: inline
-      resourceUrl: http://inline-auth-vmcp.default.svc.cluster.local:4483
-      inline:
-        issuer: https://auth.example.com
-        clientId: vmcp-client
-        audience: vmcp-api
-        clientSecretRef:
-          name: vmcp-oidc-client-secret
-          key: clientSecret
+    oidcConfigRef:
+      name: inline-auth-oidc-config
+      audience: vmcp-api
     authzConfig:
       type: inline
       inline:

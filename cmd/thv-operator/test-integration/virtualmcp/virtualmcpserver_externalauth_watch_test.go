@@ -108,7 +108,8 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: mcpGroupName},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+					Config:   vmcpconfig.Config{Group: mcpGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "anonymous",
 					},

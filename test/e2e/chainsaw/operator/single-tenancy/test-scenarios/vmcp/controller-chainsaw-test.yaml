@@ -246,6 +246,10 @@ spec:
         file: oidc-client-secret.yaml
 
     - apply:
+        file: vmcp-oidc-config.yaml
+    - assert:
+        file: vmcp-oidc-config.yaml
+    - apply:
         file: vmcp-with-oidc.yaml
     - assert:
         file: vmcp-with-oidc.yaml

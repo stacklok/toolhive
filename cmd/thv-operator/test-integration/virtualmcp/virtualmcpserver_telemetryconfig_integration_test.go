@@ -85,7 +85,8 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 						Namespace: namespace,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group-telemetry-hash"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group-telemetry-hash"},
+						Config:   vmcpconfig.Config{Group: "test-group-telemetry-hash"},
 						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 							Type: "anonymous",
 						},
@@ -219,7 +220,8 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 						Namespace: namespace,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group-telemetry-update"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group-telemetry-update"},
+						Config:   vmcpconfig.Config{Group: "test-group-telemetry-update"},
 						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 							Type: "anonymous",
 						},
@@ -328,7 +330,8 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 						Namespace: namespace,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{Group: "test-group-telemetry-notfound"},
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group-telemetry-notfound"},
+						Config:   vmcpconfig.Config{Group: "test-group-telemetry-notfound"},
 						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 							Type: "anonymous",
 						},

@@ -30,18 +30,12 @@ import (
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
-// Compile-time interface assertion to ensure VirtualMCPServer implements OIDCConfigurable.
-// This catches interface drift at compile time rather than runtime.
-// Placed here because api/v1alpha1 cannot import pkg/oidc (circular dependency).
-var _ oidc.OIDCConfigurable = (*mcpv1alpha1.VirtualMCPServer)(nil)
-
 // newNoOpMockResolver creates a mock resolver that returns (nil, nil) for all calls.
 // Use this in tests that don't care about OIDC configuration.
 func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	mockResolver := oidcmocks.NewMockResolver(ctrl)
-	mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	return mockResolver
 }
 
@@ -62,30 +56,64 @@ func newTestConverter(t *testing.T, resolver oidc.Resolver) *Converter {
 	return converter
 }
 
-// newTestVMCPServer creates a VirtualMCPServer with OIDC config for testing.
-func newTestVMCPServer(oidcConfig *mcpv1alpha1.OIDCConfigRef) *mcpv1alpha1.VirtualMCPServer {
+// newTestVMCPServer creates a VirtualMCPServer with an MCPOIDCConfigReference for testing.
+func newTestVMCPServer(oidcConfigRef *mcpv1alpha1.MCPOIDCConfigReference) *mcpv1alpha1.VirtualMCPServer {
 	return &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config:       vmcpconfig.Config{Group: "test-group"},
-			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "oidc", OIDCConfig: oidcConfig},
+			GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "oidc", OIDCConfigRef: oidcConfigRef},
 		},
 	}
+}
+
+// newTestMCPOIDCConfig creates an MCPOIDCConfig resource for testing with the given spec type.
+func newTestMCPOIDCConfig(specType mcpv1alpha1.MCPOIDCConfigSourceType) *mcpv1alpha1.MCPOIDCConfig {
+	return &mcpv1alpha1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+			Type: specType,
+		},
+	}
+}
+
+// newTestMCPOIDCConfigInline creates an MCPOIDCConfig resource with inline config for testing.
+func newTestMCPOIDCConfigInline(inline *mcpv1alpha1.InlineOIDCSharedConfig) *mcpv1alpha1.MCPOIDCConfig {
+	return &mcpv1alpha1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+			Type:   mcpv1alpha1.MCPOIDCConfigTypeInline,
+			Inline: inline,
+		},
+	}
+}
+
+// newTestConverterWithObjects creates a Converter with the given resolver and k8s objects.
+func newTestConverterWithObjects(t *testing.T, resolver oidc.Resolver, objects ...client.Object) *Converter {
+	t.Helper()
+	k8sClient := newTestK8sClient(t, objects...)
+	converter, err := NewConverter(resolver, k8sClient)
+	require.NoError(t, err)
+	return converter
 }
 
 func TestConverter_OIDCResolution(t *testing.T) {
 	t.Parallel()
 
+	const oidcConfigName = "test-oidc"
+
 	tests := []struct {
-		name       string
-		oidcConfig *mcpv1alpha1.OIDCConfigRef
-		mockReturn *oidc.OIDCConfig
-		mockErr    error
-		validate   func(t *testing.T, config *vmcpconfig.Config, err error)
+		name          string
+		oidcConfigRef *mcpv1alpha1.MCPOIDCConfigReference
+		oidcConfig    *mcpv1alpha1.MCPOIDCConfig // MCPOIDCConfig object to add to fake client
+		mockReturn    *oidc.OIDCConfig
+		mockErr       error
+		validate      func(t *testing.T, config *vmcpconfig.Config, err error)
 	}{
 		{
-			name:       "successful resolution maps all fields",
-			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeKubernetes},
+			name:          "successful resolution maps all fields",
+			oidcConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "my-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount),
 			mockReturn: &oidc.OIDCConfig{
 				Issuer: "https://issuer.example.com", Audience: "my-audience",
 				ResourceURL:        "https://resource.example.com",
@@ -106,8 +134,9 @@ func TestConverter_OIDCResolution(t *testing.T) {
 			},
 		},
 		{
-			name:       "fields mapped independently - jwksAllowPrivateIP true, protectedResourceAllowPrivateIP false",
-			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeKubernetes},
+			name:          "fields mapped independently - jwksAllowPrivateIP true, protectedResourceAllowPrivateIP false",
+			oidcConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "my-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount),
 			mockReturn: &oidc.OIDCConfig{
 				Issuer: "https://issuer.example.com", Audience: "my-audience",
 				JWKSAllowPrivateIP: true, ProtectedResourceAllowPrivateIP: false,
@@ -121,9 +150,10 @@ func TestConverter_OIDCResolution(t *testing.T) {
 			},
 		},
 		{
-			name:       "resolution error returns error (fail-closed)",
-			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeConfigMap},
-			mockErr:    errors.New("configmap not found"),
+			name:          "resolution error returns error (fail-closed)",
+			oidcConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1alpha1.MCPOIDCConfigTypeInline),
+			mockErr:       errors.New("configmap not found"),
 			validate: func(t *testing.T, _ *vmcpconfig.Config, err error) {
 				t.Helper()
 				require.Error(t, err)
@@ -131,9 +161,10 @@ func TestConverter_OIDCResolution(t *testing.T) {
 			},
 		},
 		{
-			name:       "nil resolved config results in nil OIDC",
-			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeInline},
-			mockReturn: nil,
+			name:          "nil resolved config results in nil OIDC",
+			oidcConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1alpha1.MCPOIDCConfigTypeInline),
+			mockReturn:    nil,
 			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
 				t.Helper()
 				require.NoError(t, err)
@@ -141,16 +172,15 @@ func TestConverter_OIDCResolution(t *testing.T) {
 			},
 		},
 		{
-			name: "inline with client secret sets ClientSecretEnv",
-			oidcConfig: &mcpv1alpha1.OIDCConfigRef{
-				Type: mcpv1alpha1.OIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCConfig{
-					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-						Name: "oidc-secret",
-						Key:  "client-secret",
-					},
+			name:          "inline with client secret sets ClientSecretEnv",
+			oidcConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig: newTestMCPOIDCConfigInline(&mcpv1alpha1.InlineOIDCSharedConfig{
+				Issuer: "https://issuer.example.com",
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					Name: "oidc-secret",
+					Key:  "client-secret",
 				},
-			},
+			}),
 			mockReturn: &oidc.OIDCConfig{Issuer: "https://issuer.example.com"},
 			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
 				t.Helper()
@@ -159,22 +189,10 @@ func TestConverter_OIDCResolution(t *testing.T) {
 			},
 		},
 		{
-			name: "configmap with client secret sets ClientSecretEnv",
-			oidcConfig: &mcpv1alpha1.OIDCConfigRef{
-				Type:      mcpv1alpha1.OIDCConfigTypeConfigMap,
-				ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{Name: "config"},
-			},
-			mockReturn: &oidc.OIDCConfig{Issuer: "https://issuer.example.com", ClientSecret: "secret"},
-			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
-				t.Helper()
-				require.NoError(t, err)
-				assert.Equal(t, "VMCP_OIDC_CLIENT_SECRET", config.IncomingAuth.OIDC.ClientSecretEnv)
-			},
-		},
-		{
-			name:       "kubernetes type does not set ClientSecretEnv",
-			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeKubernetes},
-			mockReturn: &oidc.OIDCConfig{Issuer: "https://kubernetes.default.svc"},
+			name:          "non-inline type does not set ClientSecretEnv",
+			oidcConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount),
+			mockReturn:    &oidc.OIDCConfig{Issuer: "https://kubernetes.default.svc"},
 			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
 				t.Helper()
 				require.NoError(t, err)
@@ -189,11 +207,13 @@ func TestConverter_OIDCResolution(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			mockResolver := oidcmocks.NewMockResolver(ctrl)
-			mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(tt.mockReturn, tt.mockErr)
+			mockResolver.EXPECT().ResolveFromConfigRef(
+				gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
+			).Return(tt.mockReturn, tt.mockErr)
 
-			converter := newTestConverter(t, mockResolver)
+			converter := newTestConverterWithObjects(t, mockResolver, tt.oidcConfig)
 			ctx := log.IntoContext(context.Background(), logr.Discard())
-			config, _, err := converter.Convert(ctx, newTestVMCPServer(tt.oidcConfig), nil)
+			config, _, err := converter.Convert(ctx, newTestVMCPServer(tt.oidcConfigRef), nil)
 
 			tt.validate(t, config, err)
 		})
@@ -212,8 +232,8 @@ func TestConverter_CompositeToolsPassThrough(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Config: vmcpconfig.Config{
-				Group: "test-group",
 				CompositeTools: []vmcpconfig.CompositeToolConfig{
 					{
 						Name:        "test-composite-tool",
@@ -264,12 +284,16 @@ func TestConverter_CompositeToolsPassThrough(t *testing.T) {
 func TestConverter_IncomingAuthRequired(t *testing.T) {
 	t.Parallel()
 
+	const oidcConfigName = "test-oidc"
+
 	tests := []struct {
 		name               string
 		incomingAuth       *mcpv1alpha1.IncomingAuthConfig
+		oidcConfig         *mcpv1alpha1.MCPOIDCConfig // MCPOIDCConfig object to add to fake client
 		expectedAuthType   string
 		expectedOIDCConfig *vmcpconfig.OIDCConfig
 		expectNilAuth      bool
+		mockReturn         *oidc.OIDCConfig
 		description        string
 	}{
 		{
@@ -287,17 +311,19 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 			description:      "Should use anonymous auth when explicitly specified",
 		},
 		{
-			name: "explicit oidc auth with inline config",
+			name: "explicit oidc auth via MCPOIDCConfigRef",
 			incomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "oidc",
-				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-					Type: "inline",
-					Inline: &mcpv1alpha1.InlineOIDCConfig{
-						Issuer:   "https://example.com",
-						ClientID: "test-client",
-						Audience: "test-audience",
-					},
-				},
+				Type:          "oidc",
+				OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			},
+			oidcConfig: newTestMCPOIDCConfigInline(&mcpv1alpha1.InlineOIDCSharedConfig{
+				Issuer:   "https://example.com",
+				ClientID: "test-client",
+			}),
+			mockReturn: &oidc.OIDCConfig{
+				Issuer:   "https://example.com",
+				ClientID: "test-client",
+				Audience: "test-audience",
 			},
 			expectedAuthType: "oidc",
 			expectedOIDCConfig: &vmcpconfig.OIDCConfig{
@@ -305,21 +331,23 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 				ClientID: "test-client",
 				Audience: "test-audience",
 			},
-			description: "Should correctly convert OIDC auth config",
+			description: "Should correctly convert OIDC auth config via MCPOIDCConfigRef",
 		},
 		{
 			name: "oidc auth with scopes",
 			incomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "oidc",
-				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-					Type: "inline",
-					Inline: &mcpv1alpha1.InlineOIDCConfig{
-						Issuer:   "https://accounts.google.com",
-						ClientID: "google-client",
-						Audience: "google-audience",
-						Scopes:   []string{"https://www.googleapis.com/auth/drive.readonly", "openid"},
-					},
-				},
+				Type:          "oidc",
+				OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "google-audience"},
+			},
+			oidcConfig: newTestMCPOIDCConfigInline(&mcpv1alpha1.InlineOIDCSharedConfig{
+				Issuer:   "https://accounts.google.com",
+				ClientID: "google-client",
+			}),
+			mockReturn: &oidc.OIDCConfig{
+				Issuer:   "https://accounts.google.com",
+				ClientID: "google-client",
+				Audience: "google-audience",
+				Scopes:   []string{"https://www.googleapis.com/auth/drive.readonly", "openid"},
 			},
 			expectedAuthType: "oidc",
 			expectedOIDCConfig: &vmcpconfig.OIDCConfig{
@@ -333,17 +361,21 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 		{
 			name: "oidc auth with jwksUrl and introspectionUrl",
 			incomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "oidc",
-				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-					Type: "inline",
-					Inline: &mcpv1alpha1.InlineOIDCConfig{
-						Issuer:           "https://auth.example.com",
-						ClientID:         "test-client",
-						Audience:         "test-audience",
-						JWKSURL:          "https://auth.example.com/custom/jwks",
-						IntrospectionURL: "https://auth.example.com/custom/introspect",
-					},
-				},
+				Type:          "oidc",
+				OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			},
+			oidcConfig: newTestMCPOIDCConfigInline(&mcpv1alpha1.InlineOIDCSharedConfig{
+				Issuer:           "https://auth.example.com",
+				ClientID:         "test-client",
+				JWKSURL:          "https://auth.example.com/custom/jwks",
+				IntrospectionURL: "https://auth.example.com/custom/introspect",
+			}),
+			mockReturn: &oidc.OIDCConfig{
+				Issuer:           "https://auth.example.com",
+				ClientID:         "test-client",
+				Audience:         "test-audience",
+				JWKSURL:          "https://auth.example.com/custom/jwks",
+				IntrospectionURL: "https://auth.example.com/custom/introspect",
 			},
 			expectedAuthType: "oidc",
 			expectedOIDCConfig: &vmcpconfig.OIDCConfig{
@@ -367,7 +399,7 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config:       vmcpconfig.Config{Group: "test-group"},
+					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					IncomingAuth: tt.incomingAuth,
 				},
 			}
@@ -376,21 +408,24 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			mockResolver := oidcmocks.NewMockResolver(ctrl)
 
-			// Configure mock to return expected OIDC config
-			if tt.expectedOIDCConfig != nil {
-				mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(&oidc.OIDCConfig{
-					Issuer:           tt.expectedOIDCConfig.Issuer,
-					ClientID:         tt.expectedOIDCConfig.ClientID,
-					Audience:         tt.expectedOIDCConfig.Audience,
-					JWKSURL:          tt.expectedOIDCConfig.JWKSURL,
-					IntrospectionURL: tt.expectedOIDCConfig.IntrospectionURL,
-					Scopes:           tt.expectedOIDCConfig.Scopes,
-				}, nil)
-			} else {
-				mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+			// Build k8s client objects
+			var objects []client.Object
+			if tt.oidcConfig != nil {
+				objects = append(objects, tt.oidcConfig)
 			}
 
-			converter := newTestConverter(t, mockResolver)
+			// Configure mock to return expected OIDC config
+			if tt.mockReturn != nil {
+				mockResolver.EXPECT().ResolveFromConfigRef(
+					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
+				).Return(tt.mockReturn, nil)
+			} else {
+				mockResolver.EXPECT().ResolveFromConfigRef(
+					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
+				).Return(nil, nil).AnyTimes()
+			}
+
+			converter := newTestConverterWithObjects(t, mockResolver, objects...)
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 			config, _, err := converter.Convert(ctx, vmcpServer, nil)
 
@@ -446,8 +481,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
 							{Name: "referenced-tool"},
 						},
@@ -494,8 +529,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						CompositeTools: []vmcpconfig.CompositeToolConfig{
 							{
 								Name:        "inline-tool",
@@ -557,8 +592,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
 							{Name: "non-existent-tool"},
 						},
@@ -577,8 +612,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						CompositeTools: []vmcpconfig.CompositeToolConfig{
 							{
 								Name:        "duplicate-tool",
@@ -630,7 +665,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 				},
 			},
 			compositeDefs: []*mcpv1alpha1.VirtualMCPCompositeToolDefinition{},
@@ -646,8 +681,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
 							{Name: "tool1"},
 							{Name: "tool2"},
@@ -715,8 +750,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
 							{Name: "referenced-tool"},
 						},
@@ -891,8 +926,8 @@ func TestConverter_CompositeToolDefinitionFieldsPreserved(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			Config: vmcpconfig.Config{
-				Group: "test-group",
 				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
 					{Name: "comprehensive-tool"},
 				},
@@ -1351,8 +1386,8 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						Aggregation: &vmcpconfig.AggregationConfig{
 							Tools: []*vmcpconfig.WorkloadToolConfig{{
 								Workload:      "backend1",
@@ -1371,8 +1406,8 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						Aggregation: &vmcpconfig.AggregationConfig{
 							Tools: []*vmcpconfig.WorkloadToolConfig{{
 								Workload:      "backend1",
@@ -1390,7 +1425,7 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 				},
 			},
 			existingConfig: nil,
@@ -1438,11 +1473,11 @@ func TestConverter_InlineTelemetryIgnored(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
 			Config: vmcpconfig.Config{
-				Group: "test-group",
 				Telemetry: &telemetry.Config{
 					Endpoint:    "otlp-collector:4317",
 					ServiceName: "should-be-ignored",
@@ -1470,11 +1505,11 @@ func TestConverter_TelemetryNil(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
 			Config: vmcpconfig.Config{
-				Group:     "test-group",
 				Telemetry: nil, // No telemetry config
 			},
 		},
@@ -1546,8 +1581,8 @@ func TestConverter_SessionStorage(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group:          "test-group",
 						SessionStorage: tt.inlineConfig,
 					},
 					SessionStorage: tt.sessionStorage,
@@ -1684,29 +1719,28 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 
 	ctrl := gomock.NewController(t)
 	mockResolver := oidcmocks.NewMockResolver(ctrl)
-	mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(&oidc.OIDCConfig{
+	mockResolver.EXPECT().ResolveFromConfigRef(
+		gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
+	).Return(&oidc.OIDCConfig{
 		Issuer:      "https://incoming-issuer.example.com",
 		Audience:    "https://my-vmcp.example.com",
 		ResourceURL: "https://resource.example.com",
 	}, nil)
 
-	k8sClient := newTestK8sClient(t)
+	oidcCfg := newTestMCPOIDCConfigInline(&mcpv1alpha1.InlineOIDCSharedConfig{
+		Issuer: "https://incoming-issuer.example.com",
+	})
+	k8sClient := newTestK8sClient(t, oidcCfg)
 	converter, err := NewConverter(mockResolver, k8sClient)
 	require.NoError(t, err)
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "oidc",
-				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-					Type: mcpv1alpha1.OIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCConfig{
-						Issuer:   "https://incoming-issuer.example.com",
-						Audience: "https://my-vmcp.example.com",
-					},
-				},
+				Type:          "oidc",
+				OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "https://my-vmcp.example.com"},
 			},
 			AuthServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
 				Issuer: "https://authserver.example.com",
@@ -1783,8 +1817,8 @@ func TestConverter_TelemetryConfigRef(t *testing.T) {
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
-			Config:       vmcpconfig.Config{Group: "test-group"},
 			TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
 				Name:        "shared-telemetry",
 				ServiceName: "custom-svc",

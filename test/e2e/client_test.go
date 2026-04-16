@@ -85,8 +85,9 @@ var _ = Describe("Client Management", Label("core", "client", "e2e"), func() {
 		BeforeEach(func() {
 			// Pre-populate temporary config with multiple registered clients in non-alphabetical order
 			testClients := []string{"vscode", "cursor", "roo-code", "cline", "claude-code"}
-			err := config.UpdateConfigAtPath(tempConfigPath, func(c *config.Config) {
+			err := config.UpdateConfigAtPath(tempConfigPath, func(c *config.Config) error {
 				c.Clients.RegisteredClients = testClients
+				return nil
 			})
 			Expect(err).ToNot(HaveOccurred())
 		})

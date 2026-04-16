@@ -574,4 +574,3 @@ func TestRoundTripReinitializesOnDialError(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "client should see 200 after transparent re-init on dial error")
 	assert.GreaterOrEqual(t, freshHit.Load(), int32(2), "fresh backend should receive initialize + replay")
 }
-

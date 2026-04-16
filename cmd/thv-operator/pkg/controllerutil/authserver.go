@@ -470,11 +470,18 @@ func BuildAuthServerRunConfig(
 		}
 	}
 
-	// Build upstream provider configs using shared bindings
+	// Build upstream provider configs using shared bindings.
+	// Pass the resource URL (first allowed audience) so upstream providers can
+	// default redirectUri to `{resourceUrl}/oauth/callback` when unset, as
+	// documented on the MCPExternalAuthConfig CRD.
+	resourceURL := ""
+	if len(allowedAudiences) > 0 {
+		resourceURL = allowedAudiences[0]
+	}
 	bindings := buildUpstreamSecretBindings(authConfig.UpstreamProviders)
 	config.Upstreams = make([]authserver.UpstreamRunConfig, 0, len(bindings))
 	for _, b := range bindings {
-		config.Upstreams = append(config.Upstreams, *buildUpstreamRunConfig(b.Provider, b.EnvVarName))
+		config.Upstreams = append(config.Upstreams, *buildUpstreamRunConfig(b.Provider, b.EnvVarName, resourceURL))
 	}
 
 	// Build storage configuration
@@ -603,9 +610,13 @@ func resolveSentinelAddrs(
 // buildUpstreamRunConfig converts CRD UpstreamProviderConfig to authserver.UpstreamRunConfig.
 // The envVarName is computed by buildUpstreamSecretBindings to keep Pod env
 // and runtime config in sync.
+// resourceURL is used to default redirectUri to `{resourceURL}/oauth/callback`
+// when the CRD leaves it empty, matching the default documented on
+// MCPExternalAuthConfig.
 func buildUpstreamRunConfig(
 	provider *mcpv1alpha1.UpstreamProviderConfig,
 	envVarName string,
+	resourceURL string,
 ) *authserver.UpstreamRunConfig {
 	config := &authserver.UpstreamRunConfig{
 		Name: provider.Name,
@@ -618,7 +629,7 @@ func buildUpstreamRunConfig(
 			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
 				IssuerURL:   provider.OIDCConfig.IssuerURL,
 				ClientID:    provider.OIDCConfig.ClientID,
-				RedirectURI: provider.OIDCConfig.RedirectURI,
+				RedirectURI: defaultRedirectURI(provider.OIDCConfig.RedirectURI, resourceURL),
 				Scopes:      provider.OIDCConfig.Scopes,
 			}
 			// If client secret is configured, reference it via env var
@@ -635,7 +646,7 @@ func buildUpstreamRunConfig(
 				AuthorizationEndpoint: provider.OAuth2Config.AuthorizationEndpoint,
 				TokenEndpoint:         provider.OAuth2Config.TokenEndpoint,
 				ClientID:              provider.OAuth2Config.ClientID,
-				RedirectURI:           provider.OAuth2Config.RedirectURI,
+				RedirectURI:           defaultRedirectURI(provider.OAuth2Config.RedirectURI, resourceURL),
 				Scopes:                provider.OAuth2Config.Scopes,
 			}
 			// If client secret is configured, reference it via env var
@@ -658,6 +669,22 @@ func buildUpstreamRunConfig(
 	}
 
 	return config
+}
+
+// defaultRedirectURI resolves the upstream provider redirectUri, applying the
+// `{resourceURL}/oauth/callback` default documented on
+// MCPExternalAuthConfig.UpstreamProviderConfig when the CRD omits it. Passing
+// through the CRD value unchanged when set preserves caller overrides, and
+// returning empty when no resourceURL is available keeps existing validation
+// behavior downstream.
+func defaultRedirectURI(redirectURI, resourceURL string) string {
+	if redirectURI != "" {
+		return redirectURI
+	}
+	if resourceURL == "" {
+		return ""
+	}
+	return strings.TrimSuffix(resourceURL, "/") + "/oauth/callback"
 }
 
 // buildUserInfoRunConfig converts CRD UserInfoConfig to authserver.UserInfoRunConfig.

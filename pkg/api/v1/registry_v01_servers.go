@@ -17,6 +17,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/registry/converters"
 	types "github.com/stacklok/toolhive-core/registry/types"
+	regpkg "github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/registry/api"
 )
 
@@ -93,6 +94,7 @@ func listServersV01(w http.ResponseWriter, r *http.Request) {
 //	@Param			registryName	path		string	true	"Registry name (currently ignored, uses the default provider)"
 //	@Param			serverName		path		string	true	"Server name (URL-encoded reverse-DNS format)"
 //	@Success		200				{object}	v0.ServerJSON
+//	@Failure		400				{object}	registryErrorResponse	"Invalid server name encoding"
 //	@Failure		404				{object}	registryErrorResponse	"Server not found"
 //	@Failure		500				{object}	registryErrorResponse	"Internal server error"
 //	@Failure		503				{object}	registryErrorResponse	"Registry authentication required or upstream registry unavailable"
@@ -128,8 +130,8 @@ func getServerV01(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		// Non-HTTP errors (e.g. "server not found: ...") from the base provider
-		if strings.Contains(err.Error(), "not found") {
+		// Sentinel error from base/API providers
+		if errors.Is(err, regpkg.ErrServerNotFound) {
 			writeJSONError(w, http.StatusNotFound, "not_found", "Server not found")
 			return
 		}

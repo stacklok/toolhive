@@ -404,6 +404,14 @@ components:
         OAuth2Config contains OAuth 2.0-specific configuration.
         Required when Type is "oauth2", must be nil when Type is "oidc".
       properties:
+        additional_authorization_params:
+          additionalProperties:
+            type: string
+          description: |-
+            AdditionalAuthorizationParams are extra query parameters to include in
+            authorization requests. Useful for provider-specific parameters like
+            Google's access_type=offline.
+          type: object
         authorization_endpoint:
           description: AuthorizationEndpoint is the URL for the OAuth authorization
             endpoint.
@@ -446,6 +454,14 @@ components:
         OIDCConfig contains OIDC-specific configuration.
         Required when Type is "oidc", must be nil when Type is "oauth2".
       properties:
+        additional_authorization_params:
+          additionalProperties:
+            type: string
+          description: |-
+            AdditionalAuthorizationParams are extra query parameters to include in
+            authorization requests. Useful for provider-specific parameters like
+            Google's access_type=offline.
+          type: object
         client_id:
           description: ClientID is the OAuth 2.0 client identifier registered with
             the upstream IDP.
@@ -474,6 +490,9 @@ components:
           description: |-
             Scopes are the OAuth scopes to request from the upstream IDP.
             If not specified, defaults to ["openid", "offline_access"].
+            When using AdditionalAuthorizationParams with provider-specific refresh
+            token mechanisms (e.g., Google's access_type=offline), set explicit scopes
+            to avoid sending both offline_access and the provider-specific parameter.
           items:
             type: string
           type: array

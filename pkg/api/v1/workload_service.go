@@ -154,7 +154,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 	var registryResolvedMetadata regtypes.ServerMetadata
 	if req.Registry != "" && req.Server != "" {
 		var err error
-		registryResolvedMetadata, err = resolveRegistryServer(req)
+		registryResolvedMetadata, err = s.resolveRegistryServer(req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve server from registry: %w", err)
 		}
@@ -214,9 +214,36 @@ func (s *WorkloadService) BuildFullRunConfig(
 	// remote auth config, proxy port) picks it up automatically.
 	if registryResolvedMetadata != nil {
 		serverMetadata = registryResolvedMetadata
-		if img, ok := registryResolvedMetadata.(*regtypes.ImageMetadata); ok {
-			imageMetadata = img
-			imageURL = img.Image
+		switch md := registryResolvedMetadata.(type) {
+		case *regtypes.ImageMetadata:
+			imageMetadata = md
+			imageURL = md.Image
+		case *regtypes.RemoteServerMetadata:
+			if req.ProxyPort == 0 && md.ProxyPort > 0 {
+				registryProxyPort = md.ProxyPort
+			}
+			if md.OAuthConfig != nil {
+				resource := req.OAuthConfig.Resource
+				if resource == "" {
+					resource = md.OAuthConfig.Resource
+				}
+				if resource == "" && md.URL != "" {
+					resource = remote.DefaultResourceIndicator(md.URL)
+				}
+				remoteAuthConfig = &remote.Config{
+					ClientID:     req.OAuthConfig.ClientID,
+					Scopes:       md.OAuthConfig.Scopes,
+					CallbackPort: md.OAuthConfig.CallbackPort,
+					Issuer:       md.OAuthConfig.Issuer,
+					AuthorizeURL: md.OAuthConfig.AuthorizeURL,
+					TokenURL:     md.OAuthConfig.TokenURL,
+					UsePKCE:      md.OAuthConfig.UsePKCE,
+					Resource:     resource,
+					OAuthParams:  md.OAuthConfig.OAuthParams,
+					Headers:      md.Headers,
+					EnvVars:      md.EnvVars,
+				}
+			}
 		}
 	}
 
@@ -591,14 +618,14 @@ func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req b
 
 // resolveRegistryServer resolves a server from the registry and fills in
 // default values on the request. User-provided fields are not overwritten.
-func resolveRegistryServer(req *createRequest) (regtypes.ServerMetadata, error) {
+func (s *WorkloadService) resolveRegistryServer(req *createRequest) (regtypes.ServerMetadata, error) {
 	// Only "default" registry is currently supported.
 	if req.Registry != "default" {
 		return nil, fmt.Errorf("unknown registry %q; only \"default\" is currently supported", req.Registry)
 	}
 
 	provider, err := registry.GetDefaultProviderWithConfig(
-		config.NewProvider(),
+		s.configProvider,
 		registry.WithInteractive(false),
 	)
 	if err != nil {

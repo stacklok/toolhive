@@ -6,6 +6,7 @@ package v1
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"testing"
 
@@ -13,6 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/httperr"
+	"github.com/stacklok/toolhive-core/permissions"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
@@ -426,4 +430,294 @@ func TestCreateWorkloadFromRequest_PolicyGateDenied(t *testing.T) {
 
 	require.Error(t, err)
 	require.ErrorIs(t, err, sentinel)
+}
+
+func TestApplyImageDefaults(t *testing.T) {
+	t.Parallel()
+
+	permProfile := &permissions.Profile{}
+
+	baseMetadata := func() *regtypes.ImageMetadata {
+		return &regtypes.ImageMetadata{
+			Image:       "ghcr.io/stacklok/fetch:latest",
+			TargetPort:  8080,
+			Args:        []string{"--listen", "0.0.0.0"},
+			Permissions: permProfile,
+			EnvVars: []*regtypes.EnvVar{
+				{Name: "LOG_LEVEL", Default: "info"},
+				{Name: "REGION", Default: "us-east-1"},
+				{Name: "API_KEY"}, // no default — should not be inserted
+			},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		req         *createRequest
+		wantImage   string
+		wantTarget  int
+		wantArgs    []string
+		wantPermSet bool
+		wantEnvVars map[string]string
+	}{
+		{
+			name:        "empty request fills all defaults",
+			req:         &createRequest{},
+			wantImage:   "ghcr.io/stacklok/fetch:latest",
+			wantTarget:  8080,
+			wantArgs:    []string{"--listen", "0.0.0.0"},
+			wantPermSet: true,
+			wantEnvVars: map[string]string{
+				"LOG_LEVEL": "info",
+				"REGION":    "us-east-1",
+			},
+		},
+		{
+			name: "user image takes precedence over registry image",
+			req: &createRequest{
+				updateRequest: updateRequest{Image: "my-registry/custom:v1"},
+			},
+			wantImage:   "my-registry/custom:v1",
+			wantTarget:  8080,
+			wantArgs:    []string{"--listen", "0.0.0.0"},
+			wantPermSet: true,
+			wantEnvVars: map[string]string{
+				"LOG_LEVEL": "info",
+				"REGION":    "us-east-1",
+			},
+		},
+		{
+			name: "user target port takes precedence",
+			req: &createRequest{
+				updateRequest: updateRequest{TargetPort: 9090},
+			},
+			wantImage:   "ghcr.io/stacklok/fetch:latest",
+			wantTarget:  9090,
+			wantArgs:    []string{"--listen", "0.0.0.0"},
+			wantPermSet: true,
+			wantEnvVars: map[string]string{
+				"LOG_LEVEL": "info",
+				"REGION":    "us-east-1",
+			},
+		},
+		{
+			name: "user cmd arguments take precedence",
+			req: &createRequest{
+				updateRequest: updateRequest{CmdArguments: []string{"--debug"}},
+			},
+			wantImage:   "ghcr.io/stacklok/fetch:latest",
+			wantTarget:  8080,
+			wantArgs:    []string{"--debug"},
+			wantPermSet: true,
+			wantEnvVars: map[string]string{
+				"LOG_LEVEL": "info",
+				"REGION":    "us-east-1",
+			},
+		},
+		{
+			name: "user env var override preserved, other defaults filled",
+			req: &createRequest{
+				updateRequest: updateRequest{
+					EnvVars: map[string]string{"LOG_LEVEL": "debug"},
+				},
+			},
+			wantImage:   "ghcr.io/stacklok/fetch:latest",
+			wantTarget:  8080,
+			wantArgs:    []string{"--listen", "0.0.0.0"},
+			wantPermSet: true,
+			wantEnvVars: map[string]string{
+				"LOG_LEVEL": "debug",
+				"REGION":    "us-east-1",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			applyImageDefaults(tt.req, baseMetadata())
+
+			assert.Equal(t, tt.wantImage, tt.req.Image)
+			assert.Equal(t, tt.wantTarget, tt.req.TargetPort)
+			assert.Equal(t, tt.wantArgs, tt.req.CmdArguments)
+			if tt.wantPermSet {
+				assert.NotNil(t, tt.req.PermissionProfile)
+			}
+			assert.Equal(t, tt.wantEnvVars, tt.req.EnvVars)
+		})
+	}
+}
+
+func TestApplyImageDefaults_UserPermissionProfilePreserved(t *testing.T) {
+	t.Parallel()
+
+	userProfile := &permissions.Profile{Name: "user-provided"}
+	registryProfile := &permissions.Profile{Name: "registry-default"}
+
+	req := &createRequest{
+		updateRequest: updateRequest{PermissionProfile: userProfile},
+	}
+	md := &regtypes.ImageMetadata{Permissions: registryProfile}
+
+	applyImageDefaults(req, md)
+
+	assert.Same(t, userProfile, req.PermissionProfile,
+		"user-provided permission profile must not be replaced by the registry default")
+}
+
+func TestApplyRemoteDefaults(t *testing.T) {
+	t.Parallel()
+
+	baseMetadata := func() *regtypes.RemoteServerMetadata {
+		return &regtypes.RemoteServerMetadata{
+			URL: "https://mcp.example.com/mcp",
+			Headers: []*regtypes.Header{
+				{Name: "X-API-Key"},
+			},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		req         *createRequest
+		wantURL     string
+		wantHeaders int
+	}{
+		{
+			name:        "empty request fills URL and Headers",
+			req:         &createRequest{},
+			wantURL:     "https://mcp.example.com/mcp",
+			wantHeaders: 1,
+		},
+		{
+			name: "user URL takes precedence",
+			req: &createRequest{
+				updateRequest: updateRequest{URL: "https://override.example.com/mcp"},
+			},
+			wantURL:     "https://override.example.com/mcp",
+			wantHeaders: 1,
+		},
+		{
+			name: "user headers take precedence over registry headers",
+			req: &createRequest{
+				updateRequest: updateRequest{
+					Headers: []*regtypes.Header{{Name: "Authorization"}},
+				},
+			},
+			wantURL:     "https://mcp.example.com/mcp",
+			wantHeaders: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			applyRemoteDefaults(tt.req, baseMetadata())
+
+			assert.Equal(t, tt.wantURL, tt.req.URL)
+			assert.Len(t, tt.req.Headers, tt.wantHeaders)
+		})
+	}
+}
+
+func TestApplyRegistryDefaults(t *testing.T) {
+	t.Parallel()
+
+	t.Run("fills transport and name from metadata", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{}
+		md := &regtypes.ImageMetadata{
+			BaseServerMetadata: regtypes.BaseServerMetadata{
+				Name:      "io.github.stacklok/fetch",
+				Transport: "stdio",
+			},
+			Image: "ghcr.io/stacklok/fetch:latest",
+		}
+
+		applyRegistryDefaults(req, md)
+
+		assert.Equal(t, "stdio", req.Transport)
+		assert.Equal(t, "io.github.stacklok/fetch", req.Name)
+		assert.Equal(t, "ghcr.io/stacklok/fetch:latest", req.Image)
+	})
+
+	t.Run("user transport and name take precedence", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			Name: "my-workload",
+			updateRequest: updateRequest{
+				Transport: "streamable-http",
+			},
+		}
+		md := &regtypes.ImageMetadata{
+			BaseServerMetadata: regtypes.BaseServerMetadata{
+				Name:      "io.github.stacklok/fetch",
+				Transport: "stdio",
+			},
+		}
+
+		applyRegistryDefaults(req, md)
+
+		assert.Equal(t, "streamable-http", req.Transport)
+		assert.Equal(t, "my-workload", req.Name)
+	})
+
+	t.Run("dispatches to remote defaults for RemoteServerMetadata", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{}
+		md := &regtypes.RemoteServerMetadata{
+			BaseServerMetadata: regtypes.BaseServerMetadata{
+				Name:      "remote-server",
+				Transport: "streamable-http",
+			},
+			URL: "https://remote.example.com/mcp",
+		}
+
+		applyRegistryDefaults(req, md)
+
+		assert.Equal(t, "streamable-http", req.Transport)
+		assert.Equal(t, "remote-server", req.Name)
+		assert.Equal(t, "https://remote.example.com/mcp", req.URL)
+	})
+
+	t.Run("dispatches to image defaults for ImageMetadata", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{}
+		md := &regtypes.ImageMetadata{
+			BaseServerMetadata: regtypes.BaseServerMetadata{
+				Transport: "stdio",
+			},
+			Image:      "ghcr.io/stacklok/fetch:latest",
+			TargetPort: 8080,
+		}
+
+		applyRegistryDefaults(req, md)
+
+		assert.Equal(t, "ghcr.io/stacklok/fetch:latest", req.Image)
+		assert.Equal(t, 8080, req.TargetPort)
+	})
+}
+
+func TestWorkloadService_ResolveRegistryServer_UnknownRegistry(t *testing.T) {
+	t.Parallel()
+
+	service := &WorkloadService{configProvider: config.NewDefaultProvider()}
+
+	req := &createRequest{
+		Registry: "nonexistent",
+		Server:   "some-server",
+	}
+
+	metadata, err := service.resolveRegistryServer(req)
+
+	require.Error(t, err)
+	assert.Nil(t, metadata)
+	assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+	assert.Contains(t, err.Error(), `unknown registry "nonexistent"`)
 }

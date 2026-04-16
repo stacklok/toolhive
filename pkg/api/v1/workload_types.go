@@ -154,6 +154,13 @@ type createRequest struct {
 	updateRequest
 	// Name of the workload
 	Name string `json:"name"`
+	// Registry is the optional registry name to resolve the server from (e.g. "default").
+	Registry string `json:"registry,omitempty"`
+	// Server is the optional server name in the registry (e.g. "io.github.stacklok/fetch").
+	// When both Registry and Server are set, thv resolves the server metadata
+	// server-side, filling in image, transport, env vars, permissions, etc.
+	// User-provided fields always override registry defaults.
+	Server string `json:"server,omitempty"`
 }
 
 // oidcOptions represents OIDC configuration options

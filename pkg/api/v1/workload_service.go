@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
@@ -145,7 +147,10 @@ func (s *WorkloadService) BuildFullRunConfig(
 ) (*runner.RunConfig, error) {
 	// Validate registry+server pairing first (guard clause)
 	if (req.Registry != "" && req.Server == "") || (req.Registry == "" && req.Server != "") {
-		return nil, fmt.Errorf("both registry and server must be specified together")
+		return nil, httperr.WithCode(
+			fmt.Errorf("both registry and server must be specified together"),
+			http.StatusBadRequest,
+		)
 	}
 	// If registry+server specified, resolve from registry and fill defaults.
 	// The returned metadata is assigned to the local variables so the rest of
@@ -643,7 +648,10 @@ func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req b
 func (s *WorkloadService) resolveRegistryServer(req *createRequest) (regtypes.ServerMetadata, error) {
 	// Only "default" registry is currently supported.
 	if req.Registry != "default" {
-		return nil, fmt.Errorf("unknown registry %q; only \"default\" is currently supported", req.Registry)
+		return nil, httperr.WithCode(
+			fmt.Errorf("unknown registry %q; only \"default\" is currently supported", req.Registry),
+			http.StatusBadRequest,
+		)
 	}
 
 	provider, err := registry.GetDefaultProviderWithConfig(
@@ -651,12 +659,24 @@ func (s *WorkloadService) resolveRegistryServer(req *createRequest) (regtypes.Se
 		registry.WithInteractive(false),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get registry provider: %w", err)
+		return nil, httperr.WithCode(
+			fmt.Errorf("failed to get registry provider: %w", err),
+			http.StatusServiceUnavailable,
+		)
 	}
 
 	metadata, err := provider.GetServer(req.Server)
 	if err != nil {
-		return nil, fmt.Errorf("server %q not found in registry: %w", req.Server, err)
+		if errors.Is(err, registry.ErrServerNotFound) {
+			return nil, httperr.WithCode(
+				fmt.Errorf("server %q not found in registry: %w", req.Server, err),
+				http.StatusNotFound,
+			)
+		}
+		return nil, httperr.WithCode(
+			fmt.Errorf("failed to look up server %q in registry: %w", req.Server, err),
+			http.StatusServiceUnavailable,
+		)
 	}
 
 	applyRegistryDefaults(req, metadata)

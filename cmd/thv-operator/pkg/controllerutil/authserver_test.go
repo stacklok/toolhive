@@ -1047,6 +1047,134 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 					upstream.OAuth2Config.AdditionalAuthorizationParams)
 			},
 		},
+		{
+			name:        "OIDC upstream with empty redirectUri defaults to resourceURL/oauth/callback",
+			resourceURL: "https://mcp.example.com",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL: "https://okta.example.com",
+							ClientID:  "client-id",
+							// RedirectURI intentionally omitted
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				require.NotNil(t, config.Upstreams[0].OIDCConfig)
+				assert.Equal(t, "https://mcp.example.com/oauth/callback", config.Upstreams[0].OIDCConfig.RedirectURI)
+			},
+		},
+		{
+			name:        "OAuth2 upstream with empty redirectUri defaults to resourceURL/oauth/callback",
+			resourceURL: "https://mcp.example.com",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "github",
+						Type: mcpv1alpha1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1alpha1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+							TokenEndpoint:         "https://github.com/login/oauth/access_token",
+							ClientID:              "client-id",
+							// RedirectURI intentionally omitted
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				require.NotNil(t, config.Upstreams[0].OAuth2Config)
+				assert.Equal(t, "https://mcp.example.com/oauth/callback", config.Upstreams[0].OAuth2Config.RedirectURI)
+			},
+		},
+		{
+			name:        "explicit redirectUri is preserved when resourceURL is also set",
+			resourceURL: "https://mcp.example.com",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL:   "https://okta.example.com",
+							ClientID:    "client-id",
+							RedirectURI: "https://custom.example.com/callback",
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				require.NotNil(t, config.Upstreams[0].OIDCConfig)
+				assert.Equal(t, "https://custom.example.com/callback", config.Upstreams[0].OIDCConfig.RedirectURI)
+			},
+		},
+		{
+			name:        "resourceURL with trailing slash produces correct default redirectUri",
+			resourceURL: "https://mcp.example.com/",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL: "https://okta.example.com",
+							ClientID:  "client-id",
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				require.NotNil(t, config.Upstreams[0].OIDCConfig)
+				assert.Equal(t, "https://mcp.example.com/oauth/callback", config.Upstreams[0].OIDCConfig.RedirectURI)
+			},
+		},
 	}
 
 	for _, tt := range tests {

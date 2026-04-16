@@ -55,3 +55,36 @@ task operator-test            # Run unit tests
 task operator-e2e-test        # Run e2e tests
 task crdref-gen              # Generate CRD API docs (run from cmd/thv-operator/)
 ```
+
+## Spec / metadata patching
+
+Never use `r.Update` on a CR spec or metadata: `Update` is a full PUT,
+so any field our local copy does not track (e.g. `spec.authzConfig`
+written by an external operator via server-side apply) gets zeroed on
+every reconcile.
+
+Use an **optimistic-lock merge patch** instead. The merge-patch body
+only contains fields the caller changed, and `MergeFromWithOptimisticLock`
+sends `resourceVersion` as a precondition so concurrent writers get a
+409 and a clean requeue. This also defends `metadata.finalizers`:
+merge-patch has no array-merge semantics, so without the lock a write
+including the `finalizers` array would replace it wholesale.
+
+```go
+original := mcpServer.DeepCopy()
+controllerutil.AddFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer")
+if err := r.Patch(ctx, mcpServer,
+    client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
+    return ctrl.Result{}, err
+}
+```
+
+Do not put unrelated work between the `DeepCopy` and the `Patch`: the
+wire diff is computed from that snapshot, so anything you mutate in
+between leaks into the patch body.
+
+Expect 409s as routine log noise once external SSA writers land — the
+guard doing its job, not a bug.
+
+Status-subresource patching follows the same "never `Update`" rule and
+is covered separately once the shared helper lands (#4633).

@@ -26,11 +26,15 @@ import (
 // Desktop clients (Studio) match on this value to display the correct UI.
 const RegistryAuthRequiredCode = "registry_auth_required"
 
-// registryErrorResponse is the JSON body for structured HTTP 503 error responses.
+// registryErrorResponse is the JSON body for structured HTTP error responses.
 // The "code" field allows clients (e.g. Studio) to distinguish between
 // "registry_auth_required" and "registry_unavailable" conditions.
+//
+//	@Description	Structured error response returned by registry endpoints
 type registryErrorResponse struct {
-	Code    string `json:"code"`
+	// Code is a machine-readable error code (e.g. "not_found", "registry_auth_required")
+	Code string `json:"code"`
+	// Message is a human-readable description of the error
 	Message string `json:"message"`
 }
 
@@ -93,7 +97,7 @@ func newSecretsProvider(configProvider config.Provider) (secrets.Provider, error
 	if err != nil {
 		return nil, fmt.Errorf("getting secrets provider type: %w", err)
 	}
-	return secrets.CreateSecretProvider(providerType)
+	return secrets.CreateProvider(providerType, secrets.WithScope(secrets.ScopeRegistry))
 }
 
 // registryAuthLogin handles POST /registry/auth/login.

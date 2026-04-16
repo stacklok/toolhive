@@ -461,7 +461,7 @@ func TestListWorkloadsInGroup(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
@@ -473,7 +473,7 @@ func TestListWorkloadsInGroup(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
@@ -485,7 +485,7 @@ func TestListWorkloadsInGroup(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
-			GroupRef:  "group-b",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-b"},
 		},
 	}
 
@@ -523,7 +523,7 @@ func TestListWorkloadsInGroup_MCPRemoteProxies(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: "group-a",
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
@@ -533,7 +533,7 @@ func TestListWorkloadsInGroup_MCPRemoteProxies(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: "group-a",
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
@@ -543,7 +543,7 @@ func TestListWorkloadsInGroup_MCPRemoteProxies(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: "group-b",
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-b"},
 		},
 	}
 
@@ -583,7 +583,7 @@ func TestListWorkloadsInGroup_MixedWorkloads(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
@@ -595,7 +595,7 @@ func TestListWorkloadsInGroup_MixedWorkloads(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
-			GroupRef:  "group-b", // Different group
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-b"}, // Different group
 		},
 	}
 
@@ -606,7 +606,7 @@ func TestListWorkloadsInGroup_MixedWorkloads(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: "group-a",
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
@@ -616,7 +616,7 @@ func TestListWorkloadsInGroup_MixedWorkloads(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: "group-a",
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
@@ -995,7 +995,7 @@ func TestListWorkloadsInGroup_MCPServerEntries(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp1.example.com",
 			Transport: "streamable-http",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
@@ -1007,7 +1007,7 @@ func TestListWorkloadsInGroup_MCPServerEntries(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp2.example.com",
 			Transport: "sse",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
@@ -1019,7 +1019,7 @@ func TestListWorkloadsInGroup_MCPServerEntries(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp3.example.com",
 			Transport: "streamable-http",
-			GroupRef:  "group-b",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-b"},
 		},
 	}
 
@@ -1057,7 +1057,7 @@ func TestListWorkloadsInGroup_AllWorkloadTypes(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "streamable-http",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
@@ -1067,7 +1067,7 @@ func TestListWorkloadsInGroup_AllWorkloadTypes(t *testing.T) {
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: "group-a",
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
@@ -1079,7 +1079,7 @@ func TestListWorkloadsInGroup_AllWorkloadTypes(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com",
 			Transport: "streamable-http",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 	}
 
@@ -1108,7 +1108,7 @@ func TestGetWorkloadAsVMCPBackend_MCPServerEntry(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/v1",
 			Transport: "streamable-http",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 		Status: mcpv1alpha1.MCPServerEntryStatus{
 			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
@@ -1160,7 +1160,7 @@ func TestMCPServerEntryToBackend_BasicFields(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/v1",
 			Transport: "streamable-http",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 		Status: mcpv1alpha1.MCPServerEntryStatus{
 			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
@@ -1200,7 +1200,7 @@ func TestMCPServerEntryToBackend_SSETransport(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/sse",
 			Transport: "sse",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 		Status: mcpv1alpha1.MCPServerEntryStatus{
 			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
@@ -1233,7 +1233,7 @@ func TestMCPServerEntryToBackend_WithAnnotations(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/v1",
 			Transport: "streamable-http",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 		Status: mcpv1alpha1.MCPServerEntryStatus{
 			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
@@ -1263,7 +1263,7 @@ func TestMCPServerEntryToBackend_EmptyRemoteURL(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "",
 			Transport: "streamable-http",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 		Status: mcpv1alpha1.MCPServerEntryStatus{
 			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
@@ -1308,7 +1308,7 @@ func TestGetWorkloadAsVMCPBackend_MCPServerEntry_NonValidPhaseSkipped(t *testing
 				Spec: mcpv1alpha1.MCPServerEntrySpec{
 					RemoteURL: "https://mcp.example.com/v1",
 					Transport: "streamable-http",
-					GroupRef:  "group-a",
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 				},
 				Status: mcpv1alpha1.MCPServerEntryStatus{
 					Phase: tt.phase,
@@ -1406,7 +1406,7 @@ func TestMCPServerEntryToBackend_HealthStatusMapping(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerEntrySpec{
 					RemoteURL: "https://mcp.example.com",
 					Transport: "streamable-http",
-					GroupRef:  "group-a",
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 				},
 				Status: mcpv1alpha1.MCPServerEntryStatus{
 					Phase: tt.phase,
@@ -1437,7 +1437,7 @@ func TestDiscoverAuth_MCPServerEntry_NoAuthConfig(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com",
 			Transport: "streamable-http",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 		},
 		Status: mcpv1alpha1.MCPServerEntryStatus{
 			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
@@ -1470,7 +1470,7 @@ func TestDiscoverAuth_MCPServerEntry_AuthConfigNotFound(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com",
 			Transport: "streamable-http",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 				Name: "non-existent-auth-config",
 			},
@@ -1538,7 +1538,7 @@ func TestDiscoverAuth_MCPServerEntry_TokenExchange(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com",
 			Transport: "streamable-http",
-			GroupRef:  "group-a",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "group-a"},
 			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 				Name: "entry-token-exchange",
 			},
@@ -1579,7 +1579,7 @@ func TestMCPServerEntryToBackend_SetsBackendTypeEntry(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/mcp",
 			Transport: "streamable-http",
-			GroupRef:  "test-group",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 		Status: mcpv1alpha1.MCPServerEntryStatus{
 			Phase: mcpv1alpha1.MCPServerEntryPhaseValid,
@@ -1619,7 +1619,7 @@ func TestMCPServerEntryToBackend_WithCABundle(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://internal-mcp.corp:8443/mcp",
 			Transport: "streamable-http",
-			GroupRef:  "test-group",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			CABundleRef: &mcpv1alpha1.CABundleSource{
 				ConfigMapRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
@@ -1658,7 +1658,7 @@ func TestMCPServerEntryToBackend_CABundleMissing_ReturnsNil(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://internal-mcp.corp:8443/mcp",
 			Transport: "streamable-http",
-			GroupRef:  "test-group",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			CABundleRef: &mcpv1alpha1.CABundleSource{
 				ConfigMapRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
@@ -1706,7 +1706,7 @@ func TestMCPServerEntryToBackend_WithCABundleDefaultKey(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://internal-mcp.corp:8443/mcp",
 			Transport: "streamable-http",
-			GroupRef:  "test-group",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			CABundleRef: &mcpv1alpha1.CABundleSource{
 				ConfigMapRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{

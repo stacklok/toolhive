@@ -106,11 +106,7 @@ func (hc *HealthChecker) checkMCPStatus(ctx context.Context) *MCPStatus {
 		LastChecked: time.Now(),
 	}
 
-	// Create a context with timeout for the ping
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	duration, err := hc.mcpPinger.Ping(pingCtx)
+	duration, err := hc.mcpPinger.Ping(ctx)
 
 	if err != nil {
 		status.Available = false

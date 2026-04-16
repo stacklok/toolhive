@@ -121,11 +121,14 @@ var vmcpDiscoveredRBACRules = []rbacv1.PolicyRule{
 	},
 }
 
-// deploymentForVirtualMCPServer returns a VirtualMCPServer Deployment object
+// deploymentForVirtualMCPServer returns a VirtualMCPServer Deployment object.
+// telemetryCfg is the already-fetched MCPTelemetryConfig (nil when not referenced),
+// used for CA bundle volumes and OpenTelemetry env vars without redundant API calls.
 func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) *appsv1.Deployment {
 	ls := labelsForVirtualMCPServer(vmcp.Name)
@@ -137,7 +140,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		log.FromContext(ctx).Error(err, "Failed to build volumes for VirtualMCPServer")
 		return nil
 	}
-	env, err := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
+	env, err := r.buildEnvVarsForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
 	if err != nil {
 		log.FromContext(ctx).Error(err, "Failed to build env vars for VirtualMCPServer")
 		return nil
@@ -151,6 +154,13 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	}
 	volumes = append(volumes, caVolumes...)
 	volumeMounts = append(volumeMounts, caMounts...)
+
+	// Add telemetry CA bundle volumes from the pre-fetched MCPTelemetryConfig
+	if telemetryCfg != nil {
+		telVolumes, telMounts := ctrlutil.AddTelemetryCABundleVolumes(telemetryCfg)
+		volumes = append(volumes, telVolumes...)
+		volumeMounts = append(volumeMounts, telMounts...)
+	}
 
 	// Add embedded auth server volumes and env vars if configured (inline config)
 	if vmcp.Spec.AuthServerConfig != nil {
@@ -198,7 +208,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 							vmcpLivenessInitialDelay, vmcpLivenessPeriod, vmcpLivenessTimeout, vmcpLivenessFailures,
 						),
 						ReadinessProbe: ctrlutil.BuildHealthProbe(
-							"/health", "http",
+							"/readyz", "http",
 							vmcpReadinessInitialDelay, vmcpReadinessPeriod, vmcpReadinessTimeout, vmcpReadinessFailures,
 						),
 						SecurityContext: containerSecurityContext,
@@ -287,23 +297,17 @@ func (r *VirtualMCPServerReconciler) buildVolumesForVmcp(
 	})
 
 	// Add OIDC CA bundle volume if configured
-	if vmcp.Spec.IncomingAuth != nil {
-		if vmcp.Spec.IncomingAuth.OIDCConfig != nil {
-			caVolumes, caMounts := ctrlutil.AddOIDCCABundleVolumes(vmcp.Spec.IncomingAuth.OIDCConfig)
+	if vmcp.Spec.IncomingAuth != nil && vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
+		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(
+			ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get MCPOIDCConfig %s for CA bundle: %w",
+				vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
+		}
+		if oidcCfg != nil {
+			caVolumes, caMounts := ctrlutil.AddOIDCConfigRefCABundleVolumes(oidcCfg)
 			volumes = append(volumes, caVolumes...)
 			volumeMounts = append(volumeMounts, caMounts...)
-		} else if vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
-			oidcCfg, err := ctrlutil.GetOIDCConfigForServer(
-				ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
-			if err != nil {
-				return nil, nil, fmt.Errorf("failed to get MCPOIDCConfig %s for CA bundle: %w",
-					vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
-			}
-			if oidcCfg != nil {
-				caVolumes, caMounts := ctrlutil.AddOIDCConfigRefCABundleVolumes(oidcCfg)
-				volumes = append(volumes, caVolumes...)
-				volumeMounts = append(volumeMounts, caMounts...)
-			}
 		}
 	}
 
@@ -312,10 +316,12 @@ func (r *VirtualMCPServerReconciler) buildVolumesForVmcp(
 	return volumeMounts, volumes, nil
 }
 
-// buildEnvVarsForVmcp builds environment variables for the vmcp container
+// buildEnvVarsForVmcp builds environment variables for the vmcp container.
+// telemetryCfg is the already-fetched MCPTelemetryConfig (nil when not referenced).
 func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) ([]corev1.EnvVar, error) {
 	env := []corev1.EnvVar{}
@@ -347,6 +353,13 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	// Mount Redis password secret when session storage provider is Redis.
 	env = append(env, r.buildRedisPasswordEnvVar(vmcp)...)
 
+	// Mount OpenTelemetry env vars (resource attributes, sensitive headers) from the pre-fetched MCPTelemetryConfig
+	if telemetryCfg != nil && vmcp.Spec.TelemetryConfigRef != nil {
+		otelEnv := ctrlutil.GenerateOpenTelemetryEnvVarsFromRef(
+			telemetryCfg, vmcp.Spec.TelemetryConfigRef, vmcp.Name, vmcp.Namespace)
+		env = append(env, otelEnv...)
+	}
+
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env), nil
 }
 
@@ -360,25 +373,7 @@ func (r *VirtualMCPServerReconciler) buildOIDCEnvVars(
 		return env, nil
 	}
 
-	// Legacy path: inline OIDCConfig client secret
-	if vmcp.Spec.IncomingAuth.OIDCConfig != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig.Inline.ClientSecretRef != nil {
-		inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
-		env = append(env, corev1.EnvVar{
-			Name: "VMCP_OIDC_CLIENT_SECRET",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: inline.ClientSecretRef.Name,
-					},
-					Key: inline.ClientSecretRef.Key,
-				},
-			},
-		})
-	}
-
-	// New path: MCPOIDCConfig inline client secret
+	// MCPOIDCConfig inline client secret
 	if vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
 		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(
 			ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
@@ -831,7 +826,7 @@ func getVmcpImage() string {
 // at pod startup, providing faster feedback to users.
 //
 // Validated secrets include:
-// - OIDC client secrets (IncomingAuth.OIDCConfig.Inline.ClientSecretRef)
+// - OIDC client secrets (via MCPOIDCConfig inline ClientSecretRef)
 // - Service account credentials (OutgoingAuth.*.ServiceAccount.CredentialsRef)
 //
 // This follows the pattern from ctrlutil.GenerateOIDCClientSecretEnvVar() which validates secrets
@@ -842,18 +837,6 @@ func (r *VirtualMCPServerReconciler) validateSecretReferences(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) error {
-	// Validate OIDC client secret if configured (legacy inline path)
-	if vmcp.Spec.IncomingAuth != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig.Inline.ClientSecretRef != nil {
-		if err := r.validateSecretKeyRef(ctx, vmcp.Namespace,
-			vmcp.Spec.IncomingAuth.OIDCConfig.Inline.ClientSecretRef,
-			"OIDC client secret"); err != nil {
-			return err
-		}
-	}
-
 	// Validate MCPOIDCConfig inline client secret if configured
 	if vmcp.Spec.IncomingAuth != nil && vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
 		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(

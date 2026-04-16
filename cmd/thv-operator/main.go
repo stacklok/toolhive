@@ -32,7 +32,6 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
 )
 
@@ -160,7 +159,7 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 
 	// Set up server-related controllers
 	if enabledFeatures[featureServer] {
-		if err := setupServerControllers(mgr, enableRegistry); err != nil {
+		if err := setupServerControllers(mgr); err != nil {
 			return err
 		}
 	} else {
@@ -199,10 +198,11 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 		"spec.groupRef",
 		func(obj client.Object) []string {
 			mcpServer := obj.(*mcpv1alpha1.MCPServer)
-			if mcpServer.Spec.GroupRef == "" {
+			name := mcpServer.Spec.GroupRef.GetName()
+			if name == "" {
 				return nil
 			}
-			return []string{mcpServer.Spec.GroupRef}
+			return []string{name}
 		},
 	); err != nil {
 		return fmt.Errorf("unable to create field index for MCPServer spec.groupRef: %w", err)
@@ -215,10 +215,11 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 		"spec.groupRef",
 		func(obj client.Object) []string {
 			mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-			if mcpRemoteProxy.Spec.GroupRef == "" {
+			name := mcpRemoteProxy.Spec.GroupRef.GetName()
+			if name == "" {
 				return nil
 			}
-			return []string{mcpRemoteProxy.Spec.GroupRef}
+			return []string{name}
 		},
 	); err != nil {
 		return fmt.Errorf("unable to create field index for MCPRemoteProxy spec.groupRef: %w", err)
@@ -231,10 +232,11 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 		"spec.groupRef",
 		func(obj client.Object) []string {
 			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
-			if mcpServerEntry.Spec.GroupRef == "" {
+			name := mcpServerEntry.Spec.GroupRef.GetName()
+			if name == "" {
 				return nil
 			}
-			return []string{mcpServerEntry.Spec.GroupRef}
+			return []string{name}
 		},
 	); err != nil {
 		return fmt.Errorf("unable to create field index for MCPServerEntry spec.groupRef: %w", err)
@@ -245,17 +247,9 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 
 // setupServerControllers sets up server-related controllers
 // (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, MCPServerEntry, ToolConfig).
-func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
+func setupServerControllers(mgr ctrl.Manager) error {
 	if err := setupGroupRefFieldIndexes(mgr); err != nil {
 		return err
-	}
-
-	// Set image validation mode based on whether registry is enabled
-	// If ENABLE_REGISTRY is enabled, enforce registry-based image validation
-	// Otherwise, allow all images
-	imageValidation := validation.ImageValidationAlwaysAllow
-	if enableRegistry {
-		imageValidation = validation.ImageValidationRegistryEnforcing
 	}
 
 	// Set up MCPServer controller
@@ -264,7 +258,6 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		Scheme:           mgr.GetScheme(),
 		Recorder:         mgr.GetEventRecorder("mcpserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-		ImageValidation:  imageValidation,
 	}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPServer: %w", err)
@@ -318,7 +311,6 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		Scheme:           mgr.GetScheme(),
 		Recorder:         mgr.GetEventRecorder("embeddingserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-		ImageValidation:  imageValidation,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller EmbeddingServer: %w", err)
 	}

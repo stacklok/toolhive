@@ -431,7 +431,8 @@ func (r *MCPGroupReconciler) findMCPGroupForMCPServer(ctx context.Context, obj c
 		ctxLogger.Error(nil, "Object is not an MCPServer", "object", obj.GetName())
 		return []ctrl.Request{}
 	}
-	if mcpServer.Spec.GroupRef == "" {
+	groupName := mcpServer.Spec.GroupRef.GetName()
+	if groupName == "" {
 		// No MCPGroup reference, nothing to do
 		return []ctrl.Request{}
 	}
@@ -444,10 +445,10 @@ func (r *MCPGroupReconciler) findMCPGroupForMCPServer(ctx context.Context, obj c
 		"mcpserver",
 		obj.GetName(),
 		"groupRef",
-		mcpServer.Spec.GroupRef)
+		groupName)
 	group := &mcpv1alpha1.MCPGroup{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: obj.GetNamespace(), Name: mcpServer.Spec.GroupRef}, group); err != nil {
-		ctxLogger.Error(err, "Failed to get MCPGroup for MCPServer", "namespace", obj.GetNamespace(), "name", mcpServer.Spec.GroupRef)
+	if err := r.Get(ctx, types.NamespacedName{Namespace: obj.GetNamespace(), Name: groupName}, group); err != nil {
+		ctxLogger.Error(err, "Failed to get MCPGroup for MCPServer", "namespace", obj.GetNamespace(), "name", groupName)
 		return []ctrl.Request{}
 	}
 	return []ctrl.Request{
@@ -469,7 +470,8 @@ func (r *MCPGroupReconciler) findMCPGroupForMCPRemoteProxy(ctx context.Context, 
 		ctxLogger.Error(nil, "Object is not an MCPRemoteProxy", "object", obj.GetName())
 		return []ctrl.Request{}
 	}
-	if mcpRemoteProxy.Spec.GroupRef == "" {
+	groupName := mcpRemoteProxy.Spec.GroupRef.GetName()
+	if groupName == "" {
 		// No MCPGroup reference, nothing to do
 		return []ctrl.Request{}
 	}
@@ -482,12 +484,12 @@ func (r *MCPGroupReconciler) findMCPGroupForMCPRemoteProxy(ctx context.Context, 
 		"mcpremoteproxy",
 		obj.GetName(),
 		"groupRef",
-		mcpRemoteProxy.Spec.GroupRef)
+		groupName)
 	group := &mcpv1alpha1.MCPGroup{}
-	groupKey := types.NamespacedName{Namespace: obj.GetNamespace(), Name: mcpRemoteProxy.Spec.GroupRef}
+	groupKey := types.NamespacedName{Namespace: obj.GetNamespace(), Name: groupName}
 	if err := r.Get(ctx, groupKey, group); err != nil {
 		ctxLogger.Error(err, "Failed to get MCPGroup for MCPRemoteProxy",
-			"namespace", obj.GetNamespace(), "name", mcpRemoteProxy.Spec.GroupRef)
+			"namespace", obj.GetNamespace(), "name", groupName)
 		return []ctrl.Request{}
 	}
 	return []ctrl.Request{
@@ -508,7 +510,8 @@ func (r *MCPGroupReconciler) findMCPGroupForMCPServerEntry(ctx context.Context, 
 		ctxLogger.Error(nil, "Object is not an MCPServerEntry", "object", obj.GetName())
 		return []ctrl.Request{}
 	}
-	if mcpServerEntry.Spec.GroupRef == "" {
+	groupName := mcpServerEntry.Spec.GroupRef.GetName()
+	if groupName == "" {
 		return []ctrl.Request{}
 	}
 
@@ -516,12 +519,12 @@ func (r *MCPGroupReconciler) findMCPGroupForMCPServerEntry(ctx context.Context, 
 		"Finding MCPGroup for MCPServerEntry",
 		"namespace", obj.GetNamespace(),
 		"mcpserverentry", obj.GetName(),
-		"groupRef", mcpServerEntry.Spec.GroupRef)
+		"groupRef", groupName)
 	group := &mcpv1alpha1.MCPGroup{}
-	groupKey := types.NamespacedName{Namespace: obj.GetNamespace(), Name: mcpServerEntry.Spec.GroupRef}
+	groupKey := types.NamespacedName{Namespace: obj.GetNamespace(), Name: groupName}
 	if err := r.Get(ctx, groupKey, group); err != nil {
 		ctxLogger.Error(err, "Failed to get MCPGroup for MCPServerEntry",
-			"namespace", obj.GetNamespace(), "name", mcpServerEntry.Spec.GroupRef)
+			"namespace", obj.GetNamespace(), "name", groupName)
 		return []ctrl.Request{}
 	}
 	return []ctrl.Request{

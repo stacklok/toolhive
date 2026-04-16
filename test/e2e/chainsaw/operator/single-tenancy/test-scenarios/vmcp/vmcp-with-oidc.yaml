@@ -4,24 +4,17 @@ metadata:
   name: test-vmcp-oidc
   namespace: toolhive-system
 spec:
+  groupRef:
+    name: test-group-controller
   config:
-    groupRef: test-group-controller
     aggregation:
       conflictResolution: prefix
       conflictResolutionConfig:
         prefixFormat: "{workload}_"
   incomingAuth:
     type: oidc
-    oidcConfig:
-      type: inline
-      resourceUrl: http://test-vmcp-oidc.toolhive-system.svc.cluster.local:4483
-      inline:
-        issuer: https://auth.example.com
-        clientId: test-client-id
-        audience: vmcp-test
-        # Using ClientSecretRef to reference a Kubernetes Secret (secure approach)
-        clientSecretRef:
-          name: test-oidc-client-secret
-          key: clientSecret
+    oidcConfigRef:
+      name: test-vmcp-oidc-config
+      audience: vmcp-test
   outgoingAuth:
     source: discovered

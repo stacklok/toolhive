@@ -106,10 +106,11 @@ var _ = BeforeSuite(func() {
 	// Set up field indexing for MCPServer.Spec.GroupRef (required by MCPGroup controller)
 	if err := k8sManager.GetFieldIndexer().IndexField(ctx, &mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 		mcpServer := obj.(*mcpv1alpha1.MCPServer)
-		if mcpServer.Spec.GroupRef == "" {
+		name := mcpServer.Spec.GroupRef.GetName()
+		if name == "" {
 			return nil
 		}
-		return []string{mcpServer.Spec.GroupRef}
+		return []string{name}
 	}); err != nil {
 		Expect(err).ToNot(HaveOccurred())
 	}
@@ -117,10 +118,11 @@ var _ = BeforeSuite(func() {
 	// Set up field indexing for MCPRemoteProxy.Spec.GroupRef
 	if err := k8sManager.GetFieldIndexer().IndexField(ctx, &mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 		mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-		if mcpRemoteProxy.Spec.GroupRef == "" {
+		name := mcpRemoteProxy.Spec.GroupRef.GetName()
+		if name == "" {
 			return nil
 		}
-		return []string{mcpRemoteProxy.Spec.GroupRef}
+		return []string{name}
 	}); err != nil {
 		Expect(err).ToNot(HaveOccurred())
 	}
@@ -132,10 +134,11 @@ var _ = BeforeSuite(func() {
 		"spec.groupRef",
 		func(obj client.Object) []string {
 			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
-			if mcpServerEntry.Spec.GroupRef == "" {
+			name := mcpServerEntry.Spec.GroupRef.GetName()
+			if name == "" {
 				return nil
 			}
-			return []string{mcpServerEntry.Spec.GroupRef}
+			return []string{name}
 		},
 	)
 	Expect(err).ToNot(HaveOccurred())
@@ -164,6 +167,13 @@ var _ = BeforeSuite(func() {
 
 	// Register the MCPExternalAuthConfig controller
 	err = (&controllers.MCPExternalAuthConfigReconciler{
+		Client: k8sManager.GetClient(),
+		Scheme: k8sManager.GetScheme(),
+	}).SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
+	// Register the MCPOIDCConfig controller (needed for authServerRef tests that use OIDCConfigRef)
+	err = (&controllers.MCPOIDCConfigReconciler{
 		Client: k8sManager.GetClient(),
 		Scheme: k8sManager.GetScheme(),
 	}).SetupWithManager(k8sManager)

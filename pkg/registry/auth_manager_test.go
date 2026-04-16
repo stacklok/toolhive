@@ -43,7 +43,7 @@ func TestDefaultAuthManager_UnsetAuth(t *testing.T) {
 			// Capture the update function and verify it zeroes RegistryAuth.
 			mockProvider.EXPECT().
 				UpdateConfig(gomock.Any()).
-				DoAndReturn(func(fn func(*config.Config)) error {
+				DoAndReturn(func(fn func(*config.Config) error) error {
 					if tt.updateErr != nil {
 						return tt.updateErr
 					}
@@ -56,7 +56,7 @@ func TestDefaultAuthManager_UnsetAuth(t *testing.T) {
 							},
 						},
 					}
-					fn(cfg)
+					require.NoError(t, fn(cfg))
 					// After the update function runs, RegistryAuth must be zero.
 					require.Equal(t, config.RegistryAuth{}, cfg.RegistryAuth)
 					return nil

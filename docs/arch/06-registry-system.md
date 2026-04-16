@@ -757,31 +757,10 @@ status:
 
 ### Storage
 
-Registry data stored in ConfigMap:
-
-**Format:**
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: company-registry-storage
-  ownerReferences:
-  - apiVersion: mcp.stacklok.com/v1alpha1
-    kind: MCPRegistry
-    name: company-registry
-data:
-  registry.json: |
-    { ... }
-  sync_metadata.json: |
-    {
-      "lastSyncTime": "2025-10-13T12:00:00Z",
-      "hash": "abc123"
-    }
-```
-
-**Owner references** ensure automatic cleanup when MCPRegistry deleted.
-
-**Implementation**: `cmd/thv-operator/pkg/sources/storage_manager.go`
+Registry data is managed by the registry server itself. The operator creates a
+`{name}-registry-server-config` ConfigMap containing the registry server's
+configuration (from `configYAML`), and the registry server fetches and stores
+data from its configured sources (Git, API, Kubernetes, etc.) at runtime.
 
 ## Registry Schema
 
@@ -970,11 +949,6 @@ kubectl get mcpregistry company-registry -o yaml
 **Trigger manual sync:**
 ```bash
 kubectl annotate mcpregistry company-registry toolhive.stacklok.dev/sync-trigger=true
-```
-
-**View registry data:**
-```bash
-kubectl get configmap company-registry-storage -o jsonpath='{.data.registry\.json}' | jq
 ```
 
 **Implementation**: `cmd/thv-operator/controllers/mcpregistry_controller.go`

@@ -73,6 +73,36 @@ type SkillInfo struct {
 	InstalledSkill *InstalledSkill `json:"installed_skill,omitempty"`
 }
 
+// ContentOptions configures the behavior of the GetContent operation.
+type ContentOptions struct {
+	// Reference is an OCI reference (e.g. ghcr.io/org/skill:v1) or a local build tag.
+	Reference string `json:"reference"`
+}
+
+// SkillFileEntry represents a single file within a skill artifact.
+type SkillFileEntry struct {
+	// Path is the file path within the artifact.
+	Path string `json:"path"`
+	// Size is the uncompressed file size in bytes.
+	Size int `json:"size"`
+}
+
+// SkillContent contains the SKILL.md body and file listing extracted from an OCI artifact.
+type SkillContent struct {
+	// Name is the skill name from the OCI config labels.
+	Name string `json:"name"`
+	// Description is the skill description from the OCI config labels.
+	Description string `json:"description"`
+	// Version is the skill version from the OCI config labels.
+	Version string `json:"version,omitempty"`
+	// License is the SPDX license identifier from the OCI config labels.
+	License string `json:"license,omitempty"`
+	// Body is the raw SKILL.md markdown content.
+	Body string `json:"body"`
+	// Files is the list of all files in the artifact with their sizes.
+	Files []SkillFileEntry `json:"files"`
+}
+
 // ValidationResult contains the outcome of a Validate operation.
 type ValidationResult struct {
 	// Valid indicates whether the skill definition is valid.

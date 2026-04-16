@@ -98,9 +98,10 @@ type Config struct {
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 
 	// Group references an existing MCPGroup that defines backend workloads.
-	// In Kubernetes, the referenced MCPGroup must exist in the same namespace.
-	// +kubebuilder:validation:Required
-	Group string `json:"groupRef" yaml:"groupRef"`
+	// In standalone CLI mode, this is set from the YAML config file.
+	// In Kubernetes, the operator populates this from spec.groupRef during conversion.
+	// +optional
+	Group string `json:"groupRef,omitempty" yaml:"groupRef,omitempty"`
 
 	// Backends defines pre-configured backend servers for static mode.
 	// When OutgoingAuth.Source is "inline", this field contains the full list of backend
@@ -147,6 +148,9 @@ type Config struct {
 
 	// Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
 	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.
+	// Deprecated (Kubernetes operator only): When deploying via the operator, use
+	// VirtualMCPServer.spec.telemetryConfigRef to reference a shared MCPTelemetryConfig
+	// resource instead. This field remains valid for standalone (non-operator) deployments.
 	// +optional
 	Telemetry *telemetry.Config `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 

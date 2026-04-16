@@ -235,8 +235,9 @@ func setOtelEndpointCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.Endpoint = endpoint
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -269,8 +270,9 @@ func unsetOtelEndpointCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.Endpoint = ""
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -292,8 +294,9 @@ func setOtelSamplingRateCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	// Update the configuration
-	err = config.UpdateConfig(func(c *config.Config) {
+	err = config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.SamplingRate = rate
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -326,8 +329,9 @@ func unsetOtelSamplingRateCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.SamplingRate = 0.0
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -346,8 +350,9 @@ func setOtelEnvVarsCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.EnvVars = vars
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -380,8 +385,9 @@ func unsetOtelEnvVarsCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.EnvVars = []string{}
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -398,8 +404,9 @@ func setOtelMetricsEnabledCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	// Update the configuration
-	err = config.UpdateConfig(func(c *config.Config) {
+	err = config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.MetricsEnabled = &enabled
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -428,8 +435,9 @@ func unsetOtelMetricsEnabledCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.MetricsEnabled = nil
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -446,8 +454,9 @@ func setOtelTracingEnabledCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	// Update the configuration
-	err = config.UpdateConfig(func(c *config.Config) {
+	err = config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.TracingEnabled = &enabled
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -476,8 +485,9 @@ func unsetOtelTracingEnabledCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.TracingEnabled = nil
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -494,8 +504,9 @@ func setOtelInsecureCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	// Update the configuration
-	err = config.UpdateConfig(func(c *config.Config) {
+	err = config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.Insecure = enabled
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -523,8 +534,9 @@ func unsetOtelInsecureCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.Insecure = false
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -541,8 +553,9 @@ func setOtelEnablePrometheusMetricsPathCmdFunc(_ *cobra.Command, args []string) 
 	}
 
 	// Update the configuration
-	err = config.UpdateConfig(func(c *config.Config) {
+	err = config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.EnablePrometheusMetricsPath = enabled
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -570,8 +583,9 @@ func unsetOtelEnablePrometheusMetricsPathCmdFunc(_ *cobra.Command, _ []string) e
 	}
 
 	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) error {
 		c.OTEL.EnablePrometheusMetricsPath = false
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)

@@ -6,6 +6,7 @@ package sessionmanager
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -79,14 +80,11 @@ func newMockFactoryWithError(t *testing.T, ctrl *gomock.Controller, err error) *
 	return factory
 }
 
-// alwaysFailDataStorage is a DataStorage whose Upsert/Create always return an
+// alwaysFailDataStorage is a DataStorage whose Create/Update always return an
 // error. It is used to exercise the Generate() double-failure path (UUID collision
 // simulation — both attempts to Create fail, so Generate() must return "").
 type alwaysFailDataStorage struct{}
 
-func (alwaysFailDataStorage) Upsert(_ context.Context, _ string, _ map[string]string) error {
-	return errors.New("storage unavailable")
-}
 func (alwaysFailDataStorage) Load(_ context.Context, _ string) (map[string]string, error) {
 	return nil, transportsession.ErrSessionNotFound
 }
@@ -104,20 +102,13 @@ func (alwaysFailDataStorage) Close() error                             { return 
 type configurableFailDataStorage struct {
 	transportsession.DataStorage
 	storeCallCount int
-	failStoreAfter int // fail Upsert/Create after this many successful calls (0 = never fail, -1 = always fail)
+	failStoreAfter int // fail Create/Update after this many successful calls (0 = never fail, -1 = always fail)
 	failDelete     bool
 }
 
 func (s *configurableFailDataStorage) shouldFail() bool {
 	s.storeCallCount++
 	return s.failStoreAfter == -1 || (s.failStoreAfter >= 0 && s.storeCallCount > s.failStoreAfter)
-}
-
-func (s *configurableFailDataStorage) Upsert(ctx context.Context, id string, metadata map[string]string) error {
-	if s.shouldFail() {
-		return errors.New("injected Upsert failure")
-	}
-	return s.DataStorage.Upsert(ctx, id, metadata)
 }
 
 func (s *configurableFailDataStorage) Create(ctx context.Context, id string, metadata map[string]string) (bool, error) {
@@ -139,6 +130,39 @@ func (s *configurableFailDataStorage) Delete(ctx context.Context, id string) err
 		return errors.New("injected Delete failure")
 	}
 	return s.DataStorage.Delete(ctx, id)
+}
+
+// deleteBeforeUpdateStorage wraps a real DataStorage and deletes the key
+// from the underlying store on the first Update call, simulating a concurrent
+// Terminate / TTL expiry that races with loadSession's metadata write-back.
+// The Update then returns (false, nil) because the key no longer exists.
+type deleteBeforeUpdateStorage struct {
+	transportsession.DataStorage
+	deleted bool
+}
+
+func (s *deleteBeforeUpdateStorage) Update(ctx context.Context, id string, metadata map[string]string) (bool, error) {
+	if !s.deleted {
+		s.deleted = true
+		_ = s.Delete(ctx, id)
+	}
+	return s.DataStorage.Update(ctx, id, metadata)
+}
+
+// errorOnUpdateStorage wraps a real DataStorage and returns an error on the
+// first Update call, simulating a transient Redis write failure during
+// loadSession's metadata write-back.
+type errorOnUpdateStorage struct {
+	transportsession.DataStorage
+	errored bool
+}
+
+func (s *errorOnUpdateStorage) Update(_ context.Context, _ string, _ map[string]string) (bool, error) {
+	if !s.errored {
+		s.errored = true
+		return false, errors.New("injected Update failure")
+	}
+	return true, nil
 }
 
 // fakeBackendRegistry is a simple BackendRegistry for tests.
@@ -615,12 +639,16 @@ func TestSessionManager_Terminate(t *testing.T) {
 		sessionID := sm.Generate()
 		require.NotEmpty(t, sessionID)
 
-		// Upgrade to full MultiSession; CreateSession writes tokenHashMeta to storage.
 		_, err := sm.CreateSession(context.Background(), sessionID)
 		require.NoError(t, err)
 		require.NotNil(t, createdSess)
 
-		// Terminate deletes from storage; cache entry remains until next Get.
+		// CreateSession already persists tokenHashMeta via sess.GetMetadata(),
+		// so Terminate will take the Phase 2 path (storage.Delete) without
+		// any additional seeding.
+
+		// Terminate deletes from storage; the cache entry is evicted lazily on
+		// the next GetMultiSession call when checkSession detects ErrSessionNotFound.
 		isNotAllowed, err := sm.Terminate(sessionID)
 		require.NoError(t, err)
 		assert.False(t, isNotAllowed)
@@ -657,9 +685,10 @@ func TestSessionManager_Terminate(t *testing.T) {
 
 		// Seed MetadataKeyTokenHash into storage so Terminate recognises this
 		// as a Phase 2 (full MultiSession) and deletes rather than marks terminated.
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+		_, err = storage.Update(context.Background(), sessionID, map[string]string{
 			sessiontypes.MetadataKeyTokenHash: "",
-		}))
+		})
+		require.NoError(t, err)
 
 		// Session must exist before termination.
 		_, loadErr := storage.Load(context.Background(), sessionID)
@@ -857,7 +886,8 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		sessionID := "restore-placeholder-session"
 		// Write placeholder metadata directly to storage, bypassing the cache.
 		// Generate() stores an empty map with no token hash.
-		require.NoError(t, sm.storage.Upsert(context.Background(), sessionID, map[string]string{}))
+		_, err := sm.storage.Create(context.Background(), sessionID, map[string]string{})
+		require.NoError(t, err)
 
 		// loadSession detects absent MetadataKeyTokenHash → ErrSessionNotFound.
 		multiSess, ok := sm.GetMultiSession(sessionID)
@@ -891,7 +921,8 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 			sessiontypes.MetadataKeyTokenHash: "", // anonymous sentinel — present but empty
 			vmcpsession.MetadataKeyBackendIDs: "", // always written; empty = zero backends
 		}
-		require.NoError(t, sm.storage.Upsert(context.Background(), sessionID, initializedMeta))
+		_, err := sm.storage.Create(context.Background(), sessionID, initializedMeta)
+		require.NoError(t, err)
 
 		// loadSession should call RestoreSession, not treat it as a placeholder.
 		multiSess, ok := sm.GetMultiSession(sessionID)
@@ -927,11 +958,146 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 			sessiontypes.MetadataKeyTokenHash: "", // Phase 2 completion marker
 			// MetadataKeyBackendIDs intentionally absent (legacy record)
 		}
-		require.NoError(t, sm.storage.Upsert(context.Background(), sessionID, legacyMeta))
+		_, err := sm.storage.Create(context.Background(), sessionID, legacyMeta)
+		require.NoError(t, err)
 
 		multiSess, ok := sm.GetMultiSession(sessionID)
 		require.True(t, ok, "legacy record without MetadataKeyBackendIDs must still be restorable")
 		require.NotNil(t, multiSess)
+		assert.Equal(t, sessionID, multiSess.ID())
+	})
+
+	t.Run("restore path: restored metadata is persisted back to storage", func(t *testing.T) {
+		t.Parallel()
+
+		// Simulate a backend that doesn't honor Mcp-Session-Id hints (e.g. SSE
+		// transport): RestoreSession assigns a fresh per-backend session ID.
+		// loadSession must write the restored session's metadata back to Redis so
+		// that stale per-backend session IDs do not persist indefinitely in storage.
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Times(0)
+
+		sessionID := "restore-metadata-persist-session"
+
+		// The restored session returns fresh per-backend session metadata.
+		freshMeta := map[string]string{
+			sessiontypes.MetadataKeyTokenHash:                         "",
+			vmcpsession.MetadataKeyBackendIDs:                         "backend-a",
+			vmcpsession.MetadataKeyBackendSessionPrefix + "backend-a": "fresh-session-id",
+		}
+		restored := sessionmocks.NewMockMultiSession(ctrl)
+		restored.EXPECT().ID().Return(sessionID).AnyTimes()
+		restored.EXPECT().GetMetadata().Return(freshMeta).AnyTimes()
+
+		factory.EXPECT().
+			RestoreSession(gomock.Any(), sessionID, gomock.Any(), gomock.Any()).
+			Return(restored, nil).Times(1)
+
+		sm, storage := newTestSessionManager(t, factory, newFakeRegistry())
+
+		// Seed storage with stale per-backend session ID.
+		staleMeta := map[string]string{
+			sessiontypes.MetadataKeyTokenHash:                         "",
+			vmcpsession.MetadataKeyBackendIDs:                         "backend-a",
+			vmcpsession.MetadataKeyBackendSessionPrefix + "backend-a": "stale-session-id",
+		}
+		_, err := sm.storage.Create(context.Background(), sessionID, staleMeta)
+		require.NoError(t, err)
+
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		require.True(t, ok, "session must be restored")
+		require.NotNil(t, multiSess)
+
+		// Verify storage now contains the fresh metadata written by loadSession.
+		storedMeta, loadErr := storage.Load(context.Background(), sessionID)
+		require.NoError(t, loadErr)
+		assert.Equal(t, freshMeta, storedMeta,
+			"loadSession must persist restored session metadata back to storage")
+	})
+
+	t.Run("restore path: concurrent delete between RestoreSession and Update returns ErrSessionNotFound", func(t *testing.T) {
+		t.Parallel()
+
+		// Simulate a Terminate / TTL expiry that races with loadSession's
+		// metadata write-back: deleteBeforeUpdateStorage deletes the key just
+		// before the first Update, so Update returns (false, nil).
+		// loadSession must treat this as ErrSessionNotFound and NOT cache the
+		// restored session.
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Times(0)
+
+		sessionID := "restore-concurrent-delete-session"
+		restored := sessionmocks.NewMockMultiSession(ctrl)
+		restored.EXPECT().ID().Return(sessionID).AnyTimes()
+		restored.EXPECT().GetMetadata().Return(map[string]string{
+			sessiontypes.MetadataKeyTokenHash: "",
+		}).AnyTimes()
+
+		factory.EXPECT().
+			RestoreSession(gomock.Any(), sessionID, gomock.Any(), gomock.Any()).
+			Return(restored, nil).Times(1)
+		// loadSession calls Close on the restored session when a concurrent
+		// delete is detected (Update returns false, nil).
+		restored.EXPECT().Close().Return(nil).Times(1)
+
+		// Build Manager with the wrapping storage.
+		innerStorage := newTestSessionDataStorage(t)
+		racyStorage := &deleteBeforeUpdateStorage{DataStorage: innerStorage}
+		sm, cleanup, err := New(racyStorage, &FactoryConfig{Base: factory, CacheCapacity: 1000}, newFakeRegistry())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = cleanup(context.Background()) })
+
+		// Seed the inner storage with a valid session record.
+		_, err = innerStorage.Create(context.Background(), sessionID, map[string]string{
+			sessiontypes.MetadataKeyTokenHash: "",
+		})
+		require.NoError(t, err)
+
+		// GetMultiSession triggers loadSession; the racing delete causes
+		// Update to return (false, nil) → ErrSessionNotFound → (nil, false).
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		assert.False(t, ok, "session deleted before metadata write-back must not be cached")
+		assert.Nil(t, multiSess)
+	})
+
+	t.Run("restore path: transient Update error is non-fatal, session is still returned", func(t *testing.T) {
+		t.Parallel()
+
+		// A transient Redis write failure during loadSession's metadata write-back
+		// must not prevent the restored session from being cached and served.
+		// The session is still usable on this pod; checkSession will detect any
+		// metadata drift on the next liveness check and evict if necessary.
+		ctrl := gomock.NewController(t)
+		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+		factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Times(0)
+
+		sessionID := "restore-update-error-session"
+		restored := newMockSession(t, ctrl, sessionID, nil)
+
+		factory.EXPECT().
+			RestoreSession(gomock.Any(), sessionID, gomock.Any(), gomock.Any()).
+			Return(restored, nil).Times(1)
+
+		innerStorage := newTestSessionDataStorage(t)
+		faultyStorage := &errorOnUpdateStorage{DataStorage: innerStorage}
+		sm, cleanup, err := New(faultyStorage, &FactoryConfig{Base: factory, CacheCapacity: 1000}, newFakeRegistry())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = cleanup(context.Background()) })
+
+		_, err = innerStorage.Create(context.Background(), sessionID, map[string]string{
+			sessiontypes.MetadataKeyTokenHash: "",
+		})
+		require.NoError(t, err)
+
+		// Write failure must be non-fatal: session is still returned and cached.
+		multiSess, ok := sm.GetMultiSession(sessionID)
+		assert.True(t, ok, "transient Update error must not prevent session from being served")
+		assert.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
 	})
 }
@@ -1989,9 +2155,10 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		t.Parallel()
 		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 		sessionID := "alive-session"
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{}))
+		_, err := storage.Create(context.Background(), sessionID, map[string]string{})
+		require.NoError(t, err)
 
-		err := sm.checkSession(sessionID, makeEmptySess(t))
+		err = sm.checkSession(sessionID, makeEmptySess(t))
 		assert.NoError(t, err, "alive session must return nil")
 	})
 
@@ -2010,11 +2177,12 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		// so the cache evicts the entry and onEvict closes backend connections.
 		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 		sessionID := "terminated-session"
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+		_, err := storage.Create(context.Background(), sessionID, map[string]string{
 			MetadataKeyTerminated: MetadataValTrue,
-		}))
+		})
+		require.NoError(t, err)
 
-		err := sm.checkSession(sessionID, makeEmptySess(t))
+		err = sm.checkSession(sessionID, makeEmptySess(t))
 		assert.ErrorIs(t, err, cache.ErrExpired, "terminated session must return ErrExpired")
 	})
 
@@ -2028,9 +2196,10 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		sessionID := "stale-session"
 
 		// Seed storage with the up-to-date backend list (backend-a expired).
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+		_, err := storage.Create(context.Background(), sessionID, map[string]string{
 			vmcpsession.MetadataKeyBackendIDs: "backend-b",
-		}))
+		})
+		require.NoError(t, err)
 
 		// Inject a cached session whose metadata still lists both backends,
 		// simulating what this pod had before it learned about the expiry.
@@ -2041,7 +2210,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err := sm.checkSession(sessionID, cached)
+		err = sm.checkSession(sessionID, cached)
 		assert.ErrorIs(t, err, cache.ErrExpired,
 			"stale backend list must return ErrExpired to trigger cross-pod eviction")
 	})
@@ -2051,9 +2220,10 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 		sessionID := "fresh-session"
 
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+		_, err := storage.Create(context.Background(), sessionID, map[string]string{
 			vmcpsession.MetadataKeyBackendIDs: "backend-a",
-		}))
+		})
+		require.NoError(t, err)
 
 		ctrl := gomock.NewController(t)
 		cached := sessionmocks.NewMockMultiSession(ctrl)
@@ -2062,7 +2232,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err := sm.checkSession(sessionID, cached)
+		err = sm.checkSession(sessionID, cached)
 		assert.NoError(t, err, "matching backend list must return nil")
 	})
 
@@ -2073,15 +2243,50 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 		sessionID := "no-ids-session"
 
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{}))
+		_, err := storage.Create(context.Background(), sessionID, map[string]string{})
+		require.NoError(t, err)
 
 		ctrl := gomock.NewController(t)
 		cached := sessionmocks.NewMockMultiSession(ctrl)
 		cached.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err := sm.checkSession(sessionID, cached)
+		err = sm.checkSession(sessionID, cached)
 		assert.NoError(t, err, "matching empty metadata must not cause eviction")
+	})
+
+	t.Run("differing per-backend session IDs do not evict", func(t *testing.T) {
+		t.Parallel()
+		// In multi-pod deployments, each pod's RestoreSession independently
+		// negotiates its own per-backend session IDs with backends that do not
+		// honor Mcp-Session-Id hints (e.g. SSE transports). Each pod then
+		// writes its own IDs back to Redis via loadSession. checkSession must
+		// NOT evict when only per-backend session IDs differ — only when the
+		// backend ID list (MetadataKeyBackendIDs) changes. Evicting on per-
+		// backend ID drift would cause each pod's write-back to invalidate all
+		// other pods' sessions, creating an infinite eviction storm.
+		sm, storage := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
+		sessionID := "multi-pod-per-backend-ids"
+
+		// Storage holds IDs written by another pod's RestoreSession.
+		_, err := storage.Create(context.Background(), sessionID, map[string]string{
+			vmcpsession.MetadataKeyBackendIDs:                         "backend-a",
+			vmcpsession.MetadataKeyBackendSessionPrefix + "backend-a": "pod-a-session-id",
+		})
+		require.NoError(t, err)
+
+		// This pod cached different per-backend IDs from its own RestoreSession.
+		ctrl := gomock.NewController(t)
+		cached := sessionmocks.NewMockMultiSession(ctrl)
+		cached.EXPECT().GetMetadata().Return(map[string]string{
+			vmcpsession.MetadataKeyBackendIDs:                         "backend-a",
+			vmcpsession.MetadataKeyBackendSessionPrefix + "backend-a": "pod-b-session-id",
+		}).AnyTimes()
+		sm.sessions.Set(sessionID, cached)
+
+		err = sm.checkSession(sessionID, cached)
+		assert.NoError(t, err,
+			"differing per-backend session IDs must not evict to avoid cross-pod eviction storms")
 	})
 }
 
@@ -2094,8 +2299,9 @@ func TestNotifyBackendExpired(t *testing.T) {
 
 	// seedBackendMetadata stores backend metadata directly in storage so that
 	// NotifyBackendExpired has something to operate on. This simulates what
-	// populateBackendMetadata writes during session creation.
-	seedBackendMetadata := func(t *testing.T, storage transportsession.DataStorage, sessionID string, ids []string, sessionIDs map[string]string) {
+	// populateBackendMetadata writes during session creation. It returns the
+	// metadata map so callers can pass it directly to NotifyBackendExpired.
+	seedBackendMetadata := func(t *testing.T, storage transportsession.DataStorage, sessionID string, ids []string, sessionIDs map[string]string) map[string]string {
 		t.Helper()
 		meta := map[string]string{
 			vmcpsession.MetadataKeyBackendIDs: strings.Join(ids, ","),
@@ -2103,7 +2309,10 @@ func TestNotifyBackendExpired(t *testing.T) {
 		for workloadID, sessID := range sessionIDs {
 			meta[vmcpsession.MetadataKeyBackendSessionPrefix+workloadID] = sessID
 		}
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, meta))
+		updated, err := storage.Update(context.Background(), sessionID, meta)
+		require.NoError(t, err)
+		require.True(t, updated, "session must exist before seeding backend metadata")
+		return meta
 	}
 
 	t.Run("clears backend session key and removes from MetadataKeyBackendIDs", func(t *testing.T) {
@@ -2120,12 +2329,14 @@ func TestNotifyBackendExpired(t *testing.T) {
 		_, err := sm.CreateSession(t.Context(), sessionID)
 		require.NoError(t, err)
 
-		seedBackendMetadata(t, storage, sessionID,
+		meta := seedBackendMetadata(t, storage, sessionID,
 			[]string{"workload-a", "workload-b"},
 			map[string]string{"workload-a": "sess-a", "workload-b": "sess-b"},
 		)
 
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		metaBefore := maps.Clone(meta)
+		sm.NotifyBackendExpired(sessionID, "workload-a", meta)
+		assert.Equal(t, metaBefore, meta, "NotifyBackendExpired must not mutate the caller's metadata map")
 
 		got, loadErr := storage.Load(context.Background(), sessionID)
 		require.NoError(t, loadErr)
@@ -2150,12 +2361,14 @@ func TestNotifyBackendExpired(t *testing.T) {
 		_, err := sm.CreateSession(t.Context(), sessionID)
 		require.NoError(t, err)
 
-		seedBackendMetadata(t, storage, sessionID,
+		meta := seedBackendMetadata(t, storage, sessionID,
 			[]string{"workload-a"},
 			map[string]string{"workload-a": "sess-a"},
 		)
 
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		metaBefore := maps.Clone(meta)
+		sm.NotifyBackendExpired(sessionID, "workload-a", meta)
+		assert.Equal(t, metaBefore, meta, "NotifyBackendExpired must not mutate the caller's metadata map")
 
 		got, loadErr := storage.Load(context.Background(), sessionID)
 		require.NoError(t, loadErr)
@@ -2176,12 +2389,16 @@ func TestNotifyBackendExpired(t *testing.T) {
 		sessionID := sm.Generate()
 		// Seed metadata that is missing MetadataKeyBackendIDs — simulates
 		// corrupted or partially-written storage.
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+		corruptedMeta := map[string]string{
 			vmcpsession.MetadataKeyBackendSessionPrefix + "workload-a": "sess-a",
 			// MetadataKeyBackendIDs intentionally absent
-		}))
+		}
+		_, err := storage.Update(context.Background(), sessionID, corruptedMeta)
+		require.NoError(t, err)
 
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		corruptedMetaBefore := maps.Clone(corruptedMeta)
+		sm.NotifyBackendExpired(sessionID, "workload-a", corruptedMeta)
+		assert.Equal(t, corruptedMetaBefore, corruptedMeta, "NotifyBackendExpired must not mutate the caller's metadata map")
 
 		// Storage must be unchanged — clobbering with "" would drop all backends.
 		got, loadErr := storage.Load(context.Background(), sessionID)
@@ -2199,7 +2416,7 @@ func TestNotifyBackendExpired(t *testing.T) {
 		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 		sm, _ := newTestSessionManager(t, factory, newFakeRegistry())
 
-		sm.NotifyBackendExpired("nonexistent-session", "workload-a") // must not panic
+		sm.NotifyBackendExpired("nonexistent-session", "workload-a", nil) // must not panic
 	})
 
 	t.Run("placeholder session (no backend IDs) is a no-op", func(t *testing.T) {
@@ -2211,7 +2428,7 @@ func TestNotifyBackendExpired(t *testing.T) {
 
 		// Generate creates a placeholder with empty metadata.
 		sessionID := sm.Generate()
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		sm.NotifyBackendExpired(sessionID, "workload-a", map[string]string{})
 
 		// Placeholder must still exist and be unmodified.
 		got, loadErr := storage.Load(context.Background(), sessionID)
@@ -2235,14 +2452,19 @@ func TestNotifyBackendExpired(t *testing.T) {
 
 		// Seed MetadataKeyTokenHash into storage so Terminate recognises this
 		// as a Phase 2 (full MultiSession) and deletes rather than marks terminated.
-		require.NoError(t, storage.Upsert(context.Background(), sessionID, map[string]string{
+		_, err = storage.Update(context.Background(), sessionID, map[string]string{
 			sessiontypes.MetadataKeyTokenHash: "",
-		}))
+		})
+		require.NoError(t, err)
 
 		_, err = sm.Terminate(sessionID)
 		require.NoError(t, err)
 
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		// Caller holds the metadata it observed before termination; updateMetadata's
+		// SET XX is a no-op because Terminate already deleted the key.
+		sm.NotifyBackendExpired(sessionID, "workload-a", map[string]string{
+			vmcpsession.MetadataKeyBackendIDs: "workload-a",
+		})
 
 		// Session must remain absent — Load after Terminate deletes from storage.
 		_, loadErr := storage.Load(context.Background(), sessionID)
@@ -2268,7 +2490,7 @@ func TestNotifyBackendExpired(t *testing.T) {
 		_, err := sm.CreateSession(t.Context(), sessionID)
 		require.NoError(t, err)
 
-		seedBackendMetadata(t, storage, sessionID,
+		meta := seedBackendMetadata(t, storage, sessionID,
 			[]string{"workload-a"},
 			map[string]string{"workload-a": "sess-a"},
 		)
@@ -2279,7 +2501,9 @@ func TestNotifyBackendExpired(t *testing.T) {
 		// storage.Update (SET XX) in updateMetadata returns (false, nil) because
 		// the key no longer exists — NotifyBackendExpired must bail without
 		// recreating the record.
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		metaBefore := maps.Clone(meta)
+		sm.NotifyBackendExpired(sessionID, "workload-a", meta)
+		assert.Equal(t, metaBefore, meta, "NotifyBackendExpired must not mutate the caller's metadata map")
 
 		_, loadErr := storage.Load(context.Background(), sessionID)
 		assert.ErrorIs(t, loadErr, transportsession.ErrSessionNotFound,
@@ -2300,19 +2524,20 @@ func TestNotifyBackendExpired(t *testing.T) {
 		_, err := sm.CreateSession(t.Context(), sessionID)
 		require.NoError(t, err)
 
-		seedBackendMetadata(t, storage, sessionID,
+		meta := seedBackendMetadata(t, storage, sessionID,
 			[]string{"workload-a"},
 			map[string]string{"workload-a": "sess-a"},
 		)
 
 		// Simulate cross-pod termination: another pod called storage.Delete while
-		// this pod was inside NotifyBackendExpired (after the Load, before the
-		// Upsert). We delete the key here to represent that state.
+		// this pod was inside NotifyBackendExpired (before the Upsert).
+		// We delete the key here to represent that state.
 		require.NoError(t, storage.Delete(context.Background(), sessionID))
 
-		// updateMetadata must re-check storage before upserting; seeing
-		// ErrSessionNotFound it must bail without recreating the record.
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		// updateMetadata's SET XX sees the absent key and bails without recreating.
+		metaBefore := maps.Clone(meta)
+		sm.NotifyBackendExpired(sessionID, "workload-a", meta)
+		assert.Equal(t, metaBefore, meta, "NotifyBackendExpired must not mutate the caller's metadata map")
 
 		_, loadErr := storage.Load(context.Background(), sessionID)
 		assert.ErrorIs(t, loadErr, transportsession.ErrSessionNotFound,
@@ -2336,12 +2561,14 @@ func TestNotifyBackendExpired(t *testing.T) {
 		// Session must be in cache after CreateSession.
 		assert.Equal(t, 1, sm.sessions.Len(), "session must be in node-local cache after CreateSession")
 
-		seedBackendMetadata(t, storage, sessionID,
+		meta := seedBackendMetadata(t, storage, sessionID,
 			[]string{"workload-a"},
 			map[string]string{"workload-a": "sess-a"},
 		)
 
-		sm.NotifyBackendExpired(sessionID, "workload-a")
+		metaBefore := maps.Clone(meta)
+		sm.NotifyBackendExpired(sessionID, "workload-a", meta)
+		assert.Equal(t, metaBefore, meta, "NotifyBackendExpired must not mutate the caller's metadata map")
 
 		// With lazy eviction, session is still in cache immediately after NotifyBackendExpired.
 		// checkSession detects drift on the next GetMultiSession call.

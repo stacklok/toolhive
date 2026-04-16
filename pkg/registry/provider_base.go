@@ -57,7 +57,7 @@ func (p *BaseProvider) GetServer(name string) (types.ServerMetadata, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("server not found: %s", name)
+	return nil, fmt.Errorf("%w: %s", ErrServerNotFound, name)
 }
 
 type shortNameMatch struct {

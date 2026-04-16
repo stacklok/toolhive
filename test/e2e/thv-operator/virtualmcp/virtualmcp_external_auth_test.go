@@ -65,7 +65,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
@@ -101,7 +101,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -240,7 +240,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
@@ -272,7 +272,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -281,7 +281,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 					// Explicitly configure unauthenticated for specific backend
 					Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 						backendName: {
-							Type: "external_auth_config_ref",
+							Type: "externalAuthConfigRef",
 							ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 								Name: externalAuthConfigName,
 							},
@@ -328,7 +328,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpServerName, Namespace: testNamespace}, vmcpServer)).To(Succeed())
 			Expect(vmcpServer.Spec.OutgoingAuth.Source).To(Equal("inline"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends).To(HaveKey(backendName))
-			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("external_auth_config_ref"))
+			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("externalAuthConfigRef"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].ExternalAuthConfigRef.Name).To(Equal(externalAuthConfigName))
 
 			By("Creating MCP client and listing tools")
@@ -416,7 +416,7 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
@@ -452,7 +452,7 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -639,7 +639,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
@@ -671,7 +671,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -680,7 +680,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 					// Explicitly configure headerInjection for specific backend
 					Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 						backendName: {
-							Type: "external_auth_config_ref",
+							Type: "externalAuthConfigRef",
 							ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 								Name: externalAuthConfigName,
 							},
@@ -730,7 +730,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpServerName, Namespace: testNamespace}, vmcpServer)).To(Succeed())
 			Expect(vmcpServer.Spec.OutgoingAuth.Source).To(Equal("inline"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends).To(HaveKey(backendName))
-			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("external_auth_config_ref"))
+			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("externalAuthConfigRef"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].ExternalAuthConfigRef.Name).To(Equal(externalAuthConfigName))
 
 			By("Creating MCP client and listing tools")
@@ -830,7 +830,7 @@ var _ = Describe("VirtualMCPServer Health Check with HeaderInjection Auth", Orde
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
@@ -867,6 +867,7 @@ var _ = Describe("VirtualMCPServer Health Check with HeaderInjection Auth", Orde
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Operational: &vmcpconfig.OperationalConfig{
@@ -1046,7 +1047,7 @@ var _ = Describe("VirtualMCPServer Health Check with TokenExchange Auth", Ordere
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
@@ -1083,6 +1084,7 @@ var _ = Describe("VirtualMCPServer Health Check with TokenExchange Auth", Ordere
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Operational: &vmcpconfig.OperationalConfig{

@@ -164,6 +164,9 @@ type Authorizer struct {
 	// groupClaimName is the JWT claim key that contains group membership.
 	// When empty, the well-known defaults are checked ("groups", "roles", etc.).
 	groupClaimName string
+	// roleClaimName is the JWT claim key that contains role membership.
+	// When empty, no role extraction is performed (backward compatible).
+	roleClaimName string
 	// claimKeyLog rate-limits the diagnostic log of resolved JWT claim keys
 	// so it emits at most once per 30 seconds instead of once per authorization check.
 	claimKeyLog *syncutil.AtMost
@@ -189,6 +192,12 @@ type ConfigOptions struct {
 	// under a URI-style claim (e.g. "https://example.com/groups" in Auth0/Okta).
 	// When empty, only the well-known claim names are checked.
 	GroupClaimName string `json:"group_claim_name,omitempty" yaml:"group_claim_name,omitempty"`
+
+	// RoleClaimName is the JWT claim key that contains role membership for the
+	// principal. When set, the claim is extracted separately from GroupClaimName
+	// and both are mapped to Cedar THVGroup entities.
+	// When empty, no role extraction is performed (backward compatible).
+	RoleClaimName string `json:"role_claim_name,omitempty" yaml:"role_claim_name,omitempty"`
 }
 
 // NewCedarAuthorizer creates a new Cedar authorizer.
@@ -199,6 +208,7 @@ func NewCedarAuthorizer(options ConfigOptions) (authorizers.Authorizer, error) {
 		entityFactory:           NewEntityFactory(),
 		primaryUpstreamProvider: options.PrimaryUpstreamProvider,
 		groupClaimName:          options.GroupClaimName,
+		roleClaimName:           options.RoleClaimName,
 		claimKeyLog:             syncutil.NewAtMost(30 * time.Second),
 	}
 

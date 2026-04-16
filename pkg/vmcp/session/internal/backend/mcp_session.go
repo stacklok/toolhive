@@ -199,13 +199,15 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
+	sessionHint string,
 ) (Session, *vmcp.CapabilityList, error) {
 	return func(
 		ctx context.Context,
 		target *vmcp.BackendTarget,
 		identity *auth.Identity,
+		sessionHint string,
 	) (Session, *vmcp.CapabilityList, error) {
-		c, err := createMCPClient(target, identity, registry)
+		c, err := createMCPClient(target, identity, registry, sessionHint)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
 		}
@@ -233,10 +235,13 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 // createMCPClient builds and starts a mark3labs MCP client for target.
 // The transport is started with context.Background() so its lifetime is bound
 // to client.Close(), not to any caller-supplied init context.
+// sessionHint, when non-empty, is passed as the initial Mcp-Session-Id for
+// streamable-HTTP transports so the backend can resume an existing session.
 func createMCPClient(
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
 	registry vmcpauth.OutgoingAuthRegistry,
+	sessionHint string,
 ) (*mcpclient.Client, error) {
 	// Resolve and validate the auth strategy once at client creation time.
 	strategyName := authtypes.StrategyTypeUnauthenticated
@@ -294,11 +299,14 @@ func createMCPClient(
 			Transport: sizeLimited,
 			Timeout:   defaultBackendRequestTimeout,
 		}
-		c, err = mcpclient.NewStreamableHttpClient(
-			target.BaseURL,
+		streamableOpts := []mcptransport.StreamableHTTPCOption{
 			mcptransport.WithHTTPTimeout(defaultBackendRequestTimeout),
 			mcptransport.WithHTTPBasicClient(httpClient),
-		)
+		}
+		if sessionHint != "" {
+			streamableOpts = append(streamableOpts, mcptransport.WithSession(sessionHint))
+		}
+		c, err = mcpclient.NewStreamableHttpClient(target.BaseURL, streamableOpts...)
 	case "sse":
 		// For SSE, the entire session is delivered as one long-lived HTTP
 		// response body. Applying io.LimitReader to that body would silently

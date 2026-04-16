@@ -59,6 +59,9 @@ type RunFlags struct {
 	// Remote MCP server support
 	RemoteURL string
 
+	// Stateless indicates the server is stateless (POST-only, no SSE)
+	Stateless bool
+
 	// Security and audit
 	AuthzConfig string
 	AuditConfig string
@@ -258,6 +261,9 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
 		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) "+
 			"(default false)")
+	cmd.Flags().BoolVar(&config.Stateless, "stateless", false,
+		"Declare the server as stateless (POST-only, no SSE). "+
+			"Use for MCP servers implementing streamable-HTTP stateless mode.")
 	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
 		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
@@ -658,6 +664,7 @@ func buildRunnerConfig(
 		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
 		runner.WithAllowDockerGateway(runFlags.AllowDockerGateway),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
+		runner.WithStateless(runFlags.Stateless),
 		runner.WithEndpointPrefix(runFlags.EndpointPrefix),
 		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
@@ -955,6 +962,9 @@ func getRemoteAuthFromRemoteServerMetadata(
 		authCfg.OAuthParams = oc.OAuthParams
 	}
 
+	// ScopeParamName: from CLI flag only (not yet supported in registry metadata)
+	authCfg.ScopeParamName = f.RemoteAuthScopeParamName
+
 	// Resolve bearer token from multiple sources (flag, file, environment variable)
 	resolvedBearerToken, err := resolveSecret(
 		f.RemoteAuthBearerToken,
@@ -1016,6 +1026,7 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 		ClientID:        runFlags.RemoteAuthFlags.RemoteAuthClientID,
 		ClientSecret:    clientSecret,
 		Scopes:          runFlags.RemoteAuthFlags.RemoteAuthScopes,
+		ScopeParamName:  runFlags.RemoteAuthFlags.RemoteAuthScopeParamName,
 		SkipBrowser:     runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
 		Timeout:         runFlags.RemoteAuthFlags.RemoteAuthTimeout,
 		CallbackPort:    runFlags.RemoteAuthFlags.RemoteAuthCallbackPort,

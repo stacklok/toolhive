@@ -66,7 +66,7 @@ func createTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 
 	// Write the config file if one is provided
 	if cfg != nil {
-		err = provider.UpdateConfig(func(c *config.Config) { *c = *cfg })
+		err = provider.UpdateConfig(func(c *config.Config) error { *c = *cfg; return nil })
 		require.NoError(t, err)
 	}
 
@@ -121,11 +121,14 @@ func TestGetClientStatus(t *testing.T) {
 			SkillsProjectPath: []string{".cursor", "skills"},
 		},
 		{
-			ClientType:   VSCode,
-			Description:  "Visual Studio Code (Test)",
-			SettingsFile: "mcp.json",
-			RelPath:      []string{".config", "Code", "User"}, // This path won't exist in test
-			Extension:    JSON,
+			ClientType:        VSCode,
+			Description:       "Visual Studio Code (Test)",
+			SettingsFile:      "mcp.json",
+			RelPath:           []string{".config", "Code", "User"}, // This path won't exist in test
+			Extension:         JSON,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".copilot", "skills"},
+			SkillsProjectPath: []string{".github", "skills"},
 		},
 	}
 
@@ -157,7 +160,7 @@ func TestGetClientStatus(t *testing.T) {
 	assert.True(t, exists)
 	assert.False(t, vscodeStatus.Installed)
 	assert.False(t, vscodeStatus.Registered)
-	assert.False(t, vscodeStatus.SupportsSkills)
+	assert.True(t, vscodeStatus.SupportsSkills)
 }
 
 func TestGetClientStatus_Sorting(t *testing.T) {

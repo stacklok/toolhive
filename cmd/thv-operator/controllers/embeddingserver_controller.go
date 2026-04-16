@@ -29,7 +29,6 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
 // EmbeddingServerReconciler reconciles a EmbeddingServer object
@@ -38,7 +37,6 @@ type EmbeddingServerReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
-	ImageValidation  validation.ImageValidation
 }
 
 const (
@@ -141,20 +139,6 @@ func (r *EmbeddingServerReconciler) performValidations(
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
-	}
-
-	// Validate image
-	if err := r.validateImage(ctx, embedding); err != nil {
-		// Status fields were set by validateImage, now update
-		if statusErr := r.Status().Update(ctx, embedding); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update EmbeddingServer status after image validation failure")
-			return ctrl.Result{}, statusErr
-		}
-		// We requeue to retry validation after image issues are resolved
-		ctxLogger.Error(err, "Image validation failed, will retry",
-			"image", embedding.Spec.Image,
-			"requeueAfter", 5*time.Minute)
-		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -408,60 +392,6 @@ func (r *EmbeddingServerReconciler) validateAndUpdatePodTemplateStatus(
 	})
 
 	return true
-}
-
-// validateImage validates the embedding image and sets the status condition
-// Status is not updated here - it will be updated at the end of reconciliation
-func (r *EmbeddingServerReconciler) validateImage(ctx context.Context, embedding *mcpv1alpha1.EmbeddingServer) error {
-	ctxLogger := log.FromContext(ctx)
-
-	imageValidator := validation.NewImageValidator(r.Client, embedding.Namespace, r.ImageValidation)
-	err := imageValidator.ValidateImage(ctx, embedding.Spec.Image, embedding.ObjectMeta)
-
-	if err == validation.ErrImageNotChecked {
-		ctxLogger.Info("Image validation skipped - no enforcement configured")
-		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionImageValidated,
-			Status:             metav1.ConditionTrue,
-			Reason:             mcpv1alpha1.ConditionReasonImageValidationSkipped,
-			Message:            "Image validation was not performed (no enforcement configured)",
-			ObservedGeneration: embedding.Generation,
-		})
-		return nil
-	} else if err == validation.ErrImageInvalid {
-		ctxLogger.Error(err, "EmbeddingServer image validation failed", "image", embedding.Spec.Image)
-		embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhaseFailed
-		embedding.Status.Message = err.Error()
-		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionImageValidated,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonImageValidationFailed,
-			Message:            err.Error(),
-			ObservedGeneration: embedding.Generation,
-		})
-		return err
-	} else if err != nil {
-		ctxLogger.Error(err, "EmbeddingServer image validation system error", "image", embedding.Spec.Image)
-		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionImageValidated,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonImageValidationError,
-			Message:            fmt.Sprintf("Error checking image validity: %v", err),
-			ObservedGeneration: embedding.Generation,
-		})
-		return err
-	}
-
-	ctxLogger.Info("Image validation passed", "image", embedding.Spec.Image)
-	meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionImageValidated,
-		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonImageValidationSuccess,
-		Message:            "Image validation passed",
-		ObservedGeneration: embedding.Generation,
-	})
-
-	return nil
 }
 
 // statefulSetForEmbedding creates a StatefulSet for the embedding server

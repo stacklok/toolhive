@@ -351,15 +351,16 @@ func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []
 	} else {
 		// We should never reach this point once groups are enabled
 		for _, clientToRegister := range clients {
-			err := config.UpdateConfig(func(c *config.Config) {
+			err := config.UpdateConfig(func(c *config.Config) error {
 				for _, registeredClient := range c.Clients.RegisteredClients {
 					if registeredClient == string(clientToRegister.Name) {
 						slog.Debug("client already registered, skipping", "client", clientToRegister.Name)
-						return
+						return nil
 					}
 				}
 
 				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, string(clientToRegister.Name))
+				return nil
 			})
 			if err != nil {
 				return fmt.Errorf("failed to update configuration for client %s: %w", clientToRegister.Name, err)
@@ -459,15 +460,16 @@ func (c *ClientRoutes) removeClientGlobally(
 
 	// Remove clients from global registered clients list
 	for _, clientToRemove := range clients {
-		err := config.UpdateConfig(func(c *config.Config) {
+		err := config.UpdateConfig(func(c *config.Config) error {
 			for i, registeredClient := range c.Clients.RegisteredClients {
 				if registeredClient == string(clientToRemove.Name) {
 					// Remove client from slice
 					c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
 					slog.Debug("successfully unregistered client", "client", clientToRemove.Name)
-					return
+					return nil
 				}
 			}
+			return nil
 		})
 		if err != nil {
 			return fmt.Errorf("failed to update configuration for client %s: %w", clientToRemove.Name, err)

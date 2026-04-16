@@ -3,7 +3,13 @@
 
 package registry
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrServerNotFound indicates a server was not found in the registry.
+var ErrServerNotFound = errors.New("server not found")
 
 // UnavailableError indicates the upstream registry is unreachable
 // or returned an unexpected (non-auth) error such as 404, timeout, or

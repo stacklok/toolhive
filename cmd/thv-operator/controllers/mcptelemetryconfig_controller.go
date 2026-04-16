@@ -45,6 +45,7 @@ type MCPTelemetryConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -197,6 +198,10 @@ func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error 
 			&mcpv1alpha1.MCPRemoteProxy{},
 			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToTelemetryConfig),
 		).
+		Watches(
+			&mcpv1alpha1.VirtualMCPServer{},
+			handler.EnqueueRequestsFromMapFunc(r.mapVirtualMCPServerToTelemetryConfig),
+		).
 		Complete(r)
 }
 
@@ -237,6 +242,52 @@ func (r *MCPTelemetryConfigReconciler) mapMCPRemoteProxyToTelemetryConfig(
 		}
 		for _, ref := range cfg.Status.ReferencingWorkloads {
 			if ref.Kind == mcpv1alpha1.WorkloadKindMCPRemoteProxy && ref.Name == proxy.Name {
+				requests = append(requests, reconcile.Request{NamespacedName: nn})
+				break
+			}
+		}
+	}
+
+	return requests
+}
+
+// mapVirtualMCPServerToTelemetryConfig enqueues MCPTelemetryConfig reconcile requests
+// when a VirtualMCPServer changes. Handles both the currently-referenced config and
+// any config that still lists this server in ReferencingWorkloads (ref-removal case).
+func (r *MCPTelemetryConfigReconciler) mapVirtualMCPServerToTelemetryConfig(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	vmcp, ok := obj.(*mcpv1alpha1.VirtualMCPServer)
+	if !ok {
+		return nil
+	}
+
+	seen := make(map[types.NamespacedName]struct{})
+	var requests []reconcile.Request
+
+	if vmcp.Spec.TelemetryConfigRef != nil {
+		nn := types.NamespacedName{
+			Name:      vmcp.Spec.TelemetryConfigRef.Name,
+			Namespace: vmcp.Namespace,
+		}
+		seen[nn] = struct{}{}
+		requests = append(requests, reconcile.Request{NamespacedName: nn})
+	}
+
+	// Also enqueue any MCPTelemetryConfig that still lists this VirtualMCPServer in
+	// ReferencingWorkloads — handles ref-removal and server-deletion cases.
+	telemetryConfigList := &mcpv1alpha1.MCPTelemetryConfigList{}
+	if err := r.List(ctx, telemetryConfigList, client.InNamespace(vmcp.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPTelemetryConfigs for VirtualMCPServer watch")
+		return requests
+	}
+	for _, cfg := range telemetryConfigList.Items {
+		nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
+		if _, already := seen[nn]; already {
+			continue
+		}
+		for _, ref := range cfg.Status.ReferencingWorkloads {
+			if ref.Kind == mcpv1alpha1.WorkloadKindVirtualMCPServer && ref.Name == vmcp.Name {
 				requests = append(requests, reconcile.Request{NamespacedName: nn})
 				break
 			}
@@ -328,10 +379,21 @@ func (r *MCPTelemetryConfigReconciler) findReferencingWorkloads(
 		return nil, err
 	}
 
-	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(serverRefs)+len(proxies))
+	// Check VirtualMCPServers
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(telemetryConfig.Namespace)); err != nil {
+		return nil, fmt.Errorf("failed to list VirtualMCPServers: %w", err)
+	}
+
+	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(serverRefs)+len(proxies)+len(vmcpList.Items))
 	refs = append(refs, serverRefs...)
 	for _, proxy := range proxies {
 		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxy.Name})
+	}
+	for _, vmcp := range vmcpList.Items {
+		if vmcp.Spec.TelemetryConfigRef != nil && vmcp.Spec.TelemetryConfigRef.Name == telemetryConfig.Name {
+			refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindVirtualMCPServer, Name: vmcp.Name})
+		}
 	}
 	ctrlutil.SortWorkloadRefs(refs)
 	return refs, nil

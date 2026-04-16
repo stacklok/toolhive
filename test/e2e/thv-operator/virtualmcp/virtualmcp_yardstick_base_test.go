@@ -46,7 +46,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
@@ -64,7 +64,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
@@ -111,6 +111,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Aggregation: &vmcpconfig.AggregationConfig{

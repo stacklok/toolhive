@@ -127,12 +127,16 @@ type InlineOIDCSharedConfig struct {
 	// +optional
 	JWKSAuthTokenPath string `json:"jwksAuthTokenPath,omitempty"`
 
-	// JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+	// JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses.
+	// Note: at runtime, if either JWKSAllowPrivateIP or ProtectedResourceAllowPrivateIP
+	// is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
 	// +kubebuilder:default=false
 	// +optional
 	JWKSAllowPrivateIP bool `json:"jwksAllowPrivateIP"`
 
-	// ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
+	// ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses.
+	// Note: at runtime, if either ProtectedResourceAllowPrivateIP or JWKSAllowPrivateIP
+	// is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
 	// +kubebuilder:default=false
 	// +optional
 	ProtectedResourceAllowPrivateIP bool `json:"protectedResourceAllowPrivateIP"`
@@ -237,6 +241,13 @@ type MCPOIDCConfigReference struct {
 	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
+
+	// ResourceURL is the public URL for OAuth protected resource metadata (RFC 9728).
+	// When the server is exposed via Ingress or gateway, set this to the external
+	// URL that MCP clients connect to. If not specified, defaults to the internal
+	// Kubernetes service URL.
+	// +optional
+	ResourceURL string `json:"resourceUrl,omitempty"`
 }
 
 // Validate performs validation on the MCPOIDCConfig spec.

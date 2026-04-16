@@ -53,6 +53,7 @@ func setupConflictResolutionTest(setup conflictResolutionTestSetup) int32 {
 			Namespace: setup.namespace,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: setup.groupName},
 			Config: vmcpconfig.Config{
 				Group:       setup.groupName,
 				Aggregation: setup.aggregation,

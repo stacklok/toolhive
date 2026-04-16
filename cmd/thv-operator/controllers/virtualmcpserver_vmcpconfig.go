@@ -28,11 +28,14 @@ import (
 // ensureVmcpConfigConfigMap ensures the vmcp Config ConfigMap exists and is up to date.
 // workloadInfos is the list of workloads in the group, passed in to ensure consistency
 // across multiple calls that need the same workload list.
+// telemetryCfg is the already-fetched MCPTelemetryConfig (nil when not referenced),
+// passed through from handleConfigRefs to avoid redundant API calls.
 // statusManager is used to set auth config conditions for any conversion failures.
 func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	// Create OIDC resolver and converter for CRD-to-config transformation
@@ -41,7 +44,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	if err != nil {
 		return fmt.Errorf("failed to create vmcp converter: %w", err)
 	}
-	config, authServerRC, err := converter.Convert(ctx, vmcp)
+	config, authServerRC, err := converter.Convert(ctx, vmcp, telemetryCfg)
 	if err != nil {
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 	}
@@ -218,7 +221,7 @@ func (r *VirtualMCPServerReconciler) discoverBackendsWithMetadata(
 	// Build auth config if OutgoingAuth is configured
 	var authConfig *vmcpconfig.OutgoingAuthConfig
 	if vmcp.Spec.OutgoingAuth != nil {
-		typedWorkloads, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.Config.Group)
+		typedWorkloads, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.ResolveGroupName())
 		if err != nil {
 			return nil, fmt.Errorf("failed to list workloads in group: %w", err)
 		}
@@ -230,7 +233,7 @@ func (r *VirtualMCPServerReconciler) discoverBackendsWithMetadata(
 	}
 
 	backendDiscoverer := aggregator.NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig)
-	backends, err := backendDiscoverer.Discover(ctx, vmcp.Spec.Config.Group)
+	backends, err := backendDiscoverer.Discover(ctx, vmcp.ResolveGroupName())
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover backends: %w", err)
 	}

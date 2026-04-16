@@ -70,6 +70,21 @@ func (mr *MockSkillServiceMockRecorder) DeleteBuild(ctx, tag any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteBuild", reflect.TypeOf((*MockSkillService)(nil).DeleteBuild), ctx, tag)
 }
 
+// GetContent mocks base method.
+func (m *MockSkillService) GetContent(ctx context.Context, opts skills.ContentOptions) (*skills.SkillContent, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetContent", ctx, opts)
+	ret0, _ := ret[0].(*skills.SkillContent)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetContent indicates an expected call of GetContent.
+func (mr *MockSkillServiceMockRecorder) GetContent(ctx, opts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetContent", reflect.TypeOf((*MockSkillService)(nil).GetContent), ctx, opts)
+}
+
 // Info mocks base method.
 func (m *MockSkillService) Info(ctx context.Context, opts skills.InfoOptions) (*skills.SkillInfo, error) {
 	m.ctrl.T.Helper()

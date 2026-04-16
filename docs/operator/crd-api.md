@@ -263,7 +263,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the virtual MCP server name. |  | Optional: \{\} <br /> |
-| `groupRef` _string_ | Group references an existing MCPGroup that defines backend workloads.<br />In Kubernetes, the referenced MCPGroup must exist in the same namespace. |  | Required: \{\} <br /> |
+| `groupRef` _string_ | Group references an existing MCPGroup that defines backend workloads.<br />In standalone CLI mode, this is set from the YAML config file.<br />In Kubernetes, the operator populates this from spec.groupRef during conversion. |  | Optional: \{\} <br /> |
 | `backends` _[vmcp.config.StaticBackendConfig](#vmcpconfigstaticbackendconfig) array_ | Backends defines pre-configured backend servers for static mode.<br />When OutgoingAuth.Source is "inline", this field contains the full list of backend<br />servers with their URLs and transport types, eliminating the need for K8s API access.<br />When OutgoingAuth.Source is "discovered", this field is empty and backends are<br />discovered at runtime via Kubernetes API. |  | Optional: \{\} <br /> |
 | `incomingAuth` _[vmcp.config.IncomingAuthConfig](#vmcpconfigincomingauthconfig)_ | IncomingAuth configures how clients authenticate to the virtual MCP server.<br />When using the Kubernetes operator, this is populated by the converter from<br />VirtualMCPServerSpec.IncomingAuth and any values set here will be superseded. |  | Optional: \{\} <br /> |
 | `outgoingAuth` _[vmcp.config.OutgoingAuthConfig](#vmcpconfigoutgoingauthconfig)_ | OutgoingAuth configures how the virtual MCP server authenticates to backends.<br />When using the Kubernetes operator, this is populated by the converter from<br />VirtualMCPServerSpec.OutgoingAuth and any values set here will be superseded. |  | Optional: \{\} <br /> |
@@ -272,7 +272,7 @@ _Appears in:_
 | `compositeToolRefs` _[vmcp.config.CompositeToolRef](#vmcpconfigcompositetoolref) array_ | CompositeToolRefs references VirtualMCPCompositeToolDefinition resources<br />for complex, reusable workflows. Only applicable when running in Kubernetes.<br />Referenced resources must be in the same namespace as the VirtualMCPServer. |  | Optional: \{\} <br /> |
 | `operational` _[vmcp.config.OperationalConfig](#vmcpconfigoperationalconfig)_ | Operational configures operational settings. |  |  |
 | `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `telemetry` _[pkg.telemetry.Config](#pkgtelemetryconfig)_ | Telemetry configures OpenTelemetry-based observability for the Virtual MCP server<br />including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint. |  | Optional: \{\} <br /> |
+| `telemetry` _[pkg.telemetry.Config](#pkgtelemetryconfig)_ | Telemetry configures OpenTelemetry-based observability for the Virtual MCP server<br />including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.<br />Deprecated (Kubernetes operator only): When deploying via the operator, use<br />VirtualMCPServer.spec.telemetryConfigRef to reference a shared MCPTelemetryConfig<br />resource instead. This field remains valid for standalone (non-operator) deployments. |  | Optional: \{\} <br /> |
 | `audit` _[pkg.audit.Config](#pkgauditconfig)_ | Audit configures audit logging for the Virtual MCP server.<br />When present, audit logs include MCP protocol operations.<br />See audit.Config for available configuration options. |  | Optional: \{\} <br /> |
 | `optimizer` _[vmcp.config.OptimizerConfig](#vmcpconfigoptimizerconfig)_ | Optimizer configures the MCP optimizer for context optimization on large toolsets.<br />When enabled, vMCP exposes only find_tool and call_tool operations to clients<br />instead of all backend tools directly. This reduces token usage by allowing<br />LLMs to discover relevant tools on demand rather than receiving all tool definitions. |  | Optional: \{\} <br /> |
 | `sessionStorage` _[vmcp.config.SessionStorageConfig](#vmcpconfigsessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When provider is "redis", the operator injects Redis connection parameters<br />(address, db, keyPrefix) here. The Redis password is provided separately via<br />the THV_SESSION_REDIS_PASSWORD environment variable. |  | Optional: \{\} <br /> |
@@ -888,8 +888,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type defines the authentication type |  | Enum: [discovered external_auth_config_ref] <br />Required: \{\} <br /> |
-| `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "external_auth_config_ref" |  | Optional: \{\} <br /> |
+| `type` _string_ | Type defines the authentication type |  | Enum: [discovered externalAuthConfigRef] <br />Required: \{\} <br /> |
+| `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "externalAuthConfigRef" |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.BearerTokenConfig
@@ -919,8 +919,6 @@ CABundleSource defines a source for CA certificate bundles.
 
 
 _Appears in:_
-- [api.v1alpha1.ConfigMapOIDCRef](#apiv1alpha1configmapoidcref)
-- [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
 - [api.v1alpha1.InlineOIDCSharedConfig](#apiv1alpha1inlineoidcsharedconfig)
 - [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
 - [api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)
@@ -945,24 +943,6 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the ConfigMap |  | Required: \{\} <br /> |
 | `key` _string_ | Key is the key in the ConfigMap that contains the authorization configuration | authz.json | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.ConfigMapOIDCRef
-
-
-
-ConfigMapOIDCRef references a ConfigMap containing OIDC configuration
-
-
-
-_Appears in:_
-- [api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is the name of the ConfigMap |  | Required: \{\} <br /> |
-| `key` _string_ | Key is the key in the ConfigMap that contains the OIDC configuration | oidc.json | Optional: \{\} <br /> |
-| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing the CA certificate bundle.<br />When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.<br />If the ConfigMap data contains an explicit thvCABundlePath key, it takes precedence. |  | Optional: \{\} <br /> |
 
 
 
@@ -1284,8 +1264,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `type` _string_ | Type defines the authentication type: anonymous or oidc<br />When no authentication is required, explicitly set this to "anonymous" |  | Enum: [anonymous oidc] <br />Required: \{\} <br /> |
-| `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration.<br />Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.<br />This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
-| `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig. |  | Optional: \{\} <br /> |
+| `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
 | `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration<br />Reuses MCPServer authz patterns |  | Optional: \{\} <br /> |
 
 
@@ -1304,33 +1283,6 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `policies` _string array_ | Policies is a list of Cedar policy strings |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `entitiesJson` _string_ | EntitiesJSON is a JSON string representing Cedar entities | [] | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.InlineOIDCConfig
-
-
-
-InlineOIDCConfig contains direct OIDC configuration
-
-
-
-_Appears in:_
-- [api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `issuer` _string_ | Issuer is the OIDC issuer URL |  | Required: \{\} <br /> |
-| `audience` _string_ | Audience is the expected audience for the token |  | Optional: \{\} <br /> |
-| `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from |  | Optional: \{\} <br /> |
-| `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint |  | Optional: \{\} <br /> |
-| `clientId` _string_ | ClientID is the OIDC client ID |  | Optional: \{\} <br /> |
-| `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef is a reference to a Kubernetes Secret containing the client secret |  | Optional: \{\} <br /> |
-| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing the CA certificate bundle.<br />When specified, ToolHive auto-mounts the ConfigMap and auto-computes the CA bundle path. |  | Optional: \{\} <br /> |
-| `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests<br />The file must be mounted into the pod (e.g., via Secret volume) |  | Optional: \{\} <br /> |
-| `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses<br />Use with caution - only enable for trusted internal IDPs | false | Optional: \{\} <br /> |
-| `protectedResourceAllowPrivateIP` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses<br />Use with caution - only enable for trusted internal IDPs or testing | false | Optional: \{\} <br /> |
-| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing<br />WARNING: This is insecure and should NEVER be used in production<br />Only enable for local development, testing, or trusted internal networks | false | Optional: \{\} <br /> |
-| `scopes` _string array_ | Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)<br />If empty, defaults to ["openid"] |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.InlineOIDCSharedConfig
@@ -1355,31 +1307,9 @@ _Appears in:_
 | `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef is a reference to a Kubernetes Secret containing the client secret |  | Optional: \{\} <br /> |
 | `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing the CA certificate bundle.<br />When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath. |  | Optional: \{\} <br /> |
 | `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests |  | Optional: \{\} <br /> |
-| `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses | false | Optional: \{\} <br /> |
-| `protectedResourceAllowPrivateIP` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses | false | Optional: \{\} <br /> |
+| `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses.<br />Note: at runtime, if either JWKSAllowPrivateIP or ProtectedResourceAllowPrivateIP<br />is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection). | false | Optional: \{\} <br /> |
+| `protectedResourceAllowPrivateIP` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses.<br />Note: at runtime, if either ProtectedResourceAllowPrivateIP or JWKSAllowPrivateIP<br />is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection). | false | Optional: \{\} <br /> |
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing.<br />WARNING: This is insecure and should NEVER be used in production. | false | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.KubernetesOIDCConfig
-
-
-
-KubernetesOIDCConfig configures OIDC for Kubernetes service account token validation
-
-
-
-_Appears in:_
-- [api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `serviceAccount` _string_ | ServiceAccount is the name of the service account to validate tokens for<br />If empty, uses the pod's service account |  | Optional: \{\} <br /> |
-| `namespace` _string_ | Namespace is the namespace of the service account<br />If empty, uses the MCPServer's namespace |  | Optional: \{\} <br /> |
-| `audience` _string_ | Audience is the expected audience for the token | toolhive | Optional: \{\} <br /> |
-| `issuer` _string_ | Issuer is the OIDC issuer URL | https://kubernetes.default.svc | Optional: \{\} <br /> |
-| `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL |  | Optional: \{\} <br /> |
-| `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint<br />If empty, OIDC discovery will be used to automatically determine the introspection URL |  | Optional: \{\} <br /> |
-| `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication<br />Defaults to true if not specified |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.KubernetesServiceAccountOIDCConfig
@@ -1553,6 +1483,26 @@ _Appears in:_
 | `Failed` | MCPGroupPhaseFailed indicates the MCPGroup has failed<br /> |
 
 
+#### api.v1alpha1.MCPGroupRef
+
+
+
+MCPGroupRef defines a reference to an MCPGroup resource.
+The referenced MCPGroup must be in the same namespace.
+
+
+
+_Appears in:_
+- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
+- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
+- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the MCPGroup resource in the same namespace |  | MinLength: 1 <br />Required: \{\} <br /> |
+
+
 #### api.v1alpha1.MCPGroupSpec
 
 
@@ -1657,6 +1607,7 @@ _Appears in:_
 | `name` _string_ | Name is the name of the MCPOIDCConfig resource |  | MinLength: 1 <br />Required: \{\} <br /> |
 | `audience` _string_ | Audience is the expected audience for token validation.<br />This MUST be unique per server to prevent token replay attacks. |  | MinLength: 1 <br />Required: \{\} <br /> |
 | `scopes` _string array_ | Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728).<br />If empty, defaults to ["openid"]. |  | Optional: \{\} <br /> |
+| `resourceUrl` _string_ | ResourceURL is the public URL for OAuth protected resource metadata (RFC 9728).<br />When the server is exposed via Ingress or gateway, set this to the external<br />URL that MCP clients connect to. If not specified, defaults to the internal<br />Kubernetes service URL. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.MCPOIDCConfigSourceType
@@ -1795,7 +1746,6 @@ _Appears in:_
 | `volumeMounts` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io) array_ | VolumeMounts defines additional volume mounts for the registry-api container.<br />Each entry is a standard Kubernetes VolumeMount object (JSON/YAML).<br />The operator appends them to the container's volume mounts alongside the config mount.<br />Mount paths must match the file paths referenced in configYAML.<br />For example, if configYAML references passwordFile: /secrets/git-creds/token,<br />a corresponding volume mount must exist with mountPath: /secrets/git-creds. |  | Optional: \{\} <br /> |
 | `pgpassSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | PGPassSecretRef references a Secret containing a pre-created pgpass file.<br />Why this is a dedicated field instead of a regular volume/volumeMount:<br />PostgreSQL's libpq rejects pgpass files that aren't mode 0600. Kubernetes<br />secret volumes mount files as root-owned, and the registry-api container<br />runs as non-root (UID 65532). A root-owned 0600 file is unreadable by<br />UID 65532, and using fsGroup changes permissions to 0640 which libpq also<br />rejects. The only solution is an init container that copies the file to an<br />emptyDir as the app user and runs chmod 0600. This cannot be expressed<br />through volumes/volumeMounts alone -- it requires an init container, two<br />extra volumes (secret + emptyDir), a subPath mount, and an environment<br />variable, all wired together correctly.<br />When specified, the operator generates all of that plumbing invisibly.<br />The user creates the Secret with pgpass-formatted content; the operator<br />handles only the Kubernetes permission mechanics.<br />Example Secret:<br />	apiVersion: v1<br />	kind: Secret<br />	metadata:<br />	  name: my-pgpass<br />	stringData:<br />	  .pgpass: \|<br />	    postgres:5432:registry:db_app:mypassword<br />	    postgres:5432:registry:db_migrator:otherpassword<br />Then reference it:<br />	pgpassSecretRef:<br />	  name: my-pgpass<br />	  key: .pgpass |  | Optional: \{\} <br /> |
 | `displayName` _string_ | DisplayName is a human-readable name for the registry. |  | Optional: \{\} <br /> |
-| `enforceServers` _boolean_ | EnforceServers indicates whether MCPServers in this namespace must have their images<br />present in at least one registry in the namespace. When any registry in the namespace<br />has this field set to true, enforcement is enabled for the entire namespace.<br />MCPServers with images not found in any registry will be rejected.<br />When false (default), MCPServers can be deployed regardless of registry presence. | false | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the registry API server.<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the registry API server runs in, you must specify<br />the `registry-api` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
 
 
@@ -1899,7 +1849,6 @@ _Appears in:_
 | `remoteUrl` _string_ | RemoteURL is the URL of the remote MCP server to proxy |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
 | `proxyPort` _integer_ | ProxyPort is the port to expose the MCP proxy on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `transport` _string_ | Transport is the transport method for the remote proxy (sse or streamable-http) | streamable-http | Enum: [sse streamable-http] <br /> |
-| `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the proxy.<br />Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.<br />This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
 | `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.<br />When specified, the proxy will exchange validated incoming tokens for remote service tokens.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy. |  | Optional: \{\} <br /> |
 | `authServerRef` _[api.v1alpha1.AuthServerRef](#apiv1alpha1authserverref)_ | AuthServerRef optionally references a resource that configures an embedded<br />OAuth 2.0/OIDC authorization server to authenticate MCP clients.<br />Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer). |  | Optional: \{\} <br /> |
@@ -1907,14 +1856,13 @@ _Appears in:_
 | `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the proxy |  | Optional: \{\} <br /> |
 | `audit` _[api.v1alpha1.AuditConfig](#apiv1alpha1auditconfig)_ | Audit defines audit logging configuration for the proxy |  | Optional: \{\} <br /> |
 | `toolConfigRef` _[api.v1alpha1.ToolConfigRef](#apiv1alpha1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this allows filtering and overriding tools from the remote MCP server. |  | Optional: \{\} <br /> |
-| `telemetryConfigRef` _[api.v1alpha1.MCPTelemetryConfigReference](#apiv1alpha1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />Mutually exclusive with the deprecated inline Telemetry field. |  | Optional: \{\} <br /> |
-| `telemetry` _[api.v1alpha1.TelemetryConfig](#apiv1alpha1telemetryconfig)_ | Telemetry defines inline observability configuration for the proxy.<br />Deprecated: Use TelemetryConfigRef to reference a shared MCPTelemetryConfig resource instead.<br />This field will be removed in a future release. Setting both telemetry and telemetryConfigRef<br />is rejected by CEL validation. |  | Optional: \{\} <br /> |
+| `telemetryConfigRef` _[api.v1alpha1.MCPTelemetryConfigReference](#apiv1alpha1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
 | `resources` _[api.v1alpha1.ResourceRequirements](#apiv1alpha1resourcerequirements)_ | Resources defines the resource requirements for the proxy container |  | Optional: \{\} <br /> |
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the proxy.<br />If not specified, a ServiceAccount will be created automatically and used by the proxy. |  | Optional: \{\} <br /> |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false | Optional: \{\} <br /> |
 | `endpointPrefix` _string_ | EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.<br />This is used to handle path-based ingress routing scenarios where the ingress<br />strips a path prefix before forwarding to the backend. |  | Optional: \{\} <br /> |
 | `resourceOverrides` _[api.v1alpha1.ResourceOverrides](#apiv1alpha1resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  | Optional: \{\} <br /> |
-| `groupRef` _string_ | GroupRef is the name of the MCPGroup this proxy belongs to<br />Must reference an existing MCPGroup in the same namespace |  | Optional: \{\} <br /> |
+| `groupRef` _[api.v1alpha1.MCPGroupRef](#apiv1alpha1mcpgroupref)_ | GroupRef references the MCPGroup this proxy belongs to.<br />The referenced MCPGroup must be in the same namespace. |  | Optional: \{\} <br /> |
 | `sessionAffinity` _string_ | SessionAffinity controls whether the Service routes repeated client connections to the same pod.<br />MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.<br />Set to "None" for stateless servers or when using an external load balancer with its own affinity. | ClientIP | Enum: [ClientIP None] <br />Optional: \{\} <br /> |
 
 
@@ -2046,7 +1994,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `remoteUrl` _string_ | RemoteURL is the URL of the remote MCP server.<br />Both HTTP and HTTPS schemes are accepted at admission time. |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
 | `transport` _string_ | Transport is the transport method for the remote server (sse or streamable-http).<br />No default is set (unlike MCPRemoteProxy) because MCPServerEntry points at external<br />servers the user doesn't control — requiring explicit transport avoids silent mismatches. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
-| `groupRef` _string_ | GroupRef is the name of the MCPGroup this entry belongs to.<br />Required — every MCPServerEntry must be part of a group for vMCP discovery. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `groupRef` _[api.v1alpha1.MCPGroupRef](#apiv1alpha1mcpgroupref)_ | GroupRef references the MCPGroup this entry belongs to.<br />Required — every MCPServerEntry must be part of a group for vMCP discovery. |  | Required: \{\} <br /> |
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange<br />when connecting to the remote MCP server. The referenced MCPExternalAuthConfig must<br />exist in the same namespace as this MCPServerEntry. |  | Optional: \{\} <br /> |
 | `headerForward` _[api.v1alpha1.HeaderForwardConfig](#apiv1alpha1headerforwardconfig)_ | HeaderForward configures headers to inject into requests to the remote MCP server.<br />Use this to add custom headers like API keys or correlation IDs. |  | Optional: \{\} <br /> |
 | `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing CA certificates for TLS verification<br />when connecting to the remote MCP server. |  | Optional: \{\} <br /> |
@@ -2138,18 +2086,16 @@ _Appears in:_
 | `permissionProfile` _[api.v1alpha1.PermissionProfileRef](#apiv1alpha1permissionprofileref)_ | PermissionProfile defines the permission profile to use |  | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the MCP server runs in, you must specify<br />the `mcp` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
 | `resourceOverrides` _[api.v1alpha1.ResourceOverrides](#apiv1alpha1resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  | Optional: \{\} <br /> |
-| `oidcConfig` _[api.v1alpha1.OIDCConfigRef](#apiv1alpha1oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the MCP server.<br />Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.<br />This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive. |  | Optional: \{\} <br /> |
-| `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. Mutually exclusive with oidcConfig. |  | Optional: \{\} <br /> |
+| `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
 | `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server |  | Optional: \{\} <br /> |
 | `audit` _[api.v1alpha1.AuditConfig](#apiv1alpha1auditconfig)_ | Audit defines audit logging configuration for the MCP server |  | Optional: \{\} <br /> |
 | `toolConfigRef` _[api.v1alpha1.ToolConfigRef](#apiv1alpha1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
 | `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer. |  | Optional: \{\} <br /> |
 | `authServerRef` _[api.v1alpha1.AuthServerRef](#apiv1alpha1authserverref)_ | AuthServerRef optionally references a resource that configures an embedded<br />OAuth 2.0/OIDC authorization server to authenticate MCP clients.<br />Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer). |  | Optional: \{\} <br /> |
-| `telemetryConfigRef` _[api.v1alpha1.MCPTelemetryConfigReference](#apiv1alpha1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons.<br />Mutually exclusive with the deprecated inline Telemetry field. |  | Optional: \{\} <br /> |
-| `telemetry` _[api.v1alpha1.TelemetryConfig](#apiv1alpha1telemetryconfig)_ | Telemetry defines inline observability configuration for the MCP server.<br />Deprecated: Use TelemetryConfigRef to reference a shared MCPTelemetryConfig resource instead.<br />This field will be removed in a future release. Setting both telemetry and telemetryConfigRef<br />is rejected by CEL validation. |  | Optional: \{\} <br /> |
+| `telemetryConfigRef` _[api.v1alpha1.MCPTelemetryConfigReference](#apiv1alpha1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false | Optional: \{\} <br /> |
 | `endpointPrefix` _string_ | EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.<br />This is used to handle path-based ingress routing scenarios where the ingress<br />strips a path prefix before forwarding to the backend. |  | Optional: \{\} <br /> |
-| `groupRef` _string_ | GroupRef is the name of the MCPGroup this server belongs to<br />Must reference an existing MCPGroup in the same namespace |  | Optional: \{\} <br /> |
+| `groupRef` _[api.v1alpha1.MCPGroupRef](#apiv1alpha1mcpgroupref)_ | GroupRef references the MCPGroup this server belongs to.<br />The referenced MCPGroup must be in the same namespace. |  | Optional: \{\} <br /> |
 | `sessionAffinity` _string_ | SessionAffinity controls whether the Service routes repeated client connections to the same pod.<br />MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.<br />Set to "None" for stateless servers or when using an external load balancer with its own affinity. | ClientIP | Enum: [ClientIP None] <br />Optional: \{\} <br /> |
 | `replicas` _integer_ | Replicas is the desired number of proxy runner (thv run) pod replicas.<br />MCPServer creates two separate Deployments: one for the proxy runner and one<br />for the MCP server backend. This field controls the proxy runner Deployment.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `backendReplicas` _integer_ | BackendReplicas is the desired number of MCP server backend pod replicas.<br />This controls the backend Deployment (the MCP server container itself),<br />independent of the proxy runner controlled by Replicas.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
@@ -2241,6 +2187,7 @@ same namespace as the MCPServer.
 _Appears in:_
 - [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
 - [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2459,28 +2406,6 @@ _Appears in:_
 | `tokenResponseMapping` _[api.v1alpha1.TokenResponseMapping](#apiv1alpha1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.OIDCConfigRef
-
-
-
-OIDCConfigRef defines a reference to OIDC configuration
-
-
-
-_Appears in:_
-- [api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `type` _string_ | Type is the type of OIDC configuration | kubernetes | Enum: [kubernetes configMap inline] <br /> |
-| `resourceUrl` _string_ | ResourceURL is the explicit resource URL for OAuth discovery endpoint (RFC 9728)<br />If not specified, defaults to the in-cluster Kubernetes service URL |  | Optional: \{\} <br /> |
-| `kubernetes` _[api.v1alpha1.KubernetesOIDCConfig](#apiv1alpha1kubernetesoidcconfig)_ | Kubernetes configures OIDC for Kubernetes service account token validation<br />Only used when Type is "kubernetes" |  | Optional: \{\} <br /> |
-| `configMap` _[api.v1alpha1.ConfigMapOIDCRef](#apiv1alpha1configmapoidcref)_ | ConfigMap references a ConfigMap containing OIDC configuration<br />Only used when Type is "configmap" |  | Optional: \{\} <br /> |
-| `inline` _[api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)_ | Inline contains direct OIDC configuration<br />Only used when Type is "inline" |  | Optional: \{\} <br /> |
-
-
 #### api.v1alpha1.OIDCUpstreamConfig
 
 
@@ -2503,29 +2428,6 @@ _Appears in:_
 | `userInfoOverride` _[api.v1alpha1.UserInfoConfig](#apiv1alpha1userinfoconfig)_ | UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.<br />By default, the UserInfo endpoint is discovered automatically via OIDC discovery.<br />Use this to override the endpoint URL, HTTP method, or field mappings for providers<br />that return non-standard claim names in their UserInfo response. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.OpenTelemetryConfig
-
-
-
-OpenTelemetryConfig defines pure OpenTelemetry configuration
-
-
-
-_Appears in:_
-- [api.v1alpha1.TelemetryConfig](#apiv1alpha1telemetryconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `enabled` _boolean_ | Enabled controls whether OpenTelemetry is enabled | false | Optional: \{\} <br /> |
-| `endpoint` _string_ | Endpoint is the OTLP endpoint URL for tracing and metrics |  | Optional: \{\} <br /> |
-| `serviceName` _string_ | ServiceName is the service name for telemetry<br />If not specified, defaults to the MCPServer name |  | Optional: \{\} <br /> |
-| `headers` _string array_ | Headers contains authentication headers for the OTLP endpoint<br />Specified as key=value pairs |  | Optional: \{\} <br /> |
-| `insecure` _boolean_ | Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint | false | Optional: \{\} <br /> |
-| `metrics` _[api.v1alpha1.OpenTelemetryMetricsConfig](#apiv1alpha1opentelemetrymetricsconfig)_ | Metrics defines OpenTelemetry metrics-specific configuration |  | Optional: \{\} <br /> |
-| `tracing` _[api.v1alpha1.OpenTelemetryTracingConfig](#apiv1alpha1opentelemetrytracingconfig)_ | Tracing defines OpenTelemetry tracing configuration |  | Optional: \{\} <br /> |
-| `useLegacyAttributes` _boolean_ | UseLegacyAttributes controls whether legacy attribute names are emitted alongside<br />the new MCP OTEL semantic convention names. Defaults to true for backward compatibility.<br />This will change to false in a future release and eventually be removed. | true | Optional: \{\} <br /> |
-
-
 #### api.v1alpha1.OpenTelemetryMetricsConfig
 
 
@@ -2536,7 +2438,6 @@ OpenTelemetryMetricsConfig defines OpenTelemetry metrics configuration
 
 _Appears in:_
 - [api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)
-- [api.v1alpha1.OpenTelemetryConfig](#apiv1alpha1opentelemetryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2553,7 +2454,6 @@ OpenTelemetryTracingConfig defines OpenTelemetry tracing configuration
 
 _Appears in:_
 - [api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)
-- [api.v1alpha1.OpenTelemetryConfig](#apiv1alpha1opentelemetryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2627,7 +2527,6 @@ PrometheusConfig defines Prometheus-specific configuration
 
 _Appears in:_
 - [api.v1alpha1.MCPTelemetryConfigSpec](#apiv1alpha1mcptelemetryconfigspec)
-- [api.v1alpha1.TelemetryConfig](#apiv1alpha1telemetryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2879,7 +2778,6 @@ _Appears in:_
 - [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
 - [api.v1alpha1.HeaderFromSecret](#apiv1alpha1headerfromsecret)
 - [api.v1alpha1.HeaderInjectionConfig](#apiv1alpha1headerinjectionconfig)
-- [api.v1alpha1.InlineOIDCConfig](#apiv1alpha1inlineoidcconfig)
 - [api.v1alpha1.InlineOIDCSharedConfig](#apiv1alpha1inlineoidcsharedconfig)
 - [api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)
 - [api.v1alpha1.OIDCUpstreamConfig](#apiv1alpha1oidcupstreamconfig)
@@ -2970,24 +2868,6 @@ _Appears in:_
 | `db` _integer_ | DB is the Redis database number | 0 | Minimum: 0 <br />Optional: \{\} <br /> |
 | `keyPrefix` _string_ | KeyPrefix is an optional prefix for all Redis keys used by ToolHive |  | Optional: \{\} <br /> |
 | `passwordRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | PasswordRef is a reference to a Secret key containing the Redis password |  | Optional: \{\} <br /> |
-
-
-#### api.v1alpha1.TelemetryConfig
-
-
-
-TelemetryConfig defines observability configuration for the MCP server
-
-
-
-_Appears in:_
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `openTelemetry` _[api.v1alpha1.OpenTelemetryConfig](#apiv1alpha1opentelemetryconfig)_ | OpenTelemetry defines OpenTelemetry configuration |  | Optional: \{\} <br /> |
-| `prometheus` _[api.v1alpha1.PrometheusConfig](#apiv1alpha1prometheusconfig)_ | Prometheus defines Prometheus-specific configuration |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.TokenExchangeConfig
@@ -3421,9 +3301,11 @@ _Appears in:_
 | `sessionAffinity` _string_ | SessionAffinity controls whether the Service routes repeated client connections to the same pod.<br />MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.<br />Set to "None" for stateless servers or when using an external load balancer with its own affinity. | ClientIP | Enum: [ClientIP None] <br />Optional: \{\} <br /> |
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.<br />If not specified, a ServiceAccount will be created automatically and used by the Virtual MCP server. |  | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
-| `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration<br />The only field currently required within config is `config.groupRef`.<br />GroupRef references an existing MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace.<br />The telemetry and audit config from here are also supported, but not required. |  | Type: object <br />Optional: \{\} <br /> |
+| `groupRef` _[api.v1alpha1.MCPGroupRef](#apiv1alpha1mcpgroupref)_ | GroupRef references the MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace. |  | Required: \{\} <br /> |
+| `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration.<br />The audit config from here is also supported, but not required. |  | Type: object <br />Optional: \{\} <br /> |
+| `telemetryConfigRef` _[api.v1alpha1.MCPTelemetryConfigReference](#apiv1alpha1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this VirtualMCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
 | `embeddingServerRef` _[api.v1alpha1.EmbeddingServerRef](#apiv1alpha1embeddingserverref)_ | EmbeddingServerRef references an existing EmbeddingServer resource by name.<br />When the optimizer is enabled, this field is required to point to a ready EmbeddingServer<br />that provides embedding capabilities.<br />The referenced EmbeddingServer must exist in the same namespace and be ready. |  | Optional: \{\} <br /> |
-| `authServerConfig` _[api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)_ | AuthServerConfig configures an embedded OAuth authorization server.<br />When set, the vMCP server acts as an OIDC issuer, drives users through<br />upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the<br />IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfig<br />so that tokens it issues are accepted by the vMCP's incoming auth middleware.<br />When nil, IncomingAuth uses an external IDP and behavior is unchanged. |  | Optional: \{\} <br /> |
+| `authServerConfig` _[api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)_ | AuthServerConfig configures an embedded OAuth authorization server.<br />When set, the vMCP server acts as an OIDC issuer, drives users through<br />upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the<br />IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfigRef<br />so that tokens it issues are accepted by the vMCP's incoming auth middleware.<br />When nil, IncomingAuth uses an external IDP and behavior is unchanged. |  | Optional: \{\} <br /> |
 | `replicas` _integer_ | Replicas is the desired number of vMCP pod replicas.<br />VirtualMCPServer creates a single Deployment for the vMCP aggregator process,<br />so there is only one replicas field (unlike MCPServer which has separate<br />Replicas and BackendReplicas for its two Deployments).<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `sessionStorage` _[api.v1alpha1.SessionStorageConfig](#apiv1alpha1sessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When nil, no session storage is configured. |  | Optional: \{\} <br /> |
 
@@ -3449,6 +3331,7 @@ _Appears in:_
 | `discoveredBackends` _[api.v1alpha1.DiscoveredBackend](#apiv1alpha1discoveredbackend) array_ | DiscoveredBackends lists discovered backend configurations from the MCPGroup |  | Optional: \{\} <br /> |
 | `backendCount` _integer_ | BackendCount is the number of healthy/ready backends<br />(excludes unavailable, degraded, and unknown backends) |  | Optional: \{\} <br /> |
 | `oidcConfigHash` _string_ | OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection.<br />Only populated when IncomingAuth.OIDCConfigRef is set. |  | Optional: \{\} <br /> |
+| `telemetryConfigHash` _string_ | TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection.<br />Only populated when TelemetryConfigRef is set. |  | Optional: \{\} <br /> |
 
 
 #### api.v1alpha1.Volume

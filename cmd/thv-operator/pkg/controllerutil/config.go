@@ -220,6 +220,34 @@ func GetTelemetryConfigForMCPRemoteProxy(
 	return telemetryConfig, nil
 }
 
+// GetTelemetryConfigForVirtualMCPServer fetches the MCPTelemetryConfig referenced by the VirtualMCPServer.
+// Returns (nil, nil) when TelemetryConfigRef is nil or the resource is not found.
+// Returns (nil, err) only for transient API errors so callers can distinguish
+// "config missing" from "API unavailable".
+func GetTelemetryConfigForVirtualMCPServer(
+	ctx context.Context,
+	c client.Client,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) (*mcpv1alpha1.MCPTelemetryConfig, error) {
+	if vmcp.Spec.TelemetryConfigRef == nil {
+		return nil, nil
+	}
+
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{}
+	err := c.Get(ctx, types.NamespacedName{
+		Name:      vmcp.Spec.TelemetryConfigRef.Name,
+		Namespace: vmcp.Namespace,
+	}, telemetryConfig)
+	if errors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPTelemetryConfig %s: %w", vmcp.Spec.TelemetryConfigRef.Name, err)
+	}
+
+	return telemetryConfig, nil
+}
+
 // GetExternalAuthConfigByName is a generic helper for fetching MCPExternalAuthConfig by name
 func GetExternalAuthConfigByName(
 	ctx context.Context,

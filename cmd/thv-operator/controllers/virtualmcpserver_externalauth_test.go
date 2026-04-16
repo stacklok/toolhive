@@ -231,7 +231,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -302,7 +302,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
@@ -412,7 +412,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "inline",
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
@@ -476,7 +476,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 						Default: &mcpv1alpha1.BackendAuthConfig{
@@ -518,7 +518,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "inline",
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
@@ -566,7 +566,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 					},
@@ -616,7 +616,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					// No OutgoingAuth specified
 				},
 			},
@@ -634,11 +634,11 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 						Default: &mcpv1alpha1.BackendAuthConfig{
-							Type: "external_auth_config_ref",
+							Type: "externalAuthConfigRef",
 							ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 								Name: "missing-default-auth", // Auth config doesn't exist
 							},
@@ -671,12 +671,12 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 							"api-backend": {
-								Type: "external_auth_config_ref",
+								Type: "externalAuthConfigRef",
 								ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 									Name: "missing-backend-auth",
 								},
@@ -765,7 +765,7 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 		validate    func(*testing.T, *authtypes.BackendAuthStrategy)
 	}{
 		{
-			name: "external_auth_config_ref type",
+			name: "externalAuthConfigRef type",
 			crdConfig: &mcpv1alpha1.BackendAuthConfig{
 				Type: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
@@ -1140,7 +1140,7 @@ func TestBuildOutgoingAuthConfig_SubjectProviderInjection(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 				Source: "discovered",
 				// Default references an MCPExternalAuthConfig (the only supported form
@@ -1556,7 +1556,7 @@ func TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection(t *testin
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 				Source: "discovered",
 				// Inline Backends override — the path exercised by this test.

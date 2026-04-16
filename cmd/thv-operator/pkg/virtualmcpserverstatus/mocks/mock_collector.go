@@ -210,6 +210,30 @@ func (mr *MockStatusManagerMockRecorder) SetReadyCondition(reason, message, stat
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetReadyCondition", reflect.TypeOf((*MockStatusManager)(nil).SetReadyCondition), reason, message, status)
 }
 
+// SetTelemetryConfigHash mocks base method.
+func (m *MockStatusManager) SetTelemetryConfigHash(hash string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetTelemetryConfigHash", hash)
+}
+
+// SetTelemetryConfigHash indicates an expected call of SetTelemetryConfigHash.
+func (mr *MockStatusManagerMockRecorder) SetTelemetryConfigHash(hash any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetTelemetryConfigHash", reflect.TypeOf((*MockStatusManager)(nil).SetTelemetryConfigHash), hash)
+}
+
+// SetTelemetryConfigRefValidatedCondition mocks base method.
+func (m *MockStatusManager) SetTelemetryConfigRefValidatedCondition(reason, message string, status v1.ConditionStatus) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetTelemetryConfigRefValidatedCondition", reason, message, status)
+}
+
+// SetTelemetryConfigRefValidatedCondition indicates an expected call of SetTelemetryConfigRefValidatedCondition.
+func (mr *MockStatusManagerMockRecorder) SetTelemetryConfigRefValidatedCondition(reason, message, status any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetTelemetryConfigRefValidatedCondition", reflect.TypeOf((*MockStatusManager)(nil).SetTelemetryConfigRefValidatedCondition), reason, message, status)
+}
+
 // SetURL mocks base method.
 func (m *MockStatusManager) SetURL(url string) {
 	m.ctrl.T.Helper()

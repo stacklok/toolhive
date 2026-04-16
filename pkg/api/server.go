@@ -772,9 +772,13 @@ func (a *clientPathAdapter) GetSkillPath(clientType, skillName string, scope ski
 
 func (a *clientPathAdapter) ListSkillSupportingClients() []string {
 	clients := a.cm.ListSkillSupportingClients()
-	result := make([]string, len(clients))
-	for i, c := range clients {
-		result[i] = string(c)
+	var result []string
+	for _, c := range clients {
+		if a.cm.IsClientInstalled(c) {
+			result = append(result, string(c))
+		} else {
+			slog.Debug("skipping client for skill install: not detected on system", "client", c)
+		}
 	}
 	return result
 }

@@ -78,9 +78,10 @@ func SetSecretsProvider(ctx context.Context, provider secrets.ProviderType) erro
 	}
 
 	// Update the secrets provider type and mark setup as completed
-	err := config.UpdateConfig(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) error {
 		c.Secrets.ProviderType = string(provider)
 		c.Secrets.SetupCompleted = true
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)

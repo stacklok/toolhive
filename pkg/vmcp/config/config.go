@@ -98,8 +98,8 @@ type Config struct {
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 
 	// Group references an existing MCPGroup that defines backend workloads.
-	// In Kubernetes, the referenced MCPGroup must exist in the same namespace.
-	// Deprecated: Use spec.groupRef on VirtualMCPServerSpec instead.
+	// In standalone CLI mode, this is set from the YAML config file.
+	// In Kubernetes, the operator populates this from spec.groupRef during conversion.
 	// +optional
 	Group string `json:"groupRef,omitempty" yaml:"groupRef,omitempty"`
 

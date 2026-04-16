@@ -66,7 +66,7 @@ func createTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 
 	// Write the config file if one is provided
 	if cfg != nil {
-		err = provider.UpdateConfig(func(c *config.Config) { *c = *cfg })
+		err = provider.UpdateConfig(func(c *config.Config) error { *c = *cfg; return nil })
 		require.NoError(t, err)
 	}
 

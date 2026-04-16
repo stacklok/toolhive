@@ -3,6 +3,7 @@ name: code-reviewer
 description: Reviews code for ToolHive best practices, security patterns, Go conventions, and architectural consistency
 tools: [Read, Glob, Grep]
 model: inherit
+color: yellow
 ---
 
 # Code Reviewer Agent

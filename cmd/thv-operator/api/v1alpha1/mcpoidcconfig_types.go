@@ -241,6 +241,13 @@ type MCPOIDCConfigReference struct {
 	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
+
+	// ResourceURL is the public URL for OAuth protected resource metadata (RFC 9728).
+	// When the server is exposed via Ingress or gateway, set this to the external
+	// URL that MCP clients connect to. If not specified, defaults to the internal
+	// Kubernetes service URL.
+	// +optional
+	ResourceURL string `json:"resourceUrl,omitempty"`
 }
 
 // Validate performs validation on the MCPOIDCConfig spec.

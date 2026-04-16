@@ -335,7 +335,7 @@ func (c *Config) saveToPath(configPath string) error {
 
 // UpdateConfig locks a separate lock file, reads from disk, applies the changes
 // from the anonymous function, writes to disk and unlocks the file.
-func UpdateConfig(updateFn func(*Config)) error {
+func UpdateConfig(updateFn func(*Config) error) error {
 	provider := NewProvider()
 	return provider.UpdateConfig(updateFn)
 }
@@ -343,7 +343,7 @@ func UpdateConfig(updateFn func(*Config)) error {
 // UpdateConfigAtPath locks a separate lock file, reads from disk, applies the changes
 // from the anonymous function, writes to disk and unlocks the file.
 // If configPath is empty, it uses the default path.
-func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
+func UpdateConfigAtPath(configPath string, updateFn func(*Config) error) error {
 	if configPath == "" {
 		var err error
 		configPath, err = getConfigPath()
@@ -375,7 +375,9 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 	}
 
 	// Apply changes to the config file.
-	updateFn(c)
+	if err := updateFn(c); err != nil {
+		return err
+	}
 
 	// Write the updated config to disk.
 	err = c.saveToPath(configPath)
@@ -430,10 +432,11 @@ func setRuntimeConfig(provider Provider, transportType string, runtimeConfig *te
 		}
 	}
 
-	return provider.UpdateConfig(func(c *Config) {
+	return provider.UpdateConfig(func(c *Config) error {
 		if c.RuntimeConfigs == nil {
 			c.RuntimeConfigs = make(map[string]*templates.RuntimeConfig)
 		}
 		c.RuntimeConfigs[transportType] = runtimeConfig
+		return nil
 	})
 }

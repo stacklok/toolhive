@@ -17,7 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -87,7 +86,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config:       vmcpconfig.Config{Group: mcpGroupName},
+					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
 					Replicas:     &replicas,
 				},
@@ -187,7 +186,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config:       vmcpconfig.Config{Group: mcpGroupName},
+					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
 					Replicas:     &replicas,
 					ServiceType:  "NodePort",

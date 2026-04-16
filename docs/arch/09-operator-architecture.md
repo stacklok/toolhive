@@ -219,6 +219,7 @@ MCPOIDCConfig eliminates OIDC configuration duplication — define an identity p
 **Per-server overrides** live in the workload's `oidcConfigRef` field (not the shared spec):
 - `audience` (required) — Must be unique per server to prevent token replay
 - `scopes` (optional) — Defaults to `["openid"]`
+- `resourceUrl` (optional) — Public URL for OAuth protected resource metadata (RFC 9728); defaults to internal service URL
 
 **Status fields** include a `Ready` condition, `configHash` for change detection, and `referencingWorkloads` tracking which resources reference this config. Deletion is blocked while references exist (finalizer pattern).
 
@@ -255,7 +256,7 @@ Defines a proxy for remote MCP servers with authentication, authorization, audit
 
 **Key fields:**
 - `remoteUrl` - URL of the remote MCP server to proxy
-- `oidcConfigRef` - Reference to shared MCPOIDCConfig (with per-server `audience` and `scopes`)
+- `oidcConfigRef` - Reference to shared MCPOIDCConfig (with per-server `audience`, `scopes`, and `resourceUrl`)
 - `externalAuthConfigRef` - Token exchange for remote service authentication
 - `authzConfig` - Authorization policies
 - `toolConfigRef` - Tool filtering and renaming
@@ -629,6 +630,7 @@ spec:
     name: corporate-idp
     audience: my-server      # per-server, prevents token replay
     scopes: ["openid"]       # optional, defaults to ["openid"]
+    resourceUrl: https://mcp.example.com  # optional, defaults to internal service URL
 ```
 
 **MCPTelemetryConfig reference:**

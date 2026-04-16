@@ -116,10 +116,13 @@ func (rb *RemoteProxyBuilder) WithAuthServerRef(name string) *RemoteProxyBuilder
 }
 
 // WithOIDCConfigRef sets the OIDCConfigRef for the proxy.
-func (rb *RemoteProxyBuilder) WithOIDCConfigRef(name, audience string) *RemoteProxyBuilder {
+// resourceURL sets both Audience and ResourceURL to the same value, which is
+// required when an embedded auth server is active (#4860).
+func (rb *RemoteProxyBuilder) WithOIDCConfigRef(name, resourceURL string) *RemoteProxyBuilder {
 	rb.proxy.Spec.OIDCConfigRef = &mcpv1alpha1.MCPOIDCConfigReference{
-		Name:     name,
-		Audience: audience,
+		Name:        name,
+		Audience:    resourceURL,
+		ResourceURL: resourceURL,
 	}
 	return rb
 }

@@ -81,8 +81,9 @@ var _ = Describe("MCPServer AuthServerRef Integration Tests", func() {
 						Name: authConfigName,
 					},
 					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
-						Name:     oidcConfigName,
-						Audience: "https://test-resource.example.com",
+						Name:        oidcConfigName,
+						Audience:    "https://test-resource.example.com",
+						ResourceURL: "https://test-resource.example.com",
 					},
 				},
 			}
@@ -197,8 +198,9 @@ var _ = Describe("MCPServer AuthServerRef Integration Tests", func() {
 						Name: authConfigConflict,
 					},
 					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
-						Name:     oidcConfigName,
-						Audience: "https://test-resource.example.com",
+						Name:        oidcConfigName,
+						Audience:    "https://test-resource.example.com",
+						ResourceURL: "https://test-resource.example.com",
 					},
 				},
 			}
@@ -376,8 +378,9 @@ var _ = Describe("MCPServer AuthServerRef Integration Tests", func() {
 						Name: authConfigName,
 					},
 					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
-						Name:     oidcConfigName,
-						Audience: "https://test-resource.example.com",
+						Name:        oidcConfigName,
+						Audience:    "https://test-resource.example.com",
+						ResourceURL: "https://test-resource.example.com",
 					},
 				},
 			}

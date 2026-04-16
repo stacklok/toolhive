@@ -1110,6 +1110,7 @@ func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {
 		{
 			name: "valid OIDC config succeeds",
 			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "http://test-server.default.svc.cluster.local:8080",
 				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
 				Scopes:      []string{"openid", "offline_access"},
 			},
@@ -1118,10 +1119,31 @@ func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {
 		{
 			name: "valid OIDC config with nil scopes succeeds",
 			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "http://test-server.default.svc.cluster.local:8080",
 				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
 				Scopes:      nil,
 			},
 			expectError: false,
+		},
+		{
+			name: "audience mismatch with resourceUrl returns error",
+			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "https://different-audience.example.com",
+				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
+				Scopes:      []string{"openid"},
+			},
+			expectError: true,
+			errContains: "must match resourceUrl",
+		},
+		{
+			name: "empty audience returns specific error",
+			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "",
+				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
+				Scopes:      []string{"openid"},
+			},
+			expectError: true,
+			errContains: "audience is required when an embedded auth server is active",
 		},
 	}
 
@@ -1665,6 +1687,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 	}
 
 	validOIDCConfig := &oidc.OIDCConfig{
+		Audience:    "https://mcp.example.com",
 		ResourceURL: "https://mcp.example.com",
 		Scopes:      []string{"openid"},
 	}
@@ -1737,6 +1760,36 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 			objects:     func() []runtime.Object { return []runtime.Object{newValidEmbeddedAuthConfig()} },
 			wantErr:     true,
 			errContains: "OIDC config is required",
+		},
+		{
+			name: "audience mismatch with resourceUrl returns error",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "auth-server-config",
+			},
+			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "https://wrong-audience.example.com",
+				ResourceURL: "https://mcp.example.com",
+				Scopes:      []string{"openid"},
+			},
+			objects:     func() []runtime.Object { return []runtime.Object{newValidEmbeddedAuthConfig()} },
+			wantErr:     true,
+			errContains: "must match resourceUrl",
+		},
+		{
+			name: "audience matching resourceUrl succeeds",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "auth-server-config",
+			},
+			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "https://mcp.example.com",
+				ResourceURL: "https://mcp.example.com",
+				Scopes:      []string{"openid"},
+			},
+			objects:     func() []runtime.Object { return []runtime.Object{newValidEmbeddedAuthConfig()} },
+			wantErr:     false,
+			wantOptions: 1,
 		},
 	}
 
@@ -1813,6 +1866,7 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 	}
 
 	validOIDC := &oidc.OIDCConfig{
+		Audience:    "https://mcp.example.com",
 		ResourceURL: "https://mcp.example.com",
 		Scopes:      []string{"openid"},
 	}

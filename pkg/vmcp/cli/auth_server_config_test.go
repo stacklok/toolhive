@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package app
+package cli
 
 import (
 	"os"
@@ -75,5 +75,4 @@ func TestLoadAuthServerConfig(t *testing.T) {
 		assert.Nil(t, rc)
 		assert.Contains(t, err.Error(), "failed to parse")
 	})
-
 }

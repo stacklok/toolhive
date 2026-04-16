@@ -807,6 +807,7 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				require.NotNil(t, upstream.OIDCConfig)
 				assert.Equal(t, "https://okta.example.com", upstream.OIDCConfig.IssuerURL)
 				assert.Equal(t, "client-id", upstream.OIDCConfig.ClientID)
+				assert.Equal(t, "https://auth.example.com/callback", upstream.OIDCConfig.RedirectURI)
 				assert.Equal(t, []string{"openid", "profile"}, upstream.OIDCConfig.Scopes)
 			},
 		},
@@ -857,12 +858,113 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				assert.Equal(t, "https://github.com/login/oauth/authorize",
 					upstream.OAuth2Config.AuthorizationEndpoint)
 				require.NotNil(t, upstream.OAuth2Config.UserInfo)
+				assert.Equal(t, "https://auth.example.com/callback", upstream.OAuth2Config.RedirectURI)
 				assert.Equal(t, "https://api.github.com/user",
 					upstream.OAuth2Config.UserInfo.EndpointURL)
 				assert.Equal(t, "GET", upstream.OAuth2Config.UserInfo.HTTPMethod)
 				require.NotNil(t, upstream.OAuth2Config.UserInfo.FieldMapping)
 				assert.Equal(t, []string{"id", "login"},
 					upstream.OAuth2Config.UserInfo.FieldMapping.SubjectFields)
+			},
+		},
+		{
+			name: "defaults upstream redirect URI from resource URL when empty",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL: "https://okta.example.com",
+							ClientID:  "client-id",
+						},
+					},
+				},
+			},
+			allowedAudiences: []string{"https://mcp.example.com"},
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				require.NotNil(t, config.Upstreams[0].OIDCConfig)
+				assert.Equal(t, "https://mcp.example.com/oauth/callback", config.Upstreams[0].OIDCConfig.RedirectURI)
+			},
+		},
+		{
+			name: "defaults redirect URI under path-prefixed resource URL",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL: "https://okta.example.com",
+							ClientID:  "client-id",
+						},
+					},
+				},
+			},
+			allowedAudiences: []string{"https://mcp-gateway.example.com/mcp"},
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				require.NotNil(t, config.Upstreams[0].OIDCConfig)
+				// Path-prefixed ingress deployments serve /oauth/* under the
+				// same prefix, so the default preserves the path from resourceUrl.
+				assert.Equal(t, "https://mcp-gateway.example.com/mcp/oauth/callback", config.Upstreams[0].OIDCConfig.RedirectURI)
+			},
+		},
+		{
+			name: "trims trailing slash from resource URL before appending callback",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL: "https://okta.example.com",
+							ClientID:  "client-id",
+						},
+					},
+				},
+			},
+			allowedAudiences: []string{"https://mcp.example.com/"},
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				require.NotNil(t, config.Upstreams[0].OIDCConfig)
+				assert.Equal(t, "https://mcp.example.com/oauth/callback", config.Upstreams[0].OIDCConfig.RedirectURI)
+			},
+		},
+		{
+			name: "preserves explicit upstream redirect URI over resource URL default",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "github",
+						Type: mcpv1alpha1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1alpha1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+							TokenEndpoint:         "https://github.com/login/oauth/access_token",
+							ClientID:              "client-id",
+							RedirectURI:           "https://configured.example.com/callback",
+						},
+					},
+				},
+			},
+			allowedAudiences: []string{"https://mcp.example.com"},
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				require.NotNil(t, config.Upstreams[0].OAuth2Config)
+				assert.Equal(t, "https://configured.example.com/callback", config.Upstreams[0].OAuth2Config.RedirectURI)
 			},
 		},
 		{
@@ -973,7 +1075,13 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			config, err := BuildAuthServerRunConfig("default", "test-server", tt.authConfig, tt.allowedAudiences, tt.scopesSupported)
+			resourceURL := ""
+			if len(tt.allowedAudiences) > 0 {
+				resourceURL = tt.allowedAudiences[0]
+			}
+			config, err := BuildAuthServerRunConfig(
+				"default", "test-server", tt.authConfig, tt.allowedAudiences, tt.scopesSupported, resourceURL,
+			)
 
 			require.NoError(t, err)
 			require.NotNil(t, config)
@@ -1538,6 +1646,7 @@ func TestBuildAuthServerRunConfig_WithRedisStorage(t *testing.T) {
 		"default", "my-mcp-server", authConfig,
 		[]string{"http://test-server.default.svc.cluster.local:8080"},
 		[]string{"openid"},
+		"http://test-server.default.svc.cluster.local:8080",
 	)
 
 	require.NoError(t, err)

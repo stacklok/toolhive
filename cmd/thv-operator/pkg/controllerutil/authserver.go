@@ -407,6 +407,7 @@ func AddEmbeddedAuthServerConfigOptions(
 	embeddedConfig, err := BuildAuthServerRunConfig(
 		namespace, mcpServerName, authServerConfig,
 		[]string{oidcConfig.ResourceURL}, oidcConfig.Scopes,
+		oidcConfig.ResourceURL,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to build embedded auth server config: %w", err)
@@ -430,6 +431,7 @@ func BuildAuthServerRunConfig(
 	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
 	allowedAudiences []string,
 	scopesSupported []string,
+	resourceURL string,
 ) (*authserver.RunConfig, error) {
 	config := &authserver.RunConfig{
 		SchemaVersion:                authserver.CurrentSchemaVersion,
@@ -473,8 +475,13 @@ func BuildAuthServerRunConfig(
 	// Build upstream provider configs using shared bindings
 	bindings := buildUpstreamSecretBindings(authConfig.UpstreamProviders)
 	config.Upstreams = make([]authserver.UpstreamRunConfig, 0, len(bindings))
+	// The embedded auth server mounts /oauth/* at the transport root, so the
+	// default upstream callback must hang off the resource's scheme+host, not
+	// its full path. A resourceUrl like "https://gw.example.com/mcp" still
+	// needs the callback at "https://gw.example.com/oauth/callback".
+	defaultRedirectURI := deriveDefaultRedirectURI(resourceURL)
 	for _, b := range bindings {
-		config.Upstreams = append(config.Upstreams, *buildUpstreamRunConfig(b.Provider, b.EnvVarName))
+		config.Upstreams = append(config.Upstreams, *buildUpstreamRunConfig(b.Provider, b.EnvVarName, defaultRedirectURI))
 	}
 
 	// Build storage configuration
@@ -606,10 +613,17 @@ func resolveSentinelAddrs(
 func buildUpstreamRunConfig(
 	provider *mcpv1alpha1.UpstreamProviderConfig,
 	envVarName string,
+	defaultRedirectURI string,
 ) *authserver.UpstreamRunConfig {
 	config := &authserver.UpstreamRunConfig{
 		Name: provider.Name,
 		Type: authserver.UpstreamProviderType(provider.Type),
+	}
+	resolveRedirectURI := func(configured string) string {
+		if configured != "" {
+			return configured
+		}
+		return defaultRedirectURI
 	}
 
 	switch provider.Type {
@@ -618,7 +632,7 @@ func buildUpstreamRunConfig(
 			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
 				IssuerURL:   provider.OIDCConfig.IssuerURL,
 				ClientID:    provider.OIDCConfig.ClientID,
-				RedirectURI: provider.OIDCConfig.RedirectURI,
+				RedirectURI: resolveRedirectURI(provider.OIDCConfig.RedirectURI),
 				Scopes:      provider.OIDCConfig.Scopes,
 			}
 			// If client secret is configured, reference it via env var
@@ -635,7 +649,7 @@ func buildUpstreamRunConfig(
 				AuthorizationEndpoint: provider.OAuth2Config.AuthorizationEndpoint,
 				TokenEndpoint:         provider.OAuth2Config.TokenEndpoint,
 				ClientID:              provider.OAuth2Config.ClientID,
-				RedirectURI:           provider.OAuth2Config.RedirectURI,
+				RedirectURI:           resolveRedirectURI(provider.OAuth2Config.RedirectURI),
 				Scopes:                provider.OAuth2Config.Scopes,
 			}
 			// If client secret is configured, reference it via env var
@@ -679,6 +693,24 @@ func buildUserInfoRunConfig(
 	}
 
 	return config
+}
+
+// deriveDefaultRedirectURI builds the fallback upstream callback URL by
+// appending "/oauth/callback" to resourceUrl, matching the default documented
+// on MCPExternalAuthConfig.UpstreamProviderConfig.RedirectURI. Returns ""
+// when resourceUrl is empty -- the caller falls back to the existing
+// "redirect_uri is required" error.
+//
+// Deployments that serve the resource under a path prefix (for example an
+// ingress gateway at "https://gw.example.com/mcp") also mount the auth
+// server's /oauth/* routes under that same prefix, so the literal
+// "{resourceUrl}/oauth/callback" concatenation is the right default across
+// both host-only and path-prefixed resource URLs.
+func deriveDefaultRedirectURI(resourceURL string) string {
+	if resourceURL == "" {
+		return ""
+	}
+	return strings.TrimRight(resourceURL, "/") + "/oauth/callback"
 }
 
 // ValidateAndAddAuthServerRefOptions performs conflict validation between authServerRef
@@ -769,6 +801,7 @@ func AddAuthServerRefOptions(
 	embeddedConfig, err := BuildAuthServerRunConfig(
 		namespace, mcpServerName, authServerConfig,
 		[]string{oidcConfig.ResourceURL}, oidcConfig.Scopes,
+		oidcConfig.ResourceURL,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to build embedded auth server config: %w", err)

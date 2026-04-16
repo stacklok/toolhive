@@ -404,7 +404,7 @@ func (*DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) erro
 		}
 	}
 
-	validModes := []string{"fail", "bestEffort"}
+	validModes := []string{"fail", "best_effort"}
 	if !slices.Contains(validModes, fh.PartialFailureMode) {
 		return fmt.Errorf("partialFailureMode must be one of: %s", strings.Join(validModes, ", "))
 	}

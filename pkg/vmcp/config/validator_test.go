@@ -697,7 +697,7 @@ func TestValidator_ValidateFailureHandling(t *testing.T) {
 			fh: &FailureHandlingConfig{
 				HealthCheckInterval: Duration(30 * time.Second),
 				UnhealthyThreshold:  3,
-				PartialFailureMode:  "bestEffort",
+				PartialFailureMode:  "best_effort",
 				CircuitBreaker: &CircuitBreakerConfig{
 					Enabled: false,
 				},
@@ -800,7 +800,7 @@ func TestValidator_ValidateFailureHandling(t *testing.T) {
 				PartialFailureMode:  "invalid",
 			},
 			wantErr: true,
-			errMsg:  "partialFailureMode must be one of: fail, bestEffort",
+			errMsg:  "partialFailureMode must be one of: fail, best_effort",
 		},
 		{
 			name: "negative health check interval",

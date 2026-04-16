@@ -785,6 +785,15 @@ spec:
                         description: Component is the component name to use in audit
                           events.
                         type: string
+                      detectApplicationErrors:
+                        default: true
+                        description: |-
+                          DetectApplicationErrors controls whether the audit middleware inspects
+                          JSON-RPC response bodies for application-level errors when the HTTP
+                          status code indicates success (2xx). When enabled, a small prefix of
+                          the response body is buffered to detect JSON-RPC error fields,
+                          independent of the IncludeResponseData setting.
+                        type: boolean
                       enabled:
                         default: false
                         description: |-

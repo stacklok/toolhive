@@ -147,9 +147,15 @@ func (s *WorkloadService) BuildFullRunConfig(
 	if (req.Registry != "" && req.Server == "") || (req.Registry == "" && req.Server != "") {
 		return nil, fmt.Errorf("both registry and server must be specified together")
 	}
-	// If registry+server specified, resolve from registry and fill defaults
+	// If registry+server specified, resolve from registry and fill defaults.
+	// The returned metadata is assigned to the local variables so the rest of
+	// BuildFullRunConfig (registry info, tool validation, remote auth, etc.)
+	// has access to it without re-looking up the server.
+	var registryResolvedMetadata regtypes.ServerMetadata
 	if req.Registry != "" && req.Server != "" {
-		if err := resolveRegistryServer(req); err != nil {
+		var err error
+		registryResolvedMetadata, err = resolveRegistryServer(req)
+		if err != nil {
 			return nil, fmt.Errorf("failed to resolve server from registry: %w", err)
 		}
 	}
@@ -202,6 +208,18 @@ func (s *WorkloadService) BuildFullRunConfig(
 	var imageMetadata *regtypes.ImageMetadata
 	var serverMetadata regtypes.ServerMetadata
 	var registryProxyPort int
+
+	// If we resolved metadata from a registry reference, assign it to the
+	// local variables so downstream code (registry info, tool validation,
+	// remote auth config, proxy port) picks it up automatically.
+	if registryResolvedMetadata != nil {
+		serverMetadata = registryResolvedMetadata
+		if img, ok := registryResolvedMetadata.(*regtypes.ImageMetadata); ok {
+			imageMetadata = img
+			imageURL = img.Image
+		}
+	}
+
 	runtimeConfigOverride := runtimeConfigFromRequest(req)
 	retrievalRuntimeConfig, err := runtimeConfigForImageBuild(req, runtimeConfigOverride)
 	if err != nil {
@@ -214,13 +232,14 @@ func (s *WorkloadService) BuildFullRunConfig(
 			req.Transport = types.TransportTypeStreamableHTTP.String()
 		}
 		remoteAuthConfig = createRequestToRemoteAuthConfig(ctx, req)
-	} else {
-		// Create a dedicated context with longer timeout for image retrieval
+	} else if registryResolvedMetadata == nil {
+		// Only call imageRetriever if we didn't already resolve from a registry
+		// reference. When registry+server was used, serverMetadata and imageMetadata
+		// are already populated above and re-looking up by bare image ref would fail
+		// (the image ref doesn't match any server name in the registry).
 		imageCtx, cancel := context.WithTimeout(ctx, imageRetrievalTimeout)
 		defer cancel()
 
-		// Resolve the requested image from the registry without pulling it.
-		// The actual pull is deferred until after the policy check.
 		imageURL, serverMetadata, err = s.imageRetriever(
 			imageCtx,
 			req.Image,
@@ -572,10 +591,10 @@ func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req b
 
 // resolveRegistryServer resolves a server from the registry and fills in
 // default values on the request. User-provided fields are not overwritten.
-func resolveRegistryServer(req *createRequest) error {
+func resolveRegistryServer(req *createRequest) (regtypes.ServerMetadata, error) {
 	// Only "default" registry is currently supported.
 	if req.Registry != "default" {
-		return fmt.Errorf("unknown registry %q; only \"default\" is currently supported", req.Registry)
+		return nil, fmt.Errorf("unknown registry %q; only \"default\" is currently supported", req.Registry)
 	}
 
 	provider, err := registry.GetDefaultProviderWithConfig(
@@ -583,16 +602,16 @@ func resolveRegistryServer(req *createRequest) error {
 		registry.WithInteractive(false),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to get registry provider: %w", err)
+		return nil, fmt.Errorf("failed to get registry provider: %w", err)
 	}
 
 	metadata, err := provider.GetServer(req.Server)
 	if err != nil {
-		return fmt.Errorf("server %q not found in registry: %w", req.Server, err)
+		return nil, fmt.Errorf("server %q not found in registry: %w", req.Server, err)
 	}
 
 	applyRegistryDefaults(req, metadata)
-	return nil
+	return metadata, nil
 }
 
 func applyRegistryDefaults(req *createRequest, metadata regtypes.ServerMetadata) {

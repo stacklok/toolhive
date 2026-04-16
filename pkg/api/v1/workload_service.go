@@ -243,7 +243,23 @@ func (s *WorkloadService) BuildFullRunConfig(
 					Headers:      md.Headers,
 					EnvVars:      md.EnvVars,
 				}
+				// Apply user-provided secrets on top of registry config
+				if req.OAuthConfig.ClientSecret != nil {
+					remoteAuthConfig.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
+				}
+				if req.OAuthConfig.BearerToken != nil {
+					remoteAuthConfig.BearerToken = req.OAuthConfig.BearerToken.ToCLIString()
+				}
 			}
+		}
+	}
+
+	// Verify image provenance for registry-resolved image servers.
+	// The normal imageRetriever path calls verifyImage internally, but
+	// we bypass it for registry references, so we must verify here.
+	if imageMetadata != nil && registryResolvedMetadata != nil {
+		if err := retriever.VerifyImage(imageURL, imageMetadata, retriever.VerifyImageWarn); err != nil {
+			return nil, fmt.Errorf("image verification failed: %w", err)
 		}
 	}
 
@@ -253,12 +269,18 @@ func (s *WorkloadService) BuildFullRunConfig(
 		return nil, fmt.Errorf("%w: %w", retriever.ErrInvalidRunConfig, err)
 	}
 
-	if req.URL != "" {
-		// Configure remote authentication if OAuth config is provided
+	if req.URL != "" && registryResolvedMetadata == nil {
+		// Direct URL from user (not resolved from registry) — build auth from request fields.
 		if req.Transport == "" {
 			req.Transport = types.TransportTypeStreamableHTTP.String()
 		}
 		remoteAuthConfig = createRequestToRemoteAuthConfig(ctx, req)
+	} else if req.URL != "" && registryResolvedMetadata != nil {
+		// URL was filled by registry resolution — remoteAuthConfig was already built
+		// in the assignment block above. Just ensure transport has a default.
+		if req.Transport == "" {
+			req.Transport = types.TransportTypeStreamableHTTP.String()
+		}
 	} else if registryResolvedMetadata == nil {
 		// Only call imageRetriever if we didn't already resolve from a registry
 		// reference. When registry+server was used, serverMetadata and imageMetadata

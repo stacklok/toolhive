@@ -210,6 +210,10 @@ const (
 	OutcomeError = "error"
 	// OutcomeDenied indicates the event was denied (e.g., by authorization)
 	OutcomeDenied = "denied"
+	// OutcomeApplicationError indicates the HTTP transport succeeded but the
+	// JSON-RPC response body contained an application-level error (e.g.,
+	// expired tokens, backend failures, invalid parameters).
+	OutcomeApplicationError = "application_error"
 )
 
 // Common source types

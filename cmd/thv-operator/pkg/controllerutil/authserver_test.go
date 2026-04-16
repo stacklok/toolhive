@@ -690,11 +690,14 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 	defaultAudiences := []string{"http://test-server.default.svc.cluster.local:8080"}
 	defaultScopes := []string{"openid", "offline_access"}
 
+	defaultResourceURL := "http://test-server.default.svc.cluster.local:8080"
+
 	tests := []struct {
 		name             string
 		authConfig       *mcpv1alpha1.EmbeddedAuthServerConfig
 		allowedAudiences []string
 		scopesSupported  []string
+		resourceURL      string
 		checkFunc        func(t *testing.T, config *authserver.RunConfig)
 	}{
 		{
@@ -774,7 +777,8 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "with OIDC upstream provider",
+			name:        "with OIDC upstream provider",
+			resourceURL: defaultResourceURL,
 			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
 				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
@@ -811,7 +815,8 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "with OAuth2 upstream provider with userinfo config",
+			name:        "with OAuth2 upstream provider with userinfo config",
+			resourceURL: defaultResourceURL,
 			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
 				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
@@ -904,7 +909,8 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "with multiple upstream providers all are included",
+			name:        "with multiple upstream providers all are included",
+			resourceURL: defaultResourceURL,
 			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
 				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
@@ -1047,7 +1053,7 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			config, err := BuildAuthServerRunConfig("default", "test-server", tt.authConfig, tt.allowedAudiences, tt.scopesSupported)
+			config, err := BuildAuthServerRunConfig("default", "test-server", tt.authConfig, tt.allowedAudiences, tt.scopesSupported, tt.resourceURL)
 
 			require.NoError(t, err)
 			require.NotNil(t, config)
@@ -1634,6 +1640,7 @@ func TestBuildAuthServerRunConfig_WithRedisStorage(t *testing.T) {
 		"default", "my-mcp-server", authConfig,
 		[]string{"http://test-server.default.svc.cluster.local:8080"},
 		[]string{"openid"},
+		"http://test-server.default.svc.cluster.local:8080",
 	)
 
 	require.NoError(t, err)

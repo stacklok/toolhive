@@ -241,7 +241,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return fmt.Errorf("failed to validate optimizer config: %w", err)
 	}
 
-	sessionFactory, err := createSessionFactory(outgoingRegistry, agg)
+	sessionFactory, err := createSessionFactory(&env.OSReader{}, outgoingRegistry, agg)
 	if err != nil {
 		return err
 	}
@@ -448,6 +448,7 @@ func discoverBackends(
 //   - If running in Kubernetes without secret: returns error (production safety requirement).
 //   - Otherwise: logs warning and creates factory with default insecure secret.
 func createSessionFactory(
+	envReader env.Reader,
 	outgoingRegistry vmcpauth.OutgoingAuthRegistry,
 	agg aggregator.Aggregator,
 ) (vmcpsession.MultiSessionFactory, error) {
@@ -461,7 +462,7 @@ func createSessionFactory(
 		opts = append(opts, vmcpsession.WithAggregator(agg))
 	}
 
-	hmacSecret := os.Getenv(envKey)
+	hmacSecret := envReader.Getenv(envKey)
 
 	if hmacSecret != "" {
 		if secretLen := len(hmacSecret); secretLen < minRecommendedSecretLen {
@@ -478,7 +479,7 @@ func createSessionFactory(
 	}
 
 	// No secret provided — fail fast in Kubernetes (production environment).
-	if runtime.IsKubernetesRuntime() {
+	if runtime.IsKubernetesRuntimeWithEnv(envReader) {
 		return nil, fmt.Errorf(
 			"VMCP_SESSION_HMAC_SECRET environment variable is required when running in Kubernetes. " +
 				"Generate a secure secret with: openssl rand -base64 32",

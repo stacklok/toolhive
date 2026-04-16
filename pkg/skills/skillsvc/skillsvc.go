@@ -1448,8 +1448,9 @@ func (s *service) resolveAndValidateClients(
 		clients := s.pathResolver.ListSkillSupportingClients()
 		if len(clients) == 0 {
 			return nil, nil, httperr.WithCode(
-				errors.New("no skill-supporting clients configured"),
-				http.StatusInternalServerError,
+				errors.New("no supported clients detected on this system; "+
+					"use --clients to target a specific client explicitly"),
+				http.StatusBadRequest,
 			)
 		}
 		requested = clients

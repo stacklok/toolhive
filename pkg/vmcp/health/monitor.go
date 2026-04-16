@@ -644,11 +644,12 @@ func formatStatusMessage(summary Summary, phase vmcp.Phase, configuredBackendCou
 			return fmt.Sprintf("All %d %s healthy", summary.Healthy, pluralBackend(summary.Healthy))
 		}
 		if summary.Healthy == 0 {
-			return fmt.Sprintf("All %d %s require authentication",
-				summary.Unauthenticated, pluralBackend(summary.Unauthenticated))
+			return fmt.Sprintf("%s %s authentication",
+				quantifyBackends(summary.Unauthenticated), pluralRequire(summary.Unauthenticated))
 		}
-		return fmt.Sprintf("%d %s healthy, %d require authentication",
-			summary.Healthy, pluralBackend(summary.Healthy), summary.Unauthenticated)
+		return fmt.Sprintf("%d %s healthy, %d %s authentication",
+			summary.Healthy, pluralBackend(summary.Healthy),
+			summary.Unauthenticated, pluralRequire(summary.Unauthenticated))
 	}
 
 	// Format non-routable backend counts (shared by Failed and Degraded)
@@ -731,9 +732,6 @@ func extractAuthInfo(backend vmcp.Backend) (authConfigRef, authType string) {
 	return backend.AuthConfigRef, backend.AuthConfig.Type
 }
 
-// formatBackendMessage creates a human-readable message for a backend's health state.
-// This returns generic error categories to avoid exposing sensitive error details in status.
-// Detailed errors are logged when they occur (in performHealthCheck) for debugging.
 // pluralBackend returns "backend" or "backends" based on count.
 func pluralBackend(n int) string {
 	if n == 1 {
@@ -742,6 +740,25 @@ func pluralBackend(n int) string {
 	return "backends"
 }
 
+// pluralRequire returns "requires" or "require" based on count for subject-verb agreement.
+func pluralRequire(n int) string {
+	if n == 1 {
+		return "requires"
+	}
+	return "require"
+}
+
+// quantifyBackends returns "All N backends" for plural, "1 backend" for singular.
+func quantifyBackends(n int) string {
+	if n == 1 {
+		return fmt.Sprintf("%d backend", n)
+	}
+	return fmt.Sprintf("All %d backends", n)
+}
+
+// formatBackendMessage creates a human-readable message for a backend's health state.
+// This returns generic error categories to avoid exposing sensitive error details in status.
+// Detailed errors are logged when they occur (in performHealthCheck) for debugging.
 func formatBackendMessage(state *State) string {
 	// Build base message
 	var baseMsg string
@@ -848,7 +865,7 @@ func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount i
 	switch phase {
 	case vmcp.PhaseReady:
 		readyCondition.Status = metav1.ConditionTrue
-		readyCondition.Reason = "AllBackendsHealthy"
+		readyCondition.Reason = "AllBackendsRoutable"
 		// Distinguish cold start (no backends configured) from having routable backends
 		if summary.Total == 0 && configuredBackendCount == 0 {
 			readyCondition.Message = "Ready, no backends configured"
@@ -856,11 +873,12 @@ func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount i
 			readyCondition.Message = fmt.Sprintf("All %d %s are healthy",
 				summary.Healthy, pluralBackend(summary.Healthy))
 		} else if summary.Healthy == 0 {
-			readyCondition.Message = fmt.Sprintf("All %d %s require authentication",
-				summary.Unauthenticated, pluralBackend(summary.Unauthenticated))
+			readyCondition.Message = fmt.Sprintf("%s %s authentication",
+				quantifyBackends(summary.Unauthenticated), pluralRequire(summary.Unauthenticated))
 		} else {
-			readyCondition.Message = fmt.Sprintf("%d %s healthy, %d require authentication",
-				summary.Healthy, pluralBackend(summary.Healthy), summary.Unauthenticated)
+			readyCondition.Message = fmt.Sprintf("%d %s healthy, %d %s authentication",
+				summary.Healthy, pluralBackend(summary.Healthy),
+				summary.Unauthenticated, pluralRequire(summary.Unauthenticated))
 		}
 	case vmcp.PhaseDegraded:
 		readyCondition.Reason = "SomeBackendsUnhealthy"

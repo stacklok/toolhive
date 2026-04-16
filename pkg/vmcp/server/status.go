@@ -93,10 +93,7 @@ func (s *Server) buildStatusResponse(ctx context.Context) StatusResponse {
 		}
 		backendStatuses = append(backendStatuses, status)
 
-		// TODO(#4824): Consider treating BackendUnauthenticated as routable here too.
-		// Currently the /status endpoint reports healthy=false when all backends are
-		// unauthenticated, even though the health monitor reports PhaseReady.
-		if healthStatus == vmcp.BackendHealthy {
+		if healthStatus == vmcp.BackendHealthy || healthStatus == vmcp.BackendUnauthenticated {
 			hasHealthyBackend = true
 		}
 	}

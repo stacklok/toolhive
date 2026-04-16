@@ -1061,6 +1061,16 @@ func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {
 			expectError: true,
 			errContains: "must match resourceUrl",
 		},
+		{
+			name: "empty audience returns specific error",
+			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "",
+				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
+				Scopes:      []string{"openid"},
+			},
+			expectError: true,
+			errContains: "audience is required when an embedded auth server is active",
+		},
 	}
 
 	for _, tt := range tests {

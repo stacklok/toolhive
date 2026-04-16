@@ -97,7 +97,7 @@ func newSecretsProvider(configProvider config.Provider) (secrets.Provider, error
 	if err != nil {
 		return nil, fmt.Errorf("getting secrets provider type: %w", err)
 	}
-	return secrets.CreateSecretProvider(providerType)
+	return secrets.CreateProvider(providerType, secrets.WithScope(secrets.ScopeRegistry))
 }
 
 // registryAuthLogin handles POST /registry/auth/login.

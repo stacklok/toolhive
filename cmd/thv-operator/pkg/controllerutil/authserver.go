@@ -407,6 +407,7 @@ func AddEmbeddedAuthServerConfigOptions(
 	embeddedConfig, err := BuildAuthServerRunConfig(
 		namespace, mcpServerName, authServerConfig,
 		[]string{oidcConfig.ResourceURL}, oidcConfig.Scopes,
+		oidcConfig.ResourceURL,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to build embedded auth server config: %w", err)
@@ -421,15 +422,19 @@ func AddEmbeddedAuthServerConfigOptions(
 // BuildAuthServerRunConfig converts CRD EmbeddedAuthServerConfig to authserver.RunConfig.
 // The RunConfig is serializable and contains file paths for secrets (not the secrets themselves).
 //
-// AllowedAudiences and ScopesSupported are caller-provided because different controllers
-// derive them from different sources (MCPServer uses oidcConfig.ResourceURL/Scopes;
+// AllowedAudiences, ScopesSupported, and resourceURL are caller-provided because different
+// controllers derive them from different sources (MCPServer uses oidcConfig.ResourceURL/Scopes;
 // VirtualMCPServer derives from the resolved vmcp Config).
+//
+// resourceURL is used to default the RedirectURI on upstream providers when not explicitly set.
+// The default is {resourceURL}/oauth/callback as documented in the MCPExternalAuthConfig CRD.
 func BuildAuthServerRunConfig(
 	namespace string,
 	name string,
 	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
 	allowedAudiences []string,
 	scopesSupported []string,
+	resourceURL string,
 ) (*authserver.RunConfig, error) {
 	config := &authserver.RunConfig{
 		SchemaVersion:                authserver.CurrentSchemaVersion,
@@ -474,7 +479,7 @@ func BuildAuthServerRunConfig(
 	bindings := buildUpstreamSecretBindings(authConfig.UpstreamProviders)
 	config.Upstreams = make([]authserver.UpstreamRunConfig, 0, len(bindings))
 	for _, b := range bindings {
-		config.Upstreams = append(config.Upstreams, *buildUpstreamRunConfig(b.Provider, b.EnvVarName))
+		config.Upstreams = append(config.Upstreams, *buildUpstreamRunConfig(b.Provider, b.EnvVarName, resourceURL))
 	}
 
 	// Build storage configuration
@@ -600,12 +605,21 @@ func resolveSentinelAddrs(
 	return []string{dnsName}, nil
 }
 
+// defaultRedirectURI returns the default redirect URI for an upstream provider
+// when one is not explicitly configured. The default is {resourceURL}/oauth/callback
+// as documented in the MCPExternalAuthConfig CRD.
+func defaultRedirectURI(resourceURL string) string {
+	return strings.TrimRight(resourceURL, "/") + "/oauth/callback"
+}
+
 // buildUpstreamRunConfig converts CRD UpstreamProviderConfig to authserver.UpstreamRunConfig.
 // The envVarName is computed by buildUpstreamSecretBindings to keep Pod env
-// and runtime config in sync.
+// and runtime config in sync. When a provider's RedirectURI is empty, it is
+// defaulted to {resourceURL}/oauth/callback.
 func buildUpstreamRunConfig(
 	provider *mcpv1alpha1.UpstreamProviderConfig,
 	envVarName string,
+	resourceURL string,
 ) *authserver.UpstreamRunConfig {
 	config := &authserver.UpstreamRunConfig{
 		Name: provider.Name,
@@ -615,10 +629,14 @@ func buildUpstreamRunConfig(
 	switch provider.Type {
 	case mcpv1alpha1.UpstreamProviderTypeOIDC:
 		if provider.OIDCConfig != nil {
+			redirectURI := provider.OIDCConfig.RedirectURI
+			if redirectURI == "" && resourceURL != "" {
+				redirectURI = defaultRedirectURI(resourceURL)
+			}
 			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
 				IssuerURL:   provider.OIDCConfig.IssuerURL,
 				ClientID:    provider.OIDCConfig.ClientID,
-				RedirectURI: provider.OIDCConfig.RedirectURI,
+				RedirectURI: redirectURI,
 				Scopes:      provider.OIDCConfig.Scopes,
 			}
 			// If client secret is configured, reference it via env var
@@ -631,11 +649,15 @@ func buildUpstreamRunConfig(
 		}
 	case mcpv1alpha1.UpstreamProviderTypeOAuth2:
 		if provider.OAuth2Config != nil {
+			redirectURI := provider.OAuth2Config.RedirectURI
+			if redirectURI == "" && resourceURL != "" {
+				redirectURI = defaultRedirectURI(resourceURL)
+			}
 			config.OAuth2Config = &authserver.OAuth2UpstreamRunConfig{
 				AuthorizationEndpoint: provider.OAuth2Config.AuthorizationEndpoint,
 				TokenEndpoint:         provider.OAuth2Config.TokenEndpoint,
 				ClientID:              provider.OAuth2Config.ClientID,
-				RedirectURI:           provider.OAuth2Config.RedirectURI,
+				RedirectURI:           redirectURI,
 				Scopes:                provider.OAuth2Config.Scopes,
 			}
 			// If client secret is configured, reference it via env var
@@ -769,6 +791,7 @@ func AddAuthServerRefOptions(
 	embeddedConfig, err := BuildAuthServerRunConfig(
 		namespace, mcpServerName, authServerConfig,
 		[]string{oidcConfig.ResourceURL}, oidcConfig.Scopes,
+		oidcConfig.ResourceURL,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to build embedded auth server config: %w", err)

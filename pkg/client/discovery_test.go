@@ -200,6 +200,66 @@ func TestGetClientStatus_Sorting(t *testing.T) {
 	}
 }
 
+func TestIsClientInstalled(t *testing.T) {
+	t.Parallel()
+
+	tempHome := t.TempDir()
+
+	// Create a .claude.json file (simulates ClaudeCode installed)
+	_, err := os.Create(filepath.Join(tempHome, ".claude.json"))
+	require.NoError(t, err)
+
+	// Create a .cursor directory (simulates Cursor installed via RelPath)
+	err = os.Mkdir(filepath.Join(tempHome, ".cursor"), 0700)
+	require.NoError(t, err)
+
+	// VSCode path (.config/Code/User) is intentionally not created
+
+	clientIntegrations := []clientAppConfig{
+		{
+			ClientType:   ClaudeCode,
+			SettingsFile: ".claude.json",
+			RelPath:      []string{}, // file directly in home dir
+		},
+		{
+			ClientType:   Cursor,
+			SettingsFile: "mcp.json",
+			RelPath:      []string{".cursor"}, // directory in home dir
+		},
+		{
+			ClientType:   VSCode,
+			SettingsFile: "mcp.json",
+			RelPath:      []string{".config", "Code", "User"}, // not created
+		},
+		{
+			// unknown client, no config
+			ClientType:   ClientApp("nonexistent"),
+			SettingsFile: "settings.json",
+			RelPath:      []string{".nonexistent"},
+		},
+	}
+
+	manager := NewTestClientManager(tempHome, nil, clientIntegrations, nil)
+
+	tests := []struct {
+		name       string
+		clientType ClientApp
+		want       bool
+	}{
+		{name: "ClaudeCode settings file present", clientType: ClaudeCode, want: true},
+		{name: "Cursor directory present", clientType: Cursor, want: true},
+		{name: "VSCode directory absent", clientType: VSCode, want: false},
+		{name: "client not in integrations", clientType: ClientApp("not-registered"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, manager.IsClientInstalled(tt.clientType))
+		})
+	}
+}
+
 func TestGetClientStatus_WithGroups(t *testing.T) {
 	t.Parallel()
 

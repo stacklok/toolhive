@@ -403,6 +403,18 @@ func AddEmbeddedAuthServerConfigOptions(
 		return fmt.Errorf("OIDC config resourceUrl is required for embedded auth server: set resourceUrl in OIDCConfigRef")
 	}
 
+	// The embedded auth server mints tokens with aud = ResourceURL (the value
+	// clients send as the RFC 8707 resource parameter). The token validator
+	// checks aud against Audience. These must match or every authenticated
+	// request will fail with an audience mismatch (#4860).
+	if oidcConfig.Audience != oidcConfig.ResourceURL {
+		return fmt.Errorf(
+			"oidcConfigRef.audience %q must match resourceUrl %q when an embedded auth server is active; "+
+				"set audience to %q or set resourceUrl to match audience",
+			oidcConfig.Audience, oidcConfig.ResourceURL, oidcConfig.ResourceURL,
+		)
+	}
+
 	// Build the embedded auth server config for runner
 	embeddedConfig, err := BuildAuthServerRunConfig(
 		namespace, mcpServerName, authServerConfig,
@@ -763,6 +775,18 @@ func AddAuthServerRefOptions(
 	}
 	if oidcConfig.ResourceURL == "" {
 		return fmt.Errorf("OIDC config resourceUrl is required for embedded auth server: set resourceUrl in OIDCConfigRef")
+	}
+
+	// The embedded auth server mints tokens with aud = ResourceURL (the value
+	// clients send as the RFC 8707 resource parameter). The token validator
+	// checks aud against Audience. These must match or every authenticated
+	// request will fail with an audience mismatch (#4860).
+	if oidcConfig.Audience != oidcConfig.ResourceURL {
+		return fmt.Errorf(
+			"oidcConfigRef.audience %q must match resourceUrl %q when an embedded auth server is active; "+
+				"set audience to %q or set resourceUrl to match audience",
+			oidcConfig.Audience, oidcConfig.ResourceURL, oidcConfig.ResourceURL,
+		)
 	}
 
 	// Build the embedded auth server config for runner

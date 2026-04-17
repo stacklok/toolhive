@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/migration"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -418,8 +419,14 @@ func discoverBackends(
 			cfg.Group,
 		)
 	} else {
-		// Dynamic mode: discover backends at runtime from K8s API.
+		// Dynamic mode: discover backends at runtime from the active workload manager (K8s or local).
 		slog.Info("dynamic mode: initializing group manager for backend discovery")
+		// EnsureDefaultGroupExists is a no-op in Kubernetes (service account has no
+		// create permission on MCPGroup CRDs). If the group does not exist,
+		// Discover returns ErrGroupNotFound which is handled below.
+		if err := migration.EnsureDefaultGroupExists(); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to ensure default group exists: %w", err)
+		}
 		groupsManager, err := groups.NewManager()
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
@@ -447,6 +454,13 @@ func runDiscovery(
 	slog.Info(fmt.Sprintf("Discovering backends in group: %s", groupRef))
 	backends, err := discoverer.Discover(ctx, groupRef)
 	if err != nil {
+		// In Kubernetes mode the MCPGroup CRD is operator/user-managed and may
+		// not exist yet. Treat a missing group as zero backends so vMCP can
+		// start and serve once backends are registered later.
+		if runtime.IsKubernetesRuntime() && errors.Is(err, groups.ErrGroupNotFound) {
+			slog.Warn(fmt.Sprintf("Group %s not found - vmcp will start but have no backends to proxy", groupRef))
+			return []vmcp.Backend{}, backendClient, outgoingRegistry, nil
+		}
 		return nil, nil, nil, fmt.Errorf("failed to discover backends: %w", err)
 	}
 

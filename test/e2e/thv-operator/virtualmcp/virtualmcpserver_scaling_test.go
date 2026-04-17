@@ -17,13 +17,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
 // countReadyPods returns the number of Running+Ready pods for a VirtualMCPServer.
-func countReadyPods(vmcpName, namespace string) (int, error) {
-	podList, err := GetVirtualMCPServerPods(ctx, k8sClient, vmcpName, namespace)
+func countReadyPods(vmcpName string) (int, error) {
+	podList, err := GetVirtualMCPServerPods(ctx, k8sClient, vmcpName, defaultNamespace)
 	if err != nil {
 		return 0, err
 	}
@@ -43,9 +42,8 @@ func countReadyPods(vmcpName, namespace string) (int, error) {
 
 var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 	const (
-		timeout          = time.Minute * 5
-		pollInterval     = time.Second * 2
-		defaultNamespace = "default"
+		timeout      = time.Minute * 5
+		pollInterval = time.Second * 2
 	)
 
 	// -------------------------------------------------------------------------
@@ -75,11 +73,11 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  mcpGroupName,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 				},
 			})).To(gomega.Succeed())
 
@@ -88,7 +86,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config:       vmcpconfig.Config{Group: mcpGroupName},
+					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
 					Replicas:     &replicas,
 				},
@@ -124,7 +122,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 		ginkgo.It("Should eventually run 2 ready pods", func() {
 			ginkgo.By("Waiting for 2 pods to become Running+Ready")
 			gomega.Eventually(func() (int, error) {
-				return countReadyPods(vmcpName, defaultNamespace)
+				return countReadyPods(vmcpName)
 			}, timeout, pollInterval).Should(gomega.Equal(2))
 		})
 
@@ -175,11 +173,11 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  mcpGroupName,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 				},
 			})).To(gomega.Succeed())
 
@@ -188,7 +186,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config:       vmcpconfig.Config{Group: mcpGroupName},
+					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
 					Replicas:     &replicas,
 					ServiceType:  "NodePort",
@@ -217,7 +215,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 
 		ginkgo.It("Should initially have 1 running pod and no SessionStorageWarning", func() {
 			gomega.Eventually(func() (int, error) {
-				return countReadyPods(vmcpName, defaultNamespace)
+				return countReadyPods(vmcpName)
 			}, timeout, pollInterval).Should(gomega.Equal(1))
 
 			WaitForCondition(ctx, k8sClient, vmcpName, defaultNamespace,
@@ -251,7 +249,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 
 			ginkgo.By("Verifying 2 pods become ready")
 			gomega.Eventually(func() (int, error) {
-				return countReadyPods(vmcpName, defaultNamespace)
+				return countReadyPods(vmcpName)
 			}, timeout, pollInterval).Should(gomega.Equal(2))
 
 			ginkgo.By("Verifying SessionStorageWarning is now set")

@@ -61,7 +61,7 @@ func TestMiddleware(t *testing.T) {
 			`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Test cases
@@ -443,7 +443,7 @@ func TestMiddlewareWithGETRequest(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Create a handler that records if it was called
@@ -808,7 +808,7 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 				cedar.ConfigOptions{
 					Policies:     tc.policies,
 					EntitiesJSON: `[]`,
-				},
+				}, "",
 			)
 			require.NoError(t, err, "Failed to create Cedar authorizer")
 
@@ -978,7 +978,7 @@ func TestMiddlewareToolsCallTestkit(t *testing.T) {
 				cedar.ConfigOptions{
 					Policies:     tc.policies,
 					EntitiesJSON: `[]`,
-				},
+				}, "",
 			)
 			require.NoError(t, err, "Failed to create Cedar authorizer")
 
@@ -1049,7 +1049,7 @@ func TestMiddlewareOptimizerMetaTools(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"allowed_backend");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	passThroughTools := map[string]struct{}{
@@ -1150,7 +1150,7 @@ func TestMiddlewareOptimizerCallToolJSONRoundTrip(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"backend_fetch");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	passThroughTools := map[string]struct{}{
@@ -1258,7 +1258,7 @@ func TestConvertToJSONRPC2ID(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := convertToJSONRPC2ID(tc.input)
+			result, err := mcpparser.ConvertToJSONRPC2ID(tc.input)
 
 			if tc.expectError {
 				assert.Error(t, err)

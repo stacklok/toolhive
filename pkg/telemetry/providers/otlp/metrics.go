@@ -27,8 +27,13 @@ func NewMetricReader(ctx context.Context, config Config) (sdkmetric.Reader, erro
 }
 
 func createMetricExporter(ctx context.Context, config Config) (sdkmetric.Exporter, error) {
+	host, basePath := splitEndpointPath(config.Endpoint)
 	opts := []otlpmetrichttp.Option{
-		otlpmetrichttp.WithEndpoint(config.Endpoint),
+		otlpmetrichttp.WithEndpoint(host),
+	}
+
+	if basePath != "" {
+		opts = append(opts, otlpmetrichttp.WithURLPath(basePath+otlpMetricsPath))
 	}
 
 	if len(config.Headers) > 0 {
@@ -37,6 +42,14 @@ func createMetricExporter(ctx context.Context, config Config) (sdkmetric.Exporte
 
 	if config.Insecure {
 		opts = append(opts, otlpmetrichttp.WithInsecure())
+	}
+
+	if config.CACertPath != "" {
+		tlsCfg, err := newTLSConfigFromCA(config.CACertPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to configure TLS for metric exporter: %w", err)
+		}
+		opts = append(opts, otlpmetrichttp.WithTLSClientConfig(tlsCfg))
 	}
 
 	return otlpmetrichttp.New(ctx, opts...)

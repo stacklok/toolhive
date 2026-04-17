@@ -6,6 +6,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -429,56 +430,74 @@ func TestMonitoredTokenSource_MultipleCallsToToken(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 }
 
-// TestMonitoredTokenSource_SingleflightDeduplicatesConcurrentRetries verifies that
-// concurrent Token() calls during a transient network error are funnelled through
-// a single retry loop via singleflight, so the underlying token source is not
-// hammered by independent retry loops ("thundering herd").
-func TestMonitoredTokenSource_SingleflightDeduplicatesConcurrentRetries(t *testing.T) {
+// TestTransientRefresher_SingleflightDeduplicatesConcurrentRetries verifies that
+// concurrent Refresh() calls are funnelled through a single retry loop via
+// singleflight, so the underlying token source is not hammered by independent
+// retry loops ("thundering herd").
+func TestTransientRefresher_SingleflightDeduplicatesConcurrentRetries(t *testing.T) {
 	t.Parallel()
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
 
 	const numCallers = 10
 
-	statusUpdater, _ := newMockStatusUpdater(ctrl)
 	tokenSource := newMockTokenSource()
-
-	// Gate that blocks the retry loop until all callers have entered Token().
-	allEntered := make(chan struct{})
-	var enteredCount sync.WaitGroup
-	enteredCount.Add(numCallers)
-
-	// First numCallers calls (the initial Token() attempt per caller) return a
-	// transient error so every caller falls into the singleflight retry path.
-	// The singleflight-selected caller's retry (call numCallers+1) blocks on allEntered,
-	// then succeeds.
-	transientErr := &net.OpError{
-		Op: "dial", Net: "tcp",
-		Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED},
-	}
 	recoveredToken := &oauth2.Token{
 		AccessToken: "recovered-token",
 		Expiry:      time.Now().Add(time.Hour),
 	}
-
 	tokenSource.setTokenFn(func() (*oauth2.Token, error) {
-		if tokenSource.callCount <= numCallers {
-			// Signal that one more caller has entered Token().
-			enteredCount.Done()
-			return nil, transientErr
-		}
-		// Singleflight retry: wait for all callers to be blocked, then succeed.
-		<-allEntered
-		return recoveredToken, nil
+		return recoveredToken, nil // retry always succeeds immediately
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	transientErr := &net.OpError{
+		Op: "dial", Net: "tcp",
+		Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED},
+	}
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
-	ats.newRetryBackOff = fastBackOff
+	// Two-phase synchronisation to guarantee deterministic singleflight deduplication:
+	//
+	// Phase 1 (beforeEntry): all numCallers goroutines arrive here before calling
+	// Refresh. A WaitGroup barrier ensures they are all released simultaneously,
+	// so they race to group.Do together.
+	//
+	// Phase 2 (afterEntry): the singleflight leader enters this hook from inside
+	// group.Do and waits until all numCallers goroutines have signalled they are
+	// about to call Refresh (i.e. finished Phase 1). At that point the leader is
+	// still running inside Do, so any follower that subsequently calls Do will be
+	// deduplicated rather than starting an independent retry loop.
+	//
+	// Without Phase 2 the leader could return before late goroutines reached Do,
+	// causing each to start its own singleflight group and hammer the token source.
+	allAtSingleflight := make(chan struct{})
+	var atSingleflight sync.WaitGroup
+	atSingleflight.Add(numCallers)
+	var closeOnce sync.Once
 
-	// Launch numCallers goroutines that all call Token() concurrently.
+	var beforeDo sync.WaitGroup
+	beforeDo.Add(numCallers)
+
+	ctx := context.Background()
+	refresher := &transientRefresher{
+		source:     tokenSource,
+		workload:   "test-workload",
+		newBackOff: fastBackOff,
+		beforeEntry: func() {
+			// Phase 1: barrier — release all goroutines simultaneously.
+			atSingleflight.Done()
+			closeOnce.Do(func() {
+				atSingleflight.Wait()
+				close(allAtSingleflight)
+			})
+			<-allAtSingleflight
+			// Signal: I am about to call group.Do.
+			beforeDo.Done()
+		},
+		afterEntry: func() {
+			// Phase 2: leader waits until all goroutines have signalled they are
+			// about to call group.Do, so the group is fully formed before retry returns.
+			beforeDo.Wait()
+		},
+	}
+
 	var wg sync.WaitGroup
 	tokens := make([]*oauth2.Token, numCallers)
 	errs := make([]error, numCallers)
@@ -486,17 +505,26 @@ func TestMonitoredTokenSource_SingleflightDeduplicatesConcurrentRetries(t *testi
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			tokens[idx], errs[idx] = ats.Token()
+			tokens[idx], errs[idx] = refresher.Refresh(ctx, transientErr)
 		}(i)
 	}
 
-	// Wait for all callers to have made their initial Token() call and fallen
-	// into the singleflight path, then unblock the retry.
-	enteredCount.Wait()
-	close(allEntered)
-	wg.Wait()
+	// Guard against a deadlock in the synchronisation barriers turning into a
+	// silent hang. Use the test deadline if available; otherwise fall back to a
+	// conservative fixed timeout.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	timeout := 10 * time.Second
+	if deadline, ok := t.Deadline(); ok {
+		timeout = time.Until(deadline) - 500*time.Millisecond
+	}
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		t.Fatal("test timed out — likely deadlock in synchronisation barriers")
+	}
 
-	// All callers must succeed with the same recovered token.
+	// All callers must succeed with the recovered token.
 	for i := range numCallers {
 		if errs[i] != nil {
 			t.Errorf("caller %d: unexpected error: %v", i, errs[i])
@@ -506,18 +534,13 @@ func TestMonitoredTokenSource_SingleflightDeduplicatesConcurrentRetries(t *testi
 		}
 	}
 
-	// KEY ASSERTION: the underlying tokenSource should have been called at most
-	// numCallers (initial attempts) + a small number of singleflight retries,
-	// NOT numCallers * retries. With singleflight only one caller retries.
+	// KEY ASSERTION: exactly 1 call via singleflight, not numCallers independent calls.
+	// Independent retry loops would produce up to numCallers calls.
 	tokenSource.mu.Lock()
 	calls := tokenSource.callCount
 	tokenSource.mu.Unlock()
-	// numCallers initial + 1 successful retry = numCallers+1 in the ideal case.
-	// Allow a small margin for timing but it must be well below numCallers*2
-	// (which would indicate independent retry loops).
-	maxExpected := numCallers + 3 // small margin for race between initial calls and singleflight coalescing
-	if calls > maxExpected {
-		t.Errorf("expected at most %d tokenSource.Token() calls, got %d — singleflight may not be deduplicating", maxExpected, calls)
+	if calls != 1 {
+		t.Errorf("expected 1 tokenSource.Token() call (singleflight deduplication), got %d", calls)
 	}
 }
 
@@ -561,11 +584,21 @@ func TestMonitoredTokenSource_BackgroundMonitor_ErrorClassification(t *testing.T
 		{name: "context.DeadlineExceeded", err: context.DeadlineExceeded, isTransient: false},
 		{name: "oauth2.RetrieveError 401", err: createRetrieveError(http.StatusUnauthorized, "unauthorized"), isTransient: false},
 		{name: "oauth2.RetrieveError 400 invalid_grant", err: createRetrieveError(http.StatusBadRequest, "invalid_grant"), isTransient: false},
+		{name: "oauth2.RetrieveError nil response", err: &oauth2.RetrieveError{}, isTransient: false},
 		// Transient: network-level errors must be retried.
 		{name: "*net.DNSError timeout", err: &net.DNSError{Err: "i/o timeout", Name: "example.com", IsTimeout: true}, isTransient: true},
 		{name: "*net.OpError connection refused", err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}, isTransient: true},
 		{name: "*url.Error wrapping *net.OpError", err: &url.Error{Op: "Post", URL: "https://example.com/token", Err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}}, isTransient: true},
 		{name: "net.Error timeout", err: &timeoutNetError{}, isTransient: true},
+		// Transient: OAuth server 5xx errors (load balancer, server restart).
+		{name: "oauth2.RetrieveError 500", err: createRetrieveError(http.StatusInternalServerError, "Internal Server Error"), isTransient: true},
+		{name: "oauth2.RetrieveError 502", err: createRetrieveError(http.StatusBadGateway, "Bad Gateway"), isTransient: true},
+		{name: "oauth2.RetrieveError 503", err: createRetrieveError(http.StatusServiceUnavailable, "Service Unavailable"), isTransient: true},
+		{name: "oauth2.RetrieveError 504", err: createRetrieveError(http.StatusGatewayTimeout, "Gateway Timeout"), isTransient: true},
+		// Transient: unparsable OAuth responses (HTML from load balancer on 200).
+		{name: "oauth2 cannot parse json", err: fmt.Errorf("oauth2: cannot parse json: invalid character '<'"), isTransient: true},
+		{name: "wrapped oauth2 parse error", err: fmt.Errorf("refresh failed: %w", fmt.Errorf("oauth2: cannot parse json: invalid character '<'")), isTransient: true},
+		{name: "oauth2 cannot parse response", err: fmt.Errorf("oauth2: cannot parse response: invalid URL escape"), isTransient: true},
 	}
 
 	for _, tt := range tests {
@@ -595,7 +628,7 @@ func TestMonitoredTokenSource_BackgroundMonitor_ErrorClassification(t *testing.T
 				retrying := tokenSource.notifyOnCall(2)
 
 				ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
-				ats.newRetryBackOff = fastBackOff
+				ats.refresher.newBackOff = fastBackOff
 				ats.StartBackgroundMonitoring()
 
 				<-retrying // Ensure the retry loop has been entered before cancelling.
@@ -615,7 +648,7 @@ func TestMonitoredTokenSource_BackgroundMonitor_ErrorClassification(t *testing.T
 					Times(1)
 
 				ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
-				ats.newRetryBackOff = fastBackOff
+				ats.refresher.newBackOff = fastBackOff
 				ats.StartBackgroundMonitoring()
 
 				<-ats.Stopped() // Monitor stops itself after marking unauthenticated.
@@ -666,7 +699,7 @@ func TestMonitoredTokenSource_TransientErrorRetriesAndSucceeds(t *testing.T) {
 	defer cancel()
 
 	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
-	ats.newRetryBackOff = fastBackOff
+	ats.refresher.newBackOff = fastBackOff
 	ats.StartBackgroundMonitoring()
 
 	// Block until the monitor has successfully recovered, then stop it.
@@ -706,7 +739,7 @@ func TestMonitoredTokenSource_TransientErrorContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
-	ats.newRetryBackOff = fastBackOff
+	ats.refresher.newBackOff = fastBackOff
 	ats.StartBackgroundMonitoring()
 
 	// Cancel once we know the retry loop is running, then wait for clean exit.
@@ -761,7 +794,7 @@ func TestMonitoredTokenSource_TransientThenNonTransientMarksUnauthenticated(t *t
 	defer cancel()
 
 	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
-	ats.newRetryBackOff = fastBackOff
+	ats.refresher.newBackOff = fastBackOff
 	ats.StartBackgroundMonitoring()
 
 	// Monitor stops itself after the non-transient error; wait for that.

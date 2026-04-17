@@ -10,7 +10,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
-	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
 // UpstreamInjectStrategy injects an upstream IDP token into backend request headers.
@@ -62,7 +62,7 @@ func (*UpstreamInjectStrategy) Authenticate(
 	ctx context.Context, req *http.Request, strategy *authtypes.BackendAuthStrategy,
 ) error {
 	// Health checks have no user identity — skip authentication.
-	if health.IsHealthCheck(ctx) {
+	if healthcontext.IsHealthCheck(ctx) {
 		return nil
 	}
 

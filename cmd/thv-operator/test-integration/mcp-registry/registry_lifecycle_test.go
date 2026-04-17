@@ -129,25 +129,11 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 			// Wait for registry to be ready
 			statusHelper.WaitForPhaseAny(registry.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 
-			// Store initial storage reference for cleanup verification
-			status, err := registryHelper.GetRegistryStatus(registry.Name)
-			Expect(err).NotTo(HaveOccurred())
-			initialStorageRef := status.StorageRef
-
 			// Delete the registry
 			Expect(registryHelper.DeleteRegistry(registry.Name)).To(Succeed())
 
 			// Verify graceful deletion process
 			statusHelper.WaitForPhase(registry.Name, mcpv1alpha1.MCPRegistryPhaseTerminating, QuickTimeout)
-
-			// Verify cleanup of associated resources (if any storage was created)
-			if initialStorageRef != nil && initialStorageRef.ConfigMapRef != nil {
-				timingHelper.WaitForControllerReconciliation(func() interface{} {
-					_, err := configMapHelper.GetConfigMap(initialStorageRef.ConfigMapRef.Name)
-					// Storage ConfigMap should be cleaned up or marked for deletion
-					return errors.IsNotFound(err)
-				}).Should(BeTrue())
-			}
 
 			// Verify complete deletion
 			timingHelper.WaitForControllerReconciliation(func() interface{} {
@@ -200,11 +186,11 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 			statusHelper.WaitForPhaseAny(registry2.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 
-			// Verify they operate independently
-			Expect(registry1.Spec.Registries[0].SyncPolicy.Interval).To(Equal("1h"))
-			Expect(registry2.Spec.Registries[0].SyncPolicy.Interval).To(Equal("30m"))
-			Expect(registry1.Spec.Registries[0].Format).To(Equal(mcpv1alpha1.RegistryFormatToolHive))
-			Expect(registry2.Spec.Registries[0].Format).To(Equal(mcpv1alpha1.RegistryFormatToolHive))
+			// Verify they operate independently by checking their configYAML
+			Expect(registry1.Spec.ConfigYAML).To(ContainSubstring("interval: 1h"))
+			Expect(registry2.Spec.ConfigYAML).To(ContainSubstring("interval: 30m"))
+			Expect(registry1.Spec.ConfigYAML).To(ContainSubstring("format: toolhive"))
+			Expect(registry2.Spec.ConfigYAML).To(ContainSubstring("format: toolhive"))
 		})
 
 		It("should allow multiple registries with same ConfigMap source", func() {
@@ -251,26 +237,9 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 				Create(registryHelper)
 
 			// Try to create second registry with same name - should fail
-			duplicateRegistry := &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "conflict-registry",
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
-						{
-							Name:   "default",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: configMap.Name,
-								},
-								Key: "registry.json",
-							},
-						},
-					},
-				},
-			}
+			duplicateBuilder := registryHelper.NewRegistryBuilder("conflict-registry").
+				WithConfigMapSource(configMap.Name, "registry.json")
+			duplicateRegistry := duplicateBuilder.Build()
 
 			err := k8sClient.Create(ctx, duplicateRegistry)
 			Expect(err).To(HaveOccurred())

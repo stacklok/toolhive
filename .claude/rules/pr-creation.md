@@ -13,8 +13,13 @@ You MUST follow the template at `.github/pull_request_template.md` when creating
 Do NOT leave optional sections empty or with only placeholder/template text. Either fill them in or delete them.
 
 - **Changes**: File-by-file table for PRs touching more than a few files.
+- **Implementation plan**: Include when the PR was planned with an AI assistant. Paste the approved plan inside the collapsible `<details>` block. This gives reviewers visibility into the intended design and tradeoffs. Remove the section entirely for PRs that were not AI-planned.
 - **Does this introduce a user-facing change?**: Describe the change from the user's perspective. Write "No" if not applicable.
 - **Special notes for reviewers**: Non-obvious design decisions, known limitations, areas wanting extra scrutiny, or planned follow-up work.
+
+## PR Scope
+
+Each PR must contain only related changes. If a bug fix, refactor, or unrelated cleanup is discovered while working on a feature, open a separate PR for it. Mixed-scope PRs are harder to review and harder to revert cleanly.
 
 ## Style guidelines
 

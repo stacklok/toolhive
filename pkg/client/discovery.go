@@ -72,6 +72,27 @@ type ClientAppStatus struct {
 
 	// Registered indicates whether the client is registered in the ToolHive configuration
 	Registered bool `json:"registered"`
+
+	// SupportsSkills indicates whether ToolHive can install skills for this client
+	SupportsSkills bool `json:"supports_skills"`
+}
+
+// IsClientInstalled reports whether the given client appears to be installed on
+// the current system. Detection is based on the presence of the client's
+// configuration directory (or settings file when no relative path is defined).
+func (cm *ClientManager) IsClientInstalled(clientType ClientApp) bool {
+	cfg := cm.lookupClientAppConfig(clientType)
+	if cfg == nil {
+		return false
+	}
+	var pathToCheck string
+	if len(cfg.RelPath) == 0 {
+		pathToCheck = filepath.Join(cm.homeDir, cfg.SettingsFile)
+	} else {
+		pathToCheck = buildConfigDirectoryPath(cfg.RelPath, cfg.PlatformPrefix, []string{cm.homeDir})
+	}
+	_, err := os.Stat(pathToCheck)
+	return err == nil
 }
 
 // GetClientStatus returns the status of all supported MCP clients using this manager's dependencies
@@ -102,26 +123,11 @@ func (cm *ClientManager) GetClientStatus(ctx context.Context) ([]ClientAppStatus
 
 	for _, cfg := range cm.clientIntegrations {
 		status := ClientAppStatus{
-			ClientType: cfg.ClientType,
-			Installed:  false, // start with assuming client is not installed
-			Registered: registeredClients[string(cfg.ClientType)],
+			ClientType:     cfg.ClientType,
+			Installed:      cm.IsClientInstalled(cfg.ClientType),
+			Registered:     registeredClients[string(cfg.ClientType)],
+			SupportsSkills: cfg.SupportsSkills,
 		}
-
-		// Determine path to check based on configuration
-		var pathToCheck string
-		if len(cfg.RelPath) == 0 {
-			// If RelPath is empty, look at just the settings file
-			pathToCheck = filepath.Join(cm.homeDir, cfg.SettingsFile)
-		} else {
-			// Otherwise build the directory path using RelPath
-			pathToCheck = buildConfigDirectoryPath(cfg.RelPath, cfg.PlatformPrefix, []string{cm.homeDir})
-		}
-
-		// Check if the path exists
-		if _, err := os.Stat(pathToCheck); err == nil {
-			status.Installed = true
-		}
-
 		statuses = append(statuses, status)
 	}
 

@@ -665,7 +665,7 @@ func TestRunConfig_WithContainerName(t *testing.T) {
 			config: &RunConfig{
 				ContainerName: "",
 				Image:         "test-image",
-				Name:          "test-server",
+				Name:          testServerName,
 			},
 			expectedChange: true,
 		},
@@ -709,7 +709,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 		{
 			name: "Basic configuration",
 			config: &RunConfig{
-				Name:            "test-server",
+				Name:            testServerName,
 				Image:           "test-image",
 				Transport:       types.TransportTypeSSE,
 				Port:            60000,
@@ -717,7 +717,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 			},
 			expected: map[string]string{
 				"toolhive":           "true",
-				"toolhive-name":      "test-server",
+				"toolhive-name":      testServerName,
 				"toolhive-transport": "sse",
 				"toolhive-port":      "60000",
 			},
@@ -725,7 +725,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 		{
 			name: "With existing labels",
 			config: &RunConfig{
-				Name:      "test-server",
+				Name:      testServerName,
 				Image:     "test-image",
 				Transport: types.TransportTypeStdio,
 				ContainerLabels: map[string]string{
@@ -734,7 +734,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 			},
 			expected: map[string]string{
 				"toolhive":           "true",
-				"toolhive-name":      "test-server",
+				"toolhive-name":      testServerName,
 				"toolhive-transport": "stdio",
 				"existing-label":     "existing-value",
 			},
@@ -742,7 +742,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 		{
 			name: "Stdio transport with SSE proxy mode",
 			config: &RunConfig{
-				Name:            "test-server",
+				Name:            testServerName,
 				Image:           "test-image",
 				Transport:       types.TransportTypeStdio,
 				ProxyMode:       types.ProxyModeSSE,
@@ -751,7 +751,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 			},
 			expected: map[string]string{
 				"toolhive":           "true",
-				"toolhive-name":      "test-server",
+				"toolhive-name":      testServerName,
 				"toolhive-transport": "stdio", // Should be "stdio" even when proxied
 				"toolhive-port":      "60000",
 			},
@@ -759,7 +759,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 		{
 			name: "Stdio transport with streamable-http proxy mode",
 			config: &RunConfig{
-				Name:            "test-server",
+				Name:            testServerName,
 				Image:           "test-image",
 				Transport:       types.TransportTypeStdio,
 				ProxyMode:       types.ProxyModeStreamableHTTP,
@@ -768,7 +768,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 			},
 			expected: map[string]string{
 				"toolhive":           "true",
-				"toolhive-name":      "test-server",
+				"toolhive-name":      testServerName,
 				"toolhive-transport": "stdio", // Should be "stdio" even when proxied
 				"toolhive-port":      "60000",
 			},
@@ -817,7 +817,7 @@ func TestRunConfigBuilder(t *testing.T) {
 
 	runtime := &runtimemocks.MockRuntime{}
 	cmdArgs := []string{"arg1", "arg2"}
-	name := "test-server"
+	name := testServerName
 	imageURL := "test-image:latest"
 	imageMetadata := &regtypes.ImageMetadata{
 		BaseServerMetadata: regtypes.BaseServerMetadata{
@@ -829,7 +829,8 @@ func TestRunConfigBuilder(t *testing.T) {
 	}
 	host := localhostStr
 	debug := true
-	volumes := []string{"/host:/container"}
+	hostDir := t.TempDir()
+	volumes := []string{hostDir + ":/container"}
 	secretsList := []string{"secret1,target=ENV_VAR1"}
 	authzConfigPath := "" // Empty to skip loading the authorization configuration
 	permissionProfile := permissions.ProfileNone
@@ -962,7 +963,7 @@ func TestRunConfigBuilder_OIDCScopes(t *testing.T) {
 			config, err := NewRunConfigBuilder(context.Background(), nil, nil, validator,
 				WithRuntime(runtime),
 				WithCmdArgs(nil),
-				WithName("test-server"),
+				WithName(testServerName),
 				WithImage("test-image"),
 				WithHost(localhostStr),
 				WithTargetHost(localhostStr),
@@ -1014,7 +1015,7 @@ func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
 	originalConfig := &RunConfig{
 		Image:         "test-image",
 		CmdArgs:       []string{"arg1", "arg2"},
-		Name:          "test-server",
+		Name:          testServerName,
 		ContainerName: "test-container",
 		BaseName:      "test-base",
 		Transport:     types.TransportTypeSSE,
@@ -1197,7 +1198,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 			config, err := NewRunConfigBuilder(context.Background(), tt.metadata, nil, validator,
 				WithRuntime(runtime),
 				WithCmdArgs(nil),
-				WithName("test-server"),
+				WithName(testServerName),
 				WithImage("test-image"),
 				WithHost(localhostStr),
 				WithTargetHost(localhostStr),
@@ -1242,7 +1243,7 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 	config, err := NewRunConfigBuilder(context.Background(), nil, map[string]string{"USER_VAR": "value"}, validator,
 		WithRuntime(runtime),
 		WithCmdArgs(nil),
-		WithName("test-server"),
+		WithName(testServerName),
 		WithImage("test-image"),
 		WithHost(localhostStr),
 		WithTargetHost(localhostStr),
@@ -1292,7 +1293,7 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 	config, err := NewRunConfigBuilder(context.Background(), metadata, nil, validator,
 		WithRuntime(runtime),
 		WithCmdArgs(userArgs),
-		WithName("test-server"),
+		WithName(testServerName),
 		WithImage("test-image"),
 		WithHost(localhostStr),
 		WithTargetHost(localhostStr),
@@ -1344,7 +1345,7 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 	config, err := NewRunConfigBuilder(context.Background(), metadata, nil, validator,
 		WithRuntime(runtime),
 		WithCmdArgs(userArgs),
-		WithName("test-server"),
+		WithName(testServerName),
 		WithImage("test-image"),
 		WithHost(localhostStr),
 		WithTargetHost(localhostStr),
@@ -1385,15 +1386,18 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
+	hostReadDir := t.TempDir()
+	hostWriteDir := t.TempDir()
+
 	volumes := []string{
-		"/host/read:/container/read:ro",
-		"/host/write:/container/write",
+		hostReadDir + ":/container/read:ro",
+		hostWriteDir + ":/container/write",
 	}
 
 	config, err := NewRunConfigBuilder(context.Background(), nil, nil, validator,
 		WithRuntime(runtime),
 		WithCmdArgs(nil),
-		WithName("test-server"),
+		WithName(testServerName),
 		WithImage("test-image"),
 		WithHost(localhostStr),
 		WithTargetHost(localhostStr),
@@ -1675,9 +1679,9 @@ func TestConfigFileLoading(t *testing.T) {
 		tmpDir := t.TempDir()
 		configPath := tmpDir + "/runconfig.json"
 
-		configContent := `{
+		configContent := fmt.Sprintf(`{
 			"schema_version": "v1",
-			"name": "test-server",
+			"name": "%s",
 			"image": "test:latest",
 			"transport": "sse",
 			"port": 9090,
@@ -1686,7 +1690,7 @@ func TestConfigFileLoading(t *testing.T) {
 				"TEST_VAR": "test_value",
 				"ANOTHER_VAR": "another_value"
 			}
-		}`
+		}`, testServerName)
 
 		err := os.WriteFile(configPath, []byte(configContent), 0644)
 		require.NoError(t, err, "Should be able to create config file")
@@ -1701,7 +1705,7 @@ func TestConfigFileLoading(t *testing.T) {
 		require.NotNil(t, config, "Should return config when file exists")
 
 		// Verify config was loaded correctly
-		assert.Equal(t, "test-server", config.Name)
+		assert.Equal(t, testServerName, config.Name)
 		assert.Equal(t, "test:latest", config.Image)
 		assert.Equal(t, "sse", string(config.Transport))
 		assert.Equal(t, 9090, config.Port)
@@ -2100,7 +2104,7 @@ func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
 
 		originalConfig := &RunConfig{
 			SchemaVersion: CurrentSchemaVersion,
-			Name:          "test-server",
+			Name:          testServerName,
 			Image:         "test-image:latest",
 			Transport:     types.TransportTypeSSE,
 			Port:          60000,
@@ -2320,13 +2324,13 @@ func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
 func TestRunConfig_BackendReplicas(t *testing.T) {
 	t.Parallel()
 
-	const testServerName = "srv"
+	const testSrvName = "srv"
 	int32ptr := func(v int32) *int32 { return &v }
 
 	t.Run("round-trip with backend_replicas set", func(t *testing.T) {
 		t.Parallel()
 		original := NewRunConfig()
-		original.Name = "test-server"
+		original.Name = testSrvName
 		original.ScalingConfig = &ScalingConfig{
 			BackendReplicas: int32ptr(3),
 		}
@@ -2344,7 +2348,7 @@ func TestRunConfig_BackendReplicas(t *testing.T) {
 	t.Run("round-trip without scaling config preserves nil", func(t *testing.T) {
 		t.Parallel()
 		minimal := NewRunConfig()
-		minimal.Name = testServerName
+		minimal.Name = testSrvName
 		var buf bytes.Buffer
 		require.NoError(t, minimal.WriteJSON(&buf))
 		got, err := ReadJSON(&buf)

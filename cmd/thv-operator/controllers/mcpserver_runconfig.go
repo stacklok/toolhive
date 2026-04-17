@@ -145,7 +145,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		runner.WithName(m.Name),
 		runner.WithImage(m.Spec.Image),
 		runner.WithCmdArgs(m.Spec.Args),
-		runner.WithTransportAndPorts(m.Spec.Transport, int(m.GetProxyPort()), int(m.GetMcpPort())),
+		runner.WithTransportAndPorts(m.Spec.Transport, int(m.GetProxyPort()), int(m.GetMCPPort())),
 		runner.WithProxyMode(transporttypes.ProxyMode(effectiveProxyMode)),
 		runner.WithHost(proxyHost),
 		runner.WithTrustProxyHeaders(m.Spec.TrustProxyHeaders),
@@ -185,17 +185,16 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
 
-	// Add telemetry configuration: prefer TelemetryConfigRef over deprecated inline Telemetry
+	// Add telemetry configuration from TelemetryConfigRef
 	if m.Spec.TelemetryConfigRef != nil {
 		telCfg, err := getTelemetryConfigForMCPServer(ctx, r.Client, m)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get MCPTelemetryConfig: %w", err)
 		}
 		if telCfg != nil {
-			runconfig.AddMCPTelemetryConfigRefOptions(&options, &telCfg.Spec, m.Spec.TelemetryConfigRef.ServiceName, m.Name)
+			caPath := ctrlutil.TelemetryCABundleFilePath(telCfg)
+			runconfig.AddMCPTelemetryConfigRefOptions(&options, &telCfg.Spec, m.Spec.TelemetryConfigRef.ServiceName, m.Name, caPath)
 		}
-	} else {
-		runconfig.AddTelemetryConfigOptions(ctx, &options, m.Spec.Telemetry, m.Name)
 	}
 
 	// Add authorization configuration if specified
@@ -236,19 +235,6 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 				resolvedOIDCConfig.Scopes,
 			))
 		}
-	} else {
-		// Legacy path: resolve from inline OIDCConfig
-		if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, m, &options); err != nil {
-			return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
-		}
-		if m.Spec.OIDCConfig != nil {
-			resolver := oidc.NewResolver(r.Client)
-			var err error
-			resolvedOIDCConfig, err = resolver.Resolve(ctx, m)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve OIDC config: %w", err)
-			}
-		}
 	}
 
 	// Add external auth configuration if specified (updated call)
@@ -260,8 +246,21 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
 	}
 
+	// Validate authServerRef/externalAuthConfigRef conflict and add authServerRef options
+	if err := ctrlutil.ValidateAndAddAuthServerRefOptions(
+		ctx, r.Client, m.Namespace, m.Name, m.Spec.AuthServerRef,
+		m.Spec.ExternalAuthConfigRef, resolvedOIDCConfig, &options,
+	); err != nil {
+		return nil, fmt.Errorf("failed to process authServerRef: %w", err)
+	}
+
 	// Add audit configuration if specified
 	runconfig.AddAuditConfigOptions(&options, m.Spec.Audit)
+
+	// Add rate limit configuration if specified
+	if m.Spec.RateLimiting != nil {
+		options = append(options, runner.WithRateLimitConfig(m.Namespace, m.Spec.RateLimiting))
+	}
 
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	runConfig, err := runner.NewOperatorRunConfigBuilder(
@@ -275,15 +274,16 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		return nil, err
 	}
 
+	// Populate scaling config (BackendReplicas and Redis session storage).
+	// Both fields use nil-passthrough: only set when explicitly configured in the spec.
+	// Must run before PopulateMiddlewareConfigs because rate limiting reads SessionRedis.
+	populateScalingConfig(runConfig, m)
+
 	// Populate middleware configs from the configuration fields
 	// This ensures that middleware_configs is properly set for serialization
 	if err := runner.PopulateMiddlewareConfigs(runConfig); err != nil {
 		return nil, fmt.Errorf("failed to populate middleware configs: %w", err)
 	}
-
-	// Populate scaling config (BackendReplicas and Redis session storage).
-	// Both fields use nil-passthrough: only set when explicitly configured in the spec.
-	populateScalingConfig(runConfig, m)
 
 	return runConfig, nil
 }

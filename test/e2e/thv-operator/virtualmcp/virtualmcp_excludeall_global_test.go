@@ -48,6 +48,7 @@ var _ = Describe("VirtualMCPServer Global ExcludeAllTools", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Aggregation: &vmcpconfig.AggregationConfig{
@@ -161,7 +162,7 @@ var _ = Describe("VirtualMCPServer Global ExcludeAllTools", Ordered, func() {
 
 			// Verify each backend is running
 			for _, backend := range backends {
-				Expect(backend.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseRunning),
+				Expect(backend.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseReady),
 					fmt.Sprintf("Backend %s should be running", backend.Name))
 			}
 

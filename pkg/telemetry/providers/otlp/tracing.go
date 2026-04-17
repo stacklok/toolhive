@@ -15,8 +15,13 @@ import (
 )
 
 func createTraceExporter(ctx context.Context, config Config) (sdktrace.SpanExporter, error) {
+	host, basePath := splitEndpointPath(config.Endpoint)
 	opts := []otlptracehttp.Option{
-		otlptracehttp.WithEndpoint(config.Endpoint),
+		otlptracehttp.WithEndpoint(host),
+	}
+
+	if basePath != "" {
+		opts = append(opts, otlptracehttp.WithURLPath(basePath+otlpTracesPath))
 	}
 
 	if len(config.Headers) > 0 {
@@ -25,6 +30,14 @@ func createTraceExporter(ctx context.Context, config Config) (sdktrace.SpanExpor
 
 	if config.Insecure {
 		opts = append(opts, otlptracehttp.WithInsecure())
+	}
+
+	if config.CACertPath != "" {
+		tlsCfg, err := newTLSConfigFromCA(config.CACertPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to configure TLS for trace exporter: %w", err)
+		}
+		opts = append(opts, otlptracehttp.WithTLSClientConfig(tlsCfg))
 	}
 
 	exporter, err := otlptracehttp.New(ctx, opts...)

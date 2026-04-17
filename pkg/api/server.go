@@ -354,6 +354,7 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
 		"/api/v1beta/groups":    v1.GroupsRouter(b.groupManager, b.workloadManager, b.clientManager),
 		"/api/v1beta/skills":    v1.SkillsRouter(b.skillManager),
+		"/registry":             v1.RegistryV01Router(),
 	}
 	for prefix, router := range standardRouters {
 		r.Mount(prefix, standardTimeout(router))
@@ -771,9 +772,13 @@ func (a *clientPathAdapter) GetSkillPath(clientType, skillName string, scope ski
 
 func (a *clientPathAdapter) ListSkillSupportingClients() []string {
 	clients := a.cm.ListSkillSupportingClients()
-	result := make([]string, len(clients))
-	for i, c := range clients {
-		result[i] = string(c)
+	var result []string
+	for _, c := range clients {
+		if a.cm.IsClientInstalled(c) {
+			result = append(result, string(c))
+		} else {
+			slog.Debug("skipping client for skill install: not detected on system", "client", c)
+		}
 	}
 	return result
 }

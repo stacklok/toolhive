@@ -52,14 +52,14 @@ jobs:
 
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: 'go.mod'
+          go-version: 'stable'
 
       - name: Setup helm-docs
         run: go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@1eddb334cfa79fdb21ecbe2180ca1a016e8e7d47 # v1
+        uses: anthropics/claude-code-action@b47fd721da662d48c5680e154ad16a73ed74d2e0 # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # Security: Restrict tools to prevent arbitrary code execution.

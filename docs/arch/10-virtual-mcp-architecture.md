@@ -12,6 +12,7 @@ vMCP solves the problem of **MCP server sprawl**. As organizations deploy more s
 - **Composite workflows** - Create new tools that orchestrate multiple backends
 - **Centralized security** - Single authentication and authorization point
 - **Token management** - Exchange and cache tokens for backend access
+- **Shared telemetry** - Reference an MCPTelemetryConfig via `telemetryConfigRef` for fleet-wide OpenTelemetry settings
 
 ## Architecture
 
@@ -41,6 +42,7 @@ graph TB
         B1[MCPServer]
         B2[MCPServer]
         B3[MCPRemoteProxy]
+        B4[MCPServerEntry]
     end
 
     Client[MCP Client] --> Server
@@ -54,9 +56,11 @@ graph TB
     BackendClient --> B1
     BackendClient --> B2
     BackendClient --> B3
+    BackendClient --> B4
     Health --> B1
     Health --> B2
     Health --> B3
+    Health --> B4
 
     style Server fill:#90caf9
     style Aggregator fill:#81c784
@@ -85,6 +89,7 @@ graph LR
     Group -->|contains| S1[MCPServer]
     Group -->|contains| S2[MCPServer]
     Group -->|contains| R1[MCPRemoteProxy]
+    Group -->|contains| E1[MCPServerEntry]
 
     style vMCP fill:#90caf9
     style Group fill:#ba68c8
@@ -92,9 +97,11 @@ graph LR
 
 **Discovery process:**
 1. VirtualMCPServer references an MCPGroup by name
-2. All MCPServers and MCPRemoteProxies in that group are discovered
+2. All MCPServers, MCPRemoteProxies, and MCPServerEntries in that group are discovered
 3. For each backend, URL, transport type, and auth config are extracted
 4. vMCP queries each backend for available tools, resources, and prompts
+
+MCPServerEntry backends connect directly to remote MCP servers without deploying a proxy pod. They are zero-infrastructure catalog entries that declare a remote endpoint URL, optional external auth, and an optional CA bundle for TLS verification. CA bundle data is fetched from Kubernetes ConfigMaps at discovery time. In dynamic mode, the BackendReconciler watches ConfigMap changes and uses a field index on `spec.caBundleRef.configMapRef.name` to efficiently re-reconcile only the MCPServerEntry backends affected by a given ConfigMap update.
 
 **Implementation**: `pkg/vmcp/aggregator/`
 

@@ -43,12 +43,16 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to parse arguments: %v", err)), nil
 	}
 
-	// Use retriever to properly fetch and prepare the MCP server
+	// Resolve the MCP server from the registry without pulling the image.
 	// TODO: make this configurable so we could warn or even fail
-	imageURL, serverMetadata, err := retriever.GetMCPServer(ctx, args.Server, "", "disabled", "", nil)
+	imageURL, serverMetadata, err := retriever.ResolveMCPServer(ctx, args.Server, "", "disabled", "", nil)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to resolve MCP server: %v", err)), nil
 	}
+
+	// Resolve registry source URLs and server name when the server was discovered via registry lookup.
+	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, h.configProvider.GetConfig())
+	regServerName := runner.ResolveRegistryServerName(serverMetadata)
 
 	// Build run configuration.
 	// Use type assertion with nil check to guard against typed nil pointers.
@@ -57,9 +61,28 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 		imageMetadata = md
 	}
 
-	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata)
+	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata,
+		runner.WithRegistrySourceURLs(regAPIURL, regURL),
+		runner.WithRegistryServerName(regServerName))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to build run configuration: %v", err)), nil
+	}
+
+	// Enforce policy gate and pull image before running the server.
+	if err := retriever.EnforcePolicyAndPullImage(
+		ctx, runConfig, serverMetadata, imageURL, retriever.PullMCPServerImage, 0,
+		runner.IsImageProtocolScheme(args.Server),
+	); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to enforce policy or pull image: %v", err)), nil
+	}
+
+	// Enforce policy eagerly for remote registry servers. EnforcePolicyAndPullImage
+	// returns nil immediately when serverMetadata.IsRemote() == true (it has no image
+	// to pull), so CheckCreateServer is never called for that case. Call
+	// EagerCheckCreateServer here so remote registry servers are blocked before state
+	// is persisted, matching the behaviour in runSingleServer and CreateWorkloadFromRequest.
+	if err := runner.EagerCheckCreateServer(ctx, runConfig); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Server creation blocked by policy: %v", err)), nil
 	}
 
 	// Save and run the server
@@ -109,12 +132,13 @@ func parseRunServerArgs(request mcp.CallToolRequest) (*runServerArgs, error) {
 	return args, nil
 }
 
-// buildServerConfig creates the run configuration for the server
+// buildServerConfig creates the run configuration for the server.
 func buildServerConfig(
 	ctx context.Context,
 	args *runServerArgs,
 	imageURL string,
 	imageMetadata *types.ImageMetadata,
+	extraOpts ...runner.RunConfigBuilderOption,
 ) (*runner.RunConfig, error) {
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
@@ -128,6 +152,7 @@ func buildServerConfig(
 		runner.WithName(args.Name),
 		runner.WithHost(args.Host),
 	}
+	opts = append(opts, extraOpts...)
 
 	// Configure transport and metadata
 	transport := configureTransport(&opts, imageMetadata)

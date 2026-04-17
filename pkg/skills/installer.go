@@ -217,6 +217,21 @@ func ValidatePathNoSymlinks(targetDir string) error {
 	return nil
 }
 
+// RemoveEmptyParents walks up from dir, removing each directory that is empty,
+// stopping at stopAt (which is never removed) or when a non-empty directory is
+// encountered. Errors are silently ignored — this is best-effort cleanup.
+func RemoveEmptyParents(dir, stopAt string) {
+	dir = filepath.Clean(dir)
+	stopAt = filepath.Clean(stopAt)
+	for dir != stopAt && filepath.Dir(dir) != dir {
+		if err := os.Remove(dir); err != nil {
+			// Directory is not empty, doesn't exist, or we lack permission — stop.
+			return
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
 // pathDepth counts the number of non-empty components in an absolute path.
 // For example, "/var/home/user/skills" returns 4.
 func pathDepth(absPath string) int {

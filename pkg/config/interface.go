@@ -13,7 +13,7 @@ import (
 //go:generate mockgen -destination=mocks/mock_provider.go -package=mocks -source=interface.go Provider
 type Provider interface {
 	GetConfig() *Config
-	UpdateConfig(updateFn func(*Config)) error
+	UpdateConfig(updateFn func(*Config) error) error
 	LoadOrCreateConfig() (*Config, error)
 
 	// Registry operations
@@ -73,7 +73,7 @@ func (*DefaultProvider) GetConfig() *Config {
 }
 
 // UpdateConfig updates the config using the default path
-func (*DefaultProvider) UpdateConfig(updateFn func(*Config)) error {
+func (*DefaultProvider) UpdateConfig(updateFn func(*Config) error) error {
 	return UpdateConfigAtPath("", updateFn)
 }
 
@@ -244,7 +244,7 @@ func (p *PathProvider) GetConfig() *Config {
 }
 
 // UpdateConfig updates the config at the specific path
-func (p *PathProvider) UpdateConfig(updateFn func(*Config)) error {
+func (p *PathProvider) UpdateConfig(updateFn func(*Config) error) error {
 	return UpdateConfigAtPath(p.configPath, updateFn)
 }
 
@@ -409,7 +409,7 @@ func (*KubernetesProvider) GetConfig() *Config {
 }
 
 // UpdateConfig is a no-op for Kubernetes environments
-func (*KubernetesProvider) UpdateConfig(_ func(*Config)) error {
+func (*KubernetesProvider) UpdateConfig(_ func(*Config) error) error {
 	return nil
 }
 

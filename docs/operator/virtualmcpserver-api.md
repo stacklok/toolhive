@@ -24,17 +24,48 @@ The `VirtualMCPServer` CRD enables aggregation of multiple backend MCPServers in
 
 ## Spec Fields
 
-### `.spec.config.groupRef` (required)
+### `.spec.groupRef` (required)
 
 References an existing `MCPGroup` that defines the backend workloads to aggregate.
+The referenced MCPGroup must exist in the same namespace.
 
-**Type**: `string`
+**Type**: `MCPGroupRef` (object with `name` field)
 
 **Example**:
 ```yaml
 spec:
-  config:
-    groupRef: engineering-team
+  groupRef:
+    name: engineering-team
+```
+
+### Backend Types
+
+A `VirtualMCPServer` aggregates three types of backends from the referenced `MCPGroup`:
+
+| Type | CRD | Infrastructure | Use Case |
+|------|-----|----------------|----------|
+| **Container** | `MCPServer` | Pod + Service | MCP servers running as containers in the cluster |
+| **Proxy** | `MCPRemoteProxy` | Proxy Pod + Service | Remote servers requiring a proxy with its own auth/audit layer |
+| **Entry** | `MCPServerEntry` | None (config only) | Remote servers where VirtualMCPServer connects directly |
+
+**When to use MCPServerEntry vs MCPRemoteProxy:**
+
+- Use `MCPServerEntry` when VirtualMCPServer can connect directly to the remote server. This is simpler (zero infrastructure) and eliminates the dual auth boundary problem where both the proxy and vMCP need separate auth configs.
+- Use `MCPRemoteProxy` when you need the proxy's own authentication middleware, audit logging, or observability for standalone (non-vMCP) access to the remote server.
+
+**Example: MCPServerEntry backend**
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServerEntry
+metadata:
+  name: context7
+spec:
+  remoteUrl: https://mcp.context7.com/mcp
+  transport: streamable-http
+  groupRef:
+    name: engineering-team
+  # No externalAuthConfigRef — public endpoint, no auth needed
 ```
 
 ### `.spec.incomingAuth` (optional)
@@ -47,7 +78,10 @@ Configures authentication for clients connecting to the Virtual MCP server. Reus
 - `type` (string, required): Authentication type. Must be explicitly specified.
   - `anonymous`: No authentication required (use this when no auth is needed)
   - `oidc`: OIDC/OAuth2 authentication
-- `oidcConfig` (OIDCConfigRef, optional): OIDC authentication configuration (required when type=oidc)
+- `oidcConfigRef` (MCPOIDCConfigReference, optional): Reference to a shared MCPOIDCConfig resource (required when type=oidc).
+  - `name` (string, required): Name of the MCPOIDCConfig resource (same namespace)
+  - `audience` (string, required): Must be unique per server to prevent token replay
+  - `scopes` ([]string, optional): Defaults to `["openid"]`
 - `authzConfig` (AuthzConfigRef, optional): Authorization policy configuration
 
 **Important**: The `type` field must always be explicitly specified. When no authentication is required, use `type: anonymous`.
@@ -59,15 +93,15 @@ spec:
     type: anonymous
 ```
 
-**Example (OIDC auth)**:
+**Example (OIDC auth with shared MCPOIDCConfig — preferred)**:
 ```yaml
 spec:
   incomingAuth:
     type: oidc
-    oidcConfig:
-      type: kubernetes
-      kubernetes:
-        audience: vmcp
+    oidcConfigRef:
+      name: corporate-idp       # references an MCPOIDCConfig resource
+      audience: vmcp-api         # unique per server
+      scopes: ["openid"]
     authzConfig:
       type: inline
       inline:
@@ -109,7 +143,7 @@ spec:
     source: inline
     backends:
       github:
-        type: external_auth_config_ref
+        type: externalAuthConfigRef
         externalAuthConfigRef:
           name: github-token-exchange
       slack:
@@ -127,8 +161,8 @@ spec:
 **Fields**:
 - `type` (string, required): Authentication type
   - `discovered`: Automatically discover from backend
-  - `external_auth_config_ref`: Reference an MCPExternalAuthConfig resource
-- `externalAuthConfigRef` (ExternalAuthConfigRef, optional): Auth config reference (when type=external_auth_config_ref)
+  - `externalAuthConfigRef`: Reference an MCPExternalAuthConfig resource
+- `externalAuthConfigRef` (ExternalAuthConfigRef, optional): Auth config reference (when type=externalAuthConfigRef)
 
 ### `.spec.config.aggregation` (optional)
 
@@ -148,8 +182,8 @@ Defines tool aggregation and conflict resolution strategies.
 **Example (prefix strategy)**:
 ```yaml
 spec:
-  config:
-    groupRef: my-services
+  groupRef:
+    name: my-services
   aggregation:
     conflictResolution: prefix
     conflictResolutionConfig:
@@ -165,8 +199,8 @@ spec:
 **Example (priority strategy)**:
 ```yaml
 spec:
-  config:
-    groupRef: my-services
+  groupRef:
+    name: my-services
   aggregation:
     conflictResolution: priority
     conflictResolutionConfig:
@@ -176,8 +210,8 @@ spec:
 **Example (manual strategy)**:
 ```yaml
 spec:
-  config:
-    groupRef: my-services
+  groupRef:
+    name: my-services
   aggregation:
     conflictResolution: manual
     tools:
@@ -320,8 +354,9 @@ Configures OpenTelemetry-based observability for the Virtual MCP server, includi
 **Example**:
 ```yaml
 spec:
+  groupRef:
+    name: my-group
   config:
-    groupRef: my-group
     telemetry:
       endpoint: "otel-collector:4317"
       serviceName: "my-vmcp"
@@ -398,6 +433,12 @@ URL where the Virtual MCP server can be accessed.
 
 **Type**: `string`
 
+### `.status.oidcConfigHash`
+
+Hash of the referenced MCPOIDCConfig spec, used for change detection. Only present when `oidcConfigRef` is set.
+
+**Type**: `string`
+
 ### `.status.observedGeneration`
 
 The most recent generation observed for this VirtualMCPServer.
@@ -413,10 +454,11 @@ metadata:
   name: engineering-vmcp
   namespace: default
 spec:
-  # Reference to MCPGroup defining backend workloads and tool aggregation
+  # Reference to MCPGroup defining backend workloads
+  groupRef:
+    name: engineering-team
+  # Tool aggregation
   config:
-    groupRef: engineering-team
-    # Tool aggregation
     aggregation:
       conflictResolution: prefix
       conflictResolutionConfig:
@@ -428,13 +470,12 @@ spec:
           toolConfigRef:
             name: jira-tool-config
 
-  # Client authentication
+  # Client authentication (preferred: reference a shared MCPOIDCConfig)
   incomingAuth:
     type: oidc
-    oidcConfig:
-      type: kubernetes
-      kubernetes:
-        audience: vmcp
+    oidcConfigRef:
+      name: engineering-idp   # references an MCPOIDCConfig in the same namespace
+      audience: engineering-vmcp
     authzConfig:
       type: inline
       inline:
@@ -549,9 +590,9 @@ status:
 The VirtualMCPServer CRD includes comprehensive validation:
 
 1. **Required Fields**:
-   - `spec.config.groupRef` must be specified
+   - `spec.groupRef.name` must be specified
    - `spec.incomingAuth.type` must be explicitly specified (use `anonymous` when no auth is needed)
-2. **Reference Validation**: All references (config.groupRef, authConfigRef, toolConfigRef) must be valid
+2. **Reference Validation**: All references (groupRef, authConfigRef, toolConfigRef) must be valid
 3. **Conflict Resolution**: Priority strategy requires `priorityOrder` configuration
 4. **Composite Tools**: Must have unique names, valid steps with IDs, and proper dependencies
 5. **Token Cache**: Redis provider requires valid address configuration
@@ -561,6 +602,7 @@ The VirtualMCPServer CRD includes comprehensive validation:
 
 - [MCPGroup](./mcpgroup-api.md): Defines groups of MCPServers
 - [MCPServer](./mcpserver-api.md): Individual MCP server instances
+- [MCPOIDCConfig](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml): Shared OIDC provider configuration (referenced via `oidcConfigRef`)
 - [MCPExternalAuthConfig](./mcpexternalauthconfig-api.md): External authentication configuration
 - [MCPToolConfig](./toolconfig-api.md): Tool filtering and renaming configuration
 - [Virtual MCP Server Observability](./virtualmcpserver-observability.md): Telemetry and metrics documentation

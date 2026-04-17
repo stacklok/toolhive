@@ -229,7 +229,7 @@ A **Virtual MCP Server** aggregates multiple MCP servers from a group into a sin
 **Key capabilities:**
 
 1. **Backend Aggregation**:
-   - Automatically discovers MCPServers from an MCPGroup
+   - Automatically discovers MCPServers, MCPRemoteProxies, and MCPServerEntries from an MCPGroup
    - Aggregates tools, resources, and prompts from all backends
    - Tracks backend health status
    - Handles backend failures gracefully
@@ -255,6 +255,11 @@ A **Virtual MCP Server** aggregates multiple MCP servers from a group into a sin
    - Outgoing: Automatic token exchange for backend authentication
    - Token caching with configurable TTL and capacity
    - Cedar authorization policies
+
+6. **Backend Types**:
+   - `MCPServer` — Container-based: runs as a pod in the cluster
+   - `MCPRemoteProxy` — Proxy-based: deploys a proxy pod that forwards to a remote server
+   - `MCPServerEntry` — Zero-infrastructure: declares a remote endpoint that VirtualMCPServer connects to directly (no pods, services, or deployments)
 
 **Example use case:**
 ```yaml
@@ -424,6 +429,35 @@ ToolHive can automatically configure clients to use MCP servers:
 - Discovery: `pkg/client/discovery.go`
 
 **Related concepts:** Workload, Group
+
+### Skill
+
+A **skill** is an Agent Skill -- a markdown-based instruction set (SKILL.md) that extends an AI coding assistant's capabilities. Skills are not MCP servers; they provide knowledge and conventions rather than callable tools.
+
+**Key characteristics:**
+- Defined by a `SKILL.md` file with YAML frontmatter
+- Distributed as OCI artifacts (tar.gz layers)
+- Can also be installed directly from git repositories
+- Scoped to user (global) or project (local)
+- Support multi-client installation (Claude Code, Cursor, etc.)
+
+**Lifecycle:**
+1. **Discover** - Browse skills from registry catalog
+2. **Build** - Package local SKILL.md into OCI artifact
+3. **Publish** - Push OCI artifact to remote registry
+4. **Install** - Pull from registry/git and extract to client skill directory
+5. **Uninstall** - Remove files and metadata
+
+**Implementation:**
+- Service: `pkg/skills/skillsvc/skillsvc.go`
+- Types: `pkg/skills/types.go`
+- Storage: `pkg/storage/sqlite/skill_store.go`
+- CLI: `cmd/thv/app/skill*.go`
+- API: `pkg/api/v1/skills.go`
+
+**For architecture details**, see [Skills System](12-skills-system.md).
+
+**Related concepts:** Registry, Group, Client
 
 ## Verbs (Actions)
 
@@ -764,6 +798,7 @@ Registry
 | **Session** | State tracking for MCP connections |
 | **Runtime** | Abstraction over container systems |
 | **Client** | Application that uses MCP servers |
+| **Skill** | Agent Skill (SKILL.md) extending AI assistant capabilities |
 | **Deploy** | Create and start a workload |
 | **Proxy** (verb) | Forward traffic with middleware |
 | **Attach** | Connect to container stdin/stdout |

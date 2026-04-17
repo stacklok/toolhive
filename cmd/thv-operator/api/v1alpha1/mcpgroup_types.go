@@ -26,20 +26,31 @@ type MCPGroupStatus struct {
 	Phase MCPGroupPhase `json:"phase,omitempty"`
 
 	// Servers lists MCPServer names in this group
+	// +listType=set
 	// +optional
 	Servers []string `json:"servers"`
 
 	// ServerCount is the number of MCPServers
 	// +optional
-	ServerCount int `json:"serverCount"`
+	ServerCount int32 `json:"serverCount"`
 
 	// RemoteProxies lists MCPRemoteProxy names in this group
+	// +listType=set
 	// +optional
 	RemoteProxies []string `json:"remoteProxies,omitempty"`
 
 	// RemoteProxyCount is the number of MCPRemoteProxies
 	// +optional
-	RemoteProxyCount int `json:"remoteProxyCount,omitempty"`
+	RemoteProxyCount int32 `json:"remoteProxyCount,omitempty"`
+
+	// Entries lists MCPServerEntry names in this group
+	// +listType=set
+	// +optional
+	Entries []string `json:"entries,omitempty"`
+
+	// EntryCount is the number of MCPServerEntries
+	// +optional
+	EntryCount int32 `json:"entryCount,omitempty"`
 
 	// Conditions represent observations
 	// +listType=map

@@ -35,7 +35,9 @@ const (
 
 	// MetadataKeyBackendIDs is the transport-session metadata key that holds
 	// a comma-separated, sorted list of successfully-connected backend IDs.
-	// The key is omitted entirely when no backends connected.
+	// The key is always written, even as an empty string for zero-backend
+	// sessions. Key presence distinguishes an explicit zero-backend state from
+	// absent/corrupted metadata in RestoreSession.
 	MetadataKeyBackendIDs = "vmcp.backend.ids"
 
 	// MetadataKeyBackendSessionPrefix is the key prefix for per-backend session IDs.
@@ -48,6 +50,11 @@ var (
 	// defaultHMACSecret is the fallback HMAC secret used when WithHMACSecret is not provided.
 	// WARNING: This is INSECURE and should ONLY be used for testing/development.
 	// Production deployments MUST provide a secure secret via WithHMACSecret option.
+	//
+	// NOTE: In multi-replica deployments, all replicas must use the same HMAC secret,
+	// injected via the VMCP_SESSION_HMAC_SECRET environment variable. If replicas use
+	// different secrets, cross-pod token validation will silently reject legitimate
+	// callers. The default insecure secret must NOT be used in production.
 	defaultHMACSecret = []byte("insecure-default-for-testing-only-change-in-production")
 )
 
@@ -101,6 +108,11 @@ type MultiSessionFactory interface {
 //  2. Running the MCP Initialize handshake.
 //  3. Querying backend capabilities (tools, resources, prompts).
 //
+// sessionHint is the backend-assigned session ID from a prior connection (stored
+// in Redis metadata). When non-empty the connector should send it as the
+// Mcp-Session-Id hint during Initialize so the backend can resume rather than
+// re-initialize. Pass an empty string for brand-new sessions.
+//
 // The returned backend.Session owns the underlying transport connection and
 // must be closed when the session ends. The returned CapabilityList is used
 // to populate the session's routing table and capability lists.
@@ -111,6 +123,7 @@ type backendConnector func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
+	sessionHint string,
 ) (backend.Session, *vmcp.CapabilityList, error)
 
 // defaultMultiSessionFactory is the production MultiSessionFactory implementation.
@@ -213,12 +226,13 @@ func (f *defaultMultiSessionFactory) initOneBackend(
 	ctx context.Context,
 	b *vmcp.Backend,
 	identity *auth.Identity,
+	sessionHint string,
 ) *initResult {
 	bCtx, cancel := context.WithTimeout(ctx, f.backendInitTimeout)
 	defer cancel()
 
 	target := vmcp.BackendToTarget(b)
-	conn, caps, err := f.connector(bCtx, target, identity)
+	conn, caps, err := f.connector(bCtx, target, identity, sessionHint)
 	if err != nil {
 		if conn != nil {
 			_ = conn.Close()
@@ -283,11 +297,14 @@ func buildRoutingTable(results []initResult) (*vmcp.RoutingTable, []vmcp.Tool, [
 // pipeline (overrides, conflict resolution, advertising filter) to the raw
 // backend capabilities in results, producing resolved tool names identical to
 // the standard aggregation path. Resources and prompts pass through unchanged.
+//
+// Returns the routing table, advertised tools (for MCP clients), all resolved
+// tools (for schema lookup), resources, prompts, and any error.
 func buildRoutingTableWithAggregator(
 	ctx context.Context,
 	agg aggregator.Aggregator,
 	results []initResult,
-) (*vmcp.RoutingTable, []vmcp.Tool, []vmcp.Resource, []vmcp.Prompt, error) {
+) (*vmcp.RoutingTable, []vmcp.Tool, []vmcp.Tool, []vmcp.Resource, []vmcp.Prompt, error) {
 	toolsByBackend := make(map[string][]vmcp.Tool, len(results))
 	targets := make(map[string]*vmcp.BackendTarget, len(results))
 	for i := range results {
@@ -296,9 +313,9 @@ func buildRoutingTableWithAggregator(
 		targets[r.target.WorkloadID] = r.target
 	}
 
-	allTools, toolsRouting, err := agg.ProcessPreQueriedCapabilities(ctx, toolsByBackend, targets)
+	advertisedTools, allResolvedTools, toolsRouting, err := agg.ProcessPreQueriedCapabilities(ctx, toolsByBackend, targets)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	rt := &vmcp.RoutingTable{
@@ -324,7 +341,7 @@ func buildRoutingTableWithAggregator(
 		}
 	}
 
-	return rt, allTools, allResources, allPrompts, nil
+	return rt, advertisedTools, allResolvedTools, allResources, allPrompts, nil
 }
 
 // MakeSessionWithID implements MultiSessionFactory.
@@ -405,6 +422,7 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 	sessID string,
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
+	sessionHints map[string]string,
 ) (*defaultMultiSession, error) {
 	filtered := make([]*vmcp.Backend, 0, len(backends))
 	for _, b := range backends {
@@ -425,7 +443,7 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			rawResults[i] = f.initOneBackend(ctx, b, identity)
+			rawResults[i] = f.initOneBackend(ctx, b, identity, sessionHints[b.ID])
 		}(i, b)
 	}
 	wg.Wait()
@@ -451,19 +469,22 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 	}
 
 	var (
-		routingTable *vmcp.RoutingTable
-		allTools     []vmcp.Tool
-		allResources []vmcp.Resource
-		allPrompts   []vmcp.Prompt
+		routingTable     *vmcp.RoutingTable
+		advertisedTools  []vmcp.Tool
+		allResolvedTools []vmcp.Tool
+		allResources     []vmcp.Resource
+		allPrompts       []vmcp.Prompt
 	)
 	if f.aggregator != nil {
 		var aggErr error
-		routingTable, allTools, allResources, allPrompts, aggErr = buildRoutingTableWithAggregator(ctx, f.aggregator, results)
+		routingTable, advertisedTools, allResolvedTools, allResources, allPrompts, aggErr =
+			buildRoutingTableWithAggregator(ctx, f.aggregator, results)
 		if aggErr != nil {
 			return nil, fmt.Errorf("failed to process backend capabilities: %w", aggErr)
 		}
 	} else {
-		routingTable, allTools, allResources, allPrompts = buildRoutingTable(results)
+		routingTable, advertisedTools, allResources, allPrompts = buildRoutingTable(results)
+		allResolvedTools = advertisedTools // no filter when no aggregator
 	}
 
 	transportSess := transportsession.NewStreamableSession(sessID)
@@ -476,7 +497,8 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 		Session:         transportSess,
 		connections:     connections,
 		routingTable:    routingTable,
-		tools:           allTools,
+		tools:           advertisedTools,
+		allTools:        allResolvedTools,
 		resources:       allResources,
 		prompts:         allPrompts,
 		backendSessions: backendSessions,
@@ -493,7 +515,7 @@ func (f *defaultMultiSessionFactory) makeSession(
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
 ) (MultiSession, error) {
-	baseSession, err := f.makeBaseSession(ctx, sessID, identity, backends)
+	baseSession, err := f.makeBaseSession(ctx, sessID, identity, backends, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -522,8 +544,18 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 		return nil, err
 	}
 
+	// MetadataKeyBackendIDs must be present. An absent key means the metadata
+	// was never fully initialised (placeholder session) or is corrupted; treat
+	// it as a hard error so we don't silently connect to zero backends when a
+	// non-empty list was expected.
+	storedBackendIDs, backendIDsPresent := storedMetadata[MetadataKeyBackendIDs]
+	if !backendIDsPresent {
+		return nil, fmt.Errorf("RestoreSession: %q metadata key absent (corrupted or placeholder metadata)",
+			MetadataKeyBackendIDs)
+	}
+
 	// Filter allBackends to the subset originally connected in this session.
-	filteredBackends := filterBackendsByStoredIDs(allBackends, storedMetadata[MetadataKeyBackendIDs])
+	filteredBackends := filterBackendsByStoredIDs(allBackends, storedBackendIDs)
 
 	// Reconstruct a minimal identity from stored metadata. The original bearer
 	// token is never persisted (only its HMAC-SHA256 hash is), so Token is empty.
@@ -534,9 +566,18 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 		identity.Subject = subject
 	}
 
+	// Extract stored per-backend session IDs as hints so each backend can
+	// resume its session (via Mcp-Session-Id) rather than starting a new one.
+	sessionHints := make(map[string]string, len(filteredBackends))
+	for _, b := range filteredBackends {
+		if hint := storedMetadata[MetadataKeyBackendSessionPrefix+b.ID]; hint != "" {
+			sessionHints[b.ID] = hint
+		}
+	}
+
 	// Build the base session (backend connections + routing table) without the
 	// security wrapper. The wrapper is applied separately using stored hash/salt.
-	baseSession, err := f.makeBaseSession(ctx, id, identity, filteredBackends)
+	baseSession, err := f.makeBaseSession(ctx, id, identity, filteredBackends, sessionHints)
 	if err != nil {
 		return nil, fmt.Errorf("RestoreSession: failed to rebuild backend connections: %w", err)
 	}
@@ -570,7 +611,7 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 		return nil, fmt.Errorf("RestoreSession: token hash metadata key absent (corrupted session metadata)")
 	}
 	storedSalt := storedMetadata[sessiontypes.MetadataKeyTokenSalt]
-	restored, err := security.RestoreHijackPrevention(baseSession, f.hmacSecret, storedHash, storedSalt)
+	restored, err := security.RestoreHijackPrevention(baseSession, storedHash, storedSalt, f.hmacSecret)
 	if err != nil {
 		_ = baseSession.Close()
 		return nil, fmt.Errorf("RestoreSession: failed to restore hijack prevention: %w", err)

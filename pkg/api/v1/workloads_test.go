@@ -6,6 +6,7 @@ package v1
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 	"golang.org/x/sync/errgroup"
 
@@ -99,11 +101,13 @@ func TestCreateWorkload(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		requestBody    string
-		setupMock      func(*testing.T, *workloadsmocks.MockManager, *runtimemocks.MockRuntime, *groupsmocks.MockManager)
-		expectedStatus int
-		expectedBody   string
+		name                  string
+		requestBody           string
+		setupMock             func(*testing.T, *workloadsmocks.MockManager, *runtimemocks.MockRuntime, *groupsmocks.MockManager)
+		expectedServerOrImage string
+		expectedRuntimeConfig *templates.RuntimeConfig
+		expectedStatus        int
+		expectedBody          string
 	}{
 		{
 			name:        "invalid JSON",
@@ -131,6 +135,57 @@ func TestCreateWorkload(t *testing.T) {
 			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "Invalid proxy_mode",
+		},
+		{
+			name:        "with runtime config override",
+			requestBody: `{"name": "test-workload", "image": "go://github.com/example/server", "runtime_config": {"builder_image": "golang:1.24-alpine", "additional_packages": ["ca-certificates"]}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+						assert.NotNil(t, runConfig.RuntimeConfig)
+						assert.Equal(t, "golang:1.24-alpine", runConfig.RuntimeConfig.BuilderImage)
+						assert.Equal(t, []string{"ca-certificates"}, runConfig.RuntimeConfig.AdditionalPackages)
+						return nil
+					})
+			},
+			expectedRuntimeConfig: func() *templates.RuntimeConfig {
+				base := getBaseRuntimeConfig(templates.TransportTypeGO)
+				return &templates.RuntimeConfig{
+					BuilderImage:       "golang:1.24-alpine",
+					AdditionalPackages: append(append([]string{}, base.AdditionalPackages...), "ca-certificates"),
+				}
+			}(),
+			expectedServerOrImage: "go://github.com/example/server",
+			expectedStatus:        http.StatusCreated,
+			expectedBody:          "test-workload",
+		},
+		{
+			name:        "empty runtime config is ignored",
+			requestBody: `{"name": "test-workload", "image": "go://github.com/example/server", "runtime_config": {}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+						assert.Nil(t, runConfig.RuntimeConfig)
+						return nil
+					})
+			},
+			expectedServerOrImage: "go://github.com/example/server",
+			expectedStatus:        http.StatusCreated,
+			expectedBody:          "test-workload",
+		},
+		{
+			name:        "runtime config with non protocol image is rejected",
+			requestBody: `{"name": "test-workload", "image": "nginx:latest", "runtime_config": {"builder_image": "golang:1.24-alpine"}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "runtime_config is only supported for protocol-scheme images",
 		},
 		{
 			name:        "with tool filters",
@@ -207,12 +262,15 @@ func TestCreateWorkload(t *testing.T) {
 			mockGroupManager := groupsmocks.NewMockManager(ctrl)
 
 			tt.setupMock(t, mockWorkloadManager, mockRuntime, mockGroupManager)
+			expectedServerOrImage := tt.expectedServerOrImage
+			if expectedServerOrImage == "" {
+				expectedServerOrImage = "test-image"
+			}
 
 			mockRetriever := makeMockRetriever(t,
-				"test-image",
-				"test-image",
+				expectedServerOrImage,
 				&regtypes.ImageMetadata{Image: "test-image"},
-				nil,
+				tt.expectedRuntimeConfig,
 			)
 
 			routes := &WorkloadRoutes{
@@ -224,7 +282,8 @@ func TestCreateWorkload(t *testing.T) {
 					groupManager:    mockGroupManager,
 					workloadManager: mockWorkloadManager,
 					imageRetriever:  mockRetriever,
-					appConfig:       &config.Config{},
+					imagePuller:     func(_ context.Context, _ string) error { return nil },
+					configProvider:  config.NewDefaultProvider(),
 				},
 			}
 
@@ -385,6 +444,35 @@ func TestUpdateWorkload(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "tool override for actual-tool must have either Name or Description set",
 		},
+		{
+			name:         "runtime config omitted on update clears stored override",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "test-image"}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload"}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+						assert.Nil(t, runConfig.RuntimeConfig)
+						return &errgroup.Group{}, nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+		},
+		{
+			name:         "runtime config with non protocol image is rejected",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "nginx:latest", "runtime_config": {"builder_image": "golang:1.24-alpine"}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload"}, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "runtime_config is only supported for protocol-scheme images",
+		},
 	}
 
 	for _, tt := range tests {
@@ -401,7 +489,6 @@ func TestUpdateWorkload(t *testing.T) {
 
 			mockRetriever := makeMockRetriever(t,
 				"test-image",
-				"test-image",
 				&regtypes.ImageMetadata{Image: "test-image"},
 				nil,
 			)
@@ -415,7 +502,8 @@ func TestUpdateWorkload(t *testing.T) {
 					groupManager:    mockGroupManager,
 					workloadManager: mockWorkloadManager,
 					imageRetriever:  mockRetriever,
-					appConfig:       &config.Config{},
+					imagePuller:     func(_ context.Context, _ string) error { return nil },
+					configProvider:  config.NewDefaultProvider(),
 				},
 			}
 
@@ -467,26 +555,6 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 			expectedStatus: http.StatusOK,
 			expectedBody:   "test-workload",
 			description:    "When proxy_port is 0, the existing port should be reused",
-		},
-		{
-			name:         "Edit with explicit port should use that port",
-			workloadName: "test-workload",
-			requestBody:  `{"image": "test-image", "proxy_port": 9090}`,
-			existingPort: 8080,
-			setupMock: func(t *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
-				t.Helper()
-				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
-					Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
-				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
-				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
-					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
-						assert.Equal(t, 9090, runConfig.Port, "Port should be set to explicitly requested port")
-						return &errgroup.Group{}, nil
-					})
-			},
-			expectedStatus: http.StatusOK,
-			expectedBody:   "test-workload",
-			description:    "When an explicit port is provided, it should be used instead of reusing",
 		},
 		{
 			name:         "Edit with same port should skip validation",
@@ -544,7 +612,6 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 
 			mockRetriever := makeMockRetriever(t,
 				"test-image",
-				"test-image",
 				&regtypes.ImageMetadata{Image: "test-image"},
 				nil,
 			)
@@ -559,7 +626,8 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 					workloadManager:  mockWorkloadManager,
 					containerRuntime: mockRuntime,
 					imageRetriever:   mockRetriever,
-					appConfig:        &config.Config{},
+					imagePuller:      func(_ context.Context, _ string) error { return nil },
+					configProvider:   config.NewDefaultProvider(),
 				},
 			}
 
@@ -578,20 +646,86 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 			assert.Contains(t, w.Body.String(), tt.expectedBody, tt.description)
 		})
 	}
+
+	// This sub-test must allocate a free port at runtime; it cannot use a
+	// hardcoded port number because the port availability check makes a real
+	// network bind and an in-use port causes a spurious 400 response.
+	t.Run("Edit with explicit port should use that port", func(t *testing.T) {
+		t.Parallel()
+
+		// Obtain a free port, then release it so the port-availability check
+		// inside config.WithPorts can bind it immediately afterward.
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err, "should be able to listen on a free port")
+		freePort := ln.Addr().(*net.TCPAddr).Port
+		require.NoError(t, ln.Close(), "should be able to release the free port")
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
+		mockRuntime := runtimemocks.NewMockRuntime(ctrl)
+		mockGroupManager := groupsmocks.NewMockManager(ctrl)
+
+		mockWorkloadManager.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+			Return(core.Workload{Name: "test-workload", Port: 8080}, nil)
+		mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+		mockWorkloadManager.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+			DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+				assert.Equal(t, freePort, runConfig.Port, "Port should be set to explicitly requested port")
+				return &errgroup.Group{}, nil
+			})
+
+		mockRetriever := makeMockRetriever(t,
+			"test-image",
+			&regtypes.ImageMetadata{Image: "test-image"},
+			nil,
+		)
+
+		routes := &WorkloadRoutes{
+			workloadManager:  mockWorkloadManager,
+			containerRuntime: mockRuntime,
+			groupManager:     mockGroupManager,
+			debugMode:        false,
+			workloadService: &WorkloadService{
+				groupManager:     mockGroupManager,
+				workloadManager:  mockWorkloadManager,
+				containerRuntime: mockRuntime,
+				imageRetriever:   mockRetriever,
+				imagePuller:      func(_ context.Context, _ string) error { return nil },
+				configProvider:   config.NewDefaultProvider(),
+			},
+		}
+
+		body := fmt.Sprintf(`{"image": "test-image", "proxy_port": %d}`, freePort)
+		req := httptest.NewRequest("POST", "/api/v1beta/workloads/test-workload/edit",
+			strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("name", "test-workload")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		apierrors.ErrorHandler(routes.updateWorkload).ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code, "When an explicit port is provided, it should be used instead of reusing")
+		assert.Contains(t, w.Body.String(), "test-workload", "When an explicit port is provided, it should be used instead of reusing")
+	})
 }
 
 func makeMockRetriever(
 	t *testing.T,
 	expectedServerOrImage string,
-	returnedImage string,
 	returnedServerMetadata regtypes.ServerMetadata,
-	returnedError error,
+	expectedRuntimeConfig *templates.RuntimeConfig,
 ) retriever.Retriever {
 	t.Helper()
 
-	return func(_ context.Context, serverOrImage string, _ string, verificationType string, _ string, _ *templates.RuntimeConfig) (string, regtypes.ServerMetadata, error) {
+	return func(_ context.Context, serverOrImage string, _ string, verificationType string, _ string, runtimeConfig *templates.RuntimeConfig) (string, regtypes.ServerMetadata, error) {
 		assert.Equal(t, expectedServerOrImage, serverOrImage)
 		assert.Equal(t, retriever.VerifyImageWarn, verificationType)
-		return returnedImage, returnedServerMetadata, returnedError
+		assert.Equal(t, expectedRuntimeConfig, runtimeConfig)
+		return "test-image", returnedServerMetadata, nil
 	}
 }

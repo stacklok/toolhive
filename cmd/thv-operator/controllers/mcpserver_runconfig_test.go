@@ -222,7 +222,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Image:     testImage,
 					Transport: "sse",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 					// ProxyMode set to streamable-http (should be ignored and set to "sse")
 					ProxyMode: streamableHTTPProxyMode,
 				},
@@ -249,7 +249,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Image:     testImage,
 					Transport: "sse",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 					// ProxyMode not specified
 				},
 			},
@@ -272,7 +272,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Image:     testImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 					// ProxyMode set to sse (should be ignored and set to "streamable-http")
 					ProxyMode: sseProxyMode,
 				},
@@ -296,7 +296,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Image:     testImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 					// ProxyMode not specified
 				},
 			},
@@ -319,7 +319,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Image:     "comprehensive:latest",
 					Transport: "streamable-http",
 					ProxyPort: 9090,
-					McpPort:   8080,
+					MCPPort:   8080,
 					ProxyMode: "streamable-http",
 					Args:      []string{"--comprehensive", "--test"},
 					Env: []mcpv1alpha1.EnvVar{
@@ -465,77 +465,6 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Equal(t, "[]", cedarCfg.Options.EntitiesJSON)
 			},
 		},
-		{
-			name: "with inline OIDC authentication configuration",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "oidc-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:             "https://auth.example.com",
-							Audience:           "toolhive-api",
-							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
-							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
-							ClientID:           "toolhive-client",
-							JWKSAuthTokenPath:  "/etc/auth/token",
-							JWKSAllowPrivateIP: true,
-						},
-					},
-				},
-			},
-			//nolint:thelper // We want to see the error at the specific line
-			expected: func(t *testing.T, config *runner.RunConfig) {
-				assert.Equal(t, "oidc-server", config.Name)
-				// Verify OIDC config is set
-				assert.NotNil(t, config.OIDCConfig)
-				assert.Equal(t, "https://auth.example.com", config.OIDCConfig.Issuer)
-				assert.Equal(t, "toolhive-api", config.OIDCConfig.Audience)
-				assert.Equal(t, "https://auth.example.com/.well-known/jwks.json", config.OIDCConfig.JWKSURL)
-				assert.Equal(t, "https://auth.example.com/oauth/introspect", config.OIDCConfig.IntrospectionURL)
-				assert.Equal(t, "toolhive-client", config.OIDCConfig.ClientID)
-				assert.Equal(t, "/etc/auth/token", config.OIDCConfig.AuthTokenFile)
-				assert.True(t, config.OIDCConfig.AllowPrivateIP)
-			},
-		},
-		{
-			name: "with inline OIDC using CABundleRef",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "oidc-cabundle-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "toolhive-api",
-							CABundleRef: &mcpv1alpha1.CABundleSource{
-								ConfigMapRef: &corev1.ConfigMapKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: "my-ca-bundle"},
-								},
-							},
-						},
-					},
-				},
-			},
-			//nolint:thelper // We want to see the error at the specific line
-			expected: func(t *testing.T, config *runner.RunConfig) {
-				assert.Equal(t, "oidc-cabundle-server", config.Name)
-				assert.NotNil(t, config.OIDCConfig)
-				assert.Equal(t, "/config/certs/my-ca-bundle/ca.crt", config.OIDCConfig.CACertPath)
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -609,7 +538,7 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 			Image:     "deterministic-test:v1.2.3",
 			Transport: "sse",
 			ProxyPort: 9090,
-			McpPort:   8080,
+			MCPPort:   8080,
 			Args:      []string{"--arg1", "--arg2", "--complex-flag=value"},
 			Env: []mcpv1alpha1.EnvVar{
 				{Name: "VAR_C", Value: "value_c"},
@@ -880,56 +809,6 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
 				assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
 				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, cedarCfg.Options.EntitiesJSON)
-			},
-		},
-		{
-			name: "configmap with inline OIDC authentication configuration",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "oidc-test",
-					Namespace: "toolhive-system",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "ghcr.io/example/server:v1.0.0",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:             "https://auth.example.com",
-							Audience:           "toolhive-api",
-							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
-							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
-							ClientID:           "toolhive-client",
-							JWKSAuthTokenPath:  "/etc/auth/token",
-							JWKSAllowPrivateIP: true,
-						},
-					},
-				},
-			},
-			existingCM:  nil,
-			expectError: false,
-			validateContent: func(t *testing.T, cm *corev1.ConfigMap) {
-				t.Helper()
-				assert.Equal(t, "oidc-test-runconfig", cm.Name)
-				assert.Equal(t, "toolhive-system", cm.Namespace)
-				assert.Contains(t, cm.Data, "runconfig.json")
-				// Parse and validate OIDC authentication configuration in runconfig.json
-				var runConfig runner.RunConfig
-				err := json.Unmarshal([]byte(cm.Data["runconfig.json"]), &runConfig)
-				require.NoError(t, err)
-				// Verify basic fields
-				assert.Equal(t, "oidc-test", runConfig.Name)
-				assert.Equal(t, "ghcr.io/example/server:v1.0.0", runConfig.Image)
-				// Verify OIDC authentication configuration is properly serialized
-				assert.NotNil(t, runConfig.OIDCConfig, "OIDCConfig should be present in runconfig.json")
-				assert.Equal(t, "https://auth.example.com", runConfig.OIDCConfig.Issuer)
-				assert.Equal(t, "toolhive-api", runConfig.OIDCConfig.Audience)
-				assert.Equal(t, "https://auth.example.com/.well-known/jwks.json", runConfig.OIDCConfig.JWKSURL)
-				assert.Equal(t, "https://auth.example.com/oauth/introspect", runConfig.OIDCConfig.IntrospectionURL)
-				assert.Equal(t, "toolhive-client", runConfig.OIDCConfig.ClientID)
-				assert.Equal(t, "/etc/auth/token", runConfig.OIDCConfig.AuthTokenFile)
-				assert.True(t, runConfig.OIDCConfig.AllowPrivateIP)
 			},
 		},
 		{
@@ -1416,7 +1295,7 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 			modifyServer: func(server *mcpv1alpha1.MCPServer) {
 				server.Spec.Transport = "sse"
 				server.Spec.ProxyPort = 9090
-				server.Spec.McpPort = 8080
+				server.Spec.MCPPort = 8080
 			},
 			expectedChanges: map[string]interface{}{
 				"Transport":  transporttypes.TransportTypeSSE,
@@ -1829,6 +1708,77 @@ func TestPopulateScalingConfig(t *testing.T) {
 			runConfig, err := r.createRunConfigFromMCPServer(m)
 			require.NoError(t, err)
 			tt.expected(t, runConfig.ScalingConfig)
+		})
+	}
+}
+
+func TestCreateRunConfigFromMCPServer_RateLimiting(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		spec    mcpv1alpha1.MCPServerSpec
+		wantNil bool
+		wantNs  string
+	}{
+		{
+			name: "rateLimiting nil produces nil config",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image: testImage,
+			},
+			wantNil: true,
+		},
+		{
+			name: "rateLimiting set flows to RunConfig",
+			spec: mcpv1alpha1.MCPServerSpec{
+				Image: testImage,
+				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6379",
+				},
+				RateLimiting: &mcpv1alpha1.RateLimitConfig{
+					Shared: &mcpv1alpha1.RateLimitBucket{
+						MaxTokens:    10,
+						RefillPeriod: metav1.Duration{Duration: 60_000_000_000}, // 1m
+					},
+				},
+			},
+			wantNil: false,
+			wantNs:  "test-ns",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			testScheme := createRunConfigTestScheme()
+			k8sClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
+
+			r := &MCPServerReconciler{
+				Client: k8sClient,
+			}
+
+			m := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "test-ns",
+				},
+				Spec: tt.spec,
+			}
+
+			runConfig, err := r.createRunConfigFromMCPServer(m)
+			require.NoError(t, err)
+
+			if tt.wantNil {
+				assert.Nil(t, runConfig.RateLimitConfig)
+				assert.Empty(t, runConfig.RateLimitNamespace)
+			} else {
+				require.NotNil(t, runConfig.RateLimitConfig)
+				assert.Equal(t, tt.wantNs, runConfig.RateLimitNamespace)
+				assert.NotNil(t, runConfig.RateLimitConfig.Shared)
+				assert.Equal(t, int32(10), runConfig.RateLimitConfig.Shared.MaxTokens)
+			}
 		})
 	}
 }

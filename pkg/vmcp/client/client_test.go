@@ -7,11 +7,22 @@ package client
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -22,11 +33,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/mock/gomock"
 
+	pkgauth "github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authmocks "github.com/stacklok/toolhive/pkg/vmcp/auth/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
 func TestHTTPBackendClient_ListCapabilities_WithMockFactory(t *testing.T) {
@@ -97,13 +110,167 @@ func TestQueryHelpers_PartialCapabilities(t *testing.T) {
 func TestNewBackendTransport_IsolatesFromDefault(t *testing.T) {
 	t.Parallel()
 
-	t1 := newBackendTransport()
-	t2 := newBackendTransport()
+	t1, err1 := newBackendTransport("", nil)
+	require.NoError(t, err1)
+	t2, err2 := newBackendTransport("", nil)
+	require.NoError(t, err2)
 
 	// Each call must return a distinct transport — not the shared DefaultTransport.
 	assert.NotSame(t, http.DefaultTransport, t1, "newBackendTransport must not return http.DefaultTransport")
 	assert.NotSame(t, http.DefaultTransport, t2, "newBackendTransport must not return http.DefaultTransport")
 	assert.NotSame(t, t1, t2, "each call must return a distinct *http.Transport")
+}
+
+// generateTestCACert creates a self-signed CA certificate in PEM format for testing.
+func generateTestCACert(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Test CA"},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+}
+
+func TestNewBackendTransport_CustomCA(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		setupFile     func(t *testing.T) string
+		caBundleData  []byte
+		expectError   bool
+		errorContains string
+		checkResult   func(t *testing.T, tr *http.Transport)
+	}{
+		{
+			name: "empty path uses default TLS",
+			setupFile: func(_ *testing.T) string {
+				return ""
+			},
+			expectError: false,
+			checkResult: func(t *testing.T, tr *http.Transport) {
+				t.Helper()
+				// When caBundlePath is empty, newBackendTransport must not set a custom
+				// RootCAs pool. The cloned DefaultTransport may carry a non-nil
+				// TLSClientConfig (e.g. for HTTP/2 NextProtos), so we check RootCAs
+				// specifically rather than asserting the entire config is nil.
+				if tr.TLSClientConfig != nil {
+					assert.Nil(t, tr.TLSClientConfig.RootCAs, "RootCAs should not be set for empty CA path")
+					assert.Equal(t, uint16(0), tr.TLSClientConfig.MinVersion,
+						"MinVersion should not be overridden for empty CA path")
+				}
+			},
+		},
+		{
+			name: "valid CA bundle applies custom TLS config",
+			setupFile: func(t *testing.T) string {
+				t.Helper()
+				certPEM := generateTestCACert(t)
+				caPath := filepath.Join(t.TempDir(), "ca.crt")
+				require.NoError(t, os.WriteFile(caPath, certPEM, 0644))
+				return caPath
+			},
+			expectError: false,
+			checkResult: func(t *testing.T, tr *http.Transport) {
+				t.Helper()
+				require.NotNil(t, tr.TLSClientConfig, "TLSClientConfig should be set for valid CA")
+				assert.Equal(t, uint16(tls.VersionTLS12), tr.TLSClientConfig.MinVersion)
+				assert.NotNil(t, tr.TLSClientConfig.RootCAs, "RootCAs should be set")
+			},
+		},
+		{
+			name: "non-existent CA file returns error",
+			setupFile: func(t *testing.T) string {
+				t.Helper()
+				return filepath.Join(t.TempDir(), "does-not-exist.crt")
+			},
+			expectError:   true,
+			errorContains: "failed to read CA bundle",
+		},
+		{
+			name: "invalid PEM content returns error",
+			setupFile: func(t *testing.T) string {
+				t.Helper()
+				caPath := filepath.Join(t.TempDir(), "bad.crt")
+				require.NoError(t, os.WriteFile(caPath, []byte("not-a-cert"), 0644))
+				return caPath
+			},
+			expectError:   true,
+			errorContains: "failed to parse CA certificate",
+		},
+		{
+			name: "valid CA data bytes applies custom TLS config",
+			setupFile: func(t *testing.T) string {
+				t.Helper()
+				return "" // no file path
+			},
+			caBundleData: generateTestCACert(t),
+			expectError:  false,
+			checkResult: func(t *testing.T, tr *http.Transport) {
+				t.Helper()
+				require.NotNil(t, tr.TLSClientConfig)
+				assert.Equal(t, uint16(tls.VersionTLS12), tr.TLSClientConfig.MinVersion)
+				assert.NotNil(t, tr.TLSClientConfig.RootCAs)
+			},
+		},
+		{
+			name: "invalid CA data bytes returns error",
+			setupFile: func(t *testing.T) string {
+				t.Helper()
+				return "" // no file path
+			},
+			caBundleData:  []byte("not-a-cert"),
+			expectError:   true,
+			errorContains: "failed to parse CA certificate from inline data",
+		},
+		{
+			name: "CA data takes precedence over file path",
+			setupFile: func(t *testing.T) string {
+				t.Helper()
+				return "/nonexistent/path.crt" // file doesn't exist but shouldn't be read
+			},
+			caBundleData: generateTestCACert(t),
+			expectError:  false,
+			checkResult: func(t *testing.T, tr *http.Transport) {
+				t.Helper()
+				require.NotNil(t, tr.TLSClientConfig)
+				assert.NotNil(t, tr.TLSClientConfig.RootCAs)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			caPath := tt.setupFile(t)
+			tr, err := newBackendTransport(caPath, tt.caBundleData)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorContains)
+				assert.Nil(t, tr)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, tr)
+				if tt.checkResult != nil {
+					tt.checkResult(t, tr)
+				}
+			}
+		})
+	}
 }
 
 func TestDefaultClientFactory_UnsupportedTransport(t *testing.T) {
@@ -854,4 +1021,126 @@ func TestWrapBackendError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// identityPropagatingRoundTripper
+// ---------------------------------------------------------------------------
+
+func TestIdentityPropagatingRoundTripper_WithIdentity_PropagatesIdentityInContext(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	identity := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "user-1"}}
+	rt := &identityPropagatingRoundTripper{base: base, identity: identity}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
+	require.True(t, ok, "identity should be in downstream request context")
+	assert.Equal(t, "user-1", got.Subject)
+}
+
+func TestIdentityPropagatingRoundTripper_NilIdentity_NoIdentityInContext(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	rt := &identityPropagatingRoundTripper{base: base, identity: nil}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	_, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
+	assert.False(t, ok, "no identity should be in downstream context when nil identity configured")
+}
+
+func TestIdentityPropagatingRoundTripper_HealthCheck_PropagatesMarker(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: true}
+
+	// Simulate mcp-go Close(): request created with context.Background(), no health check marker.
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	assert.True(t, healthcontext.IsHealthCheck(base.capturedReq.Context()),
+		"health check marker should be propagated even when original request context lacks it")
+}
+
+func TestIdentityPropagatingRoundTripper_NonHealthCheck_NoMarkerAdded(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: false}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	assert.False(t, healthcontext.IsHealthCheck(base.capturedReq.Context()),
+		"health check marker should not be injected for non-health-check transports")
+}
+
+func TestIdentityPropagatingRoundTripper_HealthCheckWithIdentity_PropagatesBoth(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	identity := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "svc-account"}}
+	rt := &identityPropagatingRoundTripper{base: base, identity: identity, isHealthCheck: true}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
+	require.True(t, ok)
+	assert.Equal(t, "svc-account", got.Subject)
+	assert.True(t, healthcontext.IsHealthCheck(base.capturedReq.Context()))
+}
+
+// TestIdentityPropagatingRoundTripper_HealthCheckClose_OriginalRequestContextUnchanged verifies
+// that when the transport is in health-check mode, RoundTrip injects the health-check marker
+// into the downstream request's context without mutating the original request context. This
+// covers requests (e.g. the DELETE mcp-go emits on Close()) whose context does not already
+// carry the marker.
+func TestIdentityPropagatingRoundTripper_HealthCheckClose_OriginalRequestContextUnchanged(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: true}
+
+	originalCtx := context.Background() // no health check marker — simulates mcp-go Close()
+	req, err := http.NewRequestWithContext(originalCtx, http.MethodDelete, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	// Original request context must NOT be modified.
+	assert.False(t, healthcontext.IsHealthCheck(originalCtx),
+		"original request context must not be mutated")
+	// But downstream context MUST have the marker.
+	require.NotNil(t, base.capturedReq)
+	assert.True(t, healthcontext.IsHealthCheck(base.capturedReq.Context()),
+		"downstream request must carry health check marker")
 }

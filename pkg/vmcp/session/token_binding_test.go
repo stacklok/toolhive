@@ -26,7 +26,7 @@ import (
 // backend to be skipped during init. This lets us exercise session-metadata
 // logic without real backend connections.
 func nilBackendConnector() backendConnector {
-	return func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
+	return func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return nil, nil, nil
 	}
 }
@@ -276,9 +276,12 @@ func TestRestoreSession_AbsentTokenHashKey(t *testing.T) {
 		t.Parallel()
 
 		// Metadata that deliberately omits MetadataKeyTokenHash (simulates
-		// corrupted or truncated session metadata).
+		// corrupted or truncated session metadata). MetadataKeyBackendIDs is
+		// present (empty = zero backends) so the earlier backend-IDs guard
+		// passes and we reach the token-hash guard.
 		storedMetadata := map[string]string{
 			MetadataKeyIdentitySubject: "alice",
+			MetadataKeyBackendIDs:      "", // present, empty = zero backends
 			// MetadataKeyTokenHash intentionally absent
 		}
 
@@ -293,6 +296,7 @@ func TestRestoreSession_AbsentTokenHashKey(t *testing.T) {
 		// Metadata with MetadataKeyTokenHash present but empty — this is what
 		// PreventSessionHijacking writes for anonymous sessions.
 		storedMetadata := map[string]string{
+			MetadataKeyBackendIDs:             "", // present, empty = zero backends
 			sessiontypes.MetadataKeyTokenHash: "", // present, empty = anonymous
 		}
 

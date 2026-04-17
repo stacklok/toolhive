@@ -33,7 +33,7 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 		name                string
 		mcpGroup            *mcpv1alpha1.MCPGroup
 		mcpServers          []*mcpv1alpha1.MCPServer
-		expectedServerCount int
+		expectedServerCount int32
 		expectedServerNames []string
 		expectedPhase       mcpv1alpha1.MCPGroupPhase
 	}{
@@ -53,10 +53,10 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
 						Image:    "test-image",
-						GroupRef: testGroupName,
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 					},
 				},
 				{
@@ -66,10 +66,10 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
 						Image:    "test-image",
-						GroupRef: testGroupName,
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 					},
 				},
 			},
@@ -93,10 +93,10 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
 						Image:    "test-image",
-						GroupRef: testGroupName,
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 					},
 				},
 				{
@@ -106,7 +106,7 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
 						Image:    "test-image",
-						GroupRef: testGroupName,
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
 						Phase: mcpv1alpha1.MCPServerPhaseFailed,
@@ -133,10 +133,10 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
 						Image:    "test-image",
-						GroupRef: testGroupName,
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseRunning,
+						Phase: mcpv1alpha1.MCPServerPhaseReady,
 					},
 				},
 				{
@@ -146,7 +146,7 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
 						Image:    "test-image",
-						GroupRef: testGroupName,
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 					Status: mcpv1alpha1.MCPServerStatus{
 						Phase: mcpv1alpha1.MCPServerPhasePending,
@@ -193,17 +193,24 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 				WithStatusSubresource(&mcpv1alpha1.MCPGroup{}).
 				WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpServer := obj.(*mcpv1alpha1.MCPServer)
-					if mcpServer.Spec.GroupRef == "" {
+					if mcpServer.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpServer.Spec.GroupRef}
+					return []string{mcpServer.Spec.GroupRef.GetName()}
 				}).
 				WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-					if mcpRemoteProxy.Spec.GroupRef == "" {
+					if mcpRemoteProxy.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpRemoteProxy.Spec.GroupRef}
+					return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef.GetName() == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef.GetName()}
 				}).
 				Build()
 
@@ -251,7 +258,7 @@ func TestMCPGroupReconciler_ServerFiltering(t *testing.T) {
 		namespace           string
 		mcpServers          []*mcpv1alpha1.MCPServer
 		expectedServerNames []string
-		expectedCount       int
+		expectedCount       int32
 	}{
 		{
 			name:      "filters servers by exact groupRef match",
@@ -260,15 +267,15 @@ func TestMCPGroupReconciler_ServerFiltering(t *testing.T) {
 			mcpServers: []*mcpv1alpha1.MCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "server1", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: testGroupName},
+					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName}},
 				},
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "server2", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: "other-group"},
+					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "other-group"}},
 				},
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "server3", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: testGroupName},
+					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName}},
 				},
 			},
 			expectedServerNames: []string{"server1", "server3"},
@@ -281,7 +288,7 @@ func TestMCPGroupReconciler_ServerFiltering(t *testing.T) {
 			mcpServers: []*mcpv1alpha1.MCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "server1", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: testGroupName},
+					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName}},
 				},
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "server2", Namespace: "default"},
@@ -298,11 +305,11 @@ func TestMCPGroupReconciler_ServerFiltering(t *testing.T) {
 			mcpServers: []*mcpv1alpha1.MCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "server1", Namespace: "namespace-a"},
-					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: testGroupName},
+					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName}},
 				},
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "server2", Namespace: "namespace-b"},
-					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: testGroupName},
+					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName}},
 				},
 			},
 			expectedServerNames: []string{"server1"},
@@ -337,17 +344,24 @@ func TestMCPGroupReconciler_ServerFiltering(t *testing.T) {
 				WithStatusSubresource(&mcpv1alpha1.MCPGroup{}).
 				WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpServer := obj.(*mcpv1alpha1.MCPServer)
-					if mcpServer.Spec.GroupRef == "" {
+					if mcpServer.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpServer.Spec.GroupRef}
+					return []string{mcpServer.Spec.GroupRef.GetName()}
 				}).
 				WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-					if mcpRemoteProxy.Spec.GroupRef == "" {
+					if mcpRemoteProxy.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpRemoteProxy.Spec.GroupRef}
+					return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef.GetName() == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef.GetName()}
 				}).
 				Build()
 
@@ -402,7 +416,7 @@ func TestMCPGroupReconciler_findMCPGroupForMCPServer(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: testGroupName,
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 				},
 			},
 			mcpGroups: []*mcpv1alpha1.MCPGroup{
@@ -447,7 +461,7 @@ func TestMCPGroupReconciler_findMCPGroupForMCPServer(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: "non-existent-group",
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "non-existent-group"},
 				},
 			},
 			mcpGroups: []*mcpv1alpha1.MCPGroup{
@@ -469,7 +483,7 @@ func TestMCPGroupReconciler_findMCPGroupForMCPServer(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: "group-b",
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-b"},
 				},
 			},
 			mcpGroups: []*mcpv1alpha1.MCPGroup{
@@ -517,17 +531,24 @@ func TestMCPGroupReconciler_findMCPGroupForMCPServer(t *testing.T) {
 				WithObjects(objs...).
 				WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpServer := obj.(*mcpv1alpha1.MCPServer)
-					if mcpServer.Spec.GroupRef == "" {
+					if mcpServer.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpServer.Spec.GroupRef}
+					return []string{mcpServer.Spec.GroupRef.GetName()}
 				}).
 				WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-					if mcpRemoteProxy.Spec.GroupRef == "" {
+					if mcpRemoteProxy.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpRemoteProxy.Spec.GroupRef}
+					return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef.GetName() == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef.GetName()}
 				}).
 				Build()
 
@@ -559,17 +580,24 @@ func TestMCPGroupReconciler_GroupNotFound(t *testing.T) {
 		WithScheme(scheme).
 		WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 			mcpServer := obj.(*mcpv1alpha1.MCPServer)
-			if mcpServer.Spec.GroupRef == "" {
+			if mcpServer.Spec.GroupRef.GetName() == "" {
 				return nil
 			}
-			return []string{mcpServer.Spec.GroupRef}
+			return []string{mcpServer.Spec.GroupRef.GetName()}
 		}).
 		WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 			mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-			if mcpRemoteProxy.Spec.GroupRef == "" {
+			if mcpRemoteProxy.Spec.GroupRef.GetName() == "" {
 				return nil
 			}
-			return []string{mcpRemoteProxy.Spec.GroupRef}
+			return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
+		}).
+		WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+			if mcpServerEntry.Spec.GroupRef.GetName() == "" {
+				return nil
+			}
+			return []string{mcpServerEntry.Spec.GroupRef.GetName()}
 		}).
 		Build()
 
@@ -618,7 +646,7 @@ func TestMCPGroupReconciler_Conditions(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
 						Image:    "test-image",
-						GroupRef: testGroupName,
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 				},
 			},
@@ -661,17 +689,24 @@ func TestMCPGroupReconciler_Conditions(t *testing.T) {
 				WithStatusSubresource(&mcpv1alpha1.MCPGroup{}).
 				WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpServer := obj.(*mcpv1alpha1.MCPServer)
-					if mcpServer.Spec.GroupRef == "" {
+					if mcpServer.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpServer.Spec.GroupRef}
+					return []string{mcpServer.Spec.GroupRef.GetName()}
 				}).
 				WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-					if mcpRemoteProxy.Spec.GroupRef == "" {
+					if mcpRemoteProxy.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpRemoteProxy.Spec.GroupRef}
+					return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef.GetName() == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef.GetName()}
 				}).
 				Build()
 
@@ -742,17 +777,24 @@ func TestMCPGroupReconciler_Finalizer(t *testing.T) {
 		WithStatusSubresource(&mcpv1alpha1.MCPGroup{}, &mcpv1alpha1.MCPServer{}).
 		WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 			mcpServer := obj.(*mcpv1alpha1.MCPServer)
-			if mcpServer.Spec.GroupRef == "" {
+			if mcpServer.Spec.GroupRef.GetName() == "" {
 				return nil
 			}
-			return []string{mcpServer.Spec.GroupRef}
+			return []string{mcpServer.Spec.GroupRef.GetName()}
 		}).
 		WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 			mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-			if mcpRemoteProxy.Spec.GroupRef == "" {
+			if mcpRemoteProxy.Spec.GroupRef.GetName() == "" {
 				return nil
 			}
-			return []string{mcpRemoteProxy.Spec.GroupRef}
+			return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
+		}).
+		WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+			if mcpServerEntry.Spec.GroupRef.GetName() == "" {
+				return nil
+			}
+			return []string{mcpServerEntry.Spec.GroupRef.GetName()}
 		}).
 		Build()
 
@@ -804,7 +846,7 @@ func TestMCPGroupReconciler_Deletion(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
 						Image:    "test-image",
-						GroupRef: testGroupName,
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 				},
 				{
@@ -814,7 +856,7 @@ func TestMCPGroupReconciler_Deletion(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
 						Image:    "test-image",
-						GroupRef: testGroupName,
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 				},
 			},
@@ -831,7 +873,7 @@ func TestMCPGroupReconciler_Deletion(t *testing.T) {
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
 						Image:    "test-image",
-						GroupRef: "other-group",
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "other-group"},
 					},
 				},
 			},
@@ -870,17 +912,24 @@ func TestMCPGroupReconciler_Deletion(t *testing.T) {
 				WithStatusSubresource(&mcpv1alpha1.MCPGroup{}, &mcpv1alpha1.MCPServer{}).
 				WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpServer := obj.(*mcpv1alpha1.MCPServer)
-					if mcpServer.Spec.GroupRef == "" {
+					if mcpServer.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpServer.Spec.GroupRef}
+					return []string{mcpServer.Spec.GroupRef.GetName()}
 				}).
 				WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-					if mcpRemoteProxy.Spec.GroupRef == "" {
+					if mcpRemoteProxy.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpRemoteProxy.Spec.GroupRef}
+					return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef.GetName() == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef.GetName()}
 				}).
 				Build()
 
@@ -911,7 +960,7 @@ func TestMCPGroupReconciler_Deletion(t *testing.T) {
 			// If servers should be updated, verify their conditions
 			if tt.shouldUpdateServers {
 				for _, server := range tt.mcpServers {
-					if server.Spec.GroupRef == testGroupName {
+					if server.Spec.GroupRef.GetName() == testGroupName {
 						var updatedServer mcpv1alpha1.MCPServer
 						err = fakeClient.Get(ctx, types.NamespacedName{
 							Name:      server.Name,
@@ -958,15 +1007,15 @@ func TestMCPGroupReconciler_findReferencingMCPServers(t *testing.T) {
 			mcpServers: []*mcpv1alpha1.MCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "server1", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: testGroupName},
+					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName}},
 				},
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "server2", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: "other-group"},
+					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "other-group"}},
 				},
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "server3", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: testGroupName},
+					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName}},
 				},
 			},
 			expectedCount: 2,
@@ -979,7 +1028,7 @@ func TestMCPGroupReconciler_findReferencingMCPServers(t *testing.T) {
 			mcpServers: []*mcpv1alpha1.MCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "server1", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: "other-group"},
+					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "other-group"}},
 				},
 			},
 			expectedCount: 0,
@@ -992,11 +1041,11 @@ func TestMCPGroupReconciler_findReferencingMCPServers(t *testing.T) {
 			mcpServers: []*mcpv1alpha1.MCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "server1", Namespace: "namespace-a"},
-					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: testGroupName},
+					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName}},
 				},
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "server2", Namespace: "namespace-b"},
-					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: testGroupName},
+					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName}},
 				},
 			},
 			expectedCount: 1,
@@ -1030,17 +1079,24 @@ func TestMCPGroupReconciler_findReferencingMCPServers(t *testing.T) {
 				WithObjects(objs...).
 				WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpServer := obj.(*mcpv1alpha1.MCPServer)
-					if mcpServer.Spec.GroupRef == "" {
+					if mcpServer.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpServer.Spec.GroupRef}
+					return []string{mcpServer.Spec.GroupRef.GetName()}
 				}).
 				WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-					if mcpRemoteProxy.Spec.GroupRef == "" {
+					if mcpRemoteProxy.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpRemoteProxy.Spec.GroupRef}
+					return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef.GetName() == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef.GetName()}
 				}).
 				Build()
 
@@ -1082,15 +1138,15 @@ func TestMCPGroupReconciler_findReferencingMCPRemoteProxies(t *testing.T) {
 			mcpRemoteProxies: []*mcpv1alpha1.MCPRemoteProxy{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "proxy1", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPRemoteProxySpec{GroupRef: testGroupName},
+					Spec:       mcpv1alpha1.MCPRemoteProxySpec{GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName}},
 				},
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "proxy2", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPRemoteProxySpec{GroupRef: "other-group"},
+					Spec:       mcpv1alpha1.MCPRemoteProxySpec{GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "other-group"}},
 				},
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "proxy3", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPRemoteProxySpec{GroupRef: testGroupName},
+					Spec:       mcpv1alpha1.MCPRemoteProxySpec{GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName}},
 				},
 			},
 			expectedCount: 2,
@@ -1103,7 +1159,7 @@ func TestMCPGroupReconciler_findReferencingMCPRemoteProxies(t *testing.T) {
 			mcpRemoteProxies: []*mcpv1alpha1.MCPRemoteProxy{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "proxy1", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPRemoteProxySpec{GroupRef: "other-group"},
+					Spec:       mcpv1alpha1.MCPRemoteProxySpec{GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "other-group"}},
 				},
 			},
 			expectedCount: 0,
@@ -1116,11 +1172,11 @@ func TestMCPGroupReconciler_findReferencingMCPRemoteProxies(t *testing.T) {
 			mcpRemoteProxies: []*mcpv1alpha1.MCPRemoteProxy{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "proxy1", Namespace: "namespace-a"},
-					Spec:       mcpv1alpha1.MCPRemoteProxySpec{GroupRef: testGroupName},
+					Spec:       mcpv1alpha1.MCPRemoteProxySpec{GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName}},
 				},
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "proxy2", Namespace: "namespace-b"},
-					Spec:       mcpv1alpha1.MCPRemoteProxySpec{GroupRef: testGroupName},
+					Spec:       mcpv1alpha1.MCPRemoteProxySpec{GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName}},
 				},
 			},
 			expectedCount: 1,
@@ -1162,17 +1218,24 @@ func TestMCPGroupReconciler_findReferencingMCPRemoteProxies(t *testing.T) {
 				WithObjects(objs...).
 				WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpServer := obj.(*mcpv1alpha1.MCPServer)
-					if mcpServer.Spec.GroupRef == "" {
+					if mcpServer.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpServer.Spec.GroupRef}
+					return []string{mcpServer.Spec.GroupRef.GetName()}
 				}).
 				WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-					if mcpRemoteProxy.Spec.GroupRef == "" {
+					if mcpRemoteProxy.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpRemoteProxy.Spec.GroupRef}
+					return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef.GetName() == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef.GetName()}
 				}).
 				Build()
 
@@ -1214,7 +1277,7 @@ func TestMCPGroupReconciler_findMCPGroupForMCPRemoteProxy(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					GroupRef: testGroupName,
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 				},
 			},
 			mcpGroups: []*mcpv1alpha1.MCPGroup{
@@ -1257,7 +1320,7 @@ func TestMCPGroupReconciler_findMCPGroupForMCPRemoteProxy(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					GroupRef: "non-existent-group",
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "non-existent-group"},
 				},
 			},
 			mcpGroups: []*mcpv1alpha1.MCPGroup{
@@ -1278,7 +1341,7 @@ func TestMCPGroupReconciler_findMCPGroupForMCPRemoteProxy(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					GroupRef: "group-b",
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "group-b"},
 				},
 			},
 			mcpGroups: []*mcpv1alpha1.MCPGroup{
@@ -1326,17 +1389,24 @@ func TestMCPGroupReconciler_findMCPGroupForMCPRemoteProxy(t *testing.T) {
 				WithObjects(objs...).
 				WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpServer := obj.(*mcpv1alpha1.MCPServer)
-					if mcpServer.Spec.GroupRef == "" {
+					if mcpServer.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpServer.Spec.GroupRef}
+					return []string{mcpServer.Spec.GroupRef.GetName()}
 				}).
 				WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-					if mcpRemoteProxy.Spec.GroupRef == "" {
+					if mcpRemoteProxy.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpRemoteProxy.Spec.GroupRef}
+					return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef.GetName() == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef.GetName()}
 				}).
 				Build()
 
@@ -1375,7 +1445,7 @@ func TestMCPGroupReconciler_updateReferencingRemoteProxiesOnDeletion(t *testing.
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPRemoteProxySpec{
-						GroupRef: testGroupName,
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 				},
 				{
@@ -1384,7 +1454,7 @@ func TestMCPGroupReconciler_updateReferencingRemoteProxiesOnDeletion(t *testing.
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPRemoteProxySpec{
-						GroupRef: testGroupName,
+						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
 					},
 				},
 			},
@@ -1418,17 +1488,24 @@ func TestMCPGroupReconciler_updateReferencingRemoteProxiesOnDeletion(t *testing.
 				WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{}).
 				WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpServer := obj.(*mcpv1alpha1.MCPServer)
-					if mcpServer.Spec.GroupRef == "" {
+					if mcpServer.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpServer.Spec.GroupRef}
+					return []string{mcpServer.Spec.GroupRef.GetName()}
 				}).
 				WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 					mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-					if mcpRemoteProxy.Spec.GroupRef == "" {
+					if mcpRemoteProxy.Spec.GroupRef.GetName() == "" {
 						return nil
 					}
-					return []string{mcpRemoteProxy.Spec.GroupRef}
+					return []string{mcpRemoteProxy.Spec.GroupRef.GetName()}
+				}).
+				WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+					mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+					if mcpServerEntry.Spec.GroupRef.GetName() == "" {
+						return nil
+					}
+					return []string{mcpServerEntry.Spec.GroupRef.GetName()}
 				}).
 				Build()
 

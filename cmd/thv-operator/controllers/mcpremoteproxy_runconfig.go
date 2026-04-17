@@ -25,7 +25,7 @@ import (
 
 // ensureRunConfigConfigMap ensures the RunConfig ConfigMap exists and is up to date for MCPRemoteProxy
 func (r *MCPRemoteProxyReconciler) ensureRunConfigConfigMap(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
-	runConfig, err := r.createRunConfigFromMCPRemoteProxy(proxy)
+	runConfig, err := r.createRunConfigFromMCPRemoteProxy(ctx, proxy)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig from MCPRemoteProxy: %w", err)
 	}
@@ -71,6 +71,7 @@ func (r *MCPRemoteProxyReconciler) ensureRunConfigConfigMap(ctx context.Context,
 // createRunConfigFromMCPRemoteProxy converts MCPRemoteProxy spec to RunConfig
 // Key difference from MCPServer: Sets RemoteURL instead of Image, and Deployer remains nil
 func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
+	ctx context.Context,
 	proxy *mcpv1alpha1.MCPRemoteProxy,
 ) (*runner.RunConfig, error) {
 	proxyHost := defaultProxyHost
@@ -79,28 +80,9 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	}
 
 	// Get tool configuration from MCPToolConfig if referenced
-	var toolsFilter []string
-	var toolsOverride map[string]runner.ToolOverride
-
-	if proxy.Spec.ToolConfigRef != nil {
-		toolConfig, err := ctrlutil.GetToolConfigForMCPRemoteProxy(context.Background(), r.Client, proxy)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
-		}
-
-		if toolConfig != nil {
-			toolsFilter = toolConfig.Spec.ToolsFilter
-
-			if len(toolConfig.Spec.ToolsOverride) > 0 {
-				toolsOverride = make(map[string]runner.ToolOverride)
-				for toolName, override := range toolConfig.Spec.ToolsOverride {
-					toolsOverride[toolName] = runner.ToolOverride{
-						Name:        override.Name,
-						Description: override.Description,
-					}
-				}
-			}
-		}
+	toolsFilter, toolsOverride, err := r.resolveToolConfig(proxy)
+	if err != nil {
+		return nil, err
 	}
 
 	// Determine transport type (default to streamable-http to match CLI)
@@ -127,22 +109,23 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		options = append(options, runner.WithToolsOverride(toolsOverride))
 	}
 
-	// Create context for API operations
-	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
-	defer cancel()
+	// Add telemetry configuration from TelemetryConfigRef
+	if err := r.addTelemetryOptions(ctx, proxy, &options); err != nil {
+		return nil, err
+	}
 
-	// Add telemetry configuration if specified
-	runconfig.AddTelemetryConfigOptions(ctx, &options, proxy.Spec.Telemetry, proxy.Name)
+	// Create context for API operations
+	apiCtx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
+	defer cancel()
 
 	// Add authorization configuration if specified
 
-	if err := ctrlutil.AddAuthzConfigOptions(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig, &options); err != nil {
+	if err := ctrlutil.AddAuthzConfigOptions(apiCtx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig, &options); err != nil {
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
-	// Add OIDC configuration (required for proxy mode)
-	// Supports both legacy inline OIDCConfig and new MCPOIDCConfigRef paths
-	resolvedOIDCConfig, err := r.resolveAndAddOIDCConfig(ctx, proxy, &options)
+	// Add OIDC configuration if referenced via MCPOIDCConfigRef
+	resolvedOIDCConfig, err := r.resolveAndAddOIDCConfig(apiCtx, proxy, &options)
 	if err != nil {
 		return nil, err
 	}
@@ -150,10 +133,18 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	// Add external auth configuration if specified (updated call)
 	// Will fail if embedded auth server is used without OIDC config or resourceUrl
 	if err := ctrlutil.AddExternalAuthConfigOptions(
-		ctx, r.Client, proxy.Namespace, proxy.Name, proxy.Spec.ExternalAuthConfigRef,
+		apiCtx, r.Client, proxy.Namespace, proxy.Name, proxy.Spec.ExternalAuthConfigRef,
 		resolvedOIDCConfig, &options,
 	); err != nil {
 		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
+	}
+
+	// Validate authServerRef/externalAuthConfigRef conflict and add authServerRef options
+	if err := ctrlutil.ValidateAndAddAuthServerRefOptions(
+		apiCtx, r.Client, proxy.Namespace, proxy.Name, proxy.Spec.AuthServerRef,
+		proxy.Spec.ExternalAuthConfigRef, resolvedOIDCConfig, &options,
+	); err != nil {
+		return nil, fmt.Errorf("failed to process authServerRef: %w", err)
 	}
 
 	// Add audit configuration if specified
@@ -185,52 +176,46 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	return runConfig, nil
 }
 
-// resolveAndAddOIDCConfig resolves OIDC configuration from either the shared MCPOIDCConfigRef
-// or the legacy inline OIDCConfig, adds the appropriate runner options, and returns the resolved config.
+// resolveAndAddOIDCConfig resolves OIDC configuration from the shared MCPOIDCConfigRef,
+// adds the appropriate runner options, and returns the resolved config.
 func (r *MCPRemoteProxyReconciler) resolveAndAddOIDCConfig(
 	ctx context.Context,
 	proxy *mcpv1alpha1.MCPRemoteProxy,
 	options *[]runner.RunConfigBuilderOption,
 ) (*oidc.OIDCConfig, error) {
-	resolver := oidc.NewResolver(r.Client)
-
-	if proxy.Spec.OIDCConfigRef != nil {
-		// Resolve from shared MCPOIDCConfig reference
-		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get MCPOIDCConfig: %w", err)
-		}
-		resolved, err := resolver.ResolveFromConfigRef(
-			ctx, proxy.Spec.OIDCConfigRef, oidcCfg, proxy.Name, proxy.Namespace, proxy.GetProxyPort(),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve OIDC config from MCPOIDCConfig ref: %w", err)
-		}
-		*options = append(*options, runner.WithOIDCConfig(
-			resolved.Issuer,
-			resolved.Audience,
-			resolved.JWKSURL,
-			resolved.IntrospectionURL,
-			resolved.ClientID,
-			resolved.ClientSecret,
-			resolved.ThvCABundlePath,
-			resolved.JWKSAuthTokenPath,
-			resolved.ResourceURL,
-			resolved.JWKSAllowPrivateIP,
-			resolved.InsecureAllowHTTP,
-			resolved.Scopes,
-		))
-		return resolved, nil
+	if proxy.Spec.OIDCConfigRef == nil {
+		return nil, nil
 	}
 
-	// Use legacy inline OIDCConfig
-	if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, proxy, options); err != nil {
-		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
-	}
-	resolved, err := resolver.Resolve(ctx, proxy)
+	// Resolve from shared MCPOIDCConfig reference
+	oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve OIDC config: %w", err)
+		return nil, fmt.Errorf("failed to get MCPOIDCConfig: %w", err)
 	}
+	resolver := oidc.NewResolver(r.Client)
+	resolved, err := resolver.ResolveFromConfigRef(
+		ctx, proxy.Spec.OIDCConfigRef, oidcCfg, proxy.Name, proxy.Namespace, proxy.GetProxyPort(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve OIDC config from MCPOIDCConfig ref: %w", err)
+	}
+	if resolved == nil {
+		return nil, nil
+	}
+	*options = append(*options, runner.WithOIDCConfig(
+		resolved.Issuer,
+		resolved.Audience,
+		resolved.JWKSURL,
+		resolved.IntrospectionURL,
+		resolved.ClientID,
+		resolved.ClientSecret,
+		resolved.ThvCABundlePath,
+		resolved.JWKSAuthTokenPath,
+		resolved.ResourceURL,
+		resolved.JWKSAllowPrivateIP,
+		resolved.InsecureAllowHTTP,
+		resolved.Scopes,
+	))
 	return resolved, nil
 }
 
@@ -241,7 +226,7 @@ func (*MCPRemoteProxyReconciler) validateRunConfigForRemoteProxy(ctx context.Con
 	}
 
 	if config.RemoteURL == "" {
-		return fmt.Errorf("remoteURL is required for remote proxy")
+		return fmt.Errorf("remoteUrl is required for remote proxy")
 	}
 
 	if config.Name == "" {
@@ -311,4 +296,55 @@ func addHeaderForwardConfigOptions(proxy *mcpv1alpha1.MCPRemoteProxy, options *[
 		}
 		*options = append(*options, runner.WithHeaderForwardSecrets(headerSecrets))
 	}
+}
+
+// resolveToolConfig fetches the MCPToolConfig referenced by the proxy and
+// returns the tools filter and override map.
+func (r *MCPRemoteProxyReconciler) resolveToolConfig(
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) ([]string, map[string]runner.ToolOverride, error) {
+	if proxy.Spec.ToolConfigRef == nil {
+		return nil, nil, nil
+	}
+
+	toolConfig, err := ctrlutil.GetToolConfigForMCPRemoteProxy(context.Background(), r.Client, proxy)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
+	}
+	if toolConfig == nil {
+		return nil, nil, nil
+	}
+
+	var toolsOverride map[string]runner.ToolOverride
+	if len(toolConfig.Spec.ToolsOverride) > 0 {
+		toolsOverride = make(map[string]runner.ToolOverride)
+		for toolName, override := range toolConfig.Spec.ToolsOverride {
+			toolsOverride[toolName] = runner.ToolOverride{
+				Name:        override.Name,
+				Description: override.Description,
+			}
+		}
+	}
+
+	return toolConfig.Spec.ToolsFilter, toolsOverride, nil
+}
+
+// addTelemetryOptions resolves telemetry configuration for the RunConfig.
+func (r *MCPRemoteProxyReconciler) addTelemetryOptions(
+	ctx context.Context,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	if proxy.Spec.TelemetryConfigRef != nil {
+		telCfg, err := ctrlutil.GetTelemetryConfigForMCPRemoteProxy(ctx, r.Client, proxy)
+		if err != nil {
+			return fmt.Errorf("failed to get MCPTelemetryConfig: %w", err)
+		}
+		if telCfg != nil {
+			caPath := ctrlutil.TelemetryCABundleFilePath(telCfg)
+			svcName := proxy.Spec.TelemetryConfigRef.ServiceName
+			runconfig.AddMCPTelemetryConfigRefOptions(options, &telCfg.Spec, svcName, proxy.Name, caPath)
+		}
+	}
+	return nil
 }

@@ -318,7 +318,7 @@ func TestBuildStatus_PhaseLogic(t *testing.T) {
 		name            string
 		backendStates   map[string]vmcp.BackendHealthStatus
 		expectedPhase   vmcp.Phase
-		expectedCount   int
+		expectedCount   int32
 		expectedMessage string
 	}{
 		{
@@ -434,7 +434,7 @@ func TestBuildStatus_PendingPhase(t *testing.T) {
 		"Phase should be Pending when backends configured but no health data")
 	assert.Equal(t, "Waiting for initial health checks (2 backends configured)", status.Message,
 		"Message should indicate waiting for health checks")
-	assert.Equal(t, 0, status.BackendCount,
+	assert.Equal(t, int32(0), status.BackendCount,
 		"BackendCount should be 0 when no health checks completed")
 	assert.Empty(t, status.DiscoveredBackends,
 		"DiscoveredBackends should be empty when no health checks completed")

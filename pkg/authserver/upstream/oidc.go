@@ -183,13 +183,14 @@ func NewOIDCProvider(
 	// This allows the embedded BaseOAuth2Provider to use the discovered endpoints
 	// for token requests while preserving the original OIDC config.
 	// Note: UserInfoEndpoint is stored in p.endpoints, not in OAuth2Config.
+	// Copy the full CommonOAuthConfig so that all fields (including
+	// AdditionalAuthorizationParams and any future additions) propagate
+	// to the embedded BaseOAuth2Provider. Override Scopes since OIDC
+	// applies default scope logic above.
+	commonCfg := config.CommonOAuthConfig
+	commonCfg.Scopes = scopes
 	oauth2Config := &OAuth2Config{
-		CommonOAuthConfig: CommonOAuthConfig{
-			ClientID:     config.ClientID,
-			ClientSecret: config.ClientSecret,
-			Scopes:       scopes,
-			RedirectURI:  config.RedirectURI,
-		},
+		CommonOAuthConfig:     commonCfg,
 		AuthorizationEndpoint: p.endpoints.AuthorizationEndpoint,
 		TokenEndpoint:         p.endpoints.TokenEndpoint,
 	}

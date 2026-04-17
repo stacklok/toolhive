@@ -167,7 +167,7 @@ func (p *APIRegistryProvider) GetServer(name string) (types.ServerMetadata, erro
 		}
 	}
 
-	return nil, fmt.Errorf("server %s not found in API", name)
+	return nil, fmt.Errorf("%w: %s", ErrServerNotFound, name)
 }
 
 // SearchServers searches for servers matching the query (queries API directly)

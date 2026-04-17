@@ -14,7 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/stacklok/toolhive-core/registry/types"
+	registry "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
 	regpkg "github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/registry/auth"
@@ -26,11 +26,15 @@ import (
 // Desktop clients (Studio) match on this value to display the correct UI.
 const RegistryAuthRequiredCode = "registry_auth_required"
 
-// registryErrorResponse is the JSON body for structured HTTP 503 error responses.
+// registryErrorResponse is the JSON body for structured HTTP error responses.
 // The "code" field allows clients (e.g. Studio) to distinguish between
 // "registry_auth_required" and "registry_unavailable" conditions.
+//
+//	@Description	Structured error response returned by registry endpoints
 type registryErrorResponse struct {
-	Code    string `json:"code"`
+	// Code is a machine-readable error code (e.g. "not_found", "registry_auth_required")
+	Code string `json:"code"`
+	// Message is a human-readable description of the error
 	Message string `json:"message"`
 }
 
@@ -93,7 +97,7 @@ func newSecretsProvider(configProvider config.Provider) (secrets.Provider, error
 	if err != nil {
 		return nil, fmt.Errorf("getting secrets provider type: %w", err)
 	}
-	return secrets.CreateSecretProvider(providerType)
+	return secrets.CreateProvider(providerType, secrets.WithScope(secrets.ScopeRegistry))
 }
 
 // registryAuthLogin handles POST /registry/auth/login.
@@ -285,9 +289,10 @@ type RegistryRoutes struct {
 
 // NewRegistryRoutes creates a new RegistryRoutes with the default config provider
 func NewRegistryRoutes() *RegistryRoutes {
+	p := config.NewProvider()
 	return &RegistryRoutes{
-		configProvider: config.NewDefaultProvider(),
-		configService:  regpkg.NewConfigurator(),
+		configProvider: p,
+		configService:  regpkg.NewConfiguratorWithProvider(p),
 	}
 }
 
@@ -303,9 +308,10 @@ func NewRegistryRoutesWithProvider(provider config.Provider) *RegistryRoutes {
 // NewRegistryRoutesForServe creates RegistryRoutes configured for serve mode.
 // In serve mode, the registry provider uses non-interactive auth (no browser OAuth).
 func NewRegistryRoutesForServe() *RegistryRoutes {
+	p := config.NewProvider()
 	return &RegistryRoutes{
-		configProvider: config.NewDefaultProvider(),
-		configService:  regpkg.NewConfigurator(),
+		configProvider: p,
+		configService:  regpkg.NewConfiguratorWithProvider(p),
 		serveMode:      true,
 	}
 }
@@ -494,6 +500,7 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 //		@Param			body	body		UpdateRegistryRequest	true	"Registry configuration"
 //		@Success		200		{object}	UpdateRegistryResponse
 //		@Failure		400		{string}	string	"Bad Request"
+//		@Failure		403		{string}	string	"Forbidden - blocked by policy"
 //		@Failure		404		{string}	string	"Not Found"
 //		@Failure		502		{string}	string	"Bad Gateway - Registry validation failed"
 //		@Failure		504		{string}	string	"Gateway Timeout - Registry unreachable"
@@ -516,6 +523,11 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 	// Validate that only one of URL, APIURL, or LocalPath is provided
 	if err := validateRegistryRequest(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := regpkg.ActivePolicyGate().CheckUpdateRegistry(r.Context(), updateRegistryConfigFromRequest(&req)); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 
@@ -588,6 +600,27 @@ func validateRegistryRequest(req *UpdateRegistryRequest) error {
 	return nil
 }
 
+// updateRegistryConfigFromRequest builds an UpdateRegistryConfig from the
+// parsed API request for policy evaluation.
+func updateRegistryConfigFromRequest(req *UpdateRegistryRequest) *regpkg.UpdateRegistryConfig {
+	cfg := &regpkg.UpdateRegistryConfig{
+		HasAuth: req.Auth != nil,
+	}
+	if req.URL != nil {
+		cfg.URL = *req.URL
+	}
+	if req.APIURL != nil {
+		cfg.APIURL = *req.APIURL
+	}
+	if req.LocalPath != nil {
+		cfg.LocalPath = *req.LocalPath
+	}
+	if req.AllowPrivateIP != nil {
+		cfg.AllowPrivateIP = *req.AllowPrivateIP
+	}
+	return cfg
+}
+
 // processAuthUpdate validates and applies OAuth configuration for registry auth.
 func (rr *RegistryRoutes) processAuthUpdate(ctx context.Context, authReq *UpdateRegistryAuthRequest) error {
 	if authReq.Issuer == "" || authReq.ClientID == "" {
@@ -654,10 +687,18 @@ func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (str
 //		@Produce		json
 //		@Param			name	path		string	true	"Registry name"
 //		@Success		204	{string}	string	"No Content"
+//		@Failure		403	{string}	string	"Forbidden - blocked by policy"
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name} [delete]
 func (*RegistryRoutes) removeRegistry(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
+
+	if err := regpkg.ActivePolicyGate().CheckDeleteRegistry(r.Context(), &regpkg.DeleteRegistryConfig{
+		Name: name,
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
 
 	// Cannot remove the default registry
 	if name == defaultRegistryName {

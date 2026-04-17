@@ -32,6 +32,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
@@ -110,6 +111,15 @@ type CommonOAuthConfig struct {
 	// RedirectURI is the callback URL where the upstream IDP will redirect
 	// after authentication.
 	RedirectURI string `json:"redirect_uri" yaml:"redirect_uri"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in the
+	// authorization URL. This is useful for providers that require custom parameters
+	// such as Google's access_type=offline for obtaining refresh tokens.
+	// Framework-managed parameters (response_type, client_id, redirect_uri, scope,
+	// state, code_challenge, code_challenge_method, nonce) are not allowed here
+	// and will be rejected during validation.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
 }
 
 // Validate checks that CommonOAuthConfig has all required fields.
@@ -119,6 +129,9 @@ func (c *CommonOAuthConfig) Validate() error {
 	}
 	if c.RedirectURI == "" {
 		return errors.New("redirect_uri is required")
+	}
+	if err := oauthparams.Validate(c.AdditionalAuthorizationParams); err != nil {
+		return err
 	}
 	return validateRedirectURI(c.RedirectURI)
 }
@@ -359,6 +372,9 @@ func (p *BaseOAuth2Provider) buildAuthorizationURL(
 	}
 
 	authOpts := &authorizationOptions{}
+	if len(p.config.AdditionalAuthorizationParams) > 0 {
+		WithAdditionalParams(p.config.AdditionalAuthorizationParams)(authOpts)
+	}
 	for _, opt := range opts {
 		opt(authOpts)
 	}

@@ -63,7 +63,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Transport: "stdio",
 					ProxyMode: "sse",
 					ProxyPort: 8080,
-					McpPort:   8081,
+					MCPPort:   8081,
 					Args:      []string{"--verbose", "--debug"},
 					Env: []mcpv1alpha1.EnvVar{
 						{
@@ -453,79 +453,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 	})
 
 	Context("When creating MCPServer with complex configurations", func() {
-		It("Should handle MCPServer with telemetry configuration", func() {
-			namespace := "telemetry-test-ns"
-			mcpServerName := "telemetry-server"
-			configMapName := mcpServerName + "-runconfig"
-
-			// Create namespace
-			ns := &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: namespace,
-				},
-			}
-			_ = k8sClient.Create(ctx, ns)
-
-			// Create MCPServer with telemetry configuration
-			mcpServer := &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      mcpServerName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "telemetry/mcp-server:latest",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					Telemetry: &mcpv1alpha1.TelemetryConfig{
-						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
-							Enabled:     true,
-							Endpoint:    "http://otel-collector:4317",
-							ServiceName: "test-service",
-							Insecure:    true,
-							Tracing: &mcpv1alpha1.OpenTelemetryTracingConfig{
-								Enabled:      true,
-								SamplingRate: "0.1",
-							},
-							Metrics: &mcpv1alpha1.OpenTelemetryMetricsConfig{
-								Enabled: true,
-							},
-						},
-						Prometheus: &mcpv1alpha1.PrometheusConfig{
-							Enabled: true,
-						},
-					},
-				},
-			}
-
-			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
-			defer k8sClient.Delete(ctx, mcpServer)
-
-			// Wait for ConfigMap to be created
-			configMap := &corev1.ConfigMap{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configMapName,
-					Namespace: namespace,
-				}, configMap)
-			}, timeout, interval).Should(Succeed())
-
-			// Parse RunConfig and verify telemetry configuration
-			var runConfig runner.RunConfig
-			err := json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
-			Expect(err).NotTo(HaveOccurred())
-
-			// Verify telemetry configuration
-			Expect(runConfig.TelemetryConfig).NotTo(BeNil())
-			Expect(runConfig.TelemetryConfig.Endpoint).To(Equal("otel-collector:4317"))
-			Expect(runConfig.TelemetryConfig.ServiceName).To(Equal("test-service"))
-			Expect(runConfig.TelemetryConfig.Insecure).To(BeTrue())
-			Expect(runConfig.TelemetryConfig.TracingEnabled).To(BeTrue())
-			Expect(runConfig.TelemetryConfig.MetricsEnabled).To(BeTrue())
-			Expect(runConfig.TelemetryConfig.SamplingRate).To(Equal("0.1"))
-			Expect(runConfig.TelemetryConfig.EnablePrometheusMetricsPath).To(BeTrue())
-		})
-
-		It("Should handle MCPServer with telemetryConfigRef producing same RunConfig as inline telemetry", func() {
+		It("Should handle MCPServer with telemetryConfigRef", func() {
 			namespace := "telemetry-ref-test-ns"
 			mcpServerName := "telemetry-ref-server"
 			configMapName := mcpServerName + "-runconfig"
@@ -538,8 +466,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			}
 			_ = k8sClient.Create(ctx, ns)
 
-			// Create the MCPTelemetryConfig resource with the same settings
-			// as the inline telemetry test above
+			// Create the MCPTelemetryConfig resource
 			telCfg := &mcpv1alpha1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "shared-otel-config",
@@ -568,8 +495,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				return err == nil && fetched.Status.ConfigHash != ""
 			}, timeout, interval).Should(BeTrue())
 
-			// Create MCPServer with telemetryConfigRef (NOT inline telemetry)
-			// Use ServiceName override to match what the inline test sets
+			// Create MCPServer with telemetryConfigRef
 			mcpServer := &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
@@ -598,8 +524,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				}, configMap)
 			}, timeout, interval).Should(Succeed())
 
-			// Parse RunConfig and verify telemetry configuration matches the
-			// inline telemetry test expectations
+			// Parse RunConfig and verify telemetry configuration
 			var runConfig runner.RunConfig
 			err := json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
 			Expect(err).NotTo(HaveOccurred())
@@ -775,7 +700,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Image:     "deterministic/mcp-server:v1.0.0",
 					Transport: "sse",
 					ProxyPort: 9090,
-					McpPort:   8080,
+					MCPPort:   8080,
 					Args:      []string{"--arg1", "--arg2", "--arg3"},
 					Env: []mcpv1alpha1.EnvVar{
 						{Name: "VAR_C", Value: "value_c"},
@@ -858,113 +783,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			Expect(runConfig.Port).To(Equal(9090))
 			Expect(runConfig.TargetPort).To(Equal(8080))
 			Expect(runConfig.CmdArgs).To(Equal([]string{"--arg1", "--arg2", "--arg3"}))
-		})
-
-		It("Should handle MCPServer with OIDC authentication configuration", func() {
-			namespace := "oidc-test-ns"
-			mcpServerName := "oidc-server"
-			configMapName := mcpServerName + "-runconfig"
-
-			// Create namespace
-			ns := &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: namespace,
-				},
-			}
-			_ = k8sClient.Create(ctx, ns)
-
-			// Create MCPServer with OIDC configuration
-			mcpServer := &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      mcpServerName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "auth/mcp-server:latest",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: "inline",
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:             "https://auth.example.com",
-							Audience:           "toolhive-api",
-							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
-							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
-							ClientID:           "toolhive-client",
-							JWKSAllowPrivateIP: true,
-						},
-					},
-				},
-			}
-
-			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
-			defer k8sClient.Delete(ctx, mcpServer)
-
-			// Wait for ConfigMap to be created
-			configMap := &corev1.ConfigMap{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configMapName,
-					Namespace: namespace,
-				}, configMap)
-			}, timeout, interval).Should(Succeed())
-
-			// Verify ConfigMap has the expected label
-			Expect(configMap.Labels).To(HaveKeyWithValue("toolhive.stacklok.io/mcp-server", mcpServerName))
-
-			// Verify ConfigMap data contains runconfig.json
-			Expect(configMap.Data).To(HaveKey("runconfig.json"))
-			runConfigJSON := configMap.Data["runconfig.json"]
-			Expect(runConfigJSON).NotTo(BeEmpty())
-
-			// Parse and verify RunConfig content
-			var runConfig runner.RunConfig
-			err := json.Unmarshal([]byte(runConfigJSON), &runConfig)
-			Expect(err).NotTo(HaveOccurred())
-
-			// Verify OIDC configuration
-			Expect(runConfig.OIDCConfig).NotTo(BeNil())
-			Expect(runConfig.OIDCConfig.Issuer).To(Equal("https://auth.example.com"))
-			Expect(runConfig.OIDCConfig.Audience).To(Equal("toolhive-api"))
-			Expect(runConfig.OIDCConfig.JWKSURL).To(Equal("https://auth.example.com/.well-known/jwks.json"))
-			Expect(runConfig.OIDCConfig.IntrospectionURL).To(Equal("https://auth.example.com/oauth/introspect"))
-			Expect(runConfig.OIDCConfig.ClientID).To(Equal("toolhive-client"))
-			Expect(runConfig.OIDCConfig.AllowPrivateIP).To(BeTrue())
-
-			// Verify fields that should be empty/nil
-			Expect(runConfig.OIDCConfig.CACertPath).To(BeEmpty())
-			Expect(runConfig.OIDCConfig.AuthTokenFile).To(BeEmpty())
-
-			// Verify middleware_configs includes auth middleware
-			Expect(runConfig.MiddlewareConfigs).NotTo(BeEmpty())
-
-			// Find the auth middleware
-			authMiddlewareFound := false
-			for _, middleware := range runConfig.MiddlewareConfigs {
-				if middleware.Type == "auth" {
-					authMiddlewareFound = true
-
-					// Verify auth middleware has the OIDC config
-					var params map[string]interface{}
-					err := json.Unmarshal(middleware.Parameters, &params)
-					Expect(err).NotTo(HaveOccurred(), "Failed to unmarshal auth middleware parameters")
-
-					if oidcConfigMap, exists := params["oidc_config"]; exists && oidcConfigMap != nil {
-						oidcConfig, ok := oidcConfigMap.(map[string]interface{})
-						Expect(ok).To(BeTrue(), "oidc_config should be a map")
-						Expect(oidcConfig["Issuer"]).To(Equal("https://auth.example.com"))
-						Expect(oidcConfig["Audience"]).To(Equal("toolhive-api"))
-						Expect(oidcConfig["JWKSURL"]).To(Equal("https://auth.example.com/.well-known/jwks.json"))
-						Expect(oidcConfig["IntrospectionURL"]).To(Equal("https://auth.example.com/oauth/introspect"))
-						Expect(oidcConfig["ClientID"]).To(Equal("toolhive-client"))
-						Expect(oidcConfig["AllowPrivateIP"]).To(BeTrue())
-					} else {
-						Fail("OIDC config not found in auth middleware parameters")
-					}
-					break
-				}
-			}
-			Expect(authMiddlewareFound).To(BeTrue(), "Auth middleware should be present in middleware_configs")
 		})
 
 		It("Should handle MCPServer with authorization ConfigMap reference", func() {

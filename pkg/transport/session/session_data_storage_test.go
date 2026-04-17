@@ -25,13 +25,15 @@ import (
 func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage) {
 	t.Helper()
 
-	t.Run("Upsert and Load round-trip", func(t *testing.T) {
+	t.Run("Create and Load round-trip", func(t *testing.T) {
 		t.Parallel()
 		s := newStorage(t)
 		ctx := context.Background()
 
 		meta := map[string]string{"key": "value", "env": "test"}
-		require.NoError(t, s.Upsert(ctx, "sess-1", meta))
+		stored, err := s.Create(ctx, "sess-1", meta)
+		require.NoError(t, err)
+		require.True(t, stored)
 
 		loaded, err := s.Load(ctx, "sess-1")
 		require.NoError(t, err)
@@ -39,37 +41,17 @@ func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage
 		assert.Equal(t, "test", loaded["env"])
 	})
 
-	t.Run("Upsert overwrites existing entry", func(t *testing.T) {
+	t.Run("Create nil metadata is treated as empty map", func(t *testing.T) {
 		t.Parallel()
 		s := newStorage(t)
 		ctx := context.Background()
 
-		require.NoError(t, s.Upsert(ctx, "sess-upsert", map[string]string{"v": "1"}))
-		require.NoError(t, s.Upsert(ctx, "sess-upsert", map[string]string{"v": "2"}))
-
-		loaded, err := s.Load(ctx, "sess-upsert")
+		stored, err := s.Create(ctx, "sess-nil-meta", nil)
 		require.NoError(t, err)
-		assert.Equal(t, "2", loaded["v"])
-	})
-
-	t.Run("Upsert nil metadata is treated as empty map", func(t *testing.T) {
-		t.Parallel()
-		s := newStorage(t)
-		ctx := context.Background()
-
-		require.NoError(t, s.Upsert(ctx, "sess-nil-meta", nil))
+		require.True(t, stored)
 		loaded, err := s.Load(ctx, "sess-nil-meta")
 		require.NoError(t, err)
 		assert.NotNil(t, loaded)
-	})
-
-	t.Run("Upsert with empty ID returns error", func(t *testing.T) {
-		t.Parallel()
-		s := newStorage(t)
-		ctx := context.Background()
-
-		err := s.Upsert(ctx, "", map[string]string{})
-		assert.Error(t, err)
 	})
 
 	t.Run("Load miss returns ErrSessionNotFound", func(t *testing.T) {
@@ -109,7 +91,8 @@ func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage
 		s := newStorage(t)
 		ctx := context.Background()
 
-		require.NoError(t, s.Upsert(ctx, "sess-existing", map[string]string{"x": "original"}))
+		_, err := s.Create(ctx, "sess-existing", map[string]string{"x": "original"})
+		require.NoError(t, err)
 
 		stored, err := s.Create(ctx, "sess-existing", map[string]string{"x": "overwrite"})
 		require.NoError(t, err)
@@ -167,10 +150,11 @@ func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage
 		s := newStorage(t)
 		ctx := context.Background()
 
-		require.NoError(t, s.Upsert(ctx, "sess-del", map[string]string{}))
+		_, err := s.Create(ctx, "sess-del", map[string]string{})
+		require.NoError(t, err)
 		require.NoError(t, s.Delete(ctx, "sess-del"))
 
-		_, err := s.Load(ctx, "sess-del")
+		_, err = s.Load(ctx, "sess-del")
 		assert.ErrorIs(t, err, ErrSessionNotFound)
 	})
 
@@ -190,6 +174,77 @@ func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage
 
 		err := s.Delete(ctx, "")
 		assert.Error(t, err)
+	})
+
+	t.Run("Update overwrites existing entry and returns true", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		_, err := s.Create(ctx, "sess-update", map[string]string{"v": "original"})
+		require.NoError(t, err)
+
+		updated, err := s.Update(ctx, "sess-update", map[string]string{"v": "updated"})
+		require.NoError(t, err)
+		assert.True(t, updated, "should return true when key exists")
+
+		loaded, err := s.Load(ctx, "sess-update")
+		require.NoError(t, err)
+		assert.Equal(t, "updated", loaded["v"])
+	})
+
+	t.Run("Update on missing key returns (false, nil) without creating it", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		updated, err := s.Update(ctx, "sess-absent", map[string]string{"v": "new"})
+		require.NoError(t, err)
+		assert.False(t, updated, "should return false when key does not exist")
+
+		// The key must not have been created.
+		_, err = s.Load(ctx, "sess-absent")
+		assert.ErrorIs(t, err, ErrSessionNotFound, "Update must not create a missing key")
+	})
+
+	t.Run("Update after Delete returns (false, nil)", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		_, err := s.Create(ctx, "sess-deleted", map[string]string{"v": "1"})
+		require.NoError(t, err)
+		require.NoError(t, s.Delete(ctx, "sess-deleted"))
+
+		updated, err := s.Update(ctx, "sess-deleted", map[string]string{"v": "2"})
+		require.NoError(t, err)
+		assert.False(t, updated, "should return false after key was deleted")
+	})
+
+	t.Run("Update with empty ID returns error", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		_, err := s.Update(ctx, "", map[string]string{})
+		assert.Error(t, err)
+	})
+
+	t.Run("Update nil metadata is treated as empty map", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		_, err := s.Create(ctx, "sess-update-nil", map[string]string{"v": "original"})
+		require.NoError(t, err)
+
+		updated, err := s.Update(ctx, "sess-update-nil", nil)
+		require.NoError(t, err)
+		assert.True(t, updated)
+
+		loaded, err := s.Load(ctx, "sess-update-nil")
+		require.NoError(t, err)
+		assert.NotNil(t, loaded)
 	})
 }
 
@@ -218,7 +273,8 @@ func TestLocalSessionDataStorage(t *testing.T) {
 		t.Cleanup(func() { _ = s.Close() })
 		ctx := context.Background()
 
-		require.NoError(t, s.Upsert(ctx, "ttl-sess", map[string]string{"k": "v"}))
+		_, err = s.Create(ctx, "ttl-sess", map[string]string{"k": "v"})
+		require.NoError(t, err)
 		backdateLocalEntry(t, s, "ttl-sess", ttl+time.Millisecond)
 		s.deleteExpired()
 
@@ -234,7 +290,8 @@ func TestLocalSessionDataStorage(t *testing.T) {
 		t.Cleanup(func() { _ = s.Close() })
 		ctx := context.Background()
 
-		require.NoError(t, s.Upsert(ctx, "active-sess", map[string]string{}))
+		_, err = s.Create(ctx, "active-sess", map[string]string{})
+		require.NoError(t, err)
 		backdateLocalEntry(t, s, "active-sess", ttl+time.Millisecond)
 
 		// Load should refresh the entry's timestamp.
@@ -254,9 +311,11 @@ func TestLocalSessionDataStorage(t *testing.T) {
 // simulating an entry that has been idle for that duration.
 func backdateLocalEntry(t *testing.T, s *LocalSessionDataStorage, id string, age time.Duration) {
 	t.Helper()
-	val, ok := s.sessions.Load(id)
+	s.mu.Lock()
+	entry, ok := s.sessions[id]
+	s.mu.Unlock()
 	require.True(t, ok, "entry %q not found for backdating", id)
-	val.(*localDataEntry).lastAccessNano.Store(time.Now().Add(-age).UnixNano())
+	entry.lastAccessNano.Store(time.Now().Add(-age).UnixNano())
 }
 
 // ---------------------------------------------------------------------------
@@ -292,10 +351,11 @@ func TestRedisSessionDataStorage(t *testing.T) {
 		s, mr := newTestRedisDataStorage(t)
 		ctx := context.Background()
 
-		require.NoError(t, s.Upsert(ctx, "ttl-refresh", map[string]string{}))
+		_, err := s.Create(ctx, "ttl-refresh", map[string]string{})
+		require.NoError(t, err)
 		mr.FastForward(29 * time.Minute)
 
-		_, err := s.Load(ctx, "ttl-refresh")
+		_, err = s.Load(ctx, "ttl-refresh")
 		require.NoError(t, err, "load should succeed before expiry")
 
 		// Advance past the original TTL; load should have reset the clock.
@@ -310,10 +370,11 @@ func TestRedisSessionDataStorage(t *testing.T) {
 		s, mr := newTestRedisDataStorage(t)
 		ctx := context.Background()
 
-		require.NoError(t, s.Upsert(ctx, "expiring", map[string]string{}))
+		_, err := s.Create(ctx, "expiring", map[string]string{})
+		require.NoError(t, err)
 		mr.FastForward(31 * time.Minute)
 
-		_, err := s.Load(ctx, "expiring")
+		_, err = s.Load(ctx, "expiring")
 		assert.ErrorIs(t, err, ErrSessionNotFound)
 	})
 
@@ -329,5 +390,26 @@ func TestRedisSessionDataStorage(t *testing.T) {
 		val, err := mr.Get("test:data:nx-test")
 		require.NoError(t, err)
 		assert.NotEmpty(t, val)
+	})
+
+	t.Run("Update refreshes TTL via SET XX", func(t *testing.T) {
+		t.Parallel()
+		s, mr := newTestRedisDataStorage(t)
+		ctx := context.Background()
+
+		_, err := s.Create(ctx, "ttl-update", map[string]string{"v": "1"})
+		require.NoError(t, err)
+		mr.FastForward(29 * time.Minute)
+
+		updated, err := s.Update(ctx, "ttl-update", map[string]string{"v": "2"})
+		require.NoError(t, err)
+		assert.True(t, updated)
+
+		// Advance past the original TTL; Update should have reset the clock.
+		mr.FastForward(2 * time.Minute)
+
+		loaded, err := s.Load(ctx, "ttl-update")
+		require.NoError(t, err, "session should still be alive after TTL reset by Update")
+		assert.Equal(t, "2", loaded["v"])
 	})
 }

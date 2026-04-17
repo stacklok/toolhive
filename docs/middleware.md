@@ -22,6 +22,39 @@ The middleware chain consists of the following components:
 10. **Header Forward Middleware**: Injects custom headers into requests to remote MCP servers (optional)
 11. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
 
+## Dynamic webhook middleware
+
+ToolHive supports dynamic webhook middleware for request mutation and validation. Webhooks are configured externally and loaded at runtime with `thv run --webhook-config <file>`.
+
+Two webhook types are supported:
+
+1. **Mutating webhooks**: Transform the parsed MCP request before later policy evaluation.
+2. **Validating webhooks**: Approve or deny the request after mutation has completed.
+
+When configured together, the effective order is:
+
+1. Authentication
+2. Token exchange and related auth middleware, when configured
+3. MCP parsing
+4. Mutating webhooks
+5. Validating webhooks
+6. Telemetry, authorization, and audit middleware
+
+Multiple webhook definitions of the same type run in configuration order. When multiple `--webhook-config` files are provided, later files override earlier webhook definitions with the same `name`.
+
+Configuration files may be written in YAML or JSON. Duration values such as `timeout` accept strings like `5s`, and omitted timeouts default to `10s`.
+
+Example:
+
+```bash
+thv run postgres-mcp --webhook-config docs/examples/webhooks.yaml
+```
+
+Example config files:
+
+- [`docs/examples/webhooks.yaml`](examples/webhooks.yaml)
+- [`docs/examples/webhooks.json`](examples/webhooks.json)
+
 ## Architecture Diagram
 
 ```mermaid

@@ -5,6 +5,7 @@ package controllerutil
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,7 +13,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
@@ -520,7 +523,7 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 	}
 }
 
-func TestGenerateAuthServerConfig(t *testing.T) {
+func TestGenerateAuthServerConfigByName(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -529,7 +532,7 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		externalAuthRef *mcpv1alpha1.ExternalAuthConfigRef
+		configName      string
 		externalAuthCfg *mcpv1alpha1.MCPExternalAuthConfig
 		wantVolumes     bool
 		wantMounts      bool
@@ -538,18 +541,8 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 		errContains     string
 	}{
 		{
-			name:            "nil external auth ref returns empty slices",
-			externalAuthRef: nil,
-			wantVolumes:     false,
-			wantMounts:      false,
-			wantEnvVars:     false,
-			wantErr:         false,
-		},
-		{
-			name: "non-embeddedAuthServer type returns empty slices",
-			externalAuthRef: &mcpv1alpha1.ExternalAuthConfigRef{
-				Name: "token-exchange-config",
-			},
+			name:       "non-embeddedAuthServer type returns empty slices",
+			configName: "token-exchange-config",
 			externalAuthCfg: &mcpv1alpha1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "token-exchange-config",
@@ -569,10 +562,8 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 			wantErr:     false,
 		},
 		{
-			name: "embeddedAuthServer type with valid config",
-			externalAuthRef: &mcpv1alpha1.ExternalAuthConfigRef{
-				Name: "embedded-auth-config",
-			},
+			name:       "embeddedAuthServer type with valid config",
+			configName: "embedded-auth-config",
 			externalAuthCfg: &mcpv1alpha1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "embedded-auth-config",
@@ -612,10 +603,8 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 			wantErr:     false,
 		},
 		{
-			name: "embeddedAuthServer type with nil embedded config",
-			externalAuthRef: &mcpv1alpha1.ExternalAuthConfigRef{
-				Name: "bad-auth-config",
-			},
+			name:       "embeddedAuthServer type with nil embedded config",
+			configName: "bad-auth-config",
 			externalAuthCfg: &mcpv1alpha1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "bad-auth-config",
@@ -633,10 +622,8 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 			errContains: "embedded auth server configuration is nil",
 		},
 		{
-			name: "non-existent external auth config",
-			externalAuthRef: &mcpv1alpha1.ExternalAuthConfigRef{
-				Name: "non-existent",
-			},
+			name:            "non-existent external auth config",
+			configName:      "non-existent",
 			externalAuthCfg: nil, // No config to create
 			wantVolumes:     false,
 			wantMounts:      false,
@@ -661,8 +648,8 @@ func TestGenerateAuthServerConfig(t *testing.T) {
 				Build()
 
 			ctx := context.Background()
-			volumes, mounts, envVars, err := GenerateAuthServerConfig(
-				ctx, fakeClient, "default", tt.externalAuthRef,
+			volumes, mounts, envVars, err := GenerateAuthServerConfigByName(
+				ctx, fakeClient, "default", tt.configName,
 			)
 
 			if tt.wantErr {
@@ -980,6 +967,80 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				assert.Equal(t, UpstreamClientSecretEnvVar+"_GITHUB", github.OAuth2Config.ClientSecretEnvVar)
 			},
 		},
+		{
+			name: "OIDC upstream propagates AdditionalAuthorizationParams",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL:   "https://okta.example.com",
+							ClientID:    "okta-client-id",
+							RedirectURI: "https://auth.example.com/callback",
+							Scopes:      []string{"openid", "profile"},
+							AdditionalAuthorizationParams: map[string]string{
+								"access_type": "offline",
+							},
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OIDCConfig)
+				assert.Equal(t, map[string]string{"access_type": "offline"},
+					upstream.OIDCConfig.AdditionalAuthorizationParams)
+			},
+		},
+		{
+			name: "OAuth2 upstream propagates AdditionalAuthorizationParams",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "github",
+						Type: mcpv1alpha1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1alpha1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+							TokenEndpoint:         "https://github.com/login/oauth/access_token",
+							ClientID:              "github-client-id",
+							RedirectURI:           "https://auth.example.com/callback",
+							AdditionalAuthorizationParams: map[string]string{
+								"access_type": "offline",
+							},
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OAuth2Config)
+				assert.Equal(t, map[string]string{"access_type": "offline"},
+					upstream.OAuth2Config.AdditionalAuthorizationParams)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1049,6 +1110,7 @@ func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {
 		{
 			name: "valid OIDC config succeeds",
 			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "http://test-server.default.svc.cluster.local:8080",
 				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
 				Scopes:      []string{"openid", "offline_access"},
 			},
@@ -1057,10 +1119,31 @@ func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {
 		{
 			name: "valid OIDC config with nil scopes succeeds",
 			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "http://test-server.default.svc.cluster.local:8080",
 				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
 				Scopes:      nil,
 			},
 			expectError: false,
+		},
+		{
+			name: "audience mismatch with resourceUrl returns error",
+			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "https://different-audience.example.com",
+				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
+				Scopes:      []string{"openid"},
+			},
+			expectError: true,
+			errContains: "must match resourceUrl",
+		},
+		{
+			name: "empty audience returns specific error",
+			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "",
+				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
+				Scopes:      []string{"openid"},
+			},
+			expectError: true,
+			errContains: "audience is required when an embedded auth server is active",
 		},
 	}
 
@@ -1560,4 +1643,347 @@ func TestBuildAuthServerRunConfig_WithRedisStorage(t *testing.T) {
 	require.NotNil(t, config.Storage.RedisConfig)
 	assert.Equal(t, "mymaster", config.Storage.RedisConfig.SentinelConfig.MasterName)
 	assert.Equal(t, authrunner.RedisUsernameEnvVar, config.Storage.RedisConfig.ACLUserConfig.UsernameEnvVar)
+}
+
+func TestAddAuthServerRefOptions(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	newValidEmbeddedAuthConfig := func() *mcpv1alpha1.MCPExternalAuthConfig {
+		return &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "auth-server-config",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+				EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+					Issuer:                       "https://auth.example.com",
+					AuthorizationEndpointBaseURL: "https://auth.example.com",
+					SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+						{Name: "signing-key", Key: "private.pem"},
+					},
+					HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+						{Name: "hmac-secret", Key: "hmac"},
+					},
+				},
+			},
+		}
+	}
+
+	newUnauthenticatedConfig := func() *mcpv1alpha1.MCPExternalAuthConfig {
+		return &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "unauth-config",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+			},
+		}
+	}
+
+	validOIDCConfig := &oidc.OIDCConfig{
+		Audience:    "https://mcp.example.com",
+		ResourceURL: "https://mcp.example.com",
+		Scopes:      []string{"openid"},
+	}
+
+	tests := []struct {
+		name          string
+		authServerRef *mcpv1alpha1.AuthServerRef
+		oidcConfig    *oidc.OIDCConfig
+		objects       func() []runtime.Object
+		wantErr       bool
+		errContains   string
+		wantOptions   int
+	}{
+		{
+			name:          "nil ref returns nil",
+			authServerRef: nil,
+			oidcConfig:    validOIDCConfig,
+			wantErr:       false,
+			wantOptions:   0,
+		},
+		{
+			name: "unsupported kind returns error",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "Foo",
+				Name: "some-config",
+			},
+			oidcConfig:  validOIDCConfig,
+			wantErr:     true,
+			errContains: "unsupported authServerRef kind",
+		},
+		{
+			name: "non-existent config returns error",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "non-existent",
+			},
+			oidcConfig:  validOIDCConfig,
+			wantErr:     true,
+			errContains: "failed to get MCPExternalAuthConfig",
+		},
+		{
+			name: "wrong type returns error",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "unauth-config",
+			},
+			oidcConfig:  validOIDCConfig,
+			objects:     func() []runtime.Object { return []runtime.Object{newUnauthenticatedConfig()} },
+			wantErr:     true,
+			errContains: "must reference a MCPExternalAuthConfig with type",
+		},
+		{
+			name: "valid ref appends option",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "auth-server-config",
+			},
+			oidcConfig:  validOIDCConfig,
+			objects:     func() []runtime.Object { return []runtime.Object{newValidEmbeddedAuthConfig()} },
+			wantErr:     false,
+			wantOptions: 1,
+		},
+		{
+			name: "nil OIDC config returns error for valid ref",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "auth-server-config",
+			},
+			oidcConfig:  nil,
+			objects:     func() []runtime.Object { return []runtime.Object{newValidEmbeddedAuthConfig()} },
+			wantErr:     true,
+			errContains: "OIDC config is required",
+		},
+		{
+			name: "audience mismatch with resourceUrl returns error",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "auth-server-config",
+			},
+			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "https://wrong-audience.example.com",
+				ResourceURL: "https://mcp.example.com",
+				Scopes:      []string{"openid"},
+			},
+			objects:     func() []runtime.Object { return []runtime.Object{newValidEmbeddedAuthConfig()} },
+			wantErr:     true,
+			errContains: "must match resourceUrl",
+		},
+		{
+			name: "audience matching resourceUrl succeeds",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "auth-server-config",
+			},
+			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "https://mcp.example.com",
+				ResourceURL: "https://mcp.example.com",
+				Scopes:      []string{"openid"},
+			},
+			objects:     func() []runtime.Object { return []runtime.Object{newValidEmbeddedAuthConfig()} },
+			wantErr:     false,
+			wantOptions: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			if tt.objects != nil {
+				builder = builder.WithRuntimeObjects(tt.objects()...)
+			}
+			fakeClient := builder.Build()
+
+			var options []runner.RunConfigBuilderOption
+			err := AddAuthServerRefOptions(
+				ctx, fakeClient, "default", "test-server",
+				tt.authServerRef, tt.oidcConfig, &options,
+			)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+				assert.Len(t, options, tt.wantOptions)
+			}
+		})
+	}
+}
+
+func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	newEmbeddedAuthConfig := func() *mcpv1alpha1.MCPExternalAuthConfig {
+		return &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "embedded-config",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+				EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+					Issuer:                       "https://auth.example.com",
+					AuthorizationEndpointBaseURL: "https://auth.example.com",
+					SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+						{Name: "signing-key", Key: "private.pem"},
+					},
+					HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+						{Name: "hmac-secret", Key: "hmac"},
+					},
+				},
+			},
+		}
+	}
+
+	newAWSStsConfig := func() *mcpv1alpha1.MCPExternalAuthConfig {
+		return &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "aws-sts-config",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeAWSSts,
+				AWSSts: &mcpv1alpha1.AWSStsConfig{
+					Region: "us-east-1",
+				},
+			},
+		}
+	}
+
+	validOIDC := &oidc.OIDCConfig{
+		Audience:    "https://mcp.example.com",
+		ResourceURL: "https://mcp.example.com",
+		Scopes:      []string{"openid"},
+	}
+
+	tests := []struct {
+		name                  string
+		authServerRef         *mcpv1alpha1.AuthServerRef
+		externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef
+		oidcConfig            *oidc.OIDCConfig
+		objects               func() []runtime.Object
+		wantErr               bool
+		errContains           string
+		wantOptions           int
+	}{
+		{
+			name:                  "both nil is a no-op",
+			authServerRef:         nil,
+			externalAuthConfigRef: nil,
+			oidcConfig:            validOIDC,
+			wantErr:               false,
+			wantOptions:           0,
+		},
+		{
+			name: "authServerRef set with nil externalAuthConfigRef succeeds",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "embedded-config",
+			},
+			externalAuthConfigRef: nil,
+			oidcConfig:            validOIDC,
+			objects:               func() []runtime.Object { return []runtime.Object{newEmbeddedAuthConfig()} },
+			wantErr:               false,
+			wantOptions:           1,
+		},
+		{
+			name: "both refs pointing to embeddedAuthServer returns conflict error",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "embedded-config",
+			},
+			externalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "embedded-config",
+			},
+			oidcConfig:  validOIDC,
+			objects:     func() []runtime.Object { return []runtime.Object{newEmbeddedAuthConfig()} },
+			wantErr:     true,
+			errContains: "conflict: both authServerRef and externalAuthConfigRef",
+		},
+		{
+			name: "authServerRef embedded + externalAuthConfigRef awsSts succeeds",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "embedded-config",
+			},
+			externalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "aws-sts-config",
+			},
+			oidcConfig:  validOIDC,
+			objects:     func() []runtime.Object { return []runtime.Object{newEmbeddedAuthConfig(), newAWSStsConfig()} },
+			wantErr:     false,
+			wantOptions: 1,
+		},
+		{
+			name: "non-NotFound fetch error for externalAuthConfigRef is returned",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "embedded-config",
+			},
+			externalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "will-error",
+			},
+			oidcConfig:  validOIDC,
+			objects:     func() []runtime.Object { return []runtime.Object{newEmbeddedAuthConfig()} },
+			wantErr:     true,
+			errContains: "failed to fetch externalAuthConfigRef for conflict validation",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			if tt.objects != nil {
+				builder = builder.WithRuntimeObjects(tt.objects()...)
+			}
+
+			// For the "non-NotFound fetch error" test case, inject a Get interceptor
+			// that returns a transient error for the specific resource name.
+			if tt.name == "non-NotFound fetch error for externalAuthConfigRef is returned" {
+				builder = builder.WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if key.Name == "will-error" {
+							return fmt.Errorf("transient API error")
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+				})
+			}
+
+			fakeClient := builder.Build()
+
+			var options []runner.RunConfigBuilderOption
+			err := ValidateAndAddAuthServerRefOptions(
+				ctx, fakeClient, "default", "test-server",
+				tt.authServerRef, tt.externalAuthConfigRef,
+				tt.oidcConfig, &options,
+			)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+				assert.Len(t, options, tt.wantOptions)
+			}
+		})
+	}
 }

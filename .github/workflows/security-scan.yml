@@ -48,8 +48,7 @@ jobs:
       - name: Run govulncheck
         uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1
         with:
-          go-version-input: ''
-          go-version-file: go.mod
+          go-version-input: 'stable'
           go-package: ./...
           repo-checkout: false
           output-format: json

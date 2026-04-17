@@ -37,8 +37,9 @@ func setCACert(provider Provider, certPath string) error {
 	}
 
 	// Update the configuration
-	err = provider.UpdateConfig(func(c *Config) {
+	err = provider.UpdateConfig(func(c *Config) error {
 		c.CACertificatePath = cleanPath
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -86,8 +87,9 @@ func unsetCACert(provider Provider) error {
 	}
 
 	// Update the configuration
-	err := provider.UpdateConfig(func(c *Config) {
+	err := provider.UpdateConfig(func(c *Config) error {
 		c.CACertificatePath = ""
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)

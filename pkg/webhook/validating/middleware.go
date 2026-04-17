@@ -125,6 +125,13 @@ func createValidatingHandler(executors []clientExecutor, serverName, transport s
 
 				resp, err := exec.client.Call(r.Context(), whReq)
 				if err != nil {
+					if webhook.IsAlwaysDenyError(err) {
+						slog.Info("Validating webhook denied request due to HTTP 422 response",
+							"webhook", whName, "error", err)
+						sendErrorResponse(w, http.StatusForbidden, "Request denied by policy", parsedMCP.ID)
+						return
+					}
+
 					// Handle error based on failure policy
 					if exec.config.FailurePolicy == webhook.FailurePolicyIgnore {
 						slog.Warn("Validating webhook error ignored due to fail-open policy",
@@ -142,11 +149,7 @@ func createValidatingHandler(executors []clientExecutor, serverName, transport s
 					slog.Info("Validating webhook denied request", "webhook", whName, "reason", resp.Reason, "message", resp.Message)
 
 					// Prevent information leaks by ignoring the webhook's message
-					msg := "Request denied by policy"
-
-					code := http.StatusForbidden
-
-					sendErrorResponse(w, code, msg, parsedMCP.ID)
+					sendErrorResponse(w, http.StatusForbidden, "Request denied by policy", parsedMCP.ID)
 					return
 				}
 			}
@@ -163,31 +166,11 @@ func readSourceIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-func convertToJSONRPC2ID(id interface{}) (jsonrpc2.ID, error) {
-	if id == nil {
-		return jsonrpc2.ID{}, nil
-	}
-
-	switch v := id.(type) {
-	case string:
-		return jsonrpc2.StringID(v), nil
-	case int:
-		return jsonrpc2.Int64ID(int64(v)), nil
-	case int64:
-		return jsonrpc2.Int64ID(v), nil
-	case float64:
-		// JSON numbers are often unmarshaled as float64
-		return jsonrpc2.Int64ID(int64(v)), nil
-	default:
-		return jsonrpc2.ID{}, fmt.Errorf("unsupported ID type: %T", id)
-	}
-}
-
 func sendErrorResponse(w http.ResponseWriter, statusCode int, message string, msgID interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 
-	id, err := convertToJSONRPC2ID(msgID)
+	id, err := mcp.ConvertToJSONRPC2ID(msgID)
 	if err != nil {
 		id = jsonrpc2.ID{} // Use empty ID if conversion fails
 	}

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 
 	"github.com/stacklok/toolhive-core/permissions"
+	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
@@ -53,6 +54,18 @@ type RunConfig struct {
 
 	// RemoteURL is the URL of the remote MCP server (if running remotely)
 	RemoteURL string `json:"remote_url,omitempty" yaml:"remote_url,omitempty"`
+
+	// RegistryAPIURL is the registry API URL that served this server's metadata.
+	// Empty when the server was not discovered via registry lookup.
+	RegistryAPIURL string `json:"registry_api_url,omitempty" yaml:"registry_api_url,omitempty"`
+
+	// RegistryURL is the registry URL that served this server's metadata.
+	// Empty when the server was not discovered via registry lookup.
+	RegistryURL string `json:"registry_url,omitempty" yaml:"registry_url,omitempty"`
+
+	// RegistryServerName is the registry entry name used to look up this server's metadata.
+	// Empty when the server was not discovered via registry lookup.
+	RegistryServerName string `json:"registry_server_name,omitempty" yaml:"registry_server_name,omitempty"`
 
 	// RemoteAuthConfig contains OAuth configuration for remote MCP servers
 	RemoteAuthConfig *remote.Config `json:"remote_auth_config,omitempty" yaml:"remote_auth_config,omitempty"`
@@ -145,6 +158,13 @@ type RunConfig struct {
 	// TelemetryConfig contains the OpenTelemetry configuration
 	TelemetryConfig *telemetry.Config `json:"telemetry_config,omitempty" yaml:"telemetry_config,omitempty"`
 
+	// RateLimitConfig contains the CRD rate limiting configuration.
+	// When set, rate limiting middleware is added to the proxy middleware chain.
+	RateLimitConfig *v1alpha1.RateLimitConfig `json:"rate_limit_config,omitempty" yaml:"rate_limit_config,omitempty"`
+
+	// RateLimitNamespace is the Kubernetes namespace for Redis key derivation.
+	RateLimitNamespace string `json:"rate_limit_namespace,omitempty" yaml:"rate_limit_namespace,omitempty"`
+
 	// Secrets are the secret parameters to pass to the container
 	// Format: "<secret name>,target=<target environment variable>"
 	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
@@ -170,6 +190,12 @@ type RunConfig struct {
 
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers,omitempty" yaml:"trust_proxy_headers,omitempty"`
+
+	// Stateless indicates the server only supports POST (no SSE/GET).
+	// When true, the proxy returns 405 for incoming GET requests and uses a
+	// POST-based health check instead of the default GET probe.
+	// Applies to both remote URLs and local container workloads.
+	Stateless bool `json:"stateless,omitempty" yaml:"stateless,omitempty"`
 
 	// ProxyMode is the effective HTTP protocol the proxy uses.
 	// For stdio transports, this is the configured mode (sse or streamable-http).
@@ -205,6 +231,10 @@ type RunConfig struct {
 
 	// ValidatingWebhooks contains the configuration for validating webhook middleware.
 	ValidatingWebhooks []webhook.Config `json:"validating_webhooks,omitempty" yaml:"validating_webhooks,omitempty"`
+
+	// MutatingWebhooks contains the configuration for mutating webhook middleware.
+	// Mutating webhooks run before validating webhooks, per RFC THV-0017 ordering.
+	MutatingWebhooks []webhook.Config `json:"mutating_webhooks,omitempty" yaml:"mutating_webhooks,omitempty"`
 
 	// existingPort is the port from an existing workload being updated (not serialized)
 	// Used during port validation to allow reusing the same port

@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 )
 
 // External auth configuration types
@@ -115,6 +117,7 @@ type TokenExchangeConfig struct {
 	Audience string `json:"audience"`
 
 	// Scopes is a list of OAuth 2.0 scopes to request for the exchanged token
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 
@@ -193,6 +196,7 @@ type EmbeddedAuthServerConfig struct {
 	// If not specified, an ephemeral signing key will be auto-generated (development only -
 	// JWTs will be invalid after restart).
 	// +kubebuilder:validation:MaxItems=5
+	// +listType=atomic
 	// +optional
 	SigningKeySecretRefs []SecretKeyRef `json:"signingKeySecretRefs,omitempty"`
 
@@ -202,6 +206,7 @@ type EmbeddedAuthServerConfig struct {
 	// Supports secret rotation via multiple entries (first is current, rest are for verification).
 	// If not specified, an ephemeral secret will be auto-generated (development only -
 	// auth codes and refresh tokens will be invalid after restart).
+	// +listType=atomic
 	// +optional
 	HMACSecretRefs []SecretKeyRef `json:"hmacSecretRefs,omitempty"`
 
@@ -215,6 +220,8 @@ type EmbeddedAuthServerConfig struct {
 	// MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
 	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
 
 	// Storage configures the storage backend for the embedded auth server.
@@ -317,6 +324,10 @@ type OIDCUpstreamConfig struct {
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	// If not specified, defaults to ["openid", "offline_access"].
+	// When using additionalAuthorizationParams with provider-specific refresh token
+	// mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
+	// sending both offline_access and the provider-specific parameter.
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 
@@ -326,6 +337,18 @@ type OIDCUpstreamConfig struct {
 	// that return non-standard claim names in their UserInfo response.
 	// +optional
 	UserInfoOverride *UserInfoConfig `json:"userInfoOverride,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests sent to the upstream provider.
+	// This is useful for providers that require custom parameters, such as
+	// Google's access_type=offline for obtaining refresh tokens.
+	// Note: when using access_type=offline, also set explicit scopes to avoid
+	// the default offline_access scope being sent alongside it.
+	// Framework-managed parameters (response_type, client_id, redirect_uri,
+	// scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+	// +kubebuilder:validation:MaxProperties=16
+	// +optional
+	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
@@ -362,6 +385,7 @@ type OAuth2UpstreamConfig struct {
 	RedirectURI string `json:"redirectUri,omitempty"`
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 
@@ -372,6 +396,16 @@ type OAuth2UpstreamConfig struct {
 	// If nil, standard OAuth 2.0 token response parsing is used.
 	// +optional
 	TokenResponseMapping *TokenResponseMapping `json:"tokenResponseMapping,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests sent to the upstream provider.
+	// This is useful for providers that require custom parameters, such as
+	// Google's access_type=offline for obtaining refresh tokens.
+	// Framework-managed parameters (response_type, client_id, redirect_uri,
+	// scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+	// +kubebuilder:validation:MaxProperties=16
+	// +optional
+	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
 }
 
 // TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields
@@ -441,18 +475,21 @@ type UserInfoFieldMapping struct {
 	// SubjectFields is an ordered list of field names to try for the user ID.
 	// The first non-empty value found will be used.
 	// Default: ["sub"]
+	// +listType=atomic
 	// +optional
 	SubjectFields []string `json:"subjectFields,omitempty"`
 
 	// NameFields is an ordered list of field names to try for the display name.
 	// The first non-empty value found will be used.
 	// Default: ["name"]
+	// +listType=atomic
 	// +optional
 	NameFields []string `json:"nameFields,omitempty"`
 
 	// EmailFields is an ordered list of field names to try for the email address.
 	// The first non-empty value found will be used.
 	// Default: ["email"]
+	// +listType=atomic
 	// +optional
 	EmailFields []string `json:"emailFields,omitempty"`
 }
@@ -535,6 +572,7 @@ type RedisSentinelConfig struct {
 
 	// SentinelAddrs is a list of Sentinel host:port addresses.
 	// Mutually exclusive with SentinelService.
+	// +listType=atomic
 	// +optional
 	SentinelAddrs []string `json:"sentinelAddrs,omitempty"`
 
@@ -627,6 +665,7 @@ type AWSStsConfig struct {
 	// RoleMappings defines claim-based role selection rules
 	// Allows mapping JWT claims (e.g., groups, roles) to specific IAM roles
 	// Lower priority values are evaluated first (higher priority)
+	// +listType=atomic
 	// +optional
 	RoleMappings []RoleMapping `json:"roleMappings,omitempty"`
 
@@ -720,6 +759,8 @@ type MCPExternalAuthConfigStatus struct {
 
 	// ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.
 	// Each entry identifies the workload by kind and name.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
@@ -728,7 +769,7 @@ type MCPExternalAuthConfigStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=extauth;mcpextauth,categories=toolhive
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+// +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
 // +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
@@ -873,6 +914,28 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
 	}
 
+	// Validate additionalAuthorizationParams does not contain reserved keys
+	return ValidateAdditionalAuthorizationParams(prefix, provider.AdditionalAuthorizationParams())
+}
+
+// AdditionalAuthorizationParams returns the additional authorization parameters
+// from whichever upstream config is set, or nil if none.
+func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]string {
+	if p.OIDCConfig != nil {
+		return p.OIDCConfig.AdditionalAuthorizationParams
+	}
+	if p.OAuth2Config != nil {
+		return p.OAuth2Config.AdditionalAuthorizationParams
+	}
+	return nil
+}
+
+// ValidateAdditionalAuthorizationParams checks that no reserved OAuth2 parameters
+// are present in the additional authorization params map.
+func ValidateAdditionalAuthorizationParams(prefix string, params map[string]string) error {
+	if err := oauthparams.Validate(params); err != nil {
+		return fmt.Errorf("%s.additionalAuthorizationParams: %w", prefix, err)
+	}
 	return nil
 }
 

@@ -453,9 +453,9 @@ func TestEnsureOAuthConfig(t *testing.T) {
 			cfg:     &config.Config{},
 			useOIDC: true,
 			setupMock: func(m *configmocks.MockProvider) {
-				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config)) error {
+				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config) error) error {
 					c := &config.Config{}
-					fn(c)
+					require.NoError(t, fn(c))
 					// Verify the update function sets expected values.
 					require.Equal(t, config.RegistryAuthTypeOAuth, c.RegistryAuth.Type)
 					require.NotNil(t, c.RegistryAuth.OAuth)
@@ -473,9 +473,9 @@ func TestEnsureOAuthConfig(t *testing.T) {
 			useOIDC:        true,
 			overrideScopes: []string{"openid", "email"},
 			setupMock: func(m *configmocks.MockProvider) {
-				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config)) error {
+				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config) error) error {
 					c := &config.Config{}
-					fn(c)
+					require.NoError(t, fn(c))
 					require.Equal(t, []string{"openid", "email"}, c.RegistryAuth.OAuth.Scopes)
 					return nil
 				})
@@ -488,9 +488,9 @@ func TestEnsureOAuthConfig(t *testing.T) {
 			useOIDC:          true,
 			overrideAudience: "api://my-api",
 			setupMock: func(m *configmocks.MockProvider) {
-				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config)) error {
+				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config) error) error {
 					c := &config.Config{}
-					fn(c)
+					require.NoError(t, fn(c))
 					require.Equal(t, "api://my-api", c.RegistryAuth.OAuth.Audience)
 					return nil
 				})
@@ -653,8 +653,8 @@ func TestLogout_DeletesCachedToken(t *testing.T) {
 	derivedKey := DeriveSecretKey(cfg.RegistryApiUrl, cfg.RegistryAuth.OAuth.Issuer)
 	mockSecrets.EXPECT().DeleteSecret(gomock.Any(), derivedKey).Return(nil)
 
-	mockCfg.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config)) error {
-		fn(cfg)
+	mockCfg.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config) error) error {
+		require.NoError(t, fn(cfg))
 		require.Empty(t, cfg.RegistryAuth.OAuth.CachedRefreshTokenRef)
 		require.True(t, cfg.RegistryAuth.OAuth.CachedTokenExpiry.IsZero())
 		return nil

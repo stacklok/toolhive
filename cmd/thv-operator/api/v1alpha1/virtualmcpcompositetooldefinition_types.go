@@ -25,11 +25,13 @@ type VirtualMCPCompositeToolDefinitionStatus struct {
 	ValidationStatus ValidationStatus `json:"validationStatus,omitempty"`
 
 	// ValidationErrors contains validation error messages if ValidationStatus is Invalid
+	// +listType=atomic
 	// +optional
 	ValidationErrors []string `json:"validationErrors,omitempty"`
 
 	// ReferencingVirtualServers lists VirtualMCPServer resources that reference this workflow
 	// This helps track which servers need to be reconciled when this workflow changes
+	// +listType=set
 	// +optional
 	ReferencingVirtualServers []string `json:"referencingVirtualServers,omitempty"`
 

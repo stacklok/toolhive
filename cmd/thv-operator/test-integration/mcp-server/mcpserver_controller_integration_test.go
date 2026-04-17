@@ -67,7 +67,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 					Transport: "stdio",
 					ProxyMode: "sse",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 					Args:      []string{"--verbose"},
 					Env: []mcpv1alpha1.EnvVar{
 						{
@@ -1018,7 +1018,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					GroupRef:  "non-existent-group", // This group doesn't exist
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "non-existent-group"}, // This group doesn't exist
 				},
 			}
 
@@ -1163,7 +1163,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					GroupRef:  mcpGroupName, // This group exists
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName}, // This group exists
 				},
 			}
 

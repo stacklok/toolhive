@@ -25,8 +25,8 @@ spec:
     - jsonPath: .spec.type
       name: Source
       type: string
-    - jsonPath: .status.conditions[?(@.type=='Ready')].status
-      name: Ready
+    - jsonPath: .status.conditions[?(@.type=='Valid')].status
+      name: Valid
       type: string
     - jsonPath: .status.referencingWorkloads
       name: References
@@ -134,8 +134,10 @@ spec:
                     type: string
                   jwksAllowPrivateIP:
                     default: false
-                    description: JWKSAllowPrivateIP allows JWKS/OIDC endpoints on
-                      private IP addresses
+                    description: |-
+                      JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses.
+                      Note: at runtime, if either JWKSAllowPrivateIP or ProtectedResourceAllowPrivateIP
+                      is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
                     type: boolean
                   jwksAuthTokenPath:
                     description: JWKSAuthTokenPath is the path to file containing
@@ -146,8 +148,10 @@ spec:
                     type: string
                   protectedResourceAllowPrivateIP:
                     default: false
-                    description: ProtectedResourceAllowPrivateIP allows protected
-                      resource endpoint on private IP addresses
+                    description: |-
+                      ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses.
+                      Note: at runtime, if either ProtectedResourceAllowPrivateIP or JWKSAllowPrivateIP
+                      is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
                     type: boolean
                 required:
                 - issuer
@@ -304,6 +308,9 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             type: object
         type: object
     served: true

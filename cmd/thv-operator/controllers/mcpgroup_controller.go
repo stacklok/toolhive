@@ -38,6 +38,8 @@ type MCPGroupReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpserverentries,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpserverentries/status,verbs=get;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop
 // which aims to move the current state of the cluster closer to the desired state.
@@ -76,16 +78,8 @@ func (r *MCPGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{RequeueAfter: 500 * time.Millisecond}, nil
 	}
 
-	// Find and update status for MCPServers and MCPRemoteProxies
-	result, err := r.updateGroupMemberStatus(ctx, mcpGroup)
-	if err != nil || result.RequeueAfter > 0 {
-		return result, err
-	}
-
-	ctxLogger.Info("Successfully reconciled MCPGroup",
-		"serverCount", mcpGroup.Status.ServerCount,
-		"remoteProxyCount", mcpGroup.Status.RemoteProxyCount)
-	return ctrl.Result{}, nil
+	// Find and update status for MCPServers, MCPRemoteProxies, and MCPServerEntries
+	return r.updateGroupMemberStatus(ctx, mcpGroup)
 }
 
 // updateGroupMemberStatus finds MCPServers and MCPRemoteProxies referencing the group
@@ -108,11 +102,17 @@ func (r *MCPGroupReconciler) updateGroupMemberStatus(
 		return r.handleListFailure(ctx, mcpGroup, err, "MCPRemoteProxies")
 	}
 
+	// Find MCPServerEntries that reference this MCPGroup
+	mcpServerEntries, err := r.findReferencingMCPServerEntries(ctx, mcpGroup)
+	if err != nil {
+		return r.handleListFailure(ctx, mcpGroup, err, "MCPServerEntries")
+	}
+
 	meta.SetStatusCondition(&mcpGroup.Status.Conditions, metav1.Condition{
 		Type:               mcpv1alpha1.ConditionTypeMCPServersChecked,
 		Status:             metav1.ConditionTrue,
 		Reason:             mcpv1alpha1.ConditionReasonListMCPServersSucceeded,
-		Message:            "Successfully listed MCPServers and MCPRemoteProxies in namespace",
+		Message:            "Successfully listed MCPServers, MCPRemoteProxies, and MCPServerEntries in namespace",
 		ObservedGeneration: mcpGroup.Generation,
 	})
 
@@ -121,6 +121,9 @@ func (r *MCPGroupReconciler) updateGroupMemberStatus(
 
 	// Set MCPGroup status fields for MCPRemoteProxies
 	r.populateRemoteProxyStatus(mcpGroup, mcpRemoteProxies)
+
+	// Set MCPGroup status fields for MCPServerEntries
+	r.populateEntryStatus(mcpGroup, mcpServerEntries)
 
 	mcpGroup.Status.Phase = mcpv1alpha1.MCPGroupPhaseReady
 
@@ -138,11 +141,12 @@ func (r *MCPGroupReconciler) updateGroupMemberStatus(
 
 	ctxLogger.Info("Successfully reconciled MCPGroup",
 		"serverCount", mcpGroup.Status.ServerCount,
-		"remoteProxyCount", mcpGroup.Status.RemoteProxyCount)
+		"remoteProxyCount", mcpGroup.Status.RemoteProxyCount,
+		"entryCount", mcpGroup.Status.EntryCount)
 	return ctrl.Result{}, nil
 }
 
-// handleListFailure handles the case when listing MCPServers or MCPRemoteProxies fails.
+// handleListFailure handles the case when listing MCPServers, MCPRemoteProxies, or MCPServerEntries fails.
 func (r *MCPGroupReconciler) handleListFailure(
 	ctx context.Context,
 	mcpGroup *mcpv1alpha1.MCPGroup,
@@ -161,11 +165,13 @@ func (r *MCPGroupReconciler) handleListFailure(
 		ObservedGeneration: mcpGroup.Generation,
 	})
 
-	// Clear both resource types' status fields to avoid stale data when entering Failed state
+	// Clear all resource types' status fields to avoid stale data when entering Failed state
 	mcpGroup.Status.ServerCount = 0
 	mcpGroup.Status.Servers = nil
 	mcpGroup.Status.RemoteProxyCount = 0
 	mcpGroup.Status.RemoteProxies = nil
+	mcpGroup.Status.EntryCount = 0
+	mcpGroup.Status.Entries = nil
 
 	// Update ObservedGeneration even on failure to reflect that we've processed this generation
 	mcpGroup.Status.ObservedGeneration = mcpGroup.Generation
@@ -184,7 +190,7 @@ func (*MCPGroupReconciler) populateServerStatus(
 	mcpGroup *mcpv1alpha1.MCPGroup,
 	mcpServers []mcpv1alpha1.MCPServer,
 ) {
-	mcpGroup.Status.ServerCount = len(mcpServers)
+	mcpGroup.Status.ServerCount = int32(len(mcpServers)) //nolint:gosec // count is bounded by k8s list size
 	if len(mcpServers) == 0 {
 		mcpGroup.Status.Servers = []string{}
 		return
@@ -201,7 +207,7 @@ func (*MCPGroupReconciler) populateRemoteProxyStatus(
 	mcpGroup *mcpv1alpha1.MCPGroup,
 	mcpRemoteProxies []mcpv1alpha1.MCPRemoteProxy,
 ) {
-	mcpGroup.Status.RemoteProxyCount = len(mcpRemoteProxies)
+	mcpGroup.Status.RemoteProxyCount = int32(len(mcpRemoteProxies)) //nolint:gosec // count is bounded by k8s list size
 	if len(mcpRemoteProxies) == 0 {
 		mcpGroup.Status.RemoteProxies = []string{}
 		return
@@ -211,6 +217,23 @@ func (*MCPGroupReconciler) populateRemoteProxyStatus(
 		mcpGroup.Status.RemoteProxies[i] = proxy.Name
 	}
 	sort.Strings(mcpGroup.Status.RemoteProxies)
+}
+
+// populateEntryStatus populates the MCPGroup status with MCPServerEntry information.
+func (*MCPGroupReconciler) populateEntryStatus(
+	mcpGroup *mcpv1alpha1.MCPGroup,
+	mcpServerEntries []mcpv1alpha1.MCPServerEntry,
+) {
+	mcpGroup.Status.EntryCount = int32(len(mcpServerEntries)) //nolint:gosec // count is bounded by k8s list size
+	if len(mcpServerEntries) == 0 {
+		mcpGroup.Status.Entries = []string{}
+		return
+	}
+	mcpGroup.Status.Entries = make([]string, len(mcpServerEntries))
+	for i, entry := range mcpServerEntries {
+		mcpGroup.Status.Entries[i] = entry.Name
+	}
+	sort.Strings(mcpGroup.Status.Entries)
 }
 
 // handleDeletion handles the deletion of an MCPGroup
@@ -242,6 +265,19 @@ func (r *MCPGroupReconciler) handleDeletion(ctx context.Context, mcpGroup *mcpv1
 		if len(referencingProxies) > 0 {
 			ctxLogger.Info("Updating conditions on referencing MCPRemoteProxies", "count", len(referencingProxies))
 			r.updateReferencingRemoteProxiesOnDeletion(ctx, referencingProxies, mcpGroup.Name)
+		}
+
+		// Find all MCPServerEntries that reference this group
+		referencingEntries, err := r.findReferencingMCPServerEntries(ctx, mcpGroup)
+		if err != nil {
+			ctxLogger.Error(err, "Failed to find referencing MCPServerEntries during deletion")
+			return ctrl.Result{}, err
+		}
+
+		// Update conditions on all referencing MCPServerEntries to indicate the group is being deleted
+		if len(referencingEntries) > 0 {
+			ctxLogger.Info("Updating conditions on referencing MCPServerEntries", "count", len(referencingEntries))
+			r.updateReferencingEntriesOnDeletion(ctx, referencingEntries, mcpGroup.Name)
 		}
 
 		// Remove the finalizer to allow deletion
@@ -290,6 +326,22 @@ func (r *MCPGroupReconciler) findReferencingMCPRemoteProxies(
 	}
 
 	return mcpRemoteProxyList.Items, nil
+}
+
+// findReferencingMCPServerEntries finds all MCPServerEntries that reference the given MCPGroup
+func (r *MCPGroupReconciler) findReferencingMCPServerEntries(
+	ctx context.Context, mcpGroup *mcpv1alpha1.MCPGroup) ([]mcpv1alpha1.MCPServerEntry, error) {
+
+	mcpServerEntryList := &mcpv1alpha1.MCPServerEntryList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(mcpGroup.Namespace),
+		client.MatchingFields{"spec.groupRef": mcpGroup.Name},
+	}
+	if err := r.List(ctx, mcpServerEntryList, listOpts...); err != nil {
+		return nil, err
+	}
+
+	return mcpServerEntryList.Items, nil
 }
 
 // updateReferencingServersOnDeletion updates the conditions on MCPServers to indicate their group is being deleted
@@ -346,6 +398,30 @@ func (r *MCPGroupReconciler) updateReferencingRemoteProxiesOnDeletion(
 	}
 }
 
+// updateReferencingEntriesOnDeletion updates the conditions on MCPServerEntries to indicate their group is being deleted
+func (r *MCPGroupReconciler) updateReferencingEntriesOnDeletion(
+	ctx context.Context, entries []mcpv1alpha1.MCPServerEntry, groupName string) {
+	ctxLogger := log.FromContext(ctx)
+
+	for _, entry := range entries {
+		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefNotFound,
+			Message:            "Referenced MCPGroup is being deleted",
+			ObservedGeneration: entry.Generation,
+		})
+
+		if err := r.Status().Update(ctx, &entry); err != nil {
+			ctxLogger.Error(err, "Failed to update MCPServerEntry condition during group deletion",
+				"mcpserverentry", entry.Name, "mcpgroup", groupName)
+			continue
+		}
+		ctxLogger.Info("Updated MCPServerEntry condition for group deletion",
+			"mcpserverentry", entry.Name, "mcpgroup", groupName)
+	}
+}
+
 func (r *MCPGroupReconciler) findMCPGroupForMCPServer(ctx context.Context, obj client.Object) []ctrl.Request {
 	ctxLogger := log.FromContext(ctx)
 
@@ -355,7 +431,8 @@ func (r *MCPGroupReconciler) findMCPGroupForMCPServer(ctx context.Context, obj c
 		ctxLogger.Error(nil, "Object is not an MCPServer", "object", obj.GetName())
 		return []ctrl.Request{}
 	}
-	if mcpServer.Spec.GroupRef == "" {
+	groupName := mcpServer.Spec.GroupRef.GetName()
+	if groupName == "" {
 		// No MCPGroup reference, nothing to do
 		return []ctrl.Request{}
 	}
@@ -368,10 +445,10 @@ func (r *MCPGroupReconciler) findMCPGroupForMCPServer(ctx context.Context, obj c
 		"mcpserver",
 		obj.GetName(),
 		"groupRef",
-		mcpServer.Spec.GroupRef)
+		groupName)
 	group := &mcpv1alpha1.MCPGroup{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: obj.GetNamespace(), Name: mcpServer.Spec.GroupRef}, group); err != nil {
-		ctxLogger.Error(err, "Failed to get MCPGroup for MCPServer", "namespace", obj.GetNamespace(), "name", mcpServer.Spec.GroupRef)
+	if err := r.Get(ctx, types.NamespacedName{Namespace: obj.GetNamespace(), Name: groupName}, group); err != nil {
+		ctxLogger.Error(err, "Failed to get MCPGroup for MCPServer", "namespace", obj.GetNamespace(), "name", groupName)
 		return []ctrl.Request{}
 	}
 	return []ctrl.Request{
@@ -393,7 +470,8 @@ func (r *MCPGroupReconciler) findMCPGroupForMCPRemoteProxy(ctx context.Context, 
 		ctxLogger.Error(nil, "Object is not an MCPRemoteProxy", "object", obj.GetName())
 		return []ctrl.Request{}
 	}
-	if mcpRemoteProxy.Spec.GroupRef == "" {
+	groupName := mcpRemoteProxy.Spec.GroupRef.GetName()
+	if groupName == "" {
 		// No MCPGroup reference, nothing to do
 		return []ctrl.Request{}
 	}
@@ -406,12 +484,47 @@ func (r *MCPGroupReconciler) findMCPGroupForMCPRemoteProxy(ctx context.Context, 
 		"mcpremoteproxy",
 		obj.GetName(),
 		"groupRef",
-		mcpRemoteProxy.Spec.GroupRef)
+		groupName)
 	group := &mcpv1alpha1.MCPGroup{}
-	groupKey := types.NamespacedName{Namespace: obj.GetNamespace(), Name: mcpRemoteProxy.Spec.GroupRef}
+	groupKey := types.NamespacedName{Namespace: obj.GetNamespace(), Name: groupName}
 	if err := r.Get(ctx, groupKey, group); err != nil {
 		ctxLogger.Error(err, "Failed to get MCPGroup for MCPRemoteProxy",
-			"namespace", obj.GetNamespace(), "name", mcpRemoteProxy.Spec.GroupRef)
+			"namespace", obj.GetNamespace(), "name", groupName)
+		return []ctrl.Request{}
+	}
+	return []ctrl.Request{
+		{
+			NamespacedName: types.NamespacedName{
+				Namespace: obj.GetNamespace(),
+				Name:      group.Name,
+			},
+		},
+	}
+}
+
+func (r *MCPGroupReconciler) findMCPGroupForMCPServerEntry(ctx context.Context, obj client.Object) []ctrl.Request {
+	ctxLogger := log.FromContext(ctx)
+
+	mcpServerEntry, ok := obj.(*mcpv1alpha1.MCPServerEntry)
+	if !ok {
+		ctxLogger.Error(nil, "Object is not an MCPServerEntry", "object", obj.GetName())
+		return []ctrl.Request{}
+	}
+	groupName := mcpServerEntry.Spec.GroupRef.GetName()
+	if groupName == "" {
+		return []ctrl.Request{}
+	}
+
+	ctxLogger.Info(
+		"Finding MCPGroup for MCPServerEntry",
+		"namespace", obj.GetNamespace(),
+		"mcpserverentry", obj.GetName(),
+		"groupRef", groupName)
+	group := &mcpv1alpha1.MCPGroup{}
+	groupKey := types.NamespacedName{Namespace: obj.GetNamespace(), Name: groupName}
+	if err := r.Get(ctx, groupKey, group); err != nil {
+		ctxLogger.Error(err, "Failed to get MCPGroup for MCPServerEntry",
+			"namespace", obj.GetNamespace(), "name", groupName)
 		return []ctrl.Request{}
 	}
 	return []ctrl.Request{
@@ -433,6 +546,9 @@ func (r *MCPGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		).
 		Watches(
 			&mcpv1alpha1.MCPRemoteProxy{}, handler.EnqueueRequestsFromMapFunc(r.findMCPGroupForMCPRemoteProxy),
+		).
+		Watches(
+			&mcpv1alpha1.MCPServerEntry{}, handler.EnqueueRequestsFromMapFunc(r.findMCPGroupForMCPServerEntry),
 		).
 		Complete(r)
 }

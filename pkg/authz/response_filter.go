@@ -371,7 +371,15 @@ func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Res
 
 		if authorized {
 			filteredPrompts = append(filteredPrompts, prompt)
+		} else {
+			slog.Debug("Prompt denied by authorization policy",
+				"prompt", prompt.Name)
 		}
+	}
+
+	if denied := len(listResult.Prompts) - len(filteredPrompts); denied > 0 {
+		slog.Debug("Authorization policy filtered prompts",
+			"total", len(listResult.Prompts), "allowed", len(filteredPrompts), "denied", denied)
 	}
 
 	// Create a new result with filtered prompts
@@ -424,7 +432,15 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 
 		if authorized {
 			filteredResources = append(filteredResources, resource)
+		} else {
+			slog.Debug("Resource denied by authorization policy",
+				"resource", resource.URI)
 		}
+	}
+
+	if denied := len(listResult.Resources) - len(filteredResources); denied > 0 {
+		slog.Debug("Authorization policy filtered resources",
+			"total", len(listResult.Resources), "allowed", len(filteredResources), "denied", denied)
 	}
 
 	// Create a new result with filtered resources

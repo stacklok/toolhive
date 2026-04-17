@@ -4,7 +4,6 @@
 package spectoconfig
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -348,88 +347,28 @@ func TestNormalizeMCPTelemetryConfig_DoesNotModifyInput(t *testing.T) {
 	assert.Equal(t, "override-name", result.ServiceName)
 }
 
-func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
+func TestNormalizeMCPTelemetryConfig_ClampsSamplingRate(t *testing.T) {
 	t.Parallel()
 
-	// This test verifies that ConvertTelemetryConfig uses NormalizeTelemetryConfig
-	// to apply endpoint prefix stripping and service name defaults.
-	// ServiceVersion is intentionally left empty — it is resolved at runtime
-	// in telemetry.NewProvider() to always reflect the running binary version.
 	tests := []struct {
-		name       string
-		input      *v1alpha1.TelemetryConfig
-		serverName string
-		expected   *telemetry.Config
+		name         string
+		samplingRate string
+		expected     string
 	}{
 		{
-			name: "applies endpoint normalization and service defaults",
-			input: &v1alpha1.TelemetryConfig{
-				OpenTelemetry: &v1alpha1.OpenTelemetryConfig{
-					Enabled:     true,
-					Endpoint:    "https://otlp-collector:4317",
-					ServiceName: "", // Empty - should default to serverName
-					Tracing: &v1alpha1.OpenTelemetryTracingConfig{
-						Enabled:      true,
-						SamplingRate: "0.1",
-					},
-				},
-			},
-			serverName: "my-mcp-server",
-			expected: &telemetry.Config{
-				Endpoint:       "otlp-collector:4317", // Prefix stripped
-				ServiceName:    "my-mcp-server",       // Defaulted
-				TracingEnabled: true,
-				SamplingRate:   "0.1",
-			},
+			name:         "value above 1.0 is clamped to 1",
+			samplingRate: "42",
+			expected:     "1",
 		},
 		{
-			name: "preserves explicit service name and version",
-			input: &v1alpha1.TelemetryConfig{
-				OpenTelemetry: &v1alpha1.OpenTelemetryConfig{
-					Enabled:     true,
-					Endpoint:    "http://localhost:4317",
-					ServiceName: "custom-service",
-				},
-			},
-			serverName: "default-server",
-			expected: &telemetry.Config{
-				Endpoint:    "localhost:4317", // Prefix stripped
-				ServiceName: "custom-service", // Preserved
-			},
+			name:         "negative value is clamped to 0",
+			samplingRate: "-1",
+			expected:     "0",
 		},
 		{
-			name: "handles prometheus-only config",
-			input: &v1alpha1.TelemetryConfig{
-				Prometheus: &v1alpha1.PrometheusConfig{
-					Enabled: true,
-				},
-			},
-			serverName: "prom-server",
-			expected: &telemetry.Config{
-				EnablePrometheusMetricsPath: true,
-				ServiceName:                 "prom-server", // Defaulted
-				UseLegacyAttributes:         true,          // Default when OTEL block absent
-			},
-		},
-		{
-			name: "reads UseLegacyAttributes from CR spec",
-			input: &v1alpha1.TelemetryConfig{
-				OpenTelemetry: &v1alpha1.OpenTelemetryConfig{
-					Enabled:             true,
-					Endpoint:            "https://otlp:4317",
-					UseLegacyAttributes: false,
-					Tracing: &v1alpha1.OpenTelemetryTracingConfig{
-						Enabled: true,
-					},
-				},
-			},
-			serverName: "legacy-test",
-			expected: &telemetry.Config{
-				Endpoint:            "otlp:4317",
-				ServiceName:         "legacy-test",
-				TracingEnabled:      true,
-				UseLegacyAttributes: false,
-			},
+			name:         "valid value is preserved",
+			samplingRate: "0.3",
+			expected:     "0.3",
 		},
 	}
 
@@ -437,16 +376,19 @@ func TestConvertTelemetryConfig_UsesNormalization(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			ctx := context.Background()
-			result := ConvertTelemetryConfig(ctx, tt.input, tt.serverName)
-
+			spec := &v1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &v1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "otel-collector:4317",
+					Tracing: &v1alpha1.OpenTelemetryTracingConfig{
+						Enabled:      true,
+						SamplingRate: tt.samplingRate,
+					},
+				},
+			}
+			result := NormalizeMCPTelemetryConfig(spec, "test-service", "default")
 			require.NotNil(t, result)
-			assert.Equal(t, tt.expected.Endpoint, result.Endpoint)
-			assert.Equal(t, tt.expected.ServiceName, result.ServiceName)
-			assert.Equal(t, tt.expected.ServiceVersion, result.ServiceVersion)
-			assert.Equal(t, tt.expected.TracingEnabled, result.TracingEnabled)
-			assert.Equal(t, tt.expected.EnablePrometheusMetricsPath, result.EnablePrometheusMetricsPath)
-			assert.Equal(t, tt.expected.UseLegacyAttributes, result.UseLegacyAttributes)
+			assert.Equal(t, tt.expected, result.SamplingRate)
 		})
 	}
 }

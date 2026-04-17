@@ -13,11 +13,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
 var _ = Describe("MCPRegistry Deployment Updates", Label("k8s", "registry", "deployment-update"), func() {
@@ -164,28 +161,14 @@ var _ = Describe("MCPRegistry Deployment Updates", Label("k8s", "registry", "dep
 		It("should update deployment when PodTemplateSpec imagePullSecrets changes", func() {
 			By("creating a registry with initial imagePullSecrets")
 			configMap := configMapHelper.CreateSampleToolHiveRegistry("update-change-ips-config")
-			registry := &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "update-change-ips-test",
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Registries: []mcpv1alpha1.MCPRegistryConfig{
-						{
-							Name:   "default",
-							Format: mcpv1alpha1.RegistryFormatToolHive,
-							ConfigMapRef: &corev1.ConfigMapKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{Name: configMap.Name},
-								Key:                  "registry.json",
-							},
-							SyncPolicy: &mcpv1alpha1.SyncPolicy{Interval: "1h"},
-						},
-					},
-					PodTemplateSpec: &runtime.RawExtension{
-						Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"creds-a"}]}}`),
-					},
-				},
+			registryObj := registryHelper.NewRegistryBuilder("update-change-ips-test").
+				WithConfigMapSource(configMap.Name, "registry.json").
+				WithSyncPolicy("1h").
+				Build()
+			registryObj.Spec.PodTemplateSpec = &runtime.RawExtension{
+				Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"creds-a"}]}}`),
 			}
+			registry := registryObj
 			Expect(k8sClient.Create(ctx, registry)).Should(Succeed())
 
 			By("waiting for deployment with initial imagePullSecrets")
@@ -245,19 +228,25 @@ var _ = Describe("MCPRegistry Deployment Updates", Label("k8s", "registry", "dep
 			originalHash := deployment.Spec.Template.Annotations["toolhive.stacklok.dev/config-hash"]
 			Expect(originalHash).NotTo(BeEmpty(), "config-hash should be set on initial deployment")
 
-			By("creating a second ConfigMap and adding it as a registry source")
-			configMap2 := configMapHelper.CreateSampleToolHiveRegistry("spec-change-config-2")
+			By("updating the registry configYAML to include a second source")
+			_ = configMapHelper.CreateSampleToolHiveRegistry("spec-change-config-2")
 
 			updatedRegistry, err := registryHelper.GetRegistry(registry.Name)
 			Expect(err).NotTo(HaveOccurred())
-			updatedRegistry.Spec.Registries = append(updatedRegistry.Spec.Registries, mcpv1alpha1.MCPRegistryConfig{
-				Name:   "extra",
-				Format: mcpv1alpha1.RegistryFormatToolHive,
-				ConfigMapRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: configMap2.Name},
-					Key:                  "registry.json",
+			// Replace the configYAML with one that has two sources
+			updatedRegistry.Spec.ConfigYAML = buildConfigYAMLForMultipleSources([]map[string]string{
+				{
+					"name":       "default",
+					"sourceType": "file",
+					"filePath":   "/config/registry/default/registry.json",
+					"interval":   "1h",
 				},
-				SyncPolicy: &mcpv1alpha1.SyncPolicy{Interval: "30m"},
+				{
+					"name":       "extra",
+					"sourceType": "file",
+					"filePath":   "/config/registry/extra/registry.json",
+					"interval":   "30m",
+				},
 			})
 			Expect(registryHelper.UpdateRegistry(updatedRegistry)).To(Succeed())
 

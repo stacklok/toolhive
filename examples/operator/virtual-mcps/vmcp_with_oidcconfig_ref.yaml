@@ -1,0 +1,71 @@
+# VirtualMCPServer using oidcConfigRef for incoming authentication.
+#
+# This is the preferred pattern — the inline oidcConfig field is deprecated
+# and will be removed in v1beta1.
+#
+# The oidcConfigRef references a shared MCPOIDCConfig resource, allowing
+# multiple VirtualMCPServers (and MCPServers) to share the same provider config.
+
+---
+# Shared MCPOIDCConfig for incoming auth
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPOIDCConfig
+metadata:
+  name: corporate-idp
+  namespace: default
+spec:
+  type: inline
+  inline:
+    issuer: "https://auth.example.com"
+    clientId: "toolhive-client"
+    clientSecretRef:
+      name: oidc-secret
+      key: client-secret
+
+---
+# MCPGroup for backend discovery
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: my-services
+  namespace: default
+spec:
+  description: Backend services for shared OIDC example
+
+---
+# VirtualMCPServer with oidcConfigRef in incomingAuth
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: shared-auth-vmcp
+  namespace: default
+spec:
+  groupRef:
+    name: my-services
+  config:
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+
+  # Incoming authentication — references shared MCPOIDCConfig
+  incomingAuth:
+    type: oidc
+    oidcConfigRef:
+      name: corporate-idp
+      audience: vmcp-api
+      scopes: ["openid"]
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - |
+            permit(
+              principal,
+              action == Action::"tools/call",
+              resource
+            );
+
+  # Backend authentication — discovered from backend MCPServers
+  outgoingAuth:
+    source: discovered

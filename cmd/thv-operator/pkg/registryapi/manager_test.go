@@ -76,28 +76,14 @@ func TestReconcileAPIService(t *testing.T) {
 			WithScheme(scheme).
 			Build()
 
-		// Create test MCPRegistry
+		// Create test MCPRegistry with configYAML
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-registry",
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "default",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "10m",
-						},
-					},
-				},
+				ConfigYAML: "sources:\n  - name: default\n    format: toolhive\n    syncPolicy:\n      interval: 10m\nregistries:\n  - name: default\n    sources: [\"default\"]\n",
 			},
 		}
 
@@ -132,8 +118,8 @@ func TestReconcileAPIService(t *testing.T) {
 		configYAML := foundConfigMap.Data["config.yaml"]
 		assert.NotEmpty(t, configYAML, "config.yaml should not be empty")
 
-		// Verify the content includes expected configuration
-		assert.Contains(t, configYAML, "registryName: test-registry")
+		// Verify the content matches the raw configYAML (operator passes it through unchanged)
+		assert.Contains(t, configYAML, "name: default")
 		assert.Contains(t, configYAML, "format: toolhive")
 		assert.Contains(t, configYAML, "interval: 10m")
 	})
@@ -161,28 +147,14 @@ func TestReconcileAPIService(t *testing.T) {
 			}).
 			Build()
 
-		// Create test MCPRegistry
+		// Create test MCPRegistry with configYAML
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-registry",
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "default",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "10m",
-						},
-					},
-				},
+				ConfigYAML: "sources:\n  - name: default\n    format: toolhive\n",
 			},
 		}
 
@@ -193,10 +165,8 @@ func TestReconcileAPIService(t *testing.T) {
 
 		// Verify that an error is returned
 		assert.NotNil(t, result, "Expected an error when ConfigMap upsert fails")
-		assert.Contains(t, result.Error(), "Failed to ensure registry server config config map",
+		assert.Contains(t, result.Error(), "Failed to upsert registry server config config map",
 			"Error should indicate registry server config ConfigMap failure")
-		assert.Contains(t, result.Error(), "failed to upsert registry server config config map",
-			"Error should indicate upsert operation failure")
 		assert.Contains(t, result.Error(), "simulated ConfigMap operation failure",
 			"Error should include the underlying client error")
 	})

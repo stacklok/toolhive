@@ -274,11 +274,12 @@ func setRegistryURL(provider Provider, registryURL string, allowPrivateRegistryI
 	}
 
 	// Update the configuration
-	err = provider.UpdateConfig(func(c *Config) {
+	err = provider.UpdateConfig(func(c *Config) error {
 		c.RegistryUrl = registryURL
 		c.RegistryApiUrl = ""    // Clear API URL when setting static URL
 		c.LocalRegistryPath = "" // Clear local path when setting URL
 		c.AllowPrivateRegistryIp = allowPrivateRegistryIp
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -320,10 +321,11 @@ func setRegistryFile(provider Provider, registryPath string) error {
 	}
 
 	// Update the configuration
-	err = provider.UpdateConfig(func(c *Config) {
+	err = provider.UpdateConfig(func(c *Config) error {
 		c.LocalRegistryPath = absPath
 		c.RegistryUrl = ""    // Clear URL when setting local path
 		c.RegistryApiUrl = "" // Clear API URL when setting local path
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -442,11 +444,12 @@ func setRegistryAPI(provider Provider, apiURL string, allowPrivateRegistryIp boo
 	}
 
 	// Update the configuration
-	err = provider.UpdateConfig(func(c *Config) {
+	err = provider.UpdateConfig(func(c *Config) error {
 		c.RegistryApiUrl = apiURL
 		c.RegistryUrl = ""       // Clear static registry URL when setting API URL
 		c.LocalRegistryPath = "" // Clear local path when setting API URL
 		c.AllowPrivateRegistryIp = allowPrivateRegistryIp
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -457,11 +460,12 @@ func setRegistryAPI(provider Provider, apiURL string, allowPrivateRegistryIp boo
 
 // unsetRegistry resets registry configuration to defaults using the provided provider
 func unsetRegistry(provider Provider) error {
-	err := provider.UpdateConfig(func(c *Config) {
+	err := provider.UpdateConfig(func(c *Config) error {
 		c.RegistryUrl = ""
 		c.RegistryApiUrl = ""
 		c.LocalRegistryPath = ""
 		c.AllowPrivateRegistryIp = false
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)

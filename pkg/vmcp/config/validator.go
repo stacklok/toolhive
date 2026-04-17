@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -68,6 +69,11 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 		errors = append(errors, err.Error())
 	}
 
+	// Validate static backends
+	if err := v.validateStaticBackends(cfg.Backends); err != nil {
+		errors = append(errors, err.Error())
+	}
+
 	// Validate composite tools
 	if err := v.validateCompositeTools(cfg.CompositeTools); err != nil {
 		errors = append(errors, err.Error())
@@ -97,6 +103,31 @@ func (*DefaultValidator) validateBasicFields(cfg *Config) error {
 		return fmt.Errorf("group reference is required")
 	}
 
+	return nil
+}
+
+func (*DefaultValidator) validateStaticBackends(backends []StaticBackendConfig) error {
+	for i, b := range backends {
+		// Validate type if specified
+		if b.Type != "" && b.Type != string(vmcp.BackendTypeEntry) {
+			return fmt.Errorf("backends[%d].type must be empty or %q, got %q", i, vmcp.BackendTypeEntry, b.Type)
+		}
+
+		// CABundlePath is only valid for entry backends
+		if b.CABundlePath != "" && b.Type != string(vmcp.BackendTypeEntry) {
+			return fmt.Errorf("backends[%d].caBundlePath is only valid when type is %q", i, vmcp.BackendTypeEntry)
+		}
+
+		// Validate CA bundle path: reject null bytes, path traversal, and relative paths
+		if b.CABundlePath != "" {
+			if strings.ContainsRune(b.CABundlePath, 0) || strings.Contains(b.CABundlePath, "..") {
+				return fmt.Errorf("backends[%d].caBundlePath contains invalid path characters", i)
+			}
+			if !filepath.IsAbs(b.CABundlePath) {
+				return fmt.Errorf("backends[%d].caBundlePath must be an absolute path", i)
+			}
+		}
+	}
 	return nil
 }
 
@@ -373,7 +404,7 @@ func (*DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) erro
 		}
 	}
 
-	validModes := []string{"fail", "bestEffort"}
+	validModes := []string{"fail", "best_effort"}
 	if !slices.Contains(validModes, fh.PartialFailureMode) {
 		return fmt.Errorf("partialFailureMode must be one of: %s", strings.Join(validModes, ", "))
 	}

@@ -504,6 +504,73 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 			expectErr: true,
 			errMsg:    "oidcConfig must be set when type is 'oidc' and must not be set otherwise",
 		},
+		{
+			name: "OIDC provider with valid additionalAuthorizationParams",
+			provider: UpstreamProviderConfig{
+				Name: "google",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://accounts.google.com",
+					ClientID:  "client-id",
+					AdditionalAuthorizationParams: map[string]string{
+						"access_type": "offline",
+						"prompt":      "consent",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OIDC provider with reserved param client_id",
+			provider: UpstreamProviderConfig{
+				Name: "google",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://accounts.google.com",
+					ClientID:  "client-id",
+					AdditionalAuthorizationParams: map[string]string{
+						"client_id": "override-attempt",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "reserved parameter \"client_id\" is managed by the framework",
+		},
+		{
+			name: "OAuth2 provider with reserved param response_type",
+			provider: UpstreamProviderConfig{
+				Name: "custom",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://oauth.example.com/authorize",
+					TokenEndpoint:         "https://oauth.example.com/token",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+					AdditionalAuthorizationParams: map[string]string{
+						"response_type": "token",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "reserved parameter \"response_type\" is managed by the framework",
+		},
+		{
+			name: "OAuth2 provider with valid additionalAuthorizationParams",
+			provider: UpstreamProviderConfig{
+				Name: "github",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+					TokenEndpoint:         "https://github.com/login/oauth/access_token",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://api.github.com/user"},
+					AdditionalAuthorizationParams: map[string]string{
+						"allow_signup": "false",
+					},
+				},
+			},
+			expectErr: false,
+		},
 	}
 
 	for _, tt := range tests {

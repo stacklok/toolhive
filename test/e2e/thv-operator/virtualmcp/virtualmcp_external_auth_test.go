@@ -65,11 +65,11 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				// Reference the unauthenticated external auth config
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: externalAuthConfigName,
@@ -88,7 +88,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 			if err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
@@ -101,7 +101,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -240,11 +240,11 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 			},
 		}
 		Expect(k8sClient.Create(ctx, backend)).To(Succeed())
@@ -259,7 +259,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 			if err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
@@ -272,7 +272,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -281,7 +281,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 					// Explicitly configure unauthenticated for specific backend
 					Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 						backendName: {
-							Type: "external_auth_config_ref",
+							Type: "externalAuthConfigRef",
 							ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 								Name: externalAuthConfigName,
 							},
@@ -328,7 +328,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpServerName, Namespace: testNamespace}, vmcpServer)).To(Succeed())
 			Expect(vmcpServer.Spec.OutgoingAuth.Source).To(Equal("inline"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends).To(HaveKey(backendName))
-			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("external_auth_config_ref"))
+			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("externalAuthConfigRef"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].ExternalAuthConfigRef.Name).To(Equal(externalAuthConfigName))
 
 			By("Creating MCP client and listing tools")
@@ -416,11 +416,11 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				// Reference the headerInjection external auth config
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: externalAuthConfigName,
@@ -439,7 +439,7 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 			if err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
@@ -452,7 +452,7 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -639,11 +639,11 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 			},
 		}
 		Expect(k8sClient.Create(ctx, backend)).To(Succeed())
@@ -658,7 +658,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 			if err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
@@ -671,7 +671,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -680,7 +680,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 					// Explicitly configure headerInjection for specific backend
 					Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 						backendName: {
-							Type: "external_auth_config_ref",
+							Type: "externalAuthConfigRef",
 							ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 								Name: externalAuthConfigName,
 							},
@@ -730,7 +730,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpServerName, Namespace: testNamespace}, vmcpServer)).To(Succeed())
 			Expect(vmcpServer.Spec.OutgoingAuth.Source).To(Equal("inline"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends).To(HaveKey(backendName))
-			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("external_auth_config_ref"))
+			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].Type).To(Equal("externalAuthConfigRef"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Backends[backendName].ExternalAuthConfigRef.Name).To(Equal(externalAuthConfigName))
 
 			By("Creating MCP client and listing tools")
@@ -830,11 +830,11 @@ var _ = Describe("VirtualMCPServer Health Check with HeaderInjection Auth", Orde
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				Env: []mcpv1alpha1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
@@ -854,7 +854,7 @@ var _ = Describe("VirtualMCPServer Health Check with HeaderInjection Auth", Orde
 			}, server); err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
@@ -867,6 +867,7 @@ var _ = Describe("VirtualMCPServer Health Check with HeaderInjection Auth", Orde
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Operational: &vmcpconfig.OperationalConfig{
@@ -1046,11 +1047,11 @@ var _ = Describe("VirtualMCPServer Health Check with TokenExchange Auth", Ordere
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				Env: []mcpv1alpha1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
@@ -1070,7 +1071,7 @@ var _ = Describe("VirtualMCPServer Health Check with TokenExchange Auth", Ordere
 			}, server); err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
@@ -1083,6 +1084,7 @@ var _ = Describe("VirtualMCPServer Health Check with TokenExchange Auth", Ordere
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Operational: &vmcpconfig.OperationalConfig{

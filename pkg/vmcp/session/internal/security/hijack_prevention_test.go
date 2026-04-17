@@ -227,7 +227,7 @@ func TestRestoreHijackPrevention(t *testing.T) {
 		t.Parallel()
 
 		base := newMockSession("s1")
-		restored, err := RestoreHijackPrevention(base, testSecret, "", "")
+		restored, err := RestoreHijackPrevention(base, "", "", testSecret)
 		require.NoError(t, err)
 		require.NotNil(t, restored)
 	})
@@ -236,7 +236,7 @@ func TestRestoreHijackPrevention(t *testing.T) {
 		t.Parallel()
 
 		base := newMockSession("s2")
-		_, err := RestoreHijackPrevention(base, testSecret, "somehash", "")
+		_, err := RestoreHijackPrevention(base, "somehash", "", testSecret)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "salt is missing")
 	})
@@ -245,7 +245,7 @@ func TestRestoreHijackPrevention(t *testing.T) {
 		t.Parallel()
 
 		base := newMockSession("s3")
-		_, err := RestoreHijackPrevention(base, testSecret, "", "deadbeef")
+		_, err := RestoreHijackPrevention(base, "", "deadbeef", testSecret)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "hash is missing")
 	})
@@ -253,7 +253,7 @@ func TestRestoreHijackPrevention(t *testing.T) {
 	t.Run("nil session is rejected", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := RestoreHijackPrevention(nil, testSecret, "", "")
+		_, err := RestoreHijackPrevention(nil, "", "", testSecret)
 		require.Error(t, err)
 	})
 }

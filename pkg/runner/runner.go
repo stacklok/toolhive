@@ -33,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 )
@@ -308,6 +309,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	var transportOpts []transport.Option
 	var setupResult *runtime.SetupResult
 
+	// Check policy gate before creating the server (applies to both local and remote)
+	if err := ActivePolicyGate().CheckCreateServer(ctx, r.Config); err != nil {
+		return fmt.Errorf("server creation blocked by policy: %w", err)
+	}
+
 	if r.Config.RemoteURL == "" {
 		// For local workloads, deploy the container using runtime.Setup first
 		var scalingConfig *rt.ScalingConfig
@@ -346,6 +352,31 @@ func (r *Runner) Run(ctx context.Context) error {
 		if setupResult.TargetURI != "" {
 			transportOpts = append(transportOpts, transport.WithTargetURI(setupResult.TargetURI))
 		}
+	}
+
+	// When Redis session storage is configured, create a Redis-backed session store
+	// so sessions are shared across proxy replicas instead of being pod-local.
+	if r.Config.ScalingConfig != nil && r.Config.ScalingConfig.SessionRedis != nil {
+		redisCfg := r.Config.ScalingConfig.SessionRedis
+		keyPrefix := redisCfg.KeyPrefix
+		if keyPrefix == "" {
+			keyPrefix = "thv:proxy:session:"
+		}
+		storage, err := session.NewRedisStorage(ctx, session.RedisConfig{
+			Addr:      redisCfg.Address,
+			Password:  os.Getenv(session.RedisPasswordEnvVar),
+			DB:        int(redisCfg.DB),
+			KeyPrefix: keyPrefix,
+		}, session.DefaultSessionTTL)
+		if err != nil {
+			return fmt.Errorf("failed to create Redis session storage: %w", err)
+		}
+		slog.Info("using Redis session storage",
+			"address", redisCfg.Address,
+			"db", redisCfg.DB,
+			"key_prefix", keyPrefix,
+		)
+		transportConfig.SessionStorage = storage
 	}
 
 	// Create transport with options
@@ -410,6 +441,17 @@ func (r *Runner) Run(ctx context.Context) error {
 				slog.Error("failed to update workload status", "error", err)
 			}
 		})
+	}
+
+	// Configure stateless mode if requested. Stateless mode applies to any
+	// streamable-HTTP server (remote or local container) where the upstream
+	// only accepts POST and does not support SSE-based sessions.
+	if r.Config.Stateless {
+		httpT, ok := transportHandler.(*transport.HTTPTransport)
+		if !ok {
+			return fmt.Errorf("--stateless requires streamable-HTTP or SSE transport, got %T", transportHandler)
+		}
+		httpT.SetStateless(true)
 	}
 
 	// Start the transport (which also starts the container and monitoring)
@@ -501,7 +543,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		slog.Info("running as detached process", "pid", os.Getpid())
 	} else {
 		// Notify that user that the workload has started successfully when using --foreground
-		fmt.Println("Workload started successfully. Press Ctrl+C to stop.")
+		slog.Info("workload started successfully, press Ctrl+C to stop")
 	}
 
 	// Create a done channel to signal when the server has been stopped

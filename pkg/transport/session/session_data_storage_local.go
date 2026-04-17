@@ -30,29 +30,16 @@ func (e *localDataEntry) lastAccess() time.Time {
 }
 
 // LocalSessionDataStorage implements DataStorage using an in-memory
-// sync.Map with TTL-based eviction.
+// map with TTL-based eviction.
 //
 // Sessions are evicted if they have not been accessed within the configured TTL.
 // A background goroutine runs until Close is called.
 type LocalSessionDataStorage struct {
-	sessions sync.Map // map[string]*localDataEntry
+	sessions map[string]*localDataEntry // guarded by mu
+	mu       sync.Mutex
 	ttl      time.Duration
 	stopCh   chan struct{}
 	stopOnce sync.Once
-}
-
-// Upsert creates or updates session metadata.
-func (s *LocalSessionDataStorage) Upsert(_ context.Context, id string, metadata map[string]string) error {
-	if id == "" {
-		return fmt.Errorf("cannot write session data with empty ID")
-	}
-	if metadata == nil {
-		metadata = make(map[string]string)
-	}
-	// Store a defensive copy so callers cannot mutate stored data.
-	copied := maps.Clone(metadata)
-	s.sessions.Store(id, newLocalDataEntry(copied))
-	return nil
 }
 
 // Load retrieves session metadata and refreshes its last-access timestamp.
@@ -61,26 +48,20 @@ func (s *LocalSessionDataStorage) Load(_ context.Context, id string) (map[string
 	if id == "" {
 		return nil, fmt.Errorf("cannot load session data with empty ID")
 	}
-
-	val, ok := s.sessions.Load(id)
+	s.mu.Lock()
+	entry, ok := s.sessions[id]
+	if ok {
+		entry.lastAccessNano.Store(time.Now().UnixNano())
+	}
+	s.mu.Unlock()
 	if !ok {
 		return nil, ErrSessionNotFound
 	}
-	entry, ok := val.(*localDataEntry)
-	if !ok {
-		return nil, fmt.Errorf("invalid entry type in local session data storage")
-	}
-
-	// Refresh last-access in place. deleteExpired re-checks the timestamp
-	// immediately before calling CompareAndDelete, so this atomic store is
-	// sufficient to prevent eviction of an actively accessed entry.
-	entry.lastAccessNano.Store(time.Now().UnixNano())
-
 	return maps.Clone(entry.metadata), nil
 }
 
-// Create atomically creates session metadata only if the session ID
-// does not already exist. Uses sync.Map.LoadOrStore for atomicity.
+// Create creates session metadata only if the session ID does not already exist.
+// Returns (true, nil) if created, (false, nil) if the key already existed.
 func (s *LocalSessionDataStorage) Create(_ context.Context, id string, metadata map[string]string) (bool, error) {
 	if id == "" {
 		return false, fmt.Errorf("cannot write session data with empty ID")
@@ -88,9 +69,31 @@ func (s *LocalSessionDataStorage) Create(_ context.Context, id string, metadata 
 	if metadata == nil {
 		metadata = make(map[string]string)
 	}
-	copied := maps.Clone(metadata)
-	_, loaded := s.sessions.LoadOrStore(id, newLocalDataEntry(copied))
-	return !loaded, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.sessions[id]; exists {
+		return false, nil
+	}
+	s.sessions[id] = newLocalDataEntry(maps.Clone(metadata))
+	return true, nil
+}
+
+// Update overwrites session metadata only if the session ID already exists.
+// Returns (true, nil) if updated, (false, nil) if not found.
+func (s *LocalSessionDataStorage) Update(_ context.Context, id string, metadata map[string]string) (bool, error) {
+	if id == "" {
+		return false, fmt.Errorf("cannot write session data with empty ID")
+	}
+	if metadata == nil {
+		metadata = make(map[string]string)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.sessions[id]; !ok {
+		return false, nil
+	}
+	s.sessions[id] = newLocalDataEntry(maps.Clone(metadata))
+	return true, nil
 }
 
 // Delete removes session metadata. Not an error if absent.
@@ -98,17 +101,18 @@ func (s *LocalSessionDataStorage) Delete(_ context.Context, id string) error {
 	if id == "" {
 		return fmt.Errorf("cannot delete session data with empty ID")
 	}
-	s.sessions.Delete(id)
+	s.mu.Lock()
+	delete(s.sessions, id)
+	s.mu.Unlock()
 	return nil
 }
 
 // Close stops the background cleanup goroutine and clears all stored metadata.
 func (s *LocalSessionDataStorage) Close() error {
 	s.stopOnce.Do(func() { close(s.stopCh) })
-	s.sessions.Range(func(key, _ any) bool {
-		s.sessions.Delete(key)
-		return true
-	})
+	s.mu.Lock()
+	s.sessions = make(map[string]*localDataEntry)
+	s.mu.Unlock()
 	return nil
 }
 
@@ -140,26 +144,11 @@ func (s *LocalSessionDataStorage) cleanupRoutine() {
 
 func (s *LocalSessionDataStorage) deleteExpired() {
 	cutoff := time.Now().Add(-s.ttl)
-	var toDelete []struct {
-		id    string
-		entry *localDataEntry
-	}
-	s.sessions.Range(func(key, val any) bool {
-		entry, ok := val.(*localDataEntry)
-		if ok && entry.lastAccess().Before(cutoff) {
-			id, ok := key.(string)
-			if ok {
-				toDelete = append(toDelete, struct {
-					id    string
-					entry *localDataEntry
-				}{id, entry})
-			}
-		}
-		return true
-	})
-	for _, item := range toDelete {
-		if item.entry.lastAccess().Before(cutoff) {
-			s.sessions.CompareAndDelete(item.id, item.entry)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, entry := range s.sessions {
+		if entry.lastAccess().Before(cutoff) {
+			delete(s.sessions, id)
 		}
 	}
 }

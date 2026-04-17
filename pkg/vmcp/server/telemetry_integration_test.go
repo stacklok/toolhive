@@ -64,12 +64,12 @@ type backendAwareTestSession struct {
 }
 
 func (s *backendAwareTestSession) Tools() []vmcp.Tool                  { return s.tools }
+func (s *backendAwareTestSession) AllTools() []vmcp.Tool               { return s.tools }
 func (*backendAwareTestSession) Resources() []vmcp.Resource            { return nil }
 func (*backendAwareTestSession) Prompts() []vmcp.Prompt                { return nil }
 func (*backendAwareTestSession) BackendSessions() map[string]string    { return nil }
 func (s *backendAwareTestSession) GetRoutingTable() *vmcp.RoutingTable { return s.routingTable }
 func (*backendAwareTestSession) Close() error                          { return nil }
-
 func (s *backendAwareTestSession) CallTool(
 	ctx context.Context, _ *auth.Identity, toolName string, args map[string]any, meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {

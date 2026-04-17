@@ -9,6 +9,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	// maxK8sVolumeName is the maximum length for a Kubernetes volume name (RFC 1123 label).
+	maxK8sVolumeName = 63
+	// telemetryCABundleVolumePrefix must match validation.TelemetryCABundleVolumePrefix.
+	telemetryCABundleVolumePrefix = "otel-ca-bundle-"
+	// maxTelemetryCABundleConfigMapName is the maximum ConfigMap name length that fits in a volume name.
+	maxTelemetryCABundleConfigMapName = maxK8sVolumeName - len(telemetryCABundleVolumePrefix)
+)
+
 // SensitiveHeader represents a header whose value is stored in a Kubernetes Secret.
 // This allows credential headers (e.g., API keys, bearer tokens) to be securely
 // referenced without embedding secrets inline in the MCPTelemetryConfig resource.
@@ -56,6 +65,8 @@ type MCPTelemetryOTelConfig struct {
 	// SensitiveHeaders contains headers whose values are stored in Kubernetes Secrets.
 	// Use this for credential headers (e.g., API keys, bearer tokens) instead of
 	// embedding secrets in the headers field.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	SensitiveHeaders []SensitiveHeader `json:"sensitiveHeaders,omitempty"`
 
@@ -80,6 +91,13 @@ type MCPTelemetryOTelConfig struct {
 	// +kubebuilder:default=true
 	// +optional
 	UseLegacyAttributes bool `json:"useLegacyAttributes"`
+
+	// CABundleRef references a ConfigMap containing a CA certificate bundle for the OTLP endpoint.
+	// When specified, the operator mounts the ConfigMap into the proxyrunner pod and configures
+	// the OTLP exporters to trust the custom CA. This is useful when the OTLP collector uses
+	// TLS with certificates signed by an internal or private CA.
+	// +optional
+	CABundleRef *CABundleSource `json:"caBundleRef,omitempty"`
 }
 
 // MCPTelemetryConfigSpec defines the desired state of MCPTelemetryConfig.
@@ -112,6 +130,8 @@ type MCPTelemetryConfigStatus struct {
 	ConfigHash string `json:"configHash,omitempty"`
 
 	// ReferencingWorkloads lists workloads that reference this MCPTelemetryConfig
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
@@ -120,7 +140,7 @@ type MCPTelemetryConfigStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=mcpotel,categories=toolhive
 // +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.spec.openTelemetry.endpoint`
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+// +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
 // +kubebuilder:printcolumn:name="Tracing",type=boolean,JSONPath=`.spec.openTelemetry.tracing.enabled`
 // +kubebuilder:printcolumn:name="Metrics",type=boolean,JSONPath=`.spec.openTelemetry.metrics.enabled`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
@@ -171,7 +191,10 @@ func (r *MCPTelemetryConfig) Validate() error {
 	if err := r.validateEndpointRequiresSignals(); err != nil {
 		return err
 	}
-	return r.validateSensitiveHeaders()
+	if err := r.validateSensitiveHeaders(); err != nil {
+		return err
+	}
+	return r.validateCABundle()
 }
 
 // validateEndpointRequiresSignals rejects an endpoint when neither tracing nor metrics is enabled.
@@ -211,6 +234,32 @@ func (r *MCPTelemetryConfig) validateSensitiveHeaders() error {
 		if _, exists := otel.Headers[sh.Name]; exists {
 			return fmt.Errorf("header %q appears in both headers and sensitiveHeaders", sh.Name)
 		}
+	}
+	return nil
+}
+
+// validateCABundle validates the CA bundle configuration if present.
+func (r *MCPTelemetryConfig) validateCABundle() error {
+	if r.Spec.OpenTelemetry == nil || r.Spec.OpenTelemetry.CABundleRef == nil {
+		return nil
+	}
+	otel := r.Spec.OpenTelemetry
+	if otel.Insecure {
+		return fmt.Errorf("openTelemetry.caBundleRef cannot be specified when insecure is true; they are mutually exclusive")
+	}
+	ref := otel.CABundleRef
+	if ref.ConfigMapRef == nil {
+		return fmt.Errorf("openTelemetry.caBundleRef.configMapRef must be specified")
+	}
+	if ref.ConfigMapRef.Name == "" {
+		return fmt.Errorf("openTelemetry.caBundleRef.configMapRef.name must not be empty")
+	}
+	if len(ref.ConfigMapRef.Name) > maxTelemetryCABundleConfigMapName {
+		//nolint:lll // error message clarity requires full context
+		return fmt.Errorf(
+			"openTelemetry.caBundleRef.configMapRef.name %q is too long (%d chars); maximum is %d",
+			ref.ConfigMapRef.Name, len(ref.ConfigMapRef.Name), maxTelemetryCABundleConfigMapName,
+		)
 	}
 	return nil
 }

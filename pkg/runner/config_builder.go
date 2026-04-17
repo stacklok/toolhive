@@ -5,15 +5,19 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
@@ -22,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authz"
+	appconfig "github.com/stacklok/toolhive/pkg/config"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -32,6 +37,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
+	"github.com/stacklok/toolhive/pkg/webhook"
 )
 
 // BuildContext defines the context in which the RunConfigBuilder is being used
@@ -96,6 +102,44 @@ func WithRemoteURL(remoteURL string) RunConfigBuilderOption {
 		b.config.RemoteURL = remoteURL
 		return nil
 	}
+}
+
+// WithRegistrySourceURLs records the registry URLs that served this server's metadata.
+func WithRegistrySourceURLs(apiURL, registryURL string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.RegistryAPIURL = apiURL
+		b.config.RegistryURL = registryURL
+		return nil
+	}
+}
+
+// ResolveRegistrySourceURLs returns the registry API URL and registry URL from
+// config when the server was discovered via registry lookup (non-nil metadata).
+// Both values are empty when metadata is nil (direct image reference or protocol scheme)
+// or when appConfig is nil.
+func ResolveRegistrySourceURLs(serverMetadata regtypes.ServerMetadata, appConfig *appconfig.Config) (apiURL, registryURL string) {
+	if serverMetadata == nil || appConfig == nil {
+		return "", ""
+	}
+	return appConfig.RegistryApiUrl, appConfig.RegistryUrl
+}
+
+// WithRegistryServerName records the registry entry name used to look up this server's metadata.
+func WithRegistryServerName(name string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.RegistryServerName = name
+		return nil
+	}
+}
+
+// ResolveRegistryServerName returns the registry entry name from server metadata
+// when the server was discovered via registry lookup (non-nil metadata).
+// Returns empty string when metadata is nil (direct image reference or protocol scheme).
+func ResolveRegistryServerName(serverMetadata regtypes.ServerMetadata) string {
+	if serverMetadata == nil {
+		return ""
+	}
+	return serverMetadata.GetName()
 }
 
 // WithRegistryProxyPort sets the proxy port from registry metadata.
@@ -222,6 +266,24 @@ func WithAuthzConfig(config *authz.Config) RunConfigBuilderOption {
 	}
 }
 
+// WithValidatingWebhooks sets the validating webhook configurations.
+// These webhooks run after mutating webhooks and can accept or deny requests.
+func WithValidatingWebhooks(webhooks []webhook.Config) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.ValidatingWebhooks = webhooks
+		return nil
+	}
+}
+
+// WithMutatingWebhooks sets the mutating webhook configurations.
+// These webhooks run before validating webhooks and can transform requests.
+func WithMutatingWebhooks(webhooks []webhook.Config) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.MutatingWebhooks = webhooks
+		return nil
+	}
+}
+
 // WithAuditConfigPath sets the audit config path
 func WithAuditConfigPath(path string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -272,6 +334,14 @@ func WithAllowDockerGateway(allow bool) RunConfigBuilderOption {
 func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.TrustProxyHeaders = trust
+		return nil
+	}
+}
+
+// WithStateless declares the server is stateless (POST-only, no SSE).
+func WithStateless(stateless bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.Stateless = stateless
 		return nil
 	}
 }
@@ -475,6 +545,15 @@ func WithTelemetryConfig(config *telemetry.Config) RunConfigBuilderOption {
 	}
 }
 
+// WithRateLimitConfig sets the rate limiting configuration.
+func WithRateLimitConfig(namespace string, config *v1alpha1.RateLimitConfig) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.RateLimitConfig = config
+		b.config.RateLimitNamespace = namespace
+		return nil
+	}
+}
+
 // WithToolsFilter sets the tools filter
 func WithToolsFilter(toolsFilter []string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -539,6 +618,24 @@ func WithMiddlewareFromFlags(
 
 		// NOTE: AWS STS middleware is NOT added here because it is only configured
 		// through the operator path via PopulateMiddlewareConfigs(), not via CLI flags.
+		//
+		// NOTE: addCoreMiddlewares also injects usage metrics before webhook insertion here,
+		// which differs slightly from PopulateMiddlewareConfigs where usage metrics is added
+		// after webhooks. This is currently benign because usage metrics does not depend on
+		// webhook state, and the broader ordering TODO remains to unify these paths.
+
+		// Add Mutating webhooks before Validating webhooks
+		var err error
+		middlewareConfigs, err = addMutatingWebhookMiddleware(middlewareConfigs, b.config)
+		if err != nil {
+			return err
+		}
+
+		// Add Validating webhooks
+		middlewareConfigs, err = addValidatingWebhookMiddleware(middlewareConfigs, b.config)
+		if err != nil {
+			return err
+		}
 
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
@@ -1092,6 +1189,24 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 		source, target, err := mount.Parse()
 		if err != nil {
 			return fmt.Errorf("invalid volume format: %s (%w)", volume, err)
+		}
+
+		// Validate source path exists on the host (CLI context only)
+		if b.buildContext == BuildContextCLI {
+			absSource := source
+			if !filepath.IsAbs(source) {
+				cwd, err := os.Getwd()
+				if err != nil {
+					return fmt.Errorf("failed to resolve relative volume path %s: %w", source, err)
+				}
+				absSource = filepath.Join(cwd, source)
+			}
+			if _, err := os.Stat(absSource); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("volume source path does not exist: %s", absSource)
+				}
+				return fmt.Errorf("failed to access volume source path %s: %w", absSource, err)
+			}
 		}
 
 		// Check for duplicate mount target

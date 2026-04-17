@@ -57,6 +57,7 @@ MCPServer is the fundamental building block. All other CRDs either **organize**,
                     │  │  │  │      CORE         │  │  │  │
                     │  │  │  │    MCPServer      │  │  │  │
                     │  │  │  │  MCPRemoteProxy   │  │  │  │
+                    │  │  │  │  MCPServerEntry   │  │  │  │
                     │  │  │  └───────────────────┘  │  │  │
                     │  │  └─────────────────────────┘  │  │
                     │  └───────────────────────────────┘  │
@@ -64,17 +65,18 @@ MCPServer is the fundamental building block. All other CRDs either **organize**,
 
         ┌──────────────────────────────────────────────────┐
         │              CONFIGURATION (attaches to any)     │
-        │         ToolConfig    MCPExternalAuthConfig      │
+        │  ToolConfig   MCPExternalAuthConfig              │
+        │  MCPOIDCConfig   MCPTelemetryConfig              │
         └──────────────────────────────────────────────────┘
 ```
 
 | Layer | CRDs | Purpose |
 |-------|------|---------|
-| **Core** | MCPServer, MCPRemoteProxy | Run or proxy MCP servers |
+| **Core** | MCPServer, MCPRemoteProxy, MCPServerEntry | Run, proxy, or declare MCP servers |
 | **Organization** | MCPGroup | Group related servers together |
 | **Aggregation** | VirtualMCPServer, VirtualMCPCompositeToolDefinition | Combine multiple servers into one endpoint |
 | **Discovery** | MCPRegistry | Help clients find available servers |
-| **Configuration** | ToolConfig, MCPExternalAuthConfig | Shared config that attaches to any layer |
+| **Configuration** | ToolConfig, MCPExternalAuthConfig, MCPOIDCConfig, MCPTelemetryConfig | Shared config that attaches to any layer |
 
 #### Workload CRDs (Deploy Running Pods)
 
@@ -89,9 +91,12 @@ MCPServer is the fundamental building block. All other CRDs either **organize**,
 
 | CRD | Purpose |
 |-----|---------|
+| **MCPServerEntry** | Zero-infrastructure declaration of a remote MCP endpoint |
 | **MCPGroup** | Logical grouping of workloads (status tracking only) |
 | **ToolConfig** | Tool filtering and renaming configuration |
 | **MCPExternalAuthConfig** | Token exchange / header injection configuration |
+| **MCPOIDCConfig** | Shared OIDC provider settings referenced by workload CRDs |
+| **MCPTelemetryConfig** | Shared OpenTelemetry/Prometheus settings referenced by workload CRDs |
 | **VirtualMCPCompositeToolDefinition** | Workflow definitions (webhook validation only) |
 
 ### CRD Relationships
@@ -105,6 +110,10 @@ graph TB
         Registry[MCPRegistry<br/>Deployment: API server]
     end
 
+    subgraph "Zero-Infrastructure"
+        Entry[MCPServerEntry<br/>No resources]
+    end
+
     subgraph "Logical Grouping"
         Group[MCPGroup<br/>No resources]
     end
@@ -113,18 +122,32 @@ graph TB
         CTD[VirtualMCPCompositeToolDefinition<br/>Webhook validation]
         ExtAuth[MCPExternalAuthConfig<br/>No resources]
         ToolCfg[ToolConfig<br/>No resources]
+        OIDCCfg[MCPOIDCConfig<br/>No resources]
+        TelCfg[MCPTelemetryConfig<br/>No resources]
     end
 
     VMCP -->|groupRef| Group
     VMCP -->|compositeToolRefs| CTD
+    VMCP -.->|oidcConfigRef| OIDCCfg
+    VMCP -.->|telemetryConfigRef| TelCfg
 
     Server -->|groupRef| Group
     Server -.->|externalAuthConfigRef| ExtAuth
+    Server -.->|authServerRef| ExtAuth
     Server -.->|toolConfigRef| ToolCfg
+    Server -.->|oidcConfigRef| OIDCCfg
+    Server -.->|telemetryConfigRef| TelCfg
 
     Proxy -->|groupRef| Group
     Proxy -.->|externalAuthConfigRef| ExtAuth
+    Proxy -.->|authServerRef| ExtAuth
     Proxy -.->|toolConfigRef| ToolCfg
+    Proxy -.->|oidcConfigRef| OIDCCfg
+    Proxy -.->|telemetryConfigRef| TelCfg
+
+    Entry -->|groupRef| Group
+    Entry -.->|externalAuthConfigRef| ExtAuth
+    Entry -.->|caBundleRef| ConfigMap[ConfigMap<br/>CA bundle]
 ```
 
 ### MCPServer
@@ -135,11 +158,20 @@ Defines an MCP server deployment, including container images, transports, middle
 
 MCPServer resources support various transport types (stdio, SSE, streamable-http), permission profiles, OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets.
 
-**Status fields** include phase (Running, Pending, Failed, Terminating) and the accessible URL for the MCP server.
+MCPServer supports referencing shared configuration CRDs:
+- `oidcConfigRef` — references an MCPOIDCConfig for shared OIDC settings
+- `telemetryConfigRef` — references an MCPTelemetryConfig for shared telemetry settings
+- `externalAuthConfigRef` — references an MCPExternalAuthConfig for outgoing auth (token exchange, AWS STS, bearer token injection, etc.)
+- `authServerRef` — references an MCPExternalAuthConfig of type `embeddedAuthServer` for incoming auth (the embedded OAuth 2.0/OIDC authorization server that authenticates MCP clients). This is the preferred path for configuring the embedded auth server, keeping incoming auth separate from `externalAuthConfigRef` which handles outgoing auth.
+
+**Backward compatibility**: Existing configurations using `externalAuthConfigRef` with `type: embeddedAuthServer` continue to work. The `authServerRef` field is optional and additive.
+
+**Status fields** include phase (Ready, Pending, Failed, Terminating), the accessible URL, and config hashes (`oidcConfigHash`, `telemetryConfigHash`, `authServerConfigHash`) for change detection on referenced CRDs.
 
 For examples, see:
 - [`examples/operator/mcp-servers/mcpserver_github.yaml`](../../examples/operator/mcp-servers/mcpserver_github.yaml) - Basic GitHub MCP server
-- [`examples/operator/mcp-servers/mcpserver_with_configmap_oidc.yaml`](../../examples/operator/mcp-servers/mcpserver_with_configmap_oidc.yaml) - With OIDC authentication
+- [`examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml`](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml) - With shared MCPOIDCConfig reference
+- [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](../../examples/operator/mcp-servers/mcpserver_fetch_otel.yaml) - With shared MCPTelemetryConfig reference
 - [`examples/operator/mcp-servers/mcpserver_with_pod_template.yaml`](../../examples/operator/mcp-servers/mcpserver_with_pod_template.yaml) - With pod customizations
 
 ### MCPRegistry
@@ -172,26 +204,115 @@ Manages external authentication configurations that can be shared across multipl
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
 
-MCPExternalAuthConfig allows you to define reusable OIDC authentication configurations that can be referenced by multiple MCPServer resources. This is useful for sharing authentication settings across servers. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
+MCPExternalAuthConfig allows you to define reusable authentication configurations that can be referenced by multiple MCPServer and MCPRemoteProxy resources. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
 
-**Referenced by MCPServer** using `oidcConfig.type: external`.
+MCPExternalAuthConfig resources can be referenced via two paths:
+- `externalAuthConfigRef` — for outgoing auth types (token exchange, AWS STS, bearer token injection). This is the original reference path.
+- `authServerRef` — for the embedded auth server type (`embeddedAuthServer`) only. This dedicated reference path makes it possible to configure both incoming auth (embedded auth server) and outgoing auth (e.g., AWS STS) on the same workload resource.
+
+**Referenced by MCPServer and MCPRemoteProxy** using `externalAuthConfigRef` or `authServerRef`.
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
+
+### MCPOIDCConfig
+
+Defines shared OIDC provider configuration that can be referenced by multiple workload CRDs (MCPServer, MCPRemoteProxy, VirtualMCPServer) in the same namespace.
+
+**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpoidcconfig_types.go`
+
+MCPOIDCConfig eliminates OIDC configuration duplication — define an identity provider once and reference it from any number of workloads. A single issuer URL change updates all referencing workloads automatically.
+
+**Configuration source variants** (mutually exclusive, CEL enforced):
+- `kubernetesServiceAccount` — Uses Kubernetes service account tokens with auto-discovered JWKS
+- `inline` — Explicit issuer, JWKS URL, client credentials (secrets via `clientSecretRef`)
+
+**Per-server overrides** live in the workload's `oidcConfigRef` field (not the shared spec):
+- `audience` (required) — Must be unique per server to prevent token replay
+- `scopes` (optional) — Defaults to `["openid"]`
+- `resourceUrl` (optional) — Public URL for OAuth protected resource metadata (RFC 9728); defaults to internal service URL
+
+**Status fields** include a `Ready` condition, `configHash` for change detection, and `referencingWorkloads` tracking which resources reference this config. Deletion is blocked while references exist (finalizer pattern).
+
+**Referenced by**: MCPServer, MCPRemoteProxy, VirtualMCPServer (via `oidcConfigRef`)
+
+**Controller**: `cmd/thv-operator/controllers/mcpoidcconfig_controller.go`
+
+For examples, see [`examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml`](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml).
+
+### MCPTelemetryConfig
+
+Defines shared OpenTelemetry and Prometheus configuration that can be referenced by multiple MCPServer resources in the same namespace.
+
+**Implementation**: `cmd/thv-operator/api/v1alpha1/mcptelemetryconfig_types.go`
+
+MCPTelemetryConfig centralises telemetry infrastructure settings (collector endpoint, sampling rate, headers) so they can be managed once for a fleet of MCP servers.
+
+**Key features:**
+- `SensitiveHeader` type with `SecretKeyRef` for credential headers (no inline secrets)
+- CEL validation prevents header name overlap between `headers` and `sensitiveHeaders`
+- Per-server `serviceName` override in the workload's `telemetryConfigRef` (since `service.name` must be unique per server)
+
+**Status fields** include a `Ready` condition, `configHash` for change detection, and `referencingWorkloads` tracking.
+
+**Referenced by**: MCPServer, VirtualMCPServer, MCPRemoteProxy (via `telemetryConfigRef`)
+
+**Controller**: `cmd/thv-operator/controllers/mcptelemetryconfig_controller.go`
+
+For examples, see [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](../../examples/operator/mcp-servers/mcpserver_fetch_otel.yaml).
 
 ### MCPRemoteProxy
 
 Defines a proxy for remote MCP servers with authentication, authorization, audit logging, and tool filtering.
 
 **Key fields:**
-- `remoteURL` - URL of the remote MCP server to proxy
-- `oidcConfig` - OIDC authentication for incoming requests (required)
-- `externalAuthConfigRef` - Token exchange for remote service authentication
+- `remoteUrl` - URL of the remote MCP server to proxy
+- `oidcConfigRef` - Reference to shared MCPOIDCConfig (with per-server `audience`, `scopes`, and `resourceUrl`)
+- `externalAuthConfigRef` - Outgoing auth for remote service authentication (token exchange, AWS STS, bearer token injection)
+- `authServerRef` - Incoming auth via the embedded OAuth 2.0/OIDC authorization server (references an MCPExternalAuthConfig of type `embeddedAuthServer`)
 - `authzConfig` - Authorization policies
+- `telemetryConfigRef` - Reference to shared MCPTelemetryConfig (replaces deprecated inline `telemetry`)
 - `toolConfigRef` - Tool filtering and renaming
+
+OIDC is optional — omit `oidcConfigRef` for unauthenticated proxies.
+
+**Combined auth pattern**: `authServerRef` and `externalAuthConfigRef` can be used together on the same MCPRemoteProxy to enable both incoming client authentication (embedded auth server) and outgoing remote service authentication (e.g., AWS STS) simultaneously. This is the primary use case for `authServerRef` on MCPRemoteProxy. If both fields point to an `embeddedAuthServer` resource, the controller produces a validation error.
+
+```yaml
+# MCPRemoteProxy with embedded auth server (incoming) + AWS STS (outgoing)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRemoteProxy
+metadata:
+  name: bedrock-proxy
+spec:
+  remoteUrl: https://bedrock-mcp.example.com
+  authServerRef:
+    kind: MCPExternalAuthConfig
+    name: my-auth-server          # type: embeddedAuthServer
+  externalAuthConfigRef:
+    name: bedrock-sts-config      # type: awsSts
+```
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpremoteproxy_types.go`
 
 **Controller**: `cmd/thv-operator/controllers/mcpremoteproxy_controller.go`
+
+### MCPServerEntry
+
+Declares a remote MCP endpoint as a zero-infrastructure catalog entry. Unlike MCPServer and MCPRemoteProxy, MCPServerEntry never creates a Deployment, Service, or Pod. vMCP connects directly to the declared remote URL.
+
+**Key fields:**
+- `remoteUrl` - URL of the remote MCP server (required)
+- `groupRef` - MCPGroup membership for discovery by VirtualMCPServer
+- `externalAuthConfigRef` - Token exchange for remote service authentication
+- `caBundleRef` - Reference to a ConfigMap containing CA certificate data for TLS verification
+
+The MCPServerEntry controller is validation-only: it validates that referenced resources (groupRef, externalAuthConfigRef, caBundleRef ConfigMap) exist and updates status conditions accordingly. It never probes the remote URL or creates infrastructure.
+
+MCPServerEntry backends are discovered by vMCP in both static mode (listed at startup) and dynamic mode (watched by the BackendReconciler). In dynamic mode, ConfigMap changes trigger re-reconciliation of affected MCPServerEntry backends via a field-indexed watch on `spec.caBundleRef.configMapRef.name`.
+
+**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpserverentry_types.go`
+
+**Controller**: `cmd/thv-operator/controllers/mcpserverentry_controller.go`
 
 ### MCPGroup
 
@@ -199,11 +320,11 @@ Logically groups MCPServer resources together for organizational purposes.
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpgroup_types.go`
 
-MCPGroup resources allow grouping related MCP servers. Servers reference their group using the `groupRef` field in MCPServer spec. The group tracks member servers in its status.
+MCPGroup resources allow grouping related MCP servers. Servers reference their group using the `groupRef` typed struct (`MCPGroupRef`) in MCPServer spec. The group tracks member servers in its status.
 
 **Status fields** include phase (Ready, Pending, Failed), list of server names, and server count.
 
-**Referenced by MCPServer** using `spec.groupRef`.
+**Referenced by MCPServer** using `spec.groupRef.name`.
 
 **Controller**: `cmd/thv-operator/controllers/mcpgroup_controller.go`
 
@@ -257,7 +378,7 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 - Backend count
 - Detailed conditions for validation, discovery, and readiness
 
-**References**: MCPGroup (via `spec.config.groupRef`)
+**References**: MCPGroup (via `spec.groupRef.name`)
 
 **Controller**: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
 
@@ -403,8 +524,8 @@ thv-proxyrunner run
 CRD attribute:
 ```yaml
 spec:
-  transport: sse  # Affects operator logic
-  port: 8080      # Affects Service creation
+  transport: sse        # Affects operator logic
+  proxyPort: 8080       # Affects Service creation
 ```
 
 PodTemplateSpec:
@@ -418,11 +539,11 @@ spec:
 
 ### Status Management
 
-**Pattern**: Batched updates via StatusCollector
+**Pattern**: Direct status update matching MCPServer workload pattern
 
-**Why**: Prevents race conditions, reduces API calls
+**Why**: Simple Phase + Ready condition + ReadyReplicas + URL, enables `kubectl wait --for=condition=Ready`
 
-**Implementation**: `cmd/thv-operator/pkg/mcpregistrystatus/`
+**Implementation**: `cmd/thv-operator/controllers/mcpregistry_controller.go`
 
 ## MCPRegistry Controller
 
@@ -463,7 +584,7 @@ graph TB
 
 **Storage Manager**: `cmd/thv-operator/pkg/sources/storage_manager.go`
 - Creates ConfigMap with key `registry.json` containing full registry data
-- Sync metadata (timestamp, hash, attempt count) stored in MCPRegistry CRD status field `SyncStatus`
+- Sync operations are handled by the registry server itself
 
 **Interface**: `cmd/thv-operator/pkg/sources/types.go`
 
@@ -482,7 +603,7 @@ data:
     { full registry data }
 ```
 
-Sync metadata (timestamp, hash, attempt count) is stored in the MCPRegistry CRD status field `SyncStatus`, not in the ConfigMap.
+Sync operations are handled by the registry server, not the operator.
 
 ### Sync Policy
 
@@ -512,28 +633,58 @@ When enabled, operator creates:
 
 ## Configuration References
 
-### ConfigMap References
+### Shared Configuration CRDs (Preferred)
 
-**OIDC config:**
+The preferred approach is to define OIDC and telemetry settings in dedicated configuration CRDs and reference them from workloads. This eliminates duplication and enables fleet-wide configuration changes from a single resource.
 
-Both patterns are supported:
+**MCPOIDCConfig reference:**
 ```yaml
-# Pattern 1: Direct data fields (as shown in examples/operator/mcp-servers/mcpserver_with_configmap_oidc.yaml)
-# ConfigMap contains: issuer, audience, clientId as direct fields
+# Define shared OIDC config once
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPOIDCConfig
+metadata:
+  name: corporate-idp
 spec:
-  oidcConfig:
-    type: configMap
-    configMap:
-      name: oidc-config
+  type: inline
+  inline:
+    issuer: "https://auth.example.com"
+    clientId: "my-client-id"
+    clientSecretRef:
+      name: oidc-secret
+      key: client-secret
+---
+# Reference from any MCPServer, MCPRemoteProxy, or VirtualMCPServer
+spec:
+  oidcConfigRef:
+    name: corporate-idp
+    audience: my-server      # per-server, prevents token replay
+    scopes: ["openid"]       # optional, defaults to ["openid"]
+    resourceUrl: https://mcp.example.com  # optional, defaults to internal service URL
+```
 
-# Pattern 2: JSON file with key parameter
-# ConfigMap contains a JSON file at the specified key
+**MCPTelemetryConfig reference:**
+```yaml
+# Define shared telemetry config once
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPTelemetryConfig
+metadata:
+  name: shared-otel
 spec:
-  oidcConfig:
-    type: configMap
-    configMap:
-      name: oidc-config
-      key: oidc.json  # defaults to oidc.json if omitted
+  openTelemetry:
+    enabled: true
+    endpoint: otel-collector:4318
+    insecure: true
+    tracing:
+      enabled: true
+      samplingRate: "0.1"
+    metrics:
+      enabled: true
+---
+# Reference from MCPServer
+spec:
+  telemetryConfigRef:
+    name: shared-otel
+    serviceName: my-server   # per-server, must be unique
 ```
 
 **Authz policies:**
@@ -546,19 +697,7 @@ spec:
       key: authz.json  # defaults to authz.json if omitted
 ```
 
-### Inline Configuration
-
-**OIDC:**
-```yaml
-spec:
-  oidcConfig:
-    type: inline
-    inline:
-      issuer: https://auth.example.com
-      audience: my-app
-```
-
-**Authz:**
+**Authz (inline):**
 ```yaml
 spec:
   authzConfig:

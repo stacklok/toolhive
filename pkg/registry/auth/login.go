@@ -129,11 +129,12 @@ func Logout(ctx context.Context, configProvider config.Provider, secretsProvider
 		slog.Debug("failed to clear registry cache", "error", err)
 	}
 
-	return configProvider.UpdateConfig(func(c *config.Config) {
+	return configProvider.UpdateConfig(func(c *config.Config) error {
 		if c.RegistryAuth.OAuth != nil {
 			c.RegistryAuth.OAuth.CachedRefreshTokenRef = ""
 			c.RegistryAuth.OAuth.CachedTokenExpiry = time.Time{}
 		}
+		return nil
 	})
 }
 
@@ -199,8 +200,9 @@ func ensureRegistryURL(configProvider config.Provider, opts LoginOptions) error 
 
 	// Always clear auth when a registry URL is explicitly provided, so that
 	// tokens are never sent to the wrong server.
-	if err := configProvider.UpdateConfig(func(c *config.Config) {
+	if err := configProvider.UpdateConfig(func(c *config.Config) error {
 		c.RegistryAuth = config.RegistryAuth{}
+		return nil
 	}); err != nil {
 		return fmt.Errorf("clearing stale auth config: %w", err)
 	}
@@ -262,7 +264,7 @@ func registryURLFromConfig(cfg *config.Config) string {
 // implementation used by both Login and AuthManager.SetOAuthAuth.
 func ConfigureOAuth(
 	ctx context.Context, issuer, clientID, audience string, scopes []string,
-) (func(*config.Config), error) {
+) (func(*config.Config) error, error) {
 	if err := validateIssuerURL(issuer); err != nil {
 		return nil, err
 	}
@@ -281,7 +283,8 @@ func ConfigureOAuth(
 		return DefaultOAuthScopes()
 	}()
 
-	return func(c *config.Config) {
+	//nolint:unparam // error return is part of the UpdateConfig callback contract; this closure always succeeds
+	return func(c *config.Config) error {
 		c.RegistryAuth = config.RegistryAuth{
 			Type: config.RegistryAuthTypeOAuth,
 			OAuth: &config.RegistryOAuthConfig{
@@ -292,6 +295,7 @@ func ConfigureOAuth(
 				CallbackPort: remote.DefaultCallbackPort,
 			},
 		}
+		return nil
 	}, nil
 }
 

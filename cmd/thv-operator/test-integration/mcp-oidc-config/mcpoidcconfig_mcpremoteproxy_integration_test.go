@@ -20,9 +20,8 @@ const (
 	testRemoteURL       = "https://remote.example.com/mcp"
 )
 
-// newTestMCPRemoteProxy creates an MCPRemoteProxy with either an OIDCConfigRef pointing
-// to a shared MCPOIDCConfig (when oidcConfigRefName is non-empty) or a legacy inline
-// OIDCConfig. The two fields are mutually exclusive per CEL validation.
+// newTestMCPRemoteProxy creates an MCPRemoteProxy with an optional OIDCConfigRef pointing
+// to a shared MCPOIDCConfig (when oidcConfigRefName is non-empty).
 func newTestMCPRemoteProxy(name, namespace string, oidcConfigRefName string) *mcpv1alpha1.MCPRemoteProxy {
 	proxy := &mcpv1alpha1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -41,15 +40,6 @@ func newTestMCPRemoteProxy(name, namespace string, oidcConfigRefName string) *mc
 			Name:     oidcConfigRefName,
 			Audience: "test-proxy-audience",
 			Scopes:   []string{"openid"},
-		}
-	} else {
-		proxy.Spec.OIDCConfig = &mcpv1alpha1.OIDCConfigRef{
-			Type: "inline",
-			Inline: &mcpv1alpha1.InlineOIDCConfig{
-				Issuer:   "https://auth.example.com",
-				Audience: "test-audience",
-				ClientID: "test-client",
-			},
 		}
 	}
 
@@ -109,7 +99,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 					return false
 				}
 				for _, cond := range updated.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady && cond.Status == metav1.ConditionTrue {
+					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
 						return true
 					}
 				}
@@ -299,7 +289,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				}
 				originalCfgHash = updated.Status.ConfigHash
 				for _, cond := range updated.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady && cond.Status == metav1.ConditionTrue {
+					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
 						return true
 					}
 				}
@@ -553,7 +543,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 					return false
 				}
 				for _, cond := range updated.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigReady && cond.Status == metav1.ConditionTrue {
+					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
 						return true
 					}
 				}
@@ -611,16 +601,8 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				Namespace: namespace,
 			}, updated)).Should(Succeed())
 
-			// Switch from OIDCConfigRef to inline OIDCConfig (mutually exclusive)
+			// Remove the OIDCConfigRef
 			updated.Spec.OIDCConfigRef = nil
-			updated.Spec.OIDCConfig = &mcpv1alpha1.OIDCConfigRef{
-				Type: "inline",
-				Inline: &mcpv1alpha1.InlineOIDCConfig{
-					Issuer:   "https://auth.example.com",
-					Audience: "test-audience",
-					ClientID: "test-client",
-				},
-			}
 			Expect(k8sClient.Update(ctx, updated)).Should(Succeed())
 
 			// MCPOIDCConfig should no longer list MCPRemoteProxy in ReferencingWorkloads

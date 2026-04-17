@@ -6,6 +6,7 @@ package v1
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -40,7 +41,7 @@ func CreateTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 
 	// Write the config file if one is provided
 	if cfg != nil {
-		err = provider.UpdateConfig(func(c *config.Config) { *c = *cfg })
+		err = provider.UpdateConfig(func(c *config.Config) error { *c = *cfg; return nil })
 		require.NoError(t, err)
 	}
 
@@ -344,4 +345,93 @@ func TestRegistryAPI_PutEndpoint(t *testing.T) {
 			}
 		})
 	}
+}
+
+// denyRegistryGate is a test helper that blocks all registry mutations.
+type denyRegistryGate struct {
+	registry.NoopPolicyGate
+	err error
+}
+
+func (g *denyRegistryGate) CheckUpdateRegistry(_ context.Context, _ *registry.UpdateRegistryConfig) error {
+	return g.err
+}
+
+func (g *denyRegistryGate) CheckDeleteRegistry(_ context.Context, _ *registry.DeleteRegistryConfig) error {
+	return g.err
+}
+
+//nolint:paralleltest // Mutates global registry policy gate singleton
+func TestUpdateRegistry_BlockedByPolicyGate(t *testing.T) {
+	original := registry.ActivePolicyGate()
+	t.Cleanup(func() { registry.RegisterPolicyGate(original) })
+
+	sentinel := errors.New("[ToolHive Policy] Registry is managed by organization policy")
+	registry.RegisterPolicyGate(&denyRegistryGate{err: sentinel})
+
+	provider, cleanup := CreateTestConfigProvider(t, nil)
+	defer cleanup()
+	routes := NewRegistryRoutesWithProvider(provider)
+
+	body := `{"url":"https://example.com/registry.json"}`
+	req := httptest.NewRequest(http.MethodPut, "/default", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("name", "default")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	routes.updateRegistry(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code, "Blocked PUT should return 403")
+	assert.Contains(t, w.Body.String(), "organization policy")
+}
+
+//nolint:paralleltest // Mutates global registry policy gate singleton
+func TestRemoveRegistry_BlockedByPolicyGate(t *testing.T) {
+	original := registry.ActivePolicyGate()
+	t.Cleanup(func() { registry.RegisterPolicyGate(original) })
+
+	sentinel := errors.New("[ToolHive Policy] Registry is managed by organization policy")
+	registry.RegisterPolicyGate(&denyRegistryGate{err: sentinel})
+
+	routes := &RegistryRoutes{}
+
+	req := httptest.NewRequest(http.MethodDelete, "/default", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("name", "default")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	routes.removeRegistry(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code, "Blocked DELETE should return 403")
+	assert.Contains(t, w.Body.String(), "organization policy")
+}
+
+//nolint:paralleltest // Mutates global registry policy gate singleton
+func TestUpdateRegistry_AllowedByDefaultGate(t *testing.T) {
+	original := registry.ActivePolicyGate()
+	t.Cleanup(func() { registry.RegisterPolicyGate(original) })
+
+	// Reset to default (allow-all) gate
+	registry.RegisterPolicyGate(registry.NoopPolicyGate{})
+
+	provider, cleanup := CreateTestConfigProvider(t, nil)
+	defer cleanup()
+	routes := NewRegistryRoutesWithProvider(provider)
+
+	// Empty body resets registry — should return 200 when gate allows
+	body := `{}`
+	req := httptest.NewRequest(http.MethodPut, "/default", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("name", "default")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	routes.updateRegistry(w, req)
+
+	assert.NotEqual(t, http.StatusForbidden, w.Code,
+		"Default gate should not return 403")
 }

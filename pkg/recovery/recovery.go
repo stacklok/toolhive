@@ -33,7 +33,7 @@ func Middleware(next http.Handler) http.Handler {
 				// ReverseProxy panics with this sentinel when a streaming
 				// response breaks mid-copy; catching it would log noisy
 				// stack traces and corrupt the already-in-flight response.
-				if rec == http.ErrAbortHandler {
+				if isErrAbortHandler(rec) {
 					panic(http.ErrAbortHandler)
 				}
 				stack := debug.Stack()
@@ -74,4 +74,26 @@ func CreateMiddleware(_ *types.MiddlewareConfig, runner types.MiddlewareRunner) 
 	recoveryMw := &FactoryMiddleware{}
 	runner.AddMiddleware(MiddlewareType, recoveryMw)
 	return nil
+}
+
+// isErrAbortHandler reports whether rec is the net/http abort-handler sentinel
+// or an error wrapping it (see errors.Is). httputil.ReverseProxy uses this
+// panic to stop copying a streaming response when the backend or client drops
+// the connection.
+//
+// We must not treat it as a normal panic: logging it as ERROR and calling
+// http.Error would run after headers may already be sent (SSE), which produces
+// "superfluous response.WriteHeader" and corrupts the response.
+func isErrAbortHandler(rec any) bool {
+	if rec == nil {
+		return false
+	}
+	if rec == http.ErrAbortHandler {
+		return true
+	}
+	err, ok := rec.(error)
+	if !ok {
+		return false
+	}
+	return errors.Is(err, http.ErrAbortHandler)
 }

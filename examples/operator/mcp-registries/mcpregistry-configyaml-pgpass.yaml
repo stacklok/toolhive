@@ -1,0 +1,83 @@
+# Example: MCPRegistry with database pgpass using the decoupled configYAML path
+#
+# This example demonstrates how to configure PostgreSQL authentication
+# using the pgpassSecretRef field. The user creates a Secret containing
+# a pgpass-formatted file, and the operator handles the Kubernetes
+# permission plumbing invisibly:
+#
+#   - An init container copies the pgpass file to an emptyDir volume
+#   - The init container runs chmod 0600 (required by libpq)
+#   - The file is mounted at /home/appuser/.pgpass in the registry container
+#   - The PGPASSFILE environment variable is set automatically
+#
+# This is necessary because Kubernetes secret volumes mount files as
+# root-owned, and the registry container runs as non-root (UID 65532).
+# A root-owned 0600 file is unreadable by UID 65532, and fsGroup sets
+# permissions to 0640 which libpq also rejects. The pgpassSecretRef
+# field encapsulates all of this complexity.
+#
+# In the legacy typed path, the operator generated the pgpass secret from
+# databaseConfig.dbAppUserPasswordSecretRef and dbMigrationUserPasswordSecretRef.
+# In the decoupled path, the user creates the pgpass secret directly with
+# the exact content they want.
+
+---
+# Secret containing the pgpass file
+# Format: hostname:port:database:username:password (one entry per line)
+# See https://www.postgresql.org/docs/current/libpq-pgpass.html
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-registry-pgpass
+  namespace: toolhive-system
+type: Opaque
+stringData:
+  .pgpass: |
+    postgres:5432:registry:db_app:myapppassword
+    postgres:5432:registry:db_migrator:mymigrationpassword
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: pgpass-configyaml
+  namespace: toolhive-system
+spec:
+  displayName: "Database Registry with PGPass (configYAML)"
+  configYAML: |
+    sources:
+      - name: production
+        format: toolhive
+        file:
+          path: /config/registry/production/registry.json
+    registries:
+      - name: default
+        sources: ["production"]
+    database:
+      host: postgres
+      port: 5432
+      user: db_app
+      migrationUser: db_migrator
+      database: registry
+      sslMode: require
+      maxOpenConns: 20
+    auth:
+      mode: anonymous
+  # Reference to the user-created pgpass Secret.
+  # The operator handles the init container, emptyDir, chmod 0600, and
+  # PGPASSFILE env var -- you do not need to configure any of that.
+  pgpassSecretRef:
+    name: my-registry-pgpass
+    key: .pgpass
+  # Volume for the registry data ConfigMap (separate from pgpass handling)
+  volumes:
+    - name: registry-data-production
+      configMap:
+        name: prod-registry
+        items:
+          - key: registry.json
+            path: registry.json
+  volumeMounts:
+    - name: registry-data-production
+      mountPath: /config/registry/production
+      readOnly: true

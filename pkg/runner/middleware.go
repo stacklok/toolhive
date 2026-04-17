@@ -16,11 +16,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
+	"github.com/stacklok/toolhive/pkg/webhook/mutating"
 	"github.com/stacklok/toolhive/pkg/webhook/validating"
 )
 
@@ -34,6 +36,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		mcp.ParserMiddlewareType:              mcp.CreateParserMiddleware,
 		mcp.ToolFilterMiddlewareType:          mcp.CreateToolFilterMiddleware,
 		mcp.ToolCallFilterMiddlewareType:      mcp.CreateToolCallFilterMiddleware,
+		ratelimit.MiddlewareType:              ratelimit.CreateMiddleware,
 		usagemetrics.MiddlewareType:           usagemetrics.CreateMiddleware,
 		telemetry.MiddlewareType:              telemetry.CreateMiddleware,
 		authz.MiddlewareType:                  authz.CreateMiddleware,
@@ -41,6 +44,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		recovery.MiddlewareType:               recovery.CreateMiddleware,
 		headerfwd.HeaderForwardMiddlewareName: headerfwd.CreateMiddleware,
 		validating.MiddlewareType:             validating.CreateMiddleware,
+		mutating.MiddlewareType:               mutating.CreateMiddleware,
 	}
 }
 
@@ -116,6 +120,22 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 		return fmt.Errorf("failed to create MCP parser middleware config: %w", err)
 	}
 	middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
+
+	// Rate limit middleware (if configured)
+	// Positioned after MCP parser (needs tool name from context).
+	// Will also need user identity from auth when per-user limits are added (#4550).
+	middlewareConfigs, err = addRateLimitMiddleware(middlewareConfigs, config)
+	if err != nil {
+		return err
+	}
+
+	// Mutating Webhooks middleware (if configured).
+	// Must run BEFORE validating webhooks:
+	// MCP Parser -> [Mutating Webhooks] -> [Validating Webhooks] -> Authz -> Audit
+	middlewareConfigs, err = addMutatingWebhookMiddleware(middlewareConfigs, config)
+	if err != nil {
+		return err
+	}
 
 	// Validating Webhooks middleware (if configured)
 	middlewareConfigs, err = addValidatingWebhookMiddleware(middlewareConfigs, config)
@@ -209,6 +229,29 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// Set the populated middleware configs
 	config.MiddlewareConfigs = middlewareConfigs
 	return nil
+}
+
+// addMutatingWebhookMiddleware configures the mutating webhook middleware if any webhooks are defined.
+// It must be called before addValidatingWebhookMiddleware to preserve the RFC-specified ordering.
+func addMutatingWebhookMiddleware(configs []types.MiddlewareConfig, runConfig *RunConfig) ([]types.MiddlewareConfig, error) {
+	if len(runConfig.MutatingWebhooks) == 0 {
+		return configs, nil
+	}
+
+	params := mutating.FactoryMiddlewareParams{
+		MiddlewareParams: mutating.MiddlewareParams{
+			Webhooks: runConfig.MutatingWebhooks,
+		},
+		ServerName: runConfig.Name,
+		Transport:  runConfig.Transport.String(),
+	}
+
+	config, err := types.NewMiddlewareConfig(mutating.MiddlewareType, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create mutating webhook middleware config: %w", err)
+	}
+
+	return append(configs, *config), nil
 }
 
 // addValidatingWebhookMiddleware configures the validating webhook middleware if any webhooks are defined
@@ -374,4 +417,30 @@ func addAWSStsMiddleware(middlewares []types.MiddlewareConfig, config *RunConfig
 		return nil, fmt.Errorf("failed to create AWS STS middleware config: %w", err)
 	}
 	return append(middlewares, *awsStsMwConfig), nil
+}
+
+// addRateLimitMiddleware adds rate limit middleware if configured.
+func addRateLimitMiddleware(middlewares []types.MiddlewareConfig, config *RunConfig) ([]types.MiddlewareConfig, error) {
+	if config.RateLimitConfig == nil {
+		return middlewares, nil
+	}
+
+	if config.ScalingConfig == nil || config.ScalingConfig.SessionRedis == nil {
+		return nil, fmt.Errorf("rate limiting requires sessionStorage with provider redis")
+	}
+	redisAddr := config.ScalingConfig.SessionRedis.Address
+	redisDB := config.ScalingConfig.SessionRedis.DB
+
+	params := ratelimit.MiddlewareParams{
+		Namespace:  config.RateLimitNamespace,
+		ServerName: config.Name,
+		Config:     config.RateLimitConfig,
+		RedisAddr:  redisAddr,
+		RedisDB:    redisDB,
+	}
+	mwConfig, err := types.NewMiddlewareConfig(ratelimit.MiddlewareType, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create rate limit middleware config: %w", err)
+	}
+	return append(middlewares, *mwConfig), nil
 }

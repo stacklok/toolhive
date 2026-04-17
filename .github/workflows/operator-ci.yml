@@ -17,7 +17,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: 'go.mod'
+          go-version: 'stable'
           cache: true
 
       - name: Install Task
@@ -38,7 +38,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: 'go.mod'
+          go-version: 'stable'
           cache: true
 
       - name: Install Task
@@ -59,7 +59,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: 'go.mod'
+          go-version: 'stable'
           cache: true
 
       - name: Install Task
@@ -80,7 +80,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: 'go.mod'
+          go-version: 'stable'
           cache: true
 
       - name: Install Task
@@ -113,7 +113,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: 'go.mod'
+          go-version: 'stable'
           cache: true
 
       - name: Install Task
@@ -168,7 +168,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
       with:
-        go-version-file: 'go.mod'
+        go-version: 'stable'
         cache: true
         
     - name: Install Task

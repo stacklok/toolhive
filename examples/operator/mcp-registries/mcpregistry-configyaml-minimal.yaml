@@ -1,0 +1,37 @@
+# Example: Minimal MCPRegistry using the decoupled configYAML path
+#
+# This is the simplest possible MCPRegistry using the new configYAML field.
+# It uses a Kubernetes source (watches MCPServer resources in the namespace),
+# which requires no volumes or volume mounts since the registry server reads
+# directly from the Kubernetes API.
+#
+# The configYAML field contains the complete registry server config.yaml
+# content. The operator passes it through to the registry server without
+# parsing or transforming it. The database and auth sections are required
+# by the registry server even in minimal configurations.
+#
+# This example uses auth mode "anonymous" for development/testing.
+# For production, use "oauth" mode (see mcpregistry-configyaml-oauth.yaml).
+
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: minimal-configyaml
+  namespace: toolhive-system
+spec:
+  displayName: "Minimal ConfigYAML Registry"
+  configYAML: |
+    sources:
+      - name: k8s
+        format: upstream
+        kubernetes: {}
+    registries:
+      - name: default
+        sources: ["k8s"]
+    database:
+      host: postgres
+      port: 5432
+      user: db_app
+      database: registry
+    auth:
+      mode: anonymous

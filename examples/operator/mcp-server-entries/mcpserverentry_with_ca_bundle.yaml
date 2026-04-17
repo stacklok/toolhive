@@ -1,0 +1,33 @@
+# MCPServerEntry with custom CA bundle for private remote servers.
+#
+# caBundleRef references a ConfigMap containing CA certificates for TLS
+# verification. Use this for remote servers using internal or self-signed
+# certificates. The ConfigMap key defaults to "ca.crt" if not specified.
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: corp-ca-bundle
+  namespace: toolhive-system
+data:
+  ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    # Your internal CA certificate PEM data here
+    -----END CERTIFICATE-----
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServerEntry
+metadata:
+  name: internal-mcp
+  namespace: toolhive-system
+spec:
+  remoteUrl: https://internal-mcp.corp:8443/mcp
+  transport: streamable-http
+  groupRef:
+    name: remote-tools
+  caBundleRef:
+    configMapRef:
+      name: corp-ca-bundle
+      key: ca.crt

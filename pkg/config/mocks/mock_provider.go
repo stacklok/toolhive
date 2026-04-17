@@ -471,7 +471,7 @@ func (mr *MockProviderMockRecorder) UnsetRegistry() *gomock.Call {
 }
 
 // UpdateConfig mocks base method.
-func (m *MockProvider) UpdateConfig(updateFn func(*config.Config)) error {
+func (m *MockProvider) UpdateConfig(updateFn func(*config.Config) error) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "UpdateConfig", updateFn)
 	ret0, _ := ret[0].(error)

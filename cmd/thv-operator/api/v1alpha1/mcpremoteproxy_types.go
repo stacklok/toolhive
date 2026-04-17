@@ -16,6 +16,8 @@ type HeaderForwardConfig struct {
 	AddPlaintextHeaders map[string]string `json:"addPlaintextHeaders,omitempty"`
 
 	// AddHeadersFromSecret references Kubernetes Secrets for sensitive header values.
+	// +listType=map
+	// +listMapKey=headerName
 	// +optional
 	AddHeadersFromSecret []HeaderFromSecret `json:"addHeadersFromSecret,omitempty"`
 }
@@ -34,15 +36,11 @@ type HeaderFromSecret struct {
 }
 
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
-//
-// +kubebuilder:validation:XValidation:rule="!(has(self.oidcConfig) && has(self.oidcConfigRef))",message="oidcConfig and oidcConfigRef are mutually exclusive; use oidcConfigRef to reference a shared MCPOIDCConfig"
-//
-//nolint:lll // CEL validation rules exceed line length limit
 type MCPRemoteProxySpec struct {
 	// RemoteURL is the URL of the remote MCP server to proxy
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^https?://`
-	RemoteURL string `json:"remoteURL"`
+	RemoteURL string `json:"remoteUrl"`
 
 	// ProxyPort is the port to expose the MCP proxy on
 	// +kubebuilder:validation:Minimum=1
@@ -54,12 +52,6 @@ type MCPRemoteProxySpec struct {
 	// +kubebuilder:validation:Enum=sse;streamable-http
 	// +kubebuilder:default=streamable-http
 	Transport string `json:"transport,omitempty"`
-
-	// OIDCConfig defines OIDC authentication configuration for the proxy.
-	// Deprecated: Use OIDCConfigRef to reference a shared MCPOIDCConfig resource instead.
-	// This field will be removed in v1beta1. OIDCConfig and OIDCConfigRef are mutually exclusive.
-	// +optional
-	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
 
 	// OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
 	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.
@@ -73,6 +65,12 @@ type MCPRemoteProxySpec struct {
 	// The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy.
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
+
+	// AuthServerRef optionally references a resource that configures an embedded
+	// OAuth 2.0/OIDC authorization server to authenticate MCP clients.
+	// Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer).
+	// +optional
+	AuthServerRef *AuthServerRef `json:"authServerRef,omitempty"`
 
 	// HeaderForward configures headers to inject into requests to the remote MCP server.
 	// Use this to add custom headers like X-Tenant-ID or correlation IDs.
@@ -94,9 +92,11 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty"`
 
-	// Telemetry defines observability configuration for the proxy
+	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
+	// The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.
+	// Cross-namespace references are not supported for security and isolation reasons.
 	// +optional
-	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
+	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
 
 	// Resources defines the resource requirements for the proxy container
 	// +optional
@@ -124,10 +124,10 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	ResourceOverrides *ResourceOverrides `json:"resourceOverrides,omitempty"`
 
-	// GroupRef is the name of the MCPGroup this proxy belongs to
-	// Must reference an existing MCPGroup in the same namespace
+	// GroupRef references the MCPGroup this proxy belongs to.
+	// The referenced MCPGroup must be in the same namespace.
 	// +optional
-	GroupRef string `json:"groupRef,omitempty"`
+	GroupRef *MCPGroupRef `json:"groupRef,omitempty"`
 
 	// SessionAffinity controls whether the Service routes repeated client connections to the same pod.
 	// MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
@@ -150,7 +150,7 @@ type MCPRemoteProxyStatus struct {
 
 	// ExternalURL is the external URL where the proxy can be accessed (if exposed externally)
 	// +optional
-	ExternalURL string `json:"externalURL,omitempty"`
+	ExternalURL string `json:"externalUrl,omitempty"`
 
 	// ObservedGeneration reflects the generation of the most recently observed MCPRemoteProxy
 	// +optional
@@ -166,9 +166,18 @@ type MCPRemoteProxyStatus struct {
 	// +optional
 	ToolConfigHash string `json:"toolConfigHash,omitempty"`
 
+	// TelemetryConfigHash stores the hash of the referenced MCPTelemetryConfig for change detection
+	// +optional
+	TelemetryConfigHash string `json:"telemetryConfigHash,omitempty"`
+
 	// ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec
 	// +optional
 	ExternalAuthConfigHash string `json:"externalAuthConfigHash,omitempty"`
+
+	// AuthServerConfigHash is the hash of the referenced authServerRef spec,
+	// used to detect configuration changes and trigger reconciliation.
+	// +optional
+	AuthServerConfigHash string `json:"authServerConfigHash,omitempty"`
 
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
 	// +optional
@@ -214,8 +223,14 @@ const (
 	// ConditionTypeMCPRemoteProxyToolConfigValidated indicates whether the ToolConfigRef is valid
 	ConditionTypeMCPRemoteProxyToolConfigValidated = "ToolConfigValidated"
 
+	// ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
+	ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
+
 	// ConditionTypeMCPRemoteProxyExternalAuthConfigValidated indicates whether the ExternalAuthConfigRef is valid
 	ConditionTypeMCPRemoteProxyExternalAuthConfigValidated = "ExternalAuthConfigValidated"
+
+	// ConditionTypeMCPRemoteProxyAuthServerRefValidated indicates whether the AuthServerRef is valid
+	ConditionTypeMCPRemoteProxyAuthServerRefValidated = "AuthServerRefValidated"
 
 	// ConditionTypeConfigurationValid indicates whether the proxy spec has passed all pre-deployment validation checks
 	ConditionTypeConfigurationValid = "ConfigurationValid"
@@ -262,6 +277,18 @@ const (
 	// ConditionReasonMCPRemoteProxyToolConfigFetchError indicates an error occurred fetching the MCPToolConfig
 	ConditionReasonMCPRemoteProxyToolConfigFetchError = "ToolConfigFetchError"
 
+	// ConditionReasonMCPRemoteProxyTelemetryConfigRefValid indicates the TelemetryConfigRef is valid
+	ConditionReasonMCPRemoteProxyTelemetryConfigRefValid = "TelemetryConfigRefValid"
+
+	// ConditionReasonMCPRemoteProxyTelemetryConfigRefNotFound indicates the referenced MCPTelemetryConfig was not found
+	ConditionReasonMCPRemoteProxyTelemetryConfigRefNotFound = "TelemetryConfigRefNotFound"
+
+	// ConditionReasonMCPRemoteProxyTelemetryConfigRefInvalid indicates the referenced MCPTelemetryConfig is invalid
+	ConditionReasonMCPRemoteProxyTelemetryConfigRefInvalid = "TelemetryConfigRefInvalid"
+
+	// ConditionReasonMCPRemoteProxyTelemetryConfigRefFetchError indicates an error occurred fetching the MCPTelemetryConfig
+	ConditionReasonMCPRemoteProxyTelemetryConfigRefFetchError = "TelemetryConfigRefFetchError"
+
 	// ConditionReasonMCPRemoteProxyExternalAuthConfigValid indicates the ExternalAuthConfigRef is valid
 	ConditionReasonMCPRemoteProxyExternalAuthConfigValid = "ExternalAuthConfigValid"
 
@@ -274,6 +301,24 @@ const (
 	// ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream indicates multi-upstream is not supported
 	// for MCPRemoteProxy (use VirtualMCPServer for multi-upstream).
 	ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefValid indicates the AuthServerRef is valid
+	ConditionReasonMCPRemoteProxyAuthServerRefValid = "AuthServerRefValid"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefNotFound indicates the referenced auth server config was not found
+	ConditionReasonMCPRemoteProxyAuthServerRefNotFound = "AuthServerRefNotFound"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefFetchError indicates an error occurred fetching the auth server config
+	ConditionReasonMCPRemoteProxyAuthServerRefFetchError = "AuthServerRefFetchError"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefInvalidKind indicates the authServerRef kind is not supported
+	ConditionReasonMCPRemoteProxyAuthServerRefInvalidKind = "AuthServerRefInvalidKind"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefInvalidType indicates the referenced config is not an embeddedAuthServer
+	ConditionReasonMCPRemoteProxyAuthServerRefInvalidType = "AuthServerRefInvalidType"
+
+	// ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream indicates multi-upstream is not supported
+	ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream = "MultiUpstreamNotSupported"
 
 	// ConditionReasonConfigurationValid indicates all configuration validations passed
 	ConditionReasonConfigurationValid = "ConfigurationValid"
@@ -293,7 +338,7 @@ const (
 	// ConditionReasonHeaderSecretNotFound indicates a referenced header Secret was not found
 	ConditionReasonHeaderSecretNotFound = "HeaderSecretNotFound"
 
-	// ConditionReasonRemoteURLInvalid indicates the remoteURL is malformed or has an invalid scheme
+	// ConditionReasonRemoteURLInvalid indicates the remoteUrl is malformed or has an invalid scheme
 	ConditionReasonRemoteURLInvalid = "RemoteURLInvalid"
 
 	// ConditionReasonJWKSURLInvalid indicates the JWKS URL is malformed or has an invalid scheme
@@ -302,9 +347,9 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:categories=toolhive
+//+kubebuilder:resource:shortName=rp;mcprp,categories=toolhive
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteURL"
+//+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteUrl"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
@@ -340,11 +385,6 @@ func (m *MCPRemoteProxy) GetName() string {
 // GetNamespace returns the namespace of the MCPRemoteProxy
 func (m *MCPRemoteProxy) GetNamespace() string {
 	return m.Namespace
-}
-
-// GetOIDCConfig returns the OIDC configuration reference
-func (m *MCPRemoteProxy) GetOIDCConfig() *OIDCConfigRef {
-	return m.Spec.OIDCConfig
 }
 
 // GetProxyPort returns the proxy port of the MCPRemoteProxy

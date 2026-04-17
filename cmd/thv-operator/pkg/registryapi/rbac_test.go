@@ -30,16 +30,7 @@ func createTestMCPRegistry() *mcpv1alpha1.MCPRegistry {
 			UID:       types.UID("test-uid"),
 		},
 		Spec: mcpv1alpha1.MCPRegistrySpec{
-			Registries: []mcpv1alpha1.MCPRegistryConfig{
-				{
-					Name:   "default",
-					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMapRef: &corev1.ConfigMapKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "test-configmap"},
-						Key:                  "registry.json",
-					},
-				},
-			},
+			ConfigYAML: "sources:\n  - name: default\n    format: toolhive\nregistries:\n  - name: default\n    sources: [\"default\"]\n",
 		},
 	}
 }

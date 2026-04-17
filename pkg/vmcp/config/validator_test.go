@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/stacklok/toolhive/pkg/authserver"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -694,7 +697,7 @@ func TestValidator_ValidateFailureHandling(t *testing.T) {
 			fh: &FailureHandlingConfig{
 				HealthCheckInterval: Duration(30 * time.Second),
 				UnhealthyThreshold:  3,
-				PartialFailureMode:  "bestEffort",
+				PartialFailureMode:  "best_effort",
 				CircuitBreaker: &CircuitBreakerConfig{
 					Enabled: false,
 				},
@@ -797,7 +800,7 @@ func TestValidator_ValidateFailureHandling(t *testing.T) {
 				PartialFailureMode:  "invalid",
 			},
 			wantErr: true,
-			errMsg:  "partialFailureMode must be one of: fail, bestEffort",
+			errMsg:  "partialFailureMode must be one of: fail, best_effort",
 		},
 		{
 			name: "negative health check interval",
@@ -1161,6 +1164,139 @@ func TestValidateAuthServerIntegration(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("ValidateAuthServerIntegration() error message = %v, want to contain %v", err.Error(), tt.errMsg)
 				}
+			}
+		})
+	}
+}
+
+func TestValidator_ValidateStaticBackends(t *testing.T) {
+	t.Parallel()
+	v := NewValidator()
+
+	tests := []struct {
+		name     string
+		backends []StaticBackendConfig
+		wantErr  bool
+		errMsg   string // substring that must appear in the error message
+	}{
+		{
+			name:     "nil backends is valid",
+			backends: nil,
+			wantErr:  false,
+		},
+		{
+			name:     "empty backends is valid",
+			backends: []StaticBackendConfig{},
+			wantErr:  false,
+		},
+		{
+			name: "valid entry backend with CA bundle",
+			backends: []StaticBackendConfig{
+				{
+					Type:         "entry",
+					CABundlePath: "/etc/toolhive/ca-bundles/test/ca.crt",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid entry backend without CA bundle",
+			backends: []StaticBackendConfig{
+				{
+					Type:         "entry",
+					CABundlePath: "",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid container backend with empty type",
+			backends: []StaticBackendConfig{
+				{
+					Type:         "",
+					CABundlePath: "",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid backend type",
+			backends: []StaticBackendConfig{
+				{
+					Type: "unknown",
+				},
+			},
+			wantErr: true,
+			errMsg:  "backends[0].type must be empty or",
+		},
+		{
+			name: "CA bundle on non-entry backend",
+			backends: []StaticBackendConfig{
+				{
+					Type:         "",
+					CABundlePath: "/some/path",
+				},
+			},
+			wantErr: true,
+			errMsg:  "caBundlePath is only valid when type is",
+		},
+		{
+			name: "path traversal in CA bundle",
+			backends: []StaticBackendConfig{
+				{
+					Type:         "entry",
+					CABundlePath: "/etc/../secret/ca.crt",
+				},
+			},
+			wantErr: true,
+			errMsg:  "contains invalid path characters",
+		},
+		{
+			name: "null byte in CA bundle",
+			backends: []StaticBackendConfig{
+				{
+					Type:         "entry",
+					CABundlePath: "/etc/ca\x00.crt",
+				},
+			},
+			wantErr: true,
+			errMsg:  "contains invalid path characters",
+		},
+		{
+			name: "relative CA bundle path",
+			backends: []StaticBackendConfig{
+				{
+					Type:         "entry",
+					CABundlePath: "relative/ca.crt",
+				},
+			},
+			wantErr: true,
+			errMsg:  "must be an absolute path",
+		},
+		{
+			name: "second backend invalid",
+			backends: []StaticBackendConfig{
+				{
+					Type: "entry",
+				},
+				{
+					Type: "invalid",
+				},
+			},
+			wantErr: true,
+			errMsg:  "backends[1]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := v.validateStaticBackends(tt.backends)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}

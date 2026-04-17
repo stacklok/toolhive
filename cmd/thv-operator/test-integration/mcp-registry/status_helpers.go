@@ -77,42 +77,6 @@ func (h *StatusTestHelper) WaitForConditionReason(registryName, conditionType, e
 		"MCPRegistry %s condition %s should have reason %s", registryName, conditionType, expectedReason)
 }
 
-// WaitForServerCount waits for the registry to report a specific server count
-func (h *StatusTestHelper) WaitForServerCount(registryName string, expectedCount int, timeout time.Duration) {
-	gomega.Eventually(func() int {
-		status, err := h.registryHelper.GetRegistryStatus(registryName)
-		if err != nil {
-			return -1
-		}
-		return status.SyncStatus.ServerCount
-	}, timeout, time.Second).Should(gomega.Equal(expectedCount),
-		"MCPRegistry %s should have server count %d", registryName, expectedCount)
-}
-
-// WaitForLastSyncTime waits for the registry to update its last sync time
-func (h *StatusTestHelper) WaitForLastSyncTime(registryName string, afterTime time.Time, timeout time.Duration) {
-	gomega.Eventually(func() bool {
-		status, err := h.registryHelper.GetRegistryStatus(registryName)
-		if err != nil || status.SyncStatus.LastSyncTime == nil {
-			return false
-		}
-		return status.SyncStatus.LastSyncTime.After(afterTime)
-	}, timeout, time.Second).Should(gomega.BeTrue(),
-		"MCPRegistry %s should update last sync time after %s", registryName, afterTime)
-}
-
-// WaitForLastSyncHash waits for the registry to have a non-empty last sync hash
-func (h *StatusTestHelper) WaitForLastSyncHash(registryName string, timeout time.Duration) {
-	gomega.Eventually(func() string {
-		status, err := h.registryHelper.GetRegistryStatus(registryName)
-		if err != nil {
-			return ""
-		}
-		return status.SyncStatus.LastSyncHash
-	}, timeout, time.Second).ShouldNot(gomega.BeEmpty(),
-		"MCPRegistry %s should have a last sync hash", registryName)
-}
-
 // WaitForSyncCompletion waits for a sync operation to complete (either success or failure)
 func (h *StatusTestHelper) WaitForSyncCompletion(registryName string, timeout time.Duration) {
 	gomega.Eventually(func() bool {
@@ -127,16 +91,4 @@ func (h *StatusTestHelper) WaitForSyncCompletion(registryName string, timeout ti
 			phase == mcpv1alpha1.MCPRegistryPhaseFailed
 	}, timeout, time.Second).Should(gomega.BeTrue(),
 		"MCPRegistry %s sync operation should complete", registryName)
-}
-
-// WaitForManualSyncProcessed waits for a manual sync annotation to be processed
-func (h *StatusTestHelper) WaitForManualSyncProcessed(registryName, triggerValue string, timeout time.Duration) {
-	gomega.Eventually(func() string {
-		status, err := h.registryHelper.GetRegistryStatus(registryName)
-		if err != nil {
-			return ""
-		}
-		return status.LastManualSyncTrigger
-	}, timeout, time.Second).Should(gomega.Equal(triggerValue),
-		"MCPRegistry %s should process manual sync trigger %s", registryName, triggerValue)
 }

@@ -57,7 +57,10 @@ For each related story, read its acceptance criteria. Ask:
 - Should I define an interface now that a sibling story will implement later?
 - Are there naming conventions or patterns I should establish that siblings will follow?
 
-**Do not implement sibling stories.** But design the code so they can be implemented without refactoring what you build here.
+**Do not implement sibling stories.** Design internal interfaces so they can be
+extended without refactoring, but do not add config fields, CRD types, or
+user-facing API surface for functionality that isn't implemented in this PR.
+Unused config confuses users and reviewers.
 
 ### 1.4 Research the Codebase
 
@@ -96,9 +99,10 @@ If the story fits in one PR, use a single PR. If not, split into multiple PRs fo
 3. **Tests alongside**: Each PR includes its own tests
 4. **Generated code with its trigger**: CRD type changes + `task operator-manifests operator-generate` output in the same PR
 
-### 2.3 Present the Plan
+### 2.3 Present the High-Level Plan
 
-Show the user a plan that covers PR boundaries AND commit boundaries within each PR:
+First, show the user a high-level plan covering PR boundaries and what each PR delivers.
+Do NOT include commit-level details yet — get alignment on the split first.
 
 ```markdown
 ## Implementation Plan
@@ -107,20 +111,23 @@ Show the user a plan that covers PR boundaries AND commit boundaries within each
 **PRs**: [1 or N]
 
 ### PR 1: [title]
-**Commits**:
-1. [commit message] — [what changes and why]
-2. [commit message] — [what changes and why]
-3. [commit message] — [what changes and why]
-**Tests**:
-- [Unit/E2E]: [what is tested]
-**AC covered**: [which acceptance criteria this satisfies]
-**Regeneration**: [which `task` commands need to run and in which commit]
+- [what this PR introduces and why]
+- **AC covered**: [which acceptance criteria]
 
 ### PR 2: [title] (if needed)
-...
+- [what this PR introduces and why]
+- **AC covered**: [which acceptance criteria]
 ```
 
-Wait for user approval before proceeding. Adjust if the user has feedback.
+Wait for user approval on the PR split. Adjust if the user has feedback.
+
+### 2.4 Plan Each PR in Detail
+
+Once the user approves the high-level split, enter plan mode for the first PR.
+In plan mode, explore the codebase and design commit boundaries, file changes,
+and test strategy. Present the detailed plan for user approval before writing code.
+
+For subsequent PRs, enter plan mode again once CI is green for the previous PR.
 
 ---
 
@@ -139,6 +146,15 @@ Implement the changes from the plan. Follow these principles:
 - **Match existing patterns**: Don't invent new conventions. Study the codebase and follow what's there.
 - **Design for siblings**: If related stories will extend this code, use interfaces and clear extension points. But don't build speculative abstractions — just leave the door open.
 - **Tests are not optional**: Every AC that says "Unit:" or "E2E:" must have a corresponding test. Write tests as you go, not at the end.
+- **Core vs integration**: Core domain logic (algorithms, data structures, config
+  parsing) can be introduced standalone — it's a testable unit of behavior.
+  Integration concerns (protocol adapters, transport-specific formatting,
+  middleware glue) should be introduced alongside the code that consumes them.
+  If nothing in the PR calls a function, ask whether it belongs in a later PR.
+- **Don't ship unused config surface**: If a story explicitly marks something
+  as out of scope, do not add config fields, CRD attributes, or API surface
+  for it. Design internal interfaces to be extensible, but only introduce
+  user-facing configuration when the corresponding logic ships in the same PR.
 
 ### 3.3 Commit Per the Plan
 

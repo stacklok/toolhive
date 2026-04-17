@@ -66,6 +66,7 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Aggregation: &vmcpconfig.AggregationConfig{

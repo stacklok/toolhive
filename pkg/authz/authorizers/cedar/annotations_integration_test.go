@@ -98,7 +98,7 @@ func TestAuthorizeWithToolAnnotations(t *testing.T) {
 			authzr, err := NewCedarAuthorizer(ConfigOptions{
 				Policies:     tc.policies,
 				EntitiesJSON: `[]`,
-			})
+			}, "")
 			require.NoError(t, err, "Failed to create Cedar authorizer")
 
 			// Build context with identity

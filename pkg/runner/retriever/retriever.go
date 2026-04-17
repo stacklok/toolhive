@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
@@ -18,6 +19,7 @@ import (
 	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/images"
+	containerRuntime "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -55,8 +57,16 @@ type Retriever func(
 	context.Context, string, string, string, string, *templates.RuntimeConfig,
 ) (string, types.ServerMetadata, error)
 
-// GetMCPServer retrieves the MCP server definition from the registry.
-func GetMCPServer(
+// ImagePuller pulls a resolved container image so that it is available locally.
+type ImagePuller func(ctx context.Context, imageURL string) error
+
+// ResolveMCPServer resolves the MCP server definition from the registry without
+// pulling the image. For protocol schemes (npx://, uvx://, go://) this still
+// builds the image since the built image name is needed for configuration.
+// For registry servers this only performs the lookup and verification (fast).
+//
+// Call PullMCPServerImage afterwards to ensure the image is available locally.
+func ResolveMCPServer(
 	ctx context.Context,
 	serverOrImage string,
 	rawCACertPath string,
@@ -67,11 +77,14 @@ func GetMCPServer(
 	var imageMetadata *types.ImageMetadata
 	var imageToUse string
 
-	imageManager := images.NewImageManager(ctx)
 	// Check if the serverOrImage is a protocol scheme, e.g., uvx://, npx://, or go://
 	if runner.IsImageProtocolScheme(serverOrImage) {
 		slog.Debug("Attempting to retrieve MCP server from protocol scheme",
 			"server_or_image", serverOrImage)
+		// Create the image manager only for protocol scheme handling (e.g. building
+		// images from npx://, uvx://, go:// URIs). Registry lookups do not need one,
+		// and NewImageManager is expensive because it pings the Docker daemon.
+		imageManager := images.NewImageManager(ctx)
 		var err error
 		imageToUse, err = handleProtocolScheme(ctx, serverOrImage, rawCACertPath, imageManager, runtimeOverride)
 		if err != nil {
@@ -81,19 +94,15 @@ func GetMCPServer(
 		slog.Debug("No protocol scheme detected, attempting to retrieve image or registry server",
 			"server_or_image", serverOrImage)
 
-		// If group name is provided, look up server in the group first
+		// Registry-based group lookups are no longer supported.
 		if groupName != "" {
-			var err error
-			var server types.ServerMetadata
-			imageToUse, imageMetadata, server, err = handleGroupLookup(ctx, serverOrImage, groupName)
-			if err != nil {
-				return "", nil, err
-			}
-			// Handle remote servers early return
-			if server != nil && server.IsRemote() {
-				return serverOrImage, server, nil
-			}
-		} else {
+			return "", nil, fmt.Errorf(
+				"registry-based group %q is no longer supported; use 'thv group' commands to manage workload groups",
+				groupName,
+			)
+		}
+
+		{
 			var err error
 			var server types.ServerMetadata
 			imageToUse, imageMetadata, server, err = handleRegistryLookup(ctx, serverOrImage)
@@ -112,18 +121,6 @@ func GetMCPServer(
 		return "", nil, err
 	}
 
-	// Pull the image if necessary
-	if err := pullImage(ctx, imageToUse, imageManager); err != nil {
-		// Check if the error is due to context cancellation/timeout
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return "", nil, fmt.Errorf("image pull timed out - the image may be too large or the connection too slow")
-		}
-		if errors.Is(ctx.Err(), context.Canceled) {
-			return "", nil, fmt.Errorf("image pull was canceled")
-		}
-		return "", nil, fmt.Errorf("failed to retrieve or pull image: %w", err)
-	}
-
 	// Guard against returning a typed nil pointer as a ServerMetadata interface.
 	// A nil *ImageMetadata wrapped in a non-nil interface would cause callers
 	// checking "serverMetadata != nil" to proceed and panic on method calls.
@@ -131,6 +128,69 @@ func GetMCPServer(
 		return imageToUse, imageMetadata, nil
 	}
 	return imageToUse, nil, nil
+}
+
+// PullMCPServerImage ensures the resolved image is available locally by pulling
+// it from a remote registry if necessary. For images that already exist locally
+// (e.g. built from a protocol scheme) this is a no-op.
+func PullMCPServerImage(ctx context.Context, imageURL string) error {
+	imageManager := images.NewImageManager(ctx)
+	if err := pullImage(ctx, imageURL, imageManager); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("image pull timed out - the image may be too large or the connection too slow")
+		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return fmt.Errorf("image pull was canceled")
+		}
+		return fmt.Errorf("failed to retrieve or pull image: %w", err)
+	}
+	return nil
+}
+
+// EnforcePolicyAndPullImage checks the runner policy gate and, for non-remote
+// local workloads, pulls the container image. The policy check runs before the
+// pull so that a rejected server fails fast without downloading the image.
+// In Kubernetes mode the pull is skipped because the kubelet handles it.
+//
+// When locallyBuilt is true the image was already built by a protocol-scheme
+// handler (npx://, uvx://, go://) and exists locally, so the pull is skipped
+// to avoid an unnecessary Docker daemon connection.
+//
+// When pullTimeout is positive a child context with that deadline is used for
+// the pull; otherwise ctx is forwarded as-is.
+//
+// The puller parameter controls how the image is fetched; pass
+// PullMCPServerImage for production use or a no-op for tests.
+func EnforcePolicyAndPullImage(
+	ctx context.Context,
+	runConfig *runner.RunConfig,
+	serverMetadata types.ServerMetadata,
+	imageURL string,
+	puller ImagePuller,
+	pullTimeout time.Duration,
+	locallyBuilt bool,
+) error {
+	if serverMetadata != nil && serverMetadata.IsRemote() {
+		return nil
+	}
+
+	if err := runner.ActivePolicyGate().CheckCreateServer(ctx, runConfig); err != nil {
+		return fmt.Errorf("server creation blocked by policy: %w", err)
+	}
+
+	// Skip pull when the image was already built locally (protocol-scheme)
+	// or when running on Kubernetes (the kubelet pulls its own image).
+	if locallyBuilt || containerRuntime.IsKubernetesRuntime() {
+		return nil
+	}
+
+	if pullTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, pullTimeout)
+		defer cancel()
+	}
+
+	return puller(ctx, imageURL)
 }
 
 // handleProtocolScheme handles the protocol scheme case.
@@ -152,64 +212,6 @@ func handleProtocolScheme(
 	}
 	slog.Debug("Using built image", "image", generatedImage, "original", serverOrImage)
 	return generatedImage, nil
-}
-
-// handleGroupLookup handles the group lookup case
-func handleGroupLookup(
-	_ context.Context,
-	serverOrImage string,
-	groupName string,
-) (string, *types.ImageMetadata, types.ServerMetadata, error) {
-	var imageMetadata *types.ImageMetadata
-	var imageToUse string
-
-	provider, err := registry.GetDefaultProvider()
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to get registry provider: %w", err)
-	}
-
-	reg, err := provider.GetRegistry()
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to get registry: %w", err)
-	}
-
-	group, exists := reg.GetGroupByName(groupName)
-	if !exists {
-		return "", nil, nil, fmt.Errorf("group '%s' not found in registry", groupName)
-	}
-
-	// First check if the server exists and whether it's remote
-	var server types.ServerMetadata
-	var serverFound bool
-	if containerServer, exists := group.Servers[serverOrImage]; exists {
-		server = containerServer
-		serverFound = true
-	} else if remoteServer, exists := group.RemoteServers[serverOrImage]; exists {
-		server = remoteServer
-		serverFound = true
-	}
-
-	if serverFound {
-		// Server found, check if it's remote
-		if server.IsRemote() {
-			return serverOrImage, nil, server, nil
-		}
-		// It's a container server, get the ImageMetadata
-		if imgMetadata, ok := server.(*types.ImageMetadata); ok {
-			imageMetadata = imgMetadata
-			slog.Debug("Found imageMetadata in group", "server", serverOrImage, "metadata", imageMetadata)
-			imageToUse = imageMetadata.Image
-		} else {
-			// This shouldn't happen since we just found it, but handle it anyway
-			slog.Debug("ImageMetadata not found in group: could not cast", "server", serverOrImage)
-			imageToUse = serverOrImage
-		}
-	} else {
-		// Server not found in group - fail explicitly
-		return "", nil, nil, fmt.Errorf("server '%s' not found in group '%s'", serverOrImage, groupName)
-	}
-
-	return imageToUse, imageMetadata, nil, nil
 }
 
 // handleRegistryLookup handles the standard registry lookup case

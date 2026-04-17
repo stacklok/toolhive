@@ -402,12 +402,14 @@ spec:
                 items:
                   type: string
                 type: array
+                x-kubernetes-list-type: set
               validationErrors:
                 description: ValidationErrors contains validation error messages if
                   ValidationStatus is Invalid
                 items:
                   type: string
                 type: array
+                x-kubernetes-list-type: atomic
               validationStatus:
                 description: |-
                   ValidationStatus indicates the validation state of the workflow

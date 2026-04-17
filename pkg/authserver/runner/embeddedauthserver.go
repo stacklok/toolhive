@@ -344,7 +344,10 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 		return nil, fmt.Errorf("failed to resolve OIDC client secret: %w", err)
 	}
 
-	// Default scopes if not specified
+	// Default scopes if not specified. The default includes offline_access
+	// (standard OIDC mechanism for refresh tokens). Providers like Google that
+	// use access_type=offline instead should specify explicit scopes in their
+	// config to avoid sending both mechanisms.
 	scopes := oidc.Scopes
 	if len(scopes) == 0 {
 		scopes = []string{"openid", "offline_access"}
@@ -352,10 +355,11 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 
 	return &upstream.OIDCConfig{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{
-			ClientID:     oidc.ClientID,
-			ClientSecret: clientSecret,
-			RedirectURI:  oidc.RedirectURI,
-			Scopes:       scopes,
+			ClientID:                      oidc.ClientID,
+			ClientSecret:                  clientSecret,
+			RedirectURI:                   oidc.RedirectURI,
+			Scopes:                        scopes,
+			AdditionalAuthorizationParams: oidc.AdditionalAuthorizationParams,
 		},
 		Issuer: oidc.IssuerURL,
 	}, nil
@@ -375,10 +379,11 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 
 	cfg := &upstream.OAuth2Config{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{
-			ClientID:     oauth2.ClientID,
-			ClientSecret: clientSecret,
-			RedirectURI:  oauth2.RedirectURI,
-			Scopes:       oauth2.Scopes,
+			ClientID:                      oauth2.ClientID,
+			ClientSecret:                  clientSecret,
+			RedirectURI:                   oauth2.RedirectURI,
+			Scopes:                        oauth2.Scopes,
+			AdditionalAuthorizationParams: oauth2.AdditionalAuthorizationParams,
 		},
 		AuthorizationEndpoint: oauth2.AuthorizationEndpoint,
 		TokenEndpoint:         oauth2.TokenEndpoint,

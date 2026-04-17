@@ -5,9 +5,14 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
+	"sort"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -98,8 +103,11 @@ var vmcpDiscoveredRBACRules = []rbacv1.PolicyRule{
 	},
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},
-		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs", "mcptoolconfigs"},
-		Verbs:     []string{"get", "list", "watch"},
+		Resources: []string{
+			"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpserverentries",
+			"mcpexternalauthconfigs", "mcptoolconfigs",
+		},
+		Verbs: []string{"get", "list", "watch"},
 	},
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},
@@ -113,11 +121,14 @@ var vmcpDiscoveredRBACRules = []rbacv1.PolicyRule{
 	},
 }
 
-// deploymentForVirtualMCPServer returns a VirtualMCPServer Deployment object
+// deploymentForVirtualMCPServer returns a VirtualMCPServer Deployment object.
+// telemetryCfg is the already-fetched MCPTelemetryConfig (nil when not referenced),
+// used for CA bundle volumes and OpenTelemetry env vars without redundant API calls.
 func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) *appsv1.Deployment {
 	ls := labelsForVirtualMCPServer(vmcp.Name)
@@ -129,10 +140,26 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		log.FromContext(ctx).Error(err, "Failed to build volumes for VirtualMCPServer")
 		return nil
 	}
-	env, err := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
+	env, err := r.buildEnvVarsForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
 	if err != nil {
 		log.FromContext(ctx).Error(err, "Failed to build env vars for VirtualMCPServer")
 		return nil
+	}
+
+	// Add CA bundle volumes for MCPServerEntry backends with caBundleRef
+	caVolumes, caMounts, err := r.buildCABundleVolumesForEntries(ctx, vmcp.Namespace, typedWorkloads)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to build CA bundle volumes for MCPServerEntries")
+		return nil
+	}
+	volumes = append(volumes, caVolumes...)
+	volumeMounts = append(volumeMounts, caMounts...)
+
+	// Add telemetry CA bundle volumes from the pre-fetched MCPTelemetryConfig
+	if telemetryCfg != nil {
+		telVolumes, telMounts := ctrlutil.AddTelemetryCABundleVolumes(telemetryCfg)
+		volumes = append(volumes, telVolumes...)
+		volumeMounts = append(volumeMounts, telMounts...)
 	}
 
 	// Add embedded auth server volumes and env vars if configured (inline config)
@@ -181,7 +208,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 							vmcpLivenessInitialDelay, vmcpLivenessPeriod, vmcpLivenessTimeout, vmcpLivenessFailures,
 						),
 						ReadinessProbe: ctrlutil.BuildHealthProbe(
-							"/health", "http",
+							"/readyz", "http",
 							vmcpReadinessInitialDelay, vmcpReadinessPeriod, vmcpReadinessTimeout, vmcpReadinessFailures,
 						),
 						SecurityContext: containerSecurityContext,
@@ -270,23 +297,17 @@ func (r *VirtualMCPServerReconciler) buildVolumesForVmcp(
 	})
 
 	// Add OIDC CA bundle volume if configured
-	if vmcp.Spec.IncomingAuth != nil {
-		if vmcp.Spec.IncomingAuth.OIDCConfig != nil {
-			caVolumes, caMounts := ctrlutil.AddOIDCCABundleVolumes(vmcp.Spec.IncomingAuth.OIDCConfig)
+	if vmcp.Spec.IncomingAuth != nil && vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
+		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(
+			ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get MCPOIDCConfig %s for CA bundle: %w",
+				vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
+		}
+		if oidcCfg != nil {
+			caVolumes, caMounts := ctrlutil.AddOIDCConfigRefCABundleVolumes(oidcCfg)
 			volumes = append(volumes, caVolumes...)
 			volumeMounts = append(volumeMounts, caMounts...)
-		} else if vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
-			oidcCfg, err := ctrlutil.GetOIDCConfigForServer(
-				ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
-			if err != nil {
-				return nil, nil, fmt.Errorf("failed to get MCPOIDCConfig %s for CA bundle: %w",
-					vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
-			}
-			if oidcCfg != nil {
-				caVolumes, caMounts := ctrlutil.AddOIDCConfigRefCABundleVolumes(oidcCfg)
-				volumes = append(volumes, caVolumes...)
-				volumeMounts = append(volumeMounts, caMounts...)
-			}
 		}
 	}
 
@@ -295,10 +316,12 @@ func (r *VirtualMCPServerReconciler) buildVolumesForVmcp(
 	return volumeMounts, volumes, nil
 }
 
-// buildEnvVarsForVmcp builds environment variables for the vmcp container
+// buildEnvVarsForVmcp builds environment variables for the vmcp container.
+// telemetryCfg is the already-fetched MCPTelemetryConfig (nil when not referenced).
 func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) ([]corev1.EnvVar, error) {
 	env := []corev1.EnvVar{}
@@ -330,6 +353,13 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	// Mount Redis password secret when session storage provider is Redis.
 	env = append(env, r.buildRedisPasswordEnvVar(vmcp)...)
 
+	// Mount OpenTelemetry env vars (resource attributes, sensitive headers) from the pre-fetched MCPTelemetryConfig
+	if telemetryCfg != nil && vmcp.Spec.TelemetryConfigRef != nil {
+		otelEnv := ctrlutil.GenerateOpenTelemetryEnvVarsFromRef(
+			telemetryCfg, vmcp.Spec.TelemetryConfigRef, vmcp.Name, vmcp.Namespace)
+		env = append(env, otelEnv...)
+	}
+
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env), nil
 }
 
@@ -343,25 +373,7 @@ func (r *VirtualMCPServerReconciler) buildOIDCEnvVars(
 		return env, nil
 	}
 
-	// Legacy path: inline OIDCConfig client secret
-	if vmcp.Spec.IncomingAuth.OIDCConfig != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig.Inline.ClientSecretRef != nil {
-		inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
-		env = append(env, corev1.EnvVar{
-			Name: "VMCP_OIDC_CLIENT_SECRET",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: inline.ClientSecretRef.Name,
-					},
-					Key: inline.ClientSecretRef.Key,
-				},
-			},
-		})
-	}
-
-	// New path: MCPOIDCConfig inline client secret
+	// MCPOIDCConfig inline client secret
 	if vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
 		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(
 			ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
@@ -494,10 +506,16 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 		return envVars
 	}
 
-	// Discover ExternalAuthConfigs from workloads (MCPServers and MCPRemoteProxies)
+	mcpServerEntryMap, err := r.listMCPServerEntriesAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPServerEntries")
+		return envVars
+	}
+
+	// Discover ExternalAuthConfigs from workloads (MCPServers, MCPRemoteProxies, and MCPServerEntries)
 	for _, workloadInfo := range typedWorkloads {
 		configName := r.getExternalAuthConfigNameFromWorkload(
-			workloadInfo, mcpServerMap, mcpRemoteProxyMap)
+			workloadInfo, mcpServerMap, mcpRemoteProxyMap, mcpServerEntryMap)
 		if configName == "" {
 			continue
 		}
@@ -520,6 +538,15 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 			envVars = append(envVars, *secretEnvVar)
 		}
 	}
+
+	// Sort by name for deterministic ordering. The Kubernetes informer cache returns
+	// items in non-deterministic order (Go map iteration), so without sorting the env
+	// vars appear in a different sequence on each reconcile. reflect.DeepEqual in
+	// containerNeedsUpdate is order-sensitive, so non-deterministic ordering causes a
+	// continuous deployment update loop with 4+ configs.
+	sort.Slice(envVars, func(i, j int) bool {
+		return envVars[i].Name < envVars[j].Name
+	})
 
 	return envVars
 }
@@ -559,6 +586,13 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 			envVars = append(envVars, *secretEnvVar)
 		}
 	}
+
+	// Sort by name for the same reason as discoverExternalAuthConfigSecrets: Go map
+	// iteration over Spec.OutgoingAuth.Backends is non-deterministic, which would
+	// cause a continuous deployment update loop via reflect.DeepEqual in containerNeedsUpdate.
+	sort.Slice(envVars, func(i, j int) bool {
+		return envVars[i].Name < envVars[j].Name
+	})
 
 	return envVars
 }
@@ -792,7 +826,7 @@ func getVmcpImage() string {
 // at pod startup, providing faster feedback to users.
 //
 // Validated secrets include:
-// - OIDC client secrets (IncomingAuth.OIDCConfig.Inline.ClientSecretRef)
+// - OIDC client secrets (via MCPOIDCConfig inline ClientSecretRef)
 // - Service account credentials (OutgoingAuth.*.ServiceAccount.CredentialsRef)
 //
 // This follows the pattern from ctrlutil.GenerateOIDCClientSecretEnvVar() which validates secrets
@@ -803,18 +837,6 @@ func (r *VirtualMCPServerReconciler) validateSecretReferences(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) error {
-	// Validate OIDC client secret if configured (legacy inline path)
-	if vmcp.Spec.IncomingAuth != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig.Inline.ClientSecretRef != nil {
-		if err := r.validateSecretKeyRef(ctx, vmcp.Namespace,
-			vmcp.Spec.IncomingAuth.OIDCConfig.Inline.ClientSecretRef,
-			"OIDC client secret"); err != nil {
-			return err
-		}
-	}
-
 	// Validate MCPOIDCConfig inline client secret if configured
 	if vmcp.Spec.IncomingAuth != nil && vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
 		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(
@@ -956,4 +978,117 @@ func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 		"namespace", vmcp.Namespace)
 
 	return nil
+}
+
+const (
+	// caBundleBasePath is the base path where CA bundle ConfigMaps are mounted in the vMCP pod.
+	caBundleBasePath = "/etc/toolhive/ca-bundles"
+)
+
+// caBundleMountPath returns the mount path for a CA bundle ConfigMap for a given entry name.
+// The key defaults to "ca.crt" if not specified in the CABundleSource.
+func caBundleMountPath(entryName string, caBundleRef *mcpv1alpha1.CABundleSource) string {
+	if caBundleRef == nil {
+		return path.Join(caBundleBasePath, entryName, "ca.crt")
+	}
+	key := "ca.crt"
+	if caBundleRef.ConfigMapRef != nil && caBundleRef.ConfigMapRef.Key != "" {
+		key = caBundleRef.ConfigMapRef.Key
+	}
+	return path.Join(caBundleBasePath, entryName, key)
+}
+
+// caBundleVolumeName returns a deterministic volume name for a CA bundle.
+// Kubernetes volume names are limited to 63 characters and must be valid DNS labels.
+// For short names, the format is "ca-bundle-<entryName>".
+// For long names that would exceed 63 chars, a hash suffix is appended to the
+// truncated name to avoid collisions: "ca-bundle-<truncated>-<sha256[:8]>".
+// Trailing hyphens are trimmed to maintain DNS label validity.
+func caBundleVolumeName(entryName string) string {
+	name := fmt.Sprintf("ca-bundle-%s", entryName)
+	if len(name) <= 63 {
+		return name
+	}
+
+	// Use a hash suffix to avoid collisions between long names sharing a prefix
+	hash := sha256.Sum256([]byte(entryName))
+	suffix := hex.EncodeToString(hash[:4]) // 8 hex chars
+	// "ca-bundle-" (10) + truncated + "-" (1) + hash (8) = 19 overhead, leaving 44 for entry name
+	maxNameLen := 63 - 10 - 1 - 8 // 44
+	truncated := entryName
+	if len(truncated) > maxNameLen {
+		truncated = truncated[:maxNameLen]
+	}
+	truncated = strings.TrimRight(truncated, "-")
+	return fmt.Sprintf("ca-bundle-%s-%s", truncated, suffix)
+}
+
+// buildCABundleVolumesForEntries builds volumes and volume mounts for MCPServerEntry CA bundles.
+func (r *VirtualMCPServerReconciler) buildCABundleVolumesForEntries(
+	ctx context.Context,
+	namespace string,
+	typedWorkloads []workloads.TypedWorkload,
+) ([]corev1.Volume, []corev1.VolumeMount, error) {
+	var volumes []corev1.Volume
+	var mounts []corev1.VolumeMount
+
+	// Early return if no MCPServerEntry workloads to avoid unnecessary API calls
+	hasEntries := false
+	for _, workload := range typedWorkloads {
+		if workload.Type == workloads.WorkloadTypeMCPServerEntry {
+			hasEntries = true
+			break
+		}
+	}
+	if !hasEntries {
+		return volumes, mounts, nil
+	}
+
+	mcpServerEntryMap, err := r.listMCPServerEntriesAsMap(ctx, namespace)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to list MCPServerEntries: %w", err)
+	}
+
+	for _, workload := range typedWorkloads {
+		if workload.Type != workloads.WorkloadTypeMCPServerEntry {
+			continue
+		}
+		entry, found := mcpServerEntryMap[workload.Name]
+		if !found || entry.Spec.CABundleRef == nil || entry.Spec.CABundleRef.ConfigMapRef == nil {
+			continue
+		}
+
+		volName := caBundleVolumeName(workload.Name)
+		mountPath := path.Join(caBundleBasePath, workload.Name)
+
+		key := "ca.crt"
+		if entry.Spec.CABundleRef.ConfigMapRef.Key != "" {
+			key = entry.Spec.CABundleRef.ConfigMapRef.Key
+		}
+
+		volumes = append(volumes, corev1.Volume{
+			Name: volName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: entry.Spec.CABundleRef.ConfigMapRef.Name,
+					},
+					Items: []corev1.KeyToPath{
+						{
+							Key:  key,
+							Path: key,
+						},
+					},
+				},
+			},
+		})
+
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      volName,
+			MountPath: mountPath,
+			ReadOnly:  true,
+		})
+	}
+
+	return volumes, mounts, nil
 }

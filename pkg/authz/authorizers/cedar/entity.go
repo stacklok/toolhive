@@ -79,11 +79,15 @@ func (*EntityFactory) CreateResourceEntity(
 ) (cedar.EntityUID, cedar.Entity) {
 	uid := cedar.NewEntityUID(cedar.EntityType(resourceType), cedar.String(resourceID))
 
-	// Ensure name attribute is set
+	// Ensure name attribute is set — but don't overwrite if the caller
+	// already provided one (e.g. authorizeResourceRead sets name to the
+	// original URI before sanitization).
 	if attributes == nil {
 		attributes = make(map[string]interface{})
 	}
-	attributes["name"] = resourceID
+	if _, exists := attributes["name"]; !exists {
+		attributes["name"] = resourceID
+	}
 
 	attrs := convertMapToCedarRecord(attributes)
 

@@ -637,6 +637,7 @@ func (a *Authorizer) authorizeResourceRead(
 
 	// Create attributes for the entities
 	attributes := mergeContexts(map[string]interface{}{
+		"name":      resourceURI,
 		"uri":       resourceURI,
 		"operation": "read",
 		"feature":   "resource",

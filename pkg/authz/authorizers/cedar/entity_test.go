@@ -161,6 +161,69 @@ func TestCreateResourceEntity_Parents(t *testing.T) {
 	}
 }
 
+// TestCreateResourceEntity_NamePreservation is a regression test for the bug
+// where CreateResourceEntity unconditionally overwrote attributes["name"] with
+// resourceID (the sanitized entity UID). authorizeResourceRead sets name to the
+// original, unsanitized URI before calling CreateResourceEntity — the caller's
+// value must survive. When no name is provided, resourceID is used as fallback.
+func TestCreateResourceEntity_NamePreservation(t *testing.T) {
+	t.Parallel()
+
+	factory := NewEntityFactory()
+
+	tests := []struct {
+		name       string
+		resourceID string
+		attributes map[string]interface{}
+		wantName   string
+	}{
+		{
+			name:       "caller_name_preserved",
+			resourceID: "sanitized-resource-id",
+			attributes: map[string]interface{}{
+				"name": "original/unsanitized:uri",
+			},
+			wantName: "original/unsanitized:uri",
+		},
+		{
+			name:       "uri_with_special_characters_preserved",
+			resourceID: "https___example_com_api_v1_resource_id=42",
+			attributes: map[string]interface{}{
+				"name": "https://example.com/api/v1/resource?id=42",
+			},
+			wantName: "https://example.com/api/v1/resource?id=42",
+		},
+		{
+			name:       "fallback_to_resourceID_when_name_absent",
+			resourceID: "weather",
+			attributes: map[string]interface{}{
+				"description": "Weather tool",
+			},
+			wantName: "weather",
+		},
+		{
+			name:       "fallback_to_resourceID_when_attributes_nil",
+			resourceID: "weather",
+			attributes: nil,
+			wantName:   "weather",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, entity := factory.CreateResourceEntity(
+				"Resource", tt.resourceID, tt.attributes,
+			)
+
+			nameVal, found := entity.Attributes.Get(cedar.String("name"))
+			require.True(t, found, "name attribute must always be set")
+			assert.Equal(t, tt.wantName, string(nameVal.(cedar.String)))
+		})
+	}
+}
+
 // TestCreateEntitiesForRequest_GroupsAsParents verifies that
 // CreateEntitiesForRequest sets THVGroup parent UIDs on the principal but
 // does NOT insert separate THVGroup entities into the entity map (fixing

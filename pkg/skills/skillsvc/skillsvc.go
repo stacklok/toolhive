@@ -240,11 +240,10 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 			return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
 		}
 		// OCI pull failed — fall back to registry lookup for names that look
-		// like a qualified "namespace/name" (no ':' or '@', exactly one '/').
-		// Names with an explicit tag or digest, or with more than one '/'
-		// (e.g. "ghcr.io/org/skill" or "ghcr.io/org/skill:v1"), are
-		// unambiguously OCI refs and must not trigger a registry search.
-		if strings.ContainsAny(opts.Name, ":@") || strings.Count(opts.Name, "/") > 1 {
+		// like a qualified "namespace/name". Names that are unambiguously OCI
+		// (digest, explicit tag, or multi-segment path) must not trigger a
+		// registry search. See isUnambiguousOCIRef for the full rule set.
+		if isUnambiguousOCIRef(opts.Name, ref) {
 			return nil, ociErr
 		}
 		slog.Debug("OCI pull failed, attempting registry fallback", "name", opts.Name, "error", ociErr)
@@ -499,10 +498,11 @@ func (s *service) GetContent(ctx context.Context, opts skills.ContentOptions) (*
 	}
 
 	// OCI failed — try resolving via registry name lookup (e.g. "skill-creator"
-	// or "io.github.stacklok/skill-creator" from the catalog index).
-	// Skip for refs that are clearly OCI references (contain ':', '@', or more
-	// than one '/') to avoid a wasted network round-trip.
-	if strings.ContainsAny(ref, ":@") || strings.Count(ref, "/") > 1 {
+	// or "io.github.stacklok/skill-creator" from the catalog index). Skip for
+	// refs that are unambiguously OCI (digest, explicit tag, or multi-segment
+	// path) to avoid a wasted network round-trip.
+	if parsedRef, isOCI, parseErr := parseOCIReference(ref); parseErr == nil && isOCI &&
+		isUnambiguousOCIRef(ref, parsedRef) {
 		return nil, ociErr
 	}
 	resolved, regErr := s.resolveFromRegistry(ref)
@@ -842,6 +842,27 @@ func parseOCIReference(name string) (nameref.Reference, bool, error) {
 		return nil, true, err
 	}
 	return ref, true, nil
+}
+
+// isUnambiguousOCIRef reports whether raw was clearly intended by the user as
+// an OCI reference, meaning a failed pull must NOT fall back to a registry
+// catalogue lookup. A ref is unambiguous if any of the following hold:
+//
+//   - the parsed form is a digest reference (e.g. "name@sha256:...")
+//   - the raw string contains ':' (explicit tag such as "name:v1")
+//   - the raw string has more than one '/' (multi-segment path such as
+//     "ghcr.io/org/skill")
+//
+// The parsed Reference alone is insufficient for the tag case:
+// nameref.ParseReference normalizes "foo/bar" to "foo/bar:latest" (a name.Tag),
+// making it indistinguishable from an explicitly tagged reference. We therefore
+// rely on the parsed form for the digest check and fall back to string
+// inspection for the tag and segment-count checks.
+func isUnambiguousOCIRef(raw string, ref nameref.Reference) bool {
+	if _, isDigest := ref.(nameref.Digest); isDigest {
+		return true
+	}
+	return strings.Contains(raw, ":") || strings.Count(raw, "/") > 1
 }
 
 // installFromOCI pulls a skill artifact from a remote registry, extracts

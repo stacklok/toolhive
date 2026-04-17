@@ -270,6 +270,69 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			expectAuthorized: true,
 		},
 		{
+			name: "Resource entity exposes name attribute for Cedar schema",
+			policy: `
+			permit(
+				principal,
+				action == Action::"read_resource",
+				resource
+			)
+			when {
+				resource.name == "sensitive_data"
+			};
+			`,
+			claims: jwt.MapClaims{
+				"sub": "user123",
+			},
+			feature:          authorizers.MCPFeatureResource,
+			operation:        authorizers.MCPOperationRead,
+			resourceID:       "sensitive_data",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
+			name: "Resource entity retains uri attribute for backward compat",
+			policy: `
+			permit(
+				principal,
+				action == Action::"read_resource",
+				resource
+			)
+			when {
+				resource.uri == "sensitive_data"
+			};
+			`,
+			claims: jwt.MapClaims{
+				"sub": "user123",
+			},
+			feature:          authorizers.MCPFeatureResource,
+			operation:        authorizers.MCPOperationRead,
+			resourceID:       "sensitive_data",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
+			name: "Resource name and uri attributes carry the same value",
+			policy: `
+			permit(
+				principal,
+				action == Action::"read_resource",
+				resource
+			)
+			when {
+				resource.name == resource.uri
+			};
+			`,
+			claims: jwt.MapClaims{
+				"sub": "user123",
+			},
+			feature:          authorizers.MCPFeatureResource,
+			operation:        authorizers.MCPOperationRead,
+			resourceID:       "sensitive_data",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
 			name: "User can get prompt",
 			policy: `
 			permit(

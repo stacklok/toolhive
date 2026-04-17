@@ -5,47 +5,46 @@
 
 <br>
 
+# The open source MCP platform trusted by developers and enterprises
+
 [![Release][release-img]][release] [![Build status][ci-img]][ci]
 [![Coverage Status][coveralls-img]][coveralls]
 [![License: Apache 2.0][license-img]][license]
 [![Star on GitHub][stars-img]][stars] [![Discord][discord-img]][discord]
 
-# ToolHive - simplify and secure MCP servers
+## Run any MCP server securely, instantly, anywhere.
 
-**Run any Model Context Protocol (MCP) server: securely, instantly, anywhere.**
+ToolHive runs every MCP server in an isolated container, enforces identity and access policy per request, and gives platform teams the observability they need to put MCP in production.
 
-ToolHive includes everything you need to use MCP servers in production. Rather than build or combine components yourself, use ToolHive's Registry Server, Runtime, Gateway, and Portal to get up and running quickly and safely.
+## Why ToolHive?
 
-ToolHive keeps you in control of your MCP estate. Integrate with popular clients in seconds and deploy pre-vetted MCP servers in locked-down containers with a single click or command. ToolHive is available as a desktop app, web app, CLI, and Kubernetes operator.
+Here are some of the more common use cases for ToolHive:
+
+<table>
+  <tr valign="top">
+    <td><strong>Developers.</strong> Run MCP servers with more security and more (token) savings</td>
+    <td><strong>Platform Engineers.</strong> Run MCP on your existing Kubernetes infrastructure</td>
+    <td><strong>Enterprises.</strong> Self-host MCP servers and stay in control of your data</td>
+  </tr>
+  <tr valign="top">
+    <td>Connect Claude Code, Cursor, GitHub Copilot, or your preferred client to MCP servers with a single click or command.<br><br>
+    ToolHive wraps every MCP server in an isolated container with a minimal permission file (no local credentials) and uses semantic tool search to reduce your token usage by up to 85%.</td>
+    <td>Put an end to shadow MCP use by your developers, and give your security team the audit logs and identity enforcement they require.<br><br>
+    ToolHive includes a Kubernetes operator, so you can declare policies, integrate with your IdP and observability stack, emit OTel traces, and more … all with familiar tools and patterns.</td>
+    <td>Most MCP solutions are SaaS, but your compliance requirements prohibit sensitive info from being processed by SaaS providers.<br><br>
+    ToolHive is the exception that allows you to self-host your MCP registry, gateway, etc. You can pilot the entire platform, and when you’re ready to scale, Stacklok’s got the added capabilities and expert team ready!</td>
+  </tr>
+  <tr valign="top">
+    <td><a href="https://stacklok.com/download/">Download ToolHive and get started</a></td>
+    <td><a href="https://docs.stacklok.com/toolhive/guides-k8s/">Explore the Kubernetes operator in our docs</a><br><br><a href="https://stacklok.com/resources/how-to-run-ai-agents-on-kubernetes">Read more about running MCP on Kubernetes</a></td>
+    <td><a href="https://stacklok.com/platform/">Learn more about Stacklok’s platform</a><br><br><a href="https://docs.stacklok.com/toolhive/enterprise">Compare open source ToolHive and Stacklok Enterprise</a></td>
+  </tr>
+</table>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/toolhive-diagram-dark.svg">
   <img src="docs/images/toolhive-diagram-light.svg" alt="ToolHive diagram" width="800" style="padding: 20px 0" />
 </picture>
-
----
-
-<table>
-<tr>
-<td width="50%">
-
-## Why ToolHive?
-
-- **Instant deployment:** Start any MCP server with one click or command, using Docker or Kubernetes.
-- **Secure by default:** Every server runs in an isolated container with only the permissions it needs. Secrets are managed securely, never in plaintext.
-- **Works everywhere:** Use the UI and CLI for local development, or the Kubernetes Operator for production and scale.
-- **Seamless integration:** ToolHive auto-configures popular clients like GitHub Copilot, Cursor, VS Code Server, and more.
-
-<br>
-</td>
-<td width="50%" align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/toolhive-sources-dark.svg">
-    <img src="docs/images/toolhive-sources-light.svg" alt="ToolHive sources diagram" width="400px" />
-  </picture>
-</td>
-</tr>
-</table>
 
 ## Quick links
 

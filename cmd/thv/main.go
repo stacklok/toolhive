@@ -66,8 +66,13 @@ func main() {
 		// Renames bare system keys (BEARER_TOKEN_, REGISTRY_OAUTH_, etc.) to __thv_<scope>_ namespace
 		migration.CheckAndPerformSecretScopeMigration()
 
-		// Ensure default group exists (creates it for fresh installs, no-op otherwise)
-		migration.EnsureDefaultGroupExists()
+		// Ensure the default group exists on fresh installs so that commands
+		// which default to --group default (e.g. run, list) work without the
+		// user having to create the group manually.
+		if err := migration.EnsureDefaultGroupExists(); err != nil {
+			slog.Error("failed to ensure default group exists", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	cmd := app.NewRootCmd(!app.IsCompletionCommand(os.Args))

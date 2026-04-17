@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	aggregatormocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
 	clientmocks "github.com/stacklok/toolhive/pkg/vmcp/client/mocks"
@@ -201,6 +203,33 @@ func TestCreateSessionFactory_NoSecretKubernetes(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorContains(t, err, "an HMAC secret is required when running in Kubernetes")
 	require.Nil(t, factory)
+}
+
+// TestRunDiscovery_KubernetesGroupNotFound exercises the Kubernetes-specific branch
+// in runDiscovery where ErrGroupNotFound is treated as a non-fatal condition.
+// vMCP should start with zero backends and return nil error so it can begin
+// serving before the MCPGroup CRD is created by the operator.
+func TestRunDiscovery_KubernetesGroupNotFound(t *testing.T) {
+	// Cannot run in parallel: t.Setenv modifies the process environment.
+	t.Setenv("TOOLHIVE_RUNTIME", "kubernetes")
+
+	ctrl := gomock.NewController(t)
+	discoverer := aggregatormocks.NewMockBackendDiscoverer(ctrl)
+	backendClient := vmcpmocks.NewMockBackendClient(ctrl)
+	registry := clientmocks.NewMockOutgoingAuthRegistry(ctrl)
+
+	const groupRef = "test-group"
+	discoverer.EXPECT().
+		Discover(gomock.Any(), groupRef).
+		Return(nil, fmt.Errorf("wrapped: %w", groups.ErrGroupNotFound))
+
+	backends, gotClient, gotRegistry, err := runDiscovery(t.Context(), groupRef, discoverer, backendClient, registry)
+
+	require.NoError(t, err)
+	assert.NotNil(t, backends)
+	assert.Empty(t, backends)
+	assert.Same(t, backendClient, gotClient)
+	assert.Same(t, registry, gotRegistry)
 }
 
 // TestRunDiscovery_ZeroBackends exercises the branch in runDiscovery where the

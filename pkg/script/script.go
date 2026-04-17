@@ -80,7 +80,7 @@ type Config struct {
 }
 
 // New creates an Executor bound to the given tools and configuration.
-// A nil cfg uses defaults (DefaultStepLimit, unlimited parallelism, no timeout).
+// A nil cfg uses defaults (DefaultStepLimit, unlimited parallelism, DefaultScriptTimeout).
 func New(tools []Tool, cfg *Config) Executor {
 	c := resolveConfig(cfg)
 	return &executor{
@@ -103,7 +103,7 @@ func resolveConfig(cfg *Config) Config {
 	if c.ParallelMax < 0 {
 		c.ParallelMax = 0
 	}
-	if c.ScriptTimeout == 0 {
+	if c.ScriptTimeout <= 0 {
 		c.ScriptTimeout = DefaultScriptTimeout
 	}
 	return c

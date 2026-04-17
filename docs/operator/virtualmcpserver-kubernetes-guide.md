@@ -50,7 +50,7 @@ The `--format k8s` option automatically converts to MCPServer CRD format.
 Review the exported YAML and make any necessary adjustments:
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: my-server
@@ -163,7 +163,7 @@ Create an MCPGroup to organize the backends:
 
 ```yaml
 # mcp-group.yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: my-services
@@ -178,7 +178,7 @@ Add `groupRef` to each exported MCPServer:
 
 ```yaml
 # github.yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: github
@@ -200,7 +200,7 @@ Create a VirtualMCPServer to aggregate the backends:
 
 ```yaml
 # virtual-mcp-server.yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: my-vmcp
@@ -362,7 +362,7 @@ thv export backend2 ./backend2.yaml --format k8s
 
 # Create manifests (add groupRef to each backend YAML)
 cat > resources.yaml <<EOF
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: services
@@ -370,7 +370,7 @@ metadata:
 # Include backend1.yaml content with groupRef: {name: services}
 # Include backend2.yaml content with groupRef: {name: services}
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: services-vmcp
@@ -438,7 +438,7 @@ For remote MCP servers that don't need a dedicated proxy, use `MCPServerEntry` i
 
 **Before (MCPRemoteProxy — deploys a proxy pod):**
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRemoteProxy
 metadata:
   name: context7
@@ -452,7 +452,7 @@ spec:
 
 **After (MCPServerEntry — zero infrastructure):**
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServerEntry
 metadata:
   name: context7

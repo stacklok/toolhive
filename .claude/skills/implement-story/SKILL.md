@@ -170,7 +170,7 @@ After changes that affect generated artifacts, run the appropriate tasks:
 
 | Change Type | Regeneration Command |
 |-------------|---------------------|
-| CRD type definitions (`api/v1alpha1/*_types.go`) | `task operator-manifests operator-generate` |
+| CRD type definitions (`api/v1beta1/*_types.go`) | `task operator-manifests operator-generate` |
 | Mock interfaces | `task gen` |
 | CLI commands or API endpoints | `task docs` |
 | Helm chart values | `task helm-docs` |

@@ -12,7 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
@@ -44,12 +44,12 @@ var _ = Describe("VirtualMCPServer Composite Tool Template Functions", Ordered, 
 			images.YardstickServerImage, timeout, pollingInterval)
 
 		By("Creating VirtualMCPCompositeToolDefinition with fromJson template function")
-		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{
+		compositeToolDef := &mcpv1beta1.VirtualMCPCompositeToolDefinition{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      compositeToolDefName,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
+			Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
 				CompositeToolConfig: vmcpconfig.CompositeToolConfig{
 					Name:        "parse_json_workflow",
 					Description: "Workflow that parses JSON text responses using fromJson",
@@ -92,7 +92,7 @@ var _ = Describe("VirtualMCPServer Composite Tool Template Functions", Ordered, 
 
 		By("Verifying VirtualMCPCompositeToolDefinition was created")
 		Eventually(func() bool {
-			def := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
+			def := &mcpv1beta1.VirtualMCPCompositeToolDefinition{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      compositeToolDefName,
 				Namespace: testNamespace,
@@ -101,13 +101,13 @@ var _ = Describe("VirtualMCPServer Composite Tool Template Functions", Ordered, 
 		}, 30*time.Second, pollingInterval).Should(BeTrue(), "VirtualMCPCompositeToolDefinition should exist")
 
 		By("Creating VirtualMCPServer with referenced composite tool")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+			Spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Aggregation: &vmcpconfig.AggregationConfig{
@@ -119,7 +119,7 @@ var _ = Describe("VirtualMCPServer Composite Tool Template Functions", Ordered, 
 						},
 					},
 				},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
 				ServiceType: "NodePort",
@@ -138,7 +138,7 @@ var _ = Describe("VirtualMCPServer Composite Tool Template Functions", Ordered, 
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -147,7 +147,7 @@ var _ = Describe("VirtualMCPServer Composite Tool Template Functions", Ordered, 
 		_ = k8sClient.Delete(ctx, vmcpServer)
 
 		By("Cleaning up VirtualMCPCompositeToolDefinition")
-		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{
+		compositeToolDef := &mcpv1beta1.VirtualMCPCompositeToolDefinition{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      compositeToolDefName,
 				Namespace: testNamespace,
@@ -156,7 +156,7 @@ var _ = Describe("VirtualMCPServer Composite Tool Template Functions", Ordered, 
 		_ = k8sClient.Delete(ctx, compositeToolDef)
 
 		By("Cleaning up backend MCPServer")
-		backend := &mcpv1alpha1.MCPServer{
+		backend := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backendName,
 				Namespace: testNamespace,
@@ -165,7 +165,7 @@ var _ = Describe("VirtualMCPServer Composite Tool Template Functions", Ordered, 
 		_ = k8sClient.Delete(ctx, backend)
 
 		By("Cleaning up MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{
+		mcpGroup := &mcpv1beta1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      mcpGroupName,
 				Namespace: testNamespace,
@@ -197,14 +197,14 @@ var _ = Describe("VirtualMCPServer Composite Tool Template Functions", Ordered, 
 		})
 
 		It("should have VirtualMCPServer in Ready phase", func() {
-			vmcp := &mcpv1alpha1.VirtualMCPServer{}
+			vmcp := &mcpv1beta1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
 			}, vmcp)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(vmcp.Status.Phase).To(Equal(mcpv1alpha1.VirtualMCPServerPhaseReady),
+			Expect(vmcp.Status.Phase).To(Equal(mcpv1beta1.VirtualMCPServerPhaseReady),
 				"VirtualMCPServer should be Ready - if not, the validator may not recognize fromJson")
 		})
 	})

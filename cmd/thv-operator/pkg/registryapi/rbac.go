@@ -9,7 +9,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 )
 
@@ -68,7 +68,7 @@ var registryAPIRBACRules = []rbacv1.PolicyRule{
 // when the MCPRegistry is deleted.
 func (m *manager) ensureRBACResources(
 	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	mcpRegistry *mcpv1beta1.MCPRegistry,
 ) error {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 	ctxLogger.Info("Ensuring RBAC resources for registry API")

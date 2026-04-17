@@ -618,7 +618,7 @@ thv run --transport sse --endpoint-prefix /playwright playwright
 
 **Kubernetes CRD:**
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 spec:
   endpointPrefix: /playwright

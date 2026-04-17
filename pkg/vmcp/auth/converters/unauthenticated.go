@@ -8,7 +8,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -24,7 +24,7 @@ func (*UnauthenticatedConverter) StrategyType() string {
 // ConvertToStrategy converts an MCPExternalAuthConfig with type "unauthenticated" to a BackendAuthStrategy.
 // Since unauthenticated requires no configuration, this simply returns a strategy with the correct type.
 func (*UnauthenticatedConverter) ConvertToStrategy(
-	_ *mcpv1alpha1.MCPExternalAuthConfig,
+	_ *mcpv1beta1.MCPExternalAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
 	return &authtypes.BackendAuthStrategy{
 		Type: authtypes.StrategyTypeUnauthenticated,
@@ -35,7 +35,7 @@ func (*UnauthenticatedConverter) ConvertToStrategy(
 // ResolveSecrets is a no-op for unauthenticated strategy since there are no secrets to resolve.
 func (*UnauthenticatedConverter) ResolveSecrets(
 	_ context.Context,
-	_ *mcpv1alpha1.MCPExternalAuthConfig,
+	_ *mcpv1beta1.MCPExternalAuthConfig,
 	_ client.Client,
 	_ string,
 	strategy *authtypes.BackendAuthStrategy,

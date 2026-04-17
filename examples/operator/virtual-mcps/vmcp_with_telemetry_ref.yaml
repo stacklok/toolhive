@@ -3,7 +3,7 @@
 # This example demonstrates using a shared MCPTelemetryConfig resource with a
 # VirtualMCPServer via spec.telemetryConfigRef. This is the preferred pattern
 # for configuring telemetry — the inline spec.config.telemetry field is
-# deprecated and will be removed in v1beta1.
+# deprecated and will be removed in a future API version.
 #
 # The MCPTelemetryConfig enables OTLP tracing, OTLP metrics, and Prometheus
 # metrics. The VirtualMCPServer references it and provides a unique serviceName
@@ -25,7 +25,7 @@
 ---
 # Step 1: Shared telemetry configuration
 # Define once, reference from multiple MCPServers and VirtualMCPServers.
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPTelemetryConfig
 metadata:
   name: shared-otel
@@ -45,7 +45,7 @@ spec:
 
 ---
 # Step 2: MCPGroup for backend discovery
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: telemetry-demo
@@ -55,7 +55,7 @@ spec:
 
 ---
 # Step 3: MCPServer backend that references the group
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: yardstick-telemetry
@@ -78,7 +78,7 @@ spec:
 # Step 4: VirtualMCPServer with telemetryConfigRef
 # The telemetryConfigRef replaces the deprecated inline spec.config.telemetry field.
 # serviceName provides a unique OTel service name for this vMCP's telemetry.
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: telemetry-demo-vmcp

@@ -5,7 +5,7 @@
 package runconfig
 
 import (
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -15,7 +15,7 @@ import (
 // caBundleFilePath is the computed mount path for the CA bundle (empty if none configured).
 func AddMCPTelemetryConfigRefOptions(
 	options *[]runner.RunConfigBuilderOption,
-	telemetrySpec *mcpv1alpha1.MCPTelemetryConfigSpec,
+	telemetrySpec *mcpv1beta1.MCPTelemetryConfigSpec,
 	serviceNameOverride string,
 	defaultServiceName string,
 	caBundleFilePath string,

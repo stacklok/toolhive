@@ -19,12 +19,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 type restartTestContext struct {
-	mcpServer  *mcpv1alpha1.MCPServer
+	mcpServer  *mcpv1beta1.MCPServer
 	client     client.Client
 	reconciler *MCPServerReconciler
 	t          *testing.T
@@ -39,7 +39,7 @@ func setupRestartTest(t *testing.T) *restartTestContext {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	return &restartTestContext{
@@ -135,7 +135,7 @@ func (tc *restartTestContext) handleRestartAnnotation() (bool, error) {
 	}
 
 	// Now fetch the updated MCPServer for the actual test
-	updatedMCPServer := &mcpv1alpha1.MCPServer{}
+	updatedMCPServer := &mcpv1beta1.MCPServer{}
 	err = tc.client.Get(context.TODO(), types.NamespacedName{
 		Name:      tc.mcpServer.Name,
 		Namespace: tc.mcpServer.Namespace,
@@ -728,7 +728,7 @@ func (m *mockFailingClient) Update(ctx context.Context, obj client.Object, opts 
 	}
 	if m.failOnMCPServerUpdate {
 		// Check if the object being updated is an MCPServer
-		if _, isMCPServer := obj.(*mcpv1alpha1.MCPServer); isMCPServer {
+		if _, isMCPServer := obj.(*mcpv1beta1.MCPServer); isMCPServer {
 			return fmt.Errorf("mock error: MCPServer Update operation failed")
 		}
 	}

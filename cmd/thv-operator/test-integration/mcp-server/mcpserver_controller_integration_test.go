@@ -23,7 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 var _ = Describe("MCPServer Controller Integration Tests", func() {
@@ -40,8 +40,8 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		var (
 			namespace        string
 			mcpServerName    string
-			mcpServer        *mcpv1alpha1.MCPServer
-			createdMCPServer *mcpv1alpha1.MCPServer
+			mcpServer        *mcpv1beta1.MCPServer
+			createdMCPServer *mcpv1beta1.MCPServer
 		)
 
 		BeforeAll(func() {
@@ -57,37 +57,37 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			_ = k8sClient.Create(ctx, ns)
 
 			// Define the MCPServer resource
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "example/mcp-server:latest",
 					Transport: "stdio",
 					ProxyMode: "sse",
 					ProxyPort: 8080,
 					MCPPort:   8080,
 					Args:      []string{"--verbose"},
-					Env: []mcpv1alpha1.EnvVar{
+					Env: []mcpv1beta1.EnvVar{
 						{
 							Name:  "DEBUG",
 							Value: "true",
 						},
 					},
-					Resources: mcpv1alpha1.ResourceRequirements{
-						Limits: mcpv1alpha1.ResourceList{
+					Resources: mcpv1beta1.ResourceRequirements{
+						Limits: mcpv1beta1.ResourceList{
 							CPU:    "500m",
 							Memory: "1Gi",
 						},
-						Requests: mcpv1alpha1.ResourceList{
+						Requests: mcpv1beta1.ResourceList{
 							CPU:    "100m",
 							Memory: "128Mi",
 						},
 					},
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							PodTemplateMetadataOverrides: &mcpv1beta1.ResourceMetadataOverrides{
 								Labels: map[string]string{
 									"podspec-testlabel": "true",
 								},
@@ -100,7 +100,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			// Create the MCPServer
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
 
-			createdMCPServer = &mcpv1alpha1.MCPServer{}
+			createdMCPServer = &mcpv1beta1.MCPServer{}
 			k8sClient.Get(ctx, types.NamespacedName{
 				Name:      mcpServerName,
 				Namespace: namespace,
@@ -325,7 +325,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 		It("Should set ObservedGeneration in status after reconciliation", func() {
 			Eventually(func() int64 {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
 					Namespace: namespace,
@@ -338,7 +338,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 		It("Should set the Ready condition", func() {
 			Eventually(func() bool {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
 					Namespace: namespace,
@@ -348,7 +348,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				}
 
 				for _, cond := range updatedMCPServer.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeReady {
+					if cond.Type == mcpv1beta1.ConditionTypeReady {
 						// In envtest, pods don't actually run, so the condition
 						// will be set (True if phase=Running, False if Pending)
 						return true
@@ -414,7 +414,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		var (
 			namespace     string
 			mcpServerName string
-			mcpServer     *mcpv1alpha1.MCPServer
+			mcpServer     *mcpv1beta1.MCPServer
 		)
 
 		BeforeAll(func() {
@@ -430,12 +430,12 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			_ = k8sClient.Create(ctx, ns)
 
 			// Define the MCPServer resource with invalid PodTemplateSpec
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
@@ -458,7 +458,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		It("Should set PodTemplateValid condition to False", func() {
 			// Wait for the status to be updated with the invalid condition
 			Eventually(func() bool {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
 					Namespace: namespace,
@@ -478,7 +478,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Verify the condition message contains expected text
-			updatedMCPServer := &mcpv1alpha1.MCPServer{}
+			updatedMCPServer := &mcpv1beta1.MCPServer{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      mcpServerName,
 				Namespace: namespace,
@@ -510,7 +510,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		})
 
 		It("Should have Failed phase in status", func() {
-			updatedMCPServer := &mcpv1alpha1.MCPServer{}
+			updatedMCPServer := &mcpv1beta1.MCPServer{}
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
@@ -519,7 +519,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				if err != nil {
 					return false
 				}
-				return updatedMCPServer.Status.Phase == mcpv1alpha1.MCPServerPhaseFailed
+				return updatedMCPServer.Status.Phase == mcpv1beta1.MCPServerPhaseFailed
 			}, timeout, interval).Should(BeTrue())
 
 			Expect(updatedMCPServer.Status.Message).To(ContainSubstring("Invalid PodTemplateSpec"))
@@ -527,7 +527,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 		It("Should set Ready condition to False for invalid PodTemplateSpec", func() {
 			Eventually(func() bool {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
 					Namespace: namespace,
@@ -537,9 +537,9 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				}
 
 				for _, cond := range updatedMCPServer.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeReady {
+					if cond.Type == mcpv1beta1.ConditionTypeReady {
 						return cond.Status == metav1.ConditionFalse &&
-							cond.Reason == mcpv1alpha1.ConditionReasonNotReady
+							cond.Reason == mcpv1beta1.ConditionReasonNotReady
 					}
 				}
 				return false
@@ -551,8 +551,8 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		var (
 			namespace        string
 			mcpServerName    string
-			mcpServer        *mcpv1alpha1.MCPServer
-			createdMCPServer *mcpv1alpha1.MCPServer
+			mcpServer        *mcpv1beta1.MCPServer
+			createdMCPServer *mcpv1beta1.MCPServer
 		)
 
 		BeforeAll(func() {
@@ -568,12 +568,12 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			_ = k8sClient.Create(ctx, ns)
 
 			// Define the MCPServer resource with PodTemplateSpec resource limits
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
@@ -586,7 +586,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			// Create the MCPServer
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
 
-			createdMCPServer = &mcpv1alpha1.MCPServer{}
+			createdMCPServer = &mcpv1beta1.MCPServer{}
 			k8sClient.Get(ctx, types.NamespacedName{
 				Name:      mcpServerName,
 				Namespace: namespace,
@@ -652,7 +652,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 		It("Should have PodTemplateValid condition set to True", func() {
 			Eventually(func() bool {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
 					Namespace: namespace,
@@ -675,8 +675,8 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		var (
 			namespace        string
 			mcpServerName    string
-			mcpServer        *mcpv1alpha1.MCPServer
-			createdMCPServer *mcpv1alpha1.MCPServer
+			mcpServer        *mcpv1beta1.MCPServer
+			createdMCPServer *mcpv1beta1.MCPServer
 		)
 
 		BeforeAll(func() {
@@ -692,12 +692,12 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			_ = k8sClient.Create(ctx, ns)
 
 			// Define the MCPServer resource with PodTemplateSpec securityContext
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
@@ -710,7 +710,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			// Create the MCPServer
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
 
-			createdMCPServer = &mcpv1alpha1.MCPServer{}
+			createdMCPServer = &mcpv1beta1.MCPServer{}
 			k8sClient.Get(ctx, types.NamespacedName{
 				Name:      mcpServerName,
 				Namespace: namespace,
@@ -764,7 +764,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 		It("Should have PodTemplateValid condition set to True", func() {
 			Eventually(func() bool {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
 					Namespace: namespace,
@@ -787,7 +787,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		var (
 			namespace     string
 			mcpServerName string
-			mcpServer     *mcpv1alpha1.MCPServer
+			mcpServer     *mcpv1beta1.MCPServer
 		)
 
 		BeforeAll(func() {
@@ -803,12 +803,12 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			_ = k8sClient.Create(ctx, ns)
 
 			// Define the MCPServer resource WITHOUT PodTemplateSpec initially
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
@@ -908,7 +908,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		var (
 			namespace     string
 			mcpServerName string
-			mcpServer     *mcpv1alpha1.MCPServer
+			mcpServer     *mcpv1beta1.MCPServer
 		)
 
 		BeforeAll(func() {
@@ -924,12 +924,12 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			_ = k8sClient.Create(ctx, ns)
 
 			// Define the MCPServer resource with a simple valid PodTemplateSpec
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
@@ -950,7 +950,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 		It("Should set PodTemplateValid condition to True with reason ValidPodTemplateSpec", func() {
 			Eventually(func() bool {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
 					Namespace: namespace,
@@ -969,7 +969,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Verify the condition details
-			updatedMCPServer := &mcpv1alpha1.MCPServer{}
+			updatedMCPServer := &mcpv1beta1.MCPServer{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      mcpServerName,
 				Namespace: namespace,
@@ -993,7 +993,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		var (
 			namespace     string
 			mcpServerName string
-			mcpServer     *mcpv1alpha1.MCPServer
+			mcpServer     *mcpv1beta1.MCPServer
 		)
 
 		BeforeAll(func() {
@@ -1009,16 +1009,16 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			_ = k8sClient.Create(ctx, ns)
 
 			// Define the MCPServer resource with invalid GroupRef
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "non-existent-group"}, // This group doesn't exist
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "non-existent-group"}, // This group doesn't exist
 				},
 			}
 
@@ -1034,7 +1034,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		It("Should set GroupRefValidated condition to False with reason GroupRefNotFound", func() {
 			// Wait for the status to be updated with the invalid condition
 			Eventually(func() bool {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
 					Namespace: namespace,
@@ -1054,7 +1054,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Verify the condition message contains expected text
-			updatedMCPServer := &mcpv1alpha1.MCPServer{}
+			updatedMCPServer := &mcpv1beta1.MCPServer{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      mcpServerName,
 				Namespace: namespace,
@@ -1090,7 +1090,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			// GroupRef validation doesn't block deployment creation,
 			// so the Ready condition should eventually be set based on pod status
 			Eventually(func() bool {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
 					Namespace: namespace,
@@ -1100,7 +1100,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				}
 
 				for _, cond := range updatedMCPServer.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeReady {
+					if cond.Type == mcpv1beta1.ConditionTypeReady {
 						return true // Condition exists, regardless of status
 					}
 				}
@@ -1114,8 +1114,8 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			namespace     string
 			mcpServerName string
 			mcpGroupName  string
-			mcpServer     *mcpv1alpha1.MCPServer
-			mcpGroup      *mcpv1alpha1.MCPGroup
+			mcpServer     *mcpv1beta1.MCPServer
+			mcpGroup      *mcpv1beta1.MCPGroup
 		)
 
 		BeforeAll(func() {
@@ -1132,12 +1132,12 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			_ = k8sClient.Create(ctx, ns)
 
 			// Create MCPGroup first
-			mcpGroup = &mcpv1alpha1.MCPGroup{
+			mcpGroup = &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpGroupName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
+				Spec: mcpv1beta1.MCPGroupSpec{
 					Description: "A test group for integration testing",
 				},
 			}
@@ -1145,25 +1145,25 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 			// Wait for the group to be created and ready
 			Eventually(func() bool {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
+				updatedGroup := &mcpv1beta1.MCPGroup{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpGroupName,
 					Namespace: namespace,
 				}, updatedGroup)
-				return err == nil && updatedGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
+				return err == nil && updatedGroup.Status.Phase == mcpv1beta1.MCPGroupPhaseReady
 			}, timeout, interval).Should(BeTrue())
 
 			// Define the MCPServer resource with valid GroupRef
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName}, // This group exists
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName}, // This group exists
 				},
 			}
 
@@ -1181,7 +1181,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		It("Should set GroupRefValidated condition to True with reason GroupRefIsValid", func() {
 			// Wait for the status to be updated with the valid condition
 			Eventually(func() bool {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
 					Namespace: namespace,
@@ -1201,7 +1201,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Verify the condition message contains expected text
-			updatedMCPServer := &mcpv1alpha1.MCPServer{}
+			updatedMCPServer := &mcpv1beta1.MCPServer{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      mcpServerName,
 				Namespace: namespace,
@@ -1222,7 +1222,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		It("Should update MCPGroup with server reference", func() {
 			// Wait for the MCPGroup to be updated with the server reference
 			Eventually(func() bool {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
+				updatedGroup := &mcpv1beta1.MCPGroup{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpGroupName,
 					Namespace: namespace,
@@ -1243,11 +1243,11 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 	})
 })
 
-func verifyOwnerReference(ownerRefs []metav1.OwnerReference, mcpServer *mcpv1alpha1.MCPServer, resourceType string) {
+func verifyOwnerReference(ownerRefs []metav1.OwnerReference, mcpServer *mcpv1beta1.MCPServer, resourceType string) {
 	ExpectWithOffset(1, ownerRefs).To(HaveLen(1), fmt.Sprintf("%s should have exactly one owner reference", resourceType))
 	ownerRef := ownerRefs[0]
 
-	ExpectWithOffset(1, ownerRef.APIVersion).To(Equal("toolhive.stacklok.dev/v1alpha1"))
+	ExpectWithOffset(1, ownerRef.APIVersion).To(Equal("toolhive.stacklok.dev/v1beta1"))
 	ExpectWithOffset(1, ownerRef.Kind).To(Equal("MCPServer"))
 	ExpectWithOffset(1, ownerRef.Name).To(Equal(mcpServer.Name))
 	ExpectWithOffset(1, ownerRef.UID).To(Equal(mcpServer.UID))

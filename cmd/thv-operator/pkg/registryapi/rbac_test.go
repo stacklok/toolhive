@@ -19,17 +19,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
-func createTestMCPRegistry() *mcpv1alpha1.MCPRegistry {
-	return &mcpv1alpha1.MCPRegistry{
+func createTestMCPRegistry() *mcpv1beta1.MCPRegistry {
+	return &mcpv1beta1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-registry",
 			Namespace: "test-namespace",
 			UID:       types.UID("test-uid"),
 		},
-		Spec: mcpv1alpha1.MCPRegistrySpec{
+		Spec: mcpv1beta1.MCPRegistrySpec{
 			ConfigYAML: "sources:\n  - name: default\n    format: toolhive\nregistries:\n  - name: default\n    sources: [\"default\"]\n",
 		},
 	}
@@ -37,7 +37,7 @@ func createTestMCPRegistry() *mcpv1alpha1.MCPRegistry {
 
 func createTestScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
 	return scheme
@@ -48,10 +48,10 @@ func TestEnsureRBACResources(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		mcpRegistry   *mcpv1alpha1.MCPRegistry
+		mcpRegistry   *mcpv1beta1.MCPRegistry
 		setupClient   func(*testing.T) client.Client
 		expectedError string
-		validate      func(*testing.T, client.Client, *mcpv1alpha1.MCPRegistry)
+		validate      func(*testing.T, client.Client, *mcpv1beta1.MCPRegistry)
 	}{
 		{
 			name:        "creates all RBAC resources when none exist",
@@ -60,7 +60,7 @@ func TestEnsureRBACResources(t *testing.T) {
 				t.Helper()
 				return fake.NewClientBuilder().WithScheme(createTestScheme()).Build()
 			},
-			validate: func(t *testing.T, c client.Client, mcpRegistry *mcpv1alpha1.MCPRegistry) {
+			validate: func(t *testing.T, c client.Client, mcpRegistry *mcpv1beta1.MCPRegistry) {
 				t.Helper()
 				ctx := context.Background()
 				resourceName := mcpRegistry.Name + "-registry-api"
@@ -107,7 +107,7 @@ func TestEnsureRBACResources(t *testing.T) {
 						&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: mcpRegistry.Namespace}, RoleRef: rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: resourceName}},
 					).Build()
 			},
-			validate: func(t *testing.T, c client.Client, mcpRegistry *mcpv1alpha1.MCPRegistry) {
+			validate: func(t *testing.T, c client.Client, mcpRegistry *mcpv1beta1.MCPRegistry) {
 				t.Helper()
 				ctx := context.Background()
 				resourceName := mcpRegistry.Name + "-registry-api"

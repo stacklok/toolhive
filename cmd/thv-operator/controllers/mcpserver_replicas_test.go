@@ -17,7 +17,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -89,12 +89,12 @@ func TestReplicaBehavior(t *testing.T) {
 			name := "replica-test"
 			namespace := testNamespaceDefault
 
-			mcpServer := &mcpv1alpha1.MCPServer{
+			mcpServer := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      name,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image:latest",
 					Transport: tt.transport,
 					ProxyPort: 8080,
@@ -146,7 +146,7 @@ func TestReplicaBehavior(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(testScheme).
 				WithObjects(mcpServer, deployment, service).
-				WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 				Build()
 
 			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -182,12 +182,12 @@ func TestConfigUpdatePreservesReplicas(t *testing.T) {
 	name := "config-update-test"
 	namespace := testNamespaceDefault
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "new-image:v2", // Changed image triggers deployment update
 			Transport: "sse",
 			ProxyPort: 8080,
@@ -238,7 +238,7 @@ func TestConfigUpdatePreservesReplicas(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer, deployment, service).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -268,12 +268,12 @@ func TestUpdateMCPServerStatusScaledToZero(t *testing.T) {
 	name := "stopped-test"
 	namespace := testNamespaceDefault
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "sse",
 			ProxyPort: 8080,
@@ -312,7 +312,7 @@ func TestUpdateMCPServerStatusScaledToZero(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer, deployment).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -321,14 +321,14 @@ func TestUpdateMCPServerStatusScaledToZero(t *testing.T) {
 	require.NoError(t, err)
 
 	// Fetch the updated MCPServer
-	updatedMCPServer := &mcpv1alpha1.MCPServer{}
+	updatedMCPServer := &mcpv1beta1.MCPServer{}
 	err = fakeClient.Get(t.Context(), types.NamespacedName{
 		Name:      name,
 		Namespace: namespace,
 	}, updatedMCPServer)
 	require.NoError(t, err)
 
-	assert.Equal(t, mcpv1alpha1.MCPServerPhaseStopped, updatedMCPServer.Status.Phase)
+	assert.Equal(t, mcpv1beta1.MCPServerPhaseStopped, updatedMCPServer.Status.Phase)
 	assert.Equal(t, "MCP server is stopped (scaled to zero)", updatedMCPServer.Status.Message)
 	assert.Equal(t, int32(0), updatedMCPServer.Status.ReadyReplicas)
 }
@@ -339,12 +339,12 @@ func TestUpdateMCPServerStatusReadyReplicas(t *testing.T) {
 	name := "ready-replicas-test"
 	namespace := testNamespaceDefault
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "sse",
 			ProxyPort: 8080,
@@ -436,7 +436,7 @@ func TestUpdateMCPServerStatusReadyReplicas(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer, deployment, runningPod1, runningPod2, pendingPod).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -445,14 +445,14 @@ func TestUpdateMCPServerStatusReadyReplicas(t *testing.T) {
 	require.NoError(t, err)
 
 	// Fetch the updated MCPServer
-	updatedMCPServer := &mcpv1alpha1.MCPServer{}
+	updatedMCPServer := &mcpv1beta1.MCPServer{}
 	err = fakeClient.Get(t.Context(), types.NamespacedName{
 		Name:      name,
 		Namespace: namespace,
 	}, updatedMCPServer)
 	require.NoError(t, err)
 
-	assert.Equal(t, mcpv1alpha1.MCPServerPhaseReady, updatedMCPServer.Status.Phase)
+	assert.Equal(t, mcpv1beta1.MCPServerPhaseReady, updatedMCPServer.Status.Phase)
 	assert.Equal(t, int32(2), updatedMCPServer.Status.ReadyReplicas,
 		"ReadyReplicas should match the number of running pods")
 }
@@ -463,12 +463,12 @@ func TestDefaultCreationHasNilReplicas(t *testing.T) {
 	name := "default-creation"
 	namespace := testNamespaceDefault
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "sse",
 			ProxyPort: 8080,
@@ -479,7 +479,7 @@ func TestDefaultCreationHasNilReplicas(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -543,12 +543,12 @@ func TestTerminationGracePeriodSet(t *testing.T) {
 	name := "tgp-test"
 	namespace := testNamespaceDefault
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "sse",
 			ProxyPort: 8080,
@@ -559,7 +559,7 @@ func TestTerminationGracePeriodSet(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -575,12 +575,12 @@ func TestSpecDrivenReplicasNil(t *testing.T) {
 	name := "nil-replicas-test"
 	namespace := testNamespaceDefault
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "sse",
 			ProxyPort: 8080,
@@ -592,7 +592,7 @@ func TestSpecDrivenReplicasNil(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -608,12 +608,12 @@ func TestSpecDrivenReplicas3(t *testing.T) {
 	namespace := testNamespaceDefault
 	replicas := int32(3)
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "sse",
 			ProxyPort: 8080,
@@ -625,7 +625,7 @@ func TestSpecDrivenReplicas3(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -644,12 +644,12 @@ func TestStdioCapConditionSet(t *testing.T) {
 	namespace := testNamespaceDefault
 	replicas := int32(3)
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
 			ProxyPort: 8080,
@@ -661,7 +661,7 @@ func TestStdioCapConditionSet(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -673,16 +673,16 @@ func TestStdioCapConditionSet(t *testing.T) {
 	require.NoError(t, err)
 
 	// Read back the MCPServer to check conditions
-	updated := &mcpv1alpha1.MCPServer{}
+	updated := &mcpv1beta1.MCPServer{}
 	err = fakeClient.Get(t.Context(), types.NamespacedName{Name: name, Namespace: namespace}, updated)
 	require.NoError(t, err)
 
 	var found bool
 	for _, cond := range updated.Status.Conditions {
-		if cond.Type == mcpv1alpha1.ConditionStdioReplicaCapped {
+		if cond.Type == mcpv1beta1.ConditionStdioReplicaCapped {
 			found = true
 			assert.Equal(t, metav1.ConditionTrue, cond.Status)
-			assert.Equal(t, mcpv1alpha1.ConditionReasonStdioReplicaCapped, cond.Reason)
+			assert.Equal(t, mcpv1beta1.ConditionReasonStdioReplicaCapped, cond.Reason)
 		}
 	}
 	assert.True(t, found, "ConditionStdioReplicaCapped condition should be set")
@@ -695,12 +695,12 @@ func TestSessionStorageWarningSet(t *testing.T) {
 	namespace := testNamespaceDefault
 	replicas := int32(2)
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "sse",
 			ProxyPort: 8080,
@@ -713,7 +713,7 @@ func TestSessionStorageWarningSet(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -723,16 +723,16 @@ func TestSessionStorageWarningSet(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	updated := &mcpv1alpha1.MCPServer{}
+	updated := &mcpv1beta1.MCPServer{}
 	err = fakeClient.Get(t.Context(), types.NamespacedName{Name: name, Namespace: namespace}, updated)
 	require.NoError(t, err)
 
 	var found bool
 	for _, cond := range updated.Status.Conditions {
-		if cond.Type == mcpv1alpha1.ConditionSessionStorageWarning {
+		if cond.Type == mcpv1beta1.ConditionSessionStorageWarning {
 			found = true
 			assert.Equal(t, metav1.ConditionTrue, cond.Status)
-			assert.Equal(t, mcpv1alpha1.ConditionReasonSessionStorageMissing, cond.Reason)
+			assert.Equal(t, mcpv1beta1.ConditionReasonSessionStorageMissing, cond.Reason)
 		}
 	}
 	assert.True(t, found, "ConditionSessionStorageWarning condition should be set")
@@ -745,18 +745,18 @@ func TestSessionStorageWarningCleared(t *testing.T) {
 	namespace := testNamespaceDefault
 	replicas := int32(2)
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "sse",
 			ProxyPort: 8080,
 			Replicas:  &replicas,
-			SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-				Provider: mcpv1alpha1.SessionStorageProviderRedis,
+			SessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
 				Address:  "redis:6379",
 			},
 		},
@@ -766,7 +766,7 @@ func TestSessionStorageWarningCleared(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -776,16 +776,16 @@ func TestSessionStorageWarningCleared(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	updated := &mcpv1alpha1.MCPServer{}
+	updated := &mcpv1beta1.MCPServer{}
 	err = fakeClient.Get(t.Context(), types.NamespacedName{Name: name, Namespace: namespace}, updated)
 	require.NoError(t, err)
 
 	var found bool
 	for _, cond := range updated.Status.Conditions {
-		if cond.Type == mcpv1alpha1.ConditionSessionStorageWarning {
+		if cond.Type == mcpv1beta1.ConditionSessionStorageWarning {
 			found = true
 			assert.Equal(t, metav1.ConditionFalse, cond.Status)
-			assert.Equal(t, mcpv1alpha1.ConditionReasonSessionStorageConfigured, cond.Reason)
+			assert.Equal(t, mcpv1beta1.ConditionReasonSessionStorageConfigured, cond.Reason)
 		}
 	}
 	assert.True(t, found, "ConditionSessionStorageWarning condition should be set to False when Redis is configured")
@@ -868,12 +868,12 @@ func TestUpdateMCPServerStatusExcludesTerminatingPods(t *testing.T) {
 	namespace := testNamespaceDefault
 	now := metav1.NewTime(time.Now())
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "sse",
 			ProxyPort: 8080,
@@ -960,7 +960,7 @@ func TestUpdateMCPServerStatusExcludesTerminatingPods(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer, deployment, runningPod1, runningPod2, terminatingPod).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -968,14 +968,14 @@ func TestUpdateMCPServerStatusExcludesTerminatingPods(t *testing.T) {
 	err := reconciler.updateMCPServerStatus(t.Context(), mcpServer)
 	require.NoError(t, err)
 
-	updatedMCPServer := &mcpv1alpha1.MCPServer{}
+	updatedMCPServer := &mcpv1beta1.MCPServer{}
 	err = fakeClient.Get(t.Context(), types.NamespacedName{
 		Name:      name,
 		Namespace: namespace,
 	}, updatedMCPServer)
 	require.NoError(t, err)
 
-	assert.Equal(t, mcpv1alpha1.MCPServerPhaseReady, updatedMCPServer.Status.Phase)
+	assert.Equal(t, mcpv1beta1.MCPServerPhaseReady, updatedMCPServer.Status.Phase)
 	assert.Equal(t, int32(2), updatedMCPServer.Status.ReadyReplicas,
 		"ReadyReplicas should exclude terminating pods")
 }
@@ -985,76 +985,76 @@ func TestRateLimitConfigValidation(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		spec         mcpv1alpha1.MCPServerSpec
+		spec         mcpv1beta1.MCPServerSpec
 		expectStatus metav1.ConditionStatus
 		expectReason string
 	}{
 		{
 			name: "no-rate-limiting",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image:     "test-image:latest",
 				Transport: "sse",
 				ProxyPort: 8080,
 			},
 			expectStatus: metav1.ConditionTrue,
-			expectReason: mcpv1alpha1.ConditionReasonRateLimitNotApplicable,
+			expectReason: mcpv1beta1.ConditionReasonRateLimitNotApplicable,
 		},
 		{
 			name: "peruser-with-auth",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image:     "test-image:latest",
 				Transport: "sse",
 				ProxyPort: 8080,
-				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-					Provider: mcpv1alpha1.SessionStorageProviderRedis,
+				SessionStorage: &mcpv1beta1.SessionStorageConfig{
+					Provider: mcpv1beta1.SessionStorageProviderRedis,
 					Address:  "redis:6379",
 				},
-				OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test"},
-				RateLimiting: &mcpv1alpha1.RateLimitConfig{
-					PerUser: &mcpv1alpha1.RateLimitBucket{
+				OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test"},
+				RateLimiting: &mcpv1beta1.RateLimitConfig{
+					PerUser: &mcpv1beta1.RateLimitBucket{
 						MaxTokens:    100,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
 				},
 			},
 			expectStatus: metav1.ConditionTrue,
-			expectReason: mcpv1alpha1.ConditionReasonRateLimitConfigValid,
+			expectReason: mcpv1beta1.ConditionReasonRateLimitConfigValid,
 		},
 		{
 			name: "peruser-without-auth",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image:     "test-image:latest",
 				Transport: "sse",
 				ProxyPort: 8080,
-				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-					Provider: mcpv1alpha1.SessionStorageProviderRedis,
+				SessionStorage: &mcpv1beta1.SessionStorageConfig{
+					Provider: mcpv1beta1.SessionStorageProviderRedis,
 					Address:  "redis:6379",
 				},
-				RateLimiting: &mcpv1alpha1.RateLimitConfig{
-					PerUser: &mcpv1alpha1.RateLimitBucket{
+				RateLimiting: &mcpv1beta1.RateLimitConfig{
+					PerUser: &mcpv1beta1.RateLimitBucket{
 						MaxTokens:    100,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
 				},
 			},
 			expectStatus: metav1.ConditionFalse,
-			expectReason: mcpv1alpha1.ConditionReasonRateLimitPerUserRequiresAuth,
+			expectReason: mcpv1beta1.ConditionReasonRateLimitPerUserRequiresAuth,
 		},
 		{
 			name: "per-tool-peruser-without-auth",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image:     "test-image:latest",
 				Transport: "sse",
 				ProxyPort: 8080,
-				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-					Provider: mcpv1alpha1.SessionStorageProviderRedis,
+				SessionStorage: &mcpv1beta1.SessionStorageConfig{
+					Provider: mcpv1beta1.SessionStorageProviderRedis,
 					Address:  "redis:6379",
 				},
-				RateLimiting: &mcpv1alpha1.RateLimitConfig{
-					Tools: []mcpv1alpha1.ToolRateLimitConfig{
+				RateLimiting: &mcpv1beta1.RateLimitConfig{
+					Tools: []mcpv1beta1.ToolRateLimitConfig{
 						{
 							Name: "search",
-							PerUser: &mcpv1alpha1.RateLimitBucket{
+							PerUser: &mcpv1beta1.RateLimitBucket{
 								MaxTokens:    10,
 								RefillPeriod: metav1.Duration{Duration: time.Minute},
 							},
@@ -1063,27 +1063,27 @@ func TestRateLimitConfigValidation(t *testing.T) {
 				},
 			},
 			expectStatus: metav1.ConditionFalse,
-			expectReason: mcpv1alpha1.ConditionReasonRateLimitPerUserRequiresAuth,
+			expectReason: mcpv1beta1.ConditionReasonRateLimitPerUserRequiresAuth,
 		},
 		{
 			name: "shared-only-no-auth",
-			spec: mcpv1alpha1.MCPServerSpec{
+			spec: mcpv1beta1.MCPServerSpec{
 				Image:     "test-image:latest",
 				Transport: "sse",
 				ProxyPort: 8080,
-				SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-					Provider: mcpv1alpha1.SessionStorageProviderRedis,
+				SessionStorage: &mcpv1beta1.SessionStorageConfig{
+					Provider: mcpv1beta1.SessionStorageProviderRedis,
 					Address:  "redis:6379",
 				},
-				RateLimiting: &mcpv1alpha1.RateLimitConfig{
-					Shared: &mcpv1alpha1.RateLimitBucket{
+				RateLimiting: &mcpv1beta1.RateLimitConfig{
+					Shared: &mcpv1beta1.RateLimitBucket{
 						MaxTokens:    1000,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
 				},
 			},
 			expectStatus: metav1.ConditionTrue,
-			expectReason: mcpv1alpha1.ConditionReasonRateLimitConfigValid,
+			expectReason: mcpv1beta1.ConditionReasonRateLimitConfigValid,
 		},
 	}
 
@@ -1094,7 +1094,7 @@ func TestRateLimitConfigValidation(t *testing.T) {
 			name := "rl-" + tt.name
 			namespace := testNamespaceDefault
 
-			mcpServer := &mcpv1alpha1.MCPServer{
+			mcpServer := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      name,
 					Namespace: namespace,
@@ -1106,25 +1106,25 @@ func TestRateLimitConfigValidation(t *testing.T) {
 			clientBuilder := fake.NewClientBuilder().
 				WithScheme(testScheme).
 				WithObjects(mcpServer).
-				WithStatusSubresource(&mcpv1alpha1.MCPServer{})
+				WithStatusSubresource(&mcpv1beta1.MCPServer{})
 
 			// Add referenced MCPOIDCConfig to fake client if spec references one
 			if mcpServer.Spec.OIDCConfigRef != nil {
-				oidcCfg := &mcpv1alpha1.MCPOIDCConfig{
+				oidcCfg := &mcpv1beta1.MCPOIDCConfig{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      mcpServer.Spec.OIDCConfigRef.Name,
 						Namespace: namespace,
 					},
-					Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-						Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+					Spec: mcpv1beta1.MCPOIDCConfigSpec{
+						Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+						Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 							Issuer: "https://auth.example.com",
 						},
 					},
 				}
 				oidcCfg.Status.Conditions = []metav1.Condition{
 					{
-						Type:               mcpv1alpha1.ConditionTypeValid,
+						Type:               mcpv1beta1.ConditionTypeValid,
 						Status:             metav1.ConditionTrue,
 						Reason:             "Valid",
 						LastTransitionTime: metav1.Now(),
@@ -1132,7 +1132,7 @@ func TestRateLimitConfigValidation(t *testing.T) {
 				}
 				clientBuilder = clientBuilder.
 					WithObjects(oidcCfg).
-					WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{})
+					WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{})
 			}
 
 			fakeClient := clientBuilder.Build()
@@ -1144,13 +1144,13 @@ func TestRateLimitConfigValidation(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			updated := &mcpv1alpha1.MCPServer{}
+			updated := &mcpv1beta1.MCPServer{}
 			err = fakeClient.Get(t.Context(), types.NamespacedName{Name: name, Namespace: namespace}, updated)
 			require.NoError(t, err)
 
 			var found bool
 			for _, cond := range updated.Status.Conditions {
-				if cond.Type == mcpv1alpha1.ConditionRateLimitConfigValid {
+				if cond.Type == mcpv1beta1.ConditionRateLimitConfigValid {
 					found = true
 					assert.Equal(t, tt.expectStatus, cond.Status)
 					assert.Equal(t, tt.expectReason, cond.Reason)

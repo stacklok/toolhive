@@ -958,6 +958,14 @@ type ScriptEngineConfig struct {
 	// parallel() can use. Zero means the worker count matches the task count.
 	// +optional
 	ParallelMax int `json:"parallelMax,omitempty" yaml:"parallelMax,omitempty"`
+
+	// ScriptTimeout is the maximum wall-clock duration for a single script
+	// execution, including all tool calls. Bounds total execution time so a
+	// script with many slow tool calls cannot block indefinitely.
+	// Defaults to 30s if not specified or zero.
+	// +kubebuilder:default="30s"
+	// +optional
+	ScriptTimeout Duration `json:"scriptTimeout,omitempty" yaml:"scriptTimeout,omitempty"`
 }
 
 // Validator validates configuration.

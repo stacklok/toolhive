@@ -8,6 +8,7 @@ package script
 
 import (
 	"context"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -55,6 +56,10 @@ type Tool struct {
 	Call func(ctx context.Context, arguments map[string]interface{}) (*mcp.CallToolResult, error)
 }
 
+// DefaultScriptTimeout is the default maximum wall-clock duration for a
+// single script execution, including all tool calls.
+const DefaultScriptTimeout = 30 * time.Second
+
 // Config holds script execution parameters. A nil Config passed to New
 // uses sensible defaults for all fields.
 type Config struct {
@@ -66,6 +71,12 @@ type Config struct {
 	// ParallelMax is the maximum number of concurrent goroutines that
 	// parallel() can spawn. Zero means unlimited.
 	ParallelMax int
+
+	// ScriptTimeout is the maximum wall-clock duration for a single script
+	// execution, including all tool calls. Bounds total execution time so
+	// a script with many slow tool calls cannot block indefinitely.
+	// Zero uses DefaultScriptTimeout (30s).
+	ScriptTimeout time.Duration
 }
 
 // New creates an Executor bound to the given tools and configuration.
@@ -80,7 +91,10 @@ func New(tools []Tool, cfg *Config) Executor {
 
 func resolveConfig(cfg *Config) Config {
 	if cfg == nil {
-		return Config{StepLimit: DefaultStepLimit}
+		return Config{
+			StepLimit:     DefaultStepLimit,
+			ScriptTimeout: DefaultScriptTimeout,
+		}
 	}
 	c := *cfg
 	if c.StepLimit == 0 {
@@ -88,6 +102,9 @@ func resolveConfig(cfg *Config) Config {
 	}
 	if c.ParallelMax < 0 {
 		c.ParallelMax = 0
+	}
+	if c.ScriptTimeout == 0 {
+		c.ScriptTimeout = DefaultScriptTimeout
 	}
 	return c
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
+	"github.com/stacklok/toolhive/pkg/transport/middleware/origin"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -110,9 +111,10 @@ Dynamic client registration (automatic OAuth client setup):
 }
 
 var (
-	proxyHost      string
-	proxyPort      int
-	proxyTargetURI string
+	proxyHost           string
+	proxyPort           int
+	proxyTargetURI      string
+	proxyAllowedOrigins []string
 
 	resourceURL string // Explicit resource URL for OAuth discovery endpoint (RFC 9728)
 
@@ -133,6 +135,10 @@ const (
 func init() {
 	proxyCmd.Flags().StringVar(&proxyHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	proxyCmd.Flags().IntVar(&proxyPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
+	proxyCmd.Flags().StringArrayVar(&proxyAllowedOrigins, "allowed-origins", nil,
+		"Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; "+
+			"loopback binds derive a default allowlist automatically, non-loopback binds log a warning when "+
+			"no value is supplied. Example: https://my-mcp.example.com")
 	proxyCmd.Flags().StringVar(
 		&proxyTargetURI,
 		"target-uri",
@@ -225,6 +231,22 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Create middlewares slice for incoming request authentication
 	var middlewares []types.NamedMiddleware
+
+	// Origin-header validation (DNS-rebinding protection per MCP 2025-11-25
+	// §"Security Warning"). Added first so disallowed Origins are rejected
+	// before authentication or any outbound token acquisition runs.
+	if allowed := origin.ResolveAllowedOrigins(proxyHost, port, proxyAllowedOrigins); len(allowed) > 0 {
+		middlewares = append(middlewares, types.NamedMiddleware{
+			Name:     origin.MiddlewareType,
+			Function: origin.CreateOriginMiddleware(allowed),
+		})
+	} else {
+		slog.Warn("Origin validation disabled — no allowlist configured for non-loopback bind",
+			"host", proxyHost,
+			"port", port,
+			"hint", "pass --allowed-origins=https://your-client.example to enable DNS-rebind protection",
+		)
+	}
 
 	// Get OIDC configuration if enabled (for protecting the proxy endpoint)
 	oidcConfig := getProxyOIDCConfig(cmd)

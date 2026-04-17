@@ -248,21 +248,16 @@ If your provider is read-only or doesn't support deletion, this command returns 
 			}
 
 			if systemFlag {
-				if !strings.HasPrefix(name, secrets.SystemKeyPrefix) {
-					return fmt.Errorf("--system flag requires a system key (starting with %q); got %q", secrets.SystemKeyPrefix, name)
+				// Validate the key name before touching the provider so a
+				// typo surfaces the right error even when secrets are not set up.
+				if err := validateSystemKeyName(name); err != nil {
+					return err
 				}
-
 				provider, err := getSystemSecretsProvider()
 				if err != nil {
 					return fmt.Errorf("failed to create secrets provider: %w", err)
 				}
-
-				err = provider.DeleteSecret(ctx, name)
-				if err != nil {
-					return fmt.Errorf("failed to delete secret %s: %w", name, err)
-				}
-
-				return nil
+				return runSystemSecretDelete(ctx, provider, name)
 			}
 
 			manager, err := getSecretsManager()
@@ -314,34 +309,7 @@ If descriptions exist for the secrets, the command displays them alongside the n
 				if err != nil {
 					return fmt.Errorf("failed to create secrets provider: %w", err)
 				}
-
-				allSecrets, err := provider.ListSecrets(ctx)
-				if err != nil {
-					return fmt.Errorf("failed to list secrets: %w", err)
-				}
-
-				var systemSecrets []secrets.SecretDescription
-				for _, s := range allSecrets {
-					if strings.HasPrefix(s.Key, secrets.SystemKeyPrefix) {
-						systemSecrets = append(systemSecrets, s)
-					}
-				}
-
-				if len(systemSecrets) == 0 {
-					fmt.Println("No system-managed secrets found")
-					return nil
-				}
-
-				fmt.Println("System-managed secrets:")
-				for _, s := range systemSecrets {
-					// Strip the prefix, split on first "_" to extract scope and name.
-					// Format: __thv_<scope>_<name>
-					rest := strings.TrimPrefix(s.Key, secrets.SystemKeyPrefix)
-					scope, name, _ := strings.Cut(rest, "_")
-					fmt.Printf("  - %s  [%s]\n", name, scope)
-				}
-
-				return nil
+				return runSystemSecretList(ctx, provider, os.Stdout)
 			}
 
 			manager, err := getSecretsManager()
@@ -381,7 +349,7 @@ If descriptions exist for the secrets, the command displays them alongside the n
 		},
 	}
 
-	cmd.Flags().BoolVar(&systemFlag, "system", false, "List system-managed secrets (registry auth, workload tokens, enterprise login)")
+	cmd.Flags().BoolVar(&systemFlag, "system", false, "List system-managed secrets (registry auth, workload tokens)")
 
 	return cmd
 }
@@ -515,6 +483,66 @@ For more information, visit: https://developer.1password.com/docs/service-accoun
 		fmt.Println("Note: 1Password provider is read-only. You can retrieve secrets but not set new ones.")
 	}
 
+	return nil
+}
+
+// runSystemSecretList lists system-managed secrets from the given provider,
+// writing formatted output to w. Only keys prefixed with SystemKeyPrefix are shown.
+func runSystemSecretList(ctx context.Context, provider secrets.Provider, w io.Writer) error {
+	allSecrets, err := provider.ListSecrets(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list secrets: %w", err)
+	}
+
+	var systemSecrets []secrets.SecretDescription
+	for _, s := range allSecrets {
+		if strings.HasPrefix(s.Key, secrets.SystemKeyPrefix) {
+			systemSecrets = append(systemSecrets, s)
+		}
+	}
+
+	if len(systemSecrets) == 0 {
+		_, err = fmt.Fprintln(w, "No system-managed secrets found")
+		return err
+	}
+
+	if _, err = fmt.Fprintln(w, "System-managed secrets:"); err != nil {
+		return err
+	}
+	for _, s := range systemSecrets {
+		if _, err = fmt.Fprintln(w, formatSystemSecretEntry(s.Key)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// runSystemSecretDelete validates that name is a system key and deletes it
+// using the given provider.
+func runSystemSecretDelete(ctx context.Context, provider secrets.Provider, name string) error {
+	if err := validateSystemKeyName(name); err != nil {
+		return err
+	}
+	if err := provider.DeleteSecret(ctx, name); err != nil {
+		return fmt.Errorf("failed to delete secret %s: %w", name, err)
+	}
+	return nil
+}
+
+// formatSystemSecretEntry formats a system-managed secret key for display.
+// Key format: __thv_<scope>_<name>
+func formatSystemSecretEntry(key string) string {
+	rest := strings.TrimPrefix(key, secrets.SystemKeyPrefix)
+	scope, name, _ := strings.Cut(rest, "_")
+	return fmt.Sprintf("  - %s  [%s]", name, scope)
+}
+
+// validateSystemKeyName returns an error if name is not a system-managed key.
+func validateSystemKeyName(name string) error {
+	if !strings.HasPrefix(name, secrets.SystemKeyPrefix) {
+		return fmt.Errorf("--system flag requires a system key (starting with %q); got %q", secrets.SystemKeyPrefix, name)
+	}
 	return nil
 }
 

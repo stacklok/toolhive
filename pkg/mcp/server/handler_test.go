@@ -9,6 +9,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -340,11 +341,19 @@ func TestBuildServerConfig(t *testing.T) {
 			runConfig, err := buildServerConfig(ctx, args, tt.imageURL, tt.imageMetadata, tt.extraOpts...)
 
 			if tt.expectError {
-				assert.Error(t, err)
-				assert.Nil(t, runConfig)
+				require.Error(t, err)
+				require.Nil(t, runConfig)
 			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, runConfig)
+				// Use require instead of assert: if buildServerConfig
+				// fails (e.g. when no container runtime is available on
+				// the host) it returns (nil, err). With the earlier
+				// assert.* calls, execution fell through to
+				// tt.checkConfig(t, nil) and the test binary crashed
+				// with a nil pointer panic. Stopping the subtest here
+				// turns that crash into a clean failure, see
+				// stacklok/toolhive#4760.
+				require.NoError(t, err)
+				require.NotNil(t, runConfig)
 				if tt.checkConfig != nil {
 					tt.checkConfig(t, runConfig)
 				}

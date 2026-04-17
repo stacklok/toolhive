@@ -1704,6 +1704,15 @@ spec:
                           ParallelMax is the maximum number of concurrent worker goroutines that
                           parallel() can use. Zero means the worker count matches the task count.
                         type: integer
+                      scriptTimeout:
+                        default: 30s
+                        description: |-
+                          ScriptTimeout is the maximum wall-clock duration for a single script
+                          execution, including all tool calls. Bounds total execution time so a
+                          script with many slow tool calls cannot block indefinitely.
+                          Defaults to 30s if not specified or zero.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
                       stepLimit:
                         description: |-
                           StepLimit is the maximum number of Starlark execution steps per script.

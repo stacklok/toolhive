@@ -578,11 +578,16 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
 	// Code wraps: auth+parser → audit → discovery → annotation-enrichment →
-	//   authz → script(+parser) → backend-enrichment → MCP-parsing → telemetry
+	//   script(+parser) → authz → backend-enrichment → MCP-parsing → telemetry
 	// Execution order: recovery → header-val → auth+parser → audit →
-	//   discovery → annotation-enrichment → authz → parser → script →
-	//   backend-enrichment → MCP-parsing → telemetry → handler
-	// Note: script middleware composes its own parser internally.
+	//   discovery → annotation-enrichment → parser → script →
+	//   authz → backend-enrichment → MCP-parsing → telemetry → handler
+	//
+	// Script middleware sits between annotation-enrichment and authz:
+	// - Auth (identity) runs before script — requests are authenticated
+	// - Authz runs AFTER script — execute_tool_script itself is not authorized,
+	//   but inner tool calls dispatched from scripts flow through authz
+	// - Script middleware composes its own parser internally
 
 	var mcpHandler http.Handler = streamableServer
 

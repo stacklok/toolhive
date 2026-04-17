@@ -517,6 +517,7 @@ _Appears in:_
 | `enabled` _boolean_ | Enabled controls whether the execute_tool_script virtual tool is available.<br />When false (default), the tool does not appear in tools/list responses. |  | Optional: \{\} <br /> |
 | `stepLimit` _integer_ | StepLimit is the maximum number of Starlark execution steps per script.<br />Prevents infinite loops and runaway computation.<br />Defaults to 100,000 if not specified or zero. |  | Optional: \{\} <br /> |
 | `parallelMax` _integer_ | ParallelMax is the maximum number of concurrent worker goroutines that<br />parallel() can use. Zero means the worker count matches the task count. |  | Optional: \{\} <br /> |
+| `scriptTimeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | ScriptTimeout is the maximum wall-clock duration for a single script<br />execution, including all tool calls. Bounds total execution time so a<br />script with many slow tool calls cannot block indefinitely.<br />Defaults to 30s if not specified or zero. | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.SessionStorageConfig

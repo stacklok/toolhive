@@ -669,7 +669,8 @@ func createScriptMiddleware(cfg *config.Config) func(http.Handler) http.Handler 
 
 	slog.Info("code mode enabled — execute_tool_script virtual tool will be available")
 	return script.NewMiddleware(&script.Config{
-		StepLimit:   cfg.ScriptEngine.StepLimit,
-		ParallelMax: cfg.ScriptEngine.ParallelMax,
+		StepLimit:     cfg.ScriptEngine.StepLimit,
+		ParallelMax:   cfg.ScriptEngine.ParallelMax,
+		ScriptTimeout: time.Duration(cfg.ScriptEngine.ScriptTimeout),
 	})
 }

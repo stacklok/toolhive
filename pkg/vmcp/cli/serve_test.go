@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	aggregatormocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
 	clientmocks "github.com/stacklok/toolhive/pkg/vmcp/client/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
 
@@ -230,6 +231,67 @@ func TestRunDiscovery_KubernetesGroupNotFound(t *testing.T) {
 	assert.Empty(t, backends)
 	assert.Same(t, backendClient, gotClient)
 	assert.Same(t, registry, gotRegistry)
+}
+
+// TestGenerateQuickModeConfig covers the generateQuickModeConfig helper.
+func TestGenerateQuickModeConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		groupRef    string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:     "valid group sets groupRef and inline source",
+			groupRef: "default",
+		},
+		{
+			name:     "group name with hyphens",
+			groupRef: "my-group",
+		},
+		{
+			name:        "empty groupRef returns error",
+			groupRef:    "",
+			wantErr:     true,
+			errContains: "--group must not be empty",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := generateQuickModeConfig(tc.groupRef)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.ErrorContains(t, err, tc.errContains)
+				require.Nil(t, cfg)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+			require.Equal(t, tc.groupRef, cfg.Group)
+			require.NotNil(t, cfg.OutgoingAuth)
+			require.Equal(t, "inline", cfg.OutgoingAuth.Source)
+			require.NotNil(t, cfg.IncomingAuth)
+			require.Equal(t, "anonymous", cfg.IncomingAuth.Type)
+			// Verify the generated config passes the real validator.
+			require.NoError(t, config.NewValidator().Validate(cfg))
+		})
+	}
+}
+
+// TestServe_NeitherConfigNorGroup verifies that Serve returns an error when
+// both --config and --group are absent.
+func TestServe_NeitherConfigNorGroup(t *testing.T) {
+	t.Parallel()
+
+	err := Serve(t.Context(), ServeConfig{})
+	require.Error(t, err)
+	require.ErrorContains(t, err, "--config or --group")
 }
 
 // TestRunDiscovery_ZeroBackends exercises the branch in runDiscovery where the

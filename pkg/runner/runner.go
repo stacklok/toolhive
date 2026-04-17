@@ -265,11 +265,22 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Origin-header validation (DNS-rebinding protection per MCP 2025-11-25
+	// §"Security Warning") is wired here, after both middleware-population
+	// paths, because it is the single place where Host/Port/AllowedOrigins are
+	// fully resolved: the CLI builder (WithMiddlewareFromFlags) defers port
+	// resolution to validateConfig, so the effective port is not known at
+	// builder time.
+	var err error
+	r.Config.MiddlewareConfigs, err = prependOriginMiddleware(r.Config.MiddlewareConfigs, r.Config)
+	if err != nil {
+		return fmt.Errorf("failed to add origin middleware: %w", err)
+	}
+
 	// Body-size limit is always the outermost middleware, regardless of how the
 	// chain was assembled (PopulateMiddlewareConfigs above, or WithMiddlewareFromFlags
 	// which pre-populates the slice and takes the else branch). Idempotent, so the
 	// operator/Populate path is a no-op here.
-	var err error
 	r.Config.MiddlewareConfigs, err = addBodyLimitMiddleware(r.Config.MiddlewareConfigs)
 	if err != nil {
 		return fmt.Errorf("failed to add body limit middleware: %w", err)

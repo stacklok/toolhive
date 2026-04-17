@@ -225,7 +225,9 @@ The secret must exist in your configured secrets provider, otherwise the command
 }
 
 func newSecretDeleteCommand() *cobra.Command {
-	return &cobra.Command{
+	var systemFlag bool
+
+	cmd := &cobra.Command{
 		Use:   "delete <name>",
 		Short: "Delete a secret",
 		Long: `Remove a secret from the configured secrets provider.
@@ -243,6 +245,24 @@ If your provider is read-only or doesn't support deletion, this command returns 
 			// Validate input
 			if name == "" {
 				return fmt.Errorf("validation error: secret name cannot be empty")
+			}
+
+			if systemFlag {
+				if !strings.HasPrefix(name, secrets.SystemKeyPrefix) {
+					return fmt.Errorf("--system flag requires a system key (starting with %q); got %q", secrets.SystemKeyPrefix, name)
+				}
+
+				provider, err := getSystemSecretsProvider()
+				if err != nil {
+					return fmt.Errorf("failed to create secrets provider: %w", err)
+				}
+
+				err = provider.DeleteSecret(ctx, name)
+				if err != nil {
+					return fmt.Errorf("failed to delete secret %s: %w", name, err)
+				}
+
+				return nil
 			}
 
 			manager, err := getSecretsManager()
@@ -269,10 +289,16 @@ If your provider is read-only or doesn't support deletion, this command returns 
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&systemFlag, "system", false, "Allow deleting a system-managed secret (emergency use only)")
+
+	return cmd
 }
 
 func newSecretListCommand() *cobra.Command {
-	return &cobra.Command{
+	var systemFlag bool
+
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all available secrets",
 		Long: `Display all secrets available in the configured secrets provider.
@@ -282,6 +308,42 @@ If descriptions exist for the secrets, the command displays them alongside the n
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
+
+			if systemFlag {
+				provider, err := getSystemSecretsProvider()
+				if err != nil {
+					return fmt.Errorf("failed to create secrets provider: %w", err)
+				}
+
+				allSecrets, err := provider.ListSecrets(ctx)
+				if err != nil {
+					return fmt.Errorf("failed to list secrets: %w", err)
+				}
+
+				var systemSecrets []secrets.SecretDescription
+				for _, s := range allSecrets {
+					if strings.HasPrefix(s.Key, secrets.SystemKeyPrefix) {
+						systemSecrets = append(systemSecrets, s)
+					}
+				}
+
+				if len(systemSecrets) == 0 {
+					fmt.Println("No system-managed secrets found")
+					return nil
+				}
+
+				fmt.Println("System-managed secrets:")
+				for _, s := range systemSecrets {
+					// Strip the prefix, split on first "_" to extract scope and name.
+					// Format: __thv_<scope>_<name>
+					rest := strings.TrimPrefix(s.Key, secrets.SystemKeyPrefix)
+					scope, name, _ := strings.Cut(rest, "_")
+					fmt.Printf("  - %s  [%s]\n", name, scope)
+				}
+
+				return nil
+			}
+
 			manager, err := getSecretsManager()
 			if err != nil {
 				return fmt.Errorf("failed to create secrets manager: %w", err)
@@ -295,18 +357,18 @@ If descriptions exist for the secrets, the command displays them alongside the n
 				return fmt.Errorf("the %s secrets provider does not support listing secrets", providerType)
 			}
 
-			secrets, err := manager.ListSecrets(ctx)
+			listedSecrets, err := manager.ListSecrets(ctx)
 			if err != nil {
 				return fmt.Errorf("failed to list secrets: %w", err)
 			}
 
-			if len(secrets) == 0 {
+			if len(listedSecrets) == 0 {
 				fmt.Println("No secrets found")
 				return nil
 			}
 
 			fmt.Println("Available secrets:")
-			for _, description := range secrets {
+			for _, description := range listedSecrets {
 				fmt.Printf("  - %s", description.Key)
 				// Add description if available.
 				if description.Description != "" {
@@ -318,6 +380,10 @@ If descriptions exist for the secrets, the command displays them alongside the n
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&systemFlag, "system", false, "List system-managed secrets (registry auth, workload tokens, enterprise login)")
+
+	return cmd
 }
 
 func newSecretResetKeyringCommand() *cobra.Command {
@@ -352,6 +418,27 @@ This command only works with the 'encrypted' secrets provider.`,
 
 func getSecretsManager() (secrets.Provider, error) {
 	return authsecrets.GetUserSecretsProvider()
+}
+
+// getSystemSecretsProvider returns a raw (unscoped) secrets provider for
+// advanced/emergency operations on system-managed keys. Unlike getSecretsManager,
+// this does not apply UserProvider filtering, allowing callers to read and
+// delete __thv_* prefixed keys.
+func getSystemSecretsProvider() (secrets.Provider, error) {
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
+	if !cfg.Secrets.SetupCompleted {
+		return nil, secrets.ErrSecretsNotSetup
+	}
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
+	}
+	provider, err := secrets.CreateProvider(providerType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
+	}
+	return provider, nil
 }
 
 func runSecretsSetup(cmd *cobra.Command, _ []string) error {

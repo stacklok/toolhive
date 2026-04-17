@@ -13,10 +13,11 @@ import (
 	"go.uber.org/mock/gomock"
 	"gopkg.in/yaml.v3"
 
-	envmocks "github.com/stacklok/toolhive-core/env/mocks"
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/vmcp"
 	aggregatormocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
 	clientmocks "github.com/stacklok/toolhive/pkg/vmcp/client/mocks"
+	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
 
 // TestLoadAndValidateConfig covers all config-loading paths.
@@ -56,9 +57,11 @@ outgoingAuth:
   source: inline
 aggregation:
   conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `,
 			wantErr:     true,
-			errContains: "validation failed",
+			errContains: "group reference is required",
 		},
 	}
 
@@ -153,58 +156,75 @@ backends:
 	assert.Len(t, backends, 1)
 }
 
-func newSessionFactoryMocks(t *testing.T) (*envmocks.MockReader, *clientmocks.MockOutgoingAuthRegistry, *aggregatormocks.MockAggregator) {
+func newSessionFactoryMocks(t *testing.T) (*clientmocks.MockOutgoingAuthRegistry, *aggregatormocks.MockAggregator) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
-	return envmocks.NewMockReader(ctrl), clientmocks.NewMockOutgoingAuthRegistry(ctrl), aggregatormocks.NewMockAggregator(ctrl)
+	return clientmocks.NewMockOutgoingAuthRegistry(ctrl), aggregatormocks.NewMockAggregator(ctrl)
 }
 
 func TestCreateSessionFactory_WithHMACSecret(t *testing.T) {
 	t.Parallel()
-	envReader, registry, agg := newSessionFactoryMocks(t)
-	envReader.EXPECT().Getenv("VMCP_SESSION_HMAC_SECRET").Return("a-sufficiently-long-hmac-secret-value-32b")
-	factory, err := createSessionFactory(envReader, registry, agg)
+	registry, agg := newSessionFactoryMocks(t)
+	factory, err := createSessionFactory("a-sufficiently-long-hmac-secret-value-32b", false, registry, agg)
 	require.NoError(t, err)
 	require.NotNil(t, factory)
 }
 
 func TestCreateSessionFactory_HMACSecretExactly32Bytes(t *testing.T) {
 	t.Parallel()
-	envReader, registry, agg := newSessionFactoryMocks(t)
-	envReader.EXPECT().Getenv("VMCP_SESSION_HMAC_SECRET").Return("12345678901234567890123456789012")
-	factory, err := createSessionFactory(envReader, registry, agg)
+	registry, agg := newSessionFactoryMocks(t)
+	factory, err := createSessionFactory("12345678901234567890123456789012", false, registry, agg)
 	require.NoError(t, err)
 	require.NotNil(t, factory)
 }
 
 func TestCreateSessionFactory_ShortHMACSecret(t *testing.T) {
 	t.Parallel()
-	envReader, registry, agg := newSessionFactoryMocks(t)
-	envReader.EXPECT().Getenv("VMCP_SESSION_HMAC_SECRET").Return("short")
-	factory, err := createSessionFactory(envReader, registry, agg)
+	registry, agg := newSessionFactoryMocks(t)
+	factory, err := createSessionFactory("short", false, registry, agg)
 	require.NoError(t, err)
 	require.NotNil(t, factory)
 }
 
 func TestCreateSessionFactory_NoSecretNonKubernetes(t *testing.T) {
 	t.Parallel()
-	envReader, registry, agg := newSessionFactoryMocks(t)
-	envReader.EXPECT().Getenv("VMCP_SESSION_HMAC_SECRET").Return("")
-	envReader.EXPECT().Getenv("TOOLHIVE_RUNTIME").Return("")
-	envReader.EXPECT().Getenv("KUBERNETES_SERVICE_HOST").Return("")
-	factory, err := createSessionFactory(envReader, registry, agg)
+	registry, agg := newSessionFactoryMocks(t)
+	factory, err := createSessionFactory("", false, registry, agg)
 	require.NoError(t, err)
 	require.NotNil(t, factory)
 }
 
 func TestCreateSessionFactory_NoSecretKubernetes(t *testing.T) {
 	t.Parallel()
-	envReader, registry, agg := newSessionFactoryMocks(t)
-	envReader.EXPECT().Getenv("VMCP_SESSION_HMAC_SECRET").Return("")
-	envReader.EXPECT().Getenv("TOOLHIVE_RUNTIME").Return("")
-	envReader.EXPECT().Getenv("KUBERNETES_SERVICE_HOST").Return("10.0.0.1")
-	factory, err := createSessionFactory(envReader, registry, agg)
+	registry, agg := newSessionFactoryMocks(t)
+	factory, err := createSessionFactory("", true, registry, agg)
 	require.Error(t, err)
-	require.ErrorContains(t, err, "VMCP_SESSION_HMAC_SECRET environment variable is required")
+	require.ErrorContains(t, err, "an HMAC secret is required when running in Kubernetes")
 	require.Nil(t, factory)
+}
+
+// TestRunDiscovery_ZeroBackends exercises the branch in runDiscovery where the
+// discoverer succeeds but returns no backends. The function must return a
+// non-error, an empty (non-nil) backend slice, and pass through the client and
+// registry it received.
+func TestRunDiscovery_ZeroBackends(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	discoverer := aggregatormocks.NewMockBackendDiscoverer(ctrl)
+	backendClient := vmcpmocks.NewMockBackendClient(ctrl)
+	registry := clientmocks.NewMockOutgoingAuthRegistry(ctrl)
+
+	const groupRef = "test-group"
+	discoverer.EXPECT().
+		Discover(gomock.Any(), groupRef).
+		Return([]vmcp.Backend{}, nil)
+
+	backends, gotClient, gotRegistry, err := runDiscovery(t.Context(), groupRef, discoverer, backendClient, registry)
+
+	require.NoError(t, err)
+	assert.NotNil(t, backends)
+	assert.Empty(t, backends)
+	assert.Same(t, backendClient, gotClient)
+	assert.Same(t, registry, gotRegistry)
 }

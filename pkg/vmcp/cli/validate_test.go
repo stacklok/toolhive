@@ -91,11 +91,13 @@ outgoingAuth:
   source: inline
 aggregation:
   conflictResolution: prefix
+  conflictResolutionConfig:
+    prefixFormat: "{workload}_"
 `), 0o600))
 				return ValidateConfig{ConfigPath: path}
 			},
 			wantErr:     true,
-			errContains: "validation failed",
+			errContains: "group reference is required",
 		},
 	}
 

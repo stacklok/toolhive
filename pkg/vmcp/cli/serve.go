@@ -50,9 +50,14 @@ import (
 
 // ServeConfig holds all parameters needed to start the vMCP server.
 // Populated by the caller from Cobra flag values or equivalent.
+// Exactly one of ConfigPath or GroupRef must be non-empty.
 type ServeConfig struct {
 	// ConfigPath is the path to the vMCP YAML configuration file.
+	// When set, takes precedence over GroupRef.
 	ConfigPath string
+	// GroupRef is a ToolHive group name used for zero-config quick mode when
+	// ConfigPath is empty. A minimal in-memory config is generated from this value.
+	GroupRef string
 	// Host is the address the server binds to (e.g. "127.0.0.1").
 	Host string
 	// Port is the TCP port the server listens on.
@@ -67,12 +72,17 @@ type ServeConfig struct {
 //
 //nolint:gocyclo // Complexity from server initialization sequence is acceptable here.
 func Serve(ctx context.Context, cfg ServeConfig) error {
-	if cfg.ConfigPath == "" {
-		return fmt.Errorf("no configuration file specified, use --config flag")
-	}
-
-	// Load and validate configuration
-	vmcpCfg, err := loadAndValidateConfig(cfg.ConfigPath)
+	// Load and validate configuration — file path takes precedence over group quick mode.
+	vmcpCfg, err := func() (*config.Config, error) {
+		switch {
+		case cfg.ConfigPath != "":
+			return loadAndValidateConfig(cfg.ConfigPath)
+		case cfg.GroupRef != "":
+			return generateQuickModeConfig(cfg.GroupRef)
+		default:
+			return nil, fmt.Errorf("either --config or --group must be specified")
+		}
+	}()
 	if err != nil {
 		return err
 	}
@@ -365,6 +375,37 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 		slog.Info(fmt.Sprintf("  Composite Tools: %d defined", len(cfg.CompositeTools)))
 	}
 
+	return cfg, nil
+}
+
+// generateQuickModeConfig constructs a minimal in-memory config for zero-config
+// quick mode (thv vmcp serve --group <name>). It sets groupRef from groupRef,
+// incomingAuth to anonymous, and outgoingAuth.source to "inline" so no
+// Kubernetes API access is required. The generated config is validated before
+// being returned; returns an error if groupRef is empty or validation fails.
+func generateQuickModeConfig(groupRef string) (*config.Config, error) {
+	if groupRef == "" {
+		return nil, fmt.Errorf("--group must not be empty")
+	}
+	cfg := &config.Config{
+		Name:  groupRef,
+		Group: groupRef,
+		IncomingAuth: &config.IncomingAuthConfig{
+			Type: config.IncomingAuthTypeAnonymous,
+		},
+		OutgoingAuth: &config.OutgoingAuthConfig{
+			Source: "inline",
+		},
+		Aggregation: &config.AggregationConfig{
+			ConflictResolution: vmcp.ConflictStrategyPrefix,
+			ConflictResolutionConfig: &config.ConflictResolutionConfig{
+				PrefixFormat: "{workload}_",
+			},
+		},
+	}
+	if err := config.NewValidator().Validate(cfg); err != nil {
+		return nil, fmt.Errorf("quick-mode config validation failed: %w", err)
+	}
 	return cfg, nil
 }
 

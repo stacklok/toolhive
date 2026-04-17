@@ -91,7 +91,10 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	}
 
 	// Helper functions to convert MCPServer spec to builder format
-	envVars := convertEnvVarsFromMCPServer(m.Spec.Env)
+	envVars, err := convertEnvVarsFromMCPServer(m.Spec.Env)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert environment variables: %w", err)
+	}
 	volumes := convertVolumesFromMCPServer(m.Spec.Volumes)
 	// For ConfigMap mode, secrets are NOT included in runconfig - they're handled via k8s pod patch
 	// This avoids secrets provider errors in Kubernetes environment
@@ -551,15 +554,18 @@ func (*MCPServerReconciler) validateToolsFilter(config *runner.RunConfig) error 
 }
 
 // convertEnvVarsFromMCPServer converts MCPServer environment variables to builder format
-func convertEnvVarsFromMCPServer(envs []corev1.EnvVar) map[string]string {
+func convertEnvVarsFromMCPServer(envs []corev1.EnvVar) (map[string]string, error) {
 	if len(envs) == 0 {
-		return nil
+		return nil, nil
 	}
 	envVars := make(map[string]string, len(envs))
 	for _, env := range envs {
+		if env.ValueFrom != nil {
+			return nil, fmt.Errorf("env var %s uses unsupported ValueFrom field", env.Name)
+		}
 		envVars[env.Name] = env.Value
 	}
-	return envVars
+	return envVars, nil
 }
 
 // convertVolumesFromMCPServer converts MCPServer volumes to builder format

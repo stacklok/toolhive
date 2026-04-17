@@ -253,10 +253,21 @@ If your provider is read-only or doesn't support deletion, this command returns 
 				if err := validateSystemKeyName(name); err != nil {
 					return err
 				}
-				provider, err := getSystemSecretsProvider()
+				provider, err := authsecrets.GetSystemSecretsProvider()
 				if err != nil {
 					return fmt.Errorf("failed to create secrets provider: %w", err)
 				}
+				if !provider.Capabilities().CanDelete {
+					configProvider := config.NewDefaultProvider()
+					cfg := configProvider.GetConfig()
+					providerType, _ := cfg.Secrets.GetProviderType()
+					return fmt.Errorf("the %s secrets provider does not support deleting secrets", providerType)
+				}
+				// Workload configs reference the bare (unscoped) name, so strip
+				// the __thv_<scope>_ prefix before searching for affected workloads.
+				rest := strings.TrimPrefix(name, secrets.SystemKeyPrefix)
+				_, bareName, _ := strings.Cut(rest, "_")
+				warnWorkloadsUsingSecret(ctx, bareName)
 				return runSystemSecretDelete(ctx, provider, name)
 			}
 
@@ -305,9 +316,15 @@ If descriptions exist for the secrets, the command displays them alongside the n
 			ctx := cmd.Context()
 
 			if systemFlag {
-				provider, err := getSystemSecretsProvider()
+				provider, err := authsecrets.GetSystemSecretsProvider()
 				if err != nil {
 					return fmt.Errorf("failed to create secrets provider: %w", err)
+				}
+				if !provider.Capabilities().CanList {
+					configProvider := config.NewDefaultProvider()
+					cfg := configProvider.GetConfig()
+					providerType, _ := cfg.Secrets.GetProviderType()
+					return fmt.Errorf("the %s secrets provider does not support listing secrets", providerType)
 				}
 				return runSystemSecretList(ctx, provider, os.Stdout)
 			}
@@ -386,27 +403,6 @@ This command only works with the 'encrypted' secrets provider.`,
 
 func getSecretsManager() (secrets.Provider, error) {
 	return authsecrets.GetUserSecretsProvider()
-}
-
-// getSystemSecretsProvider returns a raw (unscoped) secrets provider for
-// advanced/emergency operations on system-managed keys. Unlike getSecretsManager,
-// this does not apply UserProvider filtering, allowing callers to read and
-// delete __thv_* prefixed keys.
-func getSystemSecretsProvider() (secrets.Provider, error) {
-	configProvider := config.NewDefaultProvider()
-	cfg := configProvider.GetConfig()
-	if !cfg.Secrets.SetupCompleted {
-		return nil, secrets.ErrSecretsNotSetup
-	}
-	providerType, err := cfg.Secrets.GetProviderType()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
-	}
-	provider, err := secrets.CreateProvider(providerType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
-	}
-	return provider, nil
 }
 
 func runSecretsSetup(cmd *cobra.Command, _ []string) error {
@@ -518,12 +514,10 @@ func runSystemSecretList(ctx context.Context, provider secrets.Provider, w io.Wr
 	return nil
 }
 
-// runSystemSecretDelete validates that name is a system key and deletes it
-// using the given provider.
+// runSystemSecretDelete deletes a system-managed key from provider.
+// Callers are responsible for validating the key name with validateSystemKeyName
+// before calling this function.
 func runSystemSecretDelete(ctx context.Context, provider secrets.Provider, name string) error {
-	if err := validateSystemKeyName(name); err != nil {
-		return err
-	}
 	if err := provider.DeleteSecret(ctx, name); err != nil {
 		return fmt.Errorf("failed to delete secret %s: %w", name, err)
 	}

@@ -201,6 +201,31 @@ func GetUserSecretsProvider() (secrets.Provider, error) {
 	return provider, nil
 }
 
+// GetSystemSecretsProvider returns a raw (unscoped) secrets provider for
+// advanced/emergency operations on system-managed keys. Unlike
+// GetUserSecretsProvider it does not apply UserProvider filtering, so callers
+// can read and delete __thv_* prefixed keys directly.
+func GetSystemSecretsProvider() (secrets.Provider, error) {
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
+
+	if !cfg.Secrets.SetupCompleted {
+		return nil, secrets.ErrSecretsNotSetup
+	}
+
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
+	}
+
+	provider, err := secrets.CreateProvider(providerType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
+	}
+
+	return provider, nil
+}
+
 // GetSecretsManager returns the secrets manager instance
 // This is exported so it can be reused by other packages
 func GetSecretsManager() (secrets.Provider, error) {

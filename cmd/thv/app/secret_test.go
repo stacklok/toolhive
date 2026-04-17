@@ -200,38 +200,20 @@ func TestRunSystemSecretDelete(t *testing.T) {
 		key       string
 		deleteErr error
 		wantErr   bool
-		wantCalls bool // whether DeleteSecret should be called
 	}{
 		{
-			name:      "valid system key is deleted",
-			key:       "__thv_auth_session",
-			wantCalls: true,
+			name: "valid system key is deleted",
+			key:  "__thv_auth_session",
 		},
 		{
-			name:      "valid key with underscores in name is deleted",
-			key:       "__thv_registry_REGISTRY_OAUTH_abc",
-			wantCalls: true,
-		},
-		{
-			name:    "non-system key rejected before provider call",
-			key:     "my-user-secret",
-			wantErr: true,
-			// DeleteSecret must NOT be called when validation fails.
-			wantCalls: false,
-		},
-		{
-			name:    "key without double-underscore rejected",
-			key:     "thv_auth_session",
-			wantErr: true,
-			// DeleteSecret must NOT be called when validation fails.
-			wantCalls: false,
+			name: "valid key with underscores in name is deleted",
+			key:  "__thv_registry_REGISTRY_OAUTH_abc",
 		},
 		{
 			name:      "provider delete error is propagated",
 			key:       "__thv_auth_session",
 			deleteErr: errors.New("keyring locked"),
 			wantErr:   true,
-			wantCalls: true,
 		},
 	}
 
@@ -241,9 +223,7 @@ func TestRunSystemSecretDelete(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			provider := secretsmocks.NewMockProvider(ctrl)
-			if tt.wantCalls {
-				provider.EXPECT().DeleteSecret(gomock.Any(), tt.key).Return(tt.deleteErr)
-			}
+			provider.EXPECT().DeleteSecret(gomock.Any(), tt.key).Return(tt.deleteErr)
 
 			err := runSystemSecretDelete(context.Background(), provider, tt.key)
 			if tt.wantErr {

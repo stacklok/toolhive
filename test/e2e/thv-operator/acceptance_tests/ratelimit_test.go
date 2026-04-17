@@ -14,7 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/test/e2e/images"
 	"github.com/stacklok/toolhive/test/e2e/thv-operator/testutil"
 )
@@ -47,25 +47,25 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 
 		BeforeAll(func() {
 			By("Creating MCPServer with shared rate limit (maxTokens=3, refillPeriod=1m)")
-			server := &mcpv1alpha1.MCPServer{
+			server := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      serverName,
 					Namespace: testNamespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
 					MCPPort:   8080,
-					Env: []mcpv1alpha1.EnvVar{
+					Env: []mcpv1beta1.EnvVar{
 						{Name: "TRANSPORT", Value: "streamable-http"},
 					},
-					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+					SessionStorage: &mcpv1beta1.SessionStorageConfig{
 						Provider: "redis",
 						Address:  fmt.Sprintf("redis.%s.svc.cluster.local:6379", testNamespace),
 					},
-					RateLimiting: &mcpv1alpha1.RateLimitConfig{
-						Shared: &mcpv1alpha1.RateLimitBucket{
+					RateLimiting: &mcpv1beta1.RateLimitConfig{
+						Shared: &mcpv1beta1.RateLimitBucket{
 							MaxTokens:    3,
 							RefillPeriod: metav1.Duration{Duration: time.Minute},
 						},
@@ -104,7 +104,7 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 				ObjectMeta: metav1.ObjectMeta{Name: serverName + "-nodeport", Namespace: testNamespace},
 			})
 			By("Cleaning up MCPServer")
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: testNamespace},
 			})
 		})
@@ -139,32 +139,32 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 		It("should accept CRD with both shared and per-tool config (AC8)", func() {
 			By("Creating a second MCPServer with both shared and tools config")
 			server2Name := "ratelimit-both"
-			server2 := &mcpv1alpha1.MCPServer{
+			server2 := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      server2Name,
 					Namespace: testNamespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
 					MCPPort:   8080,
-					Env: []mcpv1alpha1.EnvVar{
+					Env: []mcpv1beta1.EnvVar{
 						{Name: "TRANSPORT", Value: "streamable-http"},
 					},
-					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+					SessionStorage: &mcpv1beta1.SessionStorageConfig{
 						Provider: "redis",
 						Address:  fmt.Sprintf("redis.%s.svc.cluster.local:6379", testNamespace),
 					},
-					RateLimiting: &mcpv1alpha1.RateLimitConfig{
-						Shared: &mcpv1alpha1.RateLimitBucket{
+					RateLimiting: &mcpv1beta1.RateLimitConfig{
+						Shared: &mcpv1beta1.RateLimitBucket{
 							MaxTokens:    100,
 							RefillPeriod: metav1.Duration{Duration: time.Minute},
 						},
-						Tools: []mcpv1alpha1.ToolRateLimitConfig{
+						Tools: []mcpv1beta1.ToolRateLimitConfig{
 							{
 								Name: "echo",
-								Shared: &mcpv1alpha1.RateLimitBucket{
+								Shared: &mcpv1beta1.RateLimitBucket{
 									MaxTokens:    10,
 									RefillPeriod: metav1.Duration{Duration: time.Minute},
 								},
@@ -201,14 +201,14 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 			GinkgoWriter.Printf("Mock OIDC server: issuer=%s nodePort=%d\n", issuerURL, oidcNodePort)
 
 			By("Creating MCPOIDCConfig for inline OIDC auth")
-			oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      oidcConfigName,
 					Namespace: testNamespace,
 				},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:             issuerURL,
 						JWKSAllowPrivateIP: true,
 						InsecureAllowHTTP:  true,
@@ -218,29 +218,29 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 			Expect(k8sClient.Create(ctx, oidcConfig)).To(Succeed())
 
 			By("Creating MCPServer with per-user rate limit and OIDC auth ref")
-			server := &mcpv1alpha1.MCPServer{
+			server := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      serverName,
 					Namespace: testNamespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
 					MCPPort:   8080,
-					Env: []mcpv1alpha1.EnvVar{
+					Env: []mcpv1beta1.EnvVar{
 						{Name: "TRANSPORT", Value: "streamable-http"},
 					},
-					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+					SessionStorage: &mcpv1beta1.SessionStorageConfig{
 						Provider: "redis",
 						Address:  fmt.Sprintf("redis.%s.svc.cluster.local:6379", testNamespace),
 					},
-					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
 						Name:     oidcConfigName,
 						Audience: "vmcp-audience",
 					},
-					RateLimiting: &mcpv1alpha1.RateLimitConfig{
-						PerUser: &mcpv1alpha1.RateLimitBucket{
+					RateLimiting: &mcpv1beta1.RateLimitConfig{
+						PerUser: &mcpv1beta1.RateLimitBucket{
 							MaxTokens:    2,
 							RefillPeriod: metav1.Duration{Duration: time.Minute},
 						},
@@ -279,11 +279,11 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 				ObjectMeta: metav1.ObjectMeta{Name: serverName + "-nodeport", Namespace: testNamespace},
 			})
 			By("Cleaning up MCPServer")
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: testNamespace},
 			})
 			By("Cleaning up MCPOIDCConfig")
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPOIDCConfig{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: oidcConfigName, Namespace: testNamespace},
 			})
 			By("Cleaning up OIDC server")

@@ -9,7 +9,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 //go:generate mockgen -destination=mocks/mock_collector.go -package=mocks -source=types.go StatusManager
@@ -18,7 +18,7 @@ import (
 // It collects status changes during reconciliation and applies them in a single batch update.
 type StatusManager interface {
 	// SetPhase sets the VirtualMCPServer phase
-	SetPhase(phase mcpv1alpha1.VirtualMCPServerPhase)
+	SetPhase(phase mcpv1beta1.VirtualMCPServerPhase)
 
 	// SetMessage sets the status message
 	SetMessage(message string)
@@ -72,9 +72,9 @@ type StatusManager interface {
 	SetTelemetryConfigRefValidatedCondition(reason, message string, status metav1.ConditionStatus)
 
 	// SetDiscoveredBackends sets the discovered backends list
-	SetDiscoveredBackends(backends []mcpv1alpha1.DiscoveredBackend)
+	SetDiscoveredBackends(backends []mcpv1beta1.DiscoveredBackend)
 
 	// UpdateStatus applies all collected status changes in a single batch update.
 	// Returns true if updates were applied, false if no changes were collected.
-	UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alpha1.VirtualMCPServerStatus) bool
+	UpdateStatus(ctx context.Context, vmcpStatus *mcpv1beta1.VirtualMCPServerStatus) bool
 }

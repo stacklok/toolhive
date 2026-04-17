@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -72,25 +72,25 @@ func TestDefaultRegistry(t *testing.T) {
 		registry := DefaultRegistry()
 
 		// Test token exchange converter
-		tokenExchangeConverter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeTokenExchange)
+		tokenExchangeConverter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeTokenExchange)
 		require.NoError(t, err)
 		require.NotNil(t, tokenExchangeConverter)
 		assert.Equal(t, "token_exchange", tokenExchangeConverter.StrategyType())
 
 		// Test header injection converter
-		headerInjectionConverter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeHeaderInjection)
+		headerInjectionConverter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeHeaderInjection)
 		require.NoError(t, err)
 		require.NotNil(t, headerInjectionConverter)
 		assert.Equal(t, "header_injection", headerInjectionConverter.StrategyType())
 
 		// Test unauthenticated converter
-		unauthenticatedConverter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeUnauthenticated)
+		unauthenticatedConverter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeUnauthenticated)
 		require.NoError(t, err)
 		require.NotNil(t, unauthenticatedConverter)
 		assert.Equal(t, "unauthenticated", unauthenticatedConverter.StrategyType())
 
 		// Test upstream inject converter
-		upstreamInjectConverter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeUpstreamInject)
+		upstreamInjectConverter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeUpstreamInject)
 		require.NoError(t, err)
 		require.NotNil(t, upstreamInjectConverter)
 		assert.Equal(t, "upstream_inject", upstreamInjectConverter.StrategyType())
@@ -108,19 +108,19 @@ func TestNewRegistry(t *testing.T) {
 		require.NotNil(t, registry.converters)
 
 		// Verify built-in converters are registered
-		tokenExchangeConverter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeTokenExchange)
+		tokenExchangeConverter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeTokenExchange)
 		require.NoError(t, err)
 		assert.NotNil(t, tokenExchangeConverter)
 
-		headerInjectionConverter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeHeaderInjection)
+		headerInjectionConverter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeHeaderInjection)
 		require.NoError(t, err)
 		assert.NotNil(t, headerInjectionConverter)
 
-		unauthenticatedConverter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeUnauthenticated)
+		unauthenticatedConverter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeUnauthenticated)
 		require.NoError(t, err)
 		assert.NotNil(t, unauthenticatedConverter)
 
-		upstreamInjectConverter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeUpstreamInject)
+		upstreamInjectConverter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeUpstreamInject)
 		require.NoError(t, err)
 		assert.NotNil(t, upstreamInjectConverter)
 	})
@@ -142,13 +142,13 @@ func TestNewRegistry(t *testing.T) {
 
 		// Verify correct types are registered
 		testCases := []struct {
-			authType     mcpv1alpha1.ExternalAuthType
+			authType     mcpv1beta1.ExternalAuthType
 			expectedType string
 		}{
-			{mcpv1alpha1.ExternalAuthTypeTokenExchange, "token_exchange"},
-			{mcpv1alpha1.ExternalAuthTypeHeaderInjection, "header_injection"},
-			{mcpv1alpha1.ExternalAuthTypeUnauthenticated, "unauthenticated"},
-			{mcpv1alpha1.ExternalAuthTypeUpstreamInject, "upstream_inject"},
+			{mcpv1beta1.ExternalAuthTypeTokenExchange, "token_exchange"},
+			{mcpv1beta1.ExternalAuthTypeHeaderInjection, "header_injection"},
+			{mcpv1beta1.ExternalAuthTypeUnauthenticated, "unauthenticated"},
+			{mcpv1beta1.ExternalAuthTypeUpstreamInject, "upstream_inject"},
 		}
 
 		for _, tc := range testCases {
@@ -167,13 +167,13 @@ func TestRegistry_Register(t *testing.T) {
 		t.Parallel()
 
 		registry := &Registry{
-			converters: make(map[mcpv1alpha1.ExternalAuthType]StrategyConverter),
+			converters: make(map[mcpv1beta1.ExternalAuthType]StrategyConverter),
 		}
 
 		converter := &HeaderInjectionConverter{}
-		registry.Register(mcpv1alpha1.ExternalAuthTypeHeaderInjection, converter)
+		registry.Register(mcpv1beta1.ExternalAuthTypeHeaderInjection, converter)
 
-		retrieved, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeHeaderInjection)
+		retrieved, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeHeaderInjection)
 		require.NoError(t, err)
 		assert.Same(t, converter, retrieved)
 	})
@@ -182,24 +182,24 @@ func TestRegistry_Register(t *testing.T) {
 		t.Parallel()
 
 		registry := &Registry{
-			converters: make(map[mcpv1alpha1.ExternalAuthType]StrategyConverter),
+			converters: make(map[mcpv1beta1.ExternalAuthType]StrategyConverter),
 		}
 
 		// Register a HeaderInjectionConverter first
 		converter1 := &HeaderInjectionConverter{}
-		registry.Register(mcpv1alpha1.ExternalAuthTypeHeaderInjection, converter1)
+		registry.Register(mcpv1beta1.ExternalAuthTypeHeaderInjection, converter1)
 
 		// Verify first converter is registered
-		retrieved, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeHeaderInjection)
+		retrieved, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeHeaderInjection)
 		require.NoError(t, err)
 		assert.Equal(t, "header_injection", retrieved.StrategyType())
 
 		// Register a TokenExchangeConverter with same auth type (should overwrite)
 		converter2 := &TokenExchangeConverter{}
-		registry.Register(mcpv1alpha1.ExternalAuthTypeHeaderInjection, converter2)
+		registry.Register(mcpv1beta1.ExternalAuthTypeHeaderInjection, converter2)
 
 		// Verify second converter overwrote the first
-		retrieved, err = registry.GetConverter(mcpv1alpha1.ExternalAuthTypeHeaderInjection)
+		retrieved, err = registry.GetConverter(mcpv1beta1.ExternalAuthTypeHeaderInjection)
 		require.NoError(t, err)
 		assert.Equal(t, "token_exchange", retrieved.StrategyType(), "should return second converter with different strategy type")
 	})
@@ -208,7 +208,7 @@ func TestRegistry_Register(t *testing.T) {
 		t.Parallel()
 
 		registry := &Registry{
-			converters: make(map[mcpv1alpha1.ExternalAuthType]StrategyConverter),
+			converters: make(map[mcpv1beta1.ExternalAuthType]StrategyConverter),
 		}
 
 		const numGoroutines = 50
@@ -220,7 +220,7 @@ func TestRegistry_Register(t *testing.T) {
 			go func(id int) {
 				defer wg.Done()
 				// Use different auth types to avoid overwrites
-				authType := mcpv1alpha1.ExternalAuthType("test-type-" + string(rune('A'+id%26)))
+				authType := mcpv1beta1.ExternalAuthType("test-type-" + string(rune('A'+id%26)))
 				converter := &HeaderInjectionConverter{}
 				registry.Register(authType, converter)
 			}(i)
@@ -241,7 +241,7 @@ func TestRegistry_GetConverter(t *testing.T) {
 
 		registry := NewRegistry()
 
-		converter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeHeaderInjection)
+		converter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeHeaderInjection)
 		require.NoError(t, err)
 		require.NotNil(t, converter)
 		assert.IsType(t, &HeaderInjectionConverter{}, converter)
@@ -252,7 +252,7 @@ func TestRegistry_GetConverter(t *testing.T) {
 
 		registry := NewRegistry()
 
-		converter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthType("unsupported"))
+		converter, err := registry.GetConverter(mcpv1beta1.ExternalAuthType("unsupported"))
 		assert.Error(t, err)
 		assert.Nil(t, converter)
 		assert.Contains(t, err.Error(), "unsupported auth type")
@@ -273,7 +273,7 @@ func TestRegistry_GetConverter(t *testing.T) {
 		for i := 0; i < numGoroutines; i++ {
 			go func() {
 				defer wg.Done()
-				converter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeHeaderInjection)
+				converter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeHeaderInjection)
 				if err != nil {
 					errs <- err
 					return
@@ -300,16 +300,16 @@ func TestConvertToStrategy(t *testing.T) {
 	t.Run("converts header injection config", func(t *testing.T) {
 		t.Parallel()
 
-		authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-auth",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-				HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+				HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 					HeaderName: "X-API-Key",
-					ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+					ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 						Name: "api-secret",
 						Key:  "key",
 					},
@@ -328,17 +328,17 @@ func TestConvertToStrategy(t *testing.T) {
 	t.Run("converts token exchange config", func(t *testing.T) {
 		t.Parallel()
 
-		authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-auth",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+				TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 					TokenURL: "https://auth.example.com/token",
 					ClientID: "test-client",
-					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 						Name: "oauth-secret",
 						Key:  "client-secret",
 					},
@@ -369,13 +369,13 @@ func TestConvertToStrategy(t *testing.T) {
 	t.Run("returns error for unsupported auth type", func(t *testing.T) {
 		t.Parallel()
 
-		authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-auth",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthType("unsupported"),
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthType("unsupported"),
 			},
 		}
 
@@ -388,13 +388,13 @@ func TestConvertToStrategy(t *testing.T) {
 	t.Run("returns error for invalid config", func(t *testing.T) {
 		t.Parallel()
 
-		authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-auth",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type:            mcpv1alpha1.ExternalAuthTypeHeaderInjection,
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type:            mcpv1beta1.ExternalAuthTypeHeaderInjection,
 				HeaderInjection: nil, // Invalid: missing required config
 			},
 		}
@@ -417,7 +417,7 @@ func TestResolveSecretsForStrategyFunc(t *testing.T) {
 		// Create fake client with secret
 		scheme := runtime.NewScheme()
 		_ = corev1.AddToScheme(scheme)
-		_ = mcpv1alpha1.AddToScheme(scheme)
+		_ = mcpv1beta1.AddToScheme(scheme)
 
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -434,16 +434,16 @@ func TestResolveSecretsForStrategyFunc(t *testing.T) {
 			WithRuntimeObjects(secret).
 			Build()
 
-		authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-auth",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-				HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+				HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 					HeaderName: "X-API-Key",
-					ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+					ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 						Name: "api-secret",
 						Key:  "key",
 					},
@@ -492,13 +492,13 @@ func TestResolveSecretsForStrategyFunc(t *testing.T) {
 			WithScheme(scheme).
 			Build()
 
-		authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-auth",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthType("unsupported"),
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthType("unsupported"),
 			},
 		}
 
@@ -517,22 +517,22 @@ func TestResolveSecretsForStrategyFunc(t *testing.T) {
 		// Create empty fake client (no secrets)
 		scheme := runtime.NewScheme()
 		_ = corev1.AddToScheme(scheme)
-		_ = mcpv1alpha1.AddToScheme(scheme)
+		_ = mcpv1beta1.AddToScheme(scheme)
 
 		k8sClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			Build()
 
-		authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-auth",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-				HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+				HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 					HeaderName: "X-API-Key",
-					ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+					ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 						Name: "missing-secret",
 						Key:  "key",
 					},

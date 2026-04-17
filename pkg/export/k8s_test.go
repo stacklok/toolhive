@@ -13,7 +13,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/stacklok/toolhive-core/permissions"
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -40,7 +40,7 @@ func TestWriteK8sManifest(t *testing.T) {
 		name       string
 		config     *runner.RunConfig
 		wantErr    bool
-		validateFn func(t *testing.T, mcpServer *v1alpha1.MCPServer)
+		validateFn func(t *testing.T, mcpServer *v1beta1.MCPServer)
 	}{
 		{
 			name: "basic stdio config",
@@ -54,9 +54,9 @@ func TestWriteK8sManifest(t *testing.T) {
 				Port:          8080,
 				CmdArgs:       []string{"--verbose"},
 			},
-			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
+			validateFn: func(t *testing.T, mcpServer *v1beta1.MCPServer) {
 				t.Helper()
-				assert.Equal(t, "toolhive.stacklok.dev/v1alpha1", mcpServer.APIVersion)
+				assert.Equal(t, "toolhive.stacklok.dev/v1beta1", mcpServer.APIVersion)
 				assert.Equal(t, "MCPServer", mcpServer.Kind)
 				assert.Equal(t, "github", mcpServer.Name)
 				assert.Equal(t, "ghcr.io/stacklok/mcp-server-github:latest", mcpServer.Spec.Image)
@@ -76,7 +76,7 @@ func TestWriteK8sManifest(t *testing.T) {
 				Port:       8081,
 				TargetPort: 3000,
 			},
-			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
+			validateFn: func(t *testing.T, mcpServer *v1beta1.MCPServer) {
 				t.Helper()
 				assert.Equal(t, "sse", mcpServer.Spec.Transport)
 				assert.Equal(t, int32(8081), mcpServer.GetProxyPort())
@@ -95,7 +95,7 @@ func TestWriteK8sManifest(t *testing.T) {
 					"DEBUG":        "true",
 				},
 			},
-			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
+			validateFn: func(t *testing.T, mcpServer *v1beta1.MCPServer) {
 				t.Helper()
 				require.Len(t, mcpServer.Spec.Env, 2)
 				envMap := make(map[string]string)
@@ -118,7 +118,7 @@ func TestWriteK8sManifest(t *testing.T) {
 					"/readonly:/data:ro",
 				},
 			},
-			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
+			validateFn: func(t *testing.T, mcpServer *v1beta1.MCPServer) {
 				t.Helper()
 				require.Len(t, mcpServer.Spec.Volumes, 2)
 				assert.Equal(t, "/host/path", mcpServer.Spec.Volumes[0].HostPath)
@@ -141,10 +141,10 @@ func TestWriteK8sManifest(t *testing.T) {
 					Write: []permissions.MountDeclaration{"/output"},
 				},
 			},
-			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
+			validateFn: func(t *testing.T, mcpServer *v1beta1.MCPServer) {
 				t.Helper()
 				require.NotNil(t, mcpServer.Spec.PermissionProfile)
-				assert.Equal(t, v1alpha1.PermissionProfileTypeBuiltin, mcpServer.Spec.PermissionProfile.Type)
+				assert.Equal(t, v1beta1.PermissionProfileTypeBuiltin, mcpServer.Spec.PermissionProfile.Type)
 				assert.Equal(t, "none", mcpServer.Spec.PermissionProfile.Name)
 			},
 		},
@@ -162,10 +162,10 @@ func TestWriteK8sManifest(t *testing.T) {
 					EntitiesJSON: "[]",
 				}),
 			},
-			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
+			validateFn: func(t *testing.T, mcpServer *v1beta1.MCPServer) {
 				t.Helper()
 				require.NotNil(t, mcpServer.Spec.AuthzConfig)
-				assert.Equal(t, v1alpha1.AuthzConfigTypeInline, mcpServer.Spec.AuthzConfig.Type)
+				assert.Equal(t, v1beta1.AuthzConfigTypeInline, mcpServer.Spec.AuthzConfig.Type)
 				require.NotNil(t, mcpServer.Spec.AuthzConfig.Inline)
 				require.Len(t, mcpServer.Spec.AuthzConfig.Inline.Policies, 1)
 				assert.Equal(t, "permit(principal, action, resource);", mcpServer.Spec.AuthzConfig.Inline.Policies[0])
@@ -183,7 +183,7 @@ func TestWriteK8sManifest(t *testing.T) {
 					Component: "test-component",
 				},
 			},
-			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
+			validateFn: func(t *testing.T, mcpServer *v1beta1.MCPServer) {
 				t.Helper()
 				require.NotNil(t, mcpServer.Spec.Audit)
 				assert.True(t, mcpServer.Spec.Audit.Enabled)
@@ -198,7 +198,7 @@ func TestWriteK8sManifest(t *testing.T) {
 				Transport:   types.TransportTypeStdio,
 				ToolsFilter: []string{"tool1", "tool2"},
 			},
-			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
+			validateFn: func(t *testing.T, mcpServer *v1beta1.MCPServer) {
 				t.Helper()
 				// ToolsFilter is not exported to the CRD; use MCPToolConfig with toolConfigRef instead
 				assert.Nil(t, mcpServer.Spec.ToolConfigRef, "toolConfigRef should not be set by export")
@@ -256,7 +256,7 @@ func TestWriteK8sManifest(t *testing.T) {
 			assert.NotEmpty(t, buf.String())
 
 			// Parse the YAML to validate structure
-			var mcpServer v1alpha1.MCPServer
+			var mcpServer v1beta1.MCPServer
 			err = yaml.Unmarshal(buf.Bytes(), &mcpServer)
 			require.NoError(t, err)
 
@@ -275,14 +275,14 @@ func TestParseVolumeString(t *testing.T) {
 		name    string
 		volStr  string
 		index   int
-		wantVol v1alpha1.Volume
+		wantVol v1beta1.Volume
 		wantErr bool
 	}{
 		{
 			name:   "basic volume",
 			volStr: "/host/path:/container/path",
 			index:  0,
-			wantVol: v1alpha1.Volume{
+			wantVol: v1beta1.Volume{
 				Name:      "volume-0",
 				HostPath:  "/host/path",
 				MountPath: "/container/path",
@@ -293,7 +293,7 @@ func TestParseVolumeString(t *testing.T) {
 			name:   "read-only volume",
 			volStr: "/host/path:/container/path:ro",
 			index:  1,
-			wantVol: v1alpha1.Volume{
+			wantVol: v1beta1.Volume{
 				Name:      "volume-1",
 				HostPath:  "/host/path",
 				MountPath: "/container/path",

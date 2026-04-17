@@ -15,7 +15,7 @@
 
 ---
 # Create MCPGroup
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: my-services
@@ -25,7 +25,7 @@ spec:
 
 ---
 # Backend MCP Server: Fetch (for HTTP requests)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: fetch
@@ -47,7 +47,7 @@ spec:
 
 ---
 # Backend MCP Server: Yardstick SSE (for echo and validation)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: yardstick-sse
@@ -72,7 +72,7 @@ spec:
 
 ---
 # Simple Composite Tool Definition
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPCompositeToolDefinition
 metadata:
   name: fetch-and-validate
@@ -142,7 +142,7 @@ spec:
 
 ---
 # VirtualMCPServer using the simple composite tool
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: vmcp-simple-composite

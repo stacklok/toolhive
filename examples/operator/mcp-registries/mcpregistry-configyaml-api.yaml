@@ -12,7 +12,7 @@
 # This is functionally equivalent to mcpregistry-api-basic.yaml but uses
 # the decoupled configYAML path instead of the legacy typed fields.
 
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: api-configyaml

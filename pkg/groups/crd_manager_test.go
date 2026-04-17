@@ -18,14 +18,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // createTestScheme creates a test scheme with required types
 func createTestScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(mcpv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(mcpv1beta1.AddToScheme(scheme))
 	return scheme
 }
 
@@ -58,12 +58,12 @@ func TestCRDManager_Create(t *testing.T) {
 			name:      "group already exists",
 			groupName: "existinggroup",
 			setupObjs: []client.Object{
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "existinggroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
 			},
 			expectError: true,
@@ -130,12 +130,12 @@ func TestCRDManager_Get(t *testing.T) {
 			name:      "successful get",
 			groupName: "testgroup",
 			setupObjs: []client.Object{
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "testgroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
@@ -155,12 +155,12 @@ func TestCRDManager_Get(t *testing.T) {
 			name:      "group with no registered clients",
 			groupName: "emptygroup",
 			setupObjs: []client.Object{
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "emptygroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
@@ -212,26 +212,26 @@ func TestCRDManager_List(t *testing.T) {
 		{
 			name: "list multiple groups",
 			setupObjs: []client.Object{
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "group1",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "group2",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "agroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
 			},
 			expected: []*Group{
@@ -285,12 +285,12 @@ func TestCRDManager_Delete(t *testing.T) {
 			name:      "successful deletion",
 			groupName: "testgroup",
 			setupObjs: []client.Object{
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "testgroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
@@ -322,7 +322,7 @@ func TestCRDManager_Delete(t *testing.T) {
 				assert.NoError(t, err)
 
 				// Verify the group was deleted
-				mcpGroup := &mcpv1alpha1.MCPGroup{}
+				mcpGroup := &mcpv1beta1.MCPGroup{}
 				err := fakeClient.Get(ctx, client.ObjectKey{
 					Name:      tt.groupName,
 					Namespace: "default",
@@ -347,12 +347,12 @@ func TestCRDManager_Exists(t *testing.T) {
 			name:      "group exists",
 			groupName: "testgroup",
 			setupObjs: []client.Object{
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "testgroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
 			},
 			expected:    true,
@@ -401,12 +401,12 @@ func TestCRDManager_RegisterClients(t *testing.T) {
 			groupNames:  []string{"testgroup"},
 			clientNames: []string{"client1", "client2"},
 			setupObjs: []client.Object{
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "testgroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
@@ -416,19 +416,19 @@ func TestCRDManager_RegisterClients(t *testing.T) {
 			groupNames:  []string{"group1", "group2"},
 			clientNames: []string{"client1"},
 			setupObjs: []client.Object{
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "group1",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "group2",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
@@ -475,12 +475,12 @@ func TestCRDManager_UnregisterClients(t *testing.T) {
 			groupNames:  []string{"testgroup"},
 			clientNames: []string{"client1"},
 			setupObjs: []client.Object{
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "testgroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
@@ -490,12 +490,12 @@ func TestCRDManager_UnregisterClients(t *testing.T) {
 			groupNames:  []string{"testgroup"},
 			clientNames: []string{"client1", "client2"},
 			setupObjs: []client.Object{
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "testgroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
@@ -505,19 +505,19 @@ func TestCRDManager_UnregisterClients(t *testing.T) {
 			groupNames:  []string{"group1", "group2"},
 			clientNames: []string{"client1"},
 			setupObjs: []client.Object{
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "group1",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
-				&mcpv1alpha1.MCPGroup{
+				&mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "group2",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{},
+					Spec: mcpv1beta1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
@@ -554,16 +554,16 @@ func TestMCPGroupToGroup(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		mcpGroup *mcpv1alpha1.MCPGroup
+		mcpGroup *mcpv1beta1.MCPGroup
 		expected *Group
 	}{
 		{
 			name: "basic group conversion",
-			mcpGroup: &mcpv1alpha1.MCPGroup{
+			mcpGroup: &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "testgroup",
 				},
-				Spec: mcpv1alpha1.MCPGroupSpec{},
+				Spec: mcpv1beta1.MCPGroupSpec{},
 			},
 			expected: &Group{
 				Name:              "testgroup",

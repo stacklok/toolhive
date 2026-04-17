@@ -13,7 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
@@ -44,12 +44,12 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 			images.YardstickServerImage, timeout, pollingInterval)
 
 		By("Creating VirtualMCPCompositeToolDefinition")
-		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{
+		compositeToolDef := &mcpv1beta1.VirtualMCPCompositeToolDefinition{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      compositeToolDefName,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
+			Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
 				CompositeToolConfig: vmcpconfig.CompositeToolConfig{
 					Name:        compositeToolName,
 					Description: "Echoes the input message twice in sequence (referenced)",
@@ -91,7 +91,7 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 		By("Verifying VirtualMCPCompositeToolDefinition was created")
 		// If creation succeeded, the webhook validation passed (no controller sets status)
 		Eventually(func() bool {
-			def := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
+			def := &mcpv1beta1.VirtualMCPCompositeToolDefinition{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      compositeToolDefName,
 				Namespace: testNamespace,
@@ -100,13 +100,13 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 		}, 30*time.Second, pollingInterval).Should(BeTrue(), "VirtualMCPCompositeToolDefinition should exist")
 
 		By("Creating VirtualMCPServer with referenced composite tool")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+			Spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Aggregation: &vmcpconfig.AggregationConfig{
@@ -119,7 +119,7 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 						},
 					},
 				},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
 				ServiceType: "NodePort",
@@ -138,7 +138,7 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -147,7 +147,7 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 		_ = k8sClient.Delete(ctx, vmcpServer)
 
 		By("Cleaning up VirtualMCPCompositeToolDefinition")
-		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{
+		compositeToolDef := &mcpv1beta1.VirtualMCPCompositeToolDefinition{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      compositeToolDefName,
 				Namespace: testNamespace,
@@ -156,7 +156,7 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 		_ = k8sClient.Delete(ctx, compositeToolDef)
 
 		By("Cleaning up backend MCPServer")
-		backend := &mcpv1alpha1.MCPServer{
+		backend := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backendName,
 				Namespace: testNamespace,
@@ -165,7 +165,7 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 		_ = k8sClient.Delete(ctx, backend)
 
 		By("Cleaning up MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{
+		mcpGroup := &mcpv1beta1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      mcpGroupName,
 				Namespace: testNamespace,
@@ -242,7 +242,7 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 
 	Context("when verifying referenced composite tool configuration", func() {
 		It("should have correct CompositeToolRefs in VirtualMCPServer", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -258,7 +258,7 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 		})
 
 		It("should have correct composite tool definition stored", func() {
-			compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
+			compositeToolDef := &mcpv1beta1.VirtualMCPCompositeToolDefinition{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      compositeToolDefName,
 				Namespace: testNamespace,
@@ -292,7 +292,7 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 		})
 
 		It("should reflect referenced tool in VirtualMCPServer status", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -300,16 +300,16 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check that VirtualMCPServer is in Ready phase
-			Expect(vmcpServer.Status.Phase).To(Equal(mcpv1alpha1.VirtualMCPServerPhaseReady),
+			Expect(vmcpServer.Status.Phase).To(Equal(mcpv1beta1.VirtualMCPServerPhaseReady),
 				"VirtualMCPServer should be in Ready phase when using valid CompositeToolRefs")
 
 			// Check for CompositeToolRefsValidated condition (if it exists)
 			// Note: This condition might not always be set immediately
 			for _, condition := range vmcpServer.Status.Conditions {
-				if condition.Type == mcpv1alpha1.ConditionTypeCompositeToolRefsValidated {
+				if condition.Type == mcpv1beta1.ConditionTypeCompositeToolRefsValidated {
 					Expect(condition.Status).To(Equal(metav1.ConditionTrue),
 						"CompositeToolRefs should be validated")
-					Expect(condition.Reason).To(Equal(mcpv1alpha1.ConditionReasonCompositeToolRefsValid))
+					Expect(condition.Reason).To(Equal(mcpv1beta1.ConditionReasonCompositeToolRefsValid))
 					GinkgoWriter.Printf("Found CompositeToolRefsValidated condition: %s\n", condition.Message)
 					break
 				}

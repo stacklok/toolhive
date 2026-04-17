@@ -8,18 +8,18 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // newMinimalMCPServer creates a minimal MCPServer with the given name and optional
 // AuthzConfigRef for CEL validation testing.
-func newMinimalMCPServer(name string, authz *mcpv1alpha1.AuthzConfigRef) *mcpv1alpha1.MCPServer {
-	return &mcpv1alpha1.MCPServer{
+func newMinimalMCPServer(name string, authz *mcpv1beta1.AuthzConfigRef) *mcpv1beta1.MCPServer {
+	return &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:       "example/mcp-server:latest",
 			AuthzConfig: authz,
 		},
@@ -30,7 +30,7 @@ var _ = Describe("CEL Validation for AuthzConfigRef", Label("k8s", "cel", "valid
 	Context("AuthzConfigRef CEL validation", func() {
 		Context("type=configMap", func() {
 			It("should reject when configMap field is missing", func() {
-				server := newMinimalMCPServer("authz-cm-missing", &mcpv1alpha1.AuthzConfigRef{
+				server := newMinimalMCPServer("authz-cm-missing", &mcpv1beta1.AuthzConfigRef{
 					Type: "configMap",
 				})
 				err := k8sClient.Create(ctx, server)
@@ -39,12 +39,12 @@ var _ = Describe("CEL Validation for AuthzConfigRef", Label("k8s", "cel", "valid
 			})
 
 			It("should reject when inline field is also set", func() {
-				server := newMinimalMCPServer("authz-cm-with-inline", &mcpv1alpha1.AuthzConfigRef{
+				server := newMinimalMCPServer("authz-cm-with-inline", &mcpv1beta1.AuthzConfigRef{
 					Type: "configMap",
-					ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+					ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 						Name: "test-cm",
 					},
-					Inline: &mcpv1alpha1.InlineAuthzConfig{
+					Inline: &mcpv1beta1.InlineAuthzConfig{
 						Policies: []string{"permit(principal, action, resource);"},
 					},
 				})
@@ -54,9 +54,9 @@ var _ = Describe("CEL Validation for AuthzConfigRef", Label("k8s", "cel", "valid
 			})
 
 			It("should accept when only configMap field is set", func() {
-				server := newMinimalMCPServer("authz-cm-valid", &mcpv1alpha1.AuthzConfigRef{
+				server := newMinimalMCPServer("authz-cm-valid", &mcpv1beta1.AuthzConfigRef{
 					Type: "configMap",
-					ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+					ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 						Name: "test-cm",
 					},
 				})
@@ -67,7 +67,7 @@ var _ = Describe("CEL Validation for AuthzConfigRef", Label("k8s", "cel", "valid
 
 		Context("type=inline", func() {
 			It("should reject when inline field is missing", func() {
-				server := newMinimalMCPServer("authz-inline-missing", &mcpv1alpha1.AuthzConfigRef{
+				server := newMinimalMCPServer("authz-inline-missing", &mcpv1beta1.AuthzConfigRef{
 					Type: "inline",
 				})
 				err := k8sClient.Create(ctx, server)
@@ -76,12 +76,12 @@ var _ = Describe("CEL Validation for AuthzConfigRef", Label("k8s", "cel", "valid
 			})
 
 			It("should reject when configMap field is also set", func() {
-				server := newMinimalMCPServer("authz-inline-with-cm", &mcpv1alpha1.AuthzConfigRef{
+				server := newMinimalMCPServer("authz-inline-with-cm", &mcpv1beta1.AuthzConfigRef{
 					Type: "inline",
-					Inline: &mcpv1alpha1.InlineAuthzConfig{
+					Inline: &mcpv1beta1.InlineAuthzConfig{
 						Policies: []string{"permit(principal, action, resource);"},
 					},
-					ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+					ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 						Name: "test-cm",
 					},
 				})
@@ -91,9 +91,9 @@ var _ = Describe("CEL Validation for AuthzConfigRef", Label("k8s", "cel", "valid
 			})
 
 			It("should accept when only inline field is set", func() {
-				server := newMinimalMCPServer("authz-inline-valid", &mcpv1alpha1.AuthzConfigRef{
+				server := newMinimalMCPServer("authz-inline-valid", &mcpv1beta1.AuthzConfigRef{
 					Type: "inline",
-					Inline: &mcpv1alpha1.InlineAuthzConfig{
+					Inline: &mcpv1beta1.InlineAuthzConfig{
 						Policies: []string{"permit(principal, action, resource);"},
 					},
 				})
@@ -105,9 +105,9 @@ var _ = Describe("CEL Validation for AuthzConfigRef", Label("k8s", "cel", "valid
 
 	Context("AuthzConfigRef multi-violation CEL validation", func() {
 		It("should report both missing-configMap and extra-inline when type=configMap but only inline is set", func() {
-			server := newMinimalMCPServer("authz-cm-only-inline", &mcpv1alpha1.AuthzConfigRef{
+			server := newMinimalMCPServer("authz-cm-only-inline", &mcpv1beta1.AuthzConfigRef{
 				Type: "configMap",
-				Inline: &mcpv1alpha1.InlineAuthzConfig{
+				Inline: &mcpv1beta1.InlineAuthzConfig{
 					Policies: []string{"permit(principal, action, resource);"},
 				},
 			})

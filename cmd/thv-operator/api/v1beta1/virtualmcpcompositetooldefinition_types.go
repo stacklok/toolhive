@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package v1alpha1
+package v1beta1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -98,6 +98,7 @@ const (
 )
 
 //+kubebuilder:object:root=true
+//+kubebuilder:storageversion
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=vmcpctd;compositetool,categories=toolhive
 //+kubebuilder:printcolumn:name="Workflow",type="string",JSONPath=".spec.name",description="Workflow name"

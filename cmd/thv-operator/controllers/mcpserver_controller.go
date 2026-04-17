@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
@@ -165,7 +165,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	ctxLogger := log.FromContext(ctx)
 
 	// Fetch the MCPServer instance
-	mcpServer := &mcpv1alpha1.MCPServer{}
+	mcpServer := &mcpv1beta1.MCPServer{}
 	err := r.Get(ctx, req.NamespacedName, mcpServer)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -237,8 +237,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.handleToolConfig(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPToolConfig")
 		// Update status to reflect the error
-		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPToolConfig error")
 		}
@@ -248,8 +248,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Check if MCPTelemetryConfig is referenced and handle it
 	if err := r.handleTelemetryConfig(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPTelemetryConfig")
-		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPTelemetryConfig error")
 		}
@@ -260,8 +260,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.handleExternalAuthConfig(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
 		// Update status to reflect the error
-		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
 		}
@@ -271,8 +271,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Check if authServerRef is referenced and handle config hash tracking
 	if err := r.handleAuthServerRef(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to handle authServerRef")
-		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after authServerRef error")
 		}
@@ -282,8 +282,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Check if MCPOIDCConfig is referenced and handle it
 	if err := r.handleOIDCConfig(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPOIDCConfig")
-		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, err.Error())
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPOIDCConfig error")
 		}
@@ -299,9 +299,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// check if the RBAC resources are in place for the MCP server
 	if err := r.ensureRBACResources(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to ensure RBAC resources")
-		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		mcpServer.Status.Message = fmt.Sprintf("Failed to ensure RBAC resources: %s", err.Error())
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, mcpServer.Status.Message)
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, mcpServer.Status.Message)
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after RBAC error")
 		}
@@ -311,9 +311,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Ensure authorization ConfigMap for inline configuration
 	if err := r.ensureAuthzConfigMap(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to ensure authorization ConfigMap")
-		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		mcpServer.Status.Message = fmt.Sprintf("Failed to ensure authorization ConfigMap: %s", err.Error())
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, mcpServer.Status.Message)
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, mcpServer.Status.Message)
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after authz ConfigMap error")
 		}
@@ -323,9 +323,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Ensure RunConfig ConfigMap exists and is up to date
 	if err := r.ensureRunConfigConfigMap(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to ensure RunConfig ConfigMap")
-		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		mcpServer.Status.Message = fmt.Sprintf("Failed to build configuration: %s", err.Error())
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, mcpServer.Status.Message)
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, mcpServer.Status.Message)
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after RunConfig error")
 		}
@@ -343,9 +343,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 		ctxLogger.Error(err, "Failed to get RunConfig checksum")
-		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		mcpServer.Status.Message = fmt.Sprintf("Failed to build configuration: %s", err.Error())
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, mcpServer.Status.Message)
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, mcpServer.Status.Message)
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after RunConfig checksum error")
 		}
@@ -361,9 +361,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if dep == nil {
 			ctxLogger.Error(nil, "Failed to create Deployment object")
 			deploymentErr := fmt.Errorf("failed to create Deployment object")
-			mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+			mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 			mcpServer.Status.Message = deploymentErr.Error()
-			setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, mcpServer.Status.Message)
+			setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, mcpServer.Status.Message)
 			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 				ctxLogger.Error(statusErr, "Failed to update MCPServer status after Deployment build failure")
 			}
@@ -373,9 +373,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		err = r.Create(ctx, dep)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to create new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
-			mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+			mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 			mcpServer.Status.Message = fmt.Sprintf("Failed to create Deployment: %s", err.Error())
-			setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, mcpServer.Status.Message)
+			setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, mcpServer.Status.Message)
 			if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 				ctxLogger.Error(statusErr, "Failed to update MCPServer status after Deployment creation failure")
 			}
@@ -492,7 +492,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{}, nil
 }
 
-func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) {
 	if mcpServer.Spec.GroupRef == nil {
 		// No group reference, nothing to validate
 		return
@@ -502,29 +502,29 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 	groupName := mcpServer.Spec.GroupRef.Name
 
 	// Find the referenced MCPGroup
-	group := &mcpv1alpha1.MCPGroup{}
+	group := &mcpv1beta1.MCPGroup{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: mcpServer.Namespace, Name: groupName}, group); err != nil {
 		ctxLogger.Error(err, "Failed to validate GroupRef")
 		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionGroupRefValidated,
+			Type:               mcpv1beta1.ConditionGroupRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotFound,
+			Reason:             mcpv1beta1.ConditionReasonGroupRefNotFound,
 			Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", groupName, mcpServer.Namespace),
 			ObservedGeneration: mcpServer.Generation,
 		})
-	} else if group.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
+	} else if group.Status.Phase != mcpv1beta1.MCPGroupPhaseReady {
 		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionGroupRefValidated,
+			Type:               mcpv1beta1.ConditionGroupRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotReady,
+			Reason:             mcpv1beta1.ConditionReasonGroupRefNotReady,
 			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", groupName, group.Status.Phase),
 			ObservedGeneration: mcpServer.Generation,
 		})
 	} else {
 		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionGroupRefValidated,
+			Type:               mcpv1beta1.ConditionGroupRefValidated,
 			Status:             metav1.ConditionTrue,
-			Reason:             mcpv1alpha1.ConditionReasonGroupRefValidated,
+			Reason:             mcpv1beta1.ConditionReasonGroupRefValidated,
 			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", groupName),
 			ObservedGeneration: mcpServer.Generation,
 		})
@@ -537,9 +537,9 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 }
 
 // setCABundleRefCondition sets the CA bundle validation status condition
-func setCABundleRefCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+func setCABundleRefCondition(mcpServer *mcpv1beta1.MCPServer, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionCABundleRefValidated,
+		Type:               mcpv1beta1.ConditionCABundleRefValidated,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -549,14 +549,14 @@ func setCABundleRefCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.Con
 
 // validateCABundleRef validates the CABundleRef ConfigMap reference if specified.
 // Checks the MCPOIDCConfig path for CA bundle references.
-func (r *MCPServerReconciler) validateCABundleRef(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
-	var caBundleRef *mcpv1alpha1.CABundleSource
+func (r *MCPServerReconciler) validateCABundleRef(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) {
+	var caBundleRef *mcpv1beta1.CABundleSource
 
 	// Check MCPOIDCConfig inline CA bundle if using the reference path
 	if mcpServer.Spec.OIDCConfigRef != nil {
 		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.OIDCConfigRef)
 		if err == nil && oidcCfg != nil &&
-			oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
+			oidcCfg.Spec.Type == mcpv1beta1.MCPOIDCConfigTypeInline &&
 			oidcCfg.Spec.Inline != nil {
 			caBundleRef = oidcCfg.Spec.Inline.CABundleRef
 		}
@@ -571,7 +571,7 @@ func (r *MCPServerReconciler) validateCABundleRef(ctx context.Context, mcpServer
 	// Validate the CABundleRef configuration
 	if err := validation.ValidateCABundleSource(caBundleRef); err != nil {
 		ctxLogger.Error(err, "Invalid CABundleRef configuration")
-		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonCABundleRefInvalid, err.Error())
+		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonCABundleRefInvalid, err.Error())
 		r.updateCABundleStatus(ctx, mcpServer)
 		return
 	}
@@ -581,7 +581,7 @@ func (r *MCPServerReconciler) validateCABundleRef(ctx context.Context, mcpServer
 	configMap := &corev1.ConfigMap{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: mcpServer.Namespace, Name: cmName}, configMap); err != nil {
 		ctxLogger.Error(err, "Failed to find CA bundle ConfigMap", "configMap", cmName)
-		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonCABundleRefNotFound,
+		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonCABundleRefNotFound,
 			fmt.Sprintf("CA bundle ConfigMap '%s' not found in namespace '%s'", cmName, mcpServer.Namespace))
 		r.updateCABundleStatus(ctx, mcpServer)
 		return
@@ -594,20 +594,20 @@ func (r *MCPServerReconciler) validateCABundleRef(ctx context.Context, mcpServer
 	}
 	if _, exists := configMap.Data[key]; !exists {
 		ctxLogger.Error(nil, "CA bundle key not found in ConfigMap", "configMap", cmName, "key", key)
-		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonCABundleRefInvalid,
+		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonCABundleRefInvalid,
 			fmt.Sprintf("Key '%s' not found in ConfigMap '%s'", key, cmName))
 		r.updateCABundleStatus(ctx, mcpServer)
 		return
 	}
 
 	// Validation passed
-	setCABundleRefCondition(mcpServer, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonCABundleRefValid,
+	setCABundleRefCondition(mcpServer, metav1.ConditionTrue, mcpv1beta1.ConditionReasonCABundleRefValid,
 		fmt.Sprintf("CA bundle ConfigMap '%s' is valid (key: %s)", cmName, key))
 	r.updateCABundleStatus(ctx, mcpServer)
 }
 
 // updateCABundleStatus updates the MCPServer status after CA bundle validation
-func (r *MCPServerReconciler) updateCABundleStatus(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+func (r *MCPServerReconciler) updateCABundleStatus(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) {
 	ctxLogger := log.FromContext(ctx)
 	if err := r.Status().Update(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to update MCPServer status after CABundleRef validation")
@@ -615,9 +615,9 @@ func (r *MCPServerReconciler) updateCABundleStatus(ctx context.Context, mcpServe
 }
 
 // setReadyCondition sets the top-level Ready status condition.
-func setReadyCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+func setReadyCondition(mcpServer *mcpv1beta1.MCPServer, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeReady,
+		Type:               mcpv1beta1.ConditionTypeReady,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -627,7 +627,7 @@ func setReadyCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.Condition
 
 // validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and updates the MCPServer status
 // with appropriate conditions and events
-func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) bool {
+func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) bool {
 	ctxLogger := log.FromContext(ctx)
 
 	// Only validate if PodTemplateSpec is provided
@@ -645,19 +645,19 @@ func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Con
 		}
 
 		// Set phase and message
-		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		mcpServer.Status.Message = fmt.Sprintf("Invalid PodTemplateSpec: %v", err)
 
 		// Set condition for invalid PodTemplateSpec
 		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionPodTemplateValid,
+			Type:               mcpv1beta1.ConditionPodTemplateValid,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: mcpServer.Generation,
-			Reason:             mcpv1alpha1.ConditionReasonPodTemplateInvalid,
+			Reason:             mcpv1beta1.ConditionReasonPodTemplateInvalid,
 			Message:            fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
 		})
 
-		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady,
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady,
 			fmt.Sprintf("Invalid PodTemplateSpec: %v", err))
 
 		// Update status with the condition
@@ -672,10 +672,10 @@ func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Con
 
 	// Set condition for valid PodTemplateSpec
 	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionPodTemplateValid,
+		Type:               mcpv1beta1.ConditionPodTemplateValid,
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: mcpServer.Generation,
-		Reason:             mcpv1alpha1.ConditionReasonPodTemplateValid,
+		Reason:             mcpv1beta1.ConditionReasonPodTemplateValid,
 		Message:            "PodTemplateSpec is valid",
 	})
 
@@ -689,7 +689,7 @@ func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Con
 
 // handleRestartAnnotation checks if the restart annotation has been updated and triggers a restart if needed
 // Returns true if a restart was triggered and the reconciliation should be requeued
-func (r *MCPServerReconciler) handleRestartAnnotation(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) (bool, error) {
+func (r *MCPServerReconciler) handleRestartAnnotation(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) (bool, error) {
 	ctxLogger := log.FromContext(ctx)
 
 	// Get the current restarted-at annotation value from the CR
@@ -759,7 +759,7 @@ func (r *MCPServerReconciler) handleRestartAnnotation(ctx context.Context, mcpSe
 }
 
 // performRestart executes the restart based on the specified strategy
-func (r *MCPServerReconciler) performRestart(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer, strategy string) error {
+func (r *MCPServerReconciler) performRestart(ctx context.Context, mcpServer *mcpv1beta1.MCPServer, strategy string) error {
 	switch strategy {
 	case RestartStrategyRolling:
 		return r.performRollingRestart(ctx, mcpServer)
@@ -775,7 +775,7 @@ func (r *MCPServerReconciler) performRestart(ctx context.Context, mcpServer *mcp
 // getRunConfigChecksum fetches the RunConfig ConfigMap checksum annotation for this server.
 // Uses the shared RunConfigChecksumFetcher to maintain consistency with MCPRemoteProxy.
 func (r *MCPServerReconciler) getRunConfigChecksum(
-	ctx context.Context, mcpServer *mcpv1alpha1.MCPServer,
+	ctx context.Context, mcpServer *mcpv1beta1.MCPServer,
 ) (string, error) {
 	if mcpServer == nil {
 		return "", fmt.Errorf("mcpServer cannot be nil")
@@ -786,7 +786,7 @@ func (r *MCPServerReconciler) getRunConfigChecksum(
 }
 
 // performRollingRestart triggers a rolling restart by updating the deployment's pod template annotation
-func (r *MCPServerReconciler) performRollingRestart(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
+func (r *MCPServerReconciler) performRollingRestart(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
 	deployment := &appsv1.Deployment{}
 	err := r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, deployment)
@@ -814,7 +814,7 @@ func (r *MCPServerReconciler) performRollingRestart(ctx context.Context, mcpServ
 }
 
 // performImmediateRestart triggers an immediate restart by deleting the pods directly
-func (r *MCPServerReconciler) performImmediateRestart(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
+func (r *MCPServerReconciler) performImmediateRestart(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
 
 	// List pods belonging to this MCPServer
@@ -843,7 +843,7 @@ func (r *MCPServerReconciler) performImmediateRestart(ctx context.Context, mcpSe
 }
 
 // handleToolConfig handles MCPToolConfig reference for an MCPServer
-func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
 	if m.Spec.ToolConfigRef == nil {
 		// No MCPToolConfig referenced, clear any stored hash
@@ -886,7 +886,7 @@ func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alph
 
 	return nil
 }
-func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
+func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) error {
 	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	proxyRunnerNameForRBAC := ctrlutil.ProxyRunnerServiceAccountName(mcpServer.Name)
 
@@ -930,7 +930,7 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 //
 //nolint:gocyclo
 func (r *MCPServerReconciler) deploymentForMCPServer(
-	ctx context.Context, m *mcpv1alpha1.MCPServer, runConfigChecksum string,
+	ctx context.Context, m *mcpv1beta1.MCPServer, runConfigChecksum string,
 ) *appsv1.Deployment {
 	ls := labelsForMCPServer(m.Name)
 
@@ -1036,7 +1036,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		// Check MCPOIDCConfig inline config for client secret
 		oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, m.Namespace, m.Spec.OIDCConfigRef)
 		if err == nil && oidcCfg != nil &&
-			oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
+			oidcCfg.Spec.Type == mcpv1beta1.MCPOIDCConfigTypeInline &&
 			oidcCfg.Spec.Inline != nil {
 			oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
 				ctx, r.Client, m.Namespace, oidcCfg.Spec.Inline.ClientSecretRef,
@@ -1079,7 +1079,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	}
 
 	// Add volume mount for permission profile if using configmap
-	if m.Spec.PermissionProfile != nil && m.Spec.PermissionProfile.Type == mcpv1alpha1.PermissionProfileTypeConfigMap {
+	if m.Spec.PermissionProfile != nil && m.Spec.PermissionProfile.Type == mcpv1beta1.PermissionProfileTypeConfigMap {
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
 			Name:      "permission-profile",
 			MountPath: "/etc/toolhive/profiles",
@@ -1298,7 +1298,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 }
 
 // serviceForMCPServer returns a MCPServer Service object
-func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1alpha1.MCPServer) *corev1.Service {
+func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1beta1.MCPServer) *corev1.Service {
 	ls := labelsForMCPServer(m.Name)
 
 	// we want to generate a service name that is unique for the proxy service
@@ -1420,7 +1420,7 @@ func categorizePodStatus(pod corev1.Pod) (running, pending, failed int, failureR
 }
 
 // updateMCPServerStatus updates the status of the MCPServer
-func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	// Update ObservedGeneration to reflect that we've processed this generation
 	m.Status.ObservedGeneration = m.Generation
 
@@ -1428,10 +1428,10 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 	deployment := &appsv1.Deployment{}
 	if err := r.Get(ctx, types.NamespacedName{Name: m.Name, Namespace: m.Namespace}, deployment); err == nil {
 		if deployment.Spec.Replicas != nil && *deployment.Spec.Replicas == 0 {
-			m.Status.Phase = mcpv1alpha1.MCPServerPhaseStopped
+			m.Status.Phase = mcpv1beta1.MCPServerPhaseStopped
 			m.Status.Message = "MCP server is stopped (scaled to zero)"
 			m.Status.ReadyReplicas = 0
-			setReadyCondition(m, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, "MCP server is stopped (scaled to zero)")
+			setReadyCondition(m, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, "MCP server is stopped (scaled to zero)")
 			return r.Status().Update(ctx, m)
 		}
 	}
@@ -1451,11 +1451,11 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 		// No Deployment pods found yet. If a previous reconciliation already set Phase=Failed
 		// (e.g. due to a RunConfig or RBAC error), preserve that status so the failure
 		// reason remains visible. Only reset to Pending when the phase is not Failed.
-		if m.Status.Phase != mcpv1alpha1.MCPServerPhaseFailed {
-			m.Status.Phase = mcpv1alpha1.MCPServerPhasePending
+		if m.Status.Phase != mcpv1beta1.MCPServerPhaseFailed {
+			m.Status.Phase = mcpv1beta1.MCPServerPhasePending
 			m.Status.Message = "MCP server is being created"
 			m.Status.ReadyReplicas = 0
-			setReadyCondition(m, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, "MCP server is being created")
+			setReadyCondition(m, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, "MCP server is being created")
 			return r.Status().Update(ctx, m)
 		}
 		return nil
@@ -1480,28 +1480,28 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 
 	// Update the status based on pod health
 	if running > 0 {
-		m.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
+		m.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 		m.Status.Message = "MCP server is running"
 	} else if failed > 0 {
-		m.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		m.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		if failureReason != "" {
 			m.Status.Message = fmt.Sprintf("MCP server pod failed: %s", failureReason)
 		} else {
 			m.Status.Message = "MCP server pod failed"
 		}
 	} else if pending > 0 {
-		m.Status.Phase = mcpv1alpha1.MCPServerPhasePending
+		m.Status.Phase = mcpv1beta1.MCPServerPhasePending
 		m.Status.Message = "MCP server is starting"
 	} else {
-		m.Status.Phase = mcpv1alpha1.MCPServerPhasePending
+		m.Status.Phase = mcpv1beta1.MCPServerPhasePending
 		m.Status.Message = "No healthy pods found"
 	}
 
 	// Set the top-level Ready condition based on the determined phase
-	if m.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
-		setReadyCondition(m, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonReady, "MCP server is running")
+	if m.Status.Phase == mcpv1beta1.MCPServerPhaseReady {
+		setReadyCondition(m, metav1.ConditionTrue, mcpv1beta1.ConditionReasonReady, "MCP server is running")
 	} else {
-		setReadyCondition(m, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, m.Status.Message)
+		setReadyCondition(m, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, m.Status.Message)
 	}
 
 	// Update the status
@@ -1527,11 +1527,11 @@ func (r *MCPServerReconciler) deleteIfExists(ctx context.Context, obj client.Obj
 }
 
 // finalizeMCPServer performs the finalizer logic for the MCPServer
-func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	// Update the MCPServer status
-	m.Status.Phase = mcpv1alpha1.MCPServerPhaseTerminating
+	m.Status.Phase = mcpv1beta1.MCPServerPhaseTerminating
 	m.Status.Message = "MCP server is being terminated"
-	setReadyCondition(m, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonNotReady, "MCP server is being terminated")
+	setReadyCondition(m, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, "MCP server is being terminated")
 	if err := r.Status().Update(ctx, m); err != nil {
 		return err
 	}
@@ -1559,7 +1559,7 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
-	mcpServer *mcpv1alpha1.MCPServer,
+	mcpServer *mcpv1beta1.MCPServer,
 	runConfigChecksum string,
 ) bool {
 	if deployment == nil || mcpServer == nil {
@@ -1631,7 +1631,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 				return true
 			}
 			if oidcCfg != nil &&
-				oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
+				oidcCfg.Spec.Type == mcpv1beta1.MCPOIDCConfigTypeInline &&
 				oidcCfg.Spec.Inline != nil {
 				oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
 					ctx, r.Client, mcpServer.Namespace, oidcCfg.Spec.Inline.ClientSecretRef,
@@ -1778,7 +1778,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated
-func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1alpha1.MCPServer) bool {
+func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1beta1.MCPServer) bool {
 	// Check if the service port has changed
 	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != mcpServer.GetProxyPort() {
 		return true
@@ -1823,7 +1823,7 @@ func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1alpha1.MCPServe
 }
 
 // resourceRequirementsForMCPServer returns the resource requirements for the MCPServer
-func resourceRequirementsForMCPServer(m *mcpv1alpha1.MCPServer) corev1.ResourceRequirements {
+func resourceRequirementsForMCPServer(m *mcpv1beta1.MCPServer) corev1.ResourceRequirements {
 	resources := corev1.ResourceRequirements{}
 	if m.Spec.Resources.Limits.CPU != "" || m.Spec.Resources.Limits.Memory != "" {
 		resources.Limits = corev1.ResourceList{}
@@ -1884,7 +1884,7 @@ func getToolhiveRunnerImage() string {
 
 // handleExternalAuthConfig validates and tracks the hash of the referenced MCPExternalAuthConfig.
 // It updates the MCPServer status when the external auth configuration changes.
-func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
 	if m.Spec.ExternalAuthConfigRef == nil {
 		// No MCPExternalAuthConfig referenced, clear any stored hash
@@ -1911,9 +1911,9 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	// Multi-upstream requires VirtualMCPServer.
 	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
 		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-			Type:   mcpv1alpha1.ConditionTypeExternalAuthConfigValidated,
+			Type:   mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 			Status: metav1.ConditionFalse,
-			Reason: mcpv1alpha1.ConditionReasonExternalAuthConfigMultiUpstream,
+			Reason: mcpv1beta1.ConditionReasonExternalAuthConfigMultiUpstream,
 			Message: fmt.Sprintf(
 				"MCPServer supports only one upstream provider (found %d); "+
 					"use VirtualMCPServer for multi-upstream",
@@ -1950,10 +1950,10 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 // handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.
 // It updates the MCPServer status when the auth server configuration changes and sets
 // the AuthServerRefValidated condition.
-func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
 	if m.Spec.AuthServerRef == nil {
-		meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1alpha1.ConditionTypeAuthServerRefValidated)
+		meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerRefValidated)
 		if m.Status.AuthServerConfigHash != "" {
 			m.Status.AuthServerConfigHash = ""
 			if err := r.Status().Update(ctx, m); err != nil {
@@ -1966,9 +1966,9 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1a
 	// Only MCPExternalAuthConfig kind is supported
 	if m.Spec.AuthServerRef.Kind != "MCPExternalAuthConfig" {
 		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-			Type:   mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+			Type:   mcpv1beta1.ConditionTypeAuthServerRefValidated,
 			Status: metav1.ConditionFalse,
-			Reason: mcpv1alpha1.ConditionReasonAuthServerRefInvalidKind,
+			Reason: mcpv1beta1.ConditionReasonAuthServerRefInvalidKind,
 			Message: fmt.Sprintf("unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported",
 				m.Spec.AuthServerRef.Kind),
 			ObservedGeneration: m.Generation,
@@ -1981,9 +1981,9 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1a
 	if err != nil {
 		if errors.IsNotFound(err) {
 			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-				Type:   mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+				Type:   mcpv1beta1.ConditionTypeAuthServerRefValidated,
 				Status: metav1.ConditionFalse,
-				Reason: mcpv1alpha1.ConditionReasonAuthServerRefNotFound,
+				Reason: mcpv1beta1.ConditionReasonAuthServerRefNotFound,
 				Message: fmt.Sprintf("MCPExternalAuthConfig '%s' not found in namespace '%s'",
 					m.Spec.AuthServerRef.Name, m.Namespace),
 				ObservedGeneration: m.Generation,
@@ -1992,9 +1992,9 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1a
 				m.Spec.AuthServerRef.Name, m.Namespace)
 		}
 		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+			Type:               mcpv1beta1.ConditionTypeAuthServerRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonAuthServerRefFetchError,
+			Reason:             mcpv1beta1.ConditionReasonAuthServerRefFetchError,
 			Message:            fmt.Sprintf("Failed to fetch MCPExternalAuthConfig '%s'", m.Spec.AuthServerRef.Name),
 			ObservedGeneration: m.Generation,
 		})
@@ -2002,11 +2002,11 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1a
 	}
 
 	// Validate the config type is embeddedAuthServer
-	if authConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+	if authConfig.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer {
 		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-			Type:   mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+			Type:   mcpv1beta1.ConditionTypeAuthServerRefValidated,
 			Status: metav1.ConditionFalse,
-			Reason: mcpv1alpha1.ConditionReasonAuthServerRefInvalidType,
+			Reason: mcpv1beta1.ConditionReasonAuthServerRefInvalidType,
 			Message: fmt.Sprintf("authServerRef '%s' has type %q, but only embeddedAuthServer is supported",
 				m.Spec.AuthServerRef.Name, authConfig.Spec.Type),
 			ObservedGeneration: m.Generation,
@@ -2018,9 +2018,9 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1a
 	// MCPServer supports only single-upstream embedded auth server configs
 	if embeddedCfg := authConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
 		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-			Type:   mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+			Type:   mcpv1beta1.ConditionTypeAuthServerRefValidated,
 			Status: metav1.ConditionFalse,
-			Reason: mcpv1alpha1.ConditionReasonAuthServerRefMultiUpstream,
+			Reason: mcpv1beta1.ConditionReasonAuthServerRefMultiUpstream,
 			Message: fmt.Sprintf("MCPServer supports only one upstream provider (found %d); "+
 				"use VirtualMCPServer for multi-upstream",
 				len(embeddedCfg.UpstreamProviders)),
@@ -2033,9 +2033,9 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1a
 
 	// AuthServerRef valid
 	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeAuthServerRefValidated,
+		Type:               mcpv1beta1.ConditionTypeAuthServerRefValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonAuthServerRefValid,
+		Reason:             mcpv1beta1.ConditionReasonAuthServerRefValid,
 		Message:            fmt.Sprintf("AuthServerRef '%s' is valid", authConfig.Name),
 		ObservedGeneration: m.Generation,
 	})
@@ -2060,7 +2060,7 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1a
 // handleOIDCConfig validates and tracks the hash of the referenced MCPOIDCConfig.
 // It updates the MCPServer status when the OIDC configuration changes and sets
 // the OIDCConfigRefValidated condition.
-func (r *MCPServerReconciler) handleOIDCConfig(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+func (r *MCPServerReconciler) handleOIDCConfig(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
 
 	if m.Spec.OIDCConfigRef == nil {
@@ -2089,11 +2089,11 @@ func (r *MCPServerReconciler) handleOIDCConfig(ctx context.Context, m *mcpv1alph
 	// Detect whether the condition is transitioning to True (e.g. recovering from
 	// a transient error). Without this check the status update is skipped when the
 	// hash is unchanged, leaving a stale False condition (#4511).
-	prevCondition := meta.FindStatusCondition(m.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
+	prevCondition := meta.FindStatusCondition(m.Status.Conditions, mcpv1beta1.ConditionOIDCConfigRefValidated)
 	needsUpdate := prevCondition == nil || prevCondition.Status != metav1.ConditionTrue
 
 	setOIDCConfigRefCondition(m, metav1.ConditionTrue,
-		mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
+		mcpv1beta1.ConditionReasonOIDCConfigRefValid,
 		fmt.Sprintf("MCPOIDCConfig %s is valid and ready", m.Spec.OIDCConfigRef.Name))
 
 	if m.Status.OIDCConfigHash != oidcConfig.Status.ConfigHash {
@@ -2118,14 +2118,14 @@ func (r *MCPServerReconciler) handleOIDCConfig(ctx context.Context, m *mcpv1alph
 // fetchAndValidateOIDCConfig fetches the referenced MCPOIDCConfig, validates it is
 // ready, and sets appropriate failure conditions on the MCPServer if not.
 func (r *MCPServerReconciler) fetchAndValidateOIDCConfig(
-	ctx context.Context, m *mcpv1alpha1.MCPServer,
-) (*mcpv1alpha1.MCPOIDCConfig, error) {
+	ctx context.Context, m *mcpv1beta1.MCPServer,
+) (*mcpv1beta1.MCPOIDCConfig, error) {
 	ctxLogger := log.FromContext(ctx)
 
 	oidcConfig, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, m.Namespace, m.Spec.OIDCConfigRef)
 	if err != nil {
 		setOIDCConfigRefCondition(m, metav1.ConditionFalse,
-			mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+			mcpv1beta1.ConditionReasonOIDCConfigRefNotFound,
 			fmt.Sprintf("MCPOIDCConfig %s not found: %v", m.Spec.OIDCConfigRef.Name, err))
 		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update status after MCPOIDCConfig lookup error")
@@ -2135,7 +2135,7 @@ func (r *MCPServerReconciler) fetchAndValidateOIDCConfig(
 
 	if oidcConfig == nil {
 		setOIDCConfigRefCondition(m, metav1.ConditionFalse,
-			mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+			mcpv1beta1.ConditionReasonOIDCConfigRefNotFound,
 			fmt.Sprintf("MCPOIDCConfig %s not found", m.Spec.OIDCConfigRef.Name))
 		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update status after MCPOIDCConfig not found")
@@ -2143,14 +2143,14 @@ func (r *MCPServerReconciler) fetchAndValidateOIDCConfig(
 		return nil, fmt.Errorf("MCPOIDCConfig %s not found", m.Spec.OIDCConfigRef.Name)
 	}
 
-	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigValid)
+	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1beta1.ConditionTypeOIDCConfigValid)
 	if validCondition == nil || validCondition.Status != metav1.ConditionTrue {
 		msg := fmt.Sprintf("MCPOIDCConfig %s is not valid", m.Spec.OIDCConfigRef.Name)
 		if validCondition != nil {
 			msg = fmt.Sprintf("MCPOIDCConfig %s is not valid: %s", m.Spec.OIDCConfigRef.Name, validCondition.Message)
 		}
 		setOIDCConfigRefCondition(m, metav1.ConditionFalse,
-			mcpv1alpha1.ConditionReasonOIDCConfigRefNotValid, msg)
+			mcpv1beta1.ConditionReasonOIDCConfigRefNotValid, msg)
 		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update status after MCPOIDCConfig validation check")
 		}
@@ -2161,9 +2161,9 @@ func (r *MCPServerReconciler) fetchAndValidateOIDCConfig(
 }
 
 // setOIDCConfigRefCondition sets the OIDCConfigRefValidated status condition
-func setOIDCConfigRefCondition(m *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+func setOIDCConfigRefCondition(m *mcpv1beta1.MCPServer, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,
+		Type:               mcpv1beta1.ConditionOIDCConfigRefValidated,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -2175,11 +2175,11 @@ func setOIDCConfigRefCondition(m *mcpv1alpha1.MCPServer, status metav1.Condition
 // the MCPOIDCConfig's ReferencingWorkloads status field.
 func (r *MCPServerReconciler) updateOIDCConfigReferencingWorkloads(
 	ctx context.Context,
-	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
+	oidcConfig *mcpv1beta1.MCPOIDCConfig,
 	serverName string,
 ) error {
-	ref := mcpv1alpha1.WorkloadReference{
-		Kind: mcpv1alpha1.WorkloadKindMCPServer,
+	ref := mcpv1beta1.WorkloadReference{
+		Kind: mcpv1beta1.WorkloadKindMCPServer,
 		Name: serverName,
 	}
 
@@ -2200,7 +2200,7 @@ func (r *MCPServerReconciler) updateOIDCConfigReferencingWorkloads(
 }
 
 // ensureAuthzConfigMap ensures the authorization ConfigMap exists for inline configuration
-func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	return ctrlutil.EnsureAuthzConfigMap(
 		ctx, r.Client, r.Scheme, m, m.Namespace, m.Name, m.Spec.AuthzConfig, labelsForInlineAuthzConfig(m.Name),
 	)
@@ -2230,9 +2230,9 @@ func resolveDeploymentReplicas(mcpTransport string, specReplicas *int32) *int32 
 }
 
 // setStdioReplicaCappedCondition sets the StdioReplicaCapped status condition
-func setStdioReplicaCappedCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+func setStdioReplicaCappedCondition(mcpServer *mcpv1beta1.MCPServer, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionStdioReplicaCapped,
+		Type:               mcpv1beta1.ConditionStdioReplicaCapped,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -2243,14 +2243,14 @@ func setStdioReplicaCappedCondition(mcpServer *mcpv1alpha1.MCPServer, status met
 // validateStdioReplicaCap checks if spec.replicas > 1 for stdio transport and sets a warning condition.
 // The deployment builder enforces the cap at 1 as defense-in-depth.
 // Clears the condition when transport or replica count no longer violates the cap.
-func (r *MCPServerReconciler) validateStdioReplicaCap(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+func (r *MCPServerReconciler) validateStdioReplicaCap(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) {
 	if mcpServer.Spec.Transport == stdioTransport && mcpServer.Spec.Replicas != nil && *mcpServer.Spec.Replicas > 1 {
 		setStdioReplicaCappedCondition(mcpServer, metav1.ConditionTrue,
-			mcpv1alpha1.ConditionReasonStdioReplicaCapped,
+			mcpv1beta1.ConditionReasonStdioReplicaCapped,
 			"stdio transport requires exactly 1 replica; deployment will use 1 regardless of spec.replicas")
 	} else {
 		setStdioReplicaCappedCondition(mcpServer, metav1.ConditionFalse,
-			mcpv1alpha1.ConditionReasonStdioReplicaCapNotActive,
+			mcpv1beta1.ConditionReasonStdioReplicaCapNotActive,
 			"stdio replica cap is not active")
 	}
 	if err := r.Status().Update(ctx, mcpServer); err != nil {
@@ -2259,9 +2259,9 @@ func (r *MCPServerReconciler) validateStdioReplicaCap(ctx context.Context, mcpSe
 }
 
 // setSessionStorageCondition sets the SessionStorageWarning status condition
-func setSessionStorageCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+func setSessionStorageCondition(mcpServer *mcpv1beta1.MCPServer, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionSessionStorageWarning,
+		Type:               mcpv1beta1.ConditionSessionStorageWarning,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -2272,20 +2272,20 @@ func setSessionStorageCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.
 // validateSessionStorageForReplicas emits a Warning condition when replicas > 1 but session storage
 // is not configured with a Redis backend. The deployment still proceeds; this is advisory only.
 // Clears the condition when replicas drop back to nil or <= 1.
-func (r *MCPServerReconciler) validateSessionStorageForReplicas(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+func (r *MCPServerReconciler) validateSessionStorageForReplicas(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) {
 	if mcpServer.Spec.Replicas != nil && *mcpServer.Spec.Replicas > 1 {
-		if mcpServer.Spec.SessionStorage == nil || mcpServer.Spec.SessionStorage.Provider != mcpv1alpha1.SessionStorageProviderRedis {
+		if mcpServer.Spec.SessionStorage == nil || mcpServer.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis {
 			setSessionStorageCondition(mcpServer, metav1.ConditionTrue,
-				mcpv1alpha1.ConditionReasonSessionStorageMissing,
+				mcpv1beta1.ConditionReasonSessionStorageMissing,
 				"replicas > 1 but sessionStorage.provider is not redis; sessions are not shared across replicas")
 		} else {
 			setSessionStorageCondition(mcpServer, metav1.ConditionFalse,
-				mcpv1alpha1.ConditionReasonSessionStorageConfigured,
+				mcpv1beta1.ConditionReasonSessionStorageConfigured,
 				"Redis session storage is configured")
 		}
 	} else {
 		setSessionStorageCondition(mcpServer, metav1.ConditionFalse,
-			mcpv1alpha1.ConditionReasonSessionStorageNotApplicable,
+			mcpv1beta1.ConditionReasonSessionStorageNotApplicable,
 			"session storage warning is not active")
 	}
 	if err := r.Status().Update(ctx, mcpServer); err != nil {
@@ -2294,9 +2294,9 @@ func (r *MCPServerReconciler) validateSessionStorageForReplicas(ctx context.Cont
 }
 
 // setRateLimitConfigCondition sets the RateLimitConfigValid status condition.
-func setRateLimitConfigCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+func setRateLimitConfigCondition(mcpServer *mcpv1beta1.MCPServer, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionRateLimitConfigValid,
+		Type:               mcpv1beta1.ConditionRateLimitConfigValid,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -2308,11 +2308,11 @@ func setRateLimitConfigCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1
 // Sets the RateLimitConfigValid condition. This is defense-in-depth only; CEL admission
 // validation is the primary gate. Reconciliation continues even when the condition is False
 // because per-user buckets are silently skipped when userID is empty (graceful degradation).
-func (r *MCPServerReconciler) validateRateLimitConfig(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+func (r *MCPServerReconciler) validateRateLimitConfig(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) {
 	rl := mcpServer.Spec.RateLimiting
 	if rl == nil {
 		setRateLimitConfigCondition(mcpServer, metav1.ConditionTrue,
-			mcpv1alpha1.ConditionReasonRateLimitNotApplicable,
+			mcpv1beta1.ConditionReasonRateLimitNotApplicable,
 			"rate limiting is not configured")
 		if err := r.Status().Update(ctx, mcpServer); err != nil {
 			log.FromContext(ctx).Error(err, "Failed to update MCPServer status after rate limit validation")
@@ -2335,11 +2335,11 @@ func (r *MCPServerReconciler) validateRateLimitConfig(ctx context.Context, mcpSe
 
 	if hasPerUser && !authEnabled {
 		setRateLimitConfigCondition(mcpServer, metav1.ConditionFalse,
-			mcpv1alpha1.ConditionReasonRateLimitPerUserRequiresAuth,
+			mcpv1beta1.ConditionReasonRateLimitPerUserRequiresAuth,
 			"perUser rate limiting requires authentication to be enabled (oidcConfigRef or externalAuthConfigRef)")
 	} else {
 		setRateLimitConfigCondition(mcpServer, metav1.ConditionTrue,
-			mcpv1alpha1.ConditionReasonRateLimitConfigValid,
+			mcpv1beta1.ConditionReasonRateLimitConfigValid,
 			"rate limit configuration is valid")
 	}
 	if err := r.Status().Update(ctx, mcpServer); err != nil {
@@ -2352,13 +2352,13 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
 	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			externalAuthConfig, ok := obj.(*mcpv1alpha1.MCPExternalAuthConfig)
+			externalAuthConfig, ok := obj.(*mcpv1beta1.MCPExternalAuthConfig)
 			if !ok {
 				return nil
 			}
 
 			// List all MCPServers in the same namespace
-			mcpServerList := &mcpv1alpha1.MCPServerList{}
+			mcpServerList := &mcpv1beta1.MCPServerList{}
 			if err := r.List(ctx, mcpServerList, client.InNamespace(externalAuthConfig.Namespace)); err != nil {
 				log.FromContext(ctx).Error(err, "Failed to list MCPServers for MCPExternalAuthConfig watch")
 				return nil
@@ -2387,12 +2387,12 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a handler that maps MCPOIDCConfig changes to MCPServer reconciliation requests
 	oidcConfigHandler := handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			oidcConfig, ok := obj.(*mcpv1alpha1.MCPOIDCConfig)
+			oidcConfig, ok := obj.(*mcpv1beta1.MCPOIDCConfig)
 			if !ok {
 				return nil
 			}
 
-			mcpServerList := &mcpv1alpha1.MCPServerList{}
+			mcpServerList := &mcpv1beta1.MCPServerList{}
 			if err := r.List(ctx, mcpServerList, client.InNamespace(oidcConfig.Namespace)); err != nil {
 				log.FromContext(ctx).Error(err, "Failed to list MCPServers for MCPOIDCConfig watch")
 				return nil
@@ -2418,11 +2418,11 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	telemetryConfigHandler := handler.EnqueueRequestsFromMapFunc(r.mapTelemetryConfigToServers)
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&mcpv1alpha1.MCPServer{}).
+		For(&mcpv1beta1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
-		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
-		Watches(&mcpv1alpha1.MCPOIDCConfig{}, oidcConfigHandler).
-		Watches(&mcpv1alpha1.MCPTelemetryConfig{}, telemetryConfigHandler).
+		Watches(&mcpv1beta1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
+		Watches(&mcpv1beta1.MCPOIDCConfig{}, oidcConfigHandler).
+		Watches(&mcpv1beta1.MCPTelemetryConfig{}, telemetryConfigHandler).
 		Complete(r)
 }

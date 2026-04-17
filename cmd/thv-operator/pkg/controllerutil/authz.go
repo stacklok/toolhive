@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -31,7 +31,7 @@ const (
 
 // GenerateAuthzVolumeConfig generates volume mount and volume for authorization policies
 func GenerateAuthzVolumeConfig(
-	authzConfig *mcpv1alpha1.AuthzConfigRef,
+	authzConfig *mcpv1beta1.AuthzConfigRef,
 	resourceName string,
 ) (*corev1.VolumeMount, *corev1.Volume) {
 	if authzConfig == nil {
@@ -39,7 +39,7 @@ func GenerateAuthzVolumeConfig(
 	}
 
 	switch authzConfig.Type {
-	case mcpv1alpha1.AuthzConfigTypeConfigMap:
+	case mcpv1beta1.AuthzConfigTypeConfigMap:
 		if authzConfig.ConfigMap == nil {
 			return nil, nil
 		}
@@ -74,7 +74,7 @@ func GenerateAuthzVolumeConfig(
 
 		return volumeMount, volume
 
-	case mcpv1alpha1.AuthzConfigTypeInline:
+	case mcpv1beta1.AuthzConfigTypeInline:
 		if authzConfig.Inline == nil {
 			return nil, nil
 		}
@@ -117,10 +117,10 @@ func EnsureAuthzConfigMap(
 	owner client.Object,
 	namespace string,
 	resourceName string,
-	authzConfig *mcpv1alpha1.AuthzConfigRef,
+	authzConfig *mcpv1beta1.AuthzConfigRef,
 	labels map[string]string,
 ) error {
-	if authzConfig == nil || authzConfig.Type != mcpv1alpha1.AuthzConfigTypeInline ||
+	if authzConfig == nil || authzConfig.Type != mcpv1beta1.AuthzConfigTypeInline ||
 		authzConfig.Inline == nil {
 		return nil
 	}
@@ -167,7 +167,7 @@ func EnsureAuthzConfigMap(
 }
 
 func addAuthzInlineConfigOptions(
-	authzRef *mcpv1alpha1.AuthzConfigRef,
+	authzRef *mcpv1beta1.AuthzConfigRef,
 	options *[]runner.RunConfigBuilderOption,
 ) error {
 	if authzRef.Inline == nil {
@@ -201,7 +201,7 @@ func AddAuthzConfigOptions(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
-	authzRef *mcpv1alpha1.AuthzConfigRef,
+	authzRef *mcpv1beta1.AuthzConfigRef,
 	options *[]runner.RunConfigBuilderOption,
 ) error {
 	if authzRef == nil {
@@ -209,10 +209,10 @@ func AddAuthzConfigOptions(
 	}
 
 	switch authzRef.Type {
-	case mcpv1alpha1.AuthzConfigTypeInline:
+	case mcpv1beta1.AuthzConfigTypeInline:
 		return addAuthzInlineConfigOptions(authzRef, options)
 
-	case mcpv1alpha1.AuthzConfigTypeConfigMap:
+	case mcpv1beta1.AuthzConfigTypeConfigMap:
 		// Validate reference
 		if authzRef.ConfigMap == nil || authzRef.ConfigMap.Name == "" {
 			return fmt.Errorf("configMap authz config type specified but reference is missing name")

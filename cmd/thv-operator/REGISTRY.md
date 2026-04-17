@@ -33,7 +33,7 @@ data:
       }
     }
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: my-registry
@@ -171,7 +171,7 @@ type: Opaque
 stringData:
   password: "ghp_your_github_token_here"  # GitHub PAT, GitLab token, etc.
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: private-registry
@@ -501,7 +501,7 @@ kubectl logs -n toolhive-system deployment/toolhive-operator | grep "my-registry
 
 ### Production Registry
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: production-registry
@@ -523,7 +523,7 @@ spec:
 
 ### Development Registry
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: dev-registry
@@ -554,7 +554,7 @@ type: Opaque
 stringData:
   token: "<github token>"
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: private-registry
@@ -586,7 +586,7 @@ spec:
 You can configure multiple data sources in a single MCPRegistry and aggregate them into registry views:
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: multi-source-registry

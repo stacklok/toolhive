@@ -14,7 +14,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/ratelimit/internal/bucket"
 )
 
@@ -39,7 +39,7 @@ type Decision struct {
 // NewLimiter constructs a Limiter from CRD configuration.
 // Returns a no-op limiter (always allows) when crd is nil.
 // namespace and name identify the MCP server for Redis key derivation.
-func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1alpha1.RateLimitConfig) (Limiter, error) {
+func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1beta1.RateLimitConfig) (Limiter, error) {
 	if crd == nil {
 		return noopLimiter{}, nil
 	}
@@ -177,7 +177,7 @@ func (noopLimiter) Allow(context.Context, string, string) (*Decision, error) {
 }
 
 // validateBucketCRD checks that a CRD bucket spec has valid parameters.
-func validateBucketCRD(b *v1alpha1.RateLimitBucket) (int32, time.Duration, error) {
+func validateBucketCRD(b *v1beta1.RateLimitBucket) (int32, time.Duration, error) {
 	if b.MaxTokens < 1 {
 		return 0, 0, fmt.Errorf("maxTokens must be >= 1, got %d", b.MaxTokens)
 	}
@@ -189,7 +189,7 @@ func validateBucketCRD(b *v1alpha1.RateLimitBucket) (int32, time.Duration, error
 }
 
 // newBucket validates a CRD bucket spec and creates a TokenBucket.
-func newBucket(namespace, serverName, suffix string, b *v1alpha1.RateLimitBucket) (*bucket.TokenBucket, error) {
+func newBucket(namespace, serverName, suffix string, b *v1beta1.RateLimitBucket) (*bucket.TokenBucket, error) {
 	maxTokens, refillPeriod, err := validateBucketCRD(b)
 	if err != nil {
 		return nil, err
@@ -199,7 +199,7 @@ func newBucket(namespace, serverName, suffix string, b *v1alpha1.RateLimitBucket
 
 // newBucketSpec validates a CRD bucket spec and creates a deferred bucketSpec
 // for per-user buckets that are materialized at Allow() time.
-func newBucketSpec(namespace, serverName string, b *v1alpha1.RateLimitBucket) (bucketSpec, error) {
+func newBucketSpec(namespace, serverName string, b *v1beta1.RateLimitBucket) (bucketSpec, error) {
 	maxTokens, refillPeriod, err := validateBucketCRD(b)
 	if err != nil {
 		return bucketSpec{}, err

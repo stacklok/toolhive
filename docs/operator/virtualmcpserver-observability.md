@@ -162,7 +162,7 @@ and VirtualMCPServer resources.
 
 ```yaml
 # Shared telemetry configuration
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPTelemetryConfig
 metadata:
   name: shared-otel
@@ -180,7 +180,7 @@ spec:
     enabled: true
 ---
 # VirtualMCPServer referencing shared telemetry config
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: my-vmcp
@@ -198,13 +198,13 @@ See [`examples/operator/virtual-mcps/vmcp_with_telemetry_ref.yaml`](../../exampl
 for a complete example with an MCPGroup and backend MCPServer.
 
 **Inline (deprecated)**: The inline `spec.config.telemetry` field still works
-but is deprecated and will be removed in v1beta1. It is mutually exclusive with
+but is deprecated and will be removed in a future API version. It is mutually exclusive with
 `telemetryConfigRef` (CEL enforced). Migrate to `telemetryConfigRef` to use the
 shared MCPTelemetryConfig pattern.
 
 ```yaml
 # Deprecated — use telemetryConfigRef instead
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: my-vmcp

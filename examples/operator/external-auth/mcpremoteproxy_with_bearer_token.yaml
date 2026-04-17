@@ -16,7 +16,7 @@ stringData:
 
 ---
 # External authentication configuration that references the bearer token secret
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPExternalAuthConfig
 metadata:
   name: api-bearer-auth
@@ -30,7 +30,7 @@ spec:
 
 ---
 # Shared OIDC configuration for incoming client authentication
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPOIDCConfig
 metadata:
   name: api-proxy-oidc
@@ -42,7 +42,7 @@ spec:
 
 ---
 # MCPRemoteProxy that uses bearer token authentication for outgoing requests
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRemoteProxy
 metadata:
   name: api-proxy

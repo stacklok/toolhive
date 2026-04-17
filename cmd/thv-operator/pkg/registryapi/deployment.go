@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
@@ -86,7 +86,7 @@ func (*manager) CheckAPIReadiness(ctx context.Context, deployment *appsv1.Deploy
 // updates (preserving Spec.Replicas for HPA compatibility), or skips if already up-to-date.
 func (m *manager) upsertDeployment(
 	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	mcpRegistry *mcpv1beta1.MCPRegistry,
 	deployment *appsv1.Deployment,
 ) (*appsv1.Deployment, error) {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
@@ -158,7 +158,7 @@ func (m *manager) upsertDeployment(
 // logic to upsertDeployment.
 func (m *manager) ensureDeployment(
 	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	mcpRegistry *mcpv1beta1.MCPRegistry,
 	configMapName string,
 ) (*appsv1.Deployment, error) {
 	deployment, err := m.buildRegistryAPIDeployment(ctx, mcpRegistry, configMapName)
@@ -174,7 +174,7 @@ func (m *manager) ensureDeployment(
 // and PGPassSecretRef.
 func (*manager) buildRegistryAPIDeployment(
 	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	mcpRegistry *mcpv1beta1.MCPRegistry,
 	configMapName string,
 ) (*appsv1.Deployment, error) {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)

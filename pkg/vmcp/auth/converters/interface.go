@@ -12,7 +12,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -25,7 +25,7 @@ type StrategyConverter interface {
 	// ConvertToStrategy converts an MCPExternalAuthConfig to a BackendAuthStrategy with typed fields.
 	// Secret references should be represented as environment variable names (e.g., "TOOLHIVE_*")
 	// that will be resolved later by ResolveSecrets or at runtime.
-	ConvertToStrategy(externalAuth *mcpv1alpha1.MCPExternalAuthConfig) (*authtypes.BackendAuthStrategy, error)
+	ConvertToStrategy(externalAuth *mcpv1beta1.MCPExternalAuthConfig) (*authtypes.BackendAuthStrategy, error)
 
 	// ResolveSecrets fetches secrets from Kubernetes and replaces environment variable references
 	// with actual secret values in the strategy configuration. This is used in discovered auth mode where
@@ -35,7 +35,7 @@ type StrategyConverter interface {
 	// For non-discovered mode (where secrets are mounted as env vars), this is typically a no-op.
 	ResolveSecrets(
 		ctx context.Context,
-		externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
+		externalAuth *mcpv1beta1.MCPExternalAuthConfig,
 		k8sClient client.Client,
 		namespace string,
 		strategy *authtypes.BackendAuthStrategy,
@@ -45,7 +45,7 @@ type StrategyConverter interface {
 // Registry holds registered strategy converters
 type Registry struct {
 	mu         sync.RWMutex
-	converters map[mcpv1alpha1.ExternalAuthType]StrategyConverter
+	converters map[mcpv1beta1.ExternalAuthType]StrategyConverter
 }
 
 var (
@@ -66,27 +66,27 @@ func DefaultRegistry() *Registry {
 // For most use cases, use DefaultRegistry() instead to avoid unnecessary allocations.
 func NewRegistry() *Registry {
 	r := &Registry{
-		converters: make(map[mcpv1alpha1.ExternalAuthType]StrategyConverter),
+		converters: make(map[mcpv1beta1.ExternalAuthType]StrategyConverter),
 	}
 
 	// Register built-in converters
-	r.Register(mcpv1alpha1.ExternalAuthTypeTokenExchange, &TokenExchangeConverter{})
-	r.Register(mcpv1alpha1.ExternalAuthTypeHeaderInjection, &HeaderInjectionConverter{})
-	r.Register(mcpv1alpha1.ExternalAuthTypeUnauthenticated, &UnauthenticatedConverter{})
-	r.Register(mcpv1alpha1.ExternalAuthTypeUpstreamInject, &UpstreamInjectConverter{})
+	r.Register(mcpv1beta1.ExternalAuthTypeTokenExchange, &TokenExchangeConverter{})
+	r.Register(mcpv1beta1.ExternalAuthTypeHeaderInjection, &HeaderInjectionConverter{})
+	r.Register(mcpv1beta1.ExternalAuthTypeUnauthenticated, &UnauthenticatedConverter{})
+	r.Register(mcpv1beta1.ExternalAuthTypeUpstreamInject, &UpstreamInjectConverter{})
 
 	return r
 }
 
 // Register adds a converter to the registry
-func (r *Registry) Register(authType mcpv1alpha1.ExternalAuthType, converter StrategyConverter) {
+func (r *Registry) Register(authType mcpv1beta1.ExternalAuthType, converter StrategyConverter) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.converters[authType] = converter
 }
 
 // GetConverter retrieves a converter by auth type
-func (r *Registry) GetConverter(authType mcpv1alpha1.ExternalAuthType) (StrategyConverter, error) {
+func (r *Registry) GetConverter(authType mcpv1beta1.ExternalAuthType) (StrategyConverter, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -101,7 +101,7 @@ func (r *Registry) GetConverter(authType mcpv1alpha1.ExternalAuthType) (Strategy
 // an external auth config to a BackendAuthStrategy with typed fields.
 // This is the main entry point for converting auth configs at runtime.
 func ConvertToStrategy(
-	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuth *mcpv1beta1.MCPExternalAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
 	if externalAuth == nil {
 		return nil, fmt.Errorf("external auth config is nil")
@@ -125,7 +125,7 @@ func ConvertToStrategy(
 // secrets for a given strategy.
 func ResolveSecretsForStrategy(
 	ctx context.Context,
-	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuth *mcpv1beta1.MCPExternalAuthConfig,
 	k8sClient client.Client,
 	namespace string,
 	strategy *authtypes.BackendAuthStrategy,
@@ -154,7 +154,7 @@ func ResolveSecretsForStrategy(
 // Returns nil strategy and nil error if externalAuthConfigRef is nil (no auth configured).
 func DiscoverAndResolveAuth(
 	ctx context.Context,
-	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	externalAuthConfigRef *mcpv1beta1.ExternalAuthConfigRef,
 	namespace string,
 	k8sClient client.Client,
 ) (*authtypes.BackendAuthStrategy, error) {
@@ -165,7 +165,7 @@ func DiscoverAndResolveAuth(
 	}
 
 	// Fetch the MCPExternalAuthConfig
-	externalAuth := &mcpv1alpha1.MCPExternalAuthConfig{}
+	externalAuth := &mcpv1beta1.MCPExternalAuthConfig{}
 	key := client.ObjectKey{
 		Name:      externalAuthConfigRef.Name,
 		Namespace: namespace,

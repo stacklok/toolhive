@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -25,13 +25,13 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 
 	// validOIDCCondition is a helper to build a Ready=True condition slice.
 	validOIDCCondition := []metav1.Condition{{
-		Type: mcpv1alpha1.ConditionTypeOIDCConfigValid, Status: metav1.ConditionTrue, Reason: mcpv1alpha1.ConditionReasonOIDCConfigValid,
+		Type: mcpv1beta1.ConditionTypeOIDCConfigValid, Status: metav1.ConditionTrue, Reason: mcpv1beta1.ConditionReasonOIDCConfigValid,
 	}}
 
 	tests := []struct {
 		name                    string
-		mcpServer               *mcpv1alpha1.MCPServer
-		oidcConfig              *mcpv1alpha1.MCPOIDCConfig
+		mcpServer               *mcpv1beta1.MCPServer
+		oidcConfig              *mcpv1beta1.MCPOIDCConfig
 		expectError             bool
 		expectErrorContains     string
 		expectHash              string
@@ -42,44 +42,44 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 	}{
 		{
 			name: "no ref clears previously stored hash",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-				Spec:       mcpv1alpha1.MCPServerSpec{Image: "img"},
-				Status:     mcpv1alpha1.MCPServerStatus{OIDCConfigHash: "old"},
+				Spec:       mcpv1beta1.MCPServerSpec{Image: "img"},
+				Status:     mcpv1beta1.MCPServerStatus{OIDCConfigHash: "old"},
 			},
 			expectHashCleared: true,
 		},
 		{
 			name: "referenced config not found sets NotFound condition",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:         "img",
-					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "missing", Audience: "aud"},
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "missing", Audience: "aud"},
 				},
 			},
 			expectError:           true,
 			expectConditionStatus: conditionStatusPtr(metav1.ConditionFalse),
-			expectConditionReason: mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+			expectConditionReason: mcpv1beta1.ConditionReasonOIDCConfigRefNotFound,
 		},
 		{
 			name: "config with Valid=False sets NotValid condition",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:         "img",
-					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "bad", Audience: "aud"},
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "bad", Audience: "aud"},
 				},
 			},
-			oidcConfig: &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig: &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "bad", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type:   mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{Issuer: "https://x"},
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type:   mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: "https://x"},
 				},
-				Status: mcpv1alpha1.MCPOIDCConfigStatus{
+				Status: mcpv1beta1.MCPOIDCConfigStatus{
 					Conditions: []metav1.Condition{{
-						Type: mcpv1alpha1.ConditionTypeOIDCConfigValid, Status: metav1.ConditionFalse, Reason: mcpv1alpha1.ConditionReasonOIDCConfigInvalid,
+						Type: mcpv1beta1.ConditionTypeOIDCConfigValid, Status: metav1.ConditionFalse, Reason: mcpv1beta1.ConditionReasonOIDCConfigInvalid,
 						Message: "missing fields",
 					}},
 				},
@@ -87,59 +87,59 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 			expectError:           true,
 			expectErrorContains:   "not valid",
 			expectConditionStatus: conditionStatusPtr(metav1.ConditionFalse),
-			expectConditionReason: mcpv1alpha1.ConditionReasonOIDCConfigRefNotValid,
+			expectConditionReason: mcpv1beta1.ConditionReasonOIDCConfigRefNotValid,
 		},
 		{
 			name: "valid config sets hash, condition, and referencing server",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:         "img",
-					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "ok", Audience: "aud"},
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "ok", Audience: "aud"},
 				},
 			},
-			oidcConfig: &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig: &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "ok", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type:   mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{Issuer: "https://x", ClientID: "c"},
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type:   mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: "https://x", ClientID: "c"},
 				},
-				Status: mcpv1alpha1.MCPOIDCConfigStatus{
+				Status: mcpv1beta1.MCPOIDCConfigStatus{
 					ConfigHash: "hash-123",
 					Conditions: validOIDCCondition,
 				},
 			},
 			expectHash:              "hash-123",
 			expectConditionStatus:   conditionStatusPtr(metav1.ConditionTrue),
-			expectConditionReason:   mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
+			expectConditionReason:   mcpv1beta1.ConditionReasonOIDCConfigRefValid,
 			expectReferencingServer: true,
 		},
 		{
 			name: "detects config hash change",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:         "img",
-					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "cfg", Audience: "aud"},
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "cfg", Audience: "aud"},
 				},
-				Status: mcpv1alpha1.MCPServerStatus{OIDCConfigHash: "old-hash"},
+				Status: mcpv1beta1.MCPServerStatus{OIDCConfigHash: "old-hash"},
 			},
-			oidcConfig: &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig: &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 						Issuer: "https://kubernetes.default.svc",
 					},
 				},
-				Status: mcpv1alpha1.MCPOIDCConfigStatus{
+				Status: mcpv1beta1.MCPOIDCConfigStatus{
 					ConfigHash: "new-hash",
 					Conditions: validOIDCCondition,
 				},
 			},
 			expectHash:              "new-hash",
 			expectConditionStatus:   conditionStatusPtr(metav1.ConditionTrue),
-			expectConditionReason:   mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
+			expectConditionReason:   mcpv1beta1.ConditionReasonOIDCConfigRefValid,
 			expectReferencingServer: true,
 		},
 	}
@@ -151,7 +151,7 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 			ctx := t.Context()
 
 			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 			require.NoError(t, corev1.AddToScheme(scheme))
 
 			objs := []runtime.Object{tt.mcpServer}
@@ -163,8 +163,8 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 				WithScheme(scheme).
 				WithRuntimeObjects(objs...).
 				WithStatusSubresource(
-					&mcpv1alpha1.MCPServer{},
-					&mcpv1alpha1.MCPOIDCConfig{},
+					&mcpv1beta1.MCPServer{},
+					&mcpv1beta1.MCPOIDCConfig{},
 				).
 				Build()
 
@@ -191,20 +191,20 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 			if tt.expectConditionStatus != nil {
 				var found bool
 				for _, cond := range tt.mcpServer.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionOIDCConfigRefValidated {
+					if cond.Type == mcpv1beta1.ConditionOIDCConfigRefValidated {
 						found = true
 						assert.Equal(t, string(*tt.expectConditionStatus), string(cond.Status))
 						assert.Equal(t, tt.expectConditionReason, cond.Reason)
 						break
 					}
 				}
-				assert.True(t, found, "expected %s condition", mcpv1alpha1.ConditionOIDCConfigRefValidated)
+				assert.True(t, found, "expected %s condition", mcpv1beta1.ConditionOIDCConfigRefValidated)
 			}
 
 			if tt.expectReferencingServer && tt.oidcConfig != nil {
-				var updated mcpv1alpha1.MCPOIDCConfig
+				var updated mcpv1beta1.MCPOIDCConfig
 				require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(tt.oidcConfig), &updated))
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: tt.mcpServer.Name}
+				expectedRef := mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: tt.mcpServer.Name}
 				assert.Contains(t, updated.Status.ReferencingWorkloads, expectedRef)
 			}
 		})
@@ -214,39 +214,39 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 func TestMCPServerReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) {
 	t.Parallel()
 
-	existingRef := mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "existing"}
+	existingRef := mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "existing"}
 
 	t.Run("adds new server reference", func(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-		cfg := &mcpv1alpha1.MCPOIDCConfig{
+		cfg := &mcpv1beta1.MCPOIDCConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-			Status:     mcpv1alpha1.MCPOIDCConfigStatus{ReferencingWorkloads: []mcpv1alpha1.WorkloadReference{existingRef}},
+			Status:     mcpv1beta1.MCPOIDCConfigStatus{ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef}},
 		}
 		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cfg).
-			WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).Build()
+			WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()
 		r := newTestMCPServerReconciler(fc, scheme, kubernetes.PlatformKubernetes)
 
 		require.NoError(t, r.updateOIDCConfigReferencingWorkloads(ctx, cfg, "new"))
-		newRef := mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "new"}
-		assert.ElementsMatch(t, []mcpv1alpha1.WorkloadReference{existingRef, newRef}, cfg.Status.ReferencingWorkloads)
+		newRef := mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "new"}
+		assert.ElementsMatch(t, []mcpv1beta1.WorkloadReference{existingRef, newRef}, cfg.Status.ReferencingWorkloads)
 	})
 
 	t.Run("does not duplicate existing reference", func(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-		cfg := &mcpv1alpha1.MCPOIDCConfig{
+		cfg := &mcpv1beta1.MCPOIDCConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-			Status:     mcpv1alpha1.MCPOIDCConfigStatus{ReferencingWorkloads: []mcpv1alpha1.WorkloadReference{existingRef}},
+			Status:     mcpv1beta1.MCPOIDCConfigStatus{ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef}},
 		}
 		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cfg).
-			WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).Build()
+			WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()
 		r := newTestMCPServerReconciler(fc, scheme, kubernetes.PlatformKubernetes)
 
 		require.NoError(t, r.updateOIDCConfigReferencingWorkloads(ctx, cfg, "existing"))
@@ -262,45 +262,45 @@ func TestMCPServerReconciler_handleOIDCConfig_ConditionPersistedOnRecovery(t *te
 	ctx := t.Context()
 
 	validOIDCCondition := []metav1.Condition{{
-		Type: mcpv1alpha1.ConditionTypeOIDCConfigValid, Status: metav1.ConditionTrue, Reason: mcpv1alpha1.ConditionReasonOIDCConfigValid,
+		Type: mcpv1beta1.ConditionTypeOIDCConfigValid, Status: metav1.ConditionTrue, Reason: mcpv1beta1.ConditionReasonOIDCConfigValid,
 	}}
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:         "img",
-			OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "cfg", Audience: "aud"},
+			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "cfg", Audience: "aud"},
 		},
-		Status: mcpv1alpha1.MCPServerStatus{
+		Status: mcpv1beta1.MCPServerStatus{
 			// Hash is already current — only the condition is stale (simulating recovery).
 			OIDCConfigHash: "same-hash",
 			Conditions: []metav1.Condition{{
-				Type:   mcpv1alpha1.ConditionOIDCConfigRefValidated,
+				Type:   mcpv1beta1.ConditionOIDCConfigRefValidated,
 				Status: metav1.ConditionFalse,
-				Reason: mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+				Reason: mcpv1beta1.ConditionReasonOIDCConfigRefNotFound,
 			}},
 		},
 	}
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type:   mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{Issuer: "https://x", ClientID: "c"},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type:   mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: "https://x", ClientID: "c"},
 		},
-		Status: mcpv1alpha1.MCPOIDCConfigStatus{
+		Status: mcpv1beta1.MCPOIDCConfigStatus{
 			ConfigHash: "same-hash",
 			Conditions: validOIDCCondition,
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(mcpServer, oidcConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}, &mcpv1alpha1.MCPOIDCConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}, &mcpv1beta1.MCPOIDCConfig{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
@@ -308,13 +308,13 @@ func TestMCPServerReconciler_handleOIDCConfig_ConditionPersistedOnRecovery(t *te
 
 	// Re-read from the fake client to verify the condition was actually persisted,
 	// not just set in the in-memory Go struct.
-	var persisted mcpv1alpha1.MCPServer
+	var persisted mcpv1beta1.MCPServer
 	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(mcpServer), &persisted))
 
-	cond := meta.FindStatusCondition(persisted.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
+	cond := meta.FindStatusCondition(persisted.Status.Conditions, mcpv1beta1.ConditionOIDCConfigRefValidated)
 	require.NotNil(t, cond, "OIDCConfigRefValidated condition must be persisted")
 	assert.Equal(t, metav1.ConditionTrue, cond.Status, "condition should be True after recovery")
-	assert.Equal(t, mcpv1alpha1.ConditionReasonOIDCConfigRefValid, cond.Reason)
+	assert.Equal(t, mcpv1beta1.ConditionReasonOIDCConfigRefValid, cond.Reason)
 	assert.Equal(t, "same-hash", persisted.Status.OIDCConfigHash, "hash should remain unchanged")
 }
 
@@ -323,31 +323,31 @@ func TestMCPOIDCConfigReconciler_handleDeletion_BlocksWhenReferenced(t *testing.
 	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	now := metav1.Now()
-	cfg := &mcpv1alpha1.MCPOIDCConfig{
+	cfg := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "cfg", Namespace: "default",
 			Finalizers: []string{OIDCConfigFinalizerName}, DeletionTimestamp: &now,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type:   mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{Issuer: "https://x"},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type:   mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: "https://x"},
 		},
 	}
-	server := &mcpv1alpha1.MCPServer{
+	server := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "referencing", Namespace: "default"},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:         "img",
-			OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "cfg", Audience: "aud"},
+			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "cfg", Audience: "aud"},
 		},
 	}
 
 	fc := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(cfg, server).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).Build()
+		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()
 	r := &MCPOIDCConfigReconciler{Client: fc, Scheme: scheme}
 
 	result, err := r.handleDeletion(ctx, cfg)
@@ -362,29 +362,29 @@ func TestMCPOIDCConfigReconciler_handleDeletion_AllowsWhenNotReferenced(t *testi
 	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	now := metav1.Now()
-	cfg := &mcpv1alpha1.MCPOIDCConfig{
+	cfg := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "cfg", Namespace: "default",
 			Finalizers: []string{OIDCConfigFinalizerName}, DeletionTimestamp: &now,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type:   mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{Issuer: "https://x"},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type:   mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: "https://x"},
 		},
 	}
 	// Unrelated server -- does NOT reference this config
-	unrelated := &mcpv1alpha1.MCPServer{
+	unrelated := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "default"},
-		Spec:       mcpv1alpha1.MCPServerSpec{Image: "img"},
+		Spec:       mcpv1beta1.MCPServerSpec{Image: "img"},
 	}
 
 	fc := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(cfg, unrelated).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).Build()
+		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()
 	r := &MCPOIDCConfigReconciler{Client: fc, Scheme: scheme}
 
 	result, err := r.handleDeletion(ctx, cfg)
@@ -399,32 +399,32 @@ func TestMCPOIDCConfigReconciler_handleDeletion_IgnoresCrossNamespaceRef(t *test
 	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	now := metav1.Now()
-	cfg := &mcpv1alpha1.MCPOIDCConfig{
+	cfg := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "cfg", Namespace: "ns-a",
 			Finalizers: []string{OIDCConfigFinalizerName}, DeletionTimestamp: &now,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type:   mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{Issuer: "https://x"},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type:   mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: "https://x"},
 		},
 	}
 	// Server in a DIFFERENT namespace referencing same config name
-	crossNS := &mcpv1alpha1.MCPServer{
+	crossNS := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "ns-b"},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:         "img",
-			OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "cfg", Audience: "aud"},
+			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "cfg", Audience: "aud"},
 		},
 	}
 
 	fc := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(cfg, crossNS).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).Build()
+		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()
 	r := &MCPOIDCConfigReconciler{Client: fc, Scheme: scheme}
 
 	result, err := r.handleDeletion(ctx, cfg)

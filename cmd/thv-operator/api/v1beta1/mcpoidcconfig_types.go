@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package v1alpha1
+package v1beta1
 
 import (
 	"fmt"
@@ -194,6 +194,7 @@ type MCPOIDCConfigStatus struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:storageversion
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=mcpoidc,categories=toolhive
 // +kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.type`

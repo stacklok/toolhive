@@ -28,7 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -40,19 +40,19 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name        string
-		proxy       *mcpv1alpha1.MCPRemoteProxy
-		toolConfig  *mcpv1alpha1.MCPToolConfig
+		proxy       *mcpv1beta1.MCPRemoteProxy
+		toolConfig  *mcpv1beta1.MCPToolConfig
 		expectError bool
 		validate    func(*testing.T, *runner.RunConfig)
 	}{
 		{
 			name: "basic remote proxy",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "salesforce-proxy",
 					Namespace: "mcp-proxies",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.salesforce.com",
 					ProxyPort: 8080,
 				},
@@ -70,27 +70,27 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "with tool filtering",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "filtered-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 						Name: "filter-config",
 					},
 				},
 			},
-			toolConfig: &mcpv1alpha1.MCPToolConfig{
+			toolConfig: &mcpv1beta1.MCPToolConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "filter-config",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPToolConfigSpec{
+				Spec: mcpv1beta1.MCPToolConfigSpec{
 					ToolsFilter: []string{"read_data", "list_resources"},
-					ToolsOverride: map[string]mcpv1alpha1.ToolOverride{
+					ToolsOverride: map[string]mcpv1beta1.ToolOverride{
 						"read_data": {
 							Name:        "read-customer-data",
 							Description: "Read customer data from Salesforce",
@@ -111,17 +111,17 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "with inline authorization",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "authz-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineAuthzConfig{
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeInline,
+						Inline: &mcpv1beta1.InlineAuthzConfig{
 							Policies: []string{
 								`permit(principal, action == Action::"tools/list", resource);`,
 								`forbid(principal, action == Action::"tools/call", resource) when { resource.tool == "delete_resource" };`,
@@ -146,12 +146,12 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "with trust proxy headers",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "trust-headers-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL:         "https://mcp.example.com",
 					ProxyPort:         8080,
 					TrustProxyHeaders: true,
@@ -166,15 +166,15 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "with header forward plaintext only",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "plaintext-headers-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
 						AddPlaintextHeaders: map[string]string{
 							"X-Tenant-ID":   "tenant-123",
 							"X-Correlation": "corr-abc",
@@ -194,26 +194,26 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "with header forward secrets",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "secret-headers-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
-						AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
 							{
 								HeaderName: "X-API-Key",
-								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 									Name: "api-secret",
 									Key:  "key",
 								},
 							},
 							{
 								HeaderName: "Authorization",
-								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 									Name: "auth-secret",
 									Key:  "token",
 								},
@@ -236,22 +236,22 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "with header forward mixed plaintext and secrets",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "mixed-headers-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
 						AddPlaintextHeaders: map[string]string{
 							"X-Tenant-ID": "tenant-456",
 						},
-						AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
+						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
 							{
 								HeaderName: "X-API-Key",
-								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 									Name: "api-secret",
 									Key:  "key",
 								},
@@ -315,38 +315,38 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithTokenExchange(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		proxy        *mcpv1alpha1.MCPRemoteProxy
-		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
+		proxy        *mcpv1beta1.MCPRemoteProxy
+		externalAuth *mcpv1beta1.MCPExternalAuthConfig
 		clientSecret *corev1.Secret
 		expectError  bool
 		validate     func(*testing.T, *runner.RunConfig)
 	}{
 		{
 			name: "with token exchange",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "exchange-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.salesforce.com",
 					ProxyPort: 8080,
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "salesforce-exchange",
 					},
 				},
 			},
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "salesforce-exchange",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://keycloak.company.com/token",
 						ClientID: "exchange-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "exchange-creds",
 							Key:  "client-secret",
 						},
@@ -392,15 +392,15 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithTokenExchange(t *testing.T) {
 		},
 		{
 			name: "external auth config not found",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "broken-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "non-existent",
 					},
 				},
@@ -453,36 +453,36 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithBearerToken(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		proxy        *mcpv1alpha1.MCPRemoteProxy
-		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
+		proxy        *mcpv1beta1.MCPRemoteProxy
+		externalAuth *mcpv1beta1.MCPExternalAuthConfig
 		bearerSecret *corev1.Secret
 		expectError  bool
 		validate     func(*testing.T, *runner.RunConfig)
 	}{
 		{
 			name: "with bearer token",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "bearer-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com/api",
 					ProxyPort: 8080,
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "api-bearer-auth",
 					},
 				},
 			},
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "api-bearer-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
-					BearerToken: &mcpv1alpha1.BearerTokenConfig{
-						TokenSecretRef: &mcpv1alpha1.SecretKeyRef{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1beta1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "api-bearer-token",
 							Key:  "token",
 						},
@@ -511,27 +511,27 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithBearerToken(t *testing.T) {
 		},
 		{
 			name: "missing TokenSecretRef",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "broken-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "broken-bearer",
 					},
 				},
 			},
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "broken-bearer",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
-					BearerToken: &mcpv1alpha1.BearerTokenConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1beta1.BearerTokenConfig{
 						TokenSecretRef: nil, // Missing TokenSecretRef
 					},
 				},
@@ -540,28 +540,28 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithBearerToken(t *testing.T) {
 		},
 		{
 			name: "secret not found",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "missing-secret-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "missing-secret-bearer",
 					},
 				},
 			},
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "missing-secret-bearer",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
-					BearerToken: &mcpv1alpha1.BearerTokenConfig{
-						TokenSecretRef: &mcpv1alpha1.SecretKeyRef{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1beta1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "non-existent-secret",
 							Key:  "token",
 						},
@@ -572,28 +572,28 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithBearerToken(t *testing.T) {
 		},
 		{
 			name: "secret missing key",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "missing-key-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "missing-key-bearer",
 					},
 				},
 			},
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "missing-key-bearer",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeBearerToken,
-					BearerToken: &mcpv1alpha1.BearerTokenConfig{
-						TokenSecretRef: &mcpv1alpha1.SecretKeyRef{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+					BearerToken: &mcpv1beta1.BearerTokenConfig{
+						TokenSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "incomplete-secret",
 							Key:  "token",
 						},
@@ -770,19 +770,19 @@ func TestEnsureRunConfigConfigMapForRemoteProxy(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name            string
-		proxy           *mcpv1alpha1.MCPRemoteProxy
+		proxy           *mcpv1beta1.MCPRemoteProxy
 		existingCM      *corev1.ConfigMap
 		expectError     bool
 		validateContent func(*testing.T, *corev1.ConfigMap)
 	}{
 		{
 			name: "create new configmap for remote proxy",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "new-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
 				},

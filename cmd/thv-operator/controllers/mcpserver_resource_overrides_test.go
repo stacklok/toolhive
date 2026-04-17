@@ -25,7 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -34,11 +34,11 @@ func TestResourceOverrides(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	tests := []struct {
 		name                     string
-		mcpServer                *mcpv1alpha1.MCPServer
+		mcpServer                *mcpv1beta1.MCPServer
 		expectedDeploymentLabels map[string]string
 		expectedDeploymentAnns   map[string]string
 		expectedServiceLabels    map[string]string
@@ -46,12 +46,12 @@ func TestResourceOverrides(t *testing.T) {
 	}{
 		{
 			name: "no resource overrides",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image",
 					ProxyPort: 8080,
 				},
@@ -75,17 +75,17 @@ func TestResourceOverrides(t *testing.T) {
 		},
 		{
 			name: "with resource overrides",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image",
 					ProxyPort: 8080,
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
 								Labels: map[string]string{
 									"custom-label": "deployment-value",
 									"environment":  "test",
@@ -97,7 +97,7 @@ func TestResourceOverrides(t *testing.T) {
 								},
 							},
 						},
-						ProxyService: &mcpv1alpha1.ResourceMetadataOverrides{
+						ProxyService: &mcpv1beta1.ResourceMetadataOverrides{
 							Labels: map[string]string{
 								"custom-label": "service-value",
 								"environment":  "test",
@@ -140,22 +140,22 @@ func TestResourceOverrides(t *testing.T) {
 		},
 		{
 			name: "with proxy environment variables",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image",
 					ProxyPort: 8080,
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
 								Labels: map[string]string{
 									"environment": "test",
 								},
 							},
-							Env: []mcpv1alpha1.EnvVar{
+							Env: []mcpv1beta1.EnvVar{
 								{
 									Name:  "HTTP_PROXY",
 									Value: "http://proxy.example.com:8080",
@@ -193,17 +193,17 @@ func TestResourceOverrides(t *testing.T) {
 		},
 		{
 			name: "with debug logging via TOOLHIVE_DEBUG env var",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image",
 					ProxyPort: 8080,
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							Env: []mcpv1alpha1.EnvVar{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							Env: []mcpv1beta1.EnvVar{
 								{Name: "TOOLHIVE_DEBUG", Value: "true"},
 							},
 						},
@@ -229,17 +229,17 @@ func TestResourceOverrides(t *testing.T) {
 		},
 		{
 			name: "with both metadata overrides and proxy environment variables",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image",
 					ProxyPort: 8080,
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
 								Labels: map[string]string{
 									"environment": "production",
 									"team":        "platform",
@@ -249,7 +249,7 @@ func TestResourceOverrides(t *testing.T) {
 									"version":            "v1.2.3",
 								},
 							},
-							Env: []mcpv1alpha1.EnvVar{
+							Env: []mcpv1beta1.EnvVar{
 								{
 									Name:  "LOG_LEVEL",
 									Value: "debug",
@@ -260,7 +260,7 @@ func TestResourceOverrides(t *testing.T) {
 								},
 							},
 						},
-						ProxyService: &mcpv1alpha1.ResourceMetadataOverrides{
+						ProxyService: &mcpv1beta1.ResourceMetadataOverrides{
 							Annotations: map[string]string{
 								"service.beta.kubernetes.io/aws-load-balancer-type": "nlb",
 							},
@@ -294,17 +294,17 @@ func TestResourceOverrides(t *testing.T) {
 		},
 		{
 			name: "with Vault Agent Injection pod template annotations",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image",
 					ProxyPort: 8080,
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							PodTemplateMetadataOverrides: &mcpv1beta1.ResourceMetadataOverrides{
 								Annotations: map[string]string{
 									"vault.hashicorp.com/agent-inject": "true",
 									"vault.hashicorp.com/role":         "toolhive-mcp-workloads",
@@ -460,30 +460,30 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
 
 	tests := []struct {
 		name            string
-		mcpServer       *mcpv1alpha1.MCPServer
+		mcpServer       *mcpv1beta1.MCPServer
 		existingEnvVars []corev1.EnvVar
 		expectEnvChange bool // Focus on whether env change detection works
 	}{
 		{
 			name: "matching proxy env vars - no env change",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image",
 					ProxyPort: 8080,
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							Env: []mcpv1alpha1.EnvVar{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							Env: []mcpv1beta1.EnvVar{
 								{Name: "HTTP_PROXY", Value: "http://proxy.example.com:8080"},
 								{Name: "NO_PROXY", Value: "localhost,127.0.0.1"},
 							},
@@ -499,17 +499,17 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 		},
 		{
 			name: "different proxy env vars - env change detected",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image",
 					ProxyPort: 8080,
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							Env: []mcpv1alpha1.EnvVar{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							Env: []mcpv1beta1.EnvVar{
 								{Name: "HTTP_PROXY", Value: "http://new-proxy.example.com:8080"},
 								{Name: "NO_PROXY", Value: "localhost,127.0.0.1"},
 							},
@@ -525,17 +525,17 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 		},
 		{
 			name: "added proxy env vars - env change detected",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image",
 					ProxyPort: 8080,
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							Env: []mcpv1alpha1.EnvVar{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							Env: []mcpv1beta1.EnvVar{
 								{Name: "HTTP_PROXY", Value: "http://proxy.example.com:8080"},
 								{Name: "NO_PROXY", Value: "localhost,127.0.0.1"},
 								{Name: "CUSTOM_ENV", Value: "custom-value"},
@@ -552,17 +552,17 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 		},
 		{
 			name: "removed proxy env vars - env change detected",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image",
 					ProxyPort: 8080,
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							Env: []mcpv1alpha1.EnvVar{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							Env: []mcpv1beta1.EnvVar{
 								{Name: "HTTP_PROXY", Value: "http://proxy.example.com:8080"},
 							},
 						},
@@ -577,12 +577,12 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 		},
 		{
 			name: "no proxy env vars specified - no env change when none exist",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image",
 					ProxyPort: 8080,
 				},
@@ -592,12 +592,12 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 		},
 		{
 			name: "env vars removed entirely - env change detected",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image",
 					ProxyPort: 8080,
 				},
@@ -646,14 +646,14 @@ func TestMCPServerSessionAffinityNone(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:           "test-image",
 			ProxyPort:       8080,
 			SessionAffinity: string(corev1.ServiceAffinityNone),
@@ -671,12 +671,12 @@ func TestMCPServerSessionAffinityNone(t *testing.T) {
 func TestMCPServerServiceNeedsUpdate(t *testing.T) {
 	t.Parallel()
 
-	baseMCPServer := &mcpv1alpha1.MCPServer{
+	baseMCPServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image",
 			ProxyPort: 8080,
 		},
@@ -700,7 +700,7 @@ func TestMCPServerServiceNeedsUpdate(t *testing.T) {
 	tests := []struct {
 		name        string
 		service     *corev1.Service
-		mcpServer   *mcpv1alpha1.MCPServer
+		mcpServer   *mcpv1beta1.MCPServer
 		needsUpdate bool
 	}{
 		{
@@ -722,7 +722,7 @@ func TestMCPServerServiceNeedsUpdate(t *testing.T) {
 		{
 			name:    "session affinity spec changed to None",
 			service: baseService.DeepCopy(),
-			mcpServer: func() *mcpv1alpha1.MCPServer {
+			mcpServer: func() *mcpv1beta1.MCPServer {
 				m := baseMCPServer.DeepCopy()
 				m.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
 				return m
@@ -736,7 +736,7 @@ func TestMCPServerServiceNeedsUpdate(t *testing.T) {
 				s.Spec.SessionAffinity = corev1.ServiceAffinityNone
 				return s
 			}(),
-			mcpServer: func() *mcpv1alpha1.MCPServer {
+			mcpServer: func() *mcpv1beta1.MCPServer {
 				m := baseMCPServer.DeepCopy()
 				m.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
 				return m

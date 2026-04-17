@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 const testContainerName = "test-container"
@@ -81,7 +81,7 @@ func TestPodTemplateSpecBuilder_Build(t *testing.T) {
 		{
 			name: "with secrets returns spec",
 			setup: func(b *PodTemplateSpecBuilder) {
-				b.WithSecrets([]mcpv1alpha1.SecretRef{{Name: "secret", Key: "key"}})
+				b.WithSecrets([]mcpv1beta1.SecretRef{{Name: "secret", Key: "key"}})
 			},
 			expectNil: false,
 		},
@@ -144,7 +144,7 @@ func TestPodTemplateSpecBuilder_WithSecrets(t *testing.T) {
 		require.NoError(t, err)
 
 		builder.WithSecrets(nil)
-		builder.WithSecrets([]mcpv1alpha1.SecretRef{})
+		builder.WithSecrets([]mcpv1beta1.SecretRef{})
 
 		assert.Empty(t, builder.spec.Spec.Containers)
 	})
@@ -154,7 +154,7 @@ func TestPodTemplateSpecBuilder_WithSecrets(t *testing.T) {
 		builder, err := NewPodTemplateSpecBuilder(nil, testContainerName)
 		require.NoError(t, err)
 
-		secrets := []mcpv1alpha1.SecretRef{
+		secrets := []mcpv1beta1.SecretRef{
 			{Name: "my-secret", Key: "API_KEY"},
 			{Name: "my-secret", Key: "password", TargetEnvName: "DB_PASSWORD"},
 		}
@@ -183,7 +183,7 @@ func TestPodTemplateSpecBuilder_WithSecrets(t *testing.T) {
 		builder, err := NewPodTemplateSpecBuilder(raw, testContainerName)
 		require.NoError(t, err)
 
-		builder.WithSecrets([]mcpv1alpha1.SecretRef{{Name: "secret", Key: "NEW_KEY"}})
+		builder.WithSecrets([]mcpv1beta1.SecretRef{{Name: "secret", Key: "NEW_KEY"}})
 
 		require.Len(t, builder.spec.Spec.Containers, 1)
 		container := builder.spec.Spec.Containers[0]
@@ -200,7 +200,7 @@ func TestPodTemplateSpecBuilder_WithSecrets(t *testing.T) {
 		builder, err := NewPodTemplateSpecBuilder(raw, testContainerName)
 		require.NoError(t, err)
 
-		builder.WithSecrets([]mcpv1alpha1.SecretRef{{Name: "secret", Key: "KEY"}})
+		builder.WithSecrets([]mcpv1beta1.SecretRef{{Name: "secret", Key: "KEY"}})
 
 		require.Len(t, builder.spec.Spec.Containers, 2)
 		assert.Equal(t, "other-container", builder.spec.Spec.Containers[0].Name)
@@ -244,7 +244,7 @@ func TestPodTemplateSpecBuilder_Chaining(t *testing.T) {
 	sa := "my-sa"
 	result := builder.
 		WithServiceAccount(&sa).
-		WithSecrets([]mcpv1alpha1.SecretRef{{Name: "secret", Key: "KEY"}}).
+		WithSecrets([]mcpv1beta1.SecretRef{{Name: "secret", Key: "KEY"}}).
 		Build()
 
 	require.NotNil(t, result)

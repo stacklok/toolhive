@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
@@ -67,7 +67,7 @@ func (r *EmbeddingServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	ctxLogger := log.FromContext(ctx)
 
 	// Fetch the EmbeddingServer instance
-	embedding := &mcpv1alpha1.EmbeddingServer{}
+	embedding := &mcpv1beta1.EmbeddingServer{}
 	err := r.Get(ctx, req.NamespacedName, embedding)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -127,7 +127,7 @@ func (r *EmbeddingServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 //nolint:unparam // error return kept for consistency with reconciler pattern
 func (r *EmbeddingServerReconciler) performValidations(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -149,7 +149,7 @@ func (r *EmbeddingServerReconciler) performValidations(
 //nolint:unparam // ctrl.Result return kept for consistency with reconciler pattern
 func (r *EmbeddingServerReconciler) handleDeletion(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) (ctrl.Result, bool, error) {
 	if embedding.GetDeletionTimestamp() == nil {
 		return ctrl.Result{}, false, nil
@@ -172,7 +172,7 @@ func (r *EmbeddingServerReconciler) handleDeletion(
 //nolint:unparam // ctrl.Result return kept for consistency with reconciler pattern
 func (r *EmbeddingServerReconciler) ensureFinalizer(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) (ctrl.Result, bool, error) {
 	if controllerutil.ContainsFinalizer(embedding, embeddingFinalizerName) {
 		return ctrl.Result{}, false, nil
@@ -189,7 +189,7 @@ func (r *EmbeddingServerReconciler) ensureFinalizer(
 // ensureStatefulSet ensures the statefulset exists and is up to date
 func (r *EmbeddingServerReconciler) ensureStatefulSet(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -250,7 +250,7 @@ func (r *EmbeddingServerReconciler) ensureStatefulSet(
 //nolint:unparam // ctrl.Result return kept for consistency with reconciler pattern
 func (r *EmbeddingServerReconciler) ensureService(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -298,7 +298,7 @@ func (r *EmbeddingServerReconciler) ensureService(
 // serviceNeedsUpdate checks if the service needs to be updated based on the embedding spec
 func (*EmbeddingServerReconciler) serviceNeedsUpdate(
 	service *corev1.Service,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) bool {
 	desiredPort := embedding.GetPort()
 
@@ -343,15 +343,15 @@ func (*EmbeddingServerReconciler) serviceNeedsUpdate(
 // Status is not updated here - it will be updated at the end of reconciliation
 func (r *EmbeddingServerReconciler) validateAndUpdatePodTemplateStatus(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) bool {
 	ctxLogger := log.FromContext(ctx)
 
 	if embedding.Spec.PodTemplateSpec == nil {
 		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionPodTemplateValid,
+			Type:               mcpv1beta1.ConditionPodTemplateValid,
 			Status:             metav1.ConditionTrue,
-			Reason:             mcpv1alpha1.ConditionReasonPodTemplateValid,
+			Reason:             mcpv1beta1.ConditionReasonPodTemplateValid,
 			Message:            "No PodTemplateSpec provided",
 			ObservedGeneration: embedding.Generation,
 		})
@@ -362,12 +362,12 @@ func (r *EmbeddingServerReconciler) validateAndUpdatePodTemplateStatus(
 	_, err := ctrlutil.NewPodTemplateSpecBuilder(embedding.Spec.PodTemplateSpec, embeddingContainerName)
 	if err != nil {
 		ctxLogger.Error(err, "Invalid PodTemplateSpec")
-		embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhaseFailed
+		embedding.Status.Phase = mcpv1beta1.EmbeddingServerPhaseFailed
 		embedding.Status.Message = fmt.Sprintf("Invalid PodTemplateSpec: %v", err)
 		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionPodTemplateValid,
+			Type:               mcpv1beta1.ConditionPodTemplateValid,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonPodTemplateInvalid,
+			Reason:             mcpv1beta1.ConditionReasonPodTemplateInvalid,
 			Message:            fmt.Sprintf("Invalid PodTemplateSpec: %v", err),
 			ObservedGeneration: embedding.Generation,
 		})
@@ -384,9 +384,9 @@ func (r *EmbeddingServerReconciler) validateAndUpdatePodTemplateStatus(
 	}
 
 	meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionPodTemplateValid,
+		Type:               mcpv1beta1.ConditionPodTemplateValid,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonPodTemplateValid,
+		Reason:             mcpv1beta1.ConditionReasonPodTemplateValid,
 		Message:            "PodTemplateSpec is valid",
 		ObservedGeneration: embedding.Generation,
 	})
@@ -397,7 +397,7 @@ func (r *EmbeddingServerReconciler) validateAndUpdatePodTemplateStatus(
 // statefulSetForEmbedding creates a StatefulSet for the embedding server
 func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
 	_ context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) *appsv1.StatefulSet {
 	replicas := embedding.GetReplicas()
 	labels := r.labelsForEmbedding(embedding)
@@ -446,7 +446,7 @@ func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
 
 // buildVolumeClaimTemplates builds the volumeClaimTemplates for the StatefulSet
 func (r *EmbeddingServerReconciler) buildVolumeClaimTemplates(
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) []corev1.PersistentVolumeClaim {
 	size := "10Gi"
 	if embedding.Spec.ModelCache.Size != "" {
@@ -494,7 +494,7 @@ func (r *EmbeddingServerReconciler) buildVolumeClaimTemplates(
 }
 
 // buildEmbeddingContainer builds the container spec for the embedding server
-func (r *EmbeddingServerReconciler) buildEmbeddingContainer(embedding *mcpv1alpha1.EmbeddingServer) corev1.Container {
+func (r *EmbeddingServerReconciler) buildEmbeddingContainer(embedding *mcpv1beta1.EmbeddingServer) corev1.Container {
 	// Build container args
 	args := []string{
 		"--model-id", embedding.Spec.Model,
@@ -544,7 +544,7 @@ func (r *EmbeddingServerReconciler) buildEmbeddingContainer(embedding *mcpv1alph
 }
 
 // buildEnvVars builds environment variables for the container
-func (*EmbeddingServerReconciler) buildEnvVars(embedding *mcpv1alpha1.EmbeddingServer) []corev1.EnvVar {
+func (*EmbeddingServerReconciler) buildEnvVars(embedding *mcpv1beta1.EmbeddingServer) []corev1.EnvVar {
 	envVars := []corev1.EnvVar{
 		{
 			Name:  "MODEL_ID",
@@ -577,7 +577,7 @@ func (*EmbeddingServerReconciler) buildEnvVars(embedding *mcpv1alpha1.EmbeddingS
 }
 
 // buildLivenessProbe builds the liveness probe for the container
-func (*EmbeddingServerReconciler) buildLivenessProbe(embedding *mcpv1alpha1.EmbeddingServer) *corev1.Probe {
+func (*EmbeddingServerReconciler) buildLivenessProbe(embedding *mcpv1beta1.EmbeddingServer) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
@@ -593,7 +593,7 @@ func (*EmbeddingServerReconciler) buildLivenessProbe(embedding *mcpv1alpha1.Embe
 }
 
 // buildReadinessProbe builds the readiness probe for the container
-func (*EmbeddingServerReconciler) buildReadinessProbe(embedding *mcpv1alpha1.EmbeddingServer) *corev1.Probe {
+func (*EmbeddingServerReconciler) buildReadinessProbe(embedding *mcpv1beta1.EmbeddingServer) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
@@ -609,7 +609,7 @@ func (*EmbeddingServerReconciler) buildReadinessProbe(embedding *mcpv1alpha1.Emb
 }
 
 // applyResourceRequirements applies resource requirements to the container
-func (*EmbeddingServerReconciler) applyResourceRequirements(embedding *mcpv1alpha1.EmbeddingServer, container *corev1.Container) {
+func (*EmbeddingServerReconciler) applyResourceRequirements(embedding *mcpv1beta1.EmbeddingServer, container *corev1.Container) {
 	if embedding.Spec.Resources.Limits.CPU == "" && embedding.Spec.Resources.Limits.Memory == "" &&
 		embedding.Spec.Resources.Requests.CPU == "" && embedding.Spec.Resources.Requests.Memory == "" {
 		return
@@ -636,7 +636,7 @@ func (*EmbeddingServerReconciler) applyResourceRequirements(embedding *mcpv1alph
 
 // buildPodTemplate builds the pod template for the statefulset
 func (r *EmbeddingServerReconciler) buildPodTemplate(
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 	labels map[string]string,
 	container corev1.Container,
 ) corev1.PodTemplateSpec {
@@ -660,7 +660,7 @@ func (r *EmbeddingServerReconciler) buildPodTemplate(
 
 // mergePodTemplateSpec merges user-provided PodTemplateSpec customizations
 func (r *EmbeddingServerReconciler) mergePodTemplateSpec(
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 	podTemplate *corev1.PodTemplateSpec,
 ) {
 	if embedding.Spec.PodTemplateSpec == nil {
@@ -719,7 +719,7 @@ func (*EmbeddingServerReconciler) mergeContainerSecurityContext(
 
 // applyStatefulSetOverrides applies statefulset-level overrides and returns annotations and labels
 func (*EmbeddingServerReconciler) applyStatefulSetOverrides(
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 	podTemplate *corev1.PodTemplateSpec,
 ) (map[string]string, map[string]string) {
 	annotations := make(map[string]string)
@@ -758,7 +758,7 @@ func (*EmbeddingServerReconciler) applyStatefulSetOverrides(
 // serviceForEmbedding creates a Service for the embedding server
 func (r *EmbeddingServerReconciler) serviceForEmbedding(
 	_ context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) *corev1.Service {
 	labels := r.labelsForEmbedding(embedding)
 	annotations := make(map[string]string)
@@ -803,7 +803,7 @@ func (r *EmbeddingServerReconciler) serviceForEmbedding(
 }
 
 // labelsForEmbedding returns the labels for the embedding resources
-func (*EmbeddingServerReconciler) labelsForEmbedding(embedding *mcpv1alpha1.EmbeddingServer) map[string]string {
+func (*EmbeddingServerReconciler) labelsForEmbedding(embedding *mcpv1beta1.EmbeddingServer) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":       "embeddingserver",
 		"app.kubernetes.io/instance":   embedding.Name,
@@ -816,7 +816,7 @@ func (*EmbeddingServerReconciler) labelsForEmbedding(embedding *mcpv1alpha1.Embe
 func (r *EmbeddingServerReconciler) statefulSetNeedsUpdate(
 	ctx context.Context,
 	currentSts *appsv1.StatefulSet,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) bool {
 	// Generate the expected StatefulSet from the current spec
 	newSts := r.statefulSetForEmbedding(ctx, embedding)
@@ -922,7 +922,7 @@ func (*EmbeddingServerReconciler) podTemplateMetadataChanged(currentSts, newSts 
 // updateEmbeddingServerStatus updates the status based on statefulset state
 func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
@@ -936,7 +936,7 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 	err := r.Get(ctx, types.NamespacedName{Name: embedding.Name, Namespace: embedding.Namespace}, statefulSet)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhasePending
+			embedding.Status.Phase = mcpv1beta1.EmbeddingServerPhasePending
 			embedding.Status.ReadyReplicas = 0
 		} else {
 			return err
@@ -947,26 +947,26 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 
 		// Determine phase and message based on statefulset status using immutable assignment
 		type phaseInfo struct {
-			phase   mcpv1alpha1.EmbeddingServerPhase
+			phase   mcpv1beta1.EmbeddingServerPhase
 			message string
 		}
 
 		info := func() phaseInfo {
 			if statefulSet.Status.ReadyReplicas > 0 {
 				return phaseInfo{
-					phase:   mcpv1alpha1.EmbeddingServerPhaseReady,
+					phase:   mcpv1beta1.EmbeddingServerPhaseReady,
 					message: "Embedding server is running",
 				}
 			}
 			if statefulSet.Status.Replicas > 0 && statefulSet.Status.ReadyReplicas == 0 {
 				// Check if pods are downloading the model
 				return phaseInfo{
-					phase:   mcpv1alpha1.EmbeddingServerPhaseDownloading,
+					phase:   mcpv1beta1.EmbeddingServerPhaseDownloading,
 					message: "Downloading embedding model",
 				}
 			}
 			return phaseInfo{
-				phase:   mcpv1alpha1.EmbeddingServerPhasePending,
+				phase:   mcpv1beta1.EmbeddingServerPhasePending,
 				message: "Waiting for statefulset",
 			}
 		}()
@@ -985,12 +985,12 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 }
 
 // finalizeEmbeddingServer performs cleanup before the EmbeddingServer is deleted
-func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context, embedding *mcpv1alpha1.EmbeddingServer) {
+func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context, embedding *mcpv1beta1.EmbeddingServer) {
 	ctxLogger := log.FromContext(ctx)
 	ctxLogger.Info("Finalizing EmbeddingServer", "name", embedding.Name)
 
 	// Update status to Terminating
-	embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhaseTerminating
+	embedding.Status.Phase = mcpv1beta1.EmbeddingServerPhaseTerminating
 	if err := r.Status().Update(ctx, embedding); err != nil {
 		ctxLogger.Error(err, "Failed to update EmbeddingServer status to Terminating")
 	}
@@ -1004,7 +1004,7 @@ func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context,
 // SetupWithManager sets up the controller with the Manager.
 func (r *EmbeddingServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&mcpv1alpha1.EmbeddingServer{}).
+		For(&mcpv1beta1.EmbeddingServer{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.PersistentVolumeClaim{}).

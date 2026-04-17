@@ -35,7 +35,246 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    deprecated: true
+    deprecationWarning: toolhive.stacklok.dev/v1alpha1 is deprecated; use v1beta1
     name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: MCPRegistry is the deprecated v1alpha1 version of the MCPRegistry
+          resource.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: MCPRegistrySpec defines the desired state of MCPRegistry
+            properties:
+              configYAML:
+                description: |-
+                  ConfigYAML is the complete registry server config.yaml content.
+                  The operator creates a ConfigMap from this string and mounts it
+                  at /config/config.yaml in the registry-api container.
+                  The operator does NOT parse, validate, or transform this content —
+                  configuration validation is the registry server's responsibility.
+
+                  Security note: this content is stored in a ConfigMap, not a Secret.
+                  Do not inline credentials (passwords, tokens, client secrets) in this
+                  field. Instead, reference credentials via file paths and mount the
+                  actual secrets using the Volumes and VolumeMounts fields. For database
+                  passwords, use PGPassSecretRef.
+                minLength: 1
+                type: string
+              displayName:
+                description: DisplayName is a human-readable name for the registry.
+                type: string
+              pgpassSecretRef:
+                description: "PGPassSecretRef references a Secret containing a pre-created
+                  pgpass file.\n\nWhy this is a dedicated field instead of a regular
+                  volume/volumeMount:\nPostgreSQL's libpq rejects pgpass files that
+                  aren't mode 0600. Kubernetes\nsecret volumes mount files as root-owned,
+                  and the registry-api container\nruns as non-root (UID 65532). A
+                  root-owned 0600 file is unreadable by\nUID 65532, and using fsGroup
+                  changes permissions to 0640 which libpq also\nrejects. The only
+                  solution is an init container that copies the file to an\nemptyDir
+                  as the app user and runs chmod 0600. This cannot be expressed\nthrough
+                  volumes/volumeMounts alone -- it requires an init container, two\nextra
+                  volumes (secret + emptyDir), a subPath mount, and an environment\nvariable,
+                  all wired together correctly.\n\nWhen specified, the operator generates
+                  all of that plumbing invisibly.\nThe user creates the Secret with
+                  pgpass-formatted content; the operator\nhandles only the Kubernetes
+                  permission mechanics.\n\nExample Secret:\n\n\tapiVersion: v1\n\tkind:
+                  Secret\n\tmetadata:\n\t  name: my-pgpass\n\tstringData:\n\t  .pgpass:
+                  |\n\t    postgres:5432:registry:db_app:mypassword\n\t    postgres:5432:registry:db_migrator:otherpassword\n\nThen
+                  reference it:\n\n\tpgpassSecretRef:\n\t  name: my-pgpass\n\t  key:
+                  .pgpass"
+                properties:
+                  key:
+                    description: The key of the secret to select from.  Must be a
+                      valid secret key.
+                    type: string
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                  optional:
+                    description: Specify whether the Secret or its key must be defined
+                    type: boolean
+                required:
+                - key
+                type: object
+                x-kubernetes-map-type: atomic
+              podTemplateSpec:
+                description: |-
+                  PodTemplateSpec defines the pod template to use for the registry API server.
+                  This allows for customizing the pod configuration beyond what is provided by the other fields.
+                  Note that to modify the specific container the registry API server runs in, you must specify
+                  the `registry-api` container name in the PodTemplateSpec.
+                  This field accepts a PodTemplateSpec object as JSON/YAML.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              volumeMounts:
+                description: |-
+                  VolumeMounts defines additional volume mounts for the registry-api container.
+                  Each entry is a standard Kubernetes VolumeMount object (JSON/YAML).
+                  The operator appends them to the container's volume mounts alongside the config mount.
+
+                  Mount paths must match the file paths referenced in configYAML.
+                  For example, if configYAML references passwordFile: /secrets/git-creds/token,
+                  a corresponding volume mount must exist with mountPath: /secrets/git-creds.
+                items:
+                  x-kubernetes-preserve-unknown-fields: true
+                type: array
+                x-kubernetes-list-type: atomic
+                x-kubernetes-preserve-unknown-fields: true
+              volumes:
+                description: |-
+                  Volumes defines additional volumes to add to the registry API pod.
+                  Each entry is a standard Kubernetes Volume object (JSON/YAML).
+                  The operator appends them to the pod spec alongside its own config volume.
+
+                  Use these to mount:
+                    - Secrets (git auth tokens, OAuth client secrets, CA certs)
+                    - ConfigMaps (registry data files)
+                    - PersistentVolumeClaims (registry data on persistent storage)
+                    - Any other volume type the registry server needs
+                items:
+                  x-kubernetes-preserve-unknown-fields: true
+                type: array
+                x-kubernetes-list-type: atomic
+                x-kubernetes-preserve-unknown-fields: true
+            required:
+            - configYAML
+            type: object
+          status:
+            description: MCPRegistryStatus defines the observed state of MCPRegistry
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the MCPRegistry's state
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              message:
+                description: Message provides additional information about the current
+                  phase
+                type: string
+              observedGeneration:
+                description: ObservedGeneration reflects the generation most recently
+                  observed by the controller
+                format: int64
+                type: integer
+              phase:
+                description: Phase represents the current overall phase of the MCPRegistry
+                enum:
+                - Pending
+                - Ready
+                - Failed
+                - Terminating
+                type: string
+              readyReplicas:
+                description: ReadyReplicas is the number of ready registry API replicas
+                format: int32
+                type: integer
+              url:
+                description: URL is the URL where the registry API can be accessed
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: false
+    subresources:
+      status: {}
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Status
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.readyReplicas
+      name: Replicas
+      type: integer
+    - jsonPath: .status.url
+      name: URL
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1beta1
     schema:
       openAPIV3Schema:
         description: MCPRegistry is the Schema for the mcpregistries API

@@ -17,7 +17,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/k8s"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -51,8 +51,8 @@ func NewK8SDiscoverer(namespace ...string) (Discoverer, error) {
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("failed to add client-go scheme: %w", err)
 	}
-	if err := mcpv1alpha1.AddToScheme(scheme); err != nil {
-		return nil, fmt.Errorf("failed to add MCP v1alpha1 scheme: %w", err)
+	if err := mcpv1beta1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add MCP v1beta1 scheme: %w", err)
 	}
 
 	// Create controller-runtime client
@@ -87,7 +87,7 @@ func (d *k8sDiscoverer) ListWorkloadsInGroup(ctx context.Context, groupName stri
 	var groupWorkloads []TypedWorkload
 
 	// List MCPServers in the group
-	mcpServerList := &mcpv1alpha1.MCPServerList{}
+	mcpServerList := &mcpv1beta1.MCPServerList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(d.namespace),
 	}
@@ -107,7 +107,7 @@ func (d *k8sDiscoverer) ListWorkloadsInGroup(ctx context.Context, groupName stri
 	}
 
 	// List MCPRemoteProxies in the group
-	mcpRemoteProxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	mcpRemoteProxyList := &mcpv1beta1.MCPRemoteProxyList{}
 	if err := d.k8sClient.List(ctx, mcpRemoteProxyList, listOpts...); err != nil {
 		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
 	}
@@ -123,7 +123,7 @@ func (d *k8sDiscoverer) ListWorkloadsInGroup(ctx context.Context, groupName stri
 	}
 
 	// List MCPServerEntries in the group
-	mcpServerEntryList := &mcpv1alpha1.MCPServerEntryList{}
+	mcpServerEntryList := &mcpv1beta1.MCPServerEntryList{}
 	if err := d.k8sClient.List(ctx, mcpServerEntryList, listOpts...); err != nil {
 		return nil, fmt.Errorf("failed to list MCPServerEntries: %w", err)
 	}
@@ -159,7 +159,7 @@ func (d *k8sDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workload T
 
 // getMCPServerAsBackend retrieves an MCPServer and converts it to a vmcp.Backend.
 func (d *k8sDiscoverer) getMCPServerAsBackend(ctx context.Context, workloadName string) (*vmcp.Backend, error) {
-	mcpServer := &mcpv1alpha1.MCPServer{}
+	mcpServer := &mcpv1beta1.MCPServer{}
 	key := client.ObjectKey{Name: workloadName, Namespace: d.namespace}
 	if err := d.k8sClient.Get(ctx, key, mcpServer); err != nil {
 		if errors.IsNotFound(err) {
@@ -188,7 +188,7 @@ func (d *k8sDiscoverer) getMCPServerAsBackend(ctx context.Context, workloadName 
 
 // getMCPRemoteProxyAsBackend retrieves an MCPRemoteProxy and converts it to a vmcp.Backend.
 func (d *k8sDiscoverer) getMCPRemoteProxyAsBackend(ctx context.Context, proxyName string) (*vmcp.Backend, error) {
-	mcpRemoteProxy := &mcpv1alpha1.MCPRemoteProxy{}
+	mcpRemoteProxy := &mcpv1beta1.MCPRemoteProxy{}
 	key := client.ObjectKey{Name: proxyName, Namespace: d.namespace}
 	if err := d.k8sClient.Get(ctx, key, mcpRemoteProxy); err != nil {
 		if errors.IsNotFound(err) {
@@ -218,7 +218,7 @@ func (d *k8sDiscoverer) getMCPRemoteProxyAsBackend(ctx context.Context, proxyNam
 // mcpServerToBackend converts an MCPServer CRD to a vmcp.Backend.
 // If the MCPServer has an ExternalAuthConfigRef, it will be fetched and converted to auth strategy metadata.
 // Auth discovery errors are logged but do not fail backend creation.
-func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) *vmcp.Backend {
+func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) *vmcp.Backend {
 	// Parse transport type
 	transportType, err := transporttypes.ParseTransportType(mcpServer.Spec.Transport)
 	if err != nil {
@@ -304,7 +304,7 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 //   - Returns nil error if ExternalAuthConfigRef is nil (no auth config) - this is expected behavior
 //   - Returns nil error if auth config is discovered and successfully populated into backend
 //   - Returns error if auth config exists but discovery/resolution fails (e.g., missing secret, invalid config)
-func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer, backend *vmcp.Backend) error {
+func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1beta1.MCPServer, backend *vmcp.Backend) error {
 	return d.discoverAuthConfigFromRef(
 		ctx,
 		mcpServer.Spec.ExternalAuthConfigRef,
@@ -324,7 +324,7 @@ func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1
 //   - Returns error if auth config exists but discovery/resolution fails (e.g., missing secret, invalid config)
 func (d *k8sDiscoverer) discoverAuthConfigFromRef(
 	ctx context.Context,
-	authConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	authConfigRef *mcpv1beta1.ExternalAuthConfigRef,
 	namespace string,
 	resourceName string,
 	resourceKind string,
@@ -362,17 +362,17 @@ func (d *k8sDiscoverer) discoverAuthConfigFromRef(
 }
 
 // mapK8SWorkloadPhaseToHealth converts a MCPServerPhase to a backend health status.
-func mapK8SWorkloadPhaseToHealth(phase mcpv1alpha1.MCPServerPhase) vmcp.BackendHealthStatus {
+func mapK8SWorkloadPhaseToHealth(phase mcpv1beta1.MCPServerPhase) vmcp.BackendHealthStatus {
 	switch phase {
-	case mcpv1alpha1.MCPServerPhaseReady:
+	case mcpv1beta1.MCPServerPhaseReady:
 		return vmcp.BackendHealthy
-	case mcpv1alpha1.MCPServerPhaseFailed:
+	case mcpv1beta1.MCPServerPhaseFailed:
 		return vmcp.BackendUnhealthy
-	case mcpv1alpha1.MCPServerPhaseTerminating:
+	case mcpv1beta1.MCPServerPhaseTerminating:
 		return vmcp.BackendUnhealthy
-	case mcpv1alpha1.MCPServerPhaseStopped:
+	case mcpv1beta1.MCPServerPhaseStopped:
 		return vmcp.BackendUnhealthy
-	case mcpv1alpha1.MCPServerPhasePending:
+	case mcpv1beta1.MCPServerPhasePending:
 		return vmcp.BackendUnknown
 	default:
 		return vmcp.BackendUnknown
@@ -380,15 +380,15 @@ func mapK8SWorkloadPhaseToHealth(phase mcpv1alpha1.MCPServerPhase) vmcp.BackendH
 }
 
 // mapMCPRemoteProxyPhaseToHealth converts a MCPRemoteProxyPhase to a backend health status.
-func mapMCPRemoteProxyPhaseToHealth(phase mcpv1alpha1.MCPRemoteProxyPhase) vmcp.BackendHealthStatus {
+func mapMCPRemoteProxyPhaseToHealth(phase mcpv1beta1.MCPRemoteProxyPhase) vmcp.BackendHealthStatus {
 	switch phase {
-	case mcpv1alpha1.MCPRemoteProxyPhaseReady:
+	case mcpv1beta1.MCPRemoteProxyPhaseReady:
 		return vmcp.BackendHealthy
-	case mcpv1alpha1.MCPRemoteProxyPhaseFailed:
+	case mcpv1beta1.MCPRemoteProxyPhaseFailed:
 		return vmcp.BackendUnhealthy
-	case mcpv1alpha1.MCPRemoteProxyPhaseTerminating:
+	case mcpv1beta1.MCPRemoteProxyPhaseTerminating:
 		return vmcp.BackendUnhealthy
-	case mcpv1alpha1.MCPRemoteProxyPhasePending:
+	case mcpv1beta1.MCPRemoteProxyPhasePending:
 		return vmcp.BackendUnknown
 	default:
 		return vmcp.BackendUnknown
@@ -397,7 +397,7 @@ func mapMCPRemoteProxyPhaseToHealth(phase mcpv1alpha1.MCPRemoteProxyPhase) vmcp.
 
 // mcpRemoteProxyToBackend converts an MCPRemoteProxy CRD to a vmcp.Backend.
 // If the MCPRemoteProxy has an ExternalAuthConfigRef, it will be fetched and converted to auth strategy metadata.
-func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) *vmcp.Backend {
+func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) *vmcp.Backend {
 	// Parse transport type from proxy spec
 	transportType, err := transporttypes.ParseTransportType(proxy.Spec.Transport)
 	if err != nil {
@@ -465,7 +465,7 @@ func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv
 // getMCPServerEntryAsBackend retrieves an MCPServerEntry and converts it to a vmcp.Backend.
 // MCPServerEntry is a zero-infrastructure catalog entry that directly points to a remote URL.
 func (d *k8sDiscoverer) getMCPServerEntryAsBackend(ctx context.Context, entryName string) (*vmcp.Backend, error) {
-	mcpServerEntry := &mcpv1alpha1.MCPServerEntry{}
+	mcpServerEntry := &mcpv1beta1.MCPServerEntry{}
 	key := client.ObjectKey{Name: entryName, Namespace: d.namespace}
 	if err := d.k8sClient.Get(ctx, key, mcpServerEntry); err != nil {
 		if errors.IsNotFound(err) {
@@ -477,7 +477,7 @@ func (d *k8sDiscoverer) getMCPServerEntryAsBackend(ctx context.Context, entryNam
 	// Unlike MCPServer/MCPRemoteProxy (which use status.URL, empty until ready),
 	// MCPServerEntry always has spec.remoteUrl set. Explicitly check phase to
 	// avoid routing to entries that failed validation.
-	if mcpServerEntry.Status.Phase != mcpv1alpha1.MCPServerEntryPhaseValid {
+	if mcpServerEntry.Status.Phase != mcpv1beta1.MCPServerEntryPhaseValid {
 		slog.Debug("skipping server entry with non-valid phase",
 			"entry", entryName, "phase", mcpServerEntry.Status.Phase)
 		return nil, nil
@@ -500,7 +500,7 @@ func (d *k8sDiscoverer) getMCPServerEntryAsBackend(ctx context.Context, entryNam
 // mcpServerEntryToBackend converts an MCPServerEntry CRD to a vmcp.Backend.
 // Unlike MCPServer and MCPRemoteProxy, MCPServerEntry uses the remote URL directly
 // from the spec (no K8s Service needed since it's a zero-infrastructure entry).
-func (d *k8sDiscoverer) mcpServerEntryToBackend(ctx context.Context, entry *mcpv1alpha1.MCPServerEntry) *vmcp.Backend {
+func (d *k8sDiscoverer) mcpServerEntryToBackend(ctx context.Context, entry *mcpv1beta1.MCPServerEntry) *vmcp.Backend {
 	transportType, err := transporttypes.ParseTransportType(entry.Spec.Transport)
 	if err != nil {
 		slog.Warn("failed to parse transport type for MCPServerEntry",
@@ -586,13 +586,13 @@ func (d *k8sDiscoverer) mcpServerEntryToBackend(ctx context.Context, entry *mcpv
 }
 
 // mapMCPServerEntryPhaseToHealth converts a MCPServerEntryPhase to a backend health status.
-func mapMCPServerEntryPhaseToHealth(phase mcpv1alpha1.MCPServerEntryPhase) vmcp.BackendHealthStatus {
+func mapMCPServerEntryPhaseToHealth(phase mcpv1beta1.MCPServerEntryPhase) vmcp.BackendHealthStatus {
 	switch phase {
-	case mcpv1alpha1.MCPServerEntryPhaseValid:
+	case mcpv1beta1.MCPServerEntryPhaseValid:
 		return vmcp.BackendHealthy
-	case mcpv1alpha1.MCPServerEntryPhaseFailed:
+	case mcpv1beta1.MCPServerEntryPhaseFailed:
 		return vmcp.BackendUnhealthy
-	case mcpv1alpha1.MCPServerEntryPhasePending:
+	case mcpv1beta1.MCPServerEntryPhasePending:
 		return vmcp.BackendUnknown
 	default:
 		return vmcp.BackendUnknown
@@ -603,7 +603,7 @@ func mapMCPServerEntryPhaseToHealth(phase mcpv1alpha1.MCPServerEntryPhase) vmcp.
 // from the MCPServerEntry's ExternalAuthConfigRef.
 func (d *k8sDiscoverer) discoverServerEntryAuthConfig(
 	ctx context.Context,
-	entry *mcpv1alpha1.MCPServerEntry,
+	entry *mcpv1beta1.MCPServerEntry,
 	backend *vmcp.Backend,
 ) error {
 	return d.discoverAuthConfigFromRef(
@@ -618,7 +618,7 @@ func (d *k8sDiscoverer) discoverServerEntryAuthConfig(
 
 // fetchCABundleData reads CA certificate PEM data from a ConfigMap referenced by CABundleRef.
 // Returns the raw PEM bytes for use in dynamic mode where volumes aren't mounted.
-func (d *k8sDiscoverer) fetchCABundleData(ctx context.Context, ref *mcpv1alpha1.CABundleSource) ([]byte, error) {
+func (d *k8sDiscoverer) fetchCABundleData(ctx context.Context, ref *mcpv1beta1.CABundleSource) ([]byte, error) {
 	if ref.ConfigMapRef == nil {
 		return nil, fmt.Errorf("CABundleRef.configMapRef is nil")
 	}
@@ -647,7 +647,7 @@ func (d *k8sDiscoverer) fetchCABundleData(ctx context.Context, ref *mcpv1alpha1.
 // from the MCPRemoteProxy's ExternalAuthConfigRef.
 func (d *k8sDiscoverer) discoverRemoteProxyAuthConfig(
 	ctx context.Context,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
+	proxy *mcpv1beta1.MCPRemoteProxy,
 	backend *vmcp.Backend,
 ) error {
 	return d.discoverAuthConfigFromRef(

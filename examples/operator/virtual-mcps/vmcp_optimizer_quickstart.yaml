@@ -73,7 +73,7 @@
 
 ---
 # Step 1: Create MCPGroup
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: optimizer-services
@@ -83,7 +83,7 @@ spec:
 
 ---
 # Step 2a: MCPServer backend - yardstick (unit conversion)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: yardstick
@@ -107,7 +107,7 @@ spec:
 
 ---
 # Step 2b: MCPServer backend - fetch (URL content fetching)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: fetch
@@ -132,7 +132,7 @@ spec:
 # Requires a Kubernetes Secret named "github-token" with key "token"
 # containing a GitHub Personal Access Token:
 #   kubectl create secret generic github-token --from-literal=token=ghp_YOUR_TOKEN
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: github
@@ -157,7 +157,7 @@ spec:
 
 ---
 # Step 2d: MCPServer backend - memory (knowledge graph-based persistent memory)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: memory
@@ -178,7 +178,7 @@ spec:
 
 ---
 # Step 2e: MCPServer backend - puppeteer (browser automation and web scraping)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: puppeteer
@@ -199,7 +199,7 @@ spec:
 
 ---
 # Step 2f: MCPServer backend - osv (OSV vulnerability database)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: osv
@@ -220,7 +220,7 @@ spec:
 
 ---
 # Step 2g: MCPServer backend - terraform (Terraform registry and workspace management)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: terraform
@@ -246,7 +246,7 @@ spec:
 
 ---
 # Step 2h: MCPServer backend - playwright (browser automation and testing)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: playwright
@@ -267,7 +267,7 @@ spec:
 
 ---
 # Step 2i: MCPServer backend - everything (MCP reference/test server)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: everything
@@ -288,7 +288,7 @@ spec:
 
 ---
 # Step 2j: MCPServer backend - ida-pro-mcp (IDA Pro reverse engineering)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: ida-pro-mcp
@@ -312,7 +312,7 @@ spec:
 # Requires a Kubernetes Secret named "pagerduty-token" with key "token"
 # containing a PagerDuty User API Key:
 #   kubectl create secret generic pagerduty-token --from-literal=token=YOUR_KEY
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: pagerduty
@@ -343,7 +343,7 @@ spec:
 #   port: 8080
 #   imagePullPolicy: IfNotPresent
 #   replicas: 1
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: EmbeddingServer
 metadata:
   name: optimizer-embedding
@@ -355,7 +355,7 @@ spec: {}
 # Note: No explicit "optimizer" config is needed. The operator detects that
 # embeddingServerRef is set, auto-populates the optimizer with default values,
 # resolves the EmbeddingServer URL, and emits an "OptimizerAutoConfigured" event.
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: optimizer-vmcp

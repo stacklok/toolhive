@@ -241,7 +241,13 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return fmt.Errorf("failed to validate optimizer config: %w", err)
 	}
 
-	sessionFactory, err := createSessionFactory(outgoingRegistry, agg)
+	envReader := &env.OSReader{}
+	sessionFactory, err := createSessionFactory(
+		envReader.Getenv("VMCP_SESSION_HMAC_SECRET"),
+		runtime.IsKubernetesRuntimeWithEnv(envReader),
+		outgoingRegistry,
+		agg,
+	)
 	if err != nil {
 		return err
 	}
@@ -425,14 +431,27 @@ func discoverBackends(
 		}
 	}
 
-	slog.Info(fmt.Sprintf("Discovering backends in group: %s", cfg.Group))
-	backends, err := discoverer.Discover(ctx, cfg.Group)
+	return runDiscovery(ctx, cfg.Group, discoverer, backendClient, outgoingRegistry)
+}
+
+// runDiscovery calls Discover on the provided discoverer and handles the zero-backends
+// case. Extracted so tests can inject a stub discoverer without needing a real
+// Kubernetes cluster or Docker daemon.
+func runDiscovery(
+	ctx context.Context,
+	groupRef string,
+	discoverer aggregator.BackendDiscoverer,
+	backendClient vmcp.BackendClient,
+	outgoingRegistry vmcpauth.OutgoingAuthRegistry,
+) ([]vmcp.Backend, vmcp.BackendClient, vmcpauth.OutgoingAuthRegistry, error) {
+	slog.Info(fmt.Sprintf("Discovering backends in group: %s", groupRef))
+	backends, err := discoverer.Discover(ctx, groupRef)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to discover backends: %w", err)
 	}
 
 	if len(backends) == 0 {
-		slog.Warn(fmt.Sprintf("No backends discovered in group %s - vmcp will start but have no backends to proxy", cfg.Group))
+		slog.Warn(fmt.Sprintf("No backends discovered in group %s - vmcp will start but have no backends to proxy", groupRef))
 		return []vmcp.Backend{}, backendClient, outgoingRegistry, nil
 	}
 
@@ -441,27 +460,26 @@ func discoverBackends(
 }
 
 // createSessionFactory creates a MultiSessionFactory with HMAC-SHA256 token binding.
-// The HMAC secret is read from the VMCP_SESSION_HMAC_SECRET environment variable.
+// The HMAC secret and Kubernetes detection are passed in as parameters (typically sourced
+// from the VMCP_SESSION_HMAC_SECRET environment variable and runtime environment detection
+// by the caller).
 //
 // Behavior:
-//   - If VMCP_SESSION_HMAC_SECRET is set: validates length and creates factory with the secret.
+//   - If hmacSecret is non-empty: validates length and creates factory with the secret.
 //   - If running in Kubernetes without secret: returns error (production safety requirement).
 //   - Otherwise: logs warning and creates factory with default insecure secret.
 func createSessionFactory(
+	hmacSecret string,
+	isKubernetes bool,
 	outgoingRegistry vmcpauth.OutgoingAuthRegistry,
 	agg aggregator.Aggregator,
 ) (vmcpsession.MultiSessionFactory, error) {
-	const (
-		envKey                  = "VMCP_SESSION_HMAC_SECRET"
-		minRecommendedSecretLen = 32
-	)
+	const minRecommendedSecretLen = 32
 
 	opts := []vmcpsession.MultiSessionFactoryOption{}
 	if agg != nil {
 		opts = append(opts, vmcpsession.WithAggregator(agg))
 	}
-
-	hmacSecret := os.Getenv(envKey)
 
 	if hmacSecret != "" {
 		if secretLen := len(hmacSecret); secretLen < minRecommendedSecretLen {
@@ -472,20 +490,20 @@ func createSessionFactory(
 				"recommended_length", minRecommendedSecretLen,
 			)
 		}
-		slog.Info("using HMAC secret from VMCP_SESSION_HMAC_SECRET environment variable for session token binding")
+		slog.Info("using provided HMAC secret for session token binding")
 		opts = append(opts, vmcpsession.WithHMACSecret([]byte(hmacSecret)))
 		return vmcpsession.NewSessionFactory(outgoingRegistry, opts...), nil
 	}
 
 	// No secret provided — fail fast in Kubernetes (production environment).
-	if runtime.IsKubernetesRuntime() {
+	if isKubernetes {
 		return nil, fmt.Errorf(
-			"VMCP_SESSION_HMAC_SECRET environment variable is required when running in Kubernetes. " +
+			"an HMAC secret is required when running in Kubernetes (set VMCP_SESSION_HMAC_SECRET). " +
 				"Generate a secure secret with: openssl rand -base64 32",
 		)
 	}
 
 	// Development mode: use default insecure secret with warning.
-	slog.Warn("VMCP_SESSION_HMAC_SECRET not set - using default insecure secret (NOT recommended for production)")
+	slog.Warn("no HMAC secret provided - using default insecure secret (NOT recommended for production)")
 	return vmcpsession.NewSessionFactory(outgoingRegistry, opts...), nil
 }

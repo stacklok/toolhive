@@ -256,6 +256,7 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 		JwksAllowPrivateIP:              resolved.JWKSAllowPrivateIP,
 		InsecureAllowHTTP:               resolved.InsecureAllowHTTP,
 		Scopes:                          resolved.Scopes,
+		CABundlePath:                    resolved.ThvCABundlePath,
 	}
 
 	// MCPOIDCConfig inline type may have a client secret

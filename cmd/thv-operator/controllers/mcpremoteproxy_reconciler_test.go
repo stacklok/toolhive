@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 )
@@ -44,26 +44,26 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		proxy          *mcpv1alpha1.MCPRemoteProxy
-		toolConfig     *mcpv1alpha1.MCPToolConfig
-		externalAuth   *mcpv1alpha1.MCPExternalAuthConfig
+		proxy          *mcpv1beta1.MCPRemoteProxy
+		toolConfig     *mcpv1beta1.MCPToolConfig
+		externalAuth   *mcpv1beta1.MCPExternalAuthConfig
 		secret         *corev1.Secret
-		validateResult func(*testing.T, *mcpv1alpha1.MCPRemoteProxy, client.Client)
+		validateResult func(*testing.T, *mcpv1beta1.MCPRemoteProxy, client.Client)
 	}{
 		{
 			name: "basic proxy with inline OIDC",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "basic-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.salesforce.com",
 					ProxyPort: 8080,
 					Transport: "streamable-http",
 				},
 			},
-			validateResult: func(t *testing.T, proxy *mcpv1alpha1.MCPRemoteProxy, c client.Client) {
+			validateResult: func(t *testing.T, proxy *mcpv1beta1.MCPRemoteProxy, c client.Client) {
 				t.Helper()
 
 				// Verify ServiceAccount created
@@ -118,64 +118,64 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 		},
 		{
 			name: "proxy with all features",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "full-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 9090,
 					Transport: "sse",
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "token-exchange",
 					},
-					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 						Name: "tool-filter",
 					},
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineAuthzConfig{
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeInline,
+						Inline: &mcpv1beta1.InlineAuthzConfig{
 							Policies: []string{
 								`permit(principal, action == Action::"tools/list", resource);`,
 							},
 						},
 					},
-					Audit: &mcpv1alpha1.AuditConfig{
+					Audit: &mcpv1beta1.AuditConfig{
 						Enabled: true,
 					},
 				},
 			},
-			toolConfig: &mcpv1alpha1.MCPToolConfig{
+			toolConfig: &mcpv1beta1.MCPToolConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "tool-filter",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPToolConfigSpec{
+				Spec: mcpv1beta1.MCPToolConfigSpec{
 					ToolsFilter: []string{"tool1", "tool2"},
 				},
-				Status: mcpv1alpha1.MCPToolConfigStatus{
+				Status: mcpv1beta1.MCPToolConfigStatus{
 					ConfigHash: "hash123",
 				},
 			},
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "token-exchange",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "client-id",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "oauth-secret",
 							Key:  "client-secret",
 						},
 						Audience: "api",
 					},
 				},
-				Status: mcpv1alpha1.MCPExternalAuthConfigStatus{
+				Status: mcpv1beta1.MCPExternalAuthConfigStatus{
 					ConfigHash: "hash456",
 				},
 			},
@@ -188,7 +188,7 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 					"client-secret": []byte("secret-value"),
 				},
 			},
-			validateResult: func(t *testing.T, proxy *mcpv1alpha1.MCPRemoteProxy, c client.Client) {
+			validateResult: func(t *testing.T, proxy *mcpv1beta1.MCPRemoteProxy, c client.Client) {
 				t.Helper()
 
 				// Verify all resources created
@@ -208,7 +208,7 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 				assert.NoError(t, err)
 
 				// Fetch updated proxy and verify status hashes
-				updatedProxy := &mcpv1alpha1.MCPRemoteProxy{}
+				updatedProxy := &mcpv1beta1.MCPRemoteProxy{}
 				err = c.Get(context.TODO(), types.NamespacedName{
 					Name:      proxy.Name,
 					Namespace: proxy.Namespace,
@@ -220,30 +220,30 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 		},
 		{
 			name: "proxy with validation failure",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "invalid-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "non-existent",
 					},
 				},
 			},
-			validateResult: func(t *testing.T, proxy *mcpv1alpha1.MCPRemoteProxy, c client.Client) {
+			validateResult: func(t *testing.T, proxy *mcpv1beta1.MCPRemoteProxy, c client.Client) {
 				t.Helper()
 
 				// Fetch updated proxy and verify status shows failure
-				updatedProxy := &mcpv1alpha1.MCPRemoteProxy{}
+				updatedProxy := &mcpv1beta1.MCPRemoteProxy{}
 				err := c.Get(context.TODO(), types.NamespacedName{
 					Name:      proxy.Name,
 					Namespace: proxy.Namespace,
 				}, updatedProxy)
 				require.NoError(t, err)
-				assert.Equal(t, mcpv1alpha1.MCPRemoteProxyPhaseFailed, updatedProxy.Status.Phase)
+				assert.Equal(t, mcpv1beta1.MCPRemoteProxyPhaseFailed, updatedProxy.Status.Phase)
 				assert.Contains(t, updatedProxy.Status.Message, "Validation failed")
 			},
 		},
@@ -271,7 +271,7 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithRuntimeObjects(objects...).
-				WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{}).
+				WithStatusSubresource(&mcpv1beta1.MCPRemoteProxy{}).
 				Build()
 
 			reconciler := &MCPRemoteProxyReconciler{
@@ -315,28 +315,28 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 func TestMCPRemoteProxyConfigChangePropagation(t *testing.T) {
 	t.Parallel()
 
-	toolConfig := &mcpv1alpha1.MCPToolConfig{
+	toolConfig := &mcpv1beta1.MCPToolConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "dynamic-tools",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPToolConfigSpec{
+		Spec: mcpv1beta1.MCPToolConfigSpec{
 			ToolsFilter: []string{"tool1"},
 		},
-		Status: mcpv1alpha1.MCPToolConfigStatus{
+		Status: mcpv1beta1.MCPToolConfigStatus{
 			ConfigHash: "initial-hash",
 		},
 	}
 
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
+	proxy := &mcpv1beta1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "config-watch-proxy",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
 			ProxyPort: 8080,
-			ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+			ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 				Name: "dynamic-tools",
 			},
 		},
@@ -349,7 +349,7 @@ func TestMCPRemoteProxyConfigChangePropagation(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(proxy, toolConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{}, &mcpv1alpha1.MCPToolConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPRemoteProxy{}, &mcpv1beta1.MCPToolConfig{}).
 		Build()
 
 	reconciler := &MCPRemoteProxyReconciler{
@@ -372,7 +372,7 @@ func TestMCPRemoteProxyConfigChangePropagation(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify initial hash stored
-	updatedProxy := &mcpv1alpha1.MCPRemoteProxy{}
+	updatedProxy := &mcpv1beta1.MCPRemoteProxy{}
 	err = fakeClient.Get(ctx, types.NamespacedName{
 		Name:      proxy.Name,
 		Namespace: proxy.Namespace,
@@ -402,12 +402,12 @@ func TestMCPRemoteProxyConfigChangePropagation(t *testing.T) {
 func TestMCPRemoteProxyStatusProgression(t *testing.T) {
 	t.Parallel()
 
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
+	proxy := &mcpv1beta1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "status-proxy",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
 			ProxyPort: 8080,
 		},
@@ -420,7 +420,7 @@ func TestMCPRemoteProxyStatusProgression(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(proxy).
-		WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{}).
+		WithStatusSubresource(&mcpv1beta1.MCPRemoteProxy{}).
 		Build()
 
 	reconciler := &MCPRemoteProxyReconciler{
@@ -442,13 +442,13 @@ func TestMCPRemoteProxyStatusProgression(t *testing.T) {
 	_, err := reconciler.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	updatedProxy := &mcpv1alpha1.MCPRemoteProxy{}
+	updatedProxy := &mcpv1beta1.MCPRemoteProxy{}
 	err = fakeClient.Get(ctx, types.NamespacedName{
 		Name:      proxy.Name,
 		Namespace: proxy.Namespace,
 	}, updatedProxy)
 	require.NoError(t, err)
-	assert.Equal(t, mcpv1alpha1.MCPRemoteProxyPhasePending, updatedProxy.Status.Phase)
+	assert.Equal(t, mcpv1beta1.MCPRemoteProxyPhasePending, updatedProxy.Status.Phase)
 	assert.Contains(t, updatedProxy.Status.Message, "No pods")
 
 	// Add a running pod
@@ -474,7 +474,7 @@ func TestMCPRemoteProxyStatusProgression(t *testing.T) {
 		Namespace: proxy.Namespace,
 	}, updatedProxy)
 	require.NoError(t, err)
-	assert.Equal(t, mcpv1alpha1.MCPRemoteProxyPhaseReady, updatedProxy.Status.Phase)
+	assert.Equal(t, mcpv1beta1.MCPRemoteProxyPhaseReady, updatedProxy.Status.Phase)
 	assert.Contains(t, updatedProxy.Status.Message, "running")
 
 	// Verify status URL was set
@@ -490,13 +490,13 @@ func TestCommonHelpers(t *testing.T) {
 	t.Run("GetExternalAuthConfigByName", func(t *testing.T) {
 		t.Parallel()
 
-		externalAuth := &mcpv1alpha1.MCPExternalAuthConfig{
+		externalAuth := &mcpv1beta1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-auth",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
 			},
 		}
 
@@ -515,9 +515,9 @@ func TestCommonHelpers(t *testing.T) {
 	t.Run("GenerateAuthzVolumeConfig - ConfigMap", func(t *testing.T) {
 		t.Parallel()
 
-		authzConfig := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-			ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+		authzConfig := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+			ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 				Name: "authz-cm",
 				Key:  "policies.json",
 			},
@@ -534,9 +534,9 @@ func TestCommonHelpers(t *testing.T) {
 	t.Run("GenerateAuthzVolumeConfig - Inline", func(t *testing.T) {
 		t.Parallel()
 
-		authzConfig := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineAuthzConfig{
+		authzConfig := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeInline,
+			Inline: &mcpv1beta1.InlineAuthzConfig{
 				Policies: []string{"permit(principal, action, resource);"},
 			},
 		}
@@ -552,19 +552,19 @@ func TestCommonHelpers(t *testing.T) {
 func TestEnsureAuthzConfigMapShared(t *testing.T) {
 	t.Parallel()
 
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
+	proxy := &mcpv1beta1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "authz-test-proxy",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
 		},
 	}
 
-	authzConfig := &mcpv1alpha1.AuthzConfigRef{
-		Type: mcpv1alpha1.AuthzConfigTypeInline,
-		Inline: &mcpv1alpha1.InlineAuthzConfig{
+	authzConfig := &mcpv1beta1.AuthzConfigRef{
+		Type: mcpv1beta1.AuthzConfigTypeInline,
+		Inline: &mcpv1beta1.InlineAuthzConfig{
 			Policies: []string{
 				`permit(principal, action == Action::"tools/list", resource);`,
 			},
@@ -608,13 +608,13 @@ func TestEnsureAuthzConfigMapShared(t *testing.T) {
 func TestRBACClientIntegration(t *testing.T) {
 	t.Parallel()
 
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
+	proxy := &mcpv1beta1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "rbac-test-proxy",
 			Namespace: "default",
 			UID:       "test-uid",
 		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
 		},
 	}
@@ -677,17 +677,17 @@ func TestRBACClientIntegration(t *testing.T) {
 func TestGenerateTokenExchangeEnvVarsShared(t *testing.T) {
 	t.Parallel()
 
-	externalAuth := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuth := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-exchange",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.com/token",
 				ClientID: "client-id",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "secret",
 					Key:  "key",
 				},
@@ -702,7 +702,7 @@ func TestGenerateTokenExchangeEnvVarsShared(t *testing.T) {
 		WithRuntimeObjects(externalAuth).
 		Build()
 
-	ref := &mcpv1alpha1.ExternalAuthConfigRef{
+	ref := &mcpv1beta1.ExternalAuthConfigRef{
 		Name: "test-exchange",
 	}
 
@@ -728,7 +728,7 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		proxy           *mcpv1alpha1.MCPRemoteProxy
+		proxy           *mcpv1beta1.MCPRemoteProxy
 		existingObjects []runtime.Object
 		expectError     bool
 		errContains     string
@@ -737,25 +737,25 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 	}{
 		{
 			name: "valid proxy with no OIDC config",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{Name: "no-oidc-proxy", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 				},
 			},
 			expectError:     false,
-			expectCondition: mcpv1alpha1.ConditionReasonConfigurationValid,
+			expectCondition: mcpv1beta1.ConditionReasonConfigurationValid,
 			conditionStatus: metav1.ConditionTrue,
 		},
 		{
 			name: "invalid Cedar policy syntax is rejected",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{Name: "invalid-cedar-proxy", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineAuthzConfig{
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeInline,
+						Inline: &mcpv1beta1.InlineAuthzConfig{
 							Policies: []string{"not valid cedar"},
 						},
 					},
@@ -763,18 +763,18 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 			},
 			expectError:     true,
 			errContains:     "invalid syntax",
-			expectCondition: mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid,
+			expectCondition: mcpv1beta1.ConditionReasonAuthzPolicySyntaxInvalid,
 			conditionStatus: metav1.ConditionFalse,
 		},
 		{
 			name: "referenced authz ConfigMap not found is rejected",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{Name: "missing-configmap-proxy", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+						ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 							Name: "does-not-exist",
 						},
 					},
@@ -782,20 +782,20 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 			},
 			expectError:     true,
 			errContains:     "not found",
-			expectCondition: mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound,
+			expectCondition: mcpv1beta1.ConditionReasonAuthzConfigMapNotFound,
 			conditionStatus: metav1.ConditionFalse,
 		},
 		{
 			name: "referenced header secret not found is rejected",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{Name: "missing-header-secret-proxy", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
-						AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
 							{
 								HeaderName: "X-API-Key",
-								ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 									Name: "missing-secret",
 									Key:  "api-key",
 								},
@@ -806,20 +806,20 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 			},
 			expectError:     true,
 			errContains:     "not found",
-			expectCondition: mcpv1alpha1.ConditionReasonHeaderSecretNotFound,
+			expectCondition: mcpv1beta1.ConditionReasonHeaderSecretNotFound,
 			conditionStatus: metav1.ConditionFalse,
 		},
 		{
 			name: "malformed remote URL is rejected",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{Name: "bad-scheme-proxy", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "ftp://bad-scheme.example.com",
 				},
 			},
 			expectError:     true,
 			errContains:     "scheme",
-			expectCondition: mcpv1alpha1.ConditionReasonRemoteURLInvalid,
+			expectCondition: mcpv1beta1.ConditionReasonRemoteURLInvalid,
 			conditionStatus: metav1.ConditionFalse,
 		},
 	}
@@ -834,7 +834,7 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithRuntimeObjects(objects...).
-				WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{}).
+				WithStatusSubresource(&mcpv1beta1.MCPRemoteProxy{}).
 				Build()
 
 			fakeRecorder := events.NewFakeRecorder(10)
@@ -856,7 +856,7 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 			}
 
 			// Verify the ConfigurationValid condition was set
-			cond := meta.FindStatusCondition(tt.proxy.Status.Conditions, mcpv1alpha1.ConditionTypeConfigurationValid)
+			cond := meta.FindStatusCondition(tt.proxy.Status.Conditions, mcpv1beta1.ConditionTypeConfigurationValid)
 			require.NotNil(t, cond, "ConfigurationValid condition should be set")
 			assert.Equal(t, tt.conditionStatus, cond.Status)
 			assert.Equal(t, tt.expectCondition, cond.Reason)
@@ -880,36 +880,36 @@ func TestValidateAndHandleConfigs(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		proxy        *mcpv1alpha1.MCPRemoteProxy
-		toolConfig   *mcpv1alpha1.MCPToolConfig
-		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
+		proxy        *mcpv1beta1.MCPRemoteProxy
+		toolConfig   *mcpv1beta1.MCPToolConfig
+		externalAuth *mcpv1beta1.MCPExternalAuthConfig
 		expectError  bool
-		expectPhase  mcpv1alpha1.MCPRemoteProxyPhase
+		expectPhase  mcpv1beta1.MCPRemoteProxyPhase
 	}{
 		{
 			name: "valid configs",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "valid-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 						Name: "valid-tools",
 					},
 				},
 			},
-			toolConfig: &mcpv1alpha1.MCPToolConfig{
+			toolConfig: &mcpv1beta1.MCPToolConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "valid-tools",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPToolConfigSpec{
+				Spec: mcpv1beta1.MCPToolConfigSpec{
 					ToolsFilter: []string{"tool1"},
 				},
-				Status: mcpv1alpha1.MCPToolConfigStatus{
+				Status: mcpv1beta1.MCPToolConfigStatus{
 					ConfigHash: "hash",
 				},
 			},
@@ -917,21 +917,21 @@ func TestValidateAndHandleConfigs(t *testing.T) {
 		},
 		{
 			name: "missing tool config",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
+			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "missing-tool-proxy",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 						Name: "non-existent",
 					},
 				},
 			},
 			expectError: true,
-			expectPhase: mcpv1alpha1.MCPRemoteProxyPhaseFailed,
+			expectPhase: mcpv1beta1.MCPRemoteProxyPhaseFailed,
 		},
 	}
 
@@ -951,7 +951,7 @@ func TestValidateAndHandleConfigs(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithRuntimeObjects(objects...).
-				WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{}).
+				WithStatusSubresource(&mcpv1beta1.MCPRemoteProxy{}).
 				Build()
 
 			reconciler := &MCPRemoteProxyReconciler{
@@ -966,7 +966,7 @@ func TestValidateAndHandleConfigs(t *testing.T) {
 				assert.Error(t, err)
 
 				// Verify status was updated
-				updatedProxy := &mcpv1alpha1.MCPRemoteProxy{}
+				updatedProxy := &mcpv1beta1.MCPRemoteProxy{}
 				getErr := fakeClient.Get(context.TODO(), types.NamespacedName{
 					Name:      tt.proxy.Name,
 					Namespace: tt.proxy.Namespace,

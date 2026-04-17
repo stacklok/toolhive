@@ -154,7 +154,7 @@ graph TB
 
 Defines an MCP server deployment, including container images, transports, middleware, and authentication configuration.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpserver_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpserver_types.go`
 
 MCPServer resources support various transport types (stdio, SSE, streamable-http), permission profiles, OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets.
 
@@ -178,7 +178,7 @@ For examples, see:
 
 Manages MCP server registries in Kubernetes, supporting both Git-based and ConfigMap-based registry sources with automatic or manual synchronization.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpregistry_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpregistry_types.go`
 
 MCPRegistry resources can sync registry data from external sources and optionally deploy a registry API service for serving the registry data to other components.
 
@@ -190,7 +190,7 @@ For examples, see the [`examples/operator/`](../../examples/operator/) directory
 
 Defines tool filtering and override configuration.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/toolconfig_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/toolconfig_types.go`
 
 MCPToolConfig allows you to filter which tools are exposed by an MCP server and customize tool metadata. See [`examples/operator/mcp-servers/mcpserver_fetch_tools_filter.yaml`](../../examples/operator/mcp-servers/mcpserver_fetch_tools_filter.yaml) for a complete example.
 
@@ -202,7 +202,7 @@ MCPToolConfig allows you to filter which tools are exposed by an MCP server and 
 
 Manages external authentication configurations that can be shared across multiple MCPServer resources.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`
 
 MCPExternalAuthConfig allows you to define reusable authentication configurations that can be referenced by multiple MCPServer and MCPRemoteProxy resources. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
 
@@ -218,7 +218,7 @@ MCPExternalAuthConfig resources can be referenced via two paths:
 
 Defines shared OIDC provider configuration that can be referenced by multiple workload CRDs (MCPServer, MCPRemoteProxy, VirtualMCPServer) in the same namespace.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpoidcconfig_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpoidcconfig_types.go`
 
 MCPOIDCConfig eliminates OIDC configuration duplication — define an identity provider once and reference it from any number of workloads. A single issuer URL change updates all referencing workloads automatically.
 
@@ -243,7 +243,7 @@ For examples, see [`examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.
 
 Defines shared OpenTelemetry and Prometheus configuration that can be referenced by multiple MCPServer resources in the same namespace.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcptelemetryconfig_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcptelemetryconfig_types.go`
 
 MCPTelemetryConfig centralises telemetry infrastructure settings (collector endpoint, sampling rate, headers) so they can be managed once for a fleet of MCP servers.
 
@@ -279,7 +279,7 @@ OIDC is optional — omit `oidcConfigRef` for unauthenticated proxies.
 
 ```yaml
 # MCPRemoteProxy with embedded auth server (incoming) + AWS STS (outgoing)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRemoteProxy
 metadata:
   name: bedrock-proxy
@@ -292,7 +292,7 @@ spec:
     name: bedrock-sts-config      # type: awsSts
 ```
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpremoteproxy_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpremoteproxy_types.go`
 
 **Controller**: `cmd/thv-operator/controllers/mcpremoteproxy_controller.go`
 
@@ -310,7 +310,7 @@ The MCPServerEntry controller is validation-only: it validates that referenced r
 
 MCPServerEntry backends are discovered by vMCP in both static mode (listed at startup) and dynamic mode (watched by the BackendReconciler). In dynamic mode, ConfigMap changes trigger re-reconciliation of affected MCPServerEntry backends via a field-indexed watch on `spec.caBundleRef.configMapRef.name`.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpserverentry_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpserverentry_types.go`
 
 **Controller**: `cmd/thv-operator/controllers/mcpserverentry_controller.go`
 
@@ -318,7 +318,7 @@ MCPServerEntry backends are discovered by vMCP in both static mode (listed at st
 
 Logically groups MCPServer resources together for organizational purposes.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpgroup_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpgroup_types.go`
 
 MCPGroup resources allow grouping related MCP servers. Servers reference their group using the `groupRef` typed struct (`MCPGroupRef`) in MCPServer spec. The group tracks member servers in its status.
 
@@ -332,7 +332,7 @@ MCPGroup resources allow grouping related MCP servers. Servers reference their g
 
 Aggregates multiple MCPServer resources from an MCPGroup into a single unified MCP server interface with advanced composition capabilities.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/virtualmcpserver_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/virtualmcpserver_types.go`
 
 VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, and prompts from multiple backend MCPServers. It provides:
 
@@ -401,7 +401,7 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 
 Defines reusable composite tool workflows that can be shared across multiple VirtualMCPServers.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/virtualmcpcompositetooldefinition_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/virtualmcpcompositetooldefinition_types.go`
 
 Composite tools orchestrate calls to multiple backend tools in sequence or parallel, enabling complex workflows without client awareness of the underlying backends. Workflow steps form a DAG (Directed Acyclic Graph) with support for conditional execution and error handling.
 
@@ -640,7 +640,7 @@ The preferred approach is to define OIDC and telemetry settings in dedicated con
 **MCPOIDCConfig reference:**
 ```yaml
 # Define shared OIDC config once
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPOIDCConfig
 metadata:
   name: corporate-idp
@@ -665,7 +665,7 @@ spec:
 **MCPTelemetryConfig reference:**
 ```yaml
 # Define shared telemetry config once
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPTelemetryConfig
 metadata:
   name: shared-otel

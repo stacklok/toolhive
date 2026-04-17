@@ -172,7 +172,7 @@ MCPExternalAuthConfig
               └── timeouts (dial, read, write)
 ```
 
-**Implementation:** `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
+**Implementation:** `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`
 
 ### RunConfig Serialization
 

@@ -23,7 +23,7 @@
 
 ---
 # Create MCPGroup
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: deployment-services
@@ -33,7 +33,7 @@ spec:
 
 ---
 # Backend MCP Server: Yardstick Streamable (provides echo tool)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: yardstick-streamable
@@ -58,7 +58,7 @@ spec:
 
 ---
 # Composite Tool Definition with Elicitations
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPCompositeToolDefinition
 metadata:
   name: interactive-deploy
@@ -198,7 +198,7 @@ spec:
 
 ---
 # VirtualMCPServer using the interactive composite tool
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: vmcp-interactive-deploy

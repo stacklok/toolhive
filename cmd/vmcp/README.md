@@ -244,7 +244,7 @@ spec:
 When deploying vMCP via the **ToolHive operator** with Session Management V2 enabled, the HMAC secret is **automatically generated and managed** for you:
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: my-vmcp

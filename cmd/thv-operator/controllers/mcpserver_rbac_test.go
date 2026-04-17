@@ -19,12 +19,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 type testContext struct {
-	mcpServer              *mcpv1alpha1.MCPServer
+	mcpServer              *mcpv1beta1.MCPServer
 	client                 client.Client
 	reconciler             *MCPServerReconciler
 	proxyRunnerNameForRBAC string
@@ -324,13 +324,13 @@ func TestEnsureRBACResources_Idempotency(t *testing.T) {
 func TestEnsureRBACResources_CustomServiceAccount(t *testing.T) {
 	t.Parallel()
 	customSA := "custom-mcpserver-sa"
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server-custom-sa",
 			Namespace: "default",
 			UID:       "test-uid",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:          "test-image:latest",
 			Transport:      "stdio",
 			ProxyPort:      8080,
@@ -386,8 +386,8 @@ func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 	tc := setupTest("test-server-pull-secrets", "default")
 
 	// Set ImagePullSecrets via ResourceOverrides
-	tc.mcpServer.Spec.ResourceOverrides = &mcpv1alpha1.ResourceOverrides{
-		ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
+	tc.mcpServer.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
+		ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
 			ImagePullSecrets: []corev1.LocalObjectReference{
 				{Name: "my-secret"},
 			},
@@ -424,13 +424,13 @@ func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 	assert.Equal(t, expectedSecrets, mcpServerSA.ImagePullSecrets)
 }
 
-func createTestMCPServer(name, namespace string) *mcpv1alpha1.MCPServer {
-	return &mcpv1alpha1.MCPServer{
+func createTestMCPServer(name, namespace string) *mcpv1beta1.MCPServer {
+	return &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
 			ProxyPort: 8080,
@@ -441,6 +441,6 @@ func createTestMCPServer(name, namespace string) *mcpv1alpha1.MCPServer {
 func createTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)
-	_ = mcpv1alpha1.AddToScheme(s)
+	_ = mcpv1beta1.AddToScheme(s)
 	return s
 }

@@ -16,7 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -33,8 +33,8 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 			namespace        string
 			mcpGroupName     string
 			virtualMCPName   string
-			mcpGroup         *mcpv1alpha1.MCPGroup
-			virtualMCPServer *mcpv1alpha1.VirtualMCPServer
+			mcpGroup         *mcpv1beta1.MCPGroup
+			virtualMCPServer *mcpv1beta1.VirtualMCPServer
 		)
 
 		BeforeAll(func() {
@@ -54,27 +54,27 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 			}
 
 			// Create MCPGroup first (required by VirtualMCPServer)
-			mcpGroup = &mcpv1alpha1.MCPGroup{
+			mcpGroup = &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpGroupName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
+				Spec: mcpv1beta1.MCPGroupSpec{
 					Description: "Test group for PodTemplateSpec tests",
 				},
 			}
 			Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
 
 			// Define the VirtualMCPServer resource with invalid PodTemplateSpec
-			virtualMCPServer = &mcpv1alpha1.VirtualMCPServer{
+			virtualMCPServer = &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      virtualMCPName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 					Config:   vmcpconfig.Config{Group: mcpGroupName},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
 					// Invalid PodTemplateSpec - containers should be an array, not a string
@@ -98,7 +98,7 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 		It("Should set PodTemplateSpecValid condition to False", func() {
 			// Wait for the status to be updated with the invalid condition
 			Eventually(func() bool {
-				updatedVirtualMCPServer := &mcpv1alpha1.VirtualMCPServer{}
+				updatedVirtualMCPServer := &mcpv1beta1.VirtualMCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      virtualMCPName,
 					Namespace: namespace,
@@ -118,7 +118,7 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Verify the condition message contains expected text
-			updatedVirtualMCPServer := &mcpv1alpha1.VirtualMCPServer{}
+			updatedVirtualMCPServer := &mcpv1beta1.VirtualMCPServer{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      virtualMCPName,
 				Namespace: namespace,
@@ -150,7 +150,7 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 		})
 
 		It("Should have Failed phase in status", func() {
-			updatedVirtualMCPServer := &mcpv1alpha1.VirtualMCPServer{}
+			updatedVirtualMCPServer := &mcpv1beta1.VirtualMCPServer{}
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      virtualMCPName,
@@ -159,7 +159,7 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 				if err != nil {
 					return false
 				}
-				return updatedVirtualMCPServer.Status.Phase == mcpv1alpha1.VirtualMCPServerPhaseFailed
+				return updatedVirtualMCPServer.Status.Phase == mcpv1beta1.VirtualMCPServerPhaseFailed
 			}, timeout, interval).Should(BeTrue())
 
 			Expect(updatedVirtualMCPServer.Status.Message).To(ContainSubstring("Invalid PodTemplateSpec"))
@@ -171,8 +171,8 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 			namespace        string
 			mcpGroupName     string
 			virtualMCPName   string
-			mcpGroup         *mcpv1alpha1.MCPGroup
-			virtualMCPServer *mcpv1alpha1.VirtualMCPServer
+			mcpGroup         *mcpv1beta1.MCPGroup
+			virtualMCPServer *mcpv1beta1.VirtualMCPServer
 		)
 
 		BeforeAll(func() {
@@ -192,12 +192,12 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 			}
 
 			// Create MCPGroup first (required by VirtualMCPServer)
-			mcpGroup = &mcpv1alpha1.MCPGroup{
+			mcpGroup = &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpGroupName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
+				Spec: mcpv1beta1.MCPGroupSpec{
 					Description: "Test group for PodTemplateSpec tests",
 				},
 			}
@@ -206,15 +206,15 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 			// Define the VirtualMCPServer resource with valid PodTemplateSpec containing nodeSelector
 			// Only specify nodeSelector - don't include containers array
 			// Strategic merge will preserve the controller-generated vmcp container
-			virtualMCPServer = &mcpv1alpha1.VirtualMCPServer{
+			virtualMCPServer = &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      virtualMCPName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 					Config:   vmcpconfig.Config{Group: mcpGroupName},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
 					PodTemplateSpec: &runtime.RawExtension{
@@ -236,7 +236,7 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 
 		It("Should have PodTemplateSpecValid condition set to True", func() {
 			Eventually(func() bool {
-				updatedVirtualMCPServer := &mcpv1alpha1.VirtualMCPServer{}
+				updatedVirtualMCPServer := &mcpv1beta1.VirtualMCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      virtualMCPName,
 					Namespace: namespace,
@@ -275,8 +275,8 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 			namespace        string
 			mcpGroupName     string
 			virtualMCPName   string
-			mcpGroup         *mcpv1alpha1.MCPGroup
-			virtualMCPServer *mcpv1alpha1.VirtualMCPServer
+			mcpGroup         *mcpv1beta1.MCPGroup
+			virtualMCPServer *mcpv1beta1.VirtualMCPServer
 		)
 
 		BeforeAll(func() {
@@ -296,12 +296,12 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 			}
 
 			// Create MCPGroup first (required by VirtualMCPServer)
-			mcpGroup = &mcpv1alpha1.MCPGroup{
+			mcpGroup = &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpGroupName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
+				Spec: mcpv1beta1.MCPGroupSpec{
 					Description: "Test group for PodTemplateSpec tests",
 				},
 			}
@@ -310,15 +310,15 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 			// Define the VirtualMCPServer resource with PodTemplateSpec containing nodeSelector
 			// Only specify nodeSelector - don't include containers array
 			// Strategic merge will preserve the controller-generated vmcp container
-			virtualMCPServer = &mcpv1alpha1.VirtualMCPServer{
+			virtualMCPServer = &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      virtualMCPName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 					Config:   vmcpconfig.Config{Group: mcpGroupName},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
 					PodTemplateSpec: &runtime.RawExtension{

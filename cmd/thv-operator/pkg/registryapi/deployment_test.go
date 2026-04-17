@@ -14,7 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 func TestGetRegistryAPIImage(t *testing.T) {
@@ -534,12 +534,12 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 	t.Run("no podtemplatespec has no hash annotation", func(t *testing.T) {
 		t.Parallel()
 		mgr := &manager{}
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+		mcpRegistry := &mcpv1beta1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-registry",
 				Namespace: "test-namespace",
 			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
+			Spec: mcpv1beta1.MCPRegistrySpec{
 				ConfigYAML: baseConfigYAML,
 			},
 		}
@@ -554,12 +554,12 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 	t.Run("with podtemplatespec has hash annotation", func(t *testing.T) {
 		t.Parallel()
 		mgr := &manager{}
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+		mcpRegistry := &mcpv1beta1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-registry",
 				Namespace: "test-namespace",
 			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
+			Spec: mcpv1beta1.MCPRegistrySpec{
 				ConfigYAML: baseConfigYAML,
 				PodTemplateSpec: &runtime.RawExtension{
 					Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"registry-creds"}]}}`),
@@ -579,16 +579,16 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 		t.Parallel()
 		mgr := &manager{}
 
-		registry1 := &mcpv1alpha1.MCPRegistry{
+		registry1 := &mcpv1beta1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "ns"},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
+			Spec: mcpv1beta1.MCPRegistrySpec{
 				ConfigYAML:      baseConfigYAML,
 				PodTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"creds-a"}]}}`)},
 			},
 		}
-		registry2 := &mcpv1alpha1.MCPRegistry{
+		registry2 := &mcpv1beta1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "ns"},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
+			Spec: mcpv1beta1.MCPRegistrySpec{
 				ConfigYAML:      baseConfigYAML,
 				PodTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"creds-b"}]}}`)},
 			},

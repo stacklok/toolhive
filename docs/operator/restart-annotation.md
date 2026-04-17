@@ -36,7 +36,7 @@ The MCPServer operator supports triggering pod restarts through specific annotat
 
 ### Basic Rolling Restart
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: my-mcpserver
@@ -49,7 +49,7 @@ spec:
 
 ### Immediate Restart
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: my-mcpserver

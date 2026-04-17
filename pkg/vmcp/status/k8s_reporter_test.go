@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -88,35 +88,35 @@ func TestK8sReporter_ReportStatus_Success(t *testing.T) {
 	tests := []struct {
 		name           string
 		phase          vmcptypes.Phase
-		expectedPhase  mcpv1alpha1.VirtualMCPServerPhase
+		expectedPhase  mcpv1beta1.VirtualMCPServerPhase
 		backendCount   int32
 		conditionCount int
 	}{
 		{
 			name:           "ready phase with backends",
 			phase:          vmcptypes.PhaseReady,
-			expectedPhase:  mcpv1alpha1.VirtualMCPServerPhaseReady,
+			expectedPhase:  mcpv1beta1.VirtualMCPServerPhaseReady,
 			backendCount:   2,
 			conditionCount: 2,
 		},
 		{
 			name:           "degraded phase",
 			phase:          vmcptypes.PhaseDegraded,
-			expectedPhase:  mcpv1alpha1.VirtualMCPServerPhaseDegraded,
+			expectedPhase:  mcpv1beta1.VirtualMCPServerPhaseDegraded,
 			backendCount:   1,
 			conditionCount: 1,
 		},
 		{
 			name:           "failed phase",
 			phase:          vmcptypes.PhaseFailed,
-			expectedPhase:  mcpv1alpha1.VirtualMCPServerPhaseFailed,
+			expectedPhase:  mcpv1beta1.VirtualMCPServerPhaseFailed,
 			backendCount:   0,
 			conditionCount: 1,
 		},
 		{
 			name:           "pending phase",
 			phase:          vmcptypes.PhasePending,
-			expectedPhase:  mcpv1alpha1.VirtualMCPServerPhasePending,
+			expectedPhase:  mcpv1beta1.VirtualMCPServerPhasePending,
 			backendCount:   0,
 			conditionCount: 0,
 		},
@@ -164,7 +164,7 @@ func TestK8sReporter_ReportStatus_Success(t *testing.T) {
 			require.NoError(t, err)
 
 			// Verify the status was updated
-			updated := &mcpv1alpha1.VirtualMCPServer{}
+			updated := &mcpv1beta1.VirtualMCPServer{}
 			err = fakeClient.Get(ctx, types.NamespacedName{
 				Name:      "test-server",
 				Namespace: "default",
@@ -226,7 +226,7 @@ func TestK8sReporter_ReportStatus_BackendConversion(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify backends were converted correctly
-	updated := &mcpv1alpha1.VirtualMCPServer{}
+	updated := &mcpv1beta1.VirtualMCPServer{}
 	err = fakeClient.Get(ctx, types.NamespacedName{
 		Name:      "test-server",
 		Namespace: "default",
@@ -304,7 +304,7 @@ func TestK8sReporter_ReportStatus_ConcurrentUpdates(t *testing.T) {
 	}
 
 	// Verify the final state has the last update
-	updated := &mcpv1alpha1.VirtualMCPServer{}
+	updated := &mcpv1beta1.VirtualMCPServer{}
 	err := fakeClient.Get(ctx, types.NamespacedName{
 		Name:      "test-server",
 		Namespace: "default",
@@ -348,7 +348,7 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify condition was created
-	updated := &mcpv1alpha1.VirtualMCPServer{}
+	updated := &mcpv1beta1.VirtualMCPServer{}
 	err = fakeClient.Get(ctx, types.NamespacedName{
 		Name:      "test-server",
 		Namespace: "default",
@@ -459,7 +459,7 @@ func TestK8sReporter_ReportStatus_RemovesStaleConditions(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify both conditions exist
-	updated := &mcpv1alpha1.VirtualMCPServer{}
+	updated := &mcpv1beta1.VirtualMCPServer{}
 	err = fakeClient.Get(ctx, types.NamespacedName{
 		Name:      "test-server",
 		Namespace: "default",
@@ -574,32 +574,32 @@ func TestConvertPhase(t *testing.T) {
 	tests := []struct {
 		name          string
 		input         vmcptypes.Phase
-		expectedPhase mcpv1alpha1.VirtualMCPServerPhase
+		expectedPhase mcpv1beta1.VirtualMCPServerPhase
 	}{
 		{
 			name:          "ready phase",
 			input:         vmcptypes.PhaseReady,
-			expectedPhase: mcpv1alpha1.VirtualMCPServerPhaseReady,
+			expectedPhase: mcpv1beta1.VirtualMCPServerPhaseReady,
 		},
 		{
 			name:          "degraded phase",
 			input:         vmcptypes.PhaseDegraded,
-			expectedPhase: mcpv1alpha1.VirtualMCPServerPhaseDegraded,
+			expectedPhase: mcpv1beta1.VirtualMCPServerPhaseDegraded,
 		},
 		{
 			name:          "failed phase",
 			input:         vmcptypes.PhaseFailed,
-			expectedPhase: mcpv1alpha1.VirtualMCPServerPhaseFailed,
+			expectedPhase: mcpv1beta1.VirtualMCPServerPhaseFailed,
 		},
 		{
 			name:          "pending phase",
 			input:         vmcptypes.PhasePending,
-			expectedPhase: mcpv1alpha1.VirtualMCPServerPhasePending,
+			expectedPhase: mcpv1beta1.VirtualMCPServerPhasePending,
 		},
 		{
 			name:          "unknown phase defaults to pending",
 			input:         vmcptypes.Phase("unknown"),
-			expectedPhase: mcpv1alpha1.VirtualMCPServerPhasePending,
+			expectedPhase: mcpv1beta1.VirtualMCPServerPhasePending,
 		},
 	}
 
@@ -628,13 +628,13 @@ func createTestReporter(t *testing.T, name, namespace string) (*K8sReporter, cli
 
 	// Create scheme with VirtualMCPServer types
 	scheme := runtime.NewScheme()
-	err := mcpv1alpha1.AddToScheme(scheme)
+	err := mcpv1beta1.AddToScheme(scheme)
 	require.NoError(t, err)
 
 	// Create fake client with status subresource support
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&mcpv1alpha1.VirtualMCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
 		Build()
 
 	// Create reporter with fake client
@@ -650,20 +650,20 @@ func createTestReporter(t *testing.T, name, namespace string) (*K8sReporter, cli
 // createTestVirtualMCPServer creates a test VirtualMCPServer resource.
 //
 //nolint:unparam // name parameter provides flexibility for future tests
-func createTestVirtualMCPServer(t *testing.T, fakeClient client.Client, name, namespace string) *mcpv1alpha1.VirtualMCPServer {
+func createTestVirtualMCPServer(t *testing.T, fakeClient client.Client, name, namespace string) *mcpv1beta1.VirtualMCPServer {
 	t.Helper()
 
-	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+	vmcpServer := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       name,
 			Namespace:  namespace,
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
 			Config: vmcpconfig.Config{
 				Group: "test-group",
 			},
-			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
 		},

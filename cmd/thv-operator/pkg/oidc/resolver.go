@@ -11,7 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
@@ -48,8 +48,8 @@ type Resolver interface {
 	// per-server overrides (audience, scopes) from the reference.
 	ResolveFromConfigRef(
 		ctx context.Context,
-		oidcConfigRef *mcpv1alpha1.MCPOIDCConfigReference,
-		oidcConfig *mcpv1alpha1.MCPOIDCConfig,
+		oidcConfigRef *mcpv1beta1.MCPOIDCConfigReference,
+		oidcConfig *mcpv1beta1.MCPOIDCConfig,
 		serverName, namespace string,
 		proxyPort int32,
 	) (*OIDCConfig, error)
@@ -73,8 +73,8 @@ type resolver struct {
 // (audience, scopes) from the MCPOIDCConfigReference.
 func (r *resolver) ResolveFromConfigRef(
 	ctx context.Context,
-	ref *mcpv1alpha1.MCPOIDCConfigReference,
-	oidcCfg *mcpv1alpha1.MCPOIDCConfig,
+	ref *mcpv1beta1.MCPOIDCConfigReference,
+	oidcCfg *mcpv1beta1.MCPOIDCConfig,
 	serverName, namespace string,
 	proxyPort int32,
 ) (*OIDCConfig, error) {
@@ -88,9 +88,9 @@ func (r *resolver) ResolveFromConfigRef(
 	}
 
 	switch oidcCfg.Spec.Type {
-	case mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount:
+	case mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount:
 		return r.resolveFromK8sServiceAccountConfig(ctx, oidcCfg.Spec.KubernetesServiceAccount, ref, resourceURL)
-	case mcpv1alpha1.MCPOIDCConfigTypeInline:
+	case mcpv1beta1.MCPOIDCConfigTypeInline:
 		return r.resolveFromInlineSharedConfig(oidcCfg.Spec.Inline, ref, resourceURL)
 	default:
 		return nil, fmt.Errorf("unknown MCPOIDCConfig type: %s", oidcCfg.Spec.Type)
@@ -101,15 +101,15 @@ func (r *resolver) ResolveFromConfigRef(
 // with per-server audience override from the MCPOIDCConfigReference.
 func (*resolver) resolveFromK8sServiceAccountConfig(
 	ctx context.Context,
-	config *mcpv1alpha1.KubernetesServiceAccountOIDCConfig,
-	ref *mcpv1alpha1.MCPOIDCConfigReference,
+	config *mcpv1beta1.KubernetesServiceAccountOIDCConfig,
+	ref *mcpv1beta1.MCPOIDCConfigReference,
 	resourceURL string,
 ) (*OIDCConfig, error) {
 	if config == nil {
 		ctxLogger := log.FromContext(ctx)
 		ctxLogger.Info("KubernetesServiceAccount OIDCConfig is nil, using defaults")
 		defaultUseClusterAuth := true
-		config = &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+		config = &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 			UseClusterAuth: &defaultUseClusterAuth,
 		}
 	}
@@ -146,8 +146,8 @@ func (*resolver) resolveFromK8sServiceAccountConfig(
 // resolveFromInlineSharedConfig resolves OIDC config from a shared inline config
 // with per-server audience and scopes override from the MCPOIDCConfigReference.
 func (*resolver) resolveFromInlineSharedConfig(
-	config *mcpv1alpha1.InlineOIDCSharedConfig,
-	ref *mcpv1alpha1.MCPOIDCConfigReference,
+	config *mcpv1beta1.InlineOIDCSharedConfig,
+	ref *mcpv1beta1.MCPOIDCConfigReference,
 	resourceURL string,
 ) (*OIDCConfig, error) {
 	if config == nil {
@@ -176,7 +176,7 @@ func (*resolver) resolveFromInlineSharedConfig(
 
 // computeCABundlePath computes the CA bundle mount path from a CABundleSource.
 // Returns empty string if caBundleRef is nil or has no ConfigMapRef.
-func computeCABundlePath(caBundleRef *mcpv1alpha1.CABundleSource) string {
+func computeCABundlePath(caBundleRef *mcpv1beta1.CABundleSource) string {
 	if caBundleRef == nil || caBundleRef.ConfigMapRef == nil {
 		return ""
 	}

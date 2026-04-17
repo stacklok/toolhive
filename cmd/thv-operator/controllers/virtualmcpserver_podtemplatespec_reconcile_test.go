@@ -17,7 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -33,7 +33,7 @@ const (
 func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
@@ -41,13 +41,13 @@ func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 	vmcpName := testPodTemplateVmcpName
 	groupName := testPodTemplateGroupName
 
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      groupName,
 			Namespace: namespace,
 		},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhaseReady,
 		},
 	}
 
@@ -57,13 +57,13 @@ func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 		},
 	}
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      vmcpName,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef:        &mcpv1alpha1.MCPGroupRef{Name: groupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef:        &mcpv1beta1.MCPGroupRef{Name: groupName},
 			PodTemplateSpec: podTemplateSpecToRawExtension(t, podTemplate),
 		},
 	}
@@ -111,7 +111,7 @@ func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 func TestVirtualMCPServerPodTemplateSpecPreservesContainer(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
@@ -119,25 +119,25 @@ func TestVirtualMCPServerPodTemplateSpecPreservesContainer(t *testing.T) {
 	vmcpName := testPodTemplateVmcpName
 	groupName := testPodTemplateGroupName
 
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      groupName,
 			Namespace: namespace,
 		},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhaseReady,
 		},
 	}
 
 	// Use raw JSON directly (simulating real user input) - only nodeSelector, no containers
 	// This is the exact scenario that triggered the original bug
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      vmcpName,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
 			PodTemplateSpec: &runtime.RawExtension{
 				Raw: []byte(`{"spec":{"nodeSelector":{"disktype":"ssd"}}}`),
 			},
@@ -266,13 +266,13 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 				},
 			}
 
-			vmcp := &mcpv1alpha1.VirtualMCPServer{
+			vmcp := &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testPodTemplateVmcpName,
 					Namespace: testPodTemplateNamespace,
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef:        &mcpv1alpha1.MCPGroupRef{Name: testPodTemplateGroupName},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:        &mcpv1beta1.MCPGroupRef{Name: testPodTemplateGroupName},
 					PodTemplateSpec: tt.newPodTemplateSpec,
 				},
 			}
@@ -290,7 +290,7 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 func TestVirtualMCPServerPodTemplateSpecResourceOverride(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
@@ -298,24 +298,24 @@ func TestVirtualMCPServerPodTemplateSpecResourceOverride(t *testing.T) {
 	vmcpName := testPodTemplateVmcpName
 	groupName := testPodTemplateGroupName
 
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      groupName,
 			Namespace: namespace,
 		},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhaseReady,
 		},
 	}
 
 	// Provide custom resources for the vmcp container via PodTemplateSpec
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      vmcpName,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: groupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
 			PodTemplateSpec: &runtime.RawExtension{
 				Raw: []byte(`{"spec":{"containers":[{"name":"vmcp","resources":{"requests":{"cpu":"200m","memory":"256Mi"},"limits":{"cpu":"1","memory":"1Gi"}}}]}}`),
 			},

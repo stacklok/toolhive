@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
@@ -53,7 +53,7 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 	logger := log.FromContext(ctx)
 
 	// Fetch the MCPTelemetryConfig instance
-	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{}
+	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{}
 	err := r.Get(ctx, req.NamespacedName, telemetryConfig)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -83,7 +83,7 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err := telemetryConfig.Validate(); err != nil {
 		logger.Error(err, "MCPTelemetryConfig spec validation failed")
 		meta.SetStatusCondition(&telemetryConfig.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeValid,
+			Type:               mcpv1beta1.ConditionTypeValid,
 			Status:             metav1.ConditionFalse,
 			Reason:             "ValidationFailed",
 			Message:            err.Error(),
@@ -97,7 +97,7 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Validation succeeded - set Valid=True condition
 	conditionChanged := meta.SetStatusCondition(&telemetryConfig.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeValid,
+		Type:               mcpv1beta1.ConditionTypeValid,
 		Status:             metav1.ConditionTrue,
 		Reason:             "ValidationSucceeded",
 		Message:            "Spec validation passed",
@@ -149,7 +149,7 @@ func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error 
 	// config needs to reconcile and clean up the stale entry).
 	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			server, ok := obj.(*mcpv1alpha1.MCPServer)
+			server, ok := obj.(*mcpv1beta1.MCPServer)
 			if !ok {
 				return nil
 			}
@@ -169,7 +169,7 @@ func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error 
 
 			// Also enqueue any MCPTelemetryConfig that still lists this server in
 			// ReferencingWorkloads — handles ref-removal and server-deletion cases.
-			telemetryConfigList := &mcpv1alpha1.MCPTelemetryConfigList{}
+			telemetryConfigList := &mcpv1beta1.MCPTelemetryConfigList{}
 			if err := r.List(ctx, telemetryConfigList, client.InNamespace(server.Namespace)); err != nil {
 				log.FromContext(ctx).Error(err, "Failed to list MCPTelemetryConfigs for MCPServer watch")
 				return requests
@@ -180,7 +180,7 @@ func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error 
 					continue
 				}
 				for _, ref := range cfg.Status.ReferencingWorkloads {
-					if ref.Kind == mcpv1alpha1.WorkloadKindMCPServer && ref.Name == server.Name {
+					if ref.Kind == mcpv1beta1.WorkloadKindMCPServer && ref.Name == server.Name {
 						requests = append(requests, reconcile.Request{NamespacedName: nn})
 						break
 					}
@@ -192,14 +192,14 @@ func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error 
 	)
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&mcpv1alpha1.MCPTelemetryConfig{}).
-		Watches(&mcpv1alpha1.MCPServer{}, mcpServerHandler).
+		For(&mcpv1beta1.MCPTelemetryConfig{}).
+		Watches(&mcpv1beta1.MCPServer{}, mcpServerHandler).
 		Watches(
-			&mcpv1alpha1.MCPRemoteProxy{},
+			&mcpv1beta1.MCPRemoteProxy{},
 			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToTelemetryConfig),
 		).
 		Watches(
-			&mcpv1alpha1.VirtualMCPServer{},
+			&mcpv1beta1.VirtualMCPServer{},
 			handler.EnqueueRequestsFromMapFunc(r.mapVirtualMCPServerToTelemetryConfig),
 		).
 		Complete(r)
@@ -211,7 +211,7 @@ func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error 
 func (r *MCPTelemetryConfigReconciler) mapMCPRemoteProxyToTelemetryConfig(
 	ctx context.Context, obj client.Object,
 ) []reconcile.Request {
-	proxy, ok := obj.(*mcpv1alpha1.MCPRemoteProxy)
+	proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
 	if !ok {
 		return nil
 	}
@@ -230,7 +230,7 @@ func (r *MCPTelemetryConfigReconciler) mapMCPRemoteProxyToTelemetryConfig(
 
 	// Also enqueue any MCPTelemetryConfig that still lists this proxy in
 	// ReferencingWorkloads — handles ref-removal and proxy-deletion cases.
-	telemetryConfigList := &mcpv1alpha1.MCPTelemetryConfigList{}
+	telemetryConfigList := &mcpv1beta1.MCPTelemetryConfigList{}
 	if err := r.List(ctx, telemetryConfigList, client.InNamespace(proxy.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list MCPTelemetryConfigs for MCPRemoteProxy watch")
 		return requests
@@ -241,7 +241,7 @@ func (r *MCPTelemetryConfigReconciler) mapMCPRemoteProxyToTelemetryConfig(
 			continue
 		}
 		for _, ref := range cfg.Status.ReferencingWorkloads {
-			if ref.Kind == mcpv1alpha1.WorkloadKindMCPRemoteProxy && ref.Name == proxy.Name {
+			if ref.Kind == mcpv1beta1.WorkloadKindMCPRemoteProxy && ref.Name == proxy.Name {
 				requests = append(requests, reconcile.Request{NamespacedName: nn})
 				break
 			}
@@ -257,7 +257,7 @@ func (r *MCPTelemetryConfigReconciler) mapMCPRemoteProxyToTelemetryConfig(
 func (r *MCPTelemetryConfigReconciler) mapVirtualMCPServerToTelemetryConfig(
 	ctx context.Context, obj client.Object,
 ) []reconcile.Request {
-	vmcp, ok := obj.(*mcpv1alpha1.VirtualMCPServer)
+	vmcp, ok := obj.(*mcpv1beta1.VirtualMCPServer)
 	if !ok {
 		return nil
 	}
@@ -276,7 +276,7 @@ func (r *MCPTelemetryConfigReconciler) mapVirtualMCPServerToTelemetryConfig(
 
 	// Also enqueue any MCPTelemetryConfig that still lists this VirtualMCPServer in
 	// ReferencingWorkloads — handles ref-removal and server-deletion cases.
-	telemetryConfigList := &mcpv1alpha1.MCPTelemetryConfigList{}
+	telemetryConfigList := &mcpv1beta1.MCPTelemetryConfigList{}
 	if err := r.List(ctx, telemetryConfigList, client.InNamespace(vmcp.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list MCPTelemetryConfigs for VirtualMCPServer watch")
 		return requests
@@ -287,7 +287,7 @@ func (r *MCPTelemetryConfigReconciler) mapVirtualMCPServerToTelemetryConfig(
 			continue
 		}
 		for _, ref := range cfg.Status.ReferencingWorkloads {
-			if ref.Kind == mcpv1alpha1.WorkloadKindVirtualMCPServer && ref.Name == vmcp.Name {
+			if ref.Kind == mcpv1beta1.WorkloadKindVirtualMCPServer && ref.Name == vmcp.Name {
 				requests = append(requests, reconcile.Request{NamespacedName: nn})
 				break
 			}
@@ -298,7 +298,7 @@ func (r *MCPTelemetryConfigReconciler) mapVirtualMCPServerToTelemetryConfig(
 }
 
 // calculateConfigHash calculates a hash of the MCPTelemetryConfig spec using Kubernetes utilities
-func (*MCPTelemetryConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPTelemetryConfigSpec) string {
+func (*MCPTelemetryConfigReconciler) calculateConfigHash(spec mcpv1beta1.MCPTelemetryConfigSpec) string {
 	return ctrlutil.CalculateConfigHash(spec)
 }
 
@@ -306,7 +306,7 @@ func (*MCPTelemetryConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPTel
 // Blocks deletion while MCPServer resources reference this config (deletion protection).
 func (r *MCPTelemetryConfigReconciler) handleDeletion(
 	ctx context.Context,
-	telemetryConfig *mcpv1alpha1.MCPTelemetryConfig,
+	telemetryConfig *mcpv1beta1.MCPTelemetryConfig,
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -329,7 +329,7 @@ func (r *MCPTelemetryConfigReconciler) handleDeletion(
 		msg := fmt.Sprintf("cannot delete: still referenced by MCPServer(s): %v", names)
 		logger.Info(msg, "telemetryConfig", telemetryConfig.Name)
 		meta.SetStatusCondition(&telemetryConfig.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeDeletionBlocked,
+			Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
 			Status:             metav1.ConditionTrue,
 			Reason:             "ReferencedByWorkloads",
 			Message:            msg,
@@ -355,10 +355,10 @@ func (r *MCPTelemetryConfigReconciler) handleDeletion(
 // that reference this MCPTelemetryConfig via TelemetryConfigRef.
 func (r *MCPTelemetryConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
-	telemetryConfig *mcpv1alpha1.MCPTelemetryConfig,
-) ([]mcpv1alpha1.WorkloadReference, error) {
+	telemetryConfig *mcpv1beta1.MCPTelemetryConfig,
+) ([]mcpv1beta1.WorkloadReference, error) {
 	serverRefs, err := ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, telemetryConfig.Namespace, telemetryConfig.Name,
-		func(server *mcpv1alpha1.MCPServer) *string {
+		func(server *mcpv1beta1.MCPServer) *string {
 			if server.Spec.TelemetryConfigRef != nil {
 				return &server.Spec.TelemetryConfigRef.Name
 			}
@@ -369,7 +369,7 @@ func (r *MCPTelemetryConfigReconciler) findReferencingWorkloads(
 	}
 
 	proxies, err := ctrlutil.FindReferencingMCPRemoteProxies(ctx, r.Client, telemetryConfig.Namespace, telemetryConfig.Name,
-		func(proxy *mcpv1alpha1.MCPRemoteProxy) *string {
+		func(proxy *mcpv1beta1.MCPRemoteProxy) *string {
 			if proxy.Spec.TelemetryConfigRef != nil {
 				return &proxy.Spec.TelemetryConfigRef.Name
 			}
@@ -380,19 +380,19 @@ func (r *MCPTelemetryConfigReconciler) findReferencingWorkloads(
 	}
 
 	// Check VirtualMCPServers
-	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
 	if err := r.List(ctx, vmcpList, client.InNamespace(telemetryConfig.Namespace)); err != nil {
 		return nil, fmt.Errorf("failed to list VirtualMCPServers: %w", err)
 	}
 
-	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(serverRefs)+len(proxies)+len(vmcpList.Items))
+	refs := make([]mcpv1beta1.WorkloadReference, 0, len(serverRefs)+len(proxies)+len(vmcpList.Items))
 	refs = append(refs, serverRefs...)
 	for _, proxy := range proxies {
-		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxy.Name})
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxy.Name})
 	}
 	for _, vmcp := range vmcpList.Items {
 		if vmcp.Spec.TelemetryConfigRef != nil && vmcp.Spec.TelemetryConfigRef.Name == telemetryConfig.Name {
-			refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindVirtualMCPServer, Name: vmcp.Name})
+			refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindVirtualMCPServer, Name: vmcp.Name})
 		}
 	}
 	ctrlutil.SortWorkloadRefs(refs)

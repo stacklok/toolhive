@@ -512,7 +512,7 @@ For complete registry server documentation, see:
 
 For Kubernetes deployments, registries managed via `MCPRegistry` CRD.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpregistry_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpregistry_types.go`
 
 ### How configYAML Works
 
@@ -529,7 +529,7 @@ certs) must be mounted into the registry-api container via explicit
 ### Example CRD
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: company-registry

@@ -12,7 +12,7 @@ import (
 	"log/slog"
 
 	"github.com/stacklok/toolhive-core/permissions"
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
@@ -160,7 +160,7 @@ type RunConfig struct {
 
 	// RateLimitConfig contains the CRD rate limiting configuration.
 	// When set, rate limiting middleware is added to the proxy middleware chain.
-	RateLimitConfig *v1alpha1.RateLimitConfig `json:"rate_limit_config,omitempty" yaml:"rate_limit_config,omitempty"`
+	RateLimitConfig *v1beta1.RateLimitConfig `json:"rate_limit_config,omitempty" yaml:"rate_limit_config,omitempty"`
 
 	// RateLimitNamespace is the Kubernetes namespace for Redis key derivation.
 	RateLimitNamespace string `json:"rate_limit_namespace,omitempty" yaml:"rate_limit_namespace,omitempty"`

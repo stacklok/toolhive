@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -25,22 +25,22 @@ func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
 
 	tests := []struct {
 		name string
-		spec mcpv1alpha1.MCPExternalAuthConfigSpec
+		spec mcpv1beta1.MCPExternalAuthConfigSpec
 	}{
 		{
 			name: "empty spec",
-			spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
 			},
 		},
 		{
 			name: "with token exchange config",
-			spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+			spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+				TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 					TokenURL: "https://oauth.example.com/token",
 					ClientID: "test-client-id",
-					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 						Name: "test-secret",
 						Key:  "client-secret",
 					},
@@ -51,12 +51,12 @@ func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
 		},
 		{
 			name: "with custom header",
-			spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+			spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+				TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 					TokenURL: "https://oauth.example.com/token",
 					ClientID: "test-client-id",
-					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 						Name: "test-secret",
 						Key:  "client-secret",
 					},
@@ -86,24 +86,24 @@ func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
 	t.Run("different specs produce different hashes", func(t *testing.T) {
 		t.Parallel()
 		r := &MCPExternalAuthConfigReconciler{}
-		spec1 := mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		spec1 := mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "client1",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "secret1",
 					Key:  "key1",
 				},
 				Audience: "audience1",
 			},
 		}
-		spec2 := mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		spec2 := mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "client2",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "secret2",
 					Key:  "key2",
 				},
@@ -123,24 +123,24 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 
 	tests := []struct {
 		name               string
-		externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig
-		existingMCPServer  *mcpv1alpha1.MCPServer
+		externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig
+		existingMCPServer  *mcpv1beta1.MCPServer
 		expectFinalizer    bool
 		expectHash         bool
 	}{
 		{
 			name: "new external auth config without references",
-			externalAuthConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "test-secret",
 							Key:  "client-secret",
 						},
@@ -153,17 +153,17 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 		},
 		{
 			name: "external auth config with referencing mcpserver",
-			externalAuthConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "test-secret",
 							Key:  "client-secret",
 						},
@@ -172,14 +172,14 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 					},
 				},
 			},
-			existingMCPServer: &mcpv1alpha1.MCPServer{
+			existingMCPServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "test-config",
 					},
 				},
@@ -196,7 +196,7 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 			ctx := t.Context()
 
 			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 			require.NoError(t, corev1.AddToScheme(scheme))
 
 			// Create fake client with objects
@@ -207,7 +207,7 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(objs...).
-				WithStatusSubresource(&mcpv1alpha1.MCPExternalAuthConfig{}).
+				WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
 				Build()
 
 			r := &MCPExternalAuthConfigReconciler{
@@ -236,7 +236,7 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 			}
 
 			// Check the updated MCPExternalAuthConfig
-			var updatedConfig mcpv1alpha1.MCPExternalAuthConfig
+			var updatedConfig mcpv1beta1.MCPExternalAuthConfig
 			err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 			require.NoError(t, err)
 
@@ -255,7 +255,7 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 			// Check referencing workloads in status
 			if tt.existingMCPServer != nil {
 				assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-					mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: tt.existingMCPServer.Name},
+					mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: tt.existingMCPServer.Name},
 					"Status should contain referencing MCPServer as WorkloadReference")
 			}
 		})
@@ -266,19 +266,19 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads(t *testing.T) 
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "test-secret",
 					Key:  "client-secret",
 				},
@@ -287,38 +287,38 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads(t *testing.T) 
 		},
 	}
 
-	mcpServer1 := &mcpv1alpha1.MCPServer{
+	mcpServer1 := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server1",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "test-config",
 			},
 		},
 	}
 
-	mcpServer2 := &mcpv1alpha1.MCPServer{
+	mcpServer2 := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server2",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "test-config",
 			},
 		},
 	}
 
-	mcpServer3 := &mcpv1alpha1.MCPServer{
+	mcpServer3 := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server3",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
 			// No ExternalAuthConfigRef
 		},
@@ -339,9 +339,9 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads(t *testing.T) 
 	require.NoError(t, err)
 
 	assert.Len(t, refs, 2, "Should find 2 referencing workloads")
-	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server1"})
-	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server2"})
-	assert.NotContains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server3"})
+	assert.Contains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server1"})
+	assert.Contains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server2"})
+	assert.NotContains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server3"})
 }
 
 func TestGetExternalAuthConfigForMCPServer(t *testing.T) {
@@ -349,19 +349,19 @@ func TestGetExternalAuthConfigForMCPServer(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		mcpServer      *mcpv1alpha1.MCPServer
-		existingConfig *mcpv1alpha1.MCPExternalAuthConfig
+		mcpServer      *mcpv1beta1.MCPServer
+		existingConfig *mcpv1beta1.MCPExternalAuthConfig
 		expectConfig   bool
 		expectError    bool
 	}{
 		{
 			name: "mcpserver without external auth config ref",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
 				},
 			},
@@ -370,29 +370,29 @@ func TestGetExternalAuthConfigForMCPServer(t *testing.T) {
 		},
 		{
 			name: "mcpserver with existing external auth config",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "test-config",
 					},
 				},
 			},
-			existingConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+			existingConfig: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "test-secret",
 							Key:  "client-secret",
 						},
@@ -405,14 +405,14 @@ func TestGetExternalAuthConfigForMCPServer(t *testing.T) {
 		},
 		{
 			name: "mcpserver with non-existent external auth config",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "non-existent",
 					},
 				},
@@ -429,7 +429,7 @@ func TestGetExternalAuthConfigForMCPServer(t *testing.T) {
 			ctx := t.Context()
 
 			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 			objs := []client.Object{}
 			if tt.existingConfig != nil {
@@ -464,14 +464,14 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 
 	tests := []struct {
 		name                   string
-		externalAuthConfig     *mcpv1alpha1.MCPExternalAuthConfig
-		referencingServers     []*mcpv1alpha1.MCPServer
+		externalAuthConfig     *mcpv1beta1.MCPExternalAuthConfig
+		referencingServers     []*mcpv1beta1.MCPServer
 		expectRequeue          bool
 		expectFinalizerRemoved bool
 	}{
 		{
 			name: "delete config without references",
-			externalAuthConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-config",
 					Namespace:  "default",
@@ -480,12 +480,12 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 						Time: time.Now(),
 					},
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "test-secret",
 							Key:  "client-secret",
 						},
@@ -498,7 +498,7 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 		},
 		{
 			name: "delete config with references",
-			externalAuthConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-config",
 					Namespace:  "default",
@@ -507,12 +507,12 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 						Time: time.Now(),
 					},
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "test-secret",
 							Key:  "client-secret",
 						},
@@ -520,15 +520,15 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 					},
 				},
 			},
-			referencingServers: []*mcpv1alpha1.MCPServer{
+			referencingServers: []*mcpv1beta1.MCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "server1",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPServerSpec{
+					Spec: mcpv1beta1.MCPServerSpec{
 						Image: "test-image",
-						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 							Name: "test-config",
 						},
 					},
@@ -546,7 +546,7 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 			ctx := t.Context()
 
 			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 			// Build objects list
 			objs := []client.Object{tt.externalAuthConfig}
@@ -557,7 +557,7 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(objs...).
-				WithStatusSubresource(&mcpv1alpha1.MCPExternalAuthConfig{}).
+				WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
 				Build()
 
 			r := &MCPExternalAuthConfigReconciler{
@@ -594,21 +594,21 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "test-secret",
 					Key:  "client-secret",
 				},
@@ -617,14 +617,14 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 		},
 	}
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "test-config",
 			},
 		},
@@ -633,7 +633,7 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(externalAuthConfig, mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPExternalAuthConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
 		Build()
 
 	r := &MCPExternalAuthConfigReconciler{
@@ -659,7 +659,7 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 	assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 	// Get updated config and check hash was set
-	var updatedConfig mcpv1alpha1.MCPExternalAuthConfig
+	var updatedConfig mcpv1beta1.MCPExternalAuthConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, updatedConfig.Status.ConfigHash, "Config hash should be set")
@@ -676,7 +676,7 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 	require.NoError(t, err)
 
 	// Get final config and verify hash changed
-	var finalConfig mcpv1alpha1.MCPExternalAuthConfig
+	var finalConfig mcpv1beta1.MCPExternalAuthConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &finalConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, finalConfig.Status.ConfigHash, "Config hash should still be set")
@@ -684,7 +684,7 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 	assert.Equal(t, int64(2), finalConfig.Status.ObservedGeneration, "ObservedGeneration should be updated")
 
 	// Verify MCPServer has annotation with new hash
-	var updatedServer mcpv1alpha1.MCPServer
+	var updatedServer mcpv1beta1.MCPServer
 	err = fakeClient.Get(ctx, types.NamespacedName{
 		Name:      mcpServer.Name,
 		Namespace: mcpServer.Namespace,
@@ -701,21 +701,21 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashC
 	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "test-secret",
 					Key:  "client-secret",
 				},
@@ -727,7 +727,7 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashC
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(externalAuthConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPExternalAuthConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
 		Build()
 
 	r := &MCPExternalAuthConfigReconciler{
@@ -751,21 +751,21 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashC
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var updatedConfig mcpv1alpha1.MCPExternalAuthConfig
+	var updatedConfig mcpv1beta1.MCPExternalAuthConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, updatedConfig.Status.ConfigHash)
 	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads, "No workloads should be referencing yet")
 
 	// Now add an MCPServer that references this config (without changing the config spec)
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "new-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "test-config",
 			},
 		},
@@ -779,7 +779,7 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashC
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-		mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "new-server"},
+		mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "new-server"},
 		"ReferencingWorkloads should be updated even without hash change")
 }
 
@@ -789,21 +789,21 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDele
 	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "test-secret",
 					Key:  "client-secret",
 				},
@@ -812,14 +812,14 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDele
 		},
 	}
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server-to-delete",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "test-config",
 			},
 		},
@@ -828,7 +828,7 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDele
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(externalAuthConfig, mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPExternalAuthConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
 		Build()
 
 	r := &MCPExternalAuthConfigReconciler{
@@ -852,11 +852,11 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDele
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var updatedConfig mcpv1alpha1.MCPExternalAuthConfig
+	var updatedConfig mcpv1beta1.MCPExternalAuthConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-		mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-to-delete"})
+		mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server-to-delete"})
 
 	// Delete the MCPServer
 	require.NoError(t, fakeClient.Delete(ctx, mcpServer))
@@ -875,22 +875,22 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_authServerRef(
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "auth-server-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer:                       "https://auth.example.com",
 				AuthorizationEndpointBaseURL: "https://auth.example.com",
-				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
 					{Name: "signing-key", Key: "private.pem"},
 				},
-				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
 					{Name: "hmac-secret", Key: "hmac"},
 				},
 			},
@@ -898,14 +898,14 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_authServerRef(
 	}
 
 	// Server referencing via authServerRef
-	serverViaAuthServerRef := &mcpv1alpha1.MCPServer{
+	serverViaAuthServerRef := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server-via-authserverref",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			AuthServerRef: &mcpv1alpha1.AuthServerRef{
+			AuthServerRef: &mcpv1beta1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "auth-server-config",
 			},
@@ -913,26 +913,26 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_authServerRef(
 	}
 
 	// Server referencing via externalAuthConfigRef
-	serverViaExtAuth := &mcpv1alpha1.MCPServer{
+	serverViaExtAuth := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server-via-extauth",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "auth-server-config",
 			},
 		},
 	}
 
 	// Server not referencing this config at all
-	serverNoRef := &mcpv1alpha1.MCPServer{
+	serverNoRef := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server-no-ref",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
 		},
 	}
@@ -952,32 +952,32 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_authServerRef(
 	require.NoError(t, err)
 
 	assert.Len(t, refs, 2, "Should find 2 referencing workloads (one via authServerRef, one via externalAuthConfigRef)")
-	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-via-authserverref"})
-	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-via-extauth"})
-	assert.NotContains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-no-ref"})
+	assert.Contains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server-via-authserverref"})
+	assert.Contains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server-via-extauth"})
+	assert.NotContains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server-no-ref"})
 }
 
 func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_bothRefsOnSameServer(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	// A server has externalAuthConfigRef pointing to "token-exchange-config"
 	// AND authServerRef pointing to "embedded-auth-config".
 	// Both configs should discover this server during reconciliation.
 
-	tokenExchangeConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	tokenExchangeConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "token-exchange-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "test-secret",
 					Key:  "client-secret",
 				},
@@ -986,20 +986,20 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_bothRefsOnSame
 		},
 	}
 
-	embeddedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	embeddedAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "embedded-auth-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer:                       "https://auth.example.com",
 				AuthorizationEndpointBaseURL: "https://auth.example.com",
-				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
 					{Name: "signing-key", Key: "private.pem"},
 				},
-				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
 					{Name: "hmac-secret", Key: "hmac"},
 				},
 			},
@@ -1007,17 +1007,17 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_bothRefsOnSame
 	}
 
 	// Server with both refs pointing to different configs
-	serverWithBothRefs := &mcpv1alpha1.MCPServer{
+	serverWithBothRefs := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server-with-both-refs",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "token-exchange-config",
 			},
-			AuthServerRef: &mcpv1alpha1.AuthServerRef{
+			AuthServerRef: &mcpv1beta1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "embedded-auth-config",
 			},
@@ -1040,13 +1040,13 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_bothRefsOnSame
 	refsForTokenExchange, err := r.findReferencingWorkloads(ctx, tokenExchangeConfig)
 	require.NoError(t, err)
 	assert.Len(t, refsForTokenExchange, 1, "token-exchange-config should find server via externalAuthConfigRef")
-	assert.Contains(t, refsForTokenExchange, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-with-both-refs"})
+	assert.Contains(t, refsForTokenExchange, mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server-with-both-refs"})
 
 	// Reconciling the embedded-auth-config should find the server via authServerRef
 	refsForEmbedded, err := r.findReferencingWorkloads(ctx, embeddedAuthConfig)
 	require.NoError(t, err)
 	assert.Len(t, refsForEmbedded, 1, "embedded-auth-config should find server via authServerRef")
-	assert.Contains(t, refsForEmbedded, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-with-both-refs"})
+	assert.Contains(t, refsForEmbedded, mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server-with-both-refs"})
 
 	// Also verify findReferencingMCPServers returns the server for both configs
 	serversForTokenExchange, err := r.findReferencingMCPServers(ctx, tokenExchangeConfig)
@@ -1064,21 +1064,21 @@ func TestMCPExternalAuthConfigReconciler_findReferencingMCPServers_deduplicates(
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	// A server has both externalAuthConfigRef and authServerRef pointing to the SAME config.
 	// The server should appear only once in the results.
-	config := &mcpv1alpha1.MCPExternalAuthConfig{
+	config := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "shared-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "test-secret",
 					Key:  "client-secret",
 				},
@@ -1087,17 +1087,17 @@ func TestMCPExternalAuthConfigReconciler_findReferencingMCPServers_deduplicates(
 		},
 	}
 
-	server := &mcpv1alpha1.MCPServer{
+	server := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server-both-same",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "shared-config",
 			},
-			AuthServerRef: &mcpv1alpha1.AuthServerRef{
+			AuthServerRef: &mcpv1beta1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "shared-config",
 			},
@@ -1125,22 +1125,22 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_mcpRemoteProxy
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-	config := &mcpv1alpha1.MCPExternalAuthConfig{
+	config := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "auth-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer:                       "https://auth.example.com",
 				AuthorizationEndpointBaseURL: "https://auth.example.com",
-				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
 					{Name: "signing-key", Key: "private.pem"},
 				},
-				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
 					{Name: "hmac-secret", Key: "hmac"},
 				},
 			},
@@ -1148,28 +1148,28 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_mcpRemoteProxy
 	}
 
 	// MCPRemoteProxy referencing via externalAuthConfigRef
-	proxyViaExtAuth := &mcpv1alpha1.MCPRemoteProxy{
+	proxyViaExtAuth := &mcpv1beta1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "proxy-via-extauth",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
 			RemoteURL: "https://remote.example.com",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "auth-config",
 			},
 		},
 	}
 
 	// MCPRemoteProxy referencing via authServerRef
-	proxyViaAuthServerRef := &mcpv1alpha1.MCPRemoteProxy{
+	proxyViaAuthServerRef := &mcpv1beta1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "proxy-via-authserverref",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
 			RemoteURL: "https://remote.example.com",
-			AuthServerRef: &mcpv1alpha1.AuthServerRef{
+			AuthServerRef: &mcpv1beta1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: "auth-config",
 			},
@@ -1177,25 +1177,25 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_mcpRemoteProxy
 	}
 
 	// MCPRemoteProxy not referencing this config
-	proxyNoRef := &mcpv1alpha1.MCPRemoteProxy{
+	proxyNoRef := &mcpv1beta1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "proxy-no-ref",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
 			RemoteURL: "https://remote.example.com",
 		},
 	}
 
 	// MCPServer also referencing the same config
-	server := &mcpv1alpha1.MCPServer{
+	server := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "server-ref",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "auth-config",
 			},
 		},
@@ -1216,8 +1216,8 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_mcpRemoteProxy
 	require.NoError(t, err)
 
 	assert.Len(t, refs, 3, "Should find 3 referencing workloads (1 MCPServer + 2 MCPRemoteProxies)")
-	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-ref"})
-	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPRemoteProxy", Name: "proxy-via-extauth"})
-	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPRemoteProxy", Name: "proxy-via-authserverref"})
-	assert.NotContains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPRemoteProxy", Name: "proxy-no-ref"})
+	assert.Contains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server-ref"})
+	assert.Contains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPRemoteProxy", Name: "proxy-via-extauth"})
+	assert.Contains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPRemoteProxy", Name: "proxy-via-authserverref"})
+	assert.NotContains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPRemoteProxy", Name: "proxy-no-ref"})
 }

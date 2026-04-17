@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -22,7 +22,7 @@ func TestDeploymentForMCPServer_TelemetryCABundleVolume(t *testing.T) {
 
 	tests := []struct {
 		name              string
-		telemetryConfig   *mcpv1alpha1.MCPTelemetryConfig
+		telemetryConfig   *mcpv1beta1.MCPTelemetryConfig
 		expectVolumeName  string
 		expectMountPath   string
 		expectConfigMap   string
@@ -31,17 +31,17 @@ func TestDeploymentForMCPServer_TelemetryCABundleVolume(t *testing.T) {
 	}{
 		{
 			name: "CA bundle volume and mount are present with default key",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "my-telemetry",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
 						Enabled:  true,
 						Endpoint: "https://otel-collector:4318",
-						Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
-						CABundleRef: &mcpv1alpha1.CABundleSource{
+						Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
+						CABundleRef: &mcpv1beta1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{
 									Name: "otel-ca-bundle",
@@ -58,17 +58,17 @@ func TestDeploymentForMCPServer_TelemetryCABundleVolume(t *testing.T) {
 		},
 		{
 			name: "CA bundle volume and mount use custom key",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "my-telemetry",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
 						Enabled:  true,
 						Endpoint: "https://otel-collector:4318",
-						Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
-						CABundleRef: &mcpv1alpha1.CABundleSource{
+						Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
+						CABundleRef: &mcpv1beta1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{
 									Name: "internal-ca",
@@ -86,16 +86,16 @@ func TestDeploymentForMCPServer_TelemetryCABundleVolume(t *testing.T) {
 		},
 		{
 			name: "no CA bundle when telemetry config has no caBundleRef",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "my-telemetry",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
 						Enabled:  true,
 						Endpoint: "https://otel-collector:4318",
-						Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+						Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
 					},
 				},
 			},
@@ -110,7 +110,7 @@ func TestDeploymentForMCPServer_TelemetryCABundleVolume(t *testing.T) {
 			ctx := t.Context()
 
 			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 			require.NoError(t, corev1.AddToScheme(scheme))
 
 			fakeClient := fake.NewClientBuilder().
@@ -118,16 +118,16 @@ func TestDeploymentForMCPServer_TelemetryCABundleVolume(t *testing.T) {
 				WithObjects(tt.telemetryConfig).
 				Build()
 
-			mcpServer := &mcpv1alpha1.MCPServer{
+			mcpServer := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
 						Name: "my-telemetry",
 					},
 				},
@@ -183,7 +183,7 @@ func TestDeploymentForMCPServer_TelemetryCABundleVolume_FetchError(t *testing.T)
 	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	// Build a client that does NOT have the MCPTelemetryConfig object.
@@ -192,16 +192,16 @@ func TestDeploymentForMCPServer_TelemetryCABundleVolume_FetchError(t *testing.T)
 		WithScheme(scheme).
 		Build()
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
 			ProxyPort: 8080,
-			TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+			TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
 				Name: "missing-telemetry-config",
 			},
 		},

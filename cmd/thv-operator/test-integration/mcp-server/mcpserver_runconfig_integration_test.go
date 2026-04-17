@@ -16,7 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -34,8 +34,8 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 		var (
 			namespace        string
 			mcpServerName    string
-			mcpServer        *mcpv1alpha1.MCPServer
-			createdMCPServer *mcpv1alpha1.MCPServer
+			mcpServer        *mcpv1beta1.MCPServer
+			createdMCPServer *mcpv1beta1.MCPServer
 			configMapName    string
 		)
 
@@ -53,19 +53,19 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			_ = k8sClient.Create(ctx, ns)
 
 			// Define the MCPServer resource with comprehensive configuration
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "example/mcp-server:v1.0.0",
 					Transport: "stdio",
 					ProxyMode: "sse",
 					ProxyPort: 8080,
 					MCPPort:   8081,
 					Args:      []string{"--verbose", "--debug"},
-					Env: []mcpv1alpha1.EnvVar{
+					Env: []mcpv1beta1.EnvVar{
 						{
 							Name:  "DEBUG",
 							Value: "true",
@@ -75,7 +75,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 							Value: "debug",
 						},
 					},
-					Volumes: []mcpv1alpha1.Volume{
+					Volumes: []mcpv1beta1.Volume{
 						{
 							Name:      "config",
 							HostPath:  "/host/config",
@@ -83,12 +83,12 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 							ReadOnly:  true,
 						},
 					},
-					Resources: mcpv1alpha1.ResourceRequirements{
-						Limits: mcpv1alpha1.ResourceList{
+					Resources: mcpv1beta1.ResourceRequirements{
+						Limits: mcpv1beta1.ResourceList{
 							CPU:    "500m",
 							Memory: "1Gi",
 						},
-						Requests: mcpv1alpha1.ResourceList{
+						Requests: mcpv1beta1.ResourceList{
 							CPU:    "100m",
 							Memory: "128Mi",
 						},
@@ -99,7 +99,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			// Create the MCPServer
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
 
-			createdMCPServer = &mcpv1alpha1.MCPServer{}
+			createdMCPServer = &mcpv1beta1.MCPServer{}
 			k8sClient.Get(ctx, types.NamespacedName{
 				Name:      mcpServerName,
 				Namespace: namespace,
@@ -300,7 +300,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				// Update multiple fields
 				mcpServer.Spec.Image = "example/mcp-server:v2.0.0"
 				mcpServer.Spec.ProxyPort = 9090
-				mcpServer.Spec.Env = append(mcpServer.Spec.Env, mcpv1alpha1.EnvVar{
+				mcpServer.Spec.Env = append(mcpServer.Spec.Env, mcpv1beta1.EnvVar{
 					Name:  "NEW_VAR",
 					Value: "new_value",
 				})
@@ -366,18 +366,18 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			_ = k8sClient.Create(ctx, ns)
 
 			backendReplicas := int32(3)
-			mcpServer := &mcpv1alpha1.MCPServer{
+			mcpServer := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:           "example/mcp-server:latest",
 					Transport:       "stdio",
 					ProxyPort:       8080,
 					BackendReplicas: &backendReplicas,
-					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-						Provider:  mcpv1alpha1.SessionStorageProviderRedis,
+					SessionStorage: &mcpv1beta1.SessionStorageConfig{
+						Provider:  mcpv1beta1.SessionStorageProviderRedis,
 						Address:   "redis:6379",
 						DB:        1,
 						KeyPrefix: "thv:",
@@ -420,12 +420,12 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			}
 			_ = k8sClient.Create(ctx, ns)
 
-			mcpServer := &mcpv1alpha1.MCPServer{
+			mcpServer := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "example/mcp-server:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
@@ -467,27 +467,27 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			_ = k8sClient.Create(ctx, ns)
 
 			// Create the MCPTelemetryConfig resource
-			telCfg := &mcpv1alpha1.MCPTelemetryConfig{
+			telCfg := &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "shared-otel-config",
 					Namespace: namespace,
 				},
 			}
-			telCfg.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+			telCfg.Spec.OpenTelemetry = &mcpv1beta1.MCPTelemetryOTelConfig{
 				Enabled:  true,
 				Endpoint: "otel-collector:4317",
 				Insecure: true,
-				Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true, SamplingRate: "0.1"},
-				Metrics:  &mcpv1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+				Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true, SamplingRate: "0.1"},
+				Metrics:  &mcpv1beta1.OpenTelemetryMetricsConfig{Enabled: true},
 			}
-			telCfg.Spec.Prometheus = &mcpv1alpha1.PrometheusConfig{Enabled: true}
+			telCfg.Spec.Prometheus = &mcpv1beta1.PrometheusConfig{Enabled: true}
 
 			Expect(k8sClient.Create(ctx, telCfg)).To(Succeed())
 			defer k8sClient.Delete(ctx, telCfg) //nolint:errcheck
 
 			// Wait for the MCPTelemetryConfig to be reconciled (hash set)
 			Eventually(func() bool {
-				fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+				fetched := &mcpv1beta1.MCPTelemetryConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      telCfg.Name,
 					Namespace: telCfg.Namespace,
@@ -496,16 +496,16 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Create MCPServer with telemetryConfigRef
-			mcpServer := &mcpv1alpha1.MCPServer{
+			mcpServer := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "telemetry/mcp-server:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
 						Name:        "shared-otel-config",
 						ServiceName: "test-service",
 					},
@@ -551,23 +551,23 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			}
 			_ = k8sClient.Create(ctx, ns)
 
-			telCfg := &mcpv1alpha1.MCPTelemetryConfig{
+			telCfg := &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "no-svcname-config",
 					Namespace: namespace,
 				},
 			}
-			telCfg.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+			telCfg.Spec.OpenTelemetry = &mcpv1beta1.MCPTelemetryOTelConfig{
 				Enabled:  true,
 				Endpoint: "otel-collector:4317",
-				Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+				Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
 			}
 
 			Expect(k8sClient.Create(ctx, telCfg)).To(Succeed())
 			defer k8sClient.Delete(ctx, telCfg) //nolint:errcheck
 
 			Eventually(func() bool {
-				fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+				fetched := &mcpv1beta1.MCPTelemetryConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      telCfg.Name,
 					Namespace: telCfg.Namespace,
@@ -575,16 +575,16 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				return err == nil && fetched.Status.ConfigHash != ""
 			}, timeout, interval).Should(BeTrue())
 
-			mcpServer := &mcpv1alpha1.MCPServer{
+			mcpServer := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "telemetry/mcp-server:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
 						Name: "no-svcname-config",
 						// ServiceName intentionally omitted — should default to server name
 					},
@@ -625,18 +625,18 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			_ = k8sClient.Create(ctx, ns)
 
 			// Create MCPServer with inline authorization
-			mcpServer := &mcpv1alpha1.MCPServer{
+			mcpServer := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "authz/mcp-server:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineAuthzConfig{
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeInline,
+						Inline: &mcpv1beta1.InlineAuthzConfig{
 							Policies: []string{
 								`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 								`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
@@ -691,23 +691,23 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			_ = k8sClient.Create(ctx, ns)
 
 			// Create MCPServer with comprehensive configuration
-			mcpServer := &mcpv1alpha1.MCPServer{
+			mcpServer := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "deterministic/mcp-server:v1.0.0",
 					Transport: "sse",
 					ProxyPort: 9090,
 					MCPPort:   8080,
 					Args:      []string{"--arg1", "--arg2", "--arg3"},
-					Env: []mcpv1alpha1.EnvVar{
+					Env: []mcpv1beta1.EnvVar{
 						{Name: "VAR_C", Value: "value_c"},
 						{Name: "VAR_A", Value: "value_a"},
 						{Name: "VAR_B", Value: "value_b"},
 					},
-					Volumes: []mcpv1alpha1.Volume{
+					Volumes: []mcpv1beta1.Volume{
 						{Name: "vol2", HostPath: "/host2", MountPath: "/mount2", ReadOnly: true},
 						{Name: "vol1", HostPath: "/host1", MountPath: "/mount1", ReadOnly: false},
 					},
@@ -824,18 +824,18 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			defer k8sClient.Delete(ctx, authzConfigMap)
 
 			// Create MCPServer with ConfigMap authorization reference
-			mcpServer := &mcpv1alpha1.MCPServer{
+			mcpServer := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "authz/mcp-server:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+						ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 							Name: externalAuthzConfigMapName,
 							Key:  "authz.json",
 						},

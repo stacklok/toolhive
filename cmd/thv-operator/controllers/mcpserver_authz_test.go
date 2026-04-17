@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -25,23 +25,23 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	tests := []struct {
 		name               string
-		mcpServer          *mcpv1alpha1.MCPServer
+		mcpServer          *mcpv1beta1.MCPServer
 		expectConfigMap    bool
 		expectedConfigData string
 	}{
 		{
 			name: "no authz config",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "test-namespace",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
 				},
 			},
@@ -49,16 +49,16 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 		},
 		{
 			name: "configmap authz config (no inline ConfigMap needed)",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "test-namespace",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+						ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 							Name: "external-authz-config",
 						},
 					},
@@ -68,16 +68,16 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 		},
 		{
 			name: "inline authz config",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "test-namespace",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineAuthzConfig{
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeInline,
+						Inline: &mcpv1beta1.InlineAuthzConfig{
 							Policies: []string{
 								`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 							},
@@ -91,16 +91,16 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 		},
 		{
 			name: "inline authz config with default entities",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "test-namespace",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineAuthzConfig{
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeInline,
+						Inline: &mcpv1beta1.InlineAuthzConfig{
 							Policies: []string{
 								`permit(principal, action, resource);`,
 							},
@@ -163,21 +163,21 @@ func TestEnsureAuthzConfigMap_Updates(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	// Create MCPServer with initial inline authz config
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "test-namespace",
 			UID:       "test-uid",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-				Type: mcpv1alpha1.AuthzConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineAuthzConfig{
+			AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeInline,
+				Inline: &mcpv1beta1.InlineAuthzConfig{
 					Policies: []string{
 						`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 					},
@@ -250,23 +250,23 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	tests := []struct {
 		name               string
-		mcpServer          *mcpv1alpha1.MCPServer
+		mcpServer          *mcpv1beta1.MCPServer
 		expectVolumeMount  bool
 		expectedConfigName string
 	}{
 		{
 			name: "no authz config",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "test-namespace",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
 				},
 			},
@@ -274,16 +274,16 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 		},
 		{
 			name: "configmap authz config",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "test-namespace",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+						ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 							Name: "external-authz-config",
 							Key:  "custom-authz.json",
 						},
@@ -295,16 +295,16 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 		},
 		{
 			name: "inline authz config",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "test-namespace",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
-						Type: mcpv1alpha1.AuthzConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineAuthzConfig{
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeInline,
+						Inline: &mcpv1beta1.InlineAuthzConfig{
 							Policies: []string{
 								`permit(principal, action, resource);`,
 							},

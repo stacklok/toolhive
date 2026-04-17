@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
@@ -764,8 +764,8 @@ func TestAddRateLimitMiddleware(t *testing.T) {
 		{
 			name: "rate limit without Redis returns error",
 			config: &RunConfig{
-				RateLimitConfig: &v1alpha1.RateLimitConfig{
-					Shared: &v1alpha1.RateLimitBucket{
+				RateLimitConfig: &v1beta1.RateLimitConfig{
+					Shared: &v1beta1.RateLimitBucket{
 						MaxTokens:    10,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
@@ -778,8 +778,8 @@ func TestAddRateLimitMiddleware(t *testing.T) {
 			config: &RunConfig{
 				Name:               "test-server",
 				RateLimitNamespace: "default",
-				RateLimitConfig: &v1alpha1.RateLimitConfig{
-					Shared: &v1alpha1.RateLimitBucket{
+				RateLimitConfig: &v1beta1.RateLimitConfig{
+					Shared: &v1beta1.RateLimitBucket{
 						MaxTokens:    10,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
@@ -840,8 +840,8 @@ func TestPopulateMiddlewareConfigs_RateLimit(t *testing.T) {
 			config: &RunConfig{
 				Name:               "test-server",
 				RateLimitNamespace: "default",
-				RateLimitConfig: &v1alpha1.RateLimitConfig{
-					Shared: &v1alpha1.RateLimitBucket{
+				RateLimitConfig: &v1beta1.RateLimitConfig{
+					Shared: &v1beta1.RateLimitBucket{
 						MaxTokens:    5,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},

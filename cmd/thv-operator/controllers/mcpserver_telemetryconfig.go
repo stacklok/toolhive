@@ -15,12 +15,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // handleTelemetryConfig validates and tracks the hash of the referenced MCPTelemetryConfig.
 // It updates the MCPServer status when the telemetry configuration changes.
-func (r *MCPServerReconciler) handleTelemetryConfig(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+func (r *MCPServerReconciler) handleTelemetryConfig(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
 
 	if m.Spec.TelemetryConfigRef == nil {
@@ -39,9 +39,9 @@ func (r *MCPServerReconciler) handleTelemetryConfig(ctx context.Context, m *mcpv
 	if err != nil {
 		// Transient API error (not a NotFound)
 		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTelemetryConfigRefValidated,
+			Type:               mcpv1beta1.ConditionTelemetryConfigRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonTelemetryConfigRefError,
+			Reason:             mcpv1beta1.ConditionReasonTelemetryConfigRefError,
 			Message:            err.Error(),
 			ObservedGeneration: m.Generation,
 		})
@@ -51,9 +51,9 @@ func (r *MCPServerReconciler) handleTelemetryConfig(ctx context.Context, m *mcpv
 	if telemetryConfig == nil {
 		// Resource genuinely does not exist
 		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTelemetryConfigRefValidated,
+			Type:               mcpv1beta1.ConditionTelemetryConfigRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonTelemetryConfigRefNotFound,
+			Reason:             mcpv1beta1.ConditionReasonTelemetryConfigRefNotFound,
 			Message:            fmt.Sprintf("MCPTelemetryConfig %s not found", m.Spec.TelemetryConfigRef.Name),
 			ObservedGeneration: m.Generation,
 		})
@@ -63,9 +63,9 @@ func (r *MCPServerReconciler) handleTelemetryConfig(ctx context.Context, m *mcpv
 	// Validate that the MCPTelemetryConfig is valid (has Valid=True condition)
 	if err := telemetryConfig.Validate(); err != nil {
 		meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTelemetryConfigRefValidated,
+			Type:               mcpv1beta1.ConditionTelemetryConfigRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonTelemetryConfigRefInvalid,
+			Reason:             mcpv1beta1.ConditionReasonTelemetryConfigRefInvalid,
 			Message:            fmt.Sprintf("MCPTelemetryConfig %s is invalid: %v", m.Spec.TelemetryConfigRef.Name, err),
 			ObservedGeneration: m.Generation,
 		})
@@ -75,13 +75,13 @@ func (r *MCPServerReconciler) handleTelemetryConfig(ctx context.Context, m *mcpv
 	// Detect whether the condition is transitioning to True (e.g. recovering from
 	// a transient error). Without this check the status update is skipped when the
 	// hash is unchanged, leaving a stale False condition (#4511).
-	prevCondition := meta.FindStatusCondition(m.Status.Conditions, mcpv1alpha1.ConditionTelemetryConfigRefValidated)
+	prevCondition := meta.FindStatusCondition(m.Status.Conditions, mcpv1beta1.ConditionTelemetryConfigRefValidated)
 	needsUpdate := prevCondition == nil || prevCondition.Status != metav1.ConditionTrue
 
 	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTelemetryConfigRefValidated,
+		Type:               mcpv1beta1.ConditionTelemetryConfigRefValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonTelemetryConfigRefValid,
+		Reason:             mcpv1beta1.ConditionReasonTelemetryConfigRefValid,
 		Message:            fmt.Sprintf("MCPTelemetryConfig %s is valid", m.Spec.TelemetryConfigRef.Name),
 		ObservedGeneration: m.Generation,
 	})
@@ -112,13 +112,13 @@ func (r *MCPServerReconciler) handleTelemetryConfig(ctx context.Context, m *mcpv
 func getTelemetryConfigForMCPServer(
 	ctx context.Context,
 	c client.Client,
-	m *mcpv1alpha1.MCPServer,
-) (*mcpv1alpha1.MCPTelemetryConfig, error) {
+	m *mcpv1beta1.MCPServer,
+) (*mcpv1beta1.MCPTelemetryConfig, error) {
 	if m.Spec.TelemetryConfigRef == nil {
 		return nil, nil
 	}
 
-	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{}
+	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{}
 	err := c.Get(ctx, types.NamespacedName{
 		Name:      m.Spec.TelemetryConfigRef.Name,
 		Namespace: m.Namespace,
@@ -138,12 +138,12 @@ func getTelemetryConfigForMCPServer(
 func (r *MCPServerReconciler) mapTelemetryConfigToServers(
 	ctx context.Context, obj client.Object,
 ) []reconcile.Request {
-	telemetryConfig, ok := obj.(*mcpv1alpha1.MCPTelemetryConfig)
+	telemetryConfig, ok := obj.(*mcpv1beta1.MCPTelemetryConfig)
 	if !ok {
 		return nil
 	}
 
-	mcpServerList := &mcpv1alpha1.MCPServerList{}
+	mcpServerList := &mcpv1beta1.MCPServerList{}
 	if err := r.List(ctx, mcpServerList, client.InNamespace(telemetryConfig.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list MCPServers for MCPTelemetryConfig watch")
 		return nil

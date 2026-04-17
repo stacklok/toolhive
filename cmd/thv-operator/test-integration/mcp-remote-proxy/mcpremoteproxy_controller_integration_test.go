@@ -14,7 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -241,16 +241,16 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 
 			By("waiting for Ready condition to be set")
 			statusHelper.WaitForCondition(
-				proxy.Name, mcpv1alpha1.ConditionTypeReady, metav1.ConditionFalse, MediumTimeout,
+				proxy.Name, mcpv1beta1.ConditionTypeReady, metav1.ConditionFalse, MediumTimeout,
 			)
 
 			By("verifying the Ready condition reason")
-			condition, err := proxyHelper.GetRemoteProxyCondition(proxy.Name, mcpv1alpha1.ConditionTypeReady)
+			condition, err := proxyHelper.GetRemoteProxyCondition(proxy.Name, mcpv1beta1.ConditionTypeReady)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(condition).NotTo(BeNil())
 			// Initially the condition will be False because the deployment pods won't be running in envtest
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(condition.Reason).To(Equal(mcpv1alpha1.ConditionReasonDeploymentNotReady))
+			Expect(condition.Reason).To(Equal(mcpv1beta1.ConditionReasonDeploymentNotReady))
 		})
 
 		It("should set Pending phase initially", func() {
@@ -258,14 +258,14 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 			proxy := proxyHelper.NewRemoteProxyBuilder("test-pending-phase").Create(proxyHelper)
 
 			By("waiting for status to be updated")
-			statusHelper.WaitForPhaseAny(proxy.Name, []mcpv1alpha1.MCPRemoteProxyPhase{
-				mcpv1alpha1.MCPRemoteProxyPhasePending,
-				mcpv1alpha1.MCPRemoteProxyPhaseReady,
+			statusHelper.WaitForPhaseAny(proxy.Name, []mcpv1beta1.MCPRemoteProxyPhase{
+				mcpv1beta1.MCPRemoteProxyPhasePending,
+				mcpv1beta1.MCPRemoteProxyPhaseReady,
 			}, MediumTimeout)
 
 			By("verifying the phase is Pending (since deployment is not ready in envtest)")
 			// In envtest, pods don't actually run so phase will be Pending
-			statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhasePending, MediumTimeout)
+			statusHelper.WaitForPhase(proxy.Name, mcpv1beta1.MCPRemoteProxyPhasePending, MediumTimeout)
 		})
 
 		It("should update ObservedGeneration in status", func() {
@@ -307,14 +307,14 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 			proxy := proxyHelper.NewRemoteProxyBuilder("test-auth-configured").Create(proxyHelper)
 
 			By("waiting for controller to process the resource")
-			statusHelper.WaitForPhaseAny(proxy.Name, []mcpv1alpha1.MCPRemoteProxyPhase{
-				mcpv1alpha1.MCPRemoteProxyPhasePending,
-				mcpv1alpha1.MCPRemoteProxyPhaseReady,
+			statusHelper.WaitForPhaseAny(proxy.Name, []mcpv1beta1.MCPRemoteProxyPhase{
+				mcpv1beta1.MCPRemoteProxyPhasePending,
+				mcpv1beta1.MCPRemoteProxyPhaseReady,
 			}, MediumTimeout)
 
 			By("verifying that the AuthConfigured condition does not exist (valid config)")
 			_, err := proxyHelper.GetRemoteProxyCondition(
-				proxy.Name, mcpv1alpha1.ConditionTypeAuthConfigured,
+				proxy.Name, mcpv1beta1.ConditionTypeAuthConfigured,
 			)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("not found"))
@@ -355,18 +355,18 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 					Create(proxyHelper)
 
 				By("waiting for the proxy to reach Failed phase due to missing ExternalAuthConfig")
-				statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
+				statusHelper.WaitForPhase(proxy.Name, mcpv1beta1.MCPRemoteProxyPhaseFailed, MediumTimeout)
 
 				By("verifying the AuthConfigured condition indicates invalid auth")
 				statusHelper.WaitForConditionReason(
 					proxy.Name,
-					mcpv1alpha1.ConditionTypeAuthConfigured,
-					mcpv1alpha1.ConditionReasonAuthInvalid,
+					mcpv1beta1.ConditionTypeAuthConfigured,
+					mcpv1beta1.ConditionReasonAuthInvalid,
 					MediumTimeout,
 				)
 
 				condition, err := proxyHelper.GetRemoteProxyCondition(
-					proxy.Name, mcpv1alpha1.ConditionTypeAuthConfigured,
+					proxy.Name, mcpv1beta1.ConditionTypeAuthConfigured,
 				)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(condition.Status).To(Equal(metav1.ConditionFalse))
@@ -379,16 +379,16 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 
 			It("should successfully reconcile when referenced MCPExternalAuthConfig exists", func() {
 				By("creating an MCPExternalAuthConfig")
-				authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+				authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-auth-config",
 						Namespace: testNamespace,
 					},
-					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-						Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-						HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+						Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+						HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 							HeaderName: "X-API-Key",
-							ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 								Name: "api-key-secret",
 								Key:  "key",
 							},
@@ -399,7 +399,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 
 				By("waiting for MCPExternalAuthConfig to have a ConfigHash")
 				Eventually(func() string {
-					config := &mcpv1alpha1.MCPExternalAuthConfig{}
+					config := &mcpv1beta1.MCPExternalAuthConfig{}
 					if err := k8sClient.Get(testCtx, types.NamespacedName{
 						Namespace: testNamespace,
 						Name:      authConfig.Name,
@@ -418,18 +418,18 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 				hash := proxyHelper.WaitForExternalAuthConfigHash(proxy.Name, MediumTimeout)
 
 				By("verifying phase is Pending (not Failed)")
-				statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhasePending, MediumTimeout)
+				statusHelper.WaitForPhase(proxy.Name, mcpv1beta1.MCPRemoteProxyPhasePending, MediumTimeout)
 
 				By("verifying the ExternalAuthConfigHash is tracked in status")
 				Expect(hash).NotTo(BeEmpty())
 
 				By("verifying the ExternalAuthConfigValidated condition is True")
 				condition, err := proxyHelper.GetRemoteProxyCondition(
-					proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+					proxy.Name, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
 				)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(condition.Status).To(Equal(metav1.ConditionTrue))
-				Expect(condition.Reason).To(Equal(mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid))
+				Expect(condition.Reason).To(Equal(mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid))
 				Expect(condition.Message).To(ContainSubstring("test-auth-config"))
 
 				By("cleaning up the auth config")
@@ -438,16 +438,16 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 
 			It("should trigger reconciliation when MCPExternalAuthConfig is updated", func() {
 				By("creating an MCPExternalAuthConfig")
-				authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+				authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-auth-update",
 						Namespace: testNamespace,
 					},
-					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-						Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-						HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+						Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+						HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 							HeaderName: "X-Original-Header",
-							ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 								Name: "original-secret",
 								Key:  "key",
 							},
@@ -459,7 +459,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 				By("waiting for MCPExternalAuthConfig to have a ConfigHash")
 				var originalHash string
 				Eventually(func() string {
-					config := &mcpv1alpha1.MCPExternalAuthConfig{}
+					config := &mcpv1beta1.MCPExternalAuthConfig{}
 					if err := k8sClient.Get(testCtx, types.NamespacedName{
 						Namespace: testNamespace,
 						Name:      authConfig.Name,
@@ -486,7 +486,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 
 				By("updating the MCPExternalAuthConfig")
 				Eventually(func() error {
-					config := &mcpv1alpha1.MCPExternalAuthConfig{}
+					config := &mcpv1beta1.MCPExternalAuthConfig{}
 					if err := k8sClient.Get(testCtx, types.NamespacedName{
 						Namespace: testNamespace,
 						Name:      authConfig.Name,
@@ -499,7 +499,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 
 				By("waiting for the auth config hash to change")
 				Eventually(func() string {
-					config := &mcpv1alpha1.MCPExternalAuthConfig{}
+					config := &mcpv1beta1.MCPExternalAuthConfig{}
 					if err := k8sClient.Get(testCtx, types.NamespacedName{
 						Namespace: testNamespace,
 						Name:      authConfig.Name,
@@ -525,18 +525,18 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 					Create(proxyHelper)
 
 				By("waiting for the proxy to reach Failed phase due to missing ToolConfig")
-				statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
+				statusHelper.WaitForPhase(proxy.Name, mcpv1beta1.MCPRemoteProxyPhaseFailed, MediumTimeout)
 
 				By("verifying the ToolConfigValidated condition indicates not found")
 				statusHelper.WaitForConditionReason(
 					proxy.Name,
-					mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated,
-					mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigNotFound,
+					mcpv1beta1.ConditionTypeMCPRemoteProxyToolConfigValidated,
+					mcpv1beta1.ConditionReasonMCPRemoteProxyToolConfigNotFound,
 					MediumTimeout,
 				)
 
 				condition, err := proxyHelper.GetRemoteProxyCondition(
-					proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated,
+					proxy.Name, mcpv1beta1.ConditionTypeMCPRemoteProxyToolConfigValidated,
 				)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(condition.Status).To(Equal(metav1.ConditionFalse))
@@ -545,12 +545,12 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 
 			It("should successfully reconcile when referenced MCPToolConfig exists", func() {
 				By("creating an MCPToolConfig")
-				toolConfig := &mcpv1alpha1.MCPToolConfig{
+				toolConfig := &mcpv1beta1.MCPToolConfig{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-tool-config",
 						Namespace: testNamespace,
 					},
-					Spec: mcpv1alpha1.MCPToolConfigSpec{
+					Spec: mcpv1beta1.MCPToolConfigSpec{
 						ToolsFilter: []string{"tool1", "tool2"},
 					},
 				}
@@ -558,7 +558,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 
 				By("waiting for MCPToolConfig to have a ConfigHash")
 				Eventually(func() string {
-					config := &mcpv1alpha1.MCPToolConfig{}
+					config := &mcpv1beta1.MCPToolConfig{}
 					if err := k8sClient.Get(testCtx, types.NamespacedName{
 						Namespace: testNamespace,
 						Name:      toolConfig.Name,
@@ -577,18 +577,18 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 				hash := proxyHelper.WaitForToolConfigHash(proxy.Name, MediumTimeout)
 
 				By("verifying phase is Pending (not Failed)")
-				statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhasePending, MediumTimeout)
+				statusHelper.WaitForPhase(proxy.Name, mcpv1beta1.MCPRemoteProxyPhasePending, MediumTimeout)
 
 				By("verifying the ToolConfigHash is tracked in status")
 				Expect(hash).NotTo(BeEmpty())
 
 				By("verifying the ToolConfigValidated condition is True")
 				condition, err := proxyHelper.GetRemoteProxyCondition(
-					proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated,
+					proxy.Name, mcpv1beta1.ConditionTypeMCPRemoteProxyToolConfigValidated,
 				)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(condition.Status).To(Equal(metav1.ConditionTrue))
-				Expect(condition.Reason).To(Equal(mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigValid))
+				Expect(condition.Reason).To(Equal(mcpv1beta1.ConditionReasonMCPRemoteProxyToolConfigValid))
 				Expect(condition.Message).To(ContainSubstring("test-tool-config"))
 
 				By("cleaning up the tool config")
@@ -597,12 +597,12 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 
 			It("should propagate tool config changes to the RunConfig ConfigMap", func() {
 				By("creating an MCPToolConfig with initial filter")
-				toolConfig := &mcpv1alpha1.MCPToolConfig{
+				toolConfig := &mcpv1beta1.MCPToolConfig{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-tool-propagate",
 						Namespace: testNamespace,
 					},
-					Spec: mcpv1alpha1.MCPToolConfigSpec{
+					Spec: mcpv1beta1.MCPToolConfigSpec{
 						ToolsFilter: []string{"initial-tool"},
 					},
 				}
@@ -611,7 +611,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 				By("waiting for MCPToolConfig to have a ConfigHash")
 				var initialHash string
 				Eventually(func() string {
-					config := &mcpv1alpha1.MCPToolConfig{}
+					config := &mcpv1beta1.MCPToolConfig{}
 					if err := k8sClient.Get(testCtx, types.NamespacedName{
 						Namespace: testNamespace,
 						Name:      toolConfig.Name,
@@ -641,7 +641,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 
 				By("updating the MCPToolConfig with new filter")
 				Eventually(func() error {
-					config := &mcpv1alpha1.MCPToolConfig{}
+					config := &mcpv1beta1.MCPToolConfig{}
 					if err := k8sClient.Get(testCtx, types.NamespacedName{
 						Namespace: testNamespace,
 						Name:      toolConfig.Name,
@@ -654,7 +654,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 
 				By("waiting for the tool config hash to change")
 				Eventually(func() string {
-					config := &mcpv1alpha1.MCPToolConfig{}
+					config := &mcpv1beta1.MCPToolConfig{}
 					if err := k8sClient.Get(testCtx, types.NamespacedName{
 						Namespace: testNamespace,
 						Name:      toolConfig.Name,
@@ -682,37 +682,37 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 				By("waiting for the GroupRefValidated condition to be False")
 				statusHelper.WaitForCondition(
 					proxy.Name,
-					mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
+					mcpv1beta1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 					metav1.ConditionFalse,
 					MediumTimeout,
 				)
 
 				By("verifying the GroupRefValidated condition details")
 				condition, err := proxyHelper.GetRemoteProxyCondition(
-					proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
+					proxy.Name, mcpv1beta1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 				)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-				Expect(condition.Reason).To(Equal(mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefNotFound))
+				Expect(condition.Reason).To(Equal(mcpv1beta1.ConditionReasonMCPRemoteProxyGroupRefNotFound))
 				Expect(condition.Message).To(ContainSubstring("non-existent-group"))
 			})
 
 			It("should set GroupRefValidated condition to True when referenced MCPGroup exists and is Ready", func() {
 				By("creating an MCPGroup")
-				mcpGroup := &mcpv1alpha1.MCPGroup{
+				mcpGroup := &mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-group-valid",
 						Namespace: testNamespace,
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
+					Spec: mcpv1beta1.MCPGroupSpec{
 						Description: "Test group for MCPRemoteProxy integration",
 					},
 				}
 				Expect(k8sClient.Create(testCtx, mcpGroup)).To(Succeed())
 
 				By("waiting for the MCPGroup to be Ready")
-				Eventually(func() mcpv1alpha1.MCPGroupPhase {
-					group := &mcpv1alpha1.MCPGroup{}
+				Eventually(func() mcpv1beta1.MCPGroupPhase {
+					group := &mcpv1beta1.MCPGroup{}
 					if err := k8sClient.Get(testCtx, types.NamespacedName{
 						Namespace: testNamespace,
 						Name:      mcpGroup.Name,
@@ -720,7 +720,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 						return ""
 					}
 					return group.Status.Phase
-				}, MediumTimeout, DefaultPollingInterval).Should(Equal(mcpv1alpha1.MCPGroupPhaseReady))
+				}, MediumTimeout, DefaultPollingInterval).Should(Equal(mcpv1beta1.MCPGroupPhaseReady))
 
 				By("creating an MCPRemoteProxy referencing the MCPGroup")
 				proxy := proxyHelper.NewRemoteProxyBuilder("test-group-valid").
@@ -730,18 +730,18 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 				By("waiting for the GroupRefValidated condition to be True")
 				statusHelper.WaitForCondition(
 					proxy.Name,
-					mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
+					mcpv1beta1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 					metav1.ConditionTrue,
 					MediumTimeout,
 				)
 
 				By("verifying the GroupRefValidated condition details")
 				condition, err := proxyHelper.GetRemoteProxyCondition(
-					proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
+					proxy.Name, mcpv1beta1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 				)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(condition.Status).To(Equal(metav1.ConditionTrue))
-				Expect(condition.Reason).To(Equal(mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefValidated))
+				Expect(condition.Reason).To(Equal(mcpv1beta1.ConditionReasonMCPRemoteProxyGroupRefValidated))
 				Expect(condition.Message).To(ContainSubstring("test-group-valid"))
 				Expect(condition.Message).To(ContainSubstring("valid and ready"))
 
@@ -759,14 +759,14 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 				proxy := proxyHelper.NewRemoteProxyBuilder("test-no-group").Create(proxyHelper)
 
 				By("waiting for the proxy to be reconciled")
-				statusHelper.WaitForPhaseAny(proxy.Name, []mcpv1alpha1.MCPRemoteProxyPhase{
-					mcpv1alpha1.MCPRemoteProxyPhasePending,
-					mcpv1alpha1.MCPRemoteProxyPhaseReady,
+				statusHelper.WaitForPhaseAny(proxy.Name, []mcpv1beta1.MCPRemoteProxyPhase{
+					mcpv1beta1.MCPRemoteProxyPhasePending,
+					mcpv1beta1.MCPRemoteProxyPhaseReady,
 				}, MediumTimeout)
 
 				By("verifying no GroupRefValidated condition exists")
 				_, err := proxyHelper.GetRemoteProxyCondition(
-					proxy.Name, mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
+					proxy.Name, mcpv1beta1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 				)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("not found"))
@@ -781,26 +781,26 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 				By("waiting for the GroupRefValidated condition to be False (NotFound)")
 				statusHelper.WaitForConditionReason(
 					proxy.Name,
-					mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
-					mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefNotFound,
+					mcpv1beta1.ConditionTypeMCPRemoteProxyGroupRefValidated,
+					mcpv1beta1.ConditionReasonMCPRemoteProxyGroupRefNotFound,
 					MediumTimeout,
 				)
 
 				By("creating the MCPGroup that was referenced")
-				mcpGroup := &mcpv1alpha1.MCPGroup{
+				mcpGroup := &mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-group-transition",
 						Namespace: testNamespace,
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
+					Spec: mcpv1beta1.MCPGroupSpec{
 						Description: "Test group for transition testing",
 					},
 				}
 				Expect(k8sClient.Create(testCtx, mcpGroup)).To(Succeed())
 
 				By("waiting for the MCPGroup to become Ready")
-				Eventually(func() mcpv1alpha1.MCPGroupPhase {
-					group := &mcpv1alpha1.MCPGroup{}
+				Eventually(func() mcpv1beta1.MCPGroupPhase {
+					group := &mcpv1beta1.MCPGroup{}
 					if err := k8sClient.Get(testCtx, types.NamespacedName{
 						Namespace: testNamespace,
 						Name:      mcpGroup.Name,
@@ -808,7 +808,7 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 						return ""
 					}
 					return group.Status.Phase
-				}, MediumTimeout, DefaultPollingInterval).Should(Equal(mcpv1alpha1.MCPGroupPhaseReady))
+				}, MediumTimeout, DefaultPollingInterval).Should(Equal(mcpv1beta1.MCPGroupPhaseReady))
 
 				By("triggering reconciliation by updating the proxy")
 				Eventually(func() error {
@@ -826,8 +826,8 @@ var _ = Describe("MCPRemoteProxy Controller", Label("k8s", "remoteproxy"), func(
 				By("waiting for the GroupRefValidated condition to become True")
 				statusHelper.WaitForConditionReason(
 					proxy.Name,
-					mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
-					mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefValidated,
+					mcpv1beta1.ConditionTypeMCPRemoteProxyGroupRefValidated,
+					mcpv1beta1.ConditionReasonMCPRemoteProxyGroupRefValidated,
 					MediumTimeout,
 				)
 

@@ -16,7 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -64,16 +64,16 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 			vmcpName = fmt.Sprintf("e2e-scale-vmcp-%d", ts)
 
 			ginkgo.By("Creating MCPGroup")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPGroup{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
-				Spec:       mcpv1alpha1.MCPGroupSpec{Description: "E2E scaling group"},
+				Spec:       mcpv1beta1.MCPGroupSpec{Description: "E2E scaling group"},
 			})).To(gomega.Succeed())
 
 			ginkgo.By("Creating backend MCPServer")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+				Spec: mcpv1beta1.MCPServerSpec{
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
@@ -83,28 +83,28 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 
 			replicas := int32(2)
 			ginkgo.By("Creating VirtualMCPServer with replicas=2")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:     &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
+					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
 					Replicas:     &replicas,
 				},
 			})).To(gomega.Succeed())
 		})
 
 		ginkgo.AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 			})
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 			})
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
 			})
 			gomega.Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, &mcpv1alpha1.VirtualMCPServer{})
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, &mcpv1beta1.VirtualMCPServer{})
 				return apierrors.IsNotFound(err)
 			}, timeout, pollInterval).Should(gomega.BeTrue())
 		})
@@ -128,21 +128,21 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 
 		ginkgo.It("Should set SessionStorageWarning condition when Redis is not configured", func() {
 			WaitForCondition(ctx, k8sClient, vmcpName, defaultNamespace,
-				mcpv1alpha1.ConditionSessionStorageWarning, "True",
+				mcpv1beta1.ConditionSessionStorageWarning, "True",
 				timeout, pollInterval)
 
-			vmcp := &mcpv1alpha1.VirtualMCPServer{}
+			vmcp := &mcpv1beta1.VirtualMCPServer{}
 			gomega.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, vmcp)).To(gomega.Succeed())
 
 			var warningCond *metav1.Condition
 			for i, cond := range vmcp.Status.Conditions {
-				if cond.Type == mcpv1alpha1.ConditionSessionStorageWarning {
+				if cond.Type == mcpv1beta1.ConditionSessionStorageWarning {
 					warningCond = &vmcp.Status.Conditions[i]
 					break
 				}
 			}
 			gomega.Expect(warningCond).NotTo(gomega.BeNil())
-			gomega.Expect(warningCond.Reason).To(gomega.Equal(mcpv1alpha1.ConditionReasonSessionStorageMissing))
+			gomega.Expect(warningCond.Reason).To(gomega.Equal(mcpv1beta1.ConditionReasonSessionStorageMissing))
 		})
 	})
 
@@ -164,16 +164,16 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 			vmcpName = fmt.Sprintf("e2e-scale-lc-vmcp-%d", ts)
 
 			ginkgo.By("Creating MCPGroup")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPGroup{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
-				Spec:       mcpv1alpha1.MCPGroupSpec{Description: "E2E scaling lifecycle group"},
+				Spec:       mcpv1beta1.MCPGroupSpec{Description: "E2E scaling lifecycle group"},
 			})).To(gomega.Succeed())
 
 			ginkgo.By("Creating backend MCPServer")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+				Spec: mcpv1beta1.MCPServerSpec{
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
@@ -183,11 +183,11 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 
 			replicas := int32(1)
 			ginkgo.By("Creating VirtualMCPServer with replicas=1")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:     &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
+					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
 					Replicas:     &replicas,
 					ServiceType:  "NodePort",
 				},
@@ -198,17 +198,17 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 		})
 
 		ginkgo.AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 			})
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 			})
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
 			})
 			gomega.Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, &mcpv1alpha1.VirtualMCPServer{})
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, &mcpv1beta1.VirtualMCPServer{})
 				return apierrors.IsNotFound(err)
 			}, timeout, pollInterval).Should(gomega.BeTrue())
 		})
@@ -219,14 +219,14 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 			}, timeout, pollInterval).Should(gomega.Equal(1))
 
 			WaitForCondition(ctx, k8sClient, vmcpName, defaultNamespace,
-				mcpv1alpha1.ConditionSessionStorageWarning, "False",
+				mcpv1beta1.ConditionSessionStorageWarning, "False",
 				timeout, pollInterval)
 		})
 
 		ginkgo.It("Should update Deployment replicas and set SessionStorageWarning after scaling to 2", func() {
 			ginkgo.By("Scaling VirtualMCPServer to 2 replicas")
 			gomega.Eventually(func() error {
-				vmcp := &mcpv1alpha1.VirtualMCPServer{}
+				vmcp := &mcpv1beta1.VirtualMCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, vmcp); err != nil {
 					return err
 				}
@@ -254,14 +254,14 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 
 			ginkgo.By("Verifying SessionStorageWarning is now set")
 			WaitForCondition(ctx, k8sClient, vmcpName, defaultNamespace,
-				mcpv1alpha1.ConditionSessionStorageWarning, "True",
+				mcpv1beta1.ConditionSessionStorageWarning, "True",
 				timeout, pollInterval)
 		})
 
 		ginkgo.It("Should clear SessionStorageWarning when scaled back to 1", func() {
 			ginkgo.By("Scaling VirtualMCPServer back to 1 replica")
 			gomega.Eventually(func() error {
-				vmcp := &mcpv1alpha1.VirtualMCPServer{}
+				vmcp := &mcpv1beta1.VirtualMCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, vmcp); err != nil {
 					return err
 				}
@@ -272,7 +272,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Horizontal Scaling", func() {
 
 			ginkgo.By("Verifying SessionStorageWarning is cleared")
 			WaitForCondition(ctx, k8sClient, vmcpName, defaultNamespace,
-				mcpv1alpha1.ConditionSessionStorageWarning, "False",
+				mcpv1beta1.ConditionSessionStorageWarning, "False",
 				timeout, pollInterval)
 		})
 	})

@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 func TestToolConfigReconciler_EdgeCases(t *testing.T) {
@@ -29,7 +29,7 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		ctx := t.Context()
 
 		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -58,16 +58,16 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		ctx := t.Context()
 
 		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-		toolConfig := &mcpv1alpha1.MCPToolConfig{
+		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-config",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPToolConfigSpec{
+			Spec: mcpv1beta1.MCPToolConfigSpec{
 				ToolsFilter: []string{"tool1", "tool2"},
-				ToolsOverride: map[string]mcpv1alpha1.ToolOverride{
+				ToolsOverride: map[string]mcpv1beta1.ToolOverride{
 					"tool1": {
 						Name:        "renamed-tool1",
 						Description: "Custom description",
@@ -76,14 +76,14 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 			},
 		}
 
-		mcpServer := &mcpv1alpha1.MCPServer{
+		mcpServer := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-server",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPServerSpec{
+			Spec: mcpv1beta1.MCPServerSpec{
 				Image: "test-image",
-				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 					Name: "test-config",
 				},
 			},
@@ -92,7 +92,7 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithObjects(toolConfig, mcpServer).
-			WithStatusSubresource(&mcpv1alpha1.MCPToolConfig{}).
+			WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 			Build()
 
 		r := &ToolConfigReconciler{
@@ -118,12 +118,12 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 		// Verify status was updated
-		var updatedConfig mcpv1alpha1.MCPToolConfig
+		var updatedConfig mcpv1beta1.MCPToolConfig
 		err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 		require.NoError(t, err)
 		assert.NotEmpty(t, updatedConfig.Status.ConfigHash)
 		assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-			mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "test-server"})
+			mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "test-server"})
 	})
 
 	t.Run("reconcile with changed spec", func(t *testing.T) {
@@ -131,18 +131,18 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		ctx := t.Context()
 
 		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-		toolConfig := &mcpv1alpha1.MCPToolConfig{
+		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       "test-config",
 				Namespace:  "default",
 				Finalizers: []string{ToolConfigFinalizerName},
 			},
-			Spec: mcpv1alpha1.MCPToolConfigSpec{
+			Spec: mcpv1beta1.MCPToolConfigSpec{
 				ToolsFilter: []string{"tool1"},
 			},
-			Status: mcpv1alpha1.MCPToolConfigStatus{
+			Status: mcpv1beta1.MCPToolConfigStatus{
 				ConfigHash: "oldhash",
 			},
 		}
@@ -150,7 +150,7 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithObjects(toolConfig).
-			WithStatusSubresource(&mcpv1alpha1.MCPToolConfig{}).
+			WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 			Build()
 
 		r := &ToolConfigReconciler{
@@ -177,7 +177,7 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 		// Verify hash was updated
-		var updatedConfig mcpv1alpha1.MCPToolConfig
+		var updatedConfig mcpv1beta1.MCPToolConfig
 		err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 		require.NoError(t, err)
 		assert.NotEqual(t, "oldhash", updatedConfig.Status.ConfigHash)
@@ -193,15 +193,15 @@ func TestToolConfigReconciler_ErrorScenarios(t *testing.T) {
 		ctx := t.Context()
 
 		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-		toolConfig := &mcpv1alpha1.MCPToolConfig{
+		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       "test-config",
 				Namespace:  "default",
 				Finalizers: []string{ToolConfigFinalizerName},
 			},
-			Spec: mcpv1alpha1.MCPToolConfigSpec{
+			Spec: mcpv1beta1.MCPToolConfigSpec{
 				ToolsFilter: []string{"tool1"},
 			},
 		}
@@ -211,7 +211,7 @@ func TestToolConfigReconciler_ErrorScenarios(t *testing.T) {
 			Client: fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(toolConfig).
-				WithStatusSubresource(&mcpv1alpha1.MCPToolConfig{}).
+				WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 				Build(),
 			listError: errors.New("list error"),
 		}
@@ -256,16 +256,16 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 		ctx := t.Context()
 
 		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-		toolConfig := &mcpv1alpha1.MCPToolConfig{
+		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "shared-config",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPToolConfigSpec{
+			Spec: mcpv1beta1.MCPToolConfigSpec{
 				ToolsFilter: []string{"tool1", "tool2", "tool3"},
-				ToolsOverride: map[string]mcpv1alpha1.ToolOverride{
+				ToolsOverride: map[string]mcpv1beta1.ToolOverride{
 					"tool1": {
 						Name:        "custom-tool1",
 						Description: "Customized tool 1",
@@ -275,15 +275,15 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 		}
 
 		// Create multiple MCPServers referencing the same MCPToolConfig
-		mcpServers := []*mcpv1alpha1.MCPServer{
+		mcpServers := []*mcpv1beta1.MCPServer{
 			{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "server1",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 						Name: "shared-config",
 					},
 				},
@@ -293,9 +293,9 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 					Name:      "server2",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 						Name: "shared-config",
 					},
 				},
@@ -305,9 +305,9 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 					Name:      "server3",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 						Name: "shared-config",
 					},
 				},
@@ -322,7 +322,7 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithObjects(objs...).
-			WithStatusSubresource(&mcpv1alpha1.MCPToolConfig{}).
+			WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 			Build()
 
 		r := &ToolConfigReconciler{
@@ -348,16 +348,16 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 		assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 		// Verify all servers are listed in status
-		var updatedConfig mcpv1alpha1.MCPToolConfig
+		var updatedConfig mcpv1beta1.MCPToolConfig
 		err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 		require.NoError(t, err)
 		assert.Len(t, updatedConfig.Status.ReferencingWorkloads, 3)
 		assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-			mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server1"})
+			mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server1"})
 		assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-			mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server2"})
+			mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server2"})
 		assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-			mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server3"})
+			mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server3"})
 	})
 
 	t.Run("empty MCPToolConfig spec", func(t *testing.T) {
@@ -365,15 +365,15 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 		ctx := t.Context()
 
 		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 		// MCPToolConfig with completely empty spec
-		toolConfig := &mcpv1alpha1.MCPToolConfig{
+		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "empty-config",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPToolConfigSpec{
+			Spec: mcpv1beta1.MCPToolConfigSpec{
 				// Empty spec - no filters, no overrides
 			},
 		}
@@ -381,7 +381,7 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithObjects(toolConfig).
-			WithStatusSubresource(&mcpv1alpha1.MCPToolConfig{}).
+			WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 			Build()
 
 		r := &ToolConfigReconciler{
@@ -407,7 +407,7 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 		assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 		// Verify hash was generated even for empty spec
-		var updatedConfig mcpv1alpha1.MCPToolConfig
+		var updatedConfig mcpv1beta1.MCPToolConfig
 		err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 		require.NoError(t, err)
 		assert.NotEmpty(t, updatedConfig.Status.ConfigHash)

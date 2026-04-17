@@ -17,7 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -69,19 +69,19 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 		},
 	}
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-mcp-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:           "test-image:latest",
 			Transport:       "stdio",
 			ProxyPort:       8080,
 			PodTemplateSpec: podTemplateSpecToRawExtension(t, podTemplateSpec),
-			ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-				ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-					PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+			ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+				ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+					PodTemplateMetadataOverrides: &mcpv1beta1.ResourceMetadataOverrides{
 						Labels: map[string]string{
 							"podspec-testlabel": "true",
 						},
@@ -94,8 +94,8 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 	// Create a new scheme for this test to avoid race conditions
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServer{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServerList{})
 
 	// Create a reconciler with the scheme
 	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
@@ -170,12 +170,12 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 	t.Parallel()
 	// Create a test MCPServer
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-mcp-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
 			ProxyPort: 8080,
@@ -185,8 +185,8 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 	// Create a new scheme for this test to avoid race conditions
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServer{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServerList{})
 
 	// Create a reconciler with the scheme
 	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
@@ -201,17 +201,17 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 	t.Parallel()
 	// Create a test MCPServer with secrets and custom service account
 	customSA := "custom-mcp-sa"
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-mcp-server-secrets",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:          "test-image:latest",
 			Transport:      "stdio",
 			ProxyPort:      8080,
 			ServiceAccount: &customSA,
-			Secrets: []mcpv1alpha1.SecretRef{
+			Secrets: []mcpv1beta1.SecretRef{
 				{
 					Name:          "github-token",
 					Key:           "token",
@@ -229,8 +229,8 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 	// Create a new scheme for this test to avoid race conditions
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServer{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServerList{})
 
 	// Create a reconciler with the scheme
 	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
@@ -311,12 +311,12 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 	t.Parallel()
 
 	// Create a test MCPServer
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-mcp-server-env",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
 			ProxyPort: 8080,
@@ -326,8 +326,8 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 	// Create a new scheme for this test to avoid race conditions
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServer{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServerList{})
 
 	// Create a reconciler with the scheme
 	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
@@ -358,12 +358,12 @@ func TestProxyRunnerStructuredLogsEnvVar(t *testing.T) {
 	t.Parallel()
 
 	// Create a test MCPServer
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-mcp-server-logs",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
 			ProxyPort: 8080,
@@ -373,8 +373,8 @@ func TestProxyRunnerStructuredLogsEnvVar(t *testing.T) {
 	// Create a new scheme for this test to avoid race conditions
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServer{})
+	s.AddKnownTypes(mcpv1beta1.GroupVersion, &mcpv1beta1.MCPServerList{})
 
 	// Create a reconciler with the scheme
 	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)

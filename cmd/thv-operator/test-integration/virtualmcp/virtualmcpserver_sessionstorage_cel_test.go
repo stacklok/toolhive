@@ -9,19 +9,19 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
-func newVirtualMCPServerWithSessionStorage(name string, ss *mcpv1alpha1.SessionStorageConfig) *mcpv1alpha1.VirtualMCPServer {
-	return &mcpv1alpha1.VirtualMCPServer{
+func newVirtualMCPServerWithSessionStorage(name string, ss *mcpv1beta1.SessionStorageConfig) *mcpv1beta1.VirtualMCPServer {
+	return &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
 			Config: vmcpconfig.Config{
@@ -36,7 +36,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 	Label("k8s", "cel", "validation"), func() {
 		Context("provider=redis", func() {
 			It("should reject when address is missing", func() {
-				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-no-addr", &mcpv1alpha1.SessionStorageConfig{
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-no-addr", &mcpv1beta1.SessionStorageConfig{
 					Provider: "redis",
 				})
 				err := k8sClient.Create(ctx, vmcp)
@@ -45,7 +45,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 			})
 
 			It("should reject when address is empty string", func() {
-				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-empty-addr", &mcpv1alpha1.SessionStorageConfig{
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-empty-addr", &mcpv1beta1.SessionStorageConfig{
 					Provider: "redis",
 					Address:  "",
 				})
@@ -54,7 +54,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 			})
 
 			It("should accept when address is set", func() {
-				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-with-addr", &mcpv1alpha1.SessionStorageConfig{
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-with-addr", &mcpv1beta1.SessionStorageConfig{
 					Provider: "redis",
 					Address:  "redis:6379",
 				})
@@ -63,7 +63,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 			})
 
 			It("should reject negative DB number", func() {
-				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-neg-db", &mcpv1alpha1.SessionStorageConfig{
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-neg-db", &mcpv1beta1.SessionStorageConfig{
 					Provider: "redis",
 					Address:  "redis:6379",
 					DB:       -1,
@@ -75,7 +75,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 
 		Context("provider=memory", func() {
 			It("should accept without address", func() {
-				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-memory-no-addr", &mcpv1alpha1.SessionStorageConfig{
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-memory-no-addr", &mcpv1beta1.SessionStorageConfig{
 					Provider: "memory",
 				})
 				err := k8sClient.Create(ctx, vmcp)

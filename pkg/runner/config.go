@@ -507,14 +507,28 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	}
 	c.Port = selectedPort
 
-	// Select a target port for the container if using SSE or Streamable HTTP transport
+	// Select a target port for the container if using SSE or Streamable HTTP transport.
+	// The target port is the port the MCP server listens on *inside the
+	// container*, so it must not be validated against host port
+	// availability: if the requested target port happens to be busy on
+	// the host, networking.FindOrUsePort would silently swap in a
+	// random alternative and the proxy would end up pointing at the
+	// wrong container-internal port. Only fall through to
+	// FindOrUsePort when no target port was requested, so we still
+	// pick an available number for the proxy side to route to. See
+	// stacklok/toolhive#4761.
 	if c.Transport == types.TransportTypeSSE || c.Transport == types.TransportTypeStreamableHTTP {
-		selectedTargetPort, err := networking.FindOrUsePort(targetPort)
-		if err != nil {
-			return c, fmt.Errorf("target port error: %w", err)
+		if targetPort != 0 {
+			slog.Debug("using requested target port", "port", targetPort)
+			c.TargetPort = targetPort
+		} else {
+			selectedTargetPort, err := networking.FindOrUsePort(0)
+			if err != nil {
+				return c, fmt.Errorf("target port error: %w", err)
+			}
+			slog.Debug("using target port", "port", selectedTargetPort)
+			c.TargetPort = selectedTargetPort
 		}
-		slog.Debug("using target port", "port", selectedTargetPort)
-		c.TargetPort = selectedTargetPort
 	}
 
 	return c, nil

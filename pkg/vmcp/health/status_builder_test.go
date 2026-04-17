@@ -84,7 +84,7 @@ func TestBuildConditions(t *testing.T) {
 			phase:                  vmcp.PhaseFailed,
 			configuredBackendCount: 2,
 			expectedReadyStatus:    metav1.ConditionFalse,
-			expectedReason:         "NoHealthyBackends",
+			expectedReason:         "NoRoutableBackends",
 			hasDegradedCond:        false,
 		},
 		{

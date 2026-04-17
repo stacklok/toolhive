@@ -400,7 +400,7 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 				Type:               "Ready",
 				Status:             metav1.ConditionFalse,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "NoHealthyBackends",
+				Reason:             "NoRoutableBackends",
 				Message:            "No routable backends available",
 			},
 		},
@@ -418,7 +418,7 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, updated.Status.Conditions, 1)
 	assert.Equal(t, metav1.ConditionFalse, updated.Status.Conditions[0].Status)
-	assert.Equal(t, "NoHealthyBackends", updated.Status.Conditions[0].Reason)
+	assert.Equal(t, "NoRoutableBackends", updated.Status.Conditions[0].Reason)
 	assert.Equal(t, "No routable backends available", updated.Status.Conditions[0].Message)
 }
 

@@ -884,7 +884,7 @@ func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount i
 		readyCondition.Reason = "SomeBackendsUnhealthy"
 		readyCondition.Message = fmt.Sprintf("%d/%d backends routable", summary.Routable(), summary.Total)
 	case vmcp.PhaseFailed:
-		readyCondition.Reason = "NoHealthyBackends"
+		readyCondition.Reason = "NoRoutableBackends"
 		readyCondition.Message = "No routable backends available"
 	case vmcp.PhasePending:
 		readyCondition.Reason = "BackendsPending"

@@ -30,22 +30,22 @@ func TestFormatSystemSecretEntry(t *testing.T) {
 		{
 			name:     "simple scope and name",
 			key:      "__thv_auth_session",
-			expected: "  - session  [auth]",
+			expected: "  - __thv_auth_session  [auth]",
 		},
 		{
 			name:     "name contains underscores, only first underscore splits scope",
 			key:      "__thv_registry_REGISTRY_OAUTH_abc12345",
-			expected: "  - REGISTRY_OAUTH_abc12345  [registry]",
+			expected: "  - __thv_registry_REGISTRY_OAUTH_abc12345  [registry]",
 		},
 		{
 			name:     "name contains underscore",
 			key:      "__thv_workloads_token_abc",
-			expected: "  - token_abc  [workloads]",
+			expected: "  - __thv_workloads_token_abc  [workloads]",
 		},
 		{
 			name:     "name with multiple underscores",
 			key:      "__thv_auth_session_access",
-			expected: "  - session_access  [auth]",
+			expected: "  - __thv_auth_session_access  [auth]",
 		},
 	}
 
@@ -133,8 +133,8 @@ func TestRunSystemSecretList(t *testing.T) {
 			},
 			wantContains: []string{
 				"System-managed secrets:",
-				"  - session  [auth]",
-				"  - REGISTRY_OAUTH_abc12345  [registry]",
+				"  - __thv_auth_session  [auth]",
+				"  - __thv_registry_REGISTRY_OAUTH_abc12345  [registry]",
 			},
 		},
 		{
@@ -143,7 +143,7 @@ func TestRunSystemSecretList(t *testing.T) {
 				{Key: "my-user-secret"},
 				{Key: "__thv_auth_session"},
 			},
-			wantContains: []string{"  - session  [auth]"},
+			wantContains: []string{"  - __thv_auth_session  [auth]"},
 			wantAbsent:   []string{"my-user-secret"},
 		},
 		{
@@ -287,8 +287,8 @@ func TestRunSystemSecretListIntegration(t *testing.T) {
 
 	out := buf.String()
 	require.Contains(t, out, "System-managed secrets:")
-	require.Contains(t, out, "  - session  [auth]")
-	require.Contains(t, out, "  - REGISTRY_OAUTH_deadbeef  [registry]")
+	require.Contains(t, out, "  - __thv_auth_session  [auth]")
+	require.Contains(t, out, "  - __thv_registry_REGISTRY_OAUTH_deadbeef  [registry]")
 	require.NotContains(t, out, "user-visible-secret")
 }
 

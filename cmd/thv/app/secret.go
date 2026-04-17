@@ -532,10 +532,11 @@ func runSystemSecretDelete(ctx context.Context, provider secrets.Provider, name 
 
 // formatSystemSecretEntry formats a system-managed secret key for display.
 // Key format: __thv_<scope>_<name>
+// The full key is shown so it can be passed directly to "thv secret delete --system".
 func formatSystemSecretEntry(key string) string {
 	rest := strings.TrimPrefix(key, secrets.SystemKeyPrefix)
-	scope, name, _ := strings.Cut(rest, "_")
-	return fmt.Sprintf("  - %s  [%s]", name, scope)
+	scope, _, _ := strings.Cut(rest, "_")
+	return fmt.Sprintf("  - %s  [%s]", key, scope)
 }
 
 // validateSystemKeyName returns an error if name is not a system-managed key.

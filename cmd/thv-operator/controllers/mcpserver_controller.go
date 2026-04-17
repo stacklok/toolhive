@@ -1654,6 +1654,20 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 				})
 			}
 		}
+
+		// Add embedded auth server environment variables. AuthServerRef takes precedence;
+		// externalAuthConfigRef is used as a fallback (legacy path).
+		if configName := ctrlutil.EmbeddedAuthServerConfigName(
+			mcpServer.Spec.ExternalAuthConfigRef, mcpServer.Spec.AuthServerRef,
+		); configName != "" {
+			_, _, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigByName(
+				ctx, r.Client, mcpServer.Namespace, configName,
+			)
+			if err != nil {
+				return true
+			}
+			expectedProxyEnv = append(expectedProxyEnv, authServerEnvVars...)
+		}
 		// Add default environment variables that are always injected
 		expectedProxyEnv = ctrlutil.EnsureRequiredEnvVars(ctx, expectedProxyEnv)
 		if !equality.Semantic.DeepEqual(container.Env, expectedProxyEnv) {

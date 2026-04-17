@@ -131,8 +131,10 @@ spec:
                     type: string
                   jwksAllowPrivateIP:
                     default: false
-                    description: JWKSAllowPrivateIP allows JWKS/OIDC endpoints on
-                      private IP addresses
+                    description: |-
+                      JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses.
+                      Note: at runtime, if either JWKSAllowPrivateIP or ProtectedResourceAllowPrivateIP
+                      is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
                     type: boolean
                   jwksAuthTokenPath:
                     description: JWKSAuthTokenPath is the path to file containing
@@ -143,8 +145,10 @@ spec:
                     type: string
                   protectedResourceAllowPrivateIP:
                     default: false
-                    description: ProtectedResourceAllowPrivateIP allows protected
-                      resource endpoint on private IP addresses
+                    description: |-
+                      ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses.
+                      Note: at runtime, if either ProtectedResourceAllowPrivateIP or JWKSAllowPrivateIP
+                      is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection).
                     type: boolean
                 required:
                 - issuer

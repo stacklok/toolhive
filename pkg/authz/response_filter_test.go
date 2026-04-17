@@ -88,7 +88,7 @@ func TestFindToolResponseFilter(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
@@ -239,7 +239,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 			`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	testCases := []struct {
@@ -432,7 +432,7 @@ func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Test that non-list operations pass through unchanged
@@ -481,7 +481,7 @@ func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Create an error response
@@ -534,7 +534,7 @@ func TestResponseFilteringWriter_ContentLengthMismatch(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Build the backend response: a tools/list result with 3 tools.
@@ -727,7 +727,7 @@ func TestOptimizerPassThroughToolsInResponseFilter(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: "[]",
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Build a tools/list response as the optimizer would produce it:

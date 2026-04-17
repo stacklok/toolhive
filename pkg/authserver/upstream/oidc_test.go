@@ -371,7 +371,42 @@ func TestNewOIDCProvider(t *testing.T) {
 		provider, err := NewOIDCProvider(ctx, config, WithForceConsentScreen(true))
 		require.NoError(t, err)
 		require.NotNil(t, provider)
-		// Force consent screen is tested in commit 2 with AuthorizationURL tests
+	})
+
+	t.Run("force consent screen overrides config-level prompt", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+				AdditionalAuthorizationParams: map[string]string{
+					"prompt":      "login",
+					"access_type": "offline",
+				},
+			},
+			Issuer: mock.issuer,
+		}
+
+		ctx := context.Background()
+		provider, err := NewOIDCProvider(ctx, config, WithForceConsentScreen(true))
+		require.NoError(t, err)
+
+		authURL, err := provider.AuthorizationURL("test-state", "")
+		require.NoError(t, err)
+
+		parsed, err := url.Parse(authURL)
+		require.NoError(t, err)
+
+		query := parsed.Query()
+		// ForceConsentScreen should override config-level prompt=login
+		assert.Equal(t, "consent", query.Get("prompt"))
+		// Config-level access_type should be preserved
+		assert.Equal(t, "offline", query.Get("access_type"))
 	})
 
 	t.Run("scopes without openid returns error", func(t *testing.T) {

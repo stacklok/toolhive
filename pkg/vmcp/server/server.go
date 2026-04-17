@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/stacklok/toolhive/pkg/audit"
@@ -489,6 +490,24 @@ func New(
 	// See handleSessionRegistration for implementation details.
 	hooks.AddOnRegisterSession(func(ctx context.Context, session server.ClientSession) {
 		srv.handleSessionRegistration(ctx, session)
+	})
+
+	// Register OnBeforeListTools hook for lazy session tool injection.
+	//
+	// When a session is reconstructed from Redis on a different pod (cross-pod sharing),
+	// the SDK's per-session tool store is empty because OnRegisterSession only fires
+	// during Initialize, which the client doesn't re-send to pod B. This hook lazily
+	// injects the tools from the VMCP session manager into the ephemeral SDK session
+	// before handleListTools reads from the per-session tool store.
+	hooks.AddBeforeListTools(func(ctx context.Context, _ any, _ *mcp.ListToolsRequest) {
+		srv.lazyInjectSessionTools(ctx)
+	})
+
+	// Register OnBeforeCallTool hook for the same reason as OnBeforeListTools.
+	// A client may call a tool directly without first calling tools/list, so we
+	// also need to ensure the tool handlers are registered before the call is routed.
+	hooks.AddBeforeCallTool(func(ctx context.Context, _ any, _ *mcp.CallToolRequest) {
+		srv.lazyInjectSessionTools(ctx)
 	})
 
 	// Disarm the close-on-error guard: Server is fully constructed.
@@ -1006,6 +1025,40 @@ func setSessionToolsDirect(session server.ClientSession, tools []server.ServerTo
 	}
 	sessionWithTools.SetSessionTools(toolMap)
 	return nil
+}
+
+// lazyInjectSessionTools injects tools into the SDK ephemeral session for sessions
+// that were reconstructed from Redis on a different pod (cross-pod session sharing).
+//
+// When a client connects to pod B with an existing session ID (established on pod A),
+// the SDK creates an ephemeral session with no tools because OnRegisterSession only fires
+// during Initialize, which the client doesn't re-send to pod B. This method is called
+// from OnBeforeListTools and OnBeforeCallTool hooks to lazily inject the tools before
+// the SDK handler reads from the per-session tool store.
+//
+// For sessions initialized on this pod (normal case), tools are already in the store
+// (set by setSessionToolsDirect during OnRegisterSession); this method is a no-op.
+func (s *Server) lazyInjectSessionTools(ctx context.Context) {
+	sess := server.ClientSessionFromContext(ctx)
+	if sess == nil {
+		return
+	}
+	sessionWithTools, ok := sess.(server.SessionWithTools)
+	if !ok {
+		return
+	}
+	if len(sessionWithTools.GetSessionTools()) > 0 {
+		return // tools already registered (normal pod-local case)
+	}
+	sessionID := sess.SessionID()
+	adaptedTools, err := s.vmcpSessionMgr.GetAdaptedTools(sessionID)
+	if err != nil || len(adaptedTools) == 0 {
+		slog.Debug("lazyInjectSessionTools: no tools available for session", "session_id", sessionID)
+		return
+	}
+	if err := setSessionToolsDirect(sess, adaptedTools); err != nil {
+		slog.Warn("lazyInjectSessionTools: failed to inject tools", "session_id", sessionID, "error", err)
+	}
 }
 
 // handleSessionRegistration processes a new MCP session registration.

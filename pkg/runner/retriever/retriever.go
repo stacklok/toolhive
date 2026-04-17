@@ -94,19 +94,15 @@ func ResolveMCPServer(
 		slog.Debug("No protocol scheme detected, attempting to retrieve image or registry server",
 			"server_or_image", serverOrImage)
 
-		// If group name is provided, look up server in the group first
+		// Registry-based group lookups are no longer supported.
 		if groupName != "" {
-			var err error
-			var server types.ServerMetadata
-			imageToUse, imageMetadata, server, err = handleGroupLookup(ctx, serverOrImage, groupName)
-			if err != nil {
-				return "", nil, err
-			}
-			// Handle remote servers early return
-			if server != nil && server.IsRemote() {
-				return serverOrImage, server, nil
-			}
-		} else {
+			return "", nil, fmt.Errorf(
+				"registry-based group %q is no longer supported; use 'thv group' commands to manage workload groups",
+				groupName,
+			)
+		}
+
+		{
 			var err error
 			var server types.ServerMetadata
 			imageToUse, imageMetadata, server, err = handleRegistryLookup(ctx, serverOrImage)
@@ -216,64 +212,6 @@ func handleProtocolScheme(
 	}
 	slog.Debug("Using built image", "image", generatedImage, "original", serverOrImage)
 	return generatedImage, nil
-}
-
-// handleGroupLookup handles the group lookup case
-func handleGroupLookup(
-	_ context.Context,
-	serverOrImage string,
-	groupName string,
-) (string, *types.ImageMetadata, types.ServerMetadata, error) {
-	var imageMetadata *types.ImageMetadata
-	var imageToUse string
-
-	provider, err := registry.GetDefaultProvider()
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to get registry provider: %w", err)
-	}
-
-	reg, err := provider.GetRegistry()
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to get registry: %w", err)
-	}
-
-	group, exists := reg.GetGroupByName(groupName)
-	if !exists {
-		return "", nil, nil, fmt.Errorf("group '%s' not found in registry", groupName)
-	}
-
-	// First check if the server exists and whether it's remote
-	var server types.ServerMetadata
-	var serverFound bool
-	if containerServer, exists := group.Servers[serverOrImage]; exists {
-		server = containerServer
-		serverFound = true
-	} else if remoteServer, exists := group.RemoteServers[serverOrImage]; exists {
-		server = remoteServer
-		serverFound = true
-	}
-
-	if serverFound {
-		// Server found, check if it's remote
-		if server.IsRemote() {
-			return serverOrImage, nil, server, nil
-		}
-		// It's a container server, get the ImageMetadata
-		if imgMetadata, ok := server.(*types.ImageMetadata); ok {
-			imageMetadata = imgMetadata
-			slog.Debug("Found imageMetadata in group", "server", serverOrImage, "metadata", imageMetadata)
-			imageToUse = imageMetadata.Image
-		} else {
-			// This shouldn't happen since we just found it, but handle it anyway
-			slog.Debug("ImageMetadata not found in group: could not cast", "server", serverOrImage)
-			imageToUse = serverOrImage
-		}
-	} else {
-		// Server not found in group - fail explicitly
-		return "", nil, nil, fmt.Errorf("server '%s' not found in group '%s'", serverOrImage, groupName)
-	}
-
-	return imageToUse, imageMetadata, nil, nil
 }
 
 // handleRegistryLookup handles the standard registry lookup case

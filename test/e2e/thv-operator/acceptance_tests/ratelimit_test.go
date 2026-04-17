@@ -186,6 +186,7 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 	Context("per-user rate limits", Ordered, func() {
 		var (
 			serverName     = "peruser-rl-test"
+			oidcConfigName = "peruser-rl-oidc"
 			oidcServerName = "oidc-peruser-rl"
 			nodePort       int32
 			oidcNodePort   int32
@@ -199,7 +200,24 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 				ctx, k8sClient, oidcServerName, testNamespace, timeout, pollingInterval)
 			GinkgoWriter.Printf("Mock OIDC server: issuer=%s nodePort=%d\n", issuerURL, oidcNodePort)
 
-			By("Creating MCPServer with per-user rate limit and inline OIDC auth")
+			By("Creating MCPOIDCConfig for inline OIDC auth")
+			oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      oidcConfigName,
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+						Issuer:             issuerURL,
+						JWKSAllowPrivateIP: true,
+						InsecureAllowHTTP:  true,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, oidcConfig)).To(Succeed())
+
+			By("Creating MCPServer with per-user rate limit and OIDC auth ref")
 			server := &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      serverName,
@@ -217,14 +235,9 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 						Provider: "redis",
 						Address:  fmt.Sprintf("redis.%s.svc.cluster.local:6379", testNamespace),
 					},
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: "inline",
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:             issuerURL,
-							Audience:           "vmcp-audience",
-							JWKSAllowPrivateIP: true,
-							InsecureAllowHTTP:  true,
-						},
+					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+						Name:     oidcConfigName,
+						Audience: "vmcp-audience",
 					},
 					RateLimiting: &mcpv1alpha1.RateLimitConfig{
 						PerUser: &mcpv1alpha1.RateLimitBucket{
@@ -268,6 +281,10 @@ var _ = Describe("MCPServer Rate Limiting", Ordered, func() {
 			By("Cleaning up MCPServer")
 			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: testNamespace},
+			})
+			By("Cleaning up MCPOIDCConfig")
+			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPOIDCConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: oidcConfigName, Namespace: testNamespace},
 			})
 			By("Cleaning up OIDC server")
 			if oidcCleanup != nil {

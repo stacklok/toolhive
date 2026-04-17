@@ -26,7 +26,7 @@ import (
 // backend to be skipped during init. This lets us exercise session-metadata
 // logic without real backend connections.
 func nilBackendConnector() backendConnector {
-	return func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
+	return func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return nil, nil, nil
 	}
 }

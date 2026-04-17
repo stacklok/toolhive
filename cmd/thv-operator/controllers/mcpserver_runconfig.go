@@ -185,7 +185,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
 
-	// Add telemetry configuration: prefer TelemetryConfigRef over deprecated inline Telemetry
+	// Add telemetry configuration from TelemetryConfigRef
 	if m.Spec.TelemetryConfigRef != nil {
 		telCfg, err := getTelemetryConfigForMCPServer(ctx, r.Client, m)
 		if err != nil {
@@ -195,8 +195,6 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 			caPath := ctrlutil.TelemetryCABundleFilePath(telCfg)
 			runconfig.AddMCPTelemetryConfigRefOptions(&options, &telCfg.Spec, m.Spec.TelemetryConfigRef.ServiceName, m.Name, caPath)
 		}
-	} else {
-		runconfig.AddTelemetryConfigOptions(ctx, &options, m.Spec.Telemetry, m.Name)
 	}
 
 	// Add authorization configuration if specified
@@ -236,19 +234,6 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 				resolvedOIDCConfig.InsecureAllowHTTP,
 				resolvedOIDCConfig.Scopes,
 			))
-		}
-	} else {
-		// Legacy path: resolve from inline OIDCConfig
-		if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, m, &options); err != nil {
-			return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
-		}
-		if m.Spec.OIDCConfig != nil {
-			resolver := oidc.NewResolver(r.Client)
-			var err error
-			resolvedOIDCConfig, err = resolver.Resolve(ctx, m)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve OIDC config: %w", err)
-			}
 		}
 	}
 

@@ -65,6 +65,12 @@ type StatusManager interface {
 	// SetAuthServerConfigValidatedCondition sets the AuthServerConfigValidated condition
 	SetAuthServerConfigValidatedCondition(reason, message string, status metav1.ConditionStatus)
 
+	// SetTelemetryConfigHash sets the telemetry config hash for change detection
+	SetTelemetryConfigHash(hash string)
+
+	// SetTelemetryConfigRefValidatedCondition sets the TelemetryConfigRefValidated condition
+	SetTelemetryConfigRefValidatedCondition(reason, message string, status metav1.ConditionStatus)
+
 	// SetDiscoveredBackends sets the discovered backends list
 	SetDiscoveredBackends(backends []mcpv1alpha1.DiscoveredBackend)
 

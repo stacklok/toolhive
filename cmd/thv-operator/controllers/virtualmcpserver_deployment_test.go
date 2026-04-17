@@ -46,7 +46,7 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -58,7 +58,7 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []workloads.TypedWorkload{})
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
 
 	require.NotNil(t, deployment)
 	assert.Equal(t, vmcp.Name, deployment.Name)
@@ -104,7 +104,7 @@ func TestDeploymentForVirtualMCPServer_WithRedisPassword(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			SessionStorage: &mcpv1alpha1.SessionStorageConfig{
 				Provider:    mcpv1alpha1.SessionStorageProviderRedis,
 				Address:     "redis:6379",
@@ -121,7 +121,7 @@ func TestDeploymentForVirtualMCPServer_WithRedisPassword(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []workloads.TypedWorkload{})
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
 	require.NotNil(t, deployment)
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 
@@ -157,7 +157,7 @@ func TestBuildContainerArgsForVmcp(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 				},
 			},
 			wantArgs: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483"},
@@ -170,8 +170,8 @@ func TestBuildContainerArgsForVmcp(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						Operational: &vmcpconfig.OperationalConfig{
 							LogLevel: "debug",
 						},
@@ -204,7 +204,7 @@ func TestBuildVolumesForVmcp(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -234,12 +234,12 @@ func TestBuildEnvVarsForVmcp(t *testing.T) {
 			Namespace: "test-namespace",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
 	r := &VirtualMCPServerReconciler{}
-	env, err := r.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{})
+	env, err := r.buildEnvVarsForVmcp(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
 	require.NoError(t, err)
 
 	// Should have VMCP_NAME and VMCP_NAMESPACE
@@ -409,7 +409,7 @@ func TestServiceForVirtualMCPServer(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -449,7 +449,7 @@ func TestServiceForVirtualMCPServerSessionAffinityNone(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config:          vmcpconfig.Config{Group: "test-group"},
+			GroupRef:        &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			SessionAffinity: string(corev1.ServiceAffinityNone),
 		},
 	}
@@ -536,7 +536,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	}
 
 	// Test nil inputs
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", []workloads.TypedWorkload{}))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", nil, []workloads.TypedWorkload{}))
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -546,7 +546,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	}
 
 	// Test with nil deployment
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum", []workloads.TypedWorkload{}))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum", nil, []workloads.TypedWorkload{}))
 }
 
 // TestServiceNeedsUpdate tests service update detection
@@ -722,7 +722,7 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -740,7 +740,7 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						CABundleRef: &mcpv1alpha1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "my-ca-configmap"},
@@ -776,7 +776,7 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						CABundleRef: &mcpv1alpha1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "custom-ca"},
@@ -806,7 +806,7 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						CABundleRef: &mcpv1alpha1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
@@ -819,7 +819,7 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp2.example.com",
 						Transport: "streamable-http",
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},

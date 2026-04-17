@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 )
 
 // External auth configuration types
@@ -322,6 +324,9 @@ type OIDCUpstreamConfig struct {
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	// If not specified, defaults to ["openid", "offline_access"].
+	// When using additionalAuthorizationParams with provider-specific refresh token
+	// mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
+	// sending both offline_access and the provider-specific parameter.
 	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
@@ -332,6 +337,18 @@ type OIDCUpstreamConfig struct {
 	// that return non-standard claim names in their UserInfo response.
 	// +optional
 	UserInfoOverride *UserInfoConfig `json:"userInfoOverride,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests sent to the upstream provider.
+	// This is useful for providers that require custom parameters, such as
+	// Google's access_type=offline for obtaining refresh tokens.
+	// Note: when using access_type=offline, also set explicit scopes to avoid
+	// the default offline_access scope being sent alongside it.
+	// Framework-managed parameters (response_type, client_id, redirect_uri,
+	// scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+	// +kubebuilder:validation:MaxProperties=16
+	// +optional
+	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
@@ -379,6 +396,16 @@ type OAuth2UpstreamConfig struct {
 	// If nil, standard OAuth 2.0 token response parsing is used.
 	// +optional
 	TokenResponseMapping *TokenResponseMapping `json:"tokenResponseMapping,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests sent to the upstream provider.
+	// This is useful for providers that require custom parameters, such as
+	// Google's access_type=offline for obtaining refresh tokens.
+	// Framework-managed parameters (response_type, client_id, redirect_uri,
+	// scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+	// +kubebuilder:validation:MaxProperties=16
+	// +optional
+	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
 }
 
 // TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields
@@ -887,6 +914,28 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
 	}
 
+	// Validate additionalAuthorizationParams does not contain reserved keys
+	return ValidateAdditionalAuthorizationParams(prefix, provider.AdditionalAuthorizationParams())
+}
+
+// AdditionalAuthorizationParams returns the additional authorization parameters
+// from whichever upstream config is set, or nil if none.
+func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]string {
+	if p.OIDCConfig != nil {
+		return p.OIDCConfig.AdditionalAuthorizationParams
+	}
+	if p.OAuth2Config != nil {
+		return p.OAuth2Config.AdditionalAuthorizationParams
+	}
+	return nil
+}
+
+// ValidateAdditionalAuthorizationParams checks that no reserved OAuth2 parameters
+// are present in the additional authorization params map.
+func ValidateAdditionalAuthorizationParams(prefix string, params map[string]string) error {
+	if err := oauthparams.Validate(params); err != nil {
+		return fmt.Errorf("%s.additionalAuthorizationParams: %w", prefix, err)
+	}
 	return nil
 }
 

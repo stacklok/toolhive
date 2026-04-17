@@ -46,7 +46,8 @@ metadata:
   name: yardstick
   namespace: default
 spec:
-  groupRef: optimizer-services
+  groupRef:
+    name: optimizer-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: stdio
   proxyPort: 8080
@@ -66,7 +67,8 @@ metadata:
   name: fetch
   namespace: default
 spec:
-  groupRef: optimizer-services
+  groupRef:
+    name: optimizer-services
   image: ghcr.io/stackloklabs/gofetch/server
   transport: streamable-http
   proxyPort: 8080
@@ -144,9 +146,9 @@ metadata:
   name: optimizer-vmcp
   namespace: default
 spec:
+  groupRef:
+    name: optimizer-services
   config:
-    groupRef: optimizer-services
-
     # Aggregation: prefix strategy prevents tool name conflicts
     aggregation:
       conflictResolution: prefix

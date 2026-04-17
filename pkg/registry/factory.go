@@ -143,7 +143,7 @@ func resolveTokenSource(cfg *config.Config, interactive bool) auth.TokenSource {
 		slog.Debug("Secrets provider not available for registry auth token persistence",
 			"error", err)
 	} else {
-		secretsProvider, err = secrets.CreateSecretProvider(providerType)
+		secretsProvider, err = secrets.CreateProvider(providerType, secrets.WithScope(secrets.ScopeRegistry))
 		if err != nil {
 			slog.Warn("Failed to create secrets provider for registry auth, tokens will not be persisted",
 				"error", err)

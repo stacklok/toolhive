@@ -15,11 +15,9 @@ import (
 	"github.com/stacklok/toolhive-core/permissions"
 	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/audit"
-	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -151,29 +149,6 @@ func TestWriteK8sManifest(t *testing.T) {
 			},
 		},
 		{
-			name: "config with OIDC",
-			config: &runner.RunConfig{
-				Image:     "ghcr.io/stacklok/mcp-server:latest",
-				Name:      "test",
-				BaseName:  "test",
-				Transport: types.TransportTypeStdio,
-				OIDCConfig: &auth.TokenValidatorConfig{
-					Issuer:   "https://accounts.google.com",
-					Audience: "my-client-id",
-					JWKSURL:  "https://accounts.google.com/.well-known/jwks.json",
-				},
-			},
-			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
-				t.Helper()
-				require.NotNil(t, mcpServer.Spec.OIDCConfig)
-				assert.Equal(t, v1alpha1.OIDCConfigTypeInline, mcpServer.Spec.OIDCConfig.Type)
-				require.NotNil(t, mcpServer.Spec.OIDCConfig.Inline)
-				assert.Equal(t, "https://accounts.google.com", mcpServer.Spec.OIDCConfig.Inline.Issuer)
-				assert.Equal(t, "my-client-id", mcpServer.Spec.OIDCConfig.Inline.Audience)
-				assert.Equal(t, "https://accounts.google.com/.well-known/jwks.json", mcpServer.Spec.OIDCConfig.Inline.JWKSURL)
-			},
-		},
-		{
 			name: "config with authz",
 			config: &runner.RunConfig{
 				Image:     "ghcr.io/stacklok/mcp-server:latest",
@@ -212,47 +187,6 @@ func TestWriteK8sManifest(t *testing.T) {
 				t.Helper()
 				require.NotNil(t, mcpServer.Spec.Audit)
 				assert.True(t, mcpServer.Spec.Audit.Enabled)
-			},
-		},
-		{
-			name: "config with telemetry",
-			config: &runner.RunConfig{
-				Image:     "ghcr.io/stacklok/mcp-server:latest",
-				Name:      "test",
-				BaseName:  "test",
-				Transport: types.TransportTypeStdio,
-				TelemetryConfig: &telemetry.Config{
-					Endpoint:    "http://otel-collector:4318",
-					ServiceName: "my-service",
-					Insecure:    true,
-				},
-			},
-			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
-				t.Helper()
-				require.NotNil(t, mcpServer.Spec.Telemetry)
-				require.NotNil(t, mcpServer.Spec.Telemetry.OpenTelemetry)
-				assert.True(t, mcpServer.Spec.Telemetry.OpenTelemetry.Enabled)
-				assert.Equal(t, "http://otel-collector:4318", mcpServer.Spec.Telemetry.OpenTelemetry.Endpoint)
-				assert.Equal(t, "my-service", mcpServer.Spec.Telemetry.OpenTelemetry.ServiceName)
-				assert.True(t, mcpServer.Spec.Telemetry.OpenTelemetry.Insecure)
-			},
-		},
-		{
-			name: "config with prometheus metrics",
-			config: &runner.RunConfig{
-				Image:     "ghcr.io/stacklok/mcp-server:latest",
-				Name:      "test",
-				BaseName:  "test",
-				Transport: types.TransportTypeStdio,
-				TelemetryConfig: &telemetry.Config{
-					EnablePrometheusMetricsPath: true,
-				},
-			},
-			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
-				t.Helper()
-				require.NotNil(t, mcpServer.Spec.Telemetry)
-				require.NotNil(t, mcpServer.Spec.Telemetry.Prometheus)
-				assert.True(t, mcpServer.Spec.Telemetry.Prometheus.Enabled)
 			},
 		},
 		{

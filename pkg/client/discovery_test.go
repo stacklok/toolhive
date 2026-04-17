@@ -66,7 +66,7 @@ func createTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 
 	// Write the config file if one is provided
 	if cfg != nil {
-		err = provider.UpdateConfig(func(c *config.Config) { *c = *cfg })
+		err = provider.UpdateConfig(func(c *config.Config) error { *c = *cfg; return nil })
 		require.NoError(t, err)
 	}
 
@@ -121,11 +121,14 @@ func TestGetClientStatus(t *testing.T) {
 			SkillsProjectPath: []string{".cursor", "skills"},
 		},
 		{
-			ClientType:   VSCode,
-			Description:  "Visual Studio Code (Test)",
-			SettingsFile: "mcp.json",
-			RelPath:      []string{".config", "Code", "User"}, // This path won't exist in test
-			Extension:    JSON,
+			ClientType:        VSCode,
+			Description:       "Visual Studio Code (Test)",
+			SettingsFile:      "mcp.json",
+			RelPath:           []string{".config", "Code", "User"}, // This path won't exist in test
+			Extension:         JSON,
+			SupportsSkills:    true,
+			SkillsGlobalPath:  []string{".copilot", "skills"},
+			SkillsProjectPath: []string{".github", "skills"},
 		},
 	}
 
@@ -157,7 +160,7 @@ func TestGetClientStatus(t *testing.T) {
 	assert.True(t, exists)
 	assert.False(t, vscodeStatus.Installed)
 	assert.False(t, vscodeStatus.Registered)
-	assert.False(t, vscodeStatus.SupportsSkills)
+	assert.True(t, vscodeStatus.SupportsSkills)
 }
 
 func TestGetClientStatus_Sorting(t *testing.T) {
@@ -194,6 +197,66 @@ func TestGetClientStatus_Sorting(t *testing.T) {
 		assert.True(t, prevClient < currClient,
 			"Client statuses should be sorted alphabetically: %s should come before %s",
 			prevClient, currClient)
+	}
+}
+
+func TestIsClientInstalled(t *testing.T) {
+	t.Parallel()
+
+	tempHome := t.TempDir()
+
+	// Create a .claude.json file (simulates ClaudeCode installed)
+	_, err := os.Create(filepath.Join(tempHome, ".claude.json"))
+	require.NoError(t, err)
+
+	// Create a .cursor directory (simulates Cursor installed via RelPath)
+	err = os.Mkdir(filepath.Join(tempHome, ".cursor"), 0700)
+	require.NoError(t, err)
+
+	// VSCode path (.config/Code/User) is intentionally not created
+
+	clientIntegrations := []clientAppConfig{
+		{
+			ClientType:   ClaudeCode,
+			SettingsFile: ".claude.json",
+			RelPath:      []string{}, // file directly in home dir
+		},
+		{
+			ClientType:   Cursor,
+			SettingsFile: "mcp.json",
+			RelPath:      []string{".cursor"}, // directory in home dir
+		},
+		{
+			ClientType:   VSCode,
+			SettingsFile: "mcp.json",
+			RelPath:      []string{".config", "Code", "User"}, // not created
+		},
+		{
+			// unknown client, no config
+			ClientType:   ClientApp("nonexistent"),
+			SettingsFile: "settings.json",
+			RelPath:      []string{".nonexistent"},
+		},
+	}
+
+	manager := NewTestClientManager(tempHome, nil, clientIntegrations, nil)
+
+	tests := []struct {
+		name       string
+		clientType ClientApp
+		want       bool
+	}{
+		{name: "ClaudeCode settings file present", clientType: ClaudeCode, want: true},
+		{name: "Cursor directory present", clientType: Cursor, want: true},
+		{name: "VSCode directory absent", clientType: VSCode, want: false},
+		{name: "client not in integrations", clientType: ClientApp("not-registered"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, manager.IsClientInstalled(tt.clientType))
+		})
 	}
 }
 

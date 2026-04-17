@@ -121,7 +121,7 @@ func TestReconcile_MCPServer_Success(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef: "test-group",
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -178,7 +178,7 @@ func TestReconcile_GroupRefMismatch(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef: "different-group", // Does NOT match reconciler's groupRef
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "different-group"}, // Does NOT match reconciler's groupRef
 		},
 	}
 
@@ -257,7 +257,7 @@ func TestReconcile_AuthFailure(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef: "test-group",
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -303,7 +303,7 @@ func TestReconcile_MCPRemoteProxy_Success(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: "test-group",
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -352,7 +352,7 @@ func TestReconcile_ConversionError(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef: "test-group",
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -426,7 +426,7 @@ func TestReconcile_MCPServerEntry_Success(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/mcp",
 			Transport: "streamable-http",
-			GroupRef:  "test-group",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -478,7 +478,7 @@ func TestReconcile_MCPServerEntry_GroupRefMismatch(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/mcp",
 			Transport: "streamable-http",
-			GroupRef:  "other-group",
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "other-group"},
 		},
 	}
 
@@ -561,7 +561,7 @@ func TestMapAuthConfigToEntries(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-1", Namespace: "default"},
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
-						GroupRef:              "test-group",
+						GroupRef:              &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						RemoteURL:             "https://example.com",
 						Transport:             "streamable-http",
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{Name: "my-auth"},
@@ -578,7 +578,7 @@ func TestMapAuthConfigToEntries(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-1", Namespace: "default"},
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
-						GroupRef:              "other-group",
+						GroupRef:              &mcpv1alpha1.MCPGroupRef{Name: "other-group"},
 						RemoteURL:             "https://example.com",
 						Transport:             "streamable-http",
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{Name: "my-auth"},
@@ -595,7 +595,7 @@ func TestMapAuthConfigToEntries(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-1", Namespace: "default"},
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
-						GroupRef:              "test-group",
+						GroupRef:              &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						RemoteURL:             "https://example.com",
 						Transport:             "streamable-http",
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{Name: "other-auth"},
@@ -612,7 +612,7 @@ func TestMapAuthConfigToEntries(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-1", Namespace: "default"},
 					Spec: mcpv1alpha1.MCPServerEntrySpec{
-						GroupRef:  "test-group",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 						RemoteURL: "https://example.com",
 						Transport: "streamable-http",
 					},

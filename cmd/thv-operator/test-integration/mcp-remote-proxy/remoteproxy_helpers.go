@@ -87,15 +87,6 @@ func (h *MCPRemoteProxyTestHelper) NewRemoteProxyBuilder(name string) *RemotePro
 				RemoteURL: "https://remote.example.com/mcp",
 				ProxyPort: 8080,
 				Transport: "streamable-http",
-				// Default OIDC config for tests - override with WithInlineOIDCConfig if testing OIDC
-				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-					Type: "inline",
-					Inline: &mcpv1alpha1.InlineOIDCConfig{
-						Issuer:   "https://auth.example.com",
-						Audience: "test-audience",
-						ClientID: "test-client",
-					},
-				},
 			},
 		},
 	}
@@ -124,13 +115,14 @@ func (rb *RemoteProxyBuilder) WithAuthServerRef(name string) *RemoteProxyBuilder
 	return rb
 }
 
-// WithOIDCConfigRef sets the OIDCConfigRef for the proxy and clears
-// the inline OIDCConfig since they are mutually exclusive.
-func (rb *RemoteProxyBuilder) WithOIDCConfigRef(name, audience string) *RemoteProxyBuilder {
-	rb.proxy.Spec.OIDCConfig = nil
+// WithOIDCConfigRef sets the OIDCConfigRef for the proxy.
+// resourceURL sets both Audience and ResourceURL to the same value, which is
+// required when an embedded auth server is active (#4860).
+func (rb *RemoteProxyBuilder) WithOIDCConfigRef(name, resourceURL string) *RemoteProxyBuilder {
 	rb.proxy.Spec.OIDCConfigRef = &mcpv1alpha1.MCPOIDCConfigReference{
-		Name:     name,
-		Audience: audience,
+		Name:        name,
+		Audience:    resourceURL,
+		ResourceURL: resourceURL,
 	}
 	return rb
 }
@@ -145,41 +137,13 @@ func (rb *RemoteProxyBuilder) WithToolConfigRef(name string) *RemoteProxyBuilder
 
 // WithGroupRef sets the GroupRef for the proxy
 func (rb *RemoteProxyBuilder) WithGroupRef(name string) *RemoteProxyBuilder {
-	rb.proxy.Spec.GroupRef = name
-	return rb
-}
-
-// WithInlineOIDCConfig sets an inline OIDC config for the proxy
-func (rb *RemoteProxyBuilder) WithInlineOIDCConfig(issuer, audience string, insecureAllowHTTP bool) *RemoteProxyBuilder {
-	rb.proxy.Spec.OIDCConfig = &mcpv1alpha1.OIDCConfigRef{
-		Type: "inline",
-		Inline: &mcpv1alpha1.InlineOIDCConfig{
-			Issuer:            issuer,
-			Audience:          audience,
-			InsecureAllowHTTP: insecureAllowHTTP,
-		},
-	}
+	rb.proxy.Spec.GroupRef = &mcpv1alpha1.MCPGroupRef{Name: name}
 	return rb
 }
 
 // WithRemoteURL overrides the default remote URL
 func (rb *RemoteProxyBuilder) WithRemoteURL(url string) *RemoteProxyBuilder {
 	rb.proxy.Spec.RemoteURL = url
-	return rb
-}
-
-// WithInlineOIDCConfigAndJWKS sets an inline OIDC config with a custom JWKS URL
-func (rb *RemoteProxyBuilder) WithInlineOIDCConfigAndJWKS(
-	issuer, audience, jwksURL string,
-) *RemoteProxyBuilder {
-	rb.proxy.Spec.OIDCConfig = &mcpv1alpha1.OIDCConfigRef{
-		Type: mcpv1alpha1.OIDCConfigTypeInline,
-		Inline: &mcpv1alpha1.InlineOIDCConfig{
-			Issuer:   issuer,
-			Audience: audience,
-			JWKSURL:  jwksURL,
-		},
-	}
 	return rb
 }
 

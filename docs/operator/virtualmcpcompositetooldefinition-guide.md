@@ -733,8 +733,8 @@ metadata:
   name: production-vmcp
   namespace: default
 spec:
-  config:
-    groupRef: production-backends
+  groupRef:
+    name: production-backends
 
   # Reference composite tool definitions
   compositeToolRefs:

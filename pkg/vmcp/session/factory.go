@@ -108,6 +108,11 @@ type MultiSessionFactory interface {
 //  2. Running the MCP Initialize handshake.
 //  3. Querying backend capabilities (tools, resources, prompts).
 //
+// sessionHint is the backend-assigned session ID from a prior connection (stored
+// in Redis metadata). When non-empty the connector should send it as the
+// Mcp-Session-Id hint during Initialize so the backend can resume rather than
+// re-initialize. Pass an empty string for brand-new sessions.
+//
 // The returned backend.Session owns the underlying transport connection and
 // must be closed when the session ends. The returned CapabilityList is used
 // to populate the session's routing table and capability lists.
@@ -118,6 +123,7 @@ type backendConnector func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
+	sessionHint string,
 ) (backend.Session, *vmcp.CapabilityList, error)
 
 // defaultMultiSessionFactory is the production MultiSessionFactory implementation.
@@ -220,12 +226,13 @@ func (f *defaultMultiSessionFactory) initOneBackend(
 	ctx context.Context,
 	b *vmcp.Backend,
 	identity *auth.Identity,
+	sessionHint string,
 ) *initResult {
 	bCtx, cancel := context.WithTimeout(ctx, f.backendInitTimeout)
 	defer cancel()
 
 	target := vmcp.BackendToTarget(b)
-	conn, caps, err := f.connector(bCtx, target, identity)
+	conn, caps, err := f.connector(bCtx, target, identity, sessionHint)
 	if err != nil {
 		if conn != nil {
 			_ = conn.Close()
@@ -415,6 +422,7 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 	sessID string,
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
+	sessionHints map[string]string,
 ) (*defaultMultiSession, error) {
 	filtered := make([]*vmcp.Backend, 0, len(backends))
 	for _, b := range backends {
@@ -435,7 +443,7 @@ func (f *defaultMultiSessionFactory) makeBaseSession(
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			rawResults[i] = f.initOneBackend(ctx, b, identity)
+			rawResults[i] = f.initOneBackend(ctx, b, identity, sessionHints[b.ID])
 		}(i, b)
 	}
 	wg.Wait()
@@ -507,7 +515,7 @@ func (f *defaultMultiSessionFactory) makeSession(
 	identity *auth.Identity,
 	backends []*vmcp.Backend,
 ) (MultiSession, error) {
-	baseSession, err := f.makeBaseSession(ctx, sessID, identity, backends)
+	baseSession, err := f.makeBaseSession(ctx, sessID, identity, backends, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -558,9 +566,18 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 		identity.Subject = subject
 	}
 
+	// Extract stored per-backend session IDs as hints so each backend can
+	// resume its session (via Mcp-Session-Id) rather than starting a new one.
+	sessionHints := make(map[string]string, len(filteredBackends))
+	for _, b := range filteredBackends {
+		if hint := storedMetadata[MetadataKeyBackendSessionPrefix+b.ID]; hint != "" {
+			sessionHints[b.ID] = hint
+		}
+	}
+
 	// Build the base session (backend connections + routing table) without the
 	// security wrapper. The wrapper is applied separately using stored hash/salt.
-	baseSession, err := f.makeBaseSession(ctx, id, identity, filteredBackends)
+	baseSession, err := f.makeBaseSession(ctx, id, identity, filteredBackends, sessionHints)
 	if err != nil {
 		return nil, fmt.Errorf("RestoreSession: failed to rebuild backend connections: %w", err)
 	}

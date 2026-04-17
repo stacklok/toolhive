@@ -76,6 +76,72 @@ if someCondition {
 }
 ```
 
+## Copy Before Mutating Caller Input
+
+Never mutate a value passed in by a caller. Maps and slices have reference semantics — passing them copies the header but shares the underlying data, so mutations are visible to the caller. Pointer parameters (`*T`) directly expose the caller's original value. Plain struct values (`T`) are copies and safe to modify, but structs passed as `*T`, or whose fields include maps, slices, or pointers, can still reach caller-visible data through those fields. In-place mutation surprises callers, can cause data races, and breaks the assumption that the caller's original value is unchanged after the call.
+
+Always copy the input first and mutate the copy:
+
+```go
+// Good
+meta := maps.Clone(callerMeta)
+meta["key"] = "value"
+
+// Avoid
+callerMeta["key"] = "value" // mutates the caller's map
+```
+
+Note that `maps.Clone` (and `slices.Clone`) perform a **shallow copy** — if map values or slice elements contain pointers, slices, or nested maps, mutating those nested values will still affect the caller's data. Use a deep copy when the value type requires it.
+
+This applies to function parameters, values extracted from context, and values returned by storage/cache loads. If the function's doc comment does not explicitly state "the caller's value will be modified", treat all inputs as read-only.
+
+## Keep Comments Synchronized With Code
+
+When you change behavior, update every comment that describes it. A comment that contradicts the code is worse than no comment — it actively misleads future readers and causes incorrect changes.
+
+- After any refactor, search for comments referencing the old behavior and update them.
+- If a comment names a specific function, variable, or mechanism, verify the name is still accurate.
+- Comments describing concurrency semantics (eviction timing, lazy vs. eager, which lock is held) are especially prone to drift — treat them as part of the implementation, not decoration.
+
+## Constructor Validation: Fail Loudly on Invalid Input
+
+Constructors must validate their required inputs and fail loudly (return an error or panic) rather than silently accepting invalid values and producing surprising behavior.
+
+- Required parameters: check for nil and return a descriptive error.
+- Numeric bounds: reject values outside the valid range (e.g., `capacity < 1`). Zero is Go's default — don't let it silently mean "unlimited" or "disabled".
+- Enum/string config: reject unknown values explicitly; don't fall back silently to a default that the caller didn't request.
+
+Misconfiguration that fails at startup is far easier to diagnose than misconfiguration that silently degrades behavior at runtime.
+
+## One Synchronization Primitive Per Data Structure
+
+Use a single synchronization mechanism per data set. Mixing `sync.Mutex` and `sync.Map` (or channels) on the same underlying data is a correctness hazard — future contributors cannot reason about which operations are atomic with respect to each other.
+
+If atomicity requirements grow beyond what `sync.Map` provides (e.g., you need read-modify-write), replace it with a plain `map` guarded by a `sync.Mutex` for all operations. The performance difference at typical cardinalities is negligible compared to the clarity gained.
+
+## Drain HTTP Response Bodies Before Closing
+
+Always drain a response body before closing it in error paths. Closing without reading prevents `net/http` from reusing the underlying TCP connection, causing unnecessary connection churn.
+
+```go
+// Good
+_, _ = io.Copy(io.Discard, resp.Body)
+resp.Body.Close()
+
+// Avoid — prevents connection reuse
+resp.Body.Close()
+```
+
+This applies in every code path that discards a response early (error handling, retries, fallbacks).
+
+## Write to Durable Storage Before Updating In-Memory State
+
+When a write must update both durable storage (database, Redis, file) and an in-memory structure (cache, map, struct field), always write to the authoritative store first. Update local state only after the durable write succeeds.
+
+- If the durable write fails, leave in-memory state unchanged — the next read will reload from the source of truth.
+- If the process crashes after the durable write but before the in-memory update, the next read reloads correctly.
+- Reversing the order leaves a window where in-memory state diverges permanently from durable state on any error.
+
 ## Error Handling
 
 - Return errors by default — never silently swallow errors

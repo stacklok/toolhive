@@ -5,6 +5,7 @@ package cedar
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -32,11 +33,15 @@ func TestNewCedarAuthorizer(t *testing.T) {
 
 	// Test cases
 	testCases := []struct {
-		name         string
-		policies     []string
-		entitiesJSON string
-		expectError  bool
-		errorType    error
+		name              string
+		policies          []string
+		entitiesJSON      string
+		roleClaimName     string
+		serverName        string
+		expectError       bool
+		errorType         error
+		wantRoleClaimName string
+		wantServerName    string
 	}{
 		{
 			name:         "Valid policy and empty entities",
@@ -75,6 +80,30 @@ func TestNewCedarAuthorizer(t *testing.T) {
 			entitiesJSON: `[{"uid": {"type": "User", "id": "alice"}, "attrs": {}, "parents": []}]`,
 			expectError:  false,
 		},
+		{
+			name:              "Stores configured role claim",
+			policies:          []string{`permit(principal, action, resource);`},
+			entitiesJSON:      `[]`,
+			roleClaimName:     "roles",
+			expectError:       false,
+			wantRoleClaimName: "roles",
+		},
+		{
+			name:              "Stores URI-style role claim",
+			policies:          []string{`permit(principal, action, resource);`},
+			entitiesJSON:      `[]`,
+			roleClaimName:     "https://example.com/roles",
+			expectError:       false,
+			wantRoleClaimName: "https://example.com/roles",
+		},
+		{
+			name:           "Stores server name",
+			policies:       []string{`permit(principal, action, resource);`},
+			entitiesJSON:   `[]`,
+			serverName:     "my-mcp-server",
+			expectError:    false,
+			wantServerName: "my-mcp-server",
+		},
 	}
 
 	// Run test cases
@@ -83,9 +112,10 @@ func TestNewCedarAuthorizer(t *testing.T) {
 			t.Parallel()
 			// Create a Cedar authorizer
 			authorizer, err := NewCedarAuthorizer(ConfigOptions{
-				Policies:     tc.policies,
-				EntitiesJSON: tc.entitiesJSON,
-			})
+				Policies:      tc.policies,
+				EntitiesJSON:  tc.entitiesJSON,
+				RoleClaimName: tc.roleClaimName,
+			}, tc.serverName)
 
 			// Check error expectations
 			if tc.expectError {
@@ -97,6 +127,11 @@ func TestNewCedarAuthorizer(t *testing.T) {
 			} else {
 				assert.NoError(t, err, "Unexpected error: %v", err)
 				require.NotNil(t, authorizer, "Cedar authorizer is nil")
+
+				cedarAuthz, ok := authorizer.(*Authorizer)
+				require.True(t, ok)
+				assert.Equal(t, tc.wantRoleClaimName, cedarAuthz.roleClaimName)
+				assert.Equal(t, tc.wantServerName, cedarAuthz.serverName)
 			}
 		})
 	}
@@ -235,6 +270,69 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			expectAuthorized: true,
 		},
 		{
+			name: "Resource entity exposes name attribute for Cedar schema",
+			policy: `
+			permit(
+				principal,
+				action == Action::"read_resource",
+				resource
+			)
+			when {
+				resource.name == "sensitive_data"
+			};
+			`,
+			claims: jwt.MapClaims{
+				"sub": "user123",
+			},
+			feature:          authorizers.MCPFeatureResource,
+			operation:        authorizers.MCPOperationRead,
+			resourceID:       "sensitive_data",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
+			name: "Resource entity retains uri attribute for backward compat",
+			policy: `
+			permit(
+				principal,
+				action == Action::"read_resource",
+				resource
+			)
+			when {
+				resource.uri == "sensitive_data"
+			};
+			`,
+			claims: jwt.MapClaims{
+				"sub": "user123",
+			},
+			feature:          authorizers.MCPFeatureResource,
+			operation:        authorizers.MCPOperationRead,
+			resourceID:       "sensitive_data",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
+			name: "Resource name and uri attributes carry the same value",
+			policy: `
+			permit(
+				principal,
+				action == Action::"read_resource",
+				resource
+			)
+			when {
+				resource.name == resource.uri
+			};
+			`,
+			claims: jwt.MapClaims{
+				"sub": "user123",
+			},
+			feature:          authorizers.MCPFeatureResource,
+			operation:        authorizers.MCPOperationRead,
+			resourceID:       "sensitive_data",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
 			name: "User can get prompt",
 			policy: `
 			permit(
@@ -327,7 +425,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			authorizer, err := NewCedarAuthorizer(ConfigOptions{
 				Policies:     []string{tc.policy},
 				EntitiesJSON: `[]`,
-			})
+			}, "")
 			require.NoError(t, err, "Failed to create Cedar authorizer")
 
 			// Create a context with JWT claims
@@ -352,7 +450,7 @@ func TestAuthorizeWithJWTClaimsErrors(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{`permit(principal, action, resource);`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Test cases
@@ -651,6 +749,10 @@ func TestFactoryCreateAuthorizer(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, authorizer)
+
+			cedarAuthz, ok := authorizer.(*Authorizer)
+			require.True(t, ok)
+			assert.Equal(t, "testServer", cedarAuthz.serverName)
 		})
 	}
 }
@@ -663,7 +765,7 @@ func TestUpdatePolicies(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{`permit(principal, action, resource);`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Cast to concrete type to access UpdatePolicies
@@ -724,7 +826,7 @@ func TestUpdateEntities(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{`permit(principal, action, resource);`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Cast to concrete type to access UpdateEntities
@@ -775,7 +877,7 @@ func TestEntityOperations(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{`permit(principal, action, resource);`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Cast to concrete type to access entity methods
@@ -787,9 +889,9 @@ func TestEntityOperations(t *testing.T) {
 	require.NotNil(t, factory)
 
 	// Create a test entity using the factory
-	uid, entity, _ := factory.CreatePrincipalEntity("Client", "testuser", map[string]interface{}{
+	uid, entity := factory.CreatePrincipalEntity("Client", "testuser", map[string]interface{}{
 		"name": "Test User",
-	}, nil)
+	})
 
 	// Add entity
 	cedarAuthorizer.AddEntity(entity)
@@ -815,7 +917,7 @@ func TestGetEntityNotFound(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{`permit(principal, action, resource);`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Cast to concrete type
@@ -824,7 +926,7 @@ func TestGetEntityNotFound(t *testing.T) {
 
 	// Create a UID that doesn't exist
 	factory := cedarAuthorizer.GetEntityFactory()
-	uid, _, _ := factory.CreatePrincipalEntity("Client", "nonexistent", nil, nil)
+	uid, _ := factory.CreatePrincipalEntity("Client", "nonexistent", nil)
 
 	// Try to get it
 	_, found := cedarAuthorizer.GetEntity(uid)
@@ -839,7 +941,7 @@ func TestIsAuthorizedErrors(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{`permit(principal, action, resource);`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Cast to concrete type
@@ -934,7 +1036,7 @@ func TestIsAuthorizedWithEntities(t *testing.T) {
 			);
 		`},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// Cast to concrete type
@@ -1073,7 +1175,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 		Policies:                []string{policy},
 		EntitiesJSON:            `[]`,
 		PrimaryUpstreamProvider: providerName,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	upstreamToken := makeUnsignedJWT(jwt.MapClaims{
@@ -1218,7 +1320,7 @@ func TestAuthorizeWithJWTClaims_GroupMembership(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{policy},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -1276,6 +1378,70 @@ func TestAuthorizeWithJWTClaims_GroupMembership(t *testing.T) {
 	}
 }
 
+// TestAuthorizeWithJWTClaims_TransitiveHierarchyPreserved is a regression test
+// for the merge-order hazard fixed in 40119c8e. When entities_json defines a
+// THVGroup with a THVRole parent, the transitive policy "principal in THVRole"
+// must still evaluate correctly after the request entity merge in IsAuthorized.
+// Before the fix, CreateEntitiesForRequest inserted bare THVGroup entities that
+// overwrote the static ones (which carry THVRole parents), severing the hierarchy.
+func TestAuthorizeWithJWTClaims_TransitiveHierarchyPreserved(t *testing.T) {
+	t.Parallel()
+
+	// Policy: only members of THVRole::"developer" may call the deploy tool.
+	// The user is in THVGroup::"engineering" which is a child of THVRole::"developer"
+	// in entities_json — so this requires transitive "in" evaluation.
+	policy := `
+		permit(
+			principal in THVRole::"developer",
+			action == Action::"call_tool",
+			resource == Tool::"deploy"
+		);
+	`
+
+	// Static entities: THVGroup::"engineering" → THVRole::"developer".
+	entitiesJSON := `[
+		{
+			"uid": {"type": "THVGroup", "id": "engineering"},
+			"attrs": {},
+			"parents": [{"type": "THVRole", "id": "developer"}]
+		},
+		{
+			"uid": {"type": "THVRole", "id": "developer"},
+			"attrs": {},
+			"parents": []
+		}
+	]`
+
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{
+		Policies:     []string{policy},
+		EntitiesJSON: entitiesJSON,
+	}, "")
+	require.NoError(t, err)
+
+	// User belongs to "engineering" via JWT groups claim.
+	identity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user1",
+			Claims: map[string]any{
+				"sub":    "user1",
+				"groups": []interface{}{"engineering"},
+			},
+		},
+	}
+	ctx := auth.WithIdentity(context.Background(), identity)
+
+	authorized, err := authorizer.AuthorizeWithJWTClaims(
+		ctx,
+		authorizers.MCPFeatureTool,
+		authorizers.MCPOperationCall,
+		"deploy",
+		nil,
+	)
+	require.NoError(t, err)
+	assert.True(t, authorized,
+		"transitive hierarchy THVGroup→THVRole from entities_json must survive entity merge")
+}
+
 // TestAuthorizeWithJWTClaims_DoesNotMutateIdentity verifies that
 // AuthorizeWithJWTClaims does not mutate the Identity stored in context.
 // The Identity contract (see auth.Identity) requires that the struct MUST NOT
@@ -1289,7 +1455,7 @@ func TestAuthorizeWithJWTClaims_DoesNotMutateIdentity(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies:     []string{policy},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	identity := &auth.Identity{
@@ -1337,7 +1503,7 @@ func TestAuthorizeWithJWTClaims_CustomGroupClaimName(t *testing.T) {
 		Policies:       []string{policy},
 		EntitiesJSON:   `[]`,
 		GroupClaimName: "https://example.com/groups",
-	})
+	}, "")
 	require.NoError(t, err)
 
 	// The custom claim holds "platform"; the well-known "groups" key holds other groups.
@@ -1386,7 +1552,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProviderWithGroups(t *testing.T) {
 		Policies:                []string{policy},
 		EntitiesJSON:            `[]`,
 		PrimaryUpstreamProvider: providerName,
-	})
+	}, "")
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -1563,11 +1729,12 @@ func TestInjectUpstreamProvider(t *testing.T) {
 			},
 		},
 		{
-			// GroupClaimName must survive the serialise→deserialise round-trip
-			// that InjectUpstreamProvider performs internally. A refactor that
-			// reconstructed ConfigOptions from scratch (populating only known
-			// fields) would silently drop GroupClaimName without this test.
-			name: "group_claim_name_preserved_after_inject",
+			// GroupClaimName and RoleClaimName must survive the
+			// serialise→deserialise round-trip that InjectUpstreamProvider
+			// performs internally. A refactor that reconstructed ConfigOptions
+			// from scratch (populating only known fields) would silently drop
+			// these claim name fields without this test.
+			name: "claim_names_preserved_after_inject",
 			setup: func(t *testing.T) *authorizers.Config {
 				t.Helper()
 				cfg, err := authorizers.NewConfig(Config{
@@ -1577,6 +1744,7 @@ func TestInjectUpstreamProvider(t *testing.T) {
 						Policies:       []string{`permit(principal, action, resource);`},
 						EntitiesJSON:   "[]",
 						GroupClaimName: "https://example.com/groups",
+						RoleClaimName:  "https://example.com/roles",
 					},
 				})
 				require.NoError(t, err)
@@ -1590,6 +1758,8 @@ func TestInjectUpstreamProvider(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, "https://example.com/groups", extracted.Options.GroupClaimName,
 					"GroupClaimName must be unchanged after InjectUpstreamProvider")
+				assert.Equal(t, "https://example.com/roles", extracted.Options.RoleClaimName,
+					"RoleClaimName must be unchanged after InjectUpstreamProvider")
 				assert.Equal(t, "my-provider", extracted.Options.PrimaryUpstreamProvider,
 					"PrimaryUpstreamProvider must be set by InjectUpstreamProvider")
 			},
@@ -1777,6 +1947,58 @@ func TestExtractGroupsFromClaims(t *testing.T) {
 			t.Parallel()
 			got := extractGroupsFromClaims(tt.claims, tt.customClaimName)
 			assert.Equal(t, tt.wantGroups, got)
+		})
+	}
+}
+
+// TestConfigOptionsRoleClaimNameJSON verifies JSON marshal/unmarshal of the
+// RoleClaimName field, including backward compatibility when the field is absent.
+func TestConfigOptionsRoleClaimNameJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		jsonInput     string
+		wantRole      string
+		wantOmitOnMar bool // when true, marshal output must NOT contain "role_claim_name"
+	}{
+		{
+			name:          "present",
+			jsonInput:     `{"policies":["permit(principal,action,resource);"],"role_claim_name":"roles"}`,
+			wantRole:      "roles",
+			wantOmitOnMar: false,
+		},
+		{
+			name:          "absent_gives_empty_string",
+			jsonInput:     `{"policies":["permit(principal,action,resource);"]}`,
+			wantRole:      "",
+			wantOmitOnMar: true,
+		},
+		{
+			name:          "uri_style_claim",
+			jsonInput:     `{"policies":["permit(principal,action,resource);"],"role_claim_name":"https://example.com/roles"}`,
+			wantRole:      "https://example.com/roles",
+			wantOmitOnMar: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var opts ConfigOptions
+			err := json.Unmarshal([]byte(tt.jsonInput), &opts)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantRole, opts.RoleClaimName)
+
+			marshalled, err := json.Marshal(opts)
+			require.NoError(t, err)
+			if tt.wantOmitOnMar {
+				assert.NotContains(t, string(marshalled), "role_claim_name",
+					"empty RoleClaimName must be omitted from JSON output")
+			} else {
+				assert.Contains(t, string(marshalled), "role_claim_name")
+			}
 		})
 	}
 }

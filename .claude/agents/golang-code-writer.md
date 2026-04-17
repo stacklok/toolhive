@@ -4,6 +4,7 @@ description: Write, generate, or create new Go code — functions, structs, inte
 tools: [Read, Write, Edit, Glob, Grep, Bash]
 permissionMode: acceptEdits
 model: inherit
+color: blue
 ---
 
 # Go Code Writer Agent

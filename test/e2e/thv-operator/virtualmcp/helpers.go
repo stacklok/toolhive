@@ -34,6 +34,13 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/thv-operator/testutil"
 )
 
+// Shared test constants used across all e2e test files in this package.
+const (
+	defaultNamespace = "default"
+	e2eTimeout       = 5 * time.Minute
+	e2ePollInterval  = 2 * time.Second
+)
+
 // WaitForVirtualMCPServerReady waits for a VirtualMCPServer to reach Ready status
 // and ensures at least one associated pod is actually running and ready.
 // This is used when waiting for a single expected pod (e.g., one replica deployment).
@@ -188,7 +195,7 @@ func GetMCPGroupBackends(ctx context.Context, c client.Client, groupName, namesp
 	// Filter MCPServers that reference this group
 	var backends []mcpv1alpha1.MCPServer
 	for _, mcpServer := range mcpServerList.Items {
-		if mcpServer.Spec.GroupRef == groupName {
+		if mcpServer.Spec.GroupRef.GetName() == groupName {
 			backends = append(backends, mcpServer)
 		}
 	}
@@ -667,7 +674,7 @@ func CreateMCPServerAndWait(
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef:  groupRef,
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: groupRef},
 			Image:     image,
 			Transport: "streamable-http",
 			ProxyPort: 8080,
@@ -757,7 +764,7 @@ func CreateMultipleMCPServersInParallel(
 				Namespace: backends[idx].Namespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:              backends[idx].GroupRef,
+				GroupRef:              &mcpv1alpha1.MCPGroupRef{Name: backends[idx].GroupRef},
 				Image:                 backends[idx].Image,
 				Transport:             backendTransport,
 				ProxyPort:             8080,
@@ -828,7 +835,7 @@ func GetVMCPNodePort(
 		}
 
 		// Verify the HTTP server is ready to handle requests
-		if err := checkHTTPHealthReady(nodePort, 2*time.Second); err != nil {
+		if err := checkHTTPHealthReady(nodePort); err != nil {
 			return fmt.Errorf("nodePort %d accessible but HTTP server not ready: %w", nodePort, err)
 		}
 
@@ -847,25 +854,21 @@ func checkPortAccessible(nodePort int32, timeout time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("port %d not accessible: %w", nodePort, err)
 	}
-	// Port is accessible - close connection (ignore errors as port accessibility is confirmed)
 	_ = conn.Close()
 	return nil
 }
 
 // checkHTTPHealthReady verifies the HTTP server is ready by checking the /health endpoint.
 // This is more reliable than just TCP check as it ensures the application is serving requests.
-func checkHTTPHealthReady(nodePort int32, timeout time.Duration) error {
-	httpClient := &http.Client{Timeout: timeout}
+func checkHTTPHealthReady(nodePort int32) error {
+	httpClient := &http.Client{Timeout: 2 * time.Second}
 	url := fmt.Sprintf("http://localhost:%d/health", nodePort)
 
 	resp, err := httpClient.Get(url)
 	if err != nil {
 		return fmt.Errorf("health check failed for port %d: %w", nodePort, err)
 	}
-	defer func() {
-		// Error ignored in test cleanup
-		_ = resp.Body.Close()
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("health check returned status %d for port %d", resp.StatusCode, nodePort)

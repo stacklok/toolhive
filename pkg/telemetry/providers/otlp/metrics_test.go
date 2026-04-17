@@ -16,6 +16,7 @@ func TestCreateMetricExporter(t *testing.T) {
 	tests := []struct {
 		name    string
 		config  Config
+		ctx     func() context.Context
 		wantErr bool
 		errMsg  string
 	}{
@@ -26,6 +27,7 @@ func TestCreateMetricExporter(t *testing.T) {
 				Headers:  map[string]string{"x-api-key": "secret"},
 				Insecure: true,
 			},
+			ctx:     func() context.Context { return context.Background() },
 			wantErr: false,
 		},
 		{
@@ -34,16 +36,29 @@ func TestCreateMetricExporter(t *testing.T) {
 				Endpoint: "localhost:4318",
 				Insecure: false,
 			},
+			ctx:     func() context.Context { return context.Background() },
 			wantErr: false,
 		},
 		{
-			name: "error creating metrics exporter due to malformed endpoint",
+			name: "endpoint with custom path",
 			config: Config{
-				Endpoint: "malformed//:4318",
+				Endpoint: "cloud.langfuse.com/api/public/otel",
+				Headers:  map[string]string{"Authorization": "Basic abc123"},
 				Insecure: false,
 			},
+			ctx:     func() context.Context { return context.Background() },
+			wantErr: false,
+		},
+		{
+			name: "error creating metrics exporter due to invalid CA cert",
+			config: Config{
+				Endpoint:   "localhost:4318",
+				Insecure:   false,
+				CACertPath: "/nonexistent/ca.crt",
+			},
+			ctx:     func() context.Context { return context.Background() },
 			wantErr: true,
-			errMsg:  "invalid URL escape",
+			errMsg:  "failed to configure TLS for metric exporter",
 		},
 	}
 
@@ -51,7 +66,7 @@ func TestCreateMetricExporter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			ctx := context.Background()
+			ctx := tt.ctx()
 			exporter, err := createMetricExporter(ctx, tt.config)
 
 			if tt.wantErr {
@@ -109,17 +124,13 @@ func TestNewMetricReader(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "expect error creating metrics exporter due to malformed endpoint",
+			name: "endpoint with custom path",
 			config: Config{
-				Endpoint: "malformed//:4318",
-				Headers: map[string]string{
-					"x-api-key": "secret",
-					"x-env":     "production",
-				},
+				Endpoint: "cloud.langfuse.com/api/public/otel",
+				Headers:  map[string]string{"Authorization": "Basic abc123"},
 				Insecure: false,
 			},
-			wantErr: true,
-			errMsg:  "invalid URL escape",
+			wantErr: false,
 		},
 	}
 

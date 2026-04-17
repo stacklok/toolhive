@@ -231,3 +231,76 @@ func TestNewInstaller(t *testing.T) {
 	inst := NewInstaller()
 	require.NotNil(t, inst)
 }
+
+func TestRemoveEmptyParents(t *testing.T) {
+	t.Parallel()
+
+	t.Run("removes a chain of empty directories up to stop boundary", func(t *testing.T) {
+		t.Parallel()
+		// Create: stopAt/a/b/c (all empty)
+		stopAt, _ := filepath.EvalSymlinks(t.TempDir())
+		chain := filepath.Join(stopAt, "a", "b", "c")
+		require.NoError(t, os.MkdirAll(chain, 0750))
+
+		RemoveEmptyParents(chain, stopAt)
+
+		// a, a/b, a/b/c should all be gone
+		_, err := os.Stat(filepath.Join(stopAt, "a"))
+		assert.True(t, os.IsNotExist(err), "directory 'a' should have been removed")
+	})
+
+	t.Run("stops when a directory is not empty", func(t *testing.T) {
+		t.Parallel()
+		// Create: stopAt/a/b/c (c is empty; b has an extra file)
+		stopAt, _ := filepath.EvalSymlinks(t.TempDir())
+		chain := filepath.Join(stopAt, "a", "b", "c")
+		require.NoError(t, os.MkdirAll(chain, 0750))
+		require.NoError(t, os.WriteFile(filepath.Join(stopAt, "a", "b", "other.txt"), []byte("x"), 0600))
+
+		RemoveEmptyParents(chain, stopAt)
+
+		// c should be gone but b (and a) should remain because b is not empty
+		_, errC := os.Stat(chain)
+		assert.True(t, os.IsNotExist(errC), "directory 'c' should have been removed")
+
+		_, errB := os.Stat(filepath.Join(stopAt, "a", "b"))
+		assert.NoError(t, errB, "directory 'b' should still exist (not empty)")
+	})
+
+	t.Run("never removes the stop directory itself", func(t *testing.T) {
+		t.Parallel()
+		stopAt, _ := filepath.EvalSymlinks(t.TempDir())
+		// The stop dir is also the immediate parent of what we pass in.
+		child := filepath.Join(stopAt, "skill")
+		require.NoError(t, os.MkdirAll(child, 0750))
+
+		RemoveEmptyParents(child, stopAt)
+
+		// child is removed but stopAt must remain
+		_, errChild := os.Stat(child)
+		assert.True(t, os.IsNotExist(errChild), "child directory should have been removed")
+
+		_, errStop := os.Stat(stopAt)
+		assert.NoError(t, errStop, "stop directory must not be removed")
+	})
+
+	t.Run("is a no-op when directory does not exist", func(t *testing.T) {
+		t.Parallel()
+		stopAt, _ := filepath.EvalSymlinks(t.TempDir())
+		missing := filepath.Join(stopAt, "does-not-exist")
+
+		// Should not panic or error.
+		RemoveEmptyParents(missing, stopAt)
+
+		_, err := os.Stat(stopAt)
+		assert.NoError(t, err, "stop directory must not be touched")
+	})
+
+	t.Run("stop and dir equal — does nothing", func(t *testing.T) {
+		t.Parallel()
+		dir, _ := filepath.EvalSymlinks(t.TempDir())
+		RemoveEmptyParents(dir, dir)
+		_, err := os.Stat(dir)
+		assert.NoError(t, err, "directory must not be removed when it equals stopAt")
+	})
+}

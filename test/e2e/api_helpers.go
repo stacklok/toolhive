@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -77,6 +78,11 @@ func NewServer(config *ServerConfig) (*Server, error) {
 		tempXdgConfigHome = GinkgoT().TempDir()
 		tempHome = GinkgoT().TempDir()
 	}
+
+	// Create a stub claude-code settings file so that at least one skill-supporting
+	// client is detected as installed. Without this, installs that omit --clients
+	// would fail because no client config paths exist in the temp home dir.
+	_ = os.WriteFile(filepath.Join(tempHome, ".claude.json"), []byte("{}"), 0600)
 
 	ctx, cancel := context.WithCancel(context.Background())
 

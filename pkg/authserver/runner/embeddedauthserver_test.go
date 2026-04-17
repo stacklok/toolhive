@@ -497,6 +497,30 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 		require.NotNil(t, cfg.UserInfo)
 		assert.Equal(t, "https://example.com/userinfo", cfg.UserInfo.EndpointURL)
 	})
+
+	t.Run("propagates AdditionalAuthorizationParams", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				ClientID:              "my-client-id",
+				RedirectURI:           "https://my-app.com/callback",
+				AdditionalAuthorizationParams: map[string]string{
+					"access_type": "offline",
+				},
+			},
+		}
+
+		cfg, err := buildPureOAuth2Config(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.Equal(t, map[string]string{"access_type": "offline"},
+			cfg.AdditionalAuthorizationParams)
+	})
 }
 
 // TestBuildPureOAuth2ConfigWithEnvVar tests buildPureOAuth2Config with environment variables.
@@ -918,6 +942,29 @@ func TestBuildOIDCConfig(t *testing.T) {
 		// OIDCConfig has no UserInfo field - verify the config is otherwise valid
 		assert.Equal(t, "https://example.com", cfg.Issuer)
 		assert.Equal(t, "test-client-id", cfg.ClientID)
+	})
+
+	t.Run("propagates AdditionalAuthorizationParams", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+				IssuerURL:   "https://example.com",
+				ClientID:    "test-client-id",
+				RedirectURI: "http://localhost:8080/callback",
+				AdditionalAuthorizationParams: map[string]string{
+					"access_type": "offline",
+				},
+			},
+		}
+
+		cfg, err := buildOIDCConfig(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.Equal(t, map[string]string{"access_type": "offline"},
+			cfg.AdditionalAuthorizationParams)
 	})
 }
 

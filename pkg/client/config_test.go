@@ -217,6 +217,14 @@ func createMockClientConfigs() []clientAppConfig {
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
 		},
+		{
+			ClientType:           Factory,
+			Description:          "Factory.ai Droid CLI (Mock)",
+			RelPath:              []string{"mock_factory"},
+			SettingsFile:         "mcp.json",
+			MCPServersPathPrefix: "/mcpServers",
+			Extension:            JSON,
+		},
 	}
 }
 
@@ -241,7 +249,7 @@ func CreateTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 
 	// Write the config file if one is provided
 	if cfg != nil {
-		err = provider.UpdateConfig(func(c *config.Config) { *c = *cfg })
+		err = provider.UpdateConfig(func(c *config.Config) error { *c = *cfg; return nil })
 		require.NoError(t, err)
 	}
 
@@ -403,6 +411,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					string(MistralVibe),
 					string(Codex),
 					string(KimiCli),
+					string(Factory),
 				},
 			},
 		}
@@ -495,7 +504,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case AmpWindsurf:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"AmpWindsurf config should contain mcpServers key")
-			case LMStudio, Trae, Kiro, Antigravity, GeminiCli, KimiCli:
+			case LMStudio, Trae, Kiro, Antigravity, GeminiCli, KimiCli, Factory:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"Config should contain mcpServers key")
 			case VSCodeServer:
@@ -554,7 +563,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
 				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer,
-				MistralVibe, Codex, KimiCli:
+				MistralVibe, Codex, KimiCli, Factory:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}
@@ -1283,8 +1292,8 @@ func TestGetAllClients(t *testing.T) {
 
 	clients := GetAllClients()
 
-	// Should return all 26 supported clients
-	assert.Len(t, clients, 26, "Expected 26 supported clients")
+	// Should return all 27 supported clients
+	assert.Len(t, clients, 27, "Expected 27 supported clients")
 
 	// Verify the list is sorted alphabetically
 	for i := 1; i < len(clients); i++ {
@@ -1472,5 +1481,5 @@ func TestGetClientListCSV(t *testing.T) {
 
 	// Count the number of clients (should be 25)
 	clients := strings.Split(csv, ", ")
-	assert.Len(t, clients, 26, "Expected 26 clients in CSV list")
+	assert.Len(t, clients, 27, "Expected 27 clients in CSV list")
 }

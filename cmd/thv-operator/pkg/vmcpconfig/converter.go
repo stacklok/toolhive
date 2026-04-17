@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -68,11 +69,16 @@ func NewConverter(oidcResolver oidc.Resolver, k8sClient client.Client) (*Convert
 // passed through without explicit mapping. Only fields that require special handling
 // (auth, aggregation, composite tools, telemetry) are explicitly converted below.
 //
+// telemetryCfg is the already-fetched MCPTelemetryConfig (nil when not referenced).
+// It is passed in by the controller to avoid redundant API calls; normalizeTelemetry
+// uses it directly instead of re-fetching.
+//
 // The returned Config is the serializable vMCP config. The RunConfig is non-nil only
 // when AuthServerConfig is set on the VirtualMCPServer spec.
 func (c *Converter) Convert(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
 ) (*vmcpconfig.Config, *authserver.RunConfig, error) {
 	// Start with a deep copy of the embedded config for automatic field passthrough.
 	// This ensures new fields added to config.Config are automatically included
@@ -81,6 +87,9 @@ func (c *Converter) Convert(
 
 	// Override name with the CR name (authoritative source)
 	config.Name = vmcp.Name
+
+	// Set group from spec.groupRef (authoritative source for operator)
+	config.Group = vmcp.ResolveGroupName()
 
 	// Convert IncomingAuth - required field, no defaults
 	if vmcp.Spec.IncomingAuth != nil {
@@ -92,35 +101,18 @@ func (c *Converter) Convert(
 	}
 
 	// Convert OutgoingAuth - always set with defaults if not specified
-	if vmcp.Spec.OutgoingAuth != nil {
-		outgoingAuth, err := c.convertOutgoingAuth(ctx, vmcp)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to convert outgoing auth: %w", err)
-		}
-		config.OutgoingAuth = outgoingAuth
-	} else {
-		// Provide default outgoing auth config
-		config.OutgoingAuth = &vmcpconfig.OutgoingAuthConfig{
-			Source: "discovered", // Default to discovered mode
-		}
+	outgoingAuth, err := c.convertOutgoingAuthWithDefaults(ctx, vmcp)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to convert outgoing auth: %w", err)
 	}
+	config.OutgoingAuth = outgoingAuth
 
 	// Convert Aggregation - always set with defaults if not specified
-	if vmcp.Spec.Config.Aggregation != nil {
-		agg, err := c.convertAggregation(ctx, vmcp)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to convert aggregation config: %w", err)
-		}
-		config.Aggregation = agg
-	} else {
-		// Provide default aggregation config with prefix conflict resolution
-		config.Aggregation = &vmcpconfig.AggregationConfig{
-			ConflictResolution: conflictResolutionPrefix, // Default to prefix strategy
-			ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
-				PrefixFormat: "{workload}_", // Default prefix format
-			},
-		}
+	agg, err := c.convertAggregationWithDefaults(ctx, vmcp)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to convert aggregation config: %w", err)
 	}
+	config.Aggregation = agg
 
 	// Convert CompositeTools (inline and referenced)
 	compositeTools, err := c.convertAllCompositeTools(ctx, vmcp)
@@ -134,11 +126,10 @@ func (c *Converter) Convert(
 	// Use Operational from spec.config directly
 	config.Operational = vmcp.Spec.Config.Operational
 
-	// Normalize telemetry config using the shared spectoconfig normalization logic.
-	// This applies runtime defaults and normalization (endpoint prefix stripping, service name defaults).
-	// Note: Most defaults (e.g., SamplingRate="0.05", TracingEnabled=false, MetricsEnabled=false)
-	// are handled by kubebuilder annotations in pkg/telemetry/config.go and applied by the API server.
-	config.Telemetry = spectoconfig.NormalizeTelemetryConfig(vmcp.Spec.Config.Telemetry, vmcp.Name)
+	// Normalize telemetry config: prefer TelemetryConfigRef (shared MCPTelemetryConfig resource),
+	// The inline config.telemetry field is no longer read by the operator.
+	normalizedTelemetry := c.normalizeTelemetry(ctx, vmcp, telemetryCfg)
+	config.Telemetry = normalizedTelemetry
 
 	if vmcp.Spec.Config.Audit != nil && vmcp.Spec.Config.Audit.Enabled {
 		config.Audit = vmcp.Spec.Config.Audit
@@ -204,8 +195,8 @@ func (c *Converter) convertIncomingAuth(
 	return incoming, nil
 }
 
-// resolveOIDCConfig resolves OIDC configuration from either an MCPOIDCConfig reference
-// or legacy inline OIDCConfig. Returns nil when no OIDC config is present.
+// resolveOIDCConfig resolves OIDC configuration from an MCPOIDCConfig reference.
+// Returns nil when no OIDC config is present.
 // Fails closed: returns an error when OIDC is configured but resolution fails,
 // preventing deployment without authentication when OIDC is explicitly requested.
 func (c *Converter) resolveOIDCConfig(
@@ -218,7 +209,7 @@ func (c *Converter) resolveOIDCConfig(
 
 	ctxLogger := log.FromContext(ctx)
 
-	// New path: resolve from MCPOIDCConfig reference (preferred over legacy inline OIDCConfig)
+	// Resolve from MCPOIDCConfig reference
 	if vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
 		oidcCfg, err := controllerutil.GetOIDCConfigForServer(
 			ctx, c.k8sClient, vmcp.Namespace, vmcp.Spec.IncomingAuth.OIDCConfigRef)
@@ -240,67 +231,7 @@ func (c *Converter) resolveOIDCConfig(
 		return mapResolvedOIDCToVmcpConfigFromRef(resolved, oidcCfg), nil
 	}
 
-	// Legacy path: resolve from inline OIDCConfig
-	if vmcp.Spec.IncomingAuth.OIDCConfig != nil {
-		resolved, err := c.oidcResolver.Resolve(ctx, vmcp)
-		if err != nil {
-			ctxLogger.Error(err, "failed to resolve OIDC config",
-				"vmcp", vmcp.Name,
-				"namespace", vmcp.Namespace,
-				"oidcType", vmcp.Spec.IncomingAuth.OIDCConfig.Type)
-			return nil, fmt.Errorf("OIDC resolution failed for type %q: %w",
-				vmcp.Spec.IncomingAuth.OIDCConfig.Type, err)
-		}
-		return mapResolvedOIDCToVmcpConfig(resolved, vmcp.Spec.IncomingAuth.OIDCConfig), nil
-	}
-
 	return nil, nil
-}
-
-// mapResolvedOIDCToVmcpConfig maps from oidc.OIDCConfig (resolved by the OIDC resolver)
-// to vmcpconfig.OIDCConfig (used by the vmcp runtime).
-// This keeps the vmcp config types separate from the operator's OIDC resolver types,
-// maintaining clean architectural boundaries while enabling unified OIDC resolution.
-func mapResolvedOIDCToVmcpConfig(
-	resolved *oidc.OIDCConfig,
-	oidcConfigRef *mcpv1alpha1.OIDCConfigRef,
-) *vmcpconfig.OIDCConfig {
-	if resolved == nil {
-		return nil
-	}
-
-	config := &vmcpconfig.OIDCConfig{
-		Issuer:                          resolved.Issuer,
-		ClientID:                        resolved.ClientID,
-		Audience:                        resolved.Audience,
-		Resource:                        resolved.ResourceURL,
-		JWKSURL:                         resolved.JWKSURL,
-		IntrospectionURL:                resolved.IntrospectionURL,
-		ProtectedResourceAllowPrivateIP: resolved.JWKSAllowPrivateIP,
-		InsecureAllowHTTP:               resolved.InsecureAllowHTTP,
-		Scopes:                          resolved.Scopes,
-	}
-
-	// Handle client secret - the deployment controller mounts secrets as environment variables
-	// We need to set ClientSecretEnv for all OIDC config types that may have a client secret
-	if oidcConfigRef != nil {
-		switch oidcConfigRef.Type {
-		case mcpv1alpha1.OIDCConfigTypeInline:
-			// Inline config: check if ClientSecretRef is set
-			if oidcConfigRef.Inline != nil && oidcConfigRef.Inline.ClientSecretRef != nil {
-				config.ClientSecretEnv = vmcpOIDCClientSecretEnvVar
-			}
-		case mcpv1alpha1.OIDCConfigTypeConfigMap:
-			// ConfigMap config: check if the resolved config has a client secret
-			// Note: Storing secrets in ConfigMaps is not recommended; use inline with SecretRef instead
-			if resolved.ClientSecret != "" {
-				config.ClientSecretEnv = vmcpOIDCClientSecretEnvVar
-			}
-			// OIDCConfigTypeKubernetes does not use client secrets (uses service account tokens)
-		}
-	}
-
-	return config
 }
 
 // mapResolvedOIDCToVmcpConfigFromRef maps from oidc.OIDCConfig (resolved by the OIDC resolver)
@@ -319,7 +250,10 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 		ClientID:                        resolved.ClientID,
 		Audience:                        resolved.Audience,
 		Resource:                        resolved.ResourceURL,
-		ProtectedResourceAllowPrivateIP: resolved.JWKSAllowPrivateIP,
+		JWKSURL:                         resolved.JWKSURL,
+		IntrospectionURL:                resolved.IntrospectionURL,
+		ProtectedResourceAllowPrivateIP: resolved.ProtectedResourceAllowPrivateIP,
+		JwksAllowPrivateIP:              resolved.JWKSAllowPrivateIP,
 		InsecureAllowHTTP:               resolved.InsecureAllowHTTP,
 		Scopes:                          resolved.Scopes,
 	}
@@ -333,6 +267,22 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 	}
 
 	return config
+}
+
+// normalizeTelemetry resolves and normalizes the telemetry config from a
+// pre-fetched MCPTelemetryConfig. Returns nil when TelemetryConfigRef is not set.
+// The Config.Telemetry field is still valid for standalone CLI deployments but is
+// no longer read by the operator — use TelemetryConfigRef instead.
+func (*Converter) normalizeTelemetry(
+	_ context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
+) *telemetry.Config {
+	if vmcp.Spec.TelemetryConfigRef != nil && telemetryCfg != nil {
+		return spectoconfig.NormalizeMCPTelemetryConfig(
+			&telemetryCfg.Spec, vmcp.Spec.TelemetryConfigRef.ServiceName, vmcp.Name)
+	}
+	return nil
 }
 
 // convertSessionStorage populates SessionStorage from the VirtualMCPServer spec.
@@ -407,6 +357,35 @@ func deriveScopesSupported(config *vmcpconfig.Config) []string {
 	return config.IncomingAuth.OIDC.Scopes
 }
 
+// convertOutgoingAuthWithDefaults converts OutgoingAuthConfig or returns defaults.
+func (c *Converter) convertOutgoingAuthWithDefaults(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) (*vmcpconfig.OutgoingAuthConfig, error) {
+	if vmcp.Spec.OutgoingAuth != nil {
+		return c.convertOutgoingAuth(ctx, vmcp)
+	}
+	return &vmcpconfig.OutgoingAuthConfig{
+		Source: "discovered", // Default to discovered mode
+	}, nil
+}
+
+// convertAggregationWithDefaults converts AggregationConfig or returns defaults.
+func (c *Converter) convertAggregationWithDefaults(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) (*vmcpconfig.AggregationConfig, error) {
+	if vmcp.Spec.Config.Aggregation != nil {
+		return c.convertAggregation(ctx, vmcp)
+	}
+	return &vmcpconfig.AggregationConfig{
+		ConflictResolution: conflictResolutionPrefix,
+		ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
+			PrefixFormat: "{workload}_",
+		},
+	}, nil
+}
+
 // convertOutgoingAuth converts OutgoingAuthConfig from CRD to vmcp config
 func (c *Converter) convertOutgoingAuth(
 	ctx context.Context,
@@ -452,18 +431,8 @@ func (c *Converter) convertBackendAuthConfig(
 		}, nil
 	}
 
-	// Handle deprecated snake_case value
-	if crdConfig.Type == mcpv1alpha1.DeprecatedBackendAuthTypeExternalAuthConfigRef {
-		log.FromContext(ctx).Info(
-			"backend auth type \"external_auth_config_ref\" is deprecated,"+
-				" use \"externalAuthConfigRef\" instead",
-			"backend", backendName, "vmcp", vmcp.Name,
-		)
-	}
-
-	// If type is "externalAuthConfigRef" (or deprecated "external_auth_config_ref"), resolve the MCPExternalAuthConfig
-	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef ||
-		crdConfig.Type == mcpv1alpha1.DeprecatedBackendAuthTypeExternalAuthConfigRef {
+	// If type is "externalAuthConfigRef", resolve the MCPExternalAuthConfig
+	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef {
 		if crdConfig.ExternalAuthConfigRef == nil {
 			return nil, fmt.Errorf("backend %s: externalAuthConfigRef type requires externalAuthConfigRef field", backendName)
 		}

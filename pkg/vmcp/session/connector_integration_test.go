@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -464,4 +465,84 @@ func TestTokenBinding_MetadataEncoding(t *testing.T) {
 	saltBytes, err := hex.DecodeString(tokenSalt)
 	require.NoError(t, err, "token salt must be valid hex")
 	assert.Len(t, saltBytes, 16, "decoded token salt must be 16 bytes")
+}
+
+// startInProcessMCPServerWithHeaderCapture starts an in-process MCP server and
+// returns the base URL along with a function that returns all Mcp-Session-Id
+// header values received by the server from clients.
+func startInProcessMCPServerWithHeaderCapture(t *testing.T) (string, func() []string) {
+	t.Helper()
+
+	mcpSrv := mcpserver.NewMCPServer("integration-test-backend", "1.0.0")
+	mcpSrv.AddTool(
+		mcpmcp.NewTool("echo", mcpmcp.WithDescription("echo"), mcpmcp.WithString("input", mcpmcp.Required())),
+		func(_ context.Context, req mcpmcp.CallToolRequest) (*mcpmcp.CallToolResult, error) {
+			args, _ := req.Params.Arguments.(map[string]any)
+			input, _ := args["input"].(string)
+			return &mcpmcp.CallToolResult{Content: []mcpmcp.Content{mcpmcp.NewTextContent(input)}}, nil
+		},
+	)
+
+	streamableSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
+
+	var mu sync.Mutex
+	var capturedIDs []string
+
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id := r.Header.Get("Mcp-Session-Id"); id != "" {
+			mu.Lock()
+			capturedIDs = append(capturedIDs, id)
+			mu.Unlock()
+		}
+		streamableSrv.ServeHTTP(w, r)
+	}))
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	return ts.URL + "/mcp", func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make([]string, len(capturedIDs))
+		copy(out, capturedIDs)
+		return out
+	}
+}
+
+// TestSessionFactory_Integration_RestoreSession_SendsStoredSessionHintToBackend
+// verifies that RestoreSession passes the stored backend session ID as the
+// Mcp-Session-Id hint in the Initialize request so the backend can resume
+// rather than create a new session.
+func TestSessionFactory_Integration_RestoreSession_SendsStoredSessionHintToBackend(t *testing.T) {
+	t.Parallel()
+
+	baseURL, capturedIDs := startInProcessMCPServerWithHeaderCapture(t)
+	backend := &vmcp.Backend{
+		ID:            "integration-backend",
+		Name:          "integration-backend",
+		BaseURL:       baseURL,
+		TransportType: "streamable-http",
+	}
+
+	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
+
+	// Create the original session — the backend assigns a session ID over
+	// streamable-HTTP and we store it in metadata.
+	orig, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, true, []*vmcp.Backend{backend})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = orig.Close() })
+
+	storedMeta := orig.GetMetadata()
+	storedBackendSessionID := storedMeta[MetadataKeyBackendSessionPrefix+"integration-backend"]
+	require.NotEmpty(t, storedBackendSessionID, "streamable-HTTP backend must assign a session ID on Initialize")
+
+	// RestoreSession: the factory must send the stored session ID as Mcp-Session-Id.
+	restored, err := factory.RestoreSession(context.Background(), uuid.New().String(), storedMeta, []*vmcp.Backend{backend})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = restored.Close() })
+
+	// The server must have received the stored ID as a hint in the Initialize request.
+	assert.Contains(t, capturedIDs(), storedBackendSessionID,
+		"RestoreSession must send the stored backend session ID as Mcp-Session-Id hint")
 }

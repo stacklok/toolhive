@@ -19,15 +19,16 @@ import (
 // and applies them in a single batch update at the end.
 // It implements the StatusManager interface.
 type StatusCollector struct {
-	vmcp               *mcpv1alpha1.VirtualMCPServer
-	hasChanges         bool
-	phase              *mcpv1alpha1.VirtualMCPServerPhase
-	message            *string
-	url                *string
-	observedGeneration *int64
-	oidcConfigHash     *string
-	conditions         map[string]metav1.Condition
-	discoveredBackends []mcpv1alpha1.DiscoveredBackend
+	vmcp                *mcpv1alpha1.VirtualMCPServer
+	hasChanges          bool
+	phase               *mcpv1alpha1.VirtualMCPServerPhase
+	message             *string
+	url                 *string
+	observedGeneration  *int64
+	oidcConfigHash      *string
+	telemetryConfigHash *string
+	conditions          map[string]metav1.Condition
+	discoveredBackends  []mcpv1alpha1.DiscoveredBackend
 }
 
 // NewStatusManager creates a new StatusManager for the given VirtualMCPServer resource.
@@ -77,6 +78,17 @@ func (s *StatusCollector) SetObservedGeneration(generation int64) {
 func (s *StatusCollector) SetOIDCConfigHash(hash string) {
 	s.oidcConfigHash = &hash
 	s.hasChanges = true
+}
+
+// SetTelemetryConfigHash sets the telemetry config hash to be updated.
+func (s *StatusCollector) SetTelemetryConfigHash(hash string) {
+	s.telemetryConfigHash = &hash
+	s.hasChanges = true
+}
+
+// SetTelemetryConfigRefValidatedCondition sets the TelemetryConfigRefValidated condition.
+func (s *StatusCollector) SetTelemetryConfigRefValidatedCondition(reason, message string, status metav1.ConditionStatus) {
+	s.SetCondition(mcpv1alpha1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated, reason, message, status)
 }
 
 // SetGroupRefValidatedCondition sets the GroupRef validation condition.
@@ -181,6 +193,11 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 			vmcpStatus.OIDCConfigHash = *s.oidcConfigHash
 		}
 
+		// Apply telemetry config hash change
+		if s.telemetryConfigHash != nil {
+			vmcpStatus.TelemetryConfigHash = *s.telemetryConfigHash
+		}
+
 		// Apply condition changes
 		for _, condition := range s.conditions {
 			if condition.Status == "" {
@@ -208,6 +225,7 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 			"phase", s.phase,
 			"message", s.message,
 			"oidcConfigHash", s.oidcConfigHash,
+			"telemetryConfigHash", s.telemetryConfigHash,
 			"conditionsCount", len(s.conditions),
 			"discoveredBackendsCount", len(s.discoveredBackends))
 		return true

@@ -44,6 +44,11 @@ type Config struct {
 	// OAuth parameters for server-specific customization
 	OAuthParams map[string]string `json:"oauth_params,omitempty" yaml:"oauth_params,omitempty"`
 
+	// ScopeParamName overrides the query parameter name used to send scopes in the
+	// authorization URL. When empty, the standard "scope" parameter is used.
+	// Some providers require a non-standard name (e.g., Slack uses "user_scope").
+	ScopeParamName string `json:"scope_param_name,omitempty" yaml:"scope_param_name,omitempty"`
+
 	// Bearer token configuration (alternative to OAuth)
 	BearerToken     string `json:"bearer_token,omitempty" yaml:"bearer_token,omitempty"` //nolint:gosec // G117
 	BearerTokenFile string `json:"bearer_token_file,omitempty" yaml:"bearer_token_file,omitempty"`

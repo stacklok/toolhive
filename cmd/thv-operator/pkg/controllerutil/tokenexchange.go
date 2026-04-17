@@ -19,33 +19,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
-// GenerateOpenTelemetryEnvVars generates OpenTelemetry environment variables
-func GenerateOpenTelemetryEnvVars(
-	telemetryConfig *mcpv1alpha1.TelemetryConfig,
-	resourceName string,
-	namespace string,
-) []corev1.EnvVar {
-	var envVars []corev1.EnvVar
-
-	if telemetryConfig == nil || telemetryConfig.OpenTelemetry == nil {
-		return envVars
-	}
-
-	otel := telemetryConfig.OpenTelemetry
-
-	serviceName := otel.ServiceName
-	if serviceName == "" {
-		serviceName = resourceName
-	}
-
-	envVars = append(envVars, corev1.EnvVar{
-		Name:  "OTEL_RESOURCE_ATTRIBUTES",
-		Value: fmt.Sprintf("service.name=%s,service.namespace=%s", serviceName, namespace),
-	})
-
-	return envVars
-}
-
 // GenerateTokenExchangeEnvVars generates environment variables for token exchange
 func GenerateTokenExchangeEnvVars(
 	ctx context.Context,

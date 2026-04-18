@@ -511,7 +511,7 @@ func (r *EmbeddingServerReconciler) buildEmbeddingContainer(embedding *mcpv1alph
 		Image:           embedding.Spec.Image,
 		Args:            args,
 		Env:             envVars,
-		ImagePullPolicy: corev1.PullPolicy(embedding.GetImagePullPolicy()),
+		ImagePullPolicy: embedding.GetImagePullPolicy(),
 		Ports: []corev1.ContainerPort{
 			{
 				Name:          "http",

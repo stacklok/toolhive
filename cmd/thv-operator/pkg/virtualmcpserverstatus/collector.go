@@ -211,14 +211,16 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 		// Apply discovered backends change
 		if s.discoveredBackends != nil {
 			vmcpStatus.DiscoveredBackends = s.discoveredBackends
-			// BackendCount represents the number of ready backends
-			var readyCount int32
+			// BackendCount represents the number of routable backends (ready + unauthenticated).
+			// Unauthenticated backends are reachable but require per-request user auth.
+			var routableCount int32
 			for _, backend := range s.discoveredBackends {
-				if backend.Status == mcpv1alpha1.BackendStatusReady {
-					readyCount++
+				if backend.Status == mcpv1alpha1.BackendStatusReady ||
+					backend.Status == mcpv1alpha1.BackendStatusUnauthenticated {
+					routableCount++
 				}
 			}
-			vmcpStatus.BackendCount = readyCount
+			vmcpStatus.BackendCount = routableCount
 		}
 
 		ctxLogger.V(1).Info("Batched status update applied",

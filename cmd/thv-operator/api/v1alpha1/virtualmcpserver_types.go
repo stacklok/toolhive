@@ -181,10 +181,11 @@ type BackendAuthConfig struct {
 // These are the user-facing values stored in VirtualMCPServer.Status.DiscoveredBackends.
 // Use BackendHealthStatus.ToCRDStatus() to convert from internal health status.
 const (
-	BackendStatusReady       = "ready"
-	BackendStatusUnavailable = "unavailable"
-	BackendStatusDegraded    = "degraded"
-	BackendStatusUnknown     = "unknown"
+	BackendStatusReady           = "ready"
+	BackendStatusUnavailable     = "unavailable"
+	BackendStatusDegraded        = "degraded"
+	BackendStatusUnknown         = "unknown"
+	BackendStatusUnauthenticated = "unauthenticated"
 )
 
 // DiscoveredBackend is an alias to the canonical definition in pkg/vmcp/types.go
@@ -222,8 +223,8 @@ type VirtualMCPServerStatus struct {
 	// +optional
 	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
 
-	// BackendCount is the number of healthy/ready backends
-	// (excludes unavailable, degraded, and unknown backends)
+	// BackendCount is the number of routable backends (ready + unauthenticated).
+	// Excludes unavailable, degraded, and unknown backends.
 	// +optional
 	BackendCount int32 `json:"backendCount,omitempty"`
 

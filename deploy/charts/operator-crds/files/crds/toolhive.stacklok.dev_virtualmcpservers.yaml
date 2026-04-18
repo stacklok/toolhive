@@ -2142,8 +2142,8 @@ spec:
             properties:
               backendCount:
                 description: |-
-                  BackendCount is the number of healthy/ready backends
-                  (excludes unavailable, degraded, and unknown backends)
+                  BackendCount is the number of routable backends (ready + unauthenticated).
+                  Excludes unavailable, degraded, and unknown backends.
                 format: int32
                 type: integer
               conditions:
@@ -2256,7 +2256,7 @@ spec:
                       type: string
                     status:
                       description: |-
-                        Status is the current status of the backend (ready, degraded, unavailable, unknown).
+                        Status is the current status of the backend (ready, degraded, unavailable, unauthenticated, unknown).
                         Use BackendHealthStatus.ToCRDStatus() to populate this field.
                       type: string
                     url:

@@ -564,10 +564,10 @@ func TestHandleRestartAnnotation_ErrorPaths(t *testing.T) {
 		testCtx.createDeployment()
 		testCtx.setRestartAnnotation("2023-01-01T12:00:00Z", "rolling")
 
-		// Mock a client that fails only on MCPServer Update operations
+		// Mock a client that fails only on MCPServer write operations
 		mockClient := &mockFailingClient{
-			Client:                testCtx.client,
-			failOnMCPServerUpdate: true,
+			Client:               testCtx.client,
+			failOnMCPServerWrite: true,
 		}
 		testCtx.reconciler.Client = mockClient
 
@@ -698,14 +698,20 @@ func TestReconcile_HandleRestartAnnotation_ErrorPaths(t *testing.T) {
 	})
 }
 
-// mockFailingClient is a test helper that wraps a real client and can be configured to fail on specific operations
+// mockFailingClient is a test helper that wraps a real client and can be configured to fail on specific operations.
+//
+// failOnMCPServerWrite triggers a mock error on any write (Update or Patch)
+// whose target is a *mcpv1alpha1.MCPServer. "Write" is used because the
+// #4767 migration replaced MCPServer spec Updates with optimistic-lock
+// Patches, so a single flag covers both code paths that can mutate the
+// resource.
 type mockFailingClient struct {
 	client.Client
-	failOnGet             bool
-	failOnList            bool
-	failOnUpdate          bool
-	failOnDelete          bool
-	failOnMCPServerUpdate bool
+	failOnGet            bool
+	failOnList           bool
+	failOnUpdate         bool
+	failOnDelete         bool
+	failOnMCPServerWrite bool
 }
 
 func (m *mockFailingClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -726,13 +732,24 @@ func (m *mockFailingClient) Update(ctx context.Context, obj client.Object, opts 
 	if m.failOnUpdate {
 		return fmt.Errorf("mock error: Update operation failed")
 	}
-	if m.failOnMCPServerUpdate {
+	if m.failOnMCPServerWrite {
 		// Check if the object being updated is an MCPServer
 		if _, isMCPServer := obj.(*mcpv1alpha1.MCPServer); isMCPServer {
 			return fmt.Errorf("mock error: MCPServer Update operation failed")
 		}
 	}
 	return m.Client.Update(ctx, obj, opts...)
+}
+
+func (m *mockFailingClient) Patch(
+	ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption,
+) error {
+	if m.failOnMCPServerWrite {
+		if _, isMCPServer := obj.(*mcpv1alpha1.MCPServer); isMCPServer {
+			return fmt.Errorf("mock error: MCPServer Patch operation failed")
+		}
+	}
+	return m.Client.Patch(ctx, obj, patch, opts...)
 }
 
 func (m *mockFailingClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {

@@ -9,8 +9,7 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // handleInspectorKey handles key input when the inspector panel is active.
@@ -170,7 +169,7 @@ func (m *Model) handleInspFilterKey(msg tea.KeyMsg) tea.Cmd {
 		// Find the currently selected tool in the filtered list, then clear the
 		// filter so the full list is shown with that tool still highlighted.
 		filtered := m.filteredTools()
-		var selectedTool *vmcp.Tool
+		var selectedTool *mcp.Tool
 		if len(filtered) > 0 && m.insp.toolIdx < len(filtered) {
 			t := filtered[m.insp.toolIdx]
 			selectedTool = &t
@@ -325,9 +324,11 @@ func (m *Model) inspDoCall() tea.Cmd {
 	if m.insp.loading {
 		return nil
 	}
-	sel := m.selected()
+	if m.mcpClient == nil {
+		return nil
+	}
 	filtered := m.filteredTools()
-	if sel == nil || len(filtered) == 0 || m.insp.toolIdx >= len(filtered) {
+	if len(filtered) == 0 || m.insp.toolIdx >= len(filtered) {
 		return nil
 	}
 	tool := filtered[m.insp.toolIdx]
@@ -337,6 +338,6 @@ func (m *Model) inspDoCall() tea.Cmd {
 	m.insp.spinFrame = 0
 	m.insp.resultTool = tool.Name // track which tool the result belongs to
 	spinCmd := tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return inspSpinTickMsg{} })
-	callCmd := startInspCallTool(m.ctx, sel, tool.Name, args)
+	callCmd := startInspCallTool(m.ctx, m.mcpClient, tool.Name, args)
 	return tea.Batch(spinCmd, callCmd)
 }

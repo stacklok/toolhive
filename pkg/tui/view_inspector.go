@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
-	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 // renderInspector renders the 3-column tool inspector panel.
@@ -339,7 +339,7 @@ func (m Model) renderTools(_ int) string {
 
 // buildToolsContent builds the full scrollable content string for the tools viewport.
 // selectedIdx highlights the currently selected tool (-1 for none).
-func buildToolsContent(tools []vmcp.Tool, width, selectedIdx int) string {
+func buildToolsContent(tools []mcp.Tool, width, selectedIdx int) string {
 	nameW := 28
 	descW := width - nameW - 4
 	if descW < 20 {

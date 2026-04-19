@@ -10,11 +10,12 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
+	mcpclient "github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -119,8 +120,11 @@ type Model struct {
 	logCtxCancel context.CancelFunc
 	streamingFor string // workload name currently being streamed
 
+	// MCP client (persistent per selected workload)
+	mcpClient *mcpclient.Client
+
 	// Tools panel state
-	tools            []vmcp.Tool
+	tools            []mcp.Tool
 	toolsLoading     bool
 	toolsFor         string // workload name whose tools are loaded
 	toolsErr         error
@@ -203,11 +207,11 @@ func (m *Model) filteredRegistryItems() []regtypes.ServerMetadata {
 }
 
 // filteredTools returns tools matching the current inspector filter query.
-func (m *Model) filteredTools() []vmcp.Tool {
+func (m *Model) filteredTools() []mcp.Tool {
 	if !m.insp.filterActive || m.insp.filterQuery == "" {
 		return m.tools
 	}
-	var out []vmcp.Tool
+	var out []mcp.Tool
 	for _, t := range m.tools {
 		if strings.Contains(t.Name, m.insp.filterQuery) {
 			out = append(out, t)

@@ -56,7 +56,7 @@ thv [flags]
 * [thv start](thv_start.md)	 - Start (resume) a tooling server
 * [thv status](thv_status.md)	 - Show detailed status of an MCP server
 * [thv stop](thv_stop.md)	 - Stop one or more MCP servers
-* [thv tui](thv_tui.md)	 - Open the interactive TUI dashboard
+* [thv tui](thv_tui.md)	 - Open the interactive TUI dashboard (experimental)
 * [thv version](thv_version.md)	 - Show the version of ToolHive
 * [thv vmcp](thv_vmcp.md)	 - Run and manage a Virtual MCP Server locally
 

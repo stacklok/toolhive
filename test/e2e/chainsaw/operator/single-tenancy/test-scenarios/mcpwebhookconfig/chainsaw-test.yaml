@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mcpwebhookconfig-reconciliation
+spec:
+  description: |
+    Tests that MCPServers properly wait for and reconcile their referenced MCPWebhookConfig
+  steps:
+    # Set up
+    - name: create-mcpserver-with-missing-webhook-config
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPServer
+              metadata:
+                name: missing-webhook-server
+                namespace: default
+              spec:
+                image: docker.io/library/alpine:latest
+                args: ["sleep", "infinity"]
+                webhookConfigRef:
+                  name: non-existent-webhook-config
+
+    # Wait for the system to process the MCPServer
+    - name: wait-for-failure-condition
+      try:
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPServer
+              metadata:
+                name: missing-webhook-server
+                namespace: default
+              status:
+                phase: Failed
+
+    # Create the webhook config and wait for reconciliation
+    - name: create-webhook-config
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPWebhookConfig
+              metadata:
+                name: non-existent-webhook-config
+                namespace: default
+              spec:
+                validating:
+                  - name: validate-1
+                    url: https://validate.example.com
+                mutating:
+                  - name: mutate-1
+                    url: https://mutate.example.com
+
+    # The MCPServer should now enter Running phase since the WebhookConfig was created
+    - name: wait-for-running-condition
+      try:
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPServer
+              metadata:
+                name: missing-webhook-server
+                namespace: default
+              status:
+                phase: Running
+                webhookConfigHash: (?*)
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1alpha1
+              kind: MCPWebhookConfig
+              metadata:
+                name: non-existent-webhook-config
+              status:
+                referencingServers:
+                  - missing-webhook-server

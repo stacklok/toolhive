@@ -46,7 +46,7 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				MCPPort:   8080,
-				Env: []mcpv1alpha1.EnvVar{
+				Env: []corev1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
 			},

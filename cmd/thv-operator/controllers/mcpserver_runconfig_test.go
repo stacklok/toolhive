@@ -41,7 +41,7 @@ func createRunConfigTestScheme() *runtime.Scheme {
 	return testScheme
 }
 
-func createTestMCPServerWithConfig(name, namespace, image string, envVars []mcpv1alpha1.EnvVar) *mcpv1alpha1.MCPServer {
+func createTestMCPServerWithConfig(name, namespace, image string, envVars []corev1.EnvVar) *mcpv1alpha1.MCPServer {
 	return &mcpv1alpha1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -96,7 +96,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Image:     "env-image:latest",
 					Transport: "sse",
 					ProxyPort: 9090,
-					Env: []mcpv1alpha1.EnvVar{
+					Env: []corev1.EnvVar{
 						{Name: "VAR1", Value: "value1"},
 						{Name: "VAR2", Value: "value2"},
 					},
@@ -322,7 +322,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					MCPPort:   8080,
 					ProxyMode: "streamable-http",
 					Args:      []string{"--comprehensive", "--test"},
-					Env: []mcpv1alpha1.EnvVar{
+					Env: []corev1.EnvVar{
 						{Name: "ENV1", Value: "value1"},
 						{Name: "ENV2", Value: "value2"},
 						{Name: "EMPTY_VALUE", Value: ""},
@@ -540,7 +540,7 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 			ProxyPort: 9090,
 			MCPPort:   8080,
 			Args:      []string{"--arg1", "--arg2", "--complex-flag=value"},
-			Env: []mcpv1alpha1.EnvVar{
+			Env: []corev1.EnvVar{
 				{Name: "VAR_C", Value: "value_c"},
 				{Name: "VAR_A", Value: "value_a"},
 				{Name: "VAR_B", Value: "value_b"},
@@ -1203,7 +1203,7 @@ func TestEnsureRunConfigConfigMapCompleteFlow(t *testing.T) {
 	}
 
 	// Step 1: Create initial MCPServer and ConfigMap
-	mcpServer := createTestMCPServerWithConfig("flow-server", "flow-ns", "test:v1", []mcpv1alpha1.EnvVar{
+	mcpServer := createTestMCPServerWithConfig("flow-server", "flow-ns", "test:v1", []corev1.EnvVar{
 		{Name: "ENV1", Value: "value1"},
 	})
 
@@ -1234,7 +1234,7 @@ func TestEnsureRunConfigConfigMapCompleteFlow(t *testing.T) {
 	// The checksum will automatically change when content changes
 
 	mcpServer.Spec.Image = "test:v2"
-	mcpServer.Spec.Env = []mcpv1alpha1.EnvVar{
+	mcpServer.Spec.Env = []corev1.EnvVar{
 		{Name: "ENV1", Value: "value1"},
 		{Name: "ENV2", Value: "value2"},
 	}

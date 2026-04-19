@@ -567,12 +567,7 @@ func (*EmbeddingServerReconciler) buildEnvVars(embedding *mcpv1alpha1.EmbeddingS
 		})
 	}
 
-	for _, env := range embedding.Spec.Env {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  env.Name,
-			Value: env.Value,
-		})
-	}
+	envVars = append(envVars, embedding.Spec.Env...)
 	return envVars
 }
 

@@ -155,7 +155,7 @@ func TestResourceOverrides(t *testing.T) {
 									"environment": "test",
 								},
 							},
-							Env: []mcpv1alpha1.EnvVar{
+							Env: []corev1.EnvVar{
 								{
 									Name:  "HTTP_PROXY",
 									Value: "http://proxy.example.com:8080",
@@ -203,7 +203,7 @@ func TestResourceOverrides(t *testing.T) {
 					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							Env: []mcpv1alpha1.EnvVar{
+							Env: []corev1.EnvVar{
 								{Name: "TOOLHIVE_DEBUG", Value: "true"},
 							},
 						},
@@ -249,7 +249,7 @@ func TestResourceOverrides(t *testing.T) {
 									"version":            "v1.2.3",
 								},
 							},
-							Env: []mcpv1alpha1.EnvVar{
+							Env: []corev1.EnvVar{
 								{
 									Name:  "LOG_LEVEL",
 									Value: "debug",
@@ -483,7 +483,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							Env: []mcpv1alpha1.EnvVar{
+							Env: []corev1.EnvVar{
 								{Name: "HTTP_PROXY", Value: "http://proxy.example.com:8080"},
 								{Name: "NO_PROXY", Value: "localhost,127.0.0.1"},
 							},
@@ -509,7 +509,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							Env: []mcpv1alpha1.EnvVar{
+							Env: []corev1.EnvVar{
 								{Name: "HTTP_PROXY", Value: "http://new-proxy.example.com:8080"},
 								{Name: "NO_PROXY", Value: "localhost,127.0.0.1"},
 							},
@@ -535,7 +535,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							Env: []mcpv1alpha1.EnvVar{
+							Env: []corev1.EnvVar{
 								{Name: "HTTP_PROXY", Value: "http://proxy.example.com:8080"},
 								{Name: "NO_PROXY", Value: "localhost,127.0.0.1"},
 								{Name: "CUSTOM_ENV", Value: "custom-value"},
@@ -562,7 +562,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							Env: []mcpv1alpha1.EnvVar{
+							Env: []corev1.EnvVar{
 								{Name: "HTTP_PROXY", Value: "http://proxy.example.com:8080"},
 							},
 						},

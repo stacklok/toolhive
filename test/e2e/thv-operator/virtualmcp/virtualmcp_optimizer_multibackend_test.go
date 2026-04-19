@@ -91,7 +91,7 @@ var _ = Describe("VirtualMCPServer Optimizer Multi-Backend", Ordered, func() {
 			Name: backend5Name, Namespace: testNamespace, GroupRef: mcpGroupName,
 			Image:     images.TerraformMCPServerImage, // 9 tools
 			Transport: "streamable-http",
-			Env: []mcpv1alpha1.EnvVar{
+			Env: []corev1.EnvVar{
 				{Name: "TRANSPORT_MODE", Value: "streamable-http"},
 				{Name: "TRANSPORT_HOST", Value: "0.0.0.0"},
 			},

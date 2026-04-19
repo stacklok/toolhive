@@ -19,7 +19,7 @@ import (
 
 var tuiCmd = &cobra.Command{
 	Use:   "tui",
-	Short: "Open the interactive TUI dashboard",
+	Short: "Open the interactive TUI dashboard (experimental)",
 	Long: `Launch the interactive terminal dashboard for managing MCP servers.
 
 The dashboard shows a real-time list of servers with live log streaming,

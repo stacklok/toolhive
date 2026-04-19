@@ -189,6 +189,52 @@ func TestConverter_OIDCResolution(t *testing.T) {
 			},
 		},
 		{
+			name:          "inline resolved ThvCABundlePath maps to CABundlePath",
+			oidcConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1alpha1.MCPOIDCConfigTypeInline),
+			mockReturn: &oidc.OIDCConfig{
+				Issuer:          "https://issuer.example.com",
+				ThvCABundlePath: "/config/certs/example-ca/ca.crt",
+			},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.NotNil(t, config.IncomingAuth.OIDC)
+				assert.Equal(t, "/config/certs/example-ca/ca.crt", config.IncomingAuth.OIDC.CABundlePath)
+			},
+		},
+		{
+			name:          "k8s service account ThvCABundlePath maps to CABundlePath",
+			oidcConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount),
+			mockReturn: &oidc.OIDCConfig{
+				Issuer:          "https://kubernetes.default.svc",
+				ThvCABundlePath: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+			},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.NotNil(t, config.IncomingAuth.OIDC)
+				assert.Equal(t,
+					"/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+					config.IncomingAuth.OIDC.CABundlePath)
+			},
+		},
+		{
+			name:          "empty ThvCABundlePath results in empty CABundlePath",
+			oidcConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
+			oidcConfig:    newTestMCPOIDCConfig(mcpv1alpha1.MCPOIDCConfigTypeInline),
+			mockReturn: &oidc.OIDCConfig{
+				Issuer: "https://issuer.example.com",
+			},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.NotNil(t, config.IncomingAuth.OIDC)
+				assert.Empty(t, config.IncomingAuth.OIDC.CABundlePath)
+			},
+		},
+		{
 			name:          "non-inline type does not set ClientSecretEnv",
 			oidcConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: oidcConfigName, Audience: "test-audience"},
 			oidcConfig:    newTestMCPOIDCConfig(mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount),

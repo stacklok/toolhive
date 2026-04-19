@@ -243,6 +243,8 @@ func mapWorkloadStatusToVMCPHealth(status rt.WorkloadStatus) vmcp.BackendHealthS
 		return vmcp.BackendUnknown
 	case rt.WorkloadStatusUnauthenticated:
 		return vmcp.BackendUnauthenticated
+	case rt.WorkloadStatusPolicyStopped:
+		return vmcp.BackendUnhealthy
 	default:
 		return vmcp.BackendUnknown
 	}
@@ -1086,6 +1088,15 @@ func (d *DefaultManager) restartSingleWorkload(ctx context.Context, name string,
 		return d.restartContainerWorkload(ctx, name, foreground)
 	}
 
+	// Check policy gates before restarting — the loaded RunConfig carries the same
+	// fields (RegistryAPIURL, RegistryURL, RemoteURL) that the gate evaluates on create.
+	if err := runner.EagerCheckCreateServer(ctx, runConfig); err != nil {
+		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusPolicyStopped, err.Error()); statusErr != nil {
+			slog.Warn("Failed to set workload status to policy_stopped", "workload", name, "error", statusErr)
+		}
+		return fmt.Errorf("server restart blocked by policy: %w", err)
+	}
+
 	// Check if this is a remote workload
 	if runConfig.RemoteURL != "" {
 		return d.restartRemoteWorkload(ctx, name, runConfig, foreground)
@@ -1293,6 +1304,16 @@ func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name s
 	mcpRunner, err := d.loadRunnerFromState(ctx, workloadName)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to load state for %s: %w", workloadName, err)
+	}
+
+	// Check policy gates before restarting. This covers the case where the caller
+	// could not load state via the original name but we resolved the canonical name
+	// from container labels above, so the check must happen here.
+	if err := runner.EagerCheckCreateServer(ctx, mcpRunner.Config); err != nil {
+		if statusErr := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusPolicyStopped, err.Error()); statusErr != nil {
+			slog.Warn("Failed to set workload status to policy_stopped", "workload", workloadName, "error", statusErr)
+		}
+		return "", nil, fmt.Errorf("server restart blocked by policy: %w", err)
 	}
 
 	// Set workload status to starting - use the workload name for status operations

@@ -13,7 +13,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -100,10 +99,7 @@ func printStatusJSONOutput(workload core.Workload) error {
 
 func printStatusTextOutput(workload core.Workload) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	status := string(workload.Status)
-	if workload.Status == runtime.WorkloadStatusUnauthenticated {
-		status = "⚠️  " + status
-	}
+	status := workloadStatusIndicator(workload.Status)
 
 	// Print workload information in key-value format
 	_, _ = fmt.Fprintf(w, "Name:\t%s\n", workload.Name)

@@ -97,6 +97,14 @@ type RunConfig struct {
 	// TargetHost is the host to forward traffic to (only applicable to SSE transport)
 	TargetHost string `json:"target_host,omitempty" yaml:"target_host,omitempty"`
 
+	// AllowedOrigins is the allowlist of values accepted on the HTTP Origin header,
+	// used for DNS-rebinding protection per MCP 2025-11-25 §"Security Warning".
+	// When empty and Host is loopback (127.0.0.1 / localhost / [::1]), a default
+	// loopback-only allowlist is derived at middleware-wiring time.
+	// When empty and Host is non-loopback, the middleware is disabled — operators
+	// exposing the proxy publicly must configure an explicit allowlist.
+	AllowedOrigins []string `json:"allowed_origins,omitempty" yaml:"allowed_origins,omitempty"`
+
 	// Publish lists ports to publish to the host in format "hostPort:containerPort"
 	Publish []string `json:"publish,omitempty" yaml:"publish,omitempty"`
 

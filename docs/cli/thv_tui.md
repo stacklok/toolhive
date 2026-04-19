@@ -11,7 +11,7 @@ mdx:
 
 ## thv tui
 
-Open the interactive TUI dashboard
+Open the interactive TUI dashboard (experimental)
 
 ### Synopsis
 

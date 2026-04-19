@@ -9,10 +9,10 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 // workloadsRefreshMsg is sent when the workload list is refreshed.
@@ -45,7 +45,7 @@ type tickMsg time.Time
 // toolsFetchedMsg is sent when the tools list is loaded from an MCP server.
 type toolsFetchedMsg struct {
 	workloadName string
-	tools        []vmcp.Tool
+	tools        []mcp.Tool
 	err          error
 }
 

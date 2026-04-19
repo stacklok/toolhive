@@ -9,6 +9,7 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	mcpclient "github.com/mark3labs/mcp-go/client"
 
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -55,6 +56,10 @@ func (m *Model) handleFilterKey(msg tea.KeyMsg) tea.Cmd {
 func (m *Model) handleNormalKey(msg tea.KeyMsg) tea.Cmd {
 	switch {
 	case key.Matches(msg, keys.Quit):
+		if m.mcpClient != nil {
+			_ = m.mcpClient.Close()
+			m.mcpClient = nil
+		}
 		m.quitting = true
 		return tea.Quit
 
@@ -287,6 +292,12 @@ func maxLineLen(lines []string) int {
 
 // onSelectionChanged resets panel state and starts any needed background fetches.
 func (m *Model) onSelectionChanged() tea.Cmd {
+	// Close the previous workload's MCP client.
+	if m.mcpClient != nil {
+		_ = m.mcpClient.Close()
+		m.mcpClient = nil
+	}
+
 	m.toolsFor = ""        // invalidate tools cache
 	m.toolsSelectedIdx = 0 // reset tool selection
 	m.runConfigFor = ""    // invalidate runConfig cache
@@ -375,7 +386,24 @@ func (m *Model) maybeStartToolsFetch() tea.Cmd {
 	m.toolsLoading = true
 	m.tools = nil
 	m.toolsErr = nil
-	return startToolsFetch(m.ctx, sel)
+
+	// Create and connect the MCP client if not already present.
+	if m.mcpClient == nil {
+		c, err := createMCPClient(sel)
+		if err != nil {
+			m.toolsLoading = false
+			m.toolsErr = err
+			return nil
+		}
+		if err := connectMCPClient(m.ctx, c); err != nil {
+			_ = c.Close()
+			m.toolsLoading = false
+			m.toolsErr = err
+			return nil
+		}
+		m.mcpClient = c
+	}
+	return startToolsFetch(m.ctx, m.mcpClient, sel)
 }
 
 // maybeLoadRunConfig loads the RunConfig for the selected workload if not already loaded.
@@ -400,12 +428,11 @@ func (m *Model) maybeLoadRunConfig() tea.Cmd {
 	}
 }
 
-// startToolsFetch returns a tea.Cmd that fetches tools for a workload.
-func startToolsFetch(ctx context.Context, w *core.Workload) tea.Cmd {
+// startToolsFetch returns a tea.Cmd that fetches tools for a workload via an MCP client.
+func startToolsFetch(ctx context.Context, c *mcpclient.Client, w *core.Workload) tea.Cmd {
 	name := w.Name
-	wCopy := *w
 	return func() tea.Msg {
-		tools, err := fetchTools(ctx, &wCopy)
+		tools, err := fetchTools(ctx, c)
 		return toolsFetchedMsg{workloadName: name, tools: tools, err: err}
 	}
 }

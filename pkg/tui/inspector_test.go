@@ -7,59 +7,45 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-func TestBuildRequiredSet(t *testing.T) {
+func TestBuildRequiredSetFromSlice(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
-		schema   map[string]any
+		required []string
 		expected map[string]bool
 	}{
 		{
-			name:     "missing required key",
-			schema:   map[string]any{"properties": map[string]any{}},
+			name:     "nil slice",
+			required: nil,
 			expected: map[string]bool{},
 		},
 		{
-			name:     "empty required array",
-			schema:   map[string]any{"required": []any{}},
+			name:     "empty slice",
+			required: []string{},
 			expected: map[string]bool{},
 		},
 		{
-			name: "valid required strings",
-			schema: map[string]any{
-				"required": []any{"name", "url"},
-			},
+			name:     "valid required strings",
+			required: []string{"name", "url"},
 			expected: map[string]bool{"name": true, "url": true},
 		},
 		{
-			name: "non-string elements skipped",
-			schema: map[string]any{
-				"required": []any{"name", 42, true, nil, "url"},
-			},
-			expected: map[string]bool{"name": true, "url": true},
-		},
-		{
-			name:     "required is wrong type entirely",
-			schema:   map[string]any{"required": "not-an-array"},
-			expected: map[string]bool{},
-		},
-		{
-			name:     "nil schema",
-			schema:   nil,
-			expected: map[string]bool{},
+			name:     "single entry",
+			required: []string{"id"},
+			expected: map[string]bool{"id": true},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.expected, buildRequiredSet(tc.schema))
+			assert.Equal(t, tc.expected, buildRequiredSetFromSlice(tc.required))
 		})
 	}
 }
@@ -189,7 +175,7 @@ func TestFormatInspResult(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
-		result   *vmcp.ToolCallResult
+		result   *mcp.CallToolResult
 		expected string
 	}{
 		{
@@ -199,35 +185,35 @@ func TestFormatInspResult(t *testing.T) {
 		},
 		{
 			name: "single text content",
-			result: &vmcp.ToolCallResult{
-				Content: []vmcp.Content{
-					{Type: "text", Text: "hello world"},
+			result: &mcp.CallToolResult{
+				Content: []mcp.Content{
+					mcp.TextContent{Type: "text", Text: "hello world"},
 				},
 			},
 			expected: "hello world",
 		},
 		{
 			name: "multiple text contents joined",
-			result: &vmcp.ToolCallResult{
-				Content: []vmcp.Content{
-					{Type: "text", Text: "line1"},
-					{Type: "text", Text: "line2"},
+			result: &mcp.CallToolResult{
+				Content: []mcp.Content{
+					mcp.TextContent{Type: "text", Text: "line1"},
+					mcp.TextContent{Type: "text", Text: "line2"},
 				},
 			},
 			expected: "line1\nline2",
 		},
 		{
 			name: "non-text content serialized as JSON",
-			result: &vmcp.ToolCallResult{
-				Content: []vmcp.Content{
-					{Type: "image", Data: "base64data", MimeType: "image/png"},
+			result: &mcp.CallToolResult{
+				Content: []mcp.Content{
+					mcp.ImageContent{Type: "image", Data: "base64data", MIMEType: "image/png"},
 				},
 			},
 		},
 		{
 			name: "empty content falls back to full result JSON",
-			result: &vmcp.ToolCallResult{
-				Content: []vmcp.Content{},
+			result: &mcp.CallToolResult{
+				Content: []mcp.Content{},
 				IsError: true,
 			},
 		},

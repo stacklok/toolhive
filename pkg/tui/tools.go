@@ -6,61 +6,55 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 
-	"github.com/stacklok/toolhive-core/env"
+	mcpclient "github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
+
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/vmcp"
-	vmcpauthfactory "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
-	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 )
 
-// errStdioToolsNotAvailable is returned when tool listing is attempted for a STDIO server.
-// STDIO servers only support a single MCP initialize handshake; calling initialize again
-// from the TUI would interfere with the real client connection.
 var errStdioToolsNotAvailable = errors.New("tool listing not available for STDIO servers")
 
-// newBackendClientAndTarget creates an authenticated MCP backend client and a
-// BackendTarget for the given workload. This is the common setup shared by
-// fetchTools and callTool.
-func newBackendClientAndTarget(ctx context.Context, workload *core.Workload) (vmcp.BackendClient, *vmcp.BackendTarget, error) {
-	registry, err := vmcpauthfactory.NewOutgoingAuthRegistry(ctx, &env.OSReader{})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	mcpClient, err := vmcpclient.NewHTTPBackendClient(registry)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// For stdio workloads the proxy exposes an HTTP transport (sse or streamable-http).
-	// ProxyMode holds the actual transport type clients should use.
+// createMCPClient creates a new MCP SDK client for the given workload.
+// The client is not yet started or initialized; call connectMCPClient next.
+func createMCPClient(workload *core.Workload) (*mcpclient.Client, error) {
 	transportType := workload.ProxyMode
 	if transportType == "" {
 		transportType = string(workload.TransportType)
 	}
-
-	target := &vmcp.BackendTarget{
-		WorkloadID:    workload.Name,
-		WorkloadName:  workload.Name,
-		BaseURL:       workload.URL,
-		TransportType: transportType,
+	switch transportType {
+	case "streamable-http":
+		return mcpclient.NewStreamableHttpClient(workload.URL)
+	case "sse":
+		return mcpclient.NewSSEMCPClient(workload.URL)
+	default:
+		return nil, fmt.Errorf("unsupported transport type %q for TUI client", transportType)
 	}
-
-	return mcpClient, target, nil
 }
 
-// fetchTools connects to the running MCP server and returns its tool list.
-func fetchTools(ctx context.Context, workload *core.Workload) ([]vmcp.Tool, error) {
-	mcpClient, target, err := newBackendClientAndTarget(ctx, workload)
+// connectMCPClient starts the client transport and performs the MCP initialize handshake.
+func connectMCPClient(ctx context.Context, c *mcpclient.Client) error {
+	if err := c.Start(ctx); err != nil {
+		return fmt.Errorf("start MCP client: %w", err)
+	}
+	initReq := mcp.InitializeRequest{}
+	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initReq.Params.ClientInfo = mcp.Implementation{
+		Name:    "toolhive-tui",
+		Version: "1.0.0",
+	}
+	if _, err := c.Initialize(ctx, initReq); err != nil {
+		return fmt.Errorf("initialize MCP client: %w", err)
+	}
+	return nil
+}
+
+// fetchTools queries the MCP server for its tool list via an already-connected client.
+func fetchTools(ctx context.Context, c *mcpclient.Client) ([]mcp.Tool, error) {
+	result, err := c.ListTools(ctx, mcp.ListToolsRequest{})
 	if err != nil {
 		return nil, err
 	}
-
-	caps, err := mcpClient.ListCapabilities(ctx, target)
-	if err != nil {
-		return nil, err
-	}
-
-	return caps.Tools, nil
+	return result.Tools, nil
 }

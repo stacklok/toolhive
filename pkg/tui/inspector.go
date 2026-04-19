@@ -13,9 +13,10 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	mcpclient "github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 // inspSpinFrames holds the spinner animation frames for the inspector loading state.
@@ -23,7 +24,7 @@ var inspSpinFrames = []string{"⠋", "⠙", "⠸", "⠴", "⠦", "⠧", "⠇", "
 
 // inspCallResultMsg is sent when a tool call completes in the inspector.
 type inspCallResultMsg struct {
-	result    *vmcp.ToolCallResult
+	result    *mcp.CallToolResult
 	elapsedMs int64
 	err       error
 }
@@ -33,13 +34,13 @@ type inspSpinTickMsg struct{}
 
 // buildInspFields parses a tool's InputSchema and returns form fields.
 // It extracts properties from the JSON Schema and creates textinput models.
-func buildInspFields(tool vmcp.Tool) []formField {
-	props, _ := tool.InputSchema["properties"].(map[string]any)
+func buildInspFields(tool mcp.Tool) []formField {
+	props := tool.InputSchema.Properties
 	if props == nil {
 		return nil
 	}
 
-	reqSet := buildRequiredSet(tool.InputSchema)
+	reqSet := buildRequiredSetFromSlice(tool.InputSchema.Required)
 
 	// Iterate in a stable order by collecting keys first.
 	keys := make([]string, 0, len(props))
@@ -80,14 +81,11 @@ func buildInspFields(tool vmcp.Tool) []formField {
 	return fields
 }
 
-// buildRequiredSet returns a set of required field names from a JSON Schema.
-func buildRequiredSet(schema map[string]any) map[string]bool {
+// buildRequiredSetFromSlice returns a set of required field names from a string slice.
+func buildRequiredSetFromSlice(required []string) map[string]bool {
 	reqSet := map[string]bool{}
-	reqArr, _ := schema["required"].([]any)
-	for _, r := range reqArr {
-		if s, ok := r.(string); ok {
-			reqSet[s] = true
-		}
+	for _, s := range required {
+		reqSet[s] = true
 	}
 	return reqSet
 }
@@ -128,24 +126,21 @@ func buildCurlStr(sel *core.Workload, toolName string, args map[string]any) stri
 }
 
 // startInspCallTool returns a tea.Cmd that calls a tool asynchronously.
-func startInspCallTool(ctx context.Context, sel *core.Workload, toolName string, args map[string]any) tea.Cmd {
-	wCopy := *sel
+func startInspCallTool(ctx context.Context, c *mcpclient.Client, toolName string, args map[string]any) tea.Cmd {
 	return func() tea.Msg {
 		start := time.Now()
-		result, err := callTool(ctx, &wCopy, toolName, args)
+		result, err := callTool(ctx, c, toolName, args)
 		elapsed := time.Since(start).Milliseconds()
 		return inspCallResultMsg{result: result, elapsedMs: elapsed, err: err}
 	}
 }
 
-// callTool invokes a tool on the backend MCP server.
-func callTool(ctx context.Context, workload *core.Workload, toolName string, args map[string]any) (*vmcp.ToolCallResult, error) {
-	mcpClient, target, err := newBackendClientAndTarget(ctx, workload)
-	if err != nil {
-		return nil, err
-	}
-
-	return mcpClient.CallTool(ctx, target, toolName, args, nil)
+// callTool invokes a tool on the backend MCP server via an already-connected client.
+func callTool(ctx context.Context, c *mcpclient.Client, toolName string, args map[string]any) (*mcp.CallToolResult, error) {
+	req := mcp.CallToolRequest{}
+	req.Params.Name = toolName
+	req.Params.Arguments = args
+	return c.CallTool(ctx, req)
 }
 
 // inspFieldValues builds a map[string]any from current form field input values, skipping empty fields.
@@ -161,17 +156,17 @@ func inspFieldValues(fields []formField) map[string]any {
 	return result
 }
 
-// formatInspResult formats a ToolCallResult as a pretty-printed JSON string.
-func formatInspResult(result *vmcp.ToolCallResult) string {
+// formatInspResult formats a CallToolResult as a pretty-printed JSON string.
+func formatInspResult(result *mcp.CallToolResult) string {
 	if result == nil {
 		return ""
 	}
 	parts := make([]string, 0, len(result.Content))
 	for _, c := range result.Content {
-		switch c.Type {
-		case vmcp.ContentTypeText:
-			parts = append(parts, c.Text)
-		case vmcp.ContentTypeImage, vmcp.ContentTypeAudio, vmcp.ContentTypeResource, vmcp.ContentTypeLink:
+		switch tc := c.(type) {
+		case mcp.TextContent:
+			parts = append(parts, tc.Text)
+		default:
 			b, _ := json.MarshalIndent(c, "", "  ")
 			parts = append(parts, string(b))
 		}

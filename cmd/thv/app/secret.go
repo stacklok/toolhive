@@ -225,7 +225,9 @@ The secret must exist in your configured secrets provider, otherwise the command
 }
 
 func newSecretDeleteCommand() *cobra.Command {
-	return &cobra.Command{
+	var systemFlag bool
+
+	cmd := &cobra.Command{
 		Use:   "delete <name>",
 		Short: "Delete a secret",
 		Long: `Remove a secret from the configured secrets provider.
@@ -243,6 +245,30 @@ If your provider is read-only or doesn't support deletion, this command returns 
 			// Validate input
 			if name == "" {
 				return fmt.Errorf("validation error: secret name cannot be empty")
+			}
+
+			if systemFlag {
+				// Validate the key name before touching the provider so a
+				// typo surfaces the right error even when secrets are not set up.
+				if err := validateSystemKeyName(name); err != nil {
+					return err
+				}
+				provider, err := authsecrets.GetSystemSecretsProvider()
+				if err != nil {
+					return fmt.Errorf("failed to create secrets provider: %w", err)
+				}
+				if !provider.Capabilities().CanDelete {
+					configProvider := config.NewDefaultProvider()
+					cfg := configProvider.GetConfig()
+					providerType, _ := cfg.Secrets.GetProviderType()
+					return fmt.Errorf("the %s secrets provider does not support deleting secrets", providerType)
+				}
+				// Workload configs reference the bare (unscoped) name, so strip
+				// the __thv_<scope>_ prefix before searching for affected workloads.
+				rest := strings.TrimPrefix(name, secrets.SystemKeyPrefix)
+				_, bareName, _ := strings.Cut(rest, "_")
+				warnWorkloadsUsingSecret(ctx, bareName)
+				return runSystemSecretDelete(ctx, provider, name)
 			}
 
 			manager, err := getSecretsManager()
@@ -269,10 +295,16 @@ If your provider is read-only or doesn't support deletion, this command returns 
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&systemFlag, "system", false, "Allow deleting a system-managed secret (emergency use only)")
+
+	return cmd
 }
 
 func newSecretListCommand() *cobra.Command {
-	return &cobra.Command{
+	var systemFlag bool
+
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all available secrets",
 		Long: `Display all secrets available in the configured secrets provider.
@@ -282,6 +314,21 @@ If descriptions exist for the secrets, the command displays them alongside the n
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
+
+			if systemFlag {
+				provider, err := authsecrets.GetSystemSecretsProvider()
+				if err != nil {
+					return fmt.Errorf("failed to create secrets provider: %w", err)
+				}
+				if !provider.Capabilities().CanList {
+					configProvider := config.NewDefaultProvider()
+					cfg := configProvider.GetConfig()
+					providerType, _ := cfg.Secrets.GetProviderType()
+					return fmt.Errorf("the %s secrets provider does not support listing secrets", providerType)
+				}
+				return runSystemSecretList(ctx, provider, os.Stdout)
+			}
+
 			manager, err := getSecretsManager()
 			if err != nil {
 				return fmt.Errorf("failed to create secrets manager: %w", err)
@@ -295,18 +342,18 @@ If descriptions exist for the secrets, the command displays them alongside the n
 				return fmt.Errorf("the %s secrets provider does not support listing secrets", providerType)
 			}
 
-			secrets, err := manager.ListSecrets(ctx)
+			listedSecrets, err := manager.ListSecrets(ctx)
 			if err != nil {
 				return fmt.Errorf("failed to list secrets: %w", err)
 			}
 
-			if len(secrets) == 0 {
+			if len(listedSecrets) == 0 {
 				fmt.Println("No secrets found")
 				return nil
 			}
 
 			fmt.Println("Available secrets:")
-			for _, description := range secrets {
+			for _, description := range listedSecrets {
 				fmt.Printf("  - %s", description.Key)
 				// Add description if available.
 				if description.Description != "" {
@@ -318,6 +365,10 @@ If descriptions exist for the secrets, the command displays them alongside the n
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&systemFlag, "system", false, "List system-managed secrets (registry auth, workload tokens)")
+
+	return cmd
 }
 
 func newSecretResetKeyringCommand() *cobra.Command {
@@ -428,6 +479,65 @@ For more information, visit: https://developer.1password.com/docs/service-accoun
 		fmt.Println("Note: 1Password provider is read-only. You can retrieve secrets but not set new ones.")
 	}
 
+	return nil
+}
+
+// runSystemSecretList lists system-managed secrets from the given provider,
+// writing formatted output to w. Only keys prefixed with SystemKeyPrefix are shown.
+func runSystemSecretList(ctx context.Context, provider secrets.Provider, w io.Writer) error {
+	allSecrets, err := provider.ListSecrets(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list secrets: %w", err)
+	}
+
+	var systemSecrets []secrets.SecretDescription
+	for _, s := range allSecrets {
+		if strings.HasPrefix(s.Key, secrets.SystemKeyPrefix) {
+			systemSecrets = append(systemSecrets, s)
+		}
+	}
+
+	if len(systemSecrets) == 0 {
+		_, err = fmt.Fprintln(w, "No system-managed secrets found")
+		return err
+	}
+
+	if _, err = fmt.Fprintln(w, "System-managed secrets:"); err != nil {
+		return err
+	}
+	for _, s := range systemSecrets {
+		if _, err = fmt.Fprintln(w, formatSystemSecretEntry(s.Key)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// runSystemSecretDelete deletes a system-managed key from provider.
+// Callers are responsible for validating the key name with validateSystemKeyName
+// before calling this function.
+func runSystemSecretDelete(ctx context.Context, provider secrets.Provider, name string) error {
+	if err := provider.DeleteSecret(ctx, name); err != nil {
+		return fmt.Errorf("failed to delete secret %s: %w", name, err)
+	}
+	return nil
+}
+
+// formatSystemSecretEntry formats a system-managed secret key for display.
+// Key format: __thv_<scope>_<name>
+// The full key is shown so it can be passed directly to "thv secret delete --system".
+func formatSystemSecretEntry(key string) string {
+	rest := strings.TrimPrefix(key, secrets.SystemKeyPrefix)
+	scope, _, _ := strings.Cut(rest, "_")
+	return fmt.Sprintf("  - %s  [%s]", key, scope)
+}
+
+// validateSystemKeyName returns an error if name is not a system-managed key.
+func validateSystemKeyName(name string) error {
+	if !strings.HasPrefix(name, secrets.SystemKeyPrefix) {
+		return fmt.Errorf("--system flag requires a system key (starting with %q); got %q", secrets.SystemKeyPrefix, name)
+	}
 	return nil
 }
 

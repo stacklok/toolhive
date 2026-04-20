@@ -31,6 +31,9 @@ const (
 	// defaultTEIImage is the default HuggingFace Text Embeddings Inference image.
 	defaultTEIImage = "ghcr.io/huggingface/text-embeddings-inference:cpu-latest"
 
+	// DefaultEmbeddingModel is the HuggingFace model used when EmbeddingModel is empty.
+	DefaultEmbeddingModel = "BAAI/bge-small-en-v1.5"
+
 	// teiModelCachePath is the path inside the TEI container where models are cached.
 	teiModelCachePath = "/data"
 

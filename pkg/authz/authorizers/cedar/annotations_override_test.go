@@ -128,7 +128,7 @@ func TestAnnotationAttributesCannotOverrideStandardAttributes(t *testing.T) {
 			authzr, err := NewCedarAuthorizer(ConfigOptions{
 				Policies:     tc.policies,
 				EntitiesJSON: `[]`,
-			})
+			}, "")
 			require.NoError(t, err, "Failed to create Cedar authorizer")
 
 			ctx := t.Context()

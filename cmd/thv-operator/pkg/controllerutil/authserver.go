@@ -395,12 +395,8 @@ func AddEmbeddedAuthServerConfigOptions(
 		return fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer")
 	}
 
-	// Validate OIDC config is provided with ResourceURL (required for embedded auth server)
-	if oidcConfig == nil {
-		return fmt.Errorf("OIDC config is required for embedded auth server: OIDCConfigRef must be set on the MCPServer")
-	}
-	if oidcConfig.ResourceURL == "" {
-		return fmt.Errorf("OIDC config resourceUrl is required for embedded auth server: set resourceUrl in OIDCConfigRef")
+	if err := validateOIDCConfigForEmbeddedAuthServer(oidcConfig); err != nil {
+		return err
 	}
 
 	// Build the embedded auth server config for runner
@@ -415,6 +411,42 @@ func AddEmbeddedAuthServerConfigOptions(
 	// Add the configuration option
 	*options = append(*options, runner.WithEmbeddedAuthServerConfig(embeddedConfig))
 
+	return nil
+}
+
+// validateOIDCConfigForEmbeddedAuthServer validates OIDC configuration
+// requirements when an embedded auth server is active.
+//
+// The embedded auth server mints tokens with aud = ResourceURL (the value
+// clients send as the RFC 8707 resource parameter via discovery). The token
+// validator checks aud against Audience. If these differ, every authenticated
+// request fails with an audience mismatch.
+//
+// We validate consistency at reconciliation time (rather than silently
+// overriding Audience with ResourceURL) so that operators see exactly what
+// values are in play and control both sides explicitly. This mirrors the
+// existing vMCP inline config validation (ValidateAuthServerIntegration).
+func validateOIDCConfigForEmbeddedAuthServer(oidcConfig *oidc.OIDCConfig) error {
+	if oidcConfig == nil {
+		return fmt.Errorf("OIDC config is required for embedded auth server: OIDCConfigRef must be set on the MCPServer")
+	}
+	if oidcConfig.ResourceURL == "" {
+		return fmt.Errorf("OIDC config resourceUrl is required for embedded auth server: set resourceUrl in OIDCConfigRef")
+	}
+	if oidcConfig.Audience == "" {
+		return fmt.Errorf(
+			"oidcConfigRef.audience is required when an embedded auth server is active; "+
+				"set audience to %q to match resourceUrl",
+			oidcConfig.ResourceURL,
+		)
+	}
+	if oidcConfig.Audience != oidcConfig.ResourceURL {
+		return fmt.Errorf(
+			"oidcConfigRef.audience %q must match resourceUrl %q when an embedded auth server is active; "+
+				"set audience to %q or set resourceUrl to match audience",
+			oidcConfig.Audience, oidcConfig.ResourceURL, oidcConfig.ResourceURL,
+		)
+	}
 	return nil
 }
 
@@ -616,10 +648,11 @@ func buildUpstreamRunConfig(
 	case mcpv1alpha1.UpstreamProviderTypeOIDC:
 		if provider.OIDCConfig != nil {
 			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
-				IssuerURL:   provider.OIDCConfig.IssuerURL,
-				ClientID:    provider.OIDCConfig.ClientID,
-				RedirectURI: provider.OIDCConfig.RedirectURI,
-				Scopes:      provider.OIDCConfig.Scopes,
+				IssuerURL:                     provider.OIDCConfig.IssuerURL,
+				ClientID:                      provider.OIDCConfig.ClientID,
+				RedirectURI:                   provider.OIDCConfig.RedirectURI,
+				Scopes:                        provider.OIDCConfig.Scopes,
+				AdditionalAuthorizationParams: provider.OIDCConfig.AdditionalAuthorizationParams,
 			}
 			// If client secret is configured, reference it via env var
 			if provider.OIDCConfig.ClientSecretRef != nil {
@@ -632,11 +665,12 @@ func buildUpstreamRunConfig(
 	case mcpv1alpha1.UpstreamProviderTypeOAuth2:
 		if provider.OAuth2Config != nil {
 			config.OAuth2Config = &authserver.OAuth2UpstreamRunConfig{
-				AuthorizationEndpoint: provider.OAuth2Config.AuthorizationEndpoint,
-				TokenEndpoint:         provider.OAuth2Config.TokenEndpoint,
-				ClientID:              provider.OAuth2Config.ClientID,
-				RedirectURI:           provider.OAuth2Config.RedirectURI,
-				Scopes:                provider.OAuth2Config.Scopes,
+				AuthorizationEndpoint:         provider.OAuth2Config.AuthorizationEndpoint,
+				TokenEndpoint:                 provider.OAuth2Config.TokenEndpoint,
+				ClientID:                      provider.OAuth2Config.ClientID,
+				RedirectURI:                   provider.OAuth2Config.RedirectURI,
+				Scopes:                        provider.OAuth2Config.Scopes,
+				AdditionalAuthorizationParams: provider.OAuth2Config.AdditionalAuthorizationParams,
 			}
 			// If client secret is configured, reference it via env var
 			if provider.OAuth2Config.ClientSecretRef != nil {
@@ -757,12 +791,8 @@ func AddAuthServerRefOptions(
 		return fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer")
 	}
 
-	// Validate OIDC config is provided with ResourceURL (required for embedded auth server)
-	if oidcConfig == nil {
-		return fmt.Errorf("OIDC config is required for embedded auth server: OIDCConfigRef must be set on the MCPServer")
-	}
-	if oidcConfig.ResourceURL == "" {
-		return fmt.Errorf("OIDC config resourceUrl is required for embedded auth server: set resourceUrl in OIDCConfigRef")
+	if err := validateOIDCConfigForEmbeddedAuthServer(oidcConfig); err != nil {
+		return err
 	}
 
 	// Build the embedded auth server config for runner

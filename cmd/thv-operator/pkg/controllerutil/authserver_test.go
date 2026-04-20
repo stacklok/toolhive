@@ -967,6 +967,80 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				assert.Equal(t, UpstreamClientSecretEnvVar+"_GITHUB", github.OAuth2Config.ClientSecretEnvVar)
 			},
 		},
+		{
+			name: "OIDC upstream propagates AdditionalAuthorizationParams",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL:   "https://okta.example.com",
+							ClientID:    "okta-client-id",
+							RedirectURI: "https://auth.example.com/callback",
+							Scopes:      []string{"openid", "profile"},
+							AdditionalAuthorizationParams: map[string]string{
+								"access_type": "offline",
+							},
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OIDCConfig)
+				assert.Equal(t, map[string]string{"access_type": "offline"},
+					upstream.OIDCConfig.AdditionalAuthorizationParams)
+			},
+		},
+		{
+			name: "OAuth2 upstream propagates AdditionalAuthorizationParams",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "github",
+						Type: mcpv1alpha1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1alpha1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+							TokenEndpoint:         "https://github.com/login/oauth/access_token",
+							ClientID:              "github-client-id",
+							RedirectURI:           "https://auth.example.com/callback",
+							AdditionalAuthorizationParams: map[string]string{
+								"access_type": "offline",
+							},
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OAuth2Config)
+				assert.Equal(t, map[string]string{"access_type": "offline"},
+					upstream.OAuth2Config.AdditionalAuthorizationParams)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1036,6 +1110,7 @@ func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {
 		{
 			name: "valid OIDC config succeeds",
 			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "http://test-server.default.svc.cluster.local:8080",
 				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
 				Scopes:      []string{"openid", "offline_access"},
 			},
@@ -1044,10 +1119,31 @@ func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {
 		{
 			name: "valid OIDC config with nil scopes succeeds",
 			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "http://test-server.default.svc.cluster.local:8080",
 				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
 				Scopes:      nil,
 			},
 			expectError: false,
+		},
+		{
+			name: "audience mismatch with resourceUrl returns error",
+			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "https://different-audience.example.com",
+				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
+				Scopes:      []string{"openid"},
+			},
+			expectError: true,
+			errContains: "must match resourceUrl",
+		},
+		{
+			name: "empty audience returns specific error",
+			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "",
+				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
+				Scopes:      []string{"openid"},
+			},
+			expectError: true,
+			errContains: "audience is required when an embedded auth server is active",
 		},
 	}
 
@@ -1591,6 +1687,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 	}
 
 	validOIDCConfig := &oidc.OIDCConfig{
+		Audience:    "https://mcp.example.com",
 		ResourceURL: "https://mcp.example.com",
 		Scopes:      []string{"openid"},
 	}
@@ -1663,6 +1760,36 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 			objects:     func() []runtime.Object { return []runtime.Object{newValidEmbeddedAuthConfig()} },
 			wantErr:     true,
 			errContains: "OIDC config is required",
+		},
+		{
+			name: "audience mismatch with resourceUrl returns error",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "auth-server-config",
+			},
+			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "https://wrong-audience.example.com",
+				ResourceURL: "https://mcp.example.com",
+				Scopes:      []string{"openid"},
+			},
+			objects:     func() []runtime.Object { return []runtime.Object{newValidEmbeddedAuthConfig()} },
+			wantErr:     true,
+			errContains: "must match resourceUrl",
+		},
+		{
+			name: "audience matching resourceUrl succeeds",
+			authServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: "auth-server-config",
+			},
+			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "https://mcp.example.com",
+				ResourceURL: "https://mcp.example.com",
+				Scopes:      []string{"openid"},
+			},
+			objects:     func() []runtime.Object { return []runtime.Object{newValidEmbeddedAuthConfig()} },
+			wantErr:     false,
+			wantOptions: 1,
 		},
 	}
 
@@ -1739,6 +1866,7 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 	}
 
 	validOIDC := &oidc.OIDCConfig{
+		Audience:    "https://mcp.example.com",
 		ResourceURL: "https://mcp.example.com",
 		Scopes:      []string{"openid"},
 	}

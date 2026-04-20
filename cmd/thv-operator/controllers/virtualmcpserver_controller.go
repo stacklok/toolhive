@@ -439,6 +439,24 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		return fmt.Errorf("%s", message)
 	}
 
+	// Validate additionalAuthorizationParams on each upstream provider
+	for i := range cfg.UpstreamProviders {
+		prefix := fmt.Sprintf("spec.authServerConfig.upstreamProviders[%d]", i)
+		params := cfg.UpstreamProviders[i].AdditionalAuthorizationParams()
+		if err := mcpv1alpha1.ValidateAdditionalAuthorizationParams(prefix, params); err != nil {
+			message := err.Error()
+			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetAuthServerConfigValidatedCondition(
+				mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+				message,
+				metav1.ConditionFalse,
+			)
+			statusManager.SetObservedGeneration(vmcp.Generation)
+			return fmt.Errorf("%s", message)
+		}
+	}
+
 	// AuthServerConfig is valid
 	statusManager.SetAuthServerConfigValidatedCondition(
 		mcpv1alpha1.ConditionReasonAuthServerConfigValid,
@@ -1496,14 +1514,17 @@ type statusDecision struct {
 	conditionState metav1.ConditionStatus
 }
 
-// countBackendHealth counts ready and unhealthy backends
-func countBackendHealth(ctx context.Context, backends []mcpv1alpha1.DiscoveredBackend) (ready, unhealthy int) {
+// countBackendHealth counts routable and unhealthy backends.
+// Unauthenticated backends are routable — they are reachable but require per-request
+// user auth (e.g., upstream OAuth). Health probes lack user tokens, but real requests
+// with valid OAuth tokens will be served.
+func countBackendHealth(ctx context.Context, backends []mcpv1alpha1.DiscoveredBackend) (routable, unhealthy int) {
 	ctxLogger := log.FromContext(ctx)
 
 	for _, backend := range backends {
 		switch backend.Status {
-		case mcpv1alpha1.BackendStatusReady:
-			ready++
+		case mcpv1alpha1.BackendStatusReady, mcpv1alpha1.BackendStatusUnauthenticated:
+			routable++
 		case mcpv1alpha1.BackendStatusUnavailable,
 			mcpv1alpha1.BackendStatusDegraded,
 			mcpv1alpha1.BackendStatusUnknown:
@@ -1514,7 +1535,7 @@ func countBackendHealth(ctx context.Context, backends []mcpv1alpha1.DiscoveredBa
 			unhealthy++
 		}
 	}
-	return ready, unhealthy
+	return routable, unhealthy
 }
 
 // determineStatusFromBackends evaluates backend health to determine status
@@ -1524,11 +1545,11 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 ) statusDecision {
 	ctxLogger := log.FromContext(ctx)
 
-	ready, unhealthy := countBackendHealth(ctx, vmcp.Status.DiscoveredBackends)
-	total := ready + unhealthy
+	routable, unhealthy := countBackendHealth(ctx, vmcp.Status.DiscoveredBackends)
+	total := routable + unhealthy
 
 	// All backends unhealthy
-	if ready == 0 && unhealthy > 0 {
+	if routable == 0 && unhealthy > 0 {
 		return statusDecision{
 			phase:          mcpv1alpha1.VirtualMCPServerPhaseDegraded,
 			message:        fmt.Sprintf("Virtual MCP server is running but all %d backends are unhealthy", unhealthy),
@@ -1542,15 +1563,15 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 	if unhealthy > 0 {
 		return statusDecision{
 			phase:          mcpv1alpha1.VirtualMCPServerPhaseDegraded,
-			message:        fmt.Sprintf("Virtual MCP server is running with %d/%d backends available", ready, total),
+			message:        fmt.Sprintf("Virtual MCP server is running with %d/%d backends available", routable, total),
 			reason:         "BackendsDegraded",
 			conditionMsg:   "Some backends are unhealthy",
 			conditionState: metav1.ConditionFalse,
 		}
 	}
 
-	// All backends ready
-	if ready > 0 {
+	// All backends routable
+	if routable > 0 {
 		return statusDecision{
 			phase:          mcpv1alpha1.VirtualMCPServerPhaseReady,
 			message:        "Virtual MCP server is running",

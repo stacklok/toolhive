@@ -133,12 +133,14 @@ graph TB
 
     Server -->|groupRef| Group
     Server -.->|externalAuthConfigRef| ExtAuth
+    Server -.->|authServerRef| ExtAuth
     Server -.->|toolConfigRef| ToolCfg
     Server -.->|oidcConfigRef| OIDCCfg
     Server -.->|telemetryConfigRef| TelCfg
 
     Proxy -->|groupRef| Group
     Proxy -.->|externalAuthConfigRef| ExtAuth
+    Proxy -.->|authServerRef| ExtAuth
     Proxy -.->|toolConfigRef| ToolCfg
     Proxy -.->|oidcConfigRef| OIDCCfg
     Proxy -.->|telemetryConfigRef| TelCfg
@@ -159,8 +161,12 @@ MCPServer resources support various transport types (stdio, SSE, streamable-http
 MCPServer supports referencing shared configuration CRDs:
 - `oidcConfigRef` — references an MCPOIDCConfig for shared OIDC settings
 - `telemetryConfigRef` — references an MCPTelemetryConfig for shared telemetry settings
+- `externalAuthConfigRef` — references an MCPExternalAuthConfig for outgoing auth (token exchange, AWS STS, bearer token injection, etc.)
+- `authServerRef` — references an MCPExternalAuthConfig of type `embeddedAuthServer` for incoming auth (the embedded OAuth 2.0/OIDC authorization server that authenticates MCP clients). This is the preferred path for configuring the embedded auth server, keeping incoming auth separate from `externalAuthConfigRef` which handles outgoing auth.
 
-**Status fields** include phase (Ready, Pending, Failed, Terminating), the accessible URL, and config hashes (`oidcConfigHash`, `telemetryConfigHash`) for change detection on referenced CRDs.
+**Backward compatibility**: Existing configurations using `externalAuthConfigRef` with `type: embeddedAuthServer` continue to work. The `authServerRef` field is optional and additive.
+
+**Status fields** include phase (Ready, Pending, Failed, Terminating), the accessible URL, and config hashes (`oidcConfigHash`, `telemetryConfigHash`, `authServerConfigHash`) for change detection on referenced CRDs.
 
 For examples, see:
 - [`examples/operator/mcp-servers/mcpserver_github.yaml`](../../examples/operator/mcp-servers/mcpserver_github.yaml) - Basic GitHub MCP server
@@ -198,9 +204,13 @@ Manages external authentication configurations that can be shared across multipl
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
 
-MCPExternalAuthConfig allows you to define reusable OIDC authentication configurations that can be referenced by multiple MCPServer resources. This is useful for sharing authentication settings across servers. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
+MCPExternalAuthConfig allows you to define reusable authentication configurations that can be referenced by multiple MCPServer and MCPRemoteProxy resources. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
 
-**Referenced by MCPServer** using `oidcConfig.type: external`.
+MCPExternalAuthConfig resources can be referenced via two paths:
+- `externalAuthConfigRef` — for outgoing auth types (token exchange, AWS STS, bearer token injection). This is the original reference path.
+- `authServerRef` — for the embedded auth server type (`embeddedAuthServer`) only. This dedicated reference path makes it possible to configure both incoming auth (embedded auth server) and outgoing auth (e.g., AWS STS) on the same workload resource.
+
+**Referenced by MCPServer and MCPRemoteProxy** using `externalAuthConfigRef` or `authServerRef`.
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
 
@@ -257,11 +267,30 @@ Defines a proxy for remote MCP servers with authentication, authorization, audit
 **Key fields:**
 - `remoteUrl` - URL of the remote MCP server to proxy
 - `oidcConfigRef` - Reference to shared MCPOIDCConfig (with per-server `audience`, `scopes`, and `resourceUrl`)
-- `externalAuthConfigRef` - Token exchange for remote service authentication
+- `externalAuthConfigRef` - Outgoing auth for remote service authentication (token exchange, AWS STS, bearer token injection)
+- `authServerRef` - Incoming auth via the embedded OAuth 2.0/OIDC authorization server (references an MCPExternalAuthConfig of type `embeddedAuthServer`)
 - `authzConfig` - Authorization policies
+- `telemetryConfigRef` - Reference to shared MCPTelemetryConfig (replaces deprecated inline `telemetry`)
 - `toolConfigRef` - Tool filtering and renaming
 
 OIDC is optional — omit `oidcConfigRef` for unauthenticated proxies.
+
+**Combined auth pattern**: `authServerRef` and `externalAuthConfigRef` can be used together on the same MCPRemoteProxy to enable both incoming client authentication (embedded auth server) and outgoing remote service authentication (e.g., AWS STS) simultaneously. This is the primary use case for `authServerRef` on MCPRemoteProxy. If both fields point to an `embeddedAuthServer` resource, the controller produces a validation error.
+
+```yaml
+# MCPRemoteProxy with embedded auth server (incoming) + AWS STS (outgoing)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRemoteProxy
+metadata:
+  name: bedrock-proxy
+spec:
+  remoteUrl: https://bedrock-mcp.example.com
+  authServerRef:
+    kind: MCPExternalAuthConfig
+    name: my-auth-server          # type: embeddedAuthServer
+  externalAuthConfigRef:
+    name: bedrock-sts-config      # type: awsSts
+```
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpremoteproxy_types.go`
 

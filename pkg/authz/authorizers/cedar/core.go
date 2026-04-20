@@ -119,7 +119,7 @@ func (*Factory) ValidateConfig(rawConfig json.RawMessage) error {
 
 // CreateAuthorizer creates a Cedar Authorizer from the configuration.
 // It receives the full raw config and extracts the Cedar-specific portion.
-func (*Factory) CreateAuthorizer(rawConfig json.RawMessage, _ string) (authorizers.Authorizer, error) {
+func (*Factory) CreateAuthorizer(rawConfig json.RawMessage, serverName string) (authorizers.Authorizer, error) {
 	var config Config
 	if err := json.Unmarshal(rawConfig, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse configuration: %w", err)
@@ -129,7 +129,7 @@ func (*Factory) CreateAuthorizer(rawConfig json.RawMessage, _ string) (authorize
 		return nil, fmt.Errorf("cedar configuration is required (missing 'cedar' field)")
 	}
 
-	return NewCedarAuthorizer(*config.Options)
+	return NewCedarAuthorizer(*config.Options, serverName)
 }
 
 // Common errors for Cedar authorization
@@ -167,6 +167,12 @@ type Authorizer struct {
 	// roleClaimName is the JWT claim key that contains role membership.
 	// When empty, no role extraction is performed (backward compatible).
 	roleClaimName string
+	// serverName is the identity of the MCP server this authorizer is scoped to.
+	// Used by downstream enterprise features for server-scoped Cedar policies
+	// (e.g. resource in MCP::"<server>"). When empty (standalone Cedar usage
+	// with no enterprise controller), the authorizer behaves identically to
+	// the unscoped case.
+	serverName string
 	// claimKeyLog rate-limits the diagnostic log of resolved JWT claim keys
 	// so it emits at most once per 30 seconds instead of once per authorization check.
 	claimKeyLog *syncutil.AtMost
@@ -201,7 +207,11 @@ type ConfigOptions struct {
 }
 
 // NewCedarAuthorizer creates a new Cedar authorizer.
-func NewCedarAuthorizer(options ConfigOptions) (authorizers.Authorizer, error) {
+// serverName is a runtime-injected value (not user-authored config) that
+// identifies which MCP server this authorizer is scoped to.
+// If a second runtime-injected value is needed, bundle both into a
+// RuntimeContext struct to keep the factory interface stable.
+func NewCedarAuthorizer(options ConfigOptions, serverName string) (authorizers.Authorizer, error) {
 	authorizer := &Authorizer{
 		policySet:               cedar.NewPolicySet(),
 		entities:                cedar.EntityMap{},
@@ -209,6 +219,7 @@ func NewCedarAuthorizer(options ConfigOptions) (authorizers.Authorizer, error) {
 		primaryUpstreamProvider: options.PrimaryUpstreamProvider,
 		groupClaimName:          options.GroupClaimName,
 		roleClaimName:           options.RoleClaimName,
+		serverName:              serverName,
 		claimKeyLog:             syncutil.NewAtMost(30 * time.Second),
 	}
 
@@ -314,12 +325,9 @@ func (a *Authorizer) GetEntityFactory() *EntityFactory {
 // - resource: The object being accessed (e.g., "Tool::weather")
 // - context: Additional information about the request
 //
-// Note: group-based Cedar policies (e.g. "principal in THVGroup::\"eng\"") only
-// work when entities are constructed via AuthorizeWithJWTClaims, which calls
-// CreateEntitiesForRequest with the extracted groups slice and adds THVGroup
-// parent entities. Callers that bypass AuthorizeWithJWTClaims and pass their
-// own entity map must include THVGroup entities manually for group policies to
-// evaluate correctly.
+// Note: group-based Cedar policies (e.g. "principal in THVGroup::\"eng\"") require
+// that THVGroup parent entities are included in the entity map. See #4768 for the
+// group parent wiring that will set these up via CreatePrincipalEntity.
 // - entities: Optional Cedar entity map with attributes
 func (a *Authorizer) IsAuthorized(
 	principal, action, resource string,
@@ -629,6 +637,7 @@ func (a *Authorizer) authorizeResourceRead(
 
 	// Create attributes for the entities
 	attributes := mergeContexts(map[string]interface{}{
+		"name":      resourceURI,
 		"uri":       resourceURI,
 		"operation": "read",
 		"feature":   "resource",

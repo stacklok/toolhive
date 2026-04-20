@@ -337,7 +337,7 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 				Type:               "Ready",
 				Status:             metav1.ConditionTrue,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "AllBackendsHealthy",
+				Reason:             "AllBackendsRoutable",
 				Message:            "All backends are healthy",
 			},
 		},
@@ -357,7 +357,7 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 	require.Len(t, updated.Status.Conditions, 1)
 	assert.Equal(t, "Ready", updated.Status.Conditions[0].Type)
 	assert.Equal(t, metav1.ConditionTrue, updated.Status.Conditions[0].Status)
-	assert.Equal(t, "AllBackendsHealthy", updated.Status.Conditions[0].Reason)
+	assert.Equal(t, "AllBackendsRoutable", updated.Status.Conditions[0].Reason)
 	assert.Equal(t, "All backends are healthy", updated.Status.Conditions[0].Message)
 
 	// Second report: update message while keeping Status True
@@ -370,7 +370,7 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 				Type:               "Ready",
 				Status:             metav1.ConditionTrue,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "AllBackendsHealthy",
+				Reason:             "AllBackendsRoutable",
 				Message:            "All backends are still healthy",
 			},
 		},
@@ -400,8 +400,8 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 				Type:               "Ready",
 				Status:             metav1.ConditionFalse,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "NoHealthyBackends",
-				Message:            "No healthy backends available",
+				Reason:             "NoRoutableBackends",
+				Message:            "No routable backends available",
 			},
 		},
 		BackendCount: 0,
@@ -418,8 +418,8 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, updated.Status.Conditions, 1)
 	assert.Equal(t, metav1.ConditionFalse, updated.Status.Conditions[0].Status)
-	assert.Equal(t, "NoHealthyBackends", updated.Status.Conditions[0].Reason)
-	assert.Equal(t, "No healthy backends available", updated.Status.Conditions[0].Message)
+	assert.Equal(t, "NoRoutableBackends", updated.Status.Conditions[0].Reason)
+	assert.Equal(t, "No routable backends available", updated.Status.Conditions[0].Message)
 }
 
 // TestK8sReporter_ReportStatus_RemovesStaleConditions tests that conditions
@@ -486,7 +486,7 @@ func TestK8sReporter_ReportStatus_RemovesStaleConditions(t *testing.T) {
 				Type:               "Ready",
 				Status:             metav1.ConditionTrue,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "AllBackendsHealthy",
+				Reason:             "AllBackendsRoutable",
 				Message:            "All 3 backends healthy",
 			},
 		},

@@ -27,7 +27,8 @@ thv secret list [flags]
 ### Options
 
 ```
-  -h, --help   help for list
+  -h, --help     help for list
+      --system   List system-managed secrets (registry auth, workload tokens)
 ```
 
 ### Options inherited from parent commands

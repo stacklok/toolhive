@@ -160,7 +160,7 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (back
 		return nil, fmt.Errorf("failed to check if group exists: %w", err)
 	}
 	if !exists {
-		return nil, fmt.Errorf("group %s not found", groupRef)
+		return nil, fmt.Errorf("%w: %s", groups.ErrGroupNotFound, groupRef)
 	}
 
 	// Get all typedWorkloads in the group

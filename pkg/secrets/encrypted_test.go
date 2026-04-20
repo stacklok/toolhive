@@ -117,7 +117,7 @@ func TestEncryptedManager_DeleteSecret(t *testing.T) {
 	// Test deleting a non-existent secret
 	err := manager.DeleteSecret(ctx, "non-existent")
 	assert.Error(t, err, "Deleting a non-existent secret should return an error")
-	assert.Contains(t, err.Error(), "cannot delete non-existent", "Error message should indicate the secret does not exist")
+	assert.ErrorIs(t, err, ErrSecretNotFound, "Error should be ErrSecretNotFound for a non-existent secret")
 
 	// Test deleting a secret with an empty name
 	err = manager.DeleteSecret(ctx, "")

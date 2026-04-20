@@ -185,11 +185,20 @@ type OIDCUpstreamRunConfig struct {
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	// If not specified, defaults to ["openid", "offline_access"].
+	// When using AdditionalAuthorizationParams with provider-specific refresh
+	// token mechanisms (e.g., Google's access_type=offline), set explicit scopes
+	// to avoid sending both offline_access and the provider-specific parameter.
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 
 	// UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.
 	// By default, the UserInfo endpoint is discovered automatically via OIDC discovery.
 	UserInfoOverride *UserInfoRunConfig `json:"userinfo_override,omitempty" yaml:"userinfo_override,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests. Useful for provider-specific parameters like
+	// Google's access_type=offline.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
 }
 
 // OAuth2UpstreamRunConfig contains configuration for pure OAuth 2.0 providers.
@@ -227,6 +236,12 @@ type OAuth2UpstreamRunConfig struct {
 	// the configured dot-notation paths.
 	//nolint:lll // field tags require full JSON+YAML names
 	TokenResponseMapping *TokenResponseMappingRunConfig `json:"token_response_mapping,omitempty" yaml:"token_response_mapping,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests. Useful for provider-specific parameters like
+	// Google's access_type=offline.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
 }
 
 // TokenResponseMappingRunConfig maps non-standard token response fields to standard fields.

@@ -99,6 +99,10 @@ const docTemplate = `{
                         "description": "Component is the component name to use in audit events.\n+optional",
                         "type": "string"
                     },
+                    "detectApplicationErrors": {
+                        "description": "DetectApplicationErrors controls whether the audit middleware inspects\nJSON-RPC response bodies for application-level errors when the HTTP\nstatus code indicates success (2xx). When enabled, a small prefix of\nthe response body is buffered to detect JSON-RPC error fields,\nindependent of the IncludeResponseData setting.\n+kubebuilder:default=true\n+optional",
+                        "type": "boolean"
+                    },
                     "enabled": {
                         "description": "Enabled controls whether audit logging is enabled.\nWhen true, enables audit logging with the configured options.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
@@ -406,6 +410,13 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig": {
                 "description": "OAuth2Config contains OAuth 2.0-specific configuration.\nRequired when Type is \"oauth2\", must be nil when Type is \"oidc\".",
                 "properties": {
+                    "additional_authorization_params": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
+                        "type": "object"
+                    },
                     "authorization_endpoint": {
                         "description": "AuthorizationEndpoint is the URL for the OAuth authorization endpoint.",
                         "type": "string"
@@ -450,6 +461,13 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_authserver.OIDCUpstreamRunConfig": {
                 "description": "OIDCConfig contains OIDC-specific configuration.\nRequired when Type is \"oidc\", must be nil when Type is \"oauth2\".",
                 "properties": {
+                    "additional_authorization_params": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
+                        "type": "object"
+                    },
                     "client_id": {
                         "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.",
                         "type": "string"
@@ -471,7 +489,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "scopes": {
-                        "description": "Scopes are the OAuth scopes to request from the upstream IDP.\nIf not specified, defaults to [\"openid\", \"offline_access\"].",
+                        "description": "Scopes are the OAuth scopes to request from the upstream IDP.\nIf not specified, defaults to [\"openid\", \"offline_access\"].\nWhen using AdditionalAuthorizationParams with provider-specific refresh\ntoken mechanisms (e.g., Google's access_type=offline), set explicit scopes\nto avoid sending both offline_access and the provider-specific parameter.",
                         "items": {
                             "type": "string"
                         },
@@ -1837,6 +1855,303 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "model.Argument": {
+                "properties": {
+                    "choices": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "default": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "format": {
+                        "$ref": "#/components/schemas/model.Format"
+                    },
+                    "isRepeated": {
+                        "type": "boolean"
+                    },
+                    "isRequired": {
+                        "type": "boolean"
+                    },
+                    "isSecret": {
+                        "type": "boolean"
+                    },
+                    "name": {
+                        "example": "--port",
+                        "type": "string"
+                    },
+                    "placeholder": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "$ref": "#/components/schemas/model.ArgumentType"
+                    },
+                    "value": {
+                        "type": "string"
+                    },
+                    "valueHint": {
+                        "example": "file_path",
+                        "type": "string"
+                    },
+                    "variables": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/model.Input"
+                        },
+                        "type": "object"
+                    }
+                },
+                "type": "object"
+            },
+            "model.ArgumentType": {
+                "enum": [
+                    "positional",
+                    "named"
+                ],
+                "example": "positional",
+                "type": "string",
+                "x-enum-varnames": [
+                    "ArgumentTypePositional",
+                    "ArgumentTypeNamed"
+                ]
+            },
+            "model.Format": {
+                "enum": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "filepath"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "FormatString",
+                    "FormatNumber",
+                    "FormatBoolean",
+                    "FormatFilePath"
+                ]
+            },
+            "model.Icon": {
+                "properties": {
+                    "mimeType": {
+                        "example": "image/png",
+                        "type": "string"
+                    },
+                    "sizes": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "src": {
+                        "example": "https://example.com/icon.png",
+                        "format": "uri",
+                        "maxLength": 255,
+                        "type": "string"
+                    },
+                    "theme": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "model.Input": {
+                "properties": {
+                    "choices": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "default": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "format": {
+                        "$ref": "#/components/schemas/model.Format"
+                    },
+                    "isRequired": {
+                        "type": "boolean"
+                    },
+                    "isSecret": {
+                        "type": "boolean"
+                    },
+                    "placeholder": {
+                        "type": "string"
+                    },
+                    "value": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "model.KeyValueInput": {
+                "properties": {
+                    "choices": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "default": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "format": {
+                        "$ref": "#/components/schemas/model.Format"
+                    },
+                    "isRequired": {
+                        "type": "boolean"
+                    },
+                    "isSecret": {
+                        "type": "boolean"
+                    },
+                    "name": {
+                        "example": "SOME_VARIABLE",
+                        "type": "string"
+                    },
+                    "placeholder": {
+                        "type": "string"
+                    },
+                    "value": {
+                        "type": "string"
+                    },
+                    "variables": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/model.Input"
+                        },
+                        "type": "object"
+                    }
+                },
+                "type": "object"
+            },
+            "model.Package": {
+                "properties": {
+                    "environmentVariables": {
+                        "description": "EnvironmentVariables are set when running the package",
+                        "items": {
+                            "$ref": "#/components/schemas/model.KeyValueInput"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "fileSha256": {
+                        "description": "FileSHA256 is the SHA-256 hash for integrity verification (required for mcpb, optional for others)",
+                        "example": "fe333e598595000ae021bd27117db32ec69af6987f507ba7a63c90638ff633ce",
+                        "pattern": "^[a-f0-9]{64}$",
+                        "type": "string"
+                    },
+                    "identifier": {
+                        "description": "Identifier is the package identifier:\n  - For NPM/PyPI/NuGet: package name or ID\n  - For OCI: full image reference (e.g., \"ghcr.io/owner/repo:v1.0.0\")\n  - For MCPB: direct download URL",
+                        "example": "@modelcontextprotocol/server-brave-search",
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "packageArguments": {
+                        "description": "PackageArguments are passed to the package's binary",
+                        "items": {
+                            "$ref": "#/components/schemas/model.Argument"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "registryBaseUrl": {
+                        "description": "RegistryBaseURL is the base URL of the package registry (used by npm, pypi, nuget; not used by oci, mcpb)",
+                        "example": "https://registry.npmjs.org",
+                        "format": "uri",
+                        "type": "string"
+                    },
+                    "registryType": {
+                        "description": "RegistryType indicates how to download packages (e.g., \"npm\", \"pypi\", \"oci\", \"nuget\", \"mcpb\")",
+                        "example": "npm",
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "runtimeArguments": {
+                        "description": "RuntimeArguments are passed to the package's runtime command (e.g., docker, npx)",
+                        "items": {
+                            "$ref": "#/components/schemas/model.Argument"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "runtimeHint": {
+                        "description": "RunTimeHint suggests the appropriate runtime for the package",
+                        "example": "npx",
+                        "type": "string"
+                    },
+                    "transport": {
+                        "$ref": "#/components/schemas/model.Transport"
+                    },
+                    "version": {
+                        "description": "Version is the package version (required for npm, pypi, nuget; optional for mcpb; not used by oci where version is in the identifier)",
+                        "example": "1.0.2",
+                        "minLength": 1,
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "model.Repository": {
+                "properties": {
+                    "id": {
+                        "example": "b94b5f7e-c7c6-d760-2c78-a5e9b8a5b8c9",
+                        "type": "string"
+                    },
+                    "source": {
+                        "example": "github",
+                        "type": "string"
+                    },
+                    "subfolder": {
+                        "example": "src/everything",
+                        "type": "string"
+                    },
+                    "url": {
+                        "example": "https://github.com/modelcontextprotocol/servers",
+                        "format": "uri",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "model.Transport": {
+                "description": "Transport is required and specifies the transport protocol configuration",
+                "properties": {
+                    "headers": {
+                        "items": {
+                            "$ref": "#/components/schemas/model.KeyValueInput"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "type": {
+                        "example": "stdio",
+                        "type": "string"
+                    },
+                    "url": {
+                        "example": "https://api.example.com/mcp",
+                        "type": "string"
+                    },
+                    "variables": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/model.Input"
+                        },
+                        "type": "object"
+                    }
+                },
+                "type": "object"
+            },
             "permissions.InboundNetworkPermissions": {
                 "description": "Inbound defines inbound network permissions",
                 "properties": {
@@ -2524,6 +2839,24 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "pkg_api_v1.paginationV01Metadata": {
+                "description": "Metadata contains pagination information",
+                "properties": {
+                    "limit": {
+                        "description": "Limit is the maximum number of items per page",
+                        "type": "integer"
+                    },
+                    "page": {
+                        "description": "Page is the current page number (1-based)",
+                        "type": "integer"
+                    },
+                    "total": {
+                        "description": "Total is the total number of items matching the query",
+                        "type": "integer"
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.providerCapabilitiesResponse": {
                 "description": "Capabilities of the secrets provider",
                 "properties": {
@@ -2701,6 +3034,23 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "pkg_api_v1.serversV01Response": {
+                "description": "Paginated list of servers from the registry",
+                "properties": {
+                    "metadata": {
+                        "$ref": "#/components/schemas/pkg_api_v1.paginationV01Metadata"
+                    },
+                    "servers": {
+                        "description": "Servers is the list of servers on the current page",
+                        "items": {
+                            "$ref": "#/components/schemas/v0.ServerJSON"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.setupSecretsRequest": {
                 "description": "Request to setup a secrets provider",
                 "properties": {
@@ -2743,29 +3093,11 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "pkg_api_v1.skillsV01Metadata": {
-                "description": "Metadata contains pagination information",
-                "properties": {
-                    "limit": {
-                        "description": "Limit is the maximum number of skills per page",
-                        "type": "integer"
-                    },
-                    "page": {
-                        "description": "Page is the current page number (1-based)",
-                        "type": "integer"
-                    },
-                    "total": {
-                        "description": "Total is the total number of skills matching the query",
-                        "type": "integer"
-                    }
-                },
-                "type": "object"
-            },
             "pkg_api_v1.skillsV01Response": {
                 "description": "Paginated list of skills from the registry",
                 "properties": {
                     "metadata": {
-                        "$ref": "#/components/schemas/pkg_api_v1.skillsV01Metadata"
+                        "$ref": "#/components/schemas/pkg_api_v1.paginationV01Metadata"
                     },
                     "skills": {
                         "description": "Skills is the list of skills on the current page",
@@ -3527,6 +3859,81 @@ const docTemplate = `{
                     "predicate": {},
                     "predicate_type": {
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "v0.ServerJSON": {
+                "properties": {
+                    "$schema": {
+                        "example": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+                        "format": "uri",
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "_meta": {
+                        "$ref": "#/components/schemas/v0.ServerMeta"
+                    },
+                    "description": {
+                        "example": "MCP server providing weather data and forecasts via OpenWeatherMap API",
+                        "maxLength": 100,
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "icons": {
+                        "items": {
+                            "$ref": "#/components/schemas/model.Icon"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "name": {
+                        "example": "io.github.user/weather",
+                        "maxLength": 200,
+                        "minLength": 3,
+                        "pattern": "^[a-zA-Z0-9.-]+/[a-zA-Z0-9._-]+$",
+                        "type": "string"
+                    },
+                    "packages": {
+                        "items": {
+                            "$ref": "#/components/schemas/model.Package"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "remotes": {
+                        "items": {
+                            "$ref": "#/components/schemas/model.Transport"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "repository": {
+                        "$ref": "#/components/schemas/model.Repository"
+                    },
+                    "title": {
+                        "example": "Weather API",
+                        "maxLength": 100,
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "version": {
+                        "example": "1.0.2",
+                        "type": "string"
+                    },
+                    "websiteUrl": {
+                        "example": "https://modelcontextprotocol.io/examples",
+                        "format": "uri",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "v0.ServerMeta": {
+                "properties": {
+                    "io.modelcontextprotocol.registry/publisher-provided": {
+                        "additionalProperties": {},
+                        "type": "object"
                     }
                 },
                 "type": "object"
@@ -6277,6 +6684,163 @@ const docTemplate = `{
                 "summary": "Health check",
                 "tags": [
                     "system"
+                ]
+            }
+        },
+        "/registry/{registryName}/v0.1/servers": {
+            "get": {
+                "description": "Get a paginated list of servers from the registry. Supports optional full-text search and pagination.",
+                "parameters": [
+                    {
+                        "description": "Registry name (currently ignored, uses the default provider)",
+                        "in": "path",
+                        "name": "registryName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Search filter — matches against server name and description",
+                        "in": "query",
+                        "name": "q",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Page number, 1-based (default: 1)",
+                        "in": "query",
+                        "name": "page",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Items per page, max 200 (default: 50)",
+                        "in": "query",
+                        "name": "limit",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.serversV01Response"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "List available registry servers",
+                "tags": [
+                    "registry-servers"
+                ]
+            }
+        },
+        "/registry/{registryName}/v0.1/servers/{serverName}/versions/latest": {
+            "get": {
+                "description": "Retrieve a single server by name. Names use reverse-DNS format; URL-encode slashes.",
+                "parameters": [
+                    {
+                        "description": "Registry name (currently ignored, uses the default provider)",
+                        "in": "path",
+                        "name": "registryName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Server name (URL-encoded reverse-DNS format)",
+                        "in": "path",
+                        "name": "serverName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/v0.ServerJSON"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Invalid server name encoding"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Server not found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "Get a registry server",
+                "tags": [
+                    "registry-servers"
                 ]
             }
         },

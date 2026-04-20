@@ -48,7 +48,7 @@ func TestFilterSkillsV01(t *testing.T) {
 	}
 }
 
-func TestParseSkillsPagination(t *testing.T) {
+func TestParsePaginationV01(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -57,34 +57,34 @@ func TestParseSkillsPagination(t *testing.T) {
 		wantPage  int
 		wantLimit int
 	}{
-		{"defaults", "", 1, skillsDefaultLimit},
-		{"custom page", "page=3", 3, skillsDefaultLimit},
+		{"defaults", "", 1, v01DefaultLimit},
+		{"custom page", "page=3", 3, v01DefaultLimit},
 		{"custom limit", "limit=10", 1, 10},
 		{"both", "page=2&limit=25", 2, 25},
-		{"invalid page", "page=-1", 1, skillsDefaultLimit},
-		{"limit over max", "limit=999", 1, skillsMaxLimit},
-		{"limit at max", "limit=200", 1, skillsMaxLimit},
-		{"page overflow", fmt.Sprintf("page=%d", math.MaxInt), math.MaxInt / skillsDefaultLimit, skillsDefaultLimit},
-		{"non-numeric", "page=abc&limit=xyz", 1, skillsDefaultLimit},
+		{"invalid page", "page=-1", 1, v01DefaultLimit},
+		{"limit over max", "limit=999", 1, v01MaxLimit},
+		{"limit at max", "limit=200", 1, v01MaxLimit},
+		{"page overflow", fmt.Sprintf("page=%d", math.MaxInt), math.MaxInt / v01DefaultLimit, v01DefaultLimit},
+		{"non-numeric", "page=abc&limit=xyz", 1, v01DefaultLimit},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			r := httptest.NewRequest(http.MethodGet, "/skills?"+tt.query, nil)
-			page, limit := parseSkillsPagination(r)
+			page, limit := parsePaginationV01(r)
 			assert.Equal(t, tt.wantPage, page)
 			assert.Equal(t, tt.wantLimit, limit)
 		})
 	}
 }
 
-func TestRegistryV01SkillsRouter_ListSkills(t *testing.T) {
+func TestRegistryV01Router_ListSkills(t *testing.T) {
 	t.Parallel()
 
-	handler := RegistryV01SkillsRouter()
+	handler := RegistryV01Router()
 	srv := httptest.NewServer(handler)
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/default/v0.1/x/dev.toolhive/skills")
 	require.NoError(t, err)
@@ -100,12 +100,12 @@ func TestRegistryV01SkillsRouter_ListSkills(t *testing.T) {
 	assert.GreaterOrEqual(t, body.Metadata.Total, 0)
 }
 
-func TestRegistryV01SkillsRouter_GetSkill_NotFound(t *testing.T) {
+func TestRegistryV01Router_GetSkill_NotFound(t *testing.T) {
 	t.Parallel()
 
-	handler := RegistryV01SkillsRouter()
+	handler := RegistryV01Router()
 	srv := httptest.NewServer(handler)
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/default/v0.1/x/dev.toolhive/skills/nonexistent/noskill")
 	require.NoError(t, err)
@@ -137,12 +137,12 @@ func TestFilterSkillsV01_EmptyResult_NotNull(t *testing.T) {
 	assert.Equal(t, "[]", string(data))
 }
 
-func TestRegistryV01SkillsRouter_ListSkills_PaginationBeyondResults(t *testing.T) {
+func TestRegistryV01Router_ListSkills_PaginationBeyondResults(t *testing.T) {
 	t.Parallel()
 
-	handler := RegistryV01SkillsRouter()
+	handler := RegistryV01Router()
 	srv := httptest.NewServer(handler)
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/default/v0.1/x/dev.toolhive/skills?page=999&limit=10")
 	require.NoError(t, err)

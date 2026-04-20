@@ -79,6 +79,25 @@ func TestWriteFiles(t *testing.T) {
 		},
 	}
 
+	t.Run("parent directory does not exist", func(t *testing.T) {
+		t.Parallel()
+		baseDir := resolvedTempDir(t)
+		// Point targetDir one level deeper than a non-existent subdirectory.
+		targetDir := filepath.Join(baseDir, "nonexistent", "my-skill")
+
+		files := []FileEntry{{Path: "SKILL.md", Content: []byte("# Skill"), Mode: 0644}}
+		err := WriteFiles(files, targetDir, false)
+		require.NoError(t, err)
+
+		// Both the parent and the skill directory must now exist.
+		_, statErr := os.Stat(targetDir)
+		require.NoError(t, statErr)
+
+		content, readErr := os.ReadFile(filepath.Join(targetDir, "SKILL.md"))
+		require.NoError(t, readErr)
+		assert.Equal(t, []byte("# Skill"), content)
+	})
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

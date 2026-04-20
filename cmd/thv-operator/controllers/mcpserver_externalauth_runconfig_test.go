@@ -250,6 +250,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 				},
 			},
 			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "http://test-server.default.svc.cluster.local:8080",
 				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
 				Scopes:      []string{"openid", "offline_access"},
 			},
@@ -754,7 +755,7 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 					},
 					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
 						Name:     "embedded-oidc",
-						Audience: "toolhive",
+						Audience: "http://embedded-auth-server.default.svc.cluster.local:8080",
 						Scopes:   []string{"openid", "offline_access", "mcp:tools"},
 					},
 				},

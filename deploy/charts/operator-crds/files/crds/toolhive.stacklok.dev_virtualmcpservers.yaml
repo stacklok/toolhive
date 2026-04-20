@@ -364,6 +364,18 @@ spec:
                             OAuth2Config contains OAuth 2.0-specific configuration.
                             Required when Type is "oauth2", must be nil when Type is "oidc".
                           properties:
+                            additionalAuthorizationParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalAuthorizationParams are extra query parameters to include in
+                                authorization requests sent to the upstream provider.
+                                This is useful for providers that require custom parameters, such as
+                                Google's access_type=offline for obtaining refresh tokens.
+                                Framework-managed parameters (response_type, client_id, redirect_uri,
+                                scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+                              maxProperties: 16
+                              type: object
                             authorizationEndpoint:
                               description: AuthorizationEndpoint is the URL for the
                                 OAuth authorization endpoint.
@@ -510,6 +522,20 @@ spec:
                             OIDCConfig contains OIDC-specific configuration.
                             Required when Type is "oidc", must be nil when Type is "oauth2".
                           properties:
+                            additionalAuthorizationParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalAuthorizationParams are extra query parameters to include in
+                                authorization requests sent to the upstream provider.
+                                This is useful for providers that require custom parameters, such as
+                                Google's access_type=offline for obtaining refresh tokens.
+                                Note: when using access_type=offline, also set explicit scopes to avoid
+                                the default offline_access scope being sent alongside it.
+                                Framework-managed parameters (response_type, client_id, redirect_uri,
+                                scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+                              maxProperties: 16
+                              type: object
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
                                 registered with the upstream IDP.
@@ -545,6 +571,9 @@ spec:
                               description: |-
                                 Scopes are the OAuth scopes to request from the upstream IDP.
                                 If not specified, defaults to ["openid", "offline_access"].
+                                When using additionalAuthorizationParams with provider-specific refresh token
+                                mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
+                                sending both offline_access and the provider-specific parameter.
                               items:
                                 type: string
                               type: array
@@ -785,6 +814,15 @@ spec:
                         description: Component is the component name to use in audit
                           events.
                         type: string
+                      detectApplicationErrors:
+                        default: true
+                        description: |-
+                          DetectApplicationErrors controls whether the audit middleware inspects
+                          JSON-RPC response bodies for application-level errors when the HTTP
+                          status code indicates success (2xx). When enabled, a small prefix of
+                          the response body is buffered to detect JSON-RPC error fields,
+                          independent of the IncludeResponseData setting.
+                        type: boolean
                       enabled:
                         default: false
                         description: |-
@@ -2104,8 +2142,8 @@ spec:
             properties:
               backendCount:
                 description: |-
-                  BackendCount is the number of healthy/ready backends
-                  (excludes unavailable, degraded, and unknown backends)
+                  BackendCount is the number of routable backends (ready + unauthenticated).
+                  Excludes unavailable, degraded, and unknown backends.
                 format: int32
                 type: integer
               conditions:
@@ -2218,7 +2256,7 @@ spec:
                       type: string
                     status:
                       description: |-
-                        Status is the current status of the backend (ready, degraded, unavailable, unknown).
+                        Status is the current status of the backend (ready, degraded, unavailable, unauthenticated, unknown).
                         Use BackendHealthStatus.ToCRDStatus() to populate this field.
                       type: string
                     url:

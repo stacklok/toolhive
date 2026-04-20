@@ -7,24 +7,22 @@ package migration
 import (
 	"context"
 	"log/slog"
-	"sync"
 
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 )
-
-// ensureDefaultGroupOnce ensures the default group check only runs once per process
-var ensureDefaultGroupOnce sync.Once
 
 // EnsureDefaultGroupExists ensures the default group exists, creating it if necessary.
 // This is called at application startup for fresh installs and is a no-op when
 // the group already exists (e.g. after a previous migration or existing setup).
-func EnsureDefaultGroupExists() {
-	ensureDefaultGroupOnce.Do(func() {
-		if err := ensureDefaultGroupExists(context.Background()); err != nil {
-			slog.Error("failed to ensure default group exists", "error", err)
-			return
-		}
-	})
+// In Kubernetes environments this is always a no-op: MCPGroup CRDs are
+// operator/user-managed resources and the caller's service account may not
+// have create permission on them.
+func EnsureDefaultGroupExists() error {
+	if runtime.IsKubernetesRuntime() {
+		return nil
+	}
+	return ensureDefaultGroupExists(context.Background())
 }
 
 func ensureDefaultGroupExists(ctx context.Context) error {

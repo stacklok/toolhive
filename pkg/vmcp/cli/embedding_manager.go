@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/stacklok/toolhive-core/permissions"
@@ -96,9 +97,9 @@ type EmbeddingServiceManagerConfig struct {
 //
 // On Docker the container is bound to a localhost port and the model cache is
 // bind-mounted from the host. On Kubernetes the TEI pod is exposed via a
-// ClusterIP Service and reached at http://<containerName>:<teiContainerPort>;
-// the host bind-mount is skipped because Kubernetes ignores Docker permission
-// profiles.
+// ClusterIP Service named "mcp-<containerName>" and reached at
+// http://mcp-<containerName>:<teiContainerPort>; the host bind-mount is
+// skipped because Kubernetes ignores Docker permission profiles.
 type EmbeddingServiceManager struct {
 	factory       ContainerFactory
 	cfg           EmbeddingServiceManagerConfig
@@ -128,8 +129,12 @@ type EmbeddingServiceManager struct {
 }
 
 // NewEmbeddingServiceManager constructs an EmbeddingServiceManager from the given
-// factory and config. Returns an error when cfg.Model is empty.
+// factory and config. Returns an error when factory is nil or cfg.Model is empty.
 func NewEmbeddingServiceManager(factory ContainerFactory, cfg EmbeddingServiceManagerConfig) (*EmbeddingServiceManager, error) {
+	if factory == nil {
+		return nil, fmt.Errorf("container factory must not be nil")
+	}
+	cfg.Model = strings.TrimSpace(cfg.Model)
 	if cfg.Model == "" {
 		return nil, fmt.Errorf("model must not be empty")
 	}
@@ -169,10 +174,10 @@ func NewEmbeddingServiceManager(factory ContainerFactory, cfg EmbeddingServiceMa
 	} else {
 		mgr.portFinder = networking.FindAvailable
 		mgr.urlFor = func(port int) string {
-			return fmt.Sprintf("http://localhost:%d", port)
+			return fmt.Sprintf("http://127.0.0.1:%d", port)
 		}
 		mgr.healthURLFor = func(port int) string {
-			return fmt.Sprintf("http://localhost:%d%s", port, healthPath)
+			return fmt.Sprintf("http://127.0.0.1:%d%s", port, healthPath)
 		}
 	}
 

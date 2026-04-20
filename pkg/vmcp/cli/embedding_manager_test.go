@@ -64,6 +64,13 @@ func TestContainerNameForModel(t *testing.T) {
 	})
 }
 
+func TestNewEmbeddingServiceManager_NilFactory(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewEmbeddingServiceManager(nil, EmbeddingServiceManagerConfig{Model: "BAAI/bge-small-en-v1.5"})
+	assert.ErrorContains(t, err, "factory")
+}
+
 func TestNewEmbeddingServiceManager_EmptyModel(t *testing.T) {
 	t.Parallel()
 	ctrl := gomock.NewController(t)
@@ -71,6 +78,25 @@ func TestNewEmbeddingServiceManager_EmptyModel(t *testing.T) {
 
 	_, err := NewEmbeddingServiceManager(mockFactory, EmbeddingServiceManagerConfig{Model: ""})
 	assert.ErrorContains(t, err, "model")
+}
+
+func TestNewEmbeddingServiceManager_WhitespaceModel(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	mockFactory := mocks.NewMockContainerFactory(ctrl)
+
+	_, err := NewEmbeddingServiceManager(mockFactory, EmbeddingServiceManagerConfig{Model: "   "})
+	assert.ErrorContains(t, err, "model")
+}
+
+func TestNewEmbeddingServiceManager_WhitespaceModelTrimmed(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	mockFactory := mocks.NewMockContainerFactory(ctrl)
+
+	mgr, err := NewEmbeddingServiceManager(mockFactory, EmbeddingServiceManagerConfig{Model: "  BAAI/bge-small-en-v1.5  "})
+	require.NoError(t, err)
+	assert.Equal(t, "BAAI/bge-small-en-v1.5", mgr.cfg.Model)
 }
 
 func TestNewEmbeddingServiceManager_DefaultImage(t *testing.T) {
@@ -186,7 +212,7 @@ func TestStart_DeployNewContainer(t *testing.T) {
 	gotURL, err := mgr.Start(context.Background())
 	require.NoError(t, err)
 	assert.True(t, mgr.started, "started must be true after deploying a new container")
-	assert.Contains(t, gotURL, "http://localhost:")
+	assert.Contains(t, gotURL, "http://127.0.0.1:")
 }
 
 // TestStart_DeployNewContainer_Kubernetes verifies that on a Kubernetes runtime

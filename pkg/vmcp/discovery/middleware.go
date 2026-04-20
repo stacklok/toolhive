@@ -135,9 +135,13 @@ func Middleware(
 // or degraded. Backends that are unhealthy, unknown, or unauthenticated are excluded
 // from capability aggregation to prevent exposing tools from unavailable backends.
 //
-// TODO(#4920): Unauthenticated backends are treated as routable for phase determination
-// but are excluded here because discovery probes cannot carry user tokens. If health
-// probes could authenticate, these backends would be fully healthy and included here.
+// A note on BackendUnauthenticated: a 401/403 from a backend that has an outgoing
+// auth strategy configured is treated as BackendHealthy by the health checker
+// (health probes deliberately do not carry user credentials — the challenge proves
+// reachability). BackendUnauthenticated therefore indicates a misconfiguration:
+// the backend requires authentication but no outgoing auth strategy is configured
+// on the backend target. Excluding such backends from capability aggregation is
+// the correct behavior — their capabilities cannot be safely exposed.
 //
 // Health status filtering:
 //   - healthy: included (fully operational)
@@ -145,7 +149,7 @@ func Middleware(
 //   - empty/zero-value: included (assume healthy when health monitoring is disabled)
 //   - unhealthy: excluded (not responding, circuit breaker may be open)
 //   - unknown: excluded (status not yet determined)
-//   - unauthenticated: excluded (authentication failed)
+//   - unauthenticated: excluded (misconfiguration: backend requires auth but none configured)
 //
 // When healthStatusProvider is provided, the current health status from the health
 // monitor is used (respects circuit breaker state). When nil, falls back to the

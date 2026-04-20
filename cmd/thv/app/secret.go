@@ -265,8 +265,7 @@ If your provider is read-only or doesn't support deletion, this command returns 
 				}
 				// Workload configs reference the bare (unscoped) name, so strip
 				// the __thv_<scope>_ prefix before searching for affected workloads.
-				rest := strings.TrimPrefix(name, secrets.SystemKeyPrefix)
-				_, bareName, _ := strings.Cut(rest, "_")
+				_, bareName, _ := secrets.ParseSystemKey(name)
 				warnWorkloadsUsingSecret(ctx, bareName)
 				return runSystemSecretDelete(ctx, provider, name)
 			}
@@ -528,14 +527,13 @@ func runSystemSecretDelete(ctx context.Context, provider secrets.Provider, name 
 // Key format: __thv_<scope>_<name>
 // The full key is shown so it can be passed directly to "thv secret delete --system".
 func formatSystemSecretEntry(key string) string {
-	rest := strings.TrimPrefix(key, secrets.SystemKeyPrefix)
-	scope, _, _ := strings.Cut(rest, "_")
+	scope, _, _ := secrets.ParseSystemKey(key)
 	return fmt.Sprintf("  - %s  [%s]", key, scope)
 }
 
 // validateSystemKeyName returns an error if name is not a system-managed key.
 func validateSystemKeyName(name string) error {
-	if !strings.HasPrefix(name, secrets.SystemKeyPrefix) {
+	if !secrets.IsSystemKey(name) {
 		return fmt.Errorf("--system flag requires a system key (starting with %q); got %q", secrets.SystemKeyPrefix, name)
 	}
 	return nil

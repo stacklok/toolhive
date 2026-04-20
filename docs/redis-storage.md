@@ -205,7 +205,7 @@ Create a ConfigMap or init container to provision the ACL file. The ACL user nee
 
 ```
 # /data/users.acl
-user toolhive-auth on ><your-secure-password> ~thv:auth:* &* +GET +SET +SETNX +DEL +EXISTS +EXPIRE +PEXPIRE +PTTL +MGET +SADD +SREM +SMEMBERS +EVAL +MULTI +EXEC +EVALSHA +PING
+user toolhive-auth on ><your-secure-password> ~thv:auth:* &* +@read +@write +@keyspace +@scripting +@transaction +@connection
 ```
 
 This ACL entry:
@@ -213,11 +213,11 @@ This ACL entry:
 - `><your-secure-password>` — Sets the password
 - `~thv:auth:*` — Allows access to all keys with the `thv:auth:` prefix
 - `&*` — Allows access to all Pub/Sub channels; required by the go-redis Sentinel client to receive `+switch-master` failover notifications. In a multi-tenant Redis deployment, consider restricting this to specific channels if your Redis version supports it.
-- `+GET +SET +DEL ...` — Grants only the commands used by the ToolHive auth server
+- `+@read +@write +@keyspace +@scripting +@transaction +@connection` — Grants command categories used by the ToolHive auth server
 
-> **Development / quick-start only:** You can replace the explicit command list with `+@all` to allow all commands, but this is not recommended for production environments.
+> **Development / quick-start only:** You can replace the category grants with `+@all` to allow all commands, but this is not recommended for production environments.
 
-> **Security note:** The auth server uses `GET`, `SET`, `SETNX`, `DEL`, `EXISTS`, `EXPIRE`, `PEXPIRE`, `PTTL`, `MGET`, `SADD`, `SREM`, `SMEMBERS`, `EVAL`, `EVALSHA`, `MULTI`, `EXEC`, and `PING`. Restrict the ACL to this set to follow the principle of least privilege.
+> **Security note:** The auth server uses commands from the `@read`, `@write`, `@keyspace`, `@scripting`, `@transaction`, and `@connection` categories. These categories cover the specific commands the server needs (`GET`, `SET`, `DEL`, `EXPIRE`, `EVAL`, `MULTI`/`EXEC`, `PING`, etc.) while following the principle of least privilege at the category level.
 
 ### Step 4: Create the ToolHive Auth Config
 

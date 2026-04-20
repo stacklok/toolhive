@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/migration"
+	"github.com/stacklok/toolhive/pkg/script"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -300,6 +302,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		OptimizerConfig:         optCfg,
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
+		ScriptMiddleware:        createScriptMiddleware(vmcpCfg),
 	}
 
 	// Assign Watcher only when backendWatcher is non-nil. A typed nil
@@ -520,4 +523,19 @@ func createSessionFactory(
 	// Development mode: use default insecure secret with warning.
 	slog.Warn("no HMAC secret provided - using default insecure secret (NOT recommended for production)")
 	return vmcpsession.NewSessionFactory(outgoingRegistry, opts...), nil
+}
+
+// createScriptMiddleware returns the script middleware function if code mode
+// is enabled in config, or nil if disabled.
+func createScriptMiddleware(cfg *config.Config) func(http.Handler) http.Handler {
+	if cfg.ScriptEngine == nil || !cfg.ScriptEngine.Enabled {
+		return nil
+	}
+
+	slog.Info("code mode enabled — execute_tool_script virtual tool will be available")
+	return script.NewMiddleware(&script.Config{
+		StepLimit:     cfg.ScriptEngine.StepLimit,
+		ParallelMax:   cfg.ScriptEngine.ParallelMax,
+		ScriptTimeout: time.Duration(cfg.ScriptEngine.ScriptTimeout),
+	})
 }

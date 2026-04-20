@@ -1318,8 +1318,9 @@ func TestAuthorizeWithJWTClaims_GroupMembership(t *testing.T) {
 	`
 
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
-		Policies:     []string{policy},
-		EntitiesJSON: `[]`,
+		Policies:       []string{policy},
+		EntitiesJSON:   `[]`,
+		GroupClaimName: "groups",
 	}, "")
 	require.NoError(t, err)
 
@@ -1413,8 +1414,9 @@ func TestAuthorizeWithJWTClaims_TransitiveHierarchyPreserved(t *testing.T) {
 	]`
 
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
-		Policies:     []string{policy},
-		EntitiesJSON: entitiesJSON,
+		Policies:       []string{policy},
+		EntitiesJSON:   entitiesJSON,
+		GroupClaimName: "groups",
 	}, "")
 	require.NoError(t, err)
 
@@ -1453,8 +1455,9 @@ func TestAuthorizeWithJWTClaims_DoesNotMutateIdentity(t *testing.T) {
 	policy := `permit(principal, action, resource);`
 
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
-		Policies:     []string{policy},
-		EntitiesJSON: `[]`,
+		Policies:       []string{policy},
+		EntitiesJSON:   `[]`,
+		GroupClaimName: "groups",
 	}, "")
 	require.NoError(t, err)
 
@@ -1552,6 +1555,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProviderWithGroups(t *testing.T) {
 		Policies:                []string{policy},
 		EntitiesJSON:            `[]`,
 		PrimaryUpstreamProvider: providerName,
+		GroupClaimName:          "groups",
 	}, "")
 	require.NoError(t, err)
 
@@ -1805,148 +1809,496 @@ func TestInjectUpstreamProvider_NonCedarPassThrough(t *testing.T) {
 		"non-Cedar config must be returned as the same pointer — InjectUpstreamProvider must be a no-op for unknown types")
 }
 
-// TestExtractGroupsFromClaims tests the extractGroupsFromClaims function.
-func TestExtractGroupsFromClaims(t *testing.T) {
+// TestResolveNestedClaim tests the resolveNestedClaim function.
+func TestResolveNestedClaim(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		claims          map[string]any
-		customClaimName string
-		wantGroups      []string
+		name   string
+		claims jwt.MapClaims
+		path   string
+		want   interface{}
 	}{
 		{
-			name: "groups_claim_string_slice",
-			claims: map[string]any{
-				"sub":    "user1",
-				"groups": []string{"admin", "developers"},
-			},
-			wantGroups: []string{"admin", "developers"},
+			name:   "exact_top_level_match",
+			claims: jwt.MapClaims{"groups": []interface{}{"eng", "platform"}},
+			path:   "groups",
+			want:   []interface{}{"eng", "platform"},
 		},
 		{
-			name: "groups_claim_interface_slice",
-			claims: map[string]any{
-				"sub":    "user1",
-				"groups": []interface{}{"reader", "writer"},
+			name: "dot_notation_traversal",
+			claims: jwt.MapClaims{
+				"realm_access": map[string]interface{}{
+					"roles": []interface{}{"admin", "user"},
+				},
 			},
-			wantGroups: []string{"reader", "writer"},
+			path: "realm_access.roles",
+			want: []interface{}{"admin", "user"},
 		},
 		{
-			name: "roles_claim_string_slice",
-			claims: map[string]any{
-				"sub":   "user1",
-				"roles": []string{"viewer"},
+			name: "auth0_url_claim_with_dots_matches_exact_first",
+			claims: jwt.MapClaims{
+				"https://myapp.example.com/roles": []interface{}{"editor"},
 			},
-			wantGroups: []string{"viewer"},
+			path: "https://myapp.example.com/roles",
+			want: []interface{}{"editor"},
 		},
 		{
-			name: "cognito_groups_claim",
-			claims: map[string]any{
-				"sub":            "user1",
-				"cognito:groups": []string{"pool-admins"},
-			},
-			wantGroups: []string{"pool-admins"},
+			name:   "missing_claim_returns_nil",
+			claims: jwt.MapClaims{"sub": "user1"},
+			path:   "nonexistent",
+			want:   nil,
 		},
 		{
-			name: "custom_claim_name_takes_priority",
-			claims: map[string]any{
-				"sub":                        "user1",
-				"https://example.com/groups": []string{"eng", "platform"},
-				"groups":                     []string{"other"},
+			name: "nested_traversal_hits_non_object",
+			claims: jwt.MapClaims{
+				"foo": "a-string-not-a-map",
 			},
-			customClaimName: "https://example.com/groups",
-			wantGroups:      []string{"eng", "platform"},
+			path: "foo.bar",
+			want: nil,
 		},
 		{
-			name: "custom_claim_name_falls_back_to_well_known",
-			claims: map[string]any{
-				"sub":    "user1",
-				"groups": []string{"fallback-group"},
+			name: "three_level_nesting",
+			claims: jwt.MapClaims{
+				"resource_access": map[string]interface{}{
+					"my-app": map[string]interface{}{
+						"roles": []interface{}{"viewer", "contributor"},
+					},
+				},
 			},
-			customClaimName: "https://example.com/nonexistent",
-			wantGroups:      []string{"fallback-group"},
+			path: "resource_access.my-app.roles",
+			want: []interface{}{"viewer", "contributor"},
 		},
 		{
-			name: "no_group_claim_present",
-			claims: map[string]any{
-				"sub":  "user1",
-				"name": "Alice",
-			},
-			wantGroups: nil,
+			name:   "empty_path_returns_nil",
+			claims: jwt.MapClaims{"groups": []interface{}{"eng"}},
+			path:   "",
+			want:   nil,
 		},
 		{
-			name: "empty_groups_claim_returns_empty",
-			claims: map[string]any{
-				"sub":    "user1",
-				"groups": []string{},
-			},
-			wantGroups: []string{},
+			name:   "empty_claims_returns_nil",
+			claims: jwt.MapClaims{},
+			path:   "groups",
+			want:   nil,
 		},
 		{
-			name: "empty_interface_slice_returns_empty",
-			claims: map[string]any{
-				"sub":    "user1",
-				"groups": []interface{}{},
+			name: "partial_nested_path_missing_leaf",
+			claims: jwt.MapClaims{
+				"realm_access": map[string]interface{}{
+					"other": "value",
+				},
 			},
-			wantGroups: []string{},
+			path: "realm_access.roles",
+			want: nil,
 		},
 		{
-			name: "empty_groups_does_not_fall_through_to_roles",
-			claims: map[string]any{
-				"sub":    "user1",
-				"groups": []string{},
-				"roles":  []string{"should-not-match"},
+			// Pathological path shapes. Each produces at least one empty
+			// segment after Split, which the traversal loop treats as a
+			// missing key. Pinned as tests so a future refactor that tries
+			// to "normalize" paths by skipping empty segments cannot silently
+			// change resolution behavior.
+			name: "trailing_dot_returns_nil",
+			claims: jwt.MapClaims{
+				"realm_access": map[string]interface{}{
+					"roles": []interface{}{"admin"},
+				},
 			},
-			wantGroups: []string{},
+			path: "realm_access.",
+			want: nil,
 		},
 		{
-			name: "non_string_interface_elements_skipped",
-			claims: map[string]any{
-				"sub":    "user1",
-				"groups": []interface{}{"valid", 42, true, "also-valid"},
+			name: "leading_dot_returns_nil",
+			claims: jwt.MapClaims{
+				"roles": []interface{}{"admin"},
 			},
-			wantGroups: []string{"valid", "also-valid"},
+			path: ".roles",
+			want: nil,
 		},
 		{
-			name: "groups_claim_wrong_type_returns_nil",
-			claims: map[string]any{
-				"sub":    "user1",
-				"groups": "not-a-slice",
+			name: "consecutive_dots_return_nil",
+			claims: jwt.MapClaims{
+				"a": map[string]interface{}{
+					"b": []interface{}{"x"},
+				},
 			},
-			wantGroups: nil,
-		},
-		{
-			name: "wrong_type_does_not_fall_through_to_roles",
-			claims: map[string]any{
-				"sub":    "user1",
-				"groups": "not-a-slice",
-				"roles":  []string{"should-not-match"},
-			},
-			wantGroups: nil,
-		},
-		{
-			name:       "empty_claims_map",
-			claims:     map[string]any{},
-			wantGroups: nil,
-		},
-		{
-			name: "groups_claim_prioritised_over_roles",
-			claims: map[string]any{
-				"sub":    "user1",
-				"groups": []string{"grp-a"},
-				"roles":  []string{"role-b"},
-			},
-			// defaultGroupClaimNames checks "groups" first; "groups" is found, so
-			// "roles" should not be returned.
-			wantGroups: []string{"grp-a"},
+			path: "a..b",
+			want: nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := extractGroupsFromClaims(tt.claims, tt.customClaimName)
+			got := resolveNestedClaim(tt.claims, tt.path)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestExtractGroups tests the extractGroups function.
+func TestExtractGroups(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		claims     jwt.MapClaims
+		claimName  string
+		wantGroups []string
+	}{
+		{
+			name:       "flat_claim_string_slice",
+			claims:     jwt.MapClaims{"groups": []string{"admin", "developers"}},
+			claimName:  "groups",
+			wantGroups: []string{"admin", "developers"},
+		},
+		{
+			name:       "flat_claim_interface_slice",
+			claims:     jwt.MapClaims{"groups": []interface{}{"reader", "writer"}},
+			claimName:  "groups",
+			wantGroups: []string{"reader", "writer"},
+		},
+		{
+			name: "nested_keycloak_claim",
+			claims: jwt.MapClaims{
+				"realm_access": map[string]interface{}{
+					"roles": []interface{}{"admin", "user"},
+				},
+			},
+			claimName:  "realm_access.roles",
+			wantGroups: []string{"admin", "user"},
+		},
+		{
+			name:       "empty_claim_name_returns_nil",
+			claims:     jwt.MapClaims{"groups": []interface{}{"eng"}},
+			claimName:  "",
+			wantGroups: nil,
+		},
+		{
+			name:       "missing_claim_returns_nil",
+			claims:     jwt.MapClaims{"sub": "user1"},
+			claimName:  "groups",
+			wantGroups: nil,
+		},
+		{
+			name:       "non_array_claim_returns_nil",
+			claims:     jwt.MapClaims{"groups": "not-a-slice"},
+			claimName:  "groups",
+			wantGroups: nil,
+		},
+		{
+			name:       "non_string_elements_skipped",
+			claims:     jwt.MapClaims{"groups": []interface{}{"valid", 42, true, "also-valid"}},
+			claimName:  "groups",
+			wantGroups: []string{"valid", "also-valid"},
+		},
+		{
+			name:       "empty_array_returns_empty",
+			claims:     jwt.MapClaims{"groups": []interface{}{}},
+			claimName:  "groups",
+			wantGroups: []string{},
+		},
+		{
+			name: "auth0_url_claim_name",
+			claims: jwt.MapClaims{
+				"https://example.com/groups": []interface{}{"platform"},
+			},
+			claimName:  "https://example.com/groups",
+			wantGroups: []string{"platform"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := extractGroups(tt.claims, tt.claimName)
 			assert.Equal(t, tt.wantGroups, got)
+		})
+	}
+}
+
+// TestDedup tests the dedup function.
+func TestDedup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input []string
+		want  []string
+	}{
+		{
+			name:  "nil_returns_nil",
+			input: nil,
+			want:  nil,
+		},
+		{
+			name:  "empty_returns_empty",
+			input: []string{},
+			want:  []string{},
+		},
+		{
+			name:  "no_duplicates",
+			input: []string{"a", "b", "c"},
+			want:  []string{"a", "b", "c"},
+		},
+		{
+			name:  "with_duplicates_preserves_order",
+			input: []string{"a", "b", "a", "c", "b"},
+			want:  []string{"a", "b", "c"},
+		},
+		{
+			name:  "all_duplicates",
+			input: []string{"x", "x", "x"},
+			want:  []string{"x"},
+		},
+		{
+			name:  "single_element",
+			input: []string{"only"},
+			want:  []string{"only"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := dedup(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestAuthorizeWithJWTClaims_DualClaim verifies that groups from both
+// GroupClaimName and RoleClaimName are merged and deduplicated for Cedar
+// evaluation. This is the core dual-claim extraction behavior from #4768.
+func TestAuthorizeWithJWTClaims_DualClaim(t *testing.T) {
+	t.Parallel()
+
+	// Policy: only members of "platform" may call the deploy tool.
+	policy := `
+		permit(
+			principal in THVGroup::"platform",
+			action == Action::"call_tool",
+			resource == Tool::"deploy"
+		);
+	`
+
+	tests := []struct {
+		name          string
+		groupClaim    string
+		roleClaim     string
+		claims        jwt.MapClaims
+		wantAuthorize bool
+	}{
+		{
+			name:       "group_claim_only",
+			groupClaim: "groups",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []interface{}{"platform", "devs"},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name:      "role_claim_only",
+			roleClaim: "roles",
+			claims: jwt.MapClaims{
+				"sub":   "user1",
+				"roles": []interface{}{"platform"},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name:       "both_claims_merged",
+			groupClaim: "groups",
+			roleClaim:  "roles",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []interface{}{"devs"},
+				"roles":  []interface{}{"platform"},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name:       "duplicates_across_claims_are_deduplicated",
+			groupClaim: "groups",
+			roleClaim:  "roles",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []interface{}{"platform", "devs"},
+				"roles":  []interface{}{"platform", "ops"},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name:       "neither_claim_has_matching_group",
+			groupClaim: "groups",
+			roleClaim:  "roles",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []interface{}{"marketing"},
+				"roles":  []interface{}{"sales"},
+			},
+			wantAuthorize: false,
+		},
+		{
+			name:       "both_claims_empty_falls_back_to_well_known",
+			groupClaim: "",
+			roleClaim:  "",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []interface{}{"platform"},
+			},
+			wantAuthorize: true, // well-known "groups" claim is checked when GroupClaimName is empty
+		},
+		{
+			name:       "custom_group_claim_absent_falls_back_to_well_known",
+			groupClaim: "https://example.com/groups",
+			roleClaim:  "",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []interface{}{"platform"},
+			},
+			wantAuthorize: true, // custom claim missing, well-known "groups" used as fallback
+		},
+		{
+			// Pins the "present but empty" semantic: if the configured custom
+			// claim exists as an empty array, the IdP has explicitly said
+			// "no groups" — fallback to well-known names MUST NOT fire. Without
+			// this test, a refactor of extractGroups that returns nil on empty
+			// arrays would silently flip the semantic and allow well-known
+			// claims like "roles" to grant access.
+			name:       "custom_group_claim_present_but_empty_does_not_fall_back",
+			groupClaim: "https://example.com/groups",
+			roleClaim:  "",
+			claims: jwt.MapClaims{
+				"sub":                        "user1",
+				"https://example.com/groups": []interface{}{}, // present, empty
+				"roles":                      []interface{}{"platform"},
+			},
+			wantAuthorize: false, // explicit empty suppresses fallback; "roles" is NOT consulted
+		},
+		{
+			name:       "nested_role_claim_with_dot_notation",
+			groupClaim: "groups",
+			roleClaim:  "realm_access.roles",
+			claims: jwt.MapClaims{
+				"sub":    "user1",
+				"groups": []interface{}{"devs"},
+				"realm_access": map[string]interface{}{
+					"roles": []interface{}{"platform"},
+				},
+			},
+			wantAuthorize: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:       []string{policy},
+				EntitiesJSON:   `[]`,
+				GroupClaimName: tt.groupClaim,
+				RoleClaimName:  tt.roleClaim,
+			}, "")
+			require.NoError(t, err)
+
+			identity := &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: tt.claims["sub"].(string),
+					Claims:  map[string]any(tt.claims),
+				},
+			}
+			ctx := auth.WithIdentity(context.Background(), identity)
+
+			authorized, err := authorizer.AuthorizeWithJWTClaims(
+				ctx,
+				authorizers.MCPFeatureTool,
+				authorizers.MCPOperationCall,
+				"deploy",
+				nil,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuthorize, authorized)
+		})
+	}
+}
+
+// TestAuthorizeWithJWTClaims_BackwardCompat verifies that when both GroupClaimName
+// and RoleClaimName are empty (pre-dual-claim configuration), the well-known
+// fallback claim names ("groups", "roles", "cognito:groups") are still checked.
+// This prevents a behavior regression for existing configs that rely on implicit
+// group extraction without setting GroupClaimName.
+func TestAuthorizeWithJWTClaims_BackwardCompat(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		claimKey   string
+		claimValue []interface{}
+		wantAuth   bool
+	}{
+		{
+			name:       "well-known groups claim extracted",
+			claimKey:   "groups",
+			claimValue: []interface{}{"eng"},
+			wantAuth:   true,
+		},
+		{
+			name:       "well-known roles claim extracted",
+			claimKey:   "roles",
+			claimValue: []interface{}{"eng"},
+			wantAuth:   true,
+		},
+		{
+			name:       "well-known cognito:groups claim extracted",
+			claimKey:   "cognito:groups",
+			claimValue: []interface{}{"eng"},
+			wantAuth:   true,
+		},
+		{
+			name:       "no well-known claim present denies",
+			claimKey:   "custom_groups",
+			claimValue: []interface{}{"eng"},
+			wantAuth:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Group-based policy: only permits if the principal is in THVGroup::"eng".
+			// This will fail unless groups are actually extracted from claims.
+			policy := `permit(principal in THVGroup::"eng", action, resource);`
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:     []string{policy},
+				EntitiesJSON: `[]`,
+				// Both claim names empty — backward compatible mode.
+			}, "")
+			require.NoError(t, err)
+
+			identity := &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "user1",
+					Claims: map[string]any{
+						"sub":       "user1",
+						tt.claimKey: tt.claimValue,
+					},
+				},
+			}
+			ctx := auth.WithIdentity(context.Background(), identity)
+
+			authorized, err := authorizer.AuthorizeWithJWTClaims(
+				ctx,
+				authorizers.MCPFeatureTool,
+				authorizers.MCPOperationCall,
+				"any-tool",
+				nil,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuth, authorized)
 		})
 	}
 }

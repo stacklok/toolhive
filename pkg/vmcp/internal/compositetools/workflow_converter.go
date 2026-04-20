@@ -55,6 +55,17 @@ func allToolStepsAccessible(def *composer.WorkflowDefinition, rt *vmcp.RoutingTa
 				return false
 			}
 		}
+		// For forEach steps, check the inner step's tool accessibility
+		if step.Type == composer.StepTypeForEach && step.InnerStep != nil {
+			if step.InnerStep.Type == composer.StepTypeTool {
+				if rt == nil {
+					return false
+				}
+				if !isToolStepAccessible(step.InnerStep.Tool, rt) {
+					return false
+				}
+			}
+		}
 	}
 	return true
 }

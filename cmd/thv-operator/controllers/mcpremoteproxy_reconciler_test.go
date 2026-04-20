@@ -59,15 +59,8 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.salesforce.com",
-					Port:      8080,
+					ProxyPort: 8080,
 					Transport: "streamable-http",
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://login.salesforce.com",
-							Audience: "mcp.salesforce.com",
-						},
-					},
 				},
 			},
 			validateResult: func(t *testing.T, proxy *mcpv1alpha1.MCPRemoteProxy, c client.Client) {
@@ -132,15 +125,8 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      9090,
+					ProxyPort: 9090,
 					Transport: "sse",
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.company.com",
-							Audience: "mcp-proxy",
-						},
-					},
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "token-exchange",
 					},
@@ -157,12 +143,6 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 					},
 					Audit: &mcpv1alpha1.AuditConfig{
 						Enabled: true,
-					},
-					Telemetry: &mcpv1alpha1.TelemetryConfig{
-						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
-							Enabled:     true,
-							ServiceName: "full-proxy",
-						},
 					},
 				},
 			},
@@ -247,14 +227,7 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "non-existent",
 					},
@@ -362,14 +335,7 @@ func TestMCPRemoteProxyConfigChangePropagation(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
-			Port:      8080,
-			OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-				Type: mcpv1alpha1.OIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCConfig{
-					Issuer:   "https://auth.example.com",
-					Audience: "mcp-proxy",
-				},
-			},
+			ProxyPort: 8080,
 			ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
 				Name: "dynamic-tools",
 			},
@@ -443,14 +409,7 @@ func TestMCPRemoteProxyStatusProgression(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
-			Port:      8080,
-			OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-				Type: mcpv1alpha1.OIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCConfig{
-					Issuer:   "https://auth.example.com",
-					Audience: "mcp-proxy",
-				},
-			},
+			ProxyPort: 8080,
 		},
 	}
 
@@ -553,23 +512,6 @@ func TestCommonHelpers(t *testing.T) {
 		assert.Equal(t, "test-auth", result.Name)
 	})
 
-	t.Run("GenerateOpenTelemetryEnvVars", func(t *testing.T) {
-		t.Parallel()
-
-		telemetryConfig := &mcpv1alpha1.TelemetryConfig{
-			OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
-				Enabled:     true,
-				ServiceName: "test-service",
-			},
-		}
-
-		envVars := ctrlutil.GenerateOpenTelemetryEnvVars(telemetryConfig, "test-resource", "test-ns")
-		require.Len(t, envVars, 1)
-		assert.Equal(t, "OTEL_RESOURCE_ATTRIBUTES", envVars[0].Name)
-		assert.Contains(t, envVars[0].Value, "service.name=test-service")
-		assert.Contains(t, envVars[0].Value, "service.namespace=test-ns")
-	})
-
 	t.Run("GenerateAuthzVolumeConfig - ConfigMap", func(t *testing.T) {
 		t.Parallel()
 
@@ -617,13 +559,6 @@ func TestEnsureAuthzConfigMapShared(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
-			OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-				Type: mcpv1alpha1.OIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCConfig{
-					Issuer:   "https://auth.example.com",
-					Audience: "mcp-proxy",
-				},
-			},
 		},
 	}
 
@@ -681,13 +616,6 @@ func TestRBACClientIntegration(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
-			OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-				Type: mcpv1alpha1.OIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCConfig{
-					Issuer:   "https://auth.example.com",
-					Audience: "mcp-proxy",
-				},
-			},
 		},
 	}
 
@@ -808,58 +736,11 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 		conditionStatus metav1.ConditionStatus
 	}{
 		{
-			name: "HTTP OIDC issuer is rejected",
+			name: "valid proxy with no OIDC config",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "http-oidc-proxy", Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: "no-oidc-proxy", Namespace: "default"},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "http://insecure-idp.example.com",
-							Audience: "test",
-						},
-					},
-				},
-			},
-			expectError:     true,
-			errContains:     "HTTP scheme",
-			expectCondition: mcpv1alpha1.ConditionReasonOIDCIssuerInsecure,
-			conditionStatus: metav1.ConditionFalse,
-		},
-		{
-			name: "HTTP OIDC issuer with insecureAllowHTTP is accepted",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "http-insecure-proxy", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:            "http://dev-idp.example.com",
-							Audience:          "test",
-							InsecureAllowHTTP: true,
-						},
-					},
-				},
-			},
-			expectError:     false,
-			expectCondition: mcpv1alpha1.ConditionReasonConfigurationValid,
-			conditionStatus: metav1.ConditionTrue,
-		},
-		{
-			name: "HTTPS OIDC issuer is accepted",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "https-oidc-proxy", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "test",
-						},
-					},
 				},
 			},
 			expectError:     false,
@@ -872,13 +753,6 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "invalid-cedar-proxy", Namespace: "default"},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "test",
-						},
-					},
 					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
 						Type: mcpv1alpha1.AuthzConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineAuthzConfig{
@@ -898,13 +772,6 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "missing-configmap-proxy", Namespace: "default"},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "test",
-						},
-					},
 					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
 						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
 						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
@@ -924,13 +791,6 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "missing-header-secret-proxy", Namespace: "default"},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "test",
-						},
-					},
 					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
 						AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
 							{
@@ -955,39 +815,11 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "bad-scheme-proxy", Namespace: "default"},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "ftp://bad-scheme.example.com",
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "test",
-						},
-					},
 				},
 			},
 			expectError:     true,
 			errContains:     "scheme",
 			expectCondition: mcpv1alpha1.ConditionReasonRemoteURLInvalid,
-			conditionStatus: metav1.ConditionFalse,
-		},
-		{
-			name: "HTTP JWKS URL is rejected",
-			proxy: &mcpv1alpha1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "http-jwks-proxy", Namespace: "default"},
-				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "test",
-							JWKSURL:  "http://jwks.example.com",
-						},
-					},
-				},
-			},
-			expectError:     true,
-			errContains:     "HTTPS",
-			expectCondition: mcpv1alpha1.ConditionReasonJWKSURLInvalid,
 			conditionStatus: metav1.ConditionFalse,
 		},
 	}
@@ -1063,14 +895,7 @@ func TestValidateAndHandleConfigs(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
 						Name: "valid-tools",
 					},
@@ -1099,14 +924,7 @@ func TestValidateAndHandleConfigs(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
 						Name: "non-existent",
 					},

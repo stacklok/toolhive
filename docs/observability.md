@@ -125,10 +125,51 @@ CLI flags take precedence over configuration file values when explicitly set.
 
 ### Kubernetes CRD
 
-For MCPServer resources, use `spec.openTelemetry`. For VirtualMCPServer
-resources, use `spec.config.telemetry`. See the
-[vMCP observability docs](./operator/virtualmcpserver-observability.md) for
-CRD examples.
+**MCPTelemetryConfig (preferred)**: Define telemetry settings in a shared
+`MCPTelemetryConfig` resource and reference it via `spec.telemetryConfigRef`
+in MCPServer, MCPRemoteProxy, or VirtualMCPServer. This eliminates duplication
+when managing multiple servers. Each server provides a unique `serviceName`
+override. Sensitive headers (API keys, bearer tokens) are stored in Kubernetes
+Secrets via `sensitiveHeaders[].secretKeyRef`.
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPTelemetryConfig
+metadata:
+  name: shared-otel
+spec:
+  openTelemetry:
+    enabled: true
+    endpoint: otel-collector:4318
+    insecure: true
+    tracing:
+      enabled: true
+      samplingRate: "0.1"
+    metrics:
+      enabled: true
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: my-server
+spec:
+  # ... other fields ...
+  telemetryConfigRef:
+    name: shared-otel
+    serviceName: my-server    # unique per server
+```
+
+See [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](./examples/operator/mcp-servers/mcpserver_fetch_otel.yaml)
+for a complete example.
+
+**Inline (deprecated)**: The inline `spec.telemetry` (MCPServer, MCPRemoteProxy)
+and `spec.config.telemetry` (VirtualMCPServer) fields still work but are
+deprecated and will be removed in v1beta1. They are mutually exclusive with
+`telemetryConfigRef` (CEL enforced). All three resource types now support
+`spec.telemetryConfigRef`.
+
+For VirtualMCPServer telemetry, see the
+[vMCP observability docs](./operator/virtualmcpserver-observability.md).
 
 ### Validation Rules
 

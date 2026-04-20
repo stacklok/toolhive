@@ -16,49 +16,27 @@ permissions:
   security-events: write
 
 jobs:
-  trivy-repo-scan:
-    name: Trivy Repository Scan
+  grype-repo-scan:
+    name: Grype Repository Scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Run Trivy vulnerability scanner in repo mode
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+      - name: Run Grype vulnerability scanner
+        id: grype-scan
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
-          version: 'v0.69.3'
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
+          path: "."
+          output-format: "sarif"
+          fail-build: false
 
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@b1bff81932f5cdfc8695c7752dcee935dcd061c8 # v4
+      - name: Upload Grype scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
         if: always()
         with:
-          sarif_file: 'trivy-results.sarif'
-
-  trivy-config-scan:
-    name: Trivy Configuration Scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Run Trivy configuration scanner
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
-        with:
-          version: 'v0.69.3'
-          scan-type: 'config'
-          scan-ref: './deploy/charts'
-          format: 'sarif'
-          output: 'trivy-config-results.sarif'
-
-      - name: Upload Trivy config scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@b1bff81932f5cdfc8695c7752dcee935dcd061c8 # v4
-        if: always()
-        with:
-          sarif_file: 'trivy-config-results.sarif'
+          sarif_file: ${{ steps.grype-scan.outputs.sarif }}
+          category: "grype"
 
   govulncheck:
     name: Go Vulnerability Check
@@ -70,8 +48,7 @@ jobs:
       - name: Run govulncheck
         uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1
         with:
-          go-version-input: ''
-          go-version-file: go.mod
+          go-version-input: 'stable'
           go-package: ./...
           repo-checkout: false
           output-format: json
@@ -90,7 +67,18 @@ jobs:
           #   Indirect dependency via mcp-go, invopop/jsonschema, wk8/go-ordered-map.
           #   The vulnerability is in the Delete function which is not called by ToolHive
           #   or any of its dependencies. No fixed version exists yet (all versions affected).
-          IGNORED_VULNS="GO-2025-4192 GO-2026-4514"
+          # GO-2026-4883: Off-by-one error in Moby plugin privilege validation (CVE-2026-33997)
+          #   Affects the Docker daemon's plugin privilege handling code. ToolHive only uses
+          #   the Docker client SDK to manage containers, not the daemon plugin subsystem.
+          #   No fixed version exists for github.com/docker/docker; fix is only in
+          #   github.com/moby/moby/v2 v2.0.0-beta.8+ which is not yet available as a
+          #   docker/docker release.
+          # GO-2026-4887: AuthZ plugin bypass with oversized request bodies (CVE-2026-34040)
+          #   Affects the Docker daemon's AuthZ plugin mechanism. ToolHive only uses the
+          #   Docker client SDK and does not run or configure AuthZ plugins. No fixed version
+          #   exists for github.com/docker/docker; fix is only in github.com/moby/moby/v2
+          #   v2.0.0-beta.8+ which is not yet available as a docker/docker release.
+          IGNORED_VULNS="GO-2025-4192 GO-2026-4514 GO-2026-4883 GO-2026-4887"
 
           # Show the raw output for debugging
           echo "::group::govulncheck raw output"

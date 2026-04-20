@@ -89,7 +89,7 @@ func TestK8sReporter_ReportStatus_Success(t *testing.T) {
 		name           string
 		phase          vmcptypes.Phase
 		expectedPhase  mcpv1alpha1.VirtualMCPServerPhase
-		backendCount   int
+		backendCount   int32
 		conditionCount int
 	}{
 		{
@@ -137,7 +137,7 @@ func TestK8sReporter_ReportStatus_Success(t *testing.T) {
 			}
 
 			// Add backends if specified
-			for i := 0; i < tt.backendCount; i++ {
+			for i := int32(0); i < tt.backendCount; i++ {
 				status.DiscoveredBackends = append(status.DiscoveredBackends, vmcptypes.DiscoveredBackend{
 					Name:            fmt.Sprintf("backend-%d", i+1),
 					URL:             "http://backend:8080",
@@ -179,7 +179,7 @@ func TestK8sReporter_ReportStatus_Success(t *testing.T) {
 
 			// Verify backend count
 			assert.Equal(t, tt.backendCount, updated.Status.BackendCount)
-			assert.Len(t, updated.Status.DiscoveredBackends, tt.backendCount)
+			assert.Len(t, updated.Status.DiscoveredBackends, int(tt.backendCount))
 
 			// Verify conditions
 			assert.Len(t, updated.Status.Conditions, tt.conditionCount)
@@ -312,7 +312,7 @@ func TestK8sReporter_ReportStatus_ConcurrentUpdates(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "Update 5", updated.Status.Message)
-	assert.Equal(t, 1, updated.Status.BackendCount)
+	assert.Equal(t, int32(1), updated.Status.BackendCount)
 	assert.Equal(t, "backend-5", updated.Status.DiscoveredBackends[0].Name)
 }
 
@@ -337,7 +337,7 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 				Type:               "Ready",
 				Status:             metav1.ConditionTrue,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "AllBackendsHealthy",
+				Reason:             "AllBackendsRoutable",
 				Message:            "All backends are healthy",
 			},
 		},
@@ -357,7 +357,7 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 	require.Len(t, updated.Status.Conditions, 1)
 	assert.Equal(t, "Ready", updated.Status.Conditions[0].Type)
 	assert.Equal(t, metav1.ConditionTrue, updated.Status.Conditions[0].Status)
-	assert.Equal(t, "AllBackendsHealthy", updated.Status.Conditions[0].Reason)
+	assert.Equal(t, "AllBackendsRoutable", updated.Status.Conditions[0].Reason)
 	assert.Equal(t, "All backends are healthy", updated.Status.Conditions[0].Message)
 
 	// Second report: update message while keeping Status True
@@ -370,7 +370,7 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 				Type:               "Ready",
 				Status:             metav1.ConditionTrue,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "AllBackendsHealthy",
+				Reason:             "AllBackendsRoutable",
 				Message:            "All backends are still healthy",
 			},
 		},
@@ -400,8 +400,8 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 				Type:               "Ready",
 				Status:             metav1.ConditionFalse,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "NoHealthyBackends",
-				Message:            "No healthy backends available",
+				Reason:             "NoRoutableBackends",
+				Message:            "No routable backends available",
 			},
 		},
 		BackendCount: 0,
@@ -418,8 +418,8 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, updated.Status.Conditions, 1)
 	assert.Equal(t, metav1.ConditionFalse, updated.Status.Conditions[0].Status)
-	assert.Equal(t, "NoHealthyBackends", updated.Status.Conditions[0].Reason)
-	assert.Equal(t, "No healthy backends available", updated.Status.Conditions[0].Message)
+	assert.Equal(t, "NoRoutableBackends", updated.Status.Conditions[0].Reason)
+	assert.Equal(t, "No routable backends available", updated.Status.Conditions[0].Message)
 }
 
 // TestK8sReporter_ReportStatus_RemovesStaleConditions tests that conditions
@@ -486,7 +486,7 @@ func TestK8sReporter_ReportStatus_RemovesStaleConditions(t *testing.T) {
 				Type:               "Ready",
 				Status:             metav1.ConditionTrue,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "AllBackendsHealthy",
+				Reason:             "AllBackendsRoutable",
 				Message:            "All 3 backends healthy",
 			},
 		},

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package runner
@@ -153,33 +153,68 @@ func createTemplateData(
 
 // loadRuntimeConfig loads the runtime configuration for a given transport type.
 // Priority order:
-// 1. Override provided as parameter (validated before use)
+// 1. Override provided as parameter (merged with defaults, then validated)
 // 2. User configuration from config file
 // 3. Default configuration for the transport type
+//
+// When an override is provided, empty fields fall back to the defaults and
+// AdditionalPackages are merged (defaults first, then unique override entries).
 func loadRuntimeConfig(
 	transportType templates.TransportType,
 	override *templates.RuntimeConfig,
 ) (*templates.RuntimeConfig, error) {
-	// If override is provided, validate and use it
+	// If override is provided, merge with defaults before validating
 	if override != nil {
-		if err := override.Validate(); err != nil {
+		merged := mergeRuntimeConfig(transportType, override)
+		if err := merged.Validate(); err != nil {
 			return nil, fmt.Errorf("invalid runtime config override: %w", err)
 		}
-		return override, nil
+		return merged, nil
 	}
 
-	// Try loading from user config (validate on read since config.yaml is hand-editable)
+	// Try loading from user config (merge with defaults, then validate)
 	provider := config.NewProvider()
 	if userConfig, err := provider.GetRuntimeConfig(string(transportType)); err == nil && userConfig != nil {
-		if err := userConfig.Validate(); err != nil {
+		merged := mergeRuntimeConfig(transportType, userConfig)
+		if err := merged.Validate(); err != nil {
 			return nil, fmt.Errorf("invalid runtime config in config file for %s: %w", transportType, err)
 		}
-		return userConfig, nil
+		return merged, nil
 	}
 
 	// Fall back to defaults
 	defaultConfig := templates.GetDefaultRuntimeConfig(transportType)
 	return &defaultConfig, nil
+}
+
+// mergeRuntimeConfig merges an override RuntimeConfig with the defaults for the
+// given transport type. Empty BuilderImage falls back to the default, and
+// AdditionalPackages are merged (defaults first, then unique override entries).
+func mergeRuntimeConfig(transportType templates.TransportType, override *templates.RuntimeConfig) *templates.RuntimeConfig {
+	defaults := templates.GetDefaultRuntimeConfig(transportType)
+
+	merged := &templates.RuntimeConfig{
+		BuilderImage: override.BuilderImage,
+	}
+	if merged.BuilderImage == "" {
+		merged.BuilderImage = defaults.BuilderImage
+	}
+
+	// Start with default packages, then append any override packages not
+	// already present.
+	seen := make(map[string]bool, len(defaults.AdditionalPackages))
+	merged.AdditionalPackages = append(merged.AdditionalPackages, defaults.AdditionalPackages...)
+	for _, pkg := range defaults.AdditionalPackages {
+		seen[pkg] = true
+	}
+	for _, pkg := range override.AdditionalPackages {
+		if !seen[pkg] {
+			merged.AdditionalPackages = append(merged.AdditionalPackages, pkg)
+			seen[pkg] = true
+		}
+	}
+
+	return merged
 }
 
 // addBuildEnvToTemplate loads build environment variables from config and adds them to template data.
@@ -267,7 +302,7 @@ func resolveBuildAuthFilesFromSecrets(configuredFiles []string) (map[string]stri
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	manager, err := secrets.CreateSecretProvider(providerType)
+	manager, err := secrets.CreateProvider(providerType, secrets.WithScope(secrets.ScopeWorkloads))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
 	}
@@ -301,7 +336,7 @@ func resolveSecretsForBuildEnv(secretRefs map[string]string) (map[string]string,
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	manager, err := secrets.CreateSecretProvider(providerType)
+	manager, err := secrets.CreateProvider(providerType, secrets.WithUserFacing())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
 	}

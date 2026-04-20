@@ -795,7 +795,7 @@ func TestDefaultAggregator_ProcessPreQueriedCapabilities(t *testing.T) {
 		}
 
 		agg := NewDefaultAggregator(nil, nil, nil, nil)
-		advertised, routingTable, err := agg.ProcessPreQueriedCapabilities(
+		advertised, allResolved, routingTable, err := agg.ProcessPreQueriedCapabilities(
 			context.Background(), toolsByBackend, targets,
 		)
 
@@ -807,6 +807,9 @@ func TestDefaultAggregator_ProcessPreQueriedCapabilities(t *testing.T) {
 		}
 		assert.Contains(t, advertisedNames, "tool1")
 		assert.Contains(t, advertisedNames, "tool2")
+		// With no filter, allResolved must equal the advertised list.
+		assert.ElementsMatch(t, advertised, allResolved,
+			"without a filter, allResolvedTools must equal the advertised list")
 		// Both tools must be in the routing table.
 		assert.Contains(t, routingTable, "tool1")
 		assert.Contains(t, routingTable, "tool2")
@@ -825,7 +828,7 @@ func TestDefaultAggregator_ProcessPreQueriedCapabilities(t *testing.T) {
 		}
 
 		agg := NewDefaultAggregator(nil, nil, nil, nil)
-		_, routingTable, err := agg.ProcessPreQueriedCapabilities(
+		_, _, routingTable, err := agg.ProcessPreQueriedCapabilities(
 			context.Background(), toolsByBackend, targets,
 		)
 
@@ -858,7 +861,7 @@ func TestDefaultAggregator_ProcessPreQueriedCapabilities(t *testing.T) {
 		}
 
 		agg := NewDefaultAggregator(nil, nil, aggCfg, nil)
-		advertised, routingTable, err := agg.ProcessPreQueriedCapabilities(
+		advertised, _, routingTable, err := agg.ProcessPreQueriedCapabilities(
 			context.Background(), toolsByBackend, targets,
 		)
 
@@ -892,7 +895,7 @@ func TestDefaultAggregator_ProcessPreQueriedCapabilities(t *testing.T) {
 		}
 
 		agg := NewDefaultAggregator(nil, nil, nil, nil)
-		advertised, routingTable, err := agg.ProcessPreQueriedCapabilities(
+		advertised, _, routingTable, err := agg.ProcessPreQueriedCapabilities(
 			context.Background(), toolsByBackend, targets,
 		)
 
@@ -926,13 +929,23 @@ func TestDefaultAggregator_ProcessPreQueriedCapabilities(t *testing.T) {
 		}
 
 		agg := NewDefaultAggregator(nil, nil, aggCfg, nil)
-		advertised, routingTable, err := agg.ProcessPreQueriedCapabilities(
+		advertised, allResolved, routingTable, err := agg.ProcessPreQueriedCapabilities(
 			context.Background(), toolsByBackend, targets,
 		)
 
 		require.NoError(t, err)
 		assert.Empty(t, advertised,
 			"ExcludeAllTools must produce an empty advertised list")
+		// allResolvedTools must contain all tools regardless of the advertising filter,
+		// so the workflow engine can look up InputSchema for type coercion.
+		allResolvedNames := make([]string, 0, len(allResolved))
+		for _, tool := range allResolved {
+			allResolvedNames = append(allResolvedNames, tool.Name)
+		}
+		assert.Contains(t, allResolvedNames, "tool1",
+			"excluded tools must appear in allResolvedTools for composite tool schema lookup")
+		assert.Contains(t, allResolvedNames, "tool2",
+			"excluded tools must appear in allResolvedTools for composite tool schema lookup")
 		// Tools must still be routable (composite tools need them).
 		assert.Contains(t, routingTable, "tool1",
 			"excluded tools must remain in the routing table for composite tool use")
@@ -963,7 +976,7 @@ func TestDefaultAggregator_ProcessPreQueriedCapabilities(t *testing.T) {
 		}
 
 		agg := NewDefaultAggregator(nil, nil, aggCfg, nil)
-		advertised, routingTable, err := agg.ProcessPreQueriedCapabilities(
+		advertised, allResolved, routingTable, err := agg.ProcessPreQueriedCapabilities(
 			context.Background(), toolsByBackend, targets,
 		)
 
@@ -975,6 +988,16 @@ func TestDefaultAggregator_ProcessPreQueriedCapabilities(t *testing.T) {
 		}
 		assert.Equal(t, []string{"allowed_tool"}, advertisedNames,
 			"only tools matching the filter should be advertised")
+		// allResolvedTools must include both tools so the workflow engine can
+		// look up InputSchema for type coercion on hidden_tool.
+		allResolvedNames := make([]string, 0, len(allResolved))
+		for _, tool := range allResolved {
+			allResolvedNames = append(allResolvedNames, tool.Name)
+		}
+		assert.Contains(t, allResolvedNames, "allowed_tool",
+			"filtered-in tool must appear in allResolvedTools")
+		assert.Contains(t, allResolvedNames, "hidden_tool",
+			"filtered-out tool must appear in allResolvedTools for composite tool schema lookup")
 		// Both tools remain routable (composite tools can call hidden_tool).
 		assert.Contains(t, routingTable, "allowed_tool",
 			"filtered-in tool should be in routing table")
@@ -995,7 +1018,7 @@ func TestDefaultAggregator_ProcessPreQueriedCapabilities(t *testing.T) {
 		}
 
 		agg := NewDefaultAggregator(nil, nil, nil, nil)
-		advertised, routingTable, err := agg.ProcessPreQueriedCapabilities(
+		advertised, _, routingTable, err := agg.ProcessPreQueriedCapabilities(
 			context.Background(), toolsByBackend, targets,
 		)
 
@@ -1018,7 +1041,7 @@ func TestDefaultAggregator_ProcessPreQueriedCapabilities(t *testing.T) {
 		t.Parallel()
 
 		agg := NewDefaultAggregator(nil, nil, nil, nil)
-		advertised, routingTable, err := agg.ProcessPreQueriedCapabilities(
+		advertised, _, routingTable, err := agg.ProcessPreQueriedCapabilities(
 			context.Background(),
 			map[string][]vmcp.Tool{},
 			map[string]*vmcp.BackendTarget{},

@@ -10,6 +10,8 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -33,6 +35,13 @@ import (
 // All middleware types now directly create and inject Identity into the context,
 // eliminating the need for a separate conversion layer.
 //
+// The passThroughTools parameter is optional (pass nil for none). Tool names in
+// this set bypass the response filter's policy check in tools/list responses.
+// This is used when the optimizer is enabled: its meta-tools (find_tool, call_tool)
+// would otherwise be rejected by Cedar default-deny since no policy references them
+// by name. Authorization for the underlying backend tools is enforced by the
+// middleware's call_tool interception.
+//
 // Returns:
 //   - authMw: Composed auth + MCP parser middleware (auth runs first, then parser)
 //   - authzMw: Authorization middleware (nil if authz is not configured)
@@ -41,6 +50,9 @@ import (
 func NewIncomingAuthMiddleware(
 	ctx context.Context,
 	cfg *config.IncomingAuthConfig,
+	passThroughTools map[string]struct{},
+	upstreamReader upstreamtoken.TokenReader,
+	keyProvider keys.PublicKeyProvider,
 ) (
 	authMw func(http.Handler) http.Handler,
 	authzMw func(http.Handler) http.Handler,
@@ -55,7 +67,7 @@ func NewIncomingAuthMiddleware(
 
 	switch cfg.Type {
 	case "oidc":
-		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC)
+		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC, upstreamReader, keyProvider)
 	case "local":
 		authMiddleware, authInfoHandler, err = newLocalAuthMiddleware(ctx)
 	case "anonymous":
@@ -74,7 +86,7 @@ func NewIncomingAuthMiddleware(
 	// Cedar policies access to discovered tool annotations.
 	var authzMiddleware func(http.Handler) http.Handler
 	if cfg.Authz != nil && cfg.Authz.Type == "cedar" && len(cfg.Authz.Policies) > 0 {
-		authzMiddleware, err = newCedarAuthzMiddleware(cfg.Authz)
+		authzMiddleware, err = newCedarAuthzMiddleware(cfg.Authz, passThroughTools)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to create authorization middleware: %w", err)
 		}
@@ -93,20 +105,25 @@ func NewIncomingAuthMiddleware(
 }
 
 // newCedarAuthzMiddleware creates Cedar authorization middleware from vMCP config.
-func newCedarAuthzMiddleware(authzCfg *config.AuthzConfig) (func(http.Handler) http.Handler, error) {
+func newCedarAuthzMiddleware(
+	authzCfg *config.AuthzConfig, passThroughTools map[string]struct{},
+) (func(http.Handler) http.Handler, error) {
 	if authzCfg == nil || len(authzCfg.Policies) == 0 {
 		return nil, fmt.Errorf("cedar authorization requires at least one policy")
 	}
 
 	slog.Info("creating Cedar authorization middleware", "policies", len(authzCfg.Policies))
 
-	// Build the Cedar config structure expected by the authorizer factory
+	// Build the Cedar config structure expected by the authorizer factory.
+	// PrimaryUpstreamProvider is forwarded so Cedar evaluates claims from the
+	// upstream IDP token when the embedded auth server is active.
 	cedarConfig := cedar.Config{
 		Version: "1.0",
 		Type:    cedar.ConfigType,
 		Options: &cedar.ConfigOptions{
-			Policies:     authzCfg.Policies,
-			EntitiesJSON: "[]",
+			Policies:                authzCfg.Policies,
+			EntitiesJSON:            "[]",
+			PrimaryUpstreamProvider: authzCfg.PrimaryUpstreamProvider,
 		},
 	}
 
@@ -117,7 +134,7 @@ func newCedarAuthzMiddleware(authzCfg *config.AuthzConfig) (func(http.Handler) h
 	}
 
 	// Create the middleware using the existing factory
-	middlewareFn, err := authz.CreateMiddlewareFromConfig(authzConfig, "vmcp")
+	middlewareFn, err := authz.CreateMiddlewareFromConfig(authzConfig, "vmcp", passThroughTools)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Cedar middleware: %w", err)
 	}
@@ -128,9 +145,15 @@ func newCedarAuthzMiddleware(authzCfg *config.AuthzConfig) (func(http.Handler) h
 // newOIDCAuthMiddleware creates OIDC authentication middleware.
 // Reuses pkg/auth.GetAuthenticationMiddleware for OIDC token validation.
 // The middleware now directly creates Identity in context (no separate conversion needed).
+//
+// The reader parameter, when non-nil, enables the JWT validator to load upstream
+// provider tokens from the embedded auth server's storage. This is required for
+// upstream_inject outgoing auth to work with an embedded auth server.
 func newOIDCAuthMiddleware(
 	ctx context.Context,
 	oidcCfg *config.OIDCConfig,
+	reader upstreamtoken.TokenReader,
+	keyProvider keys.PublicKeyProvider,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcCfg == nil {
 		return nil, nil, fmt.Errorf("OIDC configuration required when Type='oidc'")
@@ -148,13 +171,26 @@ func newOIDCAuthMiddleware(
 		ClientID:          oidcCfg.ClientID,
 		Audience:          oidcCfg.Audience,
 		ResourceURL:       oidcCfg.Resource,
-		AllowPrivateIP:    oidcCfg.ProtectedResourceAllowPrivateIP,
+		JWKSURL:           oidcCfg.JWKSURL,
+		IntrospectionURL:  oidcCfg.IntrospectionURL,
+		AllowPrivateIP:    oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
 		InsecureAllowHTTP: oidcCfg.InsecureAllowHTTP,
 		Scopes:            oidcCfg.Scopes,
 	}
 
+	// Wire optional dependencies from the embedded auth server so the JWT
+	// validator can (a) resolve JWKS keys in-process instead of self-referential
+	// HTTP calls, and (b) enrich Identity with upstream provider tokens.
+	var opts []auth.TokenValidatorOption
+	if keyProvider != nil {
+		opts = append(opts, auth.WithKeyProvider(keyProvider))
+	}
+	if reader != nil {
+		opts = append(opts, auth.WithUpstreamTokenReader(reader))
+	}
+
 	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity
-	authMw, authInfo, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	authMw, authInfo, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create OIDC authentication middleware: %w", err)
 	}

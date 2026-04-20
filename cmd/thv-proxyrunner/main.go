@@ -5,8 +5,11 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/viper"
 
@@ -30,8 +33,14 @@ func main() {
 	l := logging.New(opts...)
 	slog.SetDefault(l)
 
-	// Skip update check for completion command or if we are running in kubernetes
-	if err := app.NewRootCmd().Execute(); err != nil {
+	// Create a signal-aware context so SIGTERM from Kubernetes pod lifecycle,
+	// SIGQUIT, and os.Interrupt all trigger graceful connection drain via
+	// transportHandler.Stop rather than abrupt process exit.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+	defer cancel()
+
+	if err := app.NewRootCmd().ExecuteContext(ctx); err != nil {
+		slog.Error("error executing command", "error", err)
 		os.Exit(1)
 	}
 }

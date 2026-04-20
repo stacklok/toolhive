@@ -400,14 +400,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	// Create an apply configuration for the statefulset
 	statefulSetApply := appsv1apply.StatefulSet(containerName, namespace).
 		WithLabels(containerLabels).
-		WithSpec(appsv1apply.StatefulSetSpec().
-			WithReplicas(1).
-			WithSelector(metav1apply.LabelSelector().
-				WithMatchLabels(map[string]string{
-					"app": containerName,
-				})).
-			WithServiceName(containerName).
-			WithTemplate(podTemplateSpec))
+		WithSpec(buildStatefulSetSpec(containerName, podTemplateSpec, options))
 
 	// Apply the statefulset using server-side apply
 	createdStatefulSet, err := c.client.AppsV1().StatefulSets(namespace).
@@ -440,6 +433,26 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	}
 
 	return 0, nil
+}
+
+// buildStatefulSetSpec constructs the StatefulSet spec apply configuration.
+// WithReplicas is only included when BackendReplicas is explicitly set; omitting
+// the field lets the existing field manager (e.g. HPA or kubectl) retain control
+// of scaling, satisfying the nil-omission invariant from RC-11.
+func buildStatefulSetSpec(
+	containerName string,
+	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
+	options *runtime.DeployWorkloadOptions,
+) *appsv1apply.StatefulSetSpecApplyConfiguration {
+	spec := appsv1apply.StatefulSetSpec().
+		WithSelector(metav1apply.LabelSelector().
+			WithMatchLabels(map[string]string{"app": containerName})).
+		WithServiceName(containerName).
+		WithTemplate(podTemplateSpec)
+	if options != nil && options.ScalingConfig != nil && options.ScalingConfig.BackendReplicas != nil {
+		spec = spec.WithReplicas(*options.ScalingConfig.BackendReplicas)
+	}
+	return spec
 }
 
 // ensureBackendServices creates the headless and ClusterIP services needed by

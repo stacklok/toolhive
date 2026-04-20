@@ -65,11 +65,11 @@ func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool, tokenSource auth
 				return nil, fmt.Errorf(
 					"registry at %s returned 401 Unauthorized\n\n"+
 						"If this registry requires authentication, configure it with:\n"+
-						"  thv config set-registry-auth --issuer <issuer-url> --client-id <client-id>: %w",
+						"  thv config set-registry <registry-url> --issuer <issuer-url> --client-id <client-id>: %w",
 					apiURL, auth.ErrRegistryAuthRequired,
 				)
 			}
-			return nil, fmt.Errorf("API endpoint not functional: %w", err)
+			return nil, &UnavailableError{URL: apiURL, Err: err}
 		}
 	}
 
@@ -96,7 +96,7 @@ func (p *APIRegistryProvider) GetRegistry() (*types.Registry, error) {
 		if errors.Is(err, api.ErrRegistryUnauthorized) {
 			return nil, fmt.Errorf("registry rejected credentials: %w", auth.ErrRegistryAuthRequired)
 		}
-		return nil, fmt.Errorf("failed to list servers from API: %w", err)
+		return nil, &UnavailableError{URL: p.apiURL, Err: err}
 	}
 
 	// Convert servers to ToolHive format
@@ -167,7 +167,7 @@ func (p *APIRegistryProvider) GetServer(name string) (types.ServerMetadata, erro
 		}
 	}
 
-	return nil, fmt.Errorf("server %s not found in API", name)
+	return nil, fmt.Errorf("%w: %s", ErrServerNotFound, name)
 }
 
 // SearchServers searches for servers matching the query (queries API directly)

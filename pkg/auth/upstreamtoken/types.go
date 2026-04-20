@@ -5,6 +5,8 @@
 // lifecycle, including transparent refresh of expired access tokens.
 package upstreamtoken
 
+//go:generate go run go.uber.org/mock/mockgen -destination=mocks/mock_token_reader.go -package=mocks github.com/stacklok/toolhive/pkg/auth/upstreamtoken TokenReader
+
 import "context"
 
 // TokenSessionIDClaimKey is the JWT claim key for the token session ID.
@@ -17,6 +19,19 @@ const TokenSessionIDClaimKey = "tsid"
 // The caller only needs the access token to inject into upstream requests.
 type UpstreamCredential struct {
 	AccessToken string
+}
+
+// TokenReader retrieves upstream provider access tokens for a session.
+// This narrow interface decouples the auth middleware from storage internals.
+//
+// TODO(auth): Consider enriching the return type from map[string]string to
+// map[string]UpstreamCredential to carry per-provider freshness/error metadata.
+type TokenReader interface {
+	// GetAllValidTokens returns access tokens for all upstream providers in a session.
+	// Expired tokens are refreshed transparently when possible; if refresh fails,
+	// the provider is omitted from the result.
+	// Returns an empty map (not error) for unknown sessions.
+	GetAllValidTokens(ctx context.Context, sessionID string) (map[string]string, error)
 }
 
 // Service owns the upstream token lifecycle: read, refresh, error handling.

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package main is the entry point for the ToolHive CLI.
@@ -62,8 +62,17 @@ func main() {
 		// Ensures middleware-based telemetry configs are properly migrated
 		migration.CheckAndPerformMiddlewareTelemetryMigration()
 
-		// Ensure default group exists (creates it for fresh installs, no-op otherwise)
-		migration.EnsureDefaultGroupExists()
+		// Check and perform secret scope migration if needed
+		// Renames bare system keys (BEARER_TOKEN_, REGISTRY_OAUTH_, etc.) to __thv_<scope>_ namespace
+		migration.CheckAndPerformSecretScopeMigration()
+
+		// Ensure the default group exists on fresh installs so that commands
+		// which default to --group default (e.g. run, list) work without the
+		// user having to create the group manually.
+		if err := migration.EnsureDefaultGroupExists(); err != nil {
+			slog.Error("failed to ensure default group exists", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	cmd := app.NewRootCmd(!app.IsCompletionCommand(os.Args))

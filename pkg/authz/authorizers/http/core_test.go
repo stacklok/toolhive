@@ -261,9 +261,9 @@ func TestAuthorizer_AuthorizeWithJWTClaims(t *testing.T) {
 			defer authz.Close()
 
 			// Create context with identity
-			identity := &auth.Identity{
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
 				Claims: tt.claims,
-			}
+			}}
 			ctx := auth.WithIdentity(context.Background(), identity)
 
 			// Test authorization

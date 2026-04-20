@@ -5,9 +5,12 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -18,6 +21,12 @@ const (
 	IncomingAuthTypeLocal     = "local"
 	IncomingAuthTypeAnonymous = "anonymous"
 )
+
+// defaultStrategyKey is the synthetic map key used for the default outgoing auth
+// strategy in collectAllBackendStrategies. It is deliberately different from
+// authserver.DefaultUpstreamName ("default") to avoid confusion with upstream
+// provider names and to prevent key collisions with user-defined backend names.
+const defaultStrategyKey = "<default-strategy>"
 
 // DefaultValidator implements comprehensive configuration validation.
 type DefaultValidator struct{}
@@ -60,6 +69,11 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 		errors = append(errors, err.Error())
 	}
 
+	// Validate static backends
+	if err := v.validateStaticBackends(cfg.Backends); err != nil {
+		errors = append(errors, err.Error())
+	}
+
 	// Validate composite tools
 	if err := v.validateCompositeTools(cfg.CompositeTools); err != nil {
 		errors = append(errors, err.Error())
@@ -92,6 +106,31 @@ func (*DefaultValidator) validateBasicFields(cfg *Config) error {
 	return nil
 }
 
+func (*DefaultValidator) validateStaticBackends(backends []StaticBackendConfig) error {
+	for i, b := range backends {
+		// Validate type if specified
+		if b.Type != "" && b.Type != string(vmcp.BackendTypeEntry) {
+			return fmt.Errorf("backends[%d].type must be empty or %q, got %q", i, vmcp.BackendTypeEntry, b.Type)
+		}
+
+		// CABundlePath is only valid for entry backends
+		if b.CABundlePath != "" && b.Type != string(vmcp.BackendTypeEntry) {
+			return fmt.Errorf("backends[%d].caBundlePath is only valid when type is %q", i, vmcp.BackendTypeEntry)
+		}
+
+		// Validate CA bundle path: reject null bytes, path traversal, and relative paths
+		if b.CABundlePath != "" {
+			if strings.ContainsRune(b.CABundlePath, 0) || strings.Contains(b.CABundlePath, "..") {
+				return fmt.Errorf("backends[%d].caBundlePath contains invalid path characters", i)
+			}
+			if !filepath.IsAbs(b.CABundlePath) {
+				return fmt.Errorf("backends[%d].caBundlePath must be an absolute path", i)
+			}
+		}
+	}
+	return nil
+}
+
 func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error {
 	if auth == nil {
 		return fmt.Errorf("incomingAuth is required")
@@ -99,7 +138,7 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 
 	// Validate auth type
 	validTypes := []string{IncomingAuthTypeOIDC, IncomingAuthTypeLocal, IncomingAuthTypeAnonymous}
-	if !contains(validTypes, auth.Type) {
+	if !slices.Contains(validTypes, auth.Type) {
 		return fmt.Errorf("incomingAuth.type must be one of: %s", strings.Join(validTypes, ", "))
 	}
 
@@ -140,7 +179,7 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 
 func (*DefaultValidator) validateAuthz(authz *AuthzConfig) error {
 	validTypes := []string{"cedar", "none"}
-	if !contains(validTypes, authz.Type) {
+	if !slices.Contains(validTypes, authz.Type) {
 		return fmt.Errorf("type must be one of: %s", strings.Join(validTypes, ", "))
 	}
 
@@ -158,7 +197,7 @@ func (v *DefaultValidator) validateOutgoingAuth(auth *OutgoingAuthConfig) error 
 
 	// Validate source
 	validSources := []string{"inline", "discovered"}
-	if !contains(validSources, auth.Source) {
+	if !slices.Contains(validSources, auth.Source) {
 		return fmt.Errorf("outgoingAuth.source must be one of: %s", strings.Join(validSources, ", "))
 	}
 
@@ -188,10 +227,9 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		authtypes.StrategyTypeUnauthenticated,
 		authtypes.StrategyTypeHeaderInjection,
 		authtypes.StrategyTypeTokenExchange,
-		// TODO: Add more as strategies are implemented:
-		// "pass_through", "client_credentials", "oauth_proxy",
+		authtypes.StrategyTypeUpstreamInject,
 	}
-	if !contains(validTypes, strategy.Type) {
+	if !slices.Contains(validTypes, strategy.Type) {
 		return fmt.Errorf("type must be one of: %s", strings.Join(validTypes, ", "))
 	}
 
@@ -217,6 +255,13 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		if strategy.HeaderInjection.HeaderValue == "" {
 			return fmt.Errorf("headerInjection requires headerValue field")
 		}
+
+	case authtypes.StrategyTypeUpstreamInject:
+		if strategy.UpstreamInject == nil {
+			return fmt.Errorf("upstream_inject requires UpstreamInject configuration")
+		}
+		// Note: empty ProviderName is allowed here; ValidateAuthServerIntegration
+		// handles provider name resolution including the empty→"default" mapping.
 	}
 
 	return nil
@@ -233,7 +278,7 @@ func (v *DefaultValidator) validateAggregation(agg *AggregationConfig) error {
 		vmcp.ConflictStrategyPriority,
 		vmcp.ConflictStrategyManual,
 	}
-	if !containsStrategy(validStrategies, agg.ConflictResolution) {
+	if !slices.Contains(validStrategies, agg.ConflictResolution) {
 		return fmt.Errorf("conflictResolution must be one of: prefix, priority, manual")
 	}
 
@@ -359,8 +404,8 @@ func (*DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) erro
 		}
 	}
 
-	validModes := []string{"fail", "bestEffort"}
-	if !contains(validModes, fh.PartialFailureMode) {
+	validModes := []string{"fail", "best_effort"}
+	if !slices.Contains(validModes, fh.PartialFailureMode) {
 		return fmt.Errorf("partialFailureMode must be one of: %s", strings.Join(validModes, ", "))
 	}
 
@@ -436,20 +481,185 @@ func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) erro
 // Note: Workflow step validation is now handled by the shared ValidateWorkflowSteps function
 // in composite_validation.go, which is called by ValidateCompositeToolConfig.
 
-// Helper functions
+// ValidateAuthServerIntegration validates cross-cutting rules between the
+// embedded auth server configuration and backend auth strategies.
+// This is called separately from Validate() because it needs the runtime-only
+// auth server RunConfig that is not part of the serializable Config.
+func ValidateAuthServerIntegration(cfg *Config, rc *authserver.RunConfig) error {
+	strategies := collectAllBackendStrategies(cfg)
+	hasUpstreamInject := hasStrategyType(strategies, authtypes.StrategyTypeUpstreamInject)
 
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
+	// Guard clause: nothing to validate if no auth server and no upstream_inject backends.
+	if rc == nil && !hasUpstreamInject {
+		return nil
+	}
+
+	// upstream_inject requires an auth server to obtain upstream tokens.
+	if hasUpstreamInject && rc == nil {
+		return fmt.Errorf("upstream_inject requires an embedded auth server (authServer must be configured)")
+	}
+
+	// Structural validation of the auth server RunConfig.
+	if err := validateAuthServerRunConfig(rc); err != nil {
+		return err
+	}
+
+	// Auth server requires OIDC incoming auth to validate issued tokens.
+	if err := validateAuthServerRequiresOIDC(cfg); err != nil {
+		return err
+	}
+
+	// Every upstream_inject providerName must reference an existing upstream.
+	if err := validateUpstreamInjectProviders(rc, strategies); err != nil {
+		return err
+	}
+
+	// Issuer and audience consistency between auth server and incoming auth.
+	return validateAuthServerIncomingAuthConsistency(cfg, rc)
+}
+
+// validateAuthServerRunConfig performs lightweight structural validation of the
+// auth server RunConfig (issuer, upstreams, allowed audiences).
+func validateAuthServerRunConfig(rc *authserver.RunConfig) error {
+	if rc == nil {
+		return nil
+	}
+	if rc.Issuer == "" {
+		return fmt.Errorf("auth server issuer is required")
+	}
+	if len(rc.Upstreams) == 0 {
+		return fmt.Errorf("auth server requires at least one upstream")
+	}
+	// AllowedAudiences is required for MCP compliance (RFC 8707).
+	if len(rc.AllowedAudiences) == 0 {
+		return fmt.Errorf("auth server requires at least one allowed audience (MCP clients must send RFC 8707 resource parameter)")
+	}
+	return nil
+}
+
+// validateUpstreamInjectProviders checks that every upstream_inject strategy
+// references a provider that exists in the auth server upstreams.
+func validateUpstreamInjectProviders(
+	rc *authserver.RunConfig,
+	strategies map[string]*authtypes.BackendAuthStrategy,
+) error {
+	if rc == nil {
+		return nil
+	}
+	for name, strategy := range strategies {
+		if strategy.Type != authtypes.StrategyTypeUpstreamInject || strategy.UpstreamInject == nil {
+			continue
+		}
+		if !upstreamExists(rc, strategy.UpstreamInject.ProviderName) {
+			return fmt.Errorf(
+				"backend %q: upstream_inject providerName %q not found in auth server upstreams",
+				name, strategy.UpstreamInject.ProviderName,
+			)
+		}
+	}
+	return nil
+}
+
+// validateAuthServerIncomingAuthConsistency checks that the embedded auth server
+// and the incoming OIDC middleware agree on issuer and audience.
+//
+// This is a general consistency check that applies whenever both the embedded AS
+// and OIDC incoming auth are configured, regardless of which outgoing backend
+// strategies (upstream_inject, token_exchange, etc.) are in use.
+//
+// The embedded AS issues tokens that the OIDC incoming auth middleware validates.
+// If these two components disagree on issuer or audience, the middleware will
+// reject every token the AS issues, and no authenticated request will succeed.
+func validateAuthServerIncomingAuthConsistency(cfg *Config, rc *authserver.RunConfig) error {
+	if !hasAuthServerWithOIDCIncoming(cfg, rc) {
+		return nil
+	}
+	oidc := cfg.IncomingAuth.OIDC
+
+	// The OIDC middleware validates the "iss" claim against incomingAuth.oidc.issuer.
+	// If the AS uses a different issuer, every token it issues will fail validation.
+	if rc.Issuer != oidc.Issuer {
+		return fmt.Errorf(
+			"auth server issuer mismatch: auth server issuer %q != incomingAuth.oidc.issuer %q",
+			rc.Issuer, oidc.Issuer,
+		)
+	}
+
+	// The embedded AS uses the RFC 8707 resource parameter value as the
+	// token's aud claim (identity mapping). AllowedAudiences gates which resource
+	// values the AS accepts. If incomingAuth expects an audience not in that list,
+	// the AS will never issue a matching token.
+	// Note: oidc.Audience is required when incomingAuth.type is "oidc" (enforced
+	// by validateIncomingAuth), so the empty check is defensive for callers that
+	// invoke ValidateAuthServerIntegration independently.
+	if oidc.Audience != "" && !slices.Contains(rc.AllowedAudiences, oidc.Audience) {
+		return fmt.Errorf(
+			"incomingAuth.oidc.audience %q not in auth server's allowed audiences %v",
+			oidc.Audience, rc.AllowedAudiences,
+		)
+	}
+
+	return nil
+}
+
+// hasOIDCIncoming reports whether the config has OIDC incoming auth fully configured.
+func hasOIDCIncoming(cfg *Config) bool {
+	return cfg.IncomingAuth != nil &&
+		cfg.IncomingAuth.Type == IncomingAuthTypeOIDC &&
+		cfg.IncomingAuth.OIDC != nil
+}
+
+// validateAuthServerRequiresOIDC checks that when the auth server is configured,
+// incomingAuth is OIDC. The AS issues tokens that the OIDC middleware
+// validates; without OIDC incoming auth the entire OAuth flow is pointless.
+func validateAuthServerRequiresOIDC(cfg *Config) error {
+	if !hasOIDCIncoming(cfg) {
+		return fmt.Errorf("embedded auth server requires OIDC incoming auth")
+	}
+	return nil
+}
+
+// hasAuthServerWithOIDCIncoming returns true when both the auth server and
+// incoming OIDC auth are configured, enabling cross-cutting validation.
+func hasAuthServerWithOIDCIncoming(cfg *Config, rc *authserver.RunConfig) bool {
+	return rc != nil && hasOIDCIncoming(cfg)
+}
+
+// collectAllBackendStrategies returns all backend auth strategies from the config.
+func collectAllBackendStrategies(cfg *Config) map[string]*authtypes.BackendAuthStrategy {
+	result := make(map[string]*authtypes.BackendAuthStrategy)
+	if cfg.OutgoingAuth == nil {
+		return result
+	}
+	if cfg.OutgoingAuth.Default != nil {
+		result[defaultStrategyKey] = cfg.OutgoingAuth.Default
+	}
+	for name, strategy := range cfg.OutgoingAuth.Backends {
+		result[name] = strategy
+	}
+	return result
+}
+
+// hasStrategyType checks if any strategy in the map uses the given type.
+func hasStrategyType(strategies map[string]*authtypes.BackendAuthStrategy, strategyType string) bool {
+	for _, s := range strategies {
+		if s.Type == strategyType {
 			return true
 		}
 	}
 	return false
 }
 
-func containsStrategy(slice []vmcp.ConflictResolutionStrategy, item vmcp.ConflictResolutionStrategy) bool {
-	for _, s := range slice {
-		if s == item {
+// upstreamExists checks if a provider name exists in the RunConfig's upstreams.
+// Provider names and upstream names are resolved via authserver.ResolveUpstreamName
+// before comparison to ensure consistent empty→"default" normalization.
+func upstreamExists(rc *authserver.RunConfig, providerName string) bool {
+	if rc == nil {
+		return false
+	}
+	resolved := authserver.ResolveUpstreamName(providerName)
+	for i := range rc.Upstreams {
+		if authserver.ResolveUpstreamName(rc.Upstreams[i].Name) == resolved {
 			return true
 		}
 	}

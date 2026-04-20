@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package workloads contains high-level logic for managing the lifecycle of
@@ -508,12 +508,12 @@ func (d *DefaultManager) validateSecretParameters(ctx context.Context, runConfig
 			return fmt.Errorf("error determining secrets provider type: %w", err)
 		}
 
-		secretManager, err := secrets.CreateSecretProvider(providerType)
+		userProvider, err := secrets.CreateProvider(providerType, secrets.WithUserFacing())
 		if err != nil {
 			return fmt.Errorf("error instantiating secret manager: %w", err)
 		}
 
-		err = runConfig.ValidateSecrets(ctx, secretManager)
+		err = runConfig.ValidateSecrets(ctx, userProvider)
 		if err != nil {
 			return fmt.Errorf("error processing secrets: %w", err)
 		}
@@ -823,9 +823,9 @@ func (d *DefaultManager) isSupervisorProcessAlive(ctx context.Context, name stri
 	}
 
 	// Try to read the PID - if it exists, assume supervisor is running
-	_, err := d.statuses.GetWorkloadPID(ctx, name)
-	if err != nil {
-		// No PID found, supervisor is not running
+	pid, err := d.statuses.GetWorkloadPID(ctx, name)
+	if err != nil || pid <= 0 {
+		// No valid PID found, supervisor is not running
 		return false
 	}
 

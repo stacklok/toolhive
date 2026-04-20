@@ -204,8 +204,10 @@ func TestMetaPreservation_GetPrompt(t *testing.T) {
 	assert.Equal(t, "prompt-token-456", result.Meta["progressToken"])
 	assert.Equal(t, "prompt-trace-id", result.Meta["traceId"])
 
-	// Verify prompt content
-	assert.Contains(t, result.Messages, "Hello, World!")
+	// Verify prompt content preserves message structure
+	require.Len(t, result.Messages, 1)
+	assert.Equal(t, "user", result.Messages[0].Role)
+	assert.Equal(t, "Hello, World!", result.Messages[0].Content.Text)
 }
 
 // TestMetaPreservation_ReadResource documents the SDK limitation for resource _meta.
@@ -256,8 +258,9 @@ func TestMetaPreservation_ReadResource(t *testing.T) {
 	assert.Nil(t, result.Meta, "_meta cannot be included due to SDK limitation - handler returns []ResourceContents without _meta wrapper")
 
 	// Verify resource content works correctly
-	assert.Equal(t, "Test resource content", string(result.Contents))
-	assert.Equal(t, "text/plain", result.MimeType)
+	require.NotEmpty(t, result.Contents)
+	assert.Equal(t, "Test resource content", result.Contents[0].Text)
+	assert.Equal(t, "text/plain", result.Contents[0].MimeType)
 }
 
 // startTestMCPServer creates and starts a test MCP server with tools that return _meta.

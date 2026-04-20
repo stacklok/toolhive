@@ -102,6 +102,10 @@ func TestCreateMiddleware_WithoutOIDCConfig(t *testing.T) {
 	// Create mock runner
 	mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
 
+	// Expect GetUpstreamTokenReader and GetKeyProvider to be called (returns nil = no auth server)
+	mockRunner.EXPECT().GetUpstreamTokenReader().Return(nil)
+	mockRunner.EXPECT().GetKeyProvider().Return(nil)
+
 	// Expect AddMiddleware to be called with a middleware instance
 	mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Do(func(name string, mw types.Middleware) {
 		// Verify it's our auth middleware
@@ -209,6 +213,10 @@ func TestCreateMiddleware_EmptyParameters(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+
+	// Expect GetUpstreamTokenReader and GetKeyProvider to be called (returns nil = no auth server)
+	mockRunner.EXPECT().GetUpstreamTokenReader().Return(nil)
+	mockRunner.EXPECT().GetKeyProvider().Return(nil)
 
 	// Expect AddMiddleware to be called
 	mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any())

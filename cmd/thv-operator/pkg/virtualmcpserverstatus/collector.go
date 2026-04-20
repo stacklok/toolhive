@@ -19,14 +19,16 @@ import (
 // and applies them in a single batch update at the end.
 // It implements the StatusManager interface.
 type StatusCollector struct {
-	vmcp               *mcpv1alpha1.VirtualMCPServer
-	hasChanges         bool
-	phase              *mcpv1alpha1.VirtualMCPServerPhase
-	message            *string
-	url                *string
-	observedGeneration *int64
-	conditions         map[string]metav1.Condition
-	discoveredBackends []mcpv1alpha1.DiscoveredBackend
+	vmcp                *mcpv1alpha1.VirtualMCPServer
+	hasChanges          bool
+	phase               *mcpv1alpha1.VirtualMCPServerPhase
+	message             *string
+	url                 *string
+	observedGeneration  *int64
+	oidcConfigHash      *string
+	telemetryConfigHash *string
+	conditions          map[string]metav1.Condition
+	discoveredBackends  []mcpv1alpha1.DiscoveredBackend
 }
 
 // NewStatusManager creates a new StatusManager for the given VirtualMCPServer resource.
@@ -70,6 +72,23 @@ func (s *StatusCollector) SetURL(url string) {
 func (s *StatusCollector) SetObservedGeneration(generation int64) {
 	s.observedGeneration = &generation
 	s.hasChanges = true
+}
+
+// SetOIDCConfigHash sets the OIDC config hash to be updated.
+func (s *StatusCollector) SetOIDCConfigHash(hash string) {
+	s.oidcConfigHash = &hash
+	s.hasChanges = true
+}
+
+// SetTelemetryConfigHash sets the telemetry config hash to be updated.
+func (s *StatusCollector) SetTelemetryConfigHash(hash string) {
+	s.telemetryConfigHash = &hash
+	s.hasChanges = true
+}
+
+// SetTelemetryConfigRefValidatedCondition sets the TelemetryConfigRefValidated condition.
+func (s *StatusCollector) SetTelemetryConfigRefValidatedCondition(reason, message string, status metav1.ConditionStatus) {
+	s.SetCondition(mcpv1alpha1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated, reason, message, status)
 }
 
 // SetGroupRefValidatedCondition sets the GroupRef validation condition.
@@ -132,6 +151,11 @@ func (s *StatusCollector) SetEmbeddingServerReadyCondition(reason, message strin
 	s.SetCondition(mcpv1alpha1.ConditionTypeEmbeddingServerReady, reason, message, status)
 }
 
+// SetAuthServerConfigValidatedCondition sets the AuthServerConfigValidated condition.
+func (s *StatusCollector) SetAuthServerConfigValidatedCondition(reason, message string, status metav1.ConditionStatus) {
+	s.SetCondition(mcpv1alpha1.ConditionTypeAuthServerConfigValidated, reason, message, status)
+}
+
 // SetDiscoveredBackends sets the discovered backends list to be updated.
 func (s *StatusCollector) SetDiscoveredBackends(backends []mcpv1alpha1.DiscoveredBackend) {
 	s.discoveredBackends = backends
@@ -164,6 +188,16 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 			vmcpStatus.ObservedGeneration = *s.observedGeneration
 		}
 
+		// Apply OIDC config hash change
+		if s.oidcConfigHash != nil {
+			vmcpStatus.OIDCConfigHash = *s.oidcConfigHash
+		}
+
+		// Apply telemetry config hash change
+		if s.telemetryConfigHash != nil {
+			vmcpStatus.TelemetryConfigHash = *s.telemetryConfigHash
+		}
+
 		// Apply condition changes
 		for _, condition := range s.conditions {
 			if condition.Status == "" {
@@ -177,19 +211,23 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 		// Apply discovered backends change
 		if s.discoveredBackends != nil {
 			vmcpStatus.DiscoveredBackends = s.discoveredBackends
-			// BackendCount represents the number of ready backends
-			readyCount := 0
+			// BackendCount represents the number of routable backends (ready + unauthenticated).
+			// Unauthenticated backends are reachable but require per-request user auth.
+			var routableCount int32
 			for _, backend := range s.discoveredBackends {
-				if backend.Status == mcpv1alpha1.BackendStatusReady {
-					readyCount++
+				if backend.Status == mcpv1alpha1.BackendStatusReady ||
+					backend.Status == mcpv1alpha1.BackendStatusUnauthenticated {
+					routableCount++
 				}
 			}
-			vmcpStatus.BackendCount = readyCount
+			vmcpStatus.BackendCount = routableCount
 		}
 
 		ctxLogger.V(1).Info("Batched status update applied",
 			"phase", s.phase,
 			"message", s.message,
+			"oidcConfigHash", s.oidcConfigHash,
+			"telemetryConfigHash", s.telemetryConfigHash,
 			"conditionsCount", len(s.conditions),
 			"discoveredBackendsCount", len(s.discoveredBackends))
 		return true

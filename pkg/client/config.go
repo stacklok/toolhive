@@ -82,6 +82,10 @@ const (
 	MistralVibe ClientApp = "mistral-vibe"
 	// Codex represents the OpenAI Codex CLI.
 	Codex ClientApp = "codex"
+	// KimiCli represents the Kimi Code CLI.
+	KimiCli ClientApp = "kimi-cli"
+	// Factory represents the Factory.ai Droid CLI.
+	Factory ClientApp = "factory"
 )
 
 // Extension is extension of the client config file.
@@ -214,6 +218,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".roo", "skills"},
+		SkillsProjectPath: []string{".roo", "skills"},
 	},
 	{
 		ClientType:   Cline,
@@ -240,6 +247,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".cline", "skills"},
+		SkillsProjectPath: []string{".cline", "skills"},
 	},
 	{
 		ClientType:   VSCodeInsider,
@@ -266,6 +276,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".copilot", "skills"},
+		SkillsProjectPath: []string{".github", "skills"},
 	},
 	{
 		ClientType:   VSCode,
@@ -292,6 +305,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".copilot", "skills"},
+		SkillsProjectPath: []string{".github", "skills"},
 	},
 	{
 		ClientType:           Cursor,
@@ -313,6 +329,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".cursor", "skills"},
+		SkillsProjectPath: []string{".cursor", "skills"},
 	},
 	{
 		ClientType:           ClaudeCode,
@@ -354,6 +373,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "serverUrl",
 			types.TransportTypeStreamableHTTP: "serverUrl",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".codeium", "windsurf", "skills"},
+		SkillsProjectPath: []string{".windsurf", "skills"},
 	},
 	{
 		ClientType:           WindsurfJetBrains,
@@ -397,6 +419,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", "skills"},
+		SkillsProjectPath: []string{".agents", "skills"},
 	},
 	{
 		ClientType:           AmpVSCode,
@@ -543,6 +568,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			"timeout":     60,
 			"description": "",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", "skills"},
+		SkillsProjectPath: []string{".agents", "skills"},
 	},
 	{
 		ClientType:           Trae,
@@ -567,6 +595,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", "skills"},
+		SkillsProjectPath: []string{".agents", "skills"},
 	},
 	{
 		ClientType:           Continue,
@@ -634,6 +665,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "url",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".kiro", "skills"},
+		SkillsProjectPath: []string{".kiro", "skills"},
 	},
 	{
 		ClientType:                    Antigravity,
@@ -648,6 +682,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "serverUrl",
 			types.TransportTypeStreamableHTTP: "serverUrl",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", "skills"},
+		SkillsProjectPath: []string{".agents", "skills"},
 	},
 	{
 		ClientType:           Zed,
@@ -684,6 +721,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            "url",
 			types.TransportTypeStreamableHTTP: "httpUrl",
 		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", "skills"},
+		SkillsProjectPath: []string{".agents", "skills"},
 	},
 	{
 		ClientType:   VSCodeServer,
@@ -719,7 +759,10 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeStreamableHTTP: "url",
 		},
 		// TOML configuration: uses array-of-tables format [[mcp_servers]]
-		TOMLStorageType: TOMLStorageTypeArray,
+		TOMLStorageType:   TOMLStorageTypeArray,
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".vibe", "skills"},
+		SkillsProjectPath: []string{".vibe", "skills"},
 	},
 	{
 		ClientType:           Codex,
@@ -740,6 +783,46 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".agents", "skills"},
 		SkillsProjectPath: []string{".agents", "skills"},
+	},
+	{
+		ClientType:           KimiCli,
+		Description:          "Kimi Code CLI",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".kimi"},
+		Extension:            JSON,
+		// Kimi CLI does not use a transport type field in the config file
+		IsTransportTypeFieldSupported: false,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".kimi", "skills"},
+		SkillsProjectPath: []string{".kimi", "skills"},
+	},
+	{
+		ClientType:           Factory,
+		Description:          "Factory.ai Droid CLI",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".factory"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "http",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "url",
+			types.TransportTypeSSE:            "url",
+			types.TransportTypeStreamableHTTP: "url",
+		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".factory", "skills"},
+		SkillsProjectPath: []string{".factory", "skills"},
 	},
 }
 

@@ -160,3 +160,158 @@ func TestNewDecoratingFactory_HappyPath_ReturnsFinalSession(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, finalSess, got)
 }
+
+// ---------------------------------------------------------------------------
+// RestoreSession — mirrors the MakeSessionWithID tests above
+// ---------------------------------------------------------------------------
+
+func TestRestoreSession_BaseError_Propagated(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	base := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+	baseErr := errors.New("restore failed")
+	base.EXPECT().
+		RestoreSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil, baseErr)
+
+	factory := session.NewDecoratingFactory(base,
+		func(_ context.Context, s session.MultiSession) (session.MultiSession, error) { return s, nil },
+	)
+
+	_, err := factory.RestoreSession(context.Background(), "id", nil, nil)
+	require.ErrorIs(t, err, baseErr)
+}
+
+func TestRestoreSession_DecoratorsAppliedInOrder(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	sess := sessionmocks.NewMockMultiSession(ctrl)
+	base := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+	base.EXPECT().
+		RestoreSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(sess, nil)
+
+	var order []int
+	dec1 := func(_ context.Context, s session.MultiSession) (session.MultiSession, error) {
+		order = append(order, 1)
+		return s, nil
+	}
+	dec2 := func(_ context.Context, s session.MultiSession) (session.MultiSession, error) {
+		order = append(order, 2)
+		return s, nil
+	}
+
+	factory := session.NewDecoratingFactory(base, dec1, dec2)
+	_, err := factory.RestoreSession(context.Background(), "id", nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []int{1, 2}, order)
+}
+
+func TestRestoreSession_DecoratorError_ClosesSession(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	sess := sessionmocks.NewMockMultiSession(ctrl)
+	sess.EXPECT().Close().Return(nil)
+
+	base := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+	base.EXPECT().
+		RestoreSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(sess, nil)
+
+	decErr := errors.New("decorator boom")
+	factory := session.NewDecoratingFactory(base, func(_ context.Context, _ session.MultiSession) (session.MultiSession, error) {
+		return nil, decErr
+	})
+
+	_, err := factory.RestoreSession(context.Background(), "id", nil, nil)
+	require.ErrorIs(t, err, decErr)
+}
+
+func TestRestoreSession_SecondDecoratorError_ClosesCurrentSession(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	sess := sessionmocks.NewMockMultiSession(ctrl)
+	wrappedSess := sessionmocks.NewMockMultiSession(ctrl)
+	// Only the session that is current at the time of failure should be closed.
+	wrappedSess.EXPECT().Close().Return(nil)
+
+	base := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+	base.EXPECT().
+		RestoreSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(sess, nil)
+
+	decErr := errors.New("second decorator boom")
+	dec1 := func(_ context.Context, _ session.MultiSession) (session.MultiSession, error) { return wrappedSess, nil }
+	dec2 := func(_ context.Context, _ session.MultiSession) (session.MultiSession, error) { return nil, decErr }
+
+	factory := session.NewDecoratingFactory(base, dec1, dec2)
+	_, err := factory.RestoreSession(context.Background(), "id", nil, nil)
+	require.ErrorIs(t, err, decErr)
+}
+
+func TestRestoreSession_NilReturnWithNoError_ClosesSession(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	sess := sessionmocks.NewMockMultiSession(ctrl)
+	sess.EXPECT().Close().Return(nil)
+
+	base := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+	base.EXPECT().
+		RestoreSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(sess, nil)
+
+	factory := session.NewDecoratingFactory(base, func(_ context.Context, _ session.MultiSession) (session.MultiSession, error) {
+		return nil, nil // buggy decorator
+	})
+
+	_, err := factory.RestoreSession(context.Background(), "id", nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nil session")
+}
+
+func TestRestoreSession_CloseErrorDoesNotSuppressOriginalError(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	sess := sessionmocks.NewMockMultiSession(ctrl)
+	sess.EXPECT().Close().Return(errors.New("close failed"))
+
+	base := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+	base.EXPECT().
+		RestoreSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(sess, nil)
+
+	decErr := errors.New("decorator error")
+	factory := session.NewDecoratingFactory(base, func(_ context.Context, _ session.MultiSession) (session.MultiSession, error) {
+		return nil, decErr
+	})
+
+	_, err := factory.RestoreSession(context.Background(), "id", nil, nil)
+	require.ErrorIs(t, err, decErr)
+}
+
+func TestRestoreSession_HappyPath_ReturnsFinalSession(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	sess := sessionmocks.NewMockMultiSession(ctrl)
+	finalSess := sessionmocks.NewMockMultiSession(ctrl)
+
+	base := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+	base.EXPECT().
+		RestoreSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(sess, nil)
+
+	factory := session.NewDecoratingFactory(base,
+		func(_ context.Context, _ session.MultiSession) (session.MultiSession, error) { return finalSess, nil },
+	)
+
+	got, err := factory.RestoreSession(context.Background(), "id", nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, finalSess, got)
+}

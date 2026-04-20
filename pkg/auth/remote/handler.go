@@ -147,16 +147,17 @@ func (h *Handler) performOAuthFlow(
 // buildOAuthFlowConfig creates the OAuth flow configuration
 func (h *Handler) buildOAuthFlowConfig(scopes []string, authServerInfo *discovery.AuthServerInfo) *discovery.OAuthFlowConfig {
 	flowConfig := &discovery.OAuthFlowConfig{
-		ClientID:     h.config.ClientID,
-		ClientSecret: h.config.ClientSecret,
-		AuthorizeURL: h.config.AuthorizeURL,
-		TokenURL:     h.config.TokenURL,
-		Scopes:       scopes,
-		CallbackPort: h.config.CallbackPort,
-		Timeout:      h.config.Timeout,
-		SkipBrowser:  h.config.SkipBrowser,
-		Resource:     h.config.Resource,
-		OAuthParams:  h.config.OAuthParams,
+		ClientID:       h.config.ClientID,
+		ClientSecret:   h.config.ClientSecret,
+		AuthorizeURL:   h.config.AuthorizeURL,
+		TokenURL:       h.config.TokenURL,
+		Scopes:         scopes,
+		CallbackPort:   h.config.CallbackPort,
+		Timeout:        h.config.Timeout,
+		SkipBrowser:    h.config.SkipBrowser,
+		Resource:       h.config.Resource,
+		OAuthParams:    h.config.OAuthParams,
+		ScopeParamName: h.config.ScopeParamName,
 	}
 
 	// If we have discovered endpoints from the authorization server metadata,
@@ -376,7 +377,11 @@ func (h *Handler) discoverIssuerAndScopes(
 
 	// Priority 3: Fetch from resource metadata (RFC 9728)
 	if authInfo.ResourceMetadata != "" {
-		return h.tryDiscoverFromResourceMetadata(ctx, authInfo.ResourceMetadata)
+		issuer, scopes, authServerInfo, err := h.tryDiscoverFromResourceMetadata(ctx, authInfo.ResourceMetadata)
+		if err == nil {
+			return issuer, scopes, authServerInfo, nil
+		}
+		slog.Debug("Resource metadata discovery failed, falling through to well-known discovery", "error", err)
 	}
 
 	// Priority 4: Try to discover actual issuer from the server's well-known endpoint

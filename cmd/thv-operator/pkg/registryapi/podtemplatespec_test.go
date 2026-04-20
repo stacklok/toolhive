@@ -4,7 +4,6 @@
 package registryapi
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,7 +11,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
 
@@ -217,88 +215,6 @@ func TestRegistryMountOptions(t *testing.T) {
 				assert.Equal(t, config.RegistryServerConfigFilePath, pts.Spec.Containers[0].VolumeMounts[0].MountPath)
 			},
 		},
-		// WithRegistryStorageMount tests
-		{
-			name: "WithRegistryStorageMount adds emptyDir volume and volume mount",
-			options: func() []PodTemplateSpecOption {
-				return []PodTemplateSpecOption{
-					WithContainer(corev1.Container{Name: "registry-api"}),
-					WithRegistryStorageMount("registry-api"),
-				}
-			},
-			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
-				t.Helper()
-				require.Len(t, pts.Spec.Volumes, 1)
-				assert.Equal(t, "storage-data", pts.Spec.Volumes[0].Name)
-				assert.NotNil(t, pts.Spec.Volumes[0].EmptyDir)
-
-				require.Len(t, pts.Spec.Containers, 1)
-				require.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
-				assert.Equal(t, "storage-data", pts.Spec.Containers[0].VolumeMounts[0].Name)
-				assert.Equal(t, "/data", pts.Spec.Containers[0].VolumeMounts[0].MountPath)
-			},
-		},
-		// WithRegistrySourceMounts tests
-		{
-			name: "WithRegistrySourceMounts adds mounts for registries with ConfigMapRef",
-			options: func() []PodTemplateSpecOption {
-				registries := []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name: "reg1",
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "configmap1",
-							},
-							Key: "data.json",
-						},
-					},
-					{
-						Name: "reg2",
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "configmap2",
-							},
-							Key: "registry.json",
-						},
-					},
-				}
-				return []PodTemplateSpecOption{
-					WithContainer(corev1.Container{Name: "registry-api"}),
-					WithRegistrySourceMounts("registry-api", registries),
-				}
-			},
-			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
-				t.Helper()
-				assert.Len(t, pts.Spec.Volumes, 2)
-				require.Len(t, pts.Spec.Containers, 1)
-				assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 2)
-				assert.Equal(t, "registry-data-source-reg1", pts.Spec.Containers[0].VolumeMounts[0].Name)
-				assert.Equal(t, "registry-data-source-reg2", pts.Spec.Containers[0].VolumeMounts[1].Name)
-				assert.Equal(t, filepath.Join(config.RegistryJSONFilePath, "reg1"), pts.Spec.Containers[0].VolumeMounts[0].MountPath)
-				assert.Equal(t, filepath.Join(config.RegistryJSONFilePath, "reg2"), pts.Spec.Containers[0].VolumeMounts[1].MountPath)
-			},
-		},
-		{
-			name: "WithRegistrySourceMounts skips registries without ConfigMapRef",
-			options: func() []PodTemplateSpecOption {
-				registries := []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:         "reg1",
-						ConfigMapRef: nil,
-					},
-				}
-				return []PodTemplateSpecOption{
-					WithContainer(corev1.Container{Name: "registry-api"}),
-					WithRegistrySourceMounts("registry-api", registries),
-				}
-			},
-			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
-				t.Helper()
-				assert.Empty(t, pts.Spec.Volumes)
-				require.Len(t, pts.Spec.Containers, 1)
-				assert.Empty(t, pts.Spec.Containers[0].VolumeMounts)
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -312,83 +228,6 @@ func TestRegistryMountOptions(t *testing.T) {
 		})
 	}
 
-	// PVC source tests
-	t.Run("adds PVC volume and mount", func(t *testing.T) {
-		t.Parallel()
-
-		options := []PodTemplateSpecOption{
-			WithContainer(corev1.Container{Name: "registry-api"}),
-			WithRegistrySourceMounts("registry-api", []mcpv1alpha1.MCPRegistryConfig{
-				{
-					Name:   "pvc-source",
-					Format: mcpv1alpha1.RegistryFormatToolHive,
-					PVCRef: &mcpv1alpha1.PVCSource{
-						ClaimName: "registry-data-pvc",
-						Path:      "data/registry.json",
-					},
-				},
-			}),
-		}
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(options...).Build()
-
-		// Verify PVC volume was added
-		require.Len(t, pts.Spec.Volumes, 1)
-		volume := pts.Spec.Volumes[0]
-		assert.Equal(t, "registry-data-source-pvc-source", volume.Name)
-		require.NotNil(t, volume.PersistentVolumeClaim)
-		assert.Equal(t, "registry-data-pvc", volume.PersistentVolumeClaim.ClaimName)
-		assert.True(t, volume.PersistentVolumeClaim.ReadOnly)
-
-		// Verify volume mount at registry name subdirectory
-		require.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
-		volumeMount := pts.Spec.Containers[0].VolumeMounts[0]
-		assert.Equal(t, "registry-data-source-pvc-source", volumeMount.Name)
-		assert.Equal(t, "/config/registry/pvc-source", volumeMount.MountPath)
-		assert.True(t, volumeMount.ReadOnly)
-	})
-
-	t.Run("allows multiple registries to share same PVC at different mount paths", func(t *testing.T) {
-		t.Parallel()
-
-		options := []PodTemplateSpecOption{
-			WithContainer(corev1.Container{Name: "registry-api"}),
-			WithRegistrySourceMounts("registry-api", []mcpv1alpha1.MCPRegistryConfig{
-				{
-					Name:   "production",
-					Format: mcpv1alpha1.RegistryFormatToolHive,
-					PVCRef: &mcpv1alpha1.PVCSource{
-						ClaimName: "shared-pvc",
-						Path:      "production/registry.json",
-					},
-				},
-				{
-					Name:   "development",
-					Format: mcpv1alpha1.RegistryFormatToolHive,
-					PVCRef: &mcpv1alpha1.PVCSource{
-						ClaimName: "shared-pvc",
-						Path:      "development/registry.json",
-					},
-				},
-			}),
-		}
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(options...).Build()
-
-		// Verify TWO PVC volumes (one per registry, even though same PVC)
-		assert.Len(t, pts.Spec.Volumes, 2)
-		assert.Equal(t, "registry-data-source-production", pts.Spec.Volumes[0].Name)
-		assert.Equal(t, "shared-pvc", pts.Spec.Volumes[0].PersistentVolumeClaim.ClaimName)
-		assert.Equal(t, "registry-data-source-development", pts.Spec.Volumes[1].Name)
-		assert.Equal(t, "shared-pvc", pts.Spec.Volumes[1].PersistentVolumeClaim.ClaimName)
-
-		// Verify TWO volume mounts at different paths (per registry name)
-		assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 2)
-		assert.Equal(t, "/config/registry/production", pts.Spec.Containers[0].VolumeMounts[0].MountPath)
-		assert.Equal(t, "/config/registry/development", pts.Spec.Containers[0].VolumeMounts[1].MountPath)
-	})
 }
 
 func TestBuildRegistryAPIContainer(t *testing.T) {
@@ -396,7 +235,7 @@ func TestBuildRegistryAPIContainer(t *testing.T) {
 
 	container := BuildRegistryAPIContainer("my-image:v1.0")
 
-	assert.Equal(t, registryAPIContainerName, container.Name)
+	assert.Equal(t, RegistryAPIContainerName, container.Name)
 	assert.Equal(t, "my-image:v1.0", container.Image)
 	assert.Equal(t, []string{ServeCommand}, container.Args)
 
@@ -888,390 +727,191 @@ func TestNewPodTemplateSpecBuilderFrom_MergeOnBuild(t *testing.T) {
 	})
 }
 
-func TestWithPGPassMount(t *testing.T) {
+func TestWithPGPassSecretRefMount(t *testing.T) {
 	t.Parallel()
 
-	t.Run("adds secret volume for pgpass", func(t *testing.T) {
-		t.Parallel()
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithContainer(corev1.Container{Name: "registry-api"}),
-			WithPGPassMount("registry-api", "my-pgpass-secret"),
-		).Build()
-
-		// Find the secret volume
-		var secretVolume *corev1.Volume
-		for i := range pts.Spec.Volumes {
-			if pts.Spec.Volumes[i].Name == "pgpass-secret" {
-				secretVolume = &pts.Spec.Volumes[i]
-				break
-			}
-		}
-
-		require.NotNil(t, secretVolume, "pgpass-secret volume should exist")
-		require.NotNil(t, secretVolume.Secret)
-		assert.Equal(t, "my-pgpass-secret", secretVolume.Secret.SecretName)
-		require.Len(t, secretVolume.Secret.Items, 1)
-		assert.Equal(t, ".pgpass", secretVolume.Secret.Items[0].Key)
-		assert.Equal(t, ".pgpass", secretVolume.Secret.Items[0].Path)
-	})
-
-	t.Run("adds emptyDir volume for prepared pgpass", func(t *testing.T) {
-		t.Parallel()
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithContainer(corev1.Container{Name: "registry-api"}),
-			WithPGPassMount("registry-api", "my-pgpass-secret"),
-		).Build()
-
-		// Find the emptyDir volume
-		var emptyDirVolume *corev1.Volume
-		for i := range pts.Spec.Volumes {
-			if pts.Spec.Volumes[i].Name == "pgpass" {
-				emptyDirVolume = &pts.Spec.Volumes[i]
-				break
-			}
-		}
-
-		require.NotNil(t, emptyDirVolume, "pgpass emptyDir volume should exist")
-		require.NotNil(t, emptyDirVolume.EmptyDir)
-	})
-
-	t.Run("adds init container with correct command", func(t *testing.T) {
-		t.Parallel()
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithContainer(corev1.Container{Name: "registry-api"}),
-			WithPGPassMount("registry-api", "my-pgpass-secret"),
-		).Build()
-
-		require.Len(t, pts.Spec.InitContainers, 1)
-		initContainer := pts.Spec.InitContainers[0]
-
-		assert.Equal(t, "setup-pgpass", initContainer.Name)
-		assert.Equal(t, "cgr.dev/chainguard/busybox:latest", initContainer.Image)
-
-		// Verify command structure
-		require.Len(t, initContainer.Command, 3)
-		assert.Equal(t, "sh", initContainer.Command[0])
-		assert.Equal(t, "-c", initContainer.Command[1])
-		// Command should copy file and chmod 600 (no chown needed - Chainguard image runs as 65532)
-		assert.Contains(t, initContainer.Command[2], "cp /secret/.pgpass /pgpass/.pgpass")
-		assert.Contains(t, initContainer.Command[2], "chmod 0600 /pgpass/.pgpass")
-	})
-
-	t.Run("init container has correct volume mounts", func(t *testing.T) {
-		t.Parallel()
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithContainer(corev1.Container{Name: "registry-api"}),
-			WithPGPassMount("registry-api", "my-pgpass-secret"),
-		).Build()
-
-		require.Len(t, pts.Spec.InitContainers, 1)
-		initContainer := pts.Spec.InitContainers[0]
-
-		require.Len(t, initContainer.VolumeMounts, 2)
-
-		// Find secret mount
-		var secretMount, emptyDirMount *corev1.VolumeMount
-		for i := range initContainer.VolumeMounts {
-			switch initContainer.VolumeMounts[i].Name {
-			case "pgpass-secret":
-				secretMount = &initContainer.VolumeMounts[i]
-			case "pgpass":
-				emptyDirMount = &initContainer.VolumeMounts[i]
-			}
-		}
-
-		require.NotNil(t, secretMount, "secret volume mount should exist")
-		assert.Equal(t, "/secret", secretMount.MountPath)
-		assert.True(t, secretMount.ReadOnly)
-
-		require.NotNil(t, emptyDirMount, "emptyDir volume mount should exist")
-		assert.Equal(t, "/pgpass", emptyDirMount.MountPath)
-		assert.False(t, emptyDirMount.ReadOnly)
-	})
-
-	t.Run("adds volume mount to app container with subPath", func(t *testing.T) {
-		t.Parallel()
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithContainer(corev1.Container{Name: "registry-api"}),
-			WithPGPassMount("registry-api", "my-pgpass-secret"),
-		).Build()
-
-		require.Len(t, pts.Spec.Containers, 1)
-		container := pts.Spec.Containers[0]
-
-		require.Len(t, container.VolumeMounts, 1)
-		mount := container.VolumeMounts[0]
-
-		assert.Equal(t, "pgpass", mount.Name)
-		assert.Equal(t, "/home/appuser/.pgpass", mount.MountPath)
-		assert.Equal(t, ".pgpass", mount.SubPath)
-		assert.True(t, mount.ReadOnly)
-	})
-
-	t.Run("adds PGPASSFILE environment variable", func(t *testing.T) {
-		t.Parallel()
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithContainer(corev1.Container{Name: "registry-api"}),
-			WithPGPassMount("registry-api", "my-pgpass-secret"),
-		).Build()
-
-		require.Len(t, pts.Spec.Containers, 1)
-		container := pts.Spec.Containers[0]
-
-		var pgpassfileEnv *corev1.EnvVar
-		for i := range container.Env {
-			if container.Env[i].Name == "PGPASSFILE" {
-				pgpassfileEnv = &container.Env[i]
-				break
-			}
-		}
-
-		require.NotNil(t, pgpassfileEnv, "PGPASSFILE env var should exist")
-		assert.Equal(t, "/home/appuser/.pgpass", pgpassfileEnv.Value)
-	})
-
-	t.Run("does nothing if container not found", func(t *testing.T) {
-		t.Parallel()
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithPGPassMount("nonexistent-container", "my-pgpass-secret"),
-		).Build()
-
-		// Volumes and init container are still added
-		assert.Len(t, pts.Spec.Volumes, 2)
-		assert.Len(t, pts.Spec.InitContainers, 1)
-		// But no app containers
-		assert.Empty(t, pts.Spec.Containers)
-	})
-
-	t.Run("volumes and env vars are idempotent when called multiple times", func(t *testing.T) {
-		t.Parallel()
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithContainer(corev1.Container{Name: "registry-api"}),
-			WithPGPassMount("registry-api", "my-pgpass-secret"),
-			WithPGPassMount("registry-api", "my-pgpass-secret"),
-		).Build()
-
-		// Volumes are idempotent - should only have 2 volumes (pgpass-secret and pgpass)
-		assert.Len(t, pts.Spec.Volumes, 2)
-		// Volume mounts are idempotent - should only have 1 volume mount in app container
-		require.Len(t, pts.Spec.Containers, 1)
-		assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
-		// Env vars are idempotent - should only have 1 PGPASSFILE env var
-		pgpassCount := 0
-		for _, env := range pts.Spec.Containers[0].Env {
-			if env.Name == "PGPASSFILE" {
-				pgpassCount++
-			}
-		}
-		assert.Equal(t, 1, pgpassCount)
-		// Init containers are idempotent - should only have 1 init container
-		assert.Len(t, pts.Spec.InitContainers, 1)
-	})
-}
-
-func TestWithGitAuthMount(t *testing.T) {
-	t.Parallel()
-
-	// Test constants
-	const (
-		testSecretName        = "git-credentials"
-		testVolumeName        = "git-auth-git-credentials"
-		testContainerName     = "registry-api"
-		testExpectedMountPath = "/secrets/git-credentials"
-	)
-
-	t.Run("adds secret volume for git auth", func(t *testing.T) {
-		t.Parallel()
-
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: testSecretName,
+	tests := []struct {
+		name       string
+		secretRef  corev1.SecretKeySelector
+		assertions func(t *testing.T, pts corev1.PodTemplateSpec)
+	}{
+		{
+			name: "creates pgpass-secret volume from the referenced secret",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+				Key:                  ".pgpass",
 			},
-			Key: "token",
-		}
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithContainer(corev1.Container{Name: testContainerName}),
-			WithGitAuthMount(testContainerName, secretRef),
-		).Build()
-
-		// Find the secret volume
-		var secretVolume *corev1.Volume
-		for i := range pts.Spec.Volumes {
-			if pts.Spec.Volumes[i].Name == testVolumeName {
-				secretVolume = &pts.Spec.Volumes[i]
-				break
-			}
-		}
-
-		require.NotNil(t, secretVolume, "git-auth volume should exist")
-		require.NotNil(t, secretVolume.Secret)
-		assert.Equal(t, testSecretName, secretVolume.Secret.SecretName)
-		require.Len(t, secretVolume.Secret.Items, 1)
-		assert.Equal(t, "token", secretVolume.Secret.Items[0].Key)
-		assert.Equal(t, "token", secretVolume.Secret.Items[0].Path)
-	})
-
-	t.Run("adds volume mount at correct path", func(t *testing.T) {
-		t.Parallel()
-
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: testSecretName,
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				var secretVolume *corev1.Volume
+				for i := range pts.Spec.Volumes {
+					if pts.Spec.Volumes[i].Name == PGPassSecretVolumeName {
+						secretVolume = &pts.Spec.Volumes[i]
+						break
+					}
+				}
+				require.NotNil(t, secretVolume, "pgpass-secret volume must exist")
+				require.NotNil(t, secretVolume.Secret)
+				assert.Equal(t, "my-pgpass", secretVolume.Secret.SecretName)
 			},
-			Key: "token",
-		}
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithContainer(corev1.Container{Name: testContainerName}),
-			WithGitAuthMount(testContainerName, secretRef),
-		).Build()
-
-		require.Len(t, pts.Spec.Containers, 1)
-		container := pts.Spec.Containers[0]
-
-		// Find the volume mount
-		var volumeMount *corev1.VolumeMount
-		for i := range container.VolumeMounts {
-			if container.VolumeMounts[i].Name == testVolumeName {
-				volumeMount = &container.VolumeMounts[i]
-				break
-			}
-		}
-
-		require.NotNil(t, volumeMount, "git-auth volume mount should exist")
-		assert.Equal(t, testExpectedMountPath, volumeMount.MountPath)
-		assert.True(t, volumeMount.ReadOnly)
-	})
-
-	t.Run("does nothing when key is empty", func(t *testing.T) {
-		t.Parallel()
-
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: testSecretName,
+		},
+		{
+			name: "creates pgpass emptyDir volume",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+				Key:                  ".pgpass",
 			},
-			// Key is empty - should be skipped (key is required)
-		}
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithContainer(corev1.Container{Name: testContainerName}),
-			WithGitAuthMount(testContainerName, secretRef),
-		).Build()
-
-		// No volume should be added when key is empty
-		for _, vol := range pts.Spec.Volumes {
-			assert.NotContains(t, vol.Name, "git-auth", "no git-auth volume should be added when key is empty")
-		}
-	})
-
-	t.Run("does nothing when secret name is empty", func(t *testing.T) {
-		t.Parallel()
-
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: "", // Empty name should be skipped
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				var emptyDirVolume *corev1.Volume
+				for i := range pts.Spec.Volumes {
+					if pts.Spec.Volumes[i].Name == PGPassVolumeName {
+						emptyDirVolume = &pts.Spec.Volumes[i]
+						break
+					}
+				}
+				require.NotNil(t, emptyDirVolume, "pgpass emptyDir volume must exist")
+				require.NotNil(t, emptyDirVolume.EmptyDir)
 			},
-			Key: "token",
-		}
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithContainer(corev1.Container{Name: testContainerName}),
-			WithGitAuthMount(testContainerName, secretRef),
-		).Build()
-
-		// No volumes should be added
-		assert.Empty(t, pts.Spec.Volumes)
-		// No volume mounts on container
-		require.Len(t, pts.Spec.Containers, 1)
-		assert.Empty(t, pts.Spec.Containers[0].VolumeMounts)
-	})
-
-	t.Run("supports multiple git auth secrets", func(t *testing.T) {
-		t.Parallel()
-
-		const (
-			secretName1 = "git-credentials-1"
-			secretName2 = "git-credentials-2"
-		)
-
-		secretRef1 := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: secretName1,
+		},
+		{
+			name: "creates setup-pgpass init container with correct command image and security context",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+				Key:                  ".pgpass",
 			},
-			Key: "token",
-		}
-		secretRef2 := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: secretName2,
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				require.Len(t, pts.Spec.InitContainers, 1)
+				ic := pts.Spec.InitContainers[0]
+
+				assert.Equal(t, PGPassInitContainerName, ic.Name)
+				assert.Equal(t, "cgr.dev/chainguard/busybox:latest", ic.Image)
+				require.Len(t, ic.Command, 3)
+				assert.Equal(t, "sh", ic.Command[0])
+				assert.Equal(t, "-c", ic.Command[1])
+				assert.Contains(t, ic.Command[2], "cp /secret/.pgpass /pgpass/.pgpass")
+				assert.Contains(t, ic.Command[2], "chmod 0600 /pgpass/.pgpass")
+
+				// Security context
+				require.NotNil(t, ic.SecurityContext)
+				assert.True(t, *ic.SecurityContext.RunAsNonRoot)
+				assert.False(t, *ic.SecurityContext.AllowPrivilegeEscalation)
+				assert.True(t, *ic.SecurityContext.ReadOnlyRootFilesystem)
+				require.NotNil(t, ic.SecurityContext.Capabilities)
+				assert.Contains(t, ic.SecurityContext.Capabilities.Drop, corev1.Capability("ALL"))
 			},
-			Key: "password",
-		}
-
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithContainer(corev1.Container{Name: testContainerName}),
-			WithGitAuthMount(testContainerName, secretRef1),
-			WithGitAuthMount(testContainerName, secretRef2),
-		).Build()
-
-		// Should have 2 volumes
-		assert.Len(t, pts.Spec.Volumes, 2)
-
-		// Should have 2 volume mounts
-		require.Len(t, pts.Spec.Containers, 1)
-		assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 2)
-
-		// Verify mount paths
-		mountPaths := make(map[string]bool)
-		for _, mount := range pts.Spec.Containers[0].VolumeMounts {
-			mountPaths[mount.MountPath] = true
-		}
-		assert.True(t, mountPaths["/secrets/"+secretName1])
-		assert.True(t, mountPaths["/secrets/"+secretName2])
-	})
-
-	t.Run("volumes are idempotent when called multiple times with same secret", func(t *testing.T) {
-		t.Parallel()
-
-		secretRef := corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: testSecretName,
+		},
+		{
+			name: "creates volume mount on app container at pgpass path with subPath",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+				Key:                  ".pgpass",
 			},
-			Key: "token",
-		}
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				require.Len(t, pts.Spec.Containers, 1)
+				container := pts.Spec.Containers[0]
+				require.Len(t, container.VolumeMounts, 1)
 
-		builder := NewPodTemplateSpecBuilderFrom(nil)
-		pts := builder.Apply(
-			WithContainer(corev1.Container{Name: testContainerName}),
-			WithGitAuthMount(testContainerName, secretRef),
-			WithGitAuthMount(testContainerName, secretRef),
-		).Build()
+				mount := container.VolumeMounts[0]
+				assert.Equal(t, PGPassVolumeName, mount.Name)
+				assert.Equal(t, PGPassAppUserMountPath, mount.MountPath)
+				assert.Equal(t, ".pgpass", mount.SubPath)
+				assert.True(t, mount.ReadOnly)
+			},
+		},
+		{
+			name: "creates PGPASSFILE env var",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+				Key:                  ".pgpass",
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				require.Len(t, pts.Spec.Containers, 1)
+				container := pts.Spec.Containers[0]
 
-		// Volumes are idempotent - should only have 1 volume
-		assert.Len(t, pts.Spec.Volumes, 1)
-		// Volume mounts are idempotent - should only have 1 volume mount
-		require.Len(t, pts.Spec.Containers, 1)
-		assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
-	})
+				var pgpassEnv *corev1.EnvVar
+				for i := range container.Env {
+					if container.Env[i].Name == pgpassEnvVar {
+						pgpassEnv = &container.Env[i]
+						break
+					}
+				}
+				require.NotNil(t, pgpassEnv, "PGPASSFILE env var must exist")
+				assert.Equal(t, PGPassAppUserMountPath, pgpassEnv.Value)
+			},
+		},
+		{
+			name: "no-op when secretRef name is empty",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: ""},
+				Key:                  ".pgpass",
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				assert.Empty(t, pts.Spec.Volumes, "no volumes should be added when secret name is empty")
+				assert.Empty(t, pts.Spec.InitContainers, "no init containers should be added when secret name is empty")
+				require.Len(t, pts.Spec.Containers, 1)
+				assert.Empty(t, pts.Spec.Containers[0].VolumeMounts, "no volume mounts should be added when secret name is empty")
+				assert.Empty(t, pts.Spec.Containers[0].Env, "no env vars should be added when secret name is empty")
+			},
+		},
+		{
+			name: "no-op when secretRef key is empty",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "my-pgpass"},
+				Key:                  "",
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				assert.Empty(t, pts.Spec.Volumes, "no volumes should be added when key is empty")
+				assert.Empty(t, pts.Spec.InitContainers, "no init containers should be added when key is empty")
+				require.Len(t, pts.Spec.Containers, 1)
+				assert.Empty(t, pts.Spec.Containers[0].VolumeMounts, "no volume mounts should be added when key is empty")
+				assert.Empty(t, pts.Spec.Containers[0].Env, "no env vars should be added when key is empty")
+			},
+		},
+		{
+			name: "uses the correct key from secretRef not hardcoded",
+			secretRef: corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "custom-secret"},
+				Key:                  "custom-key",
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				// Find the pgpass-secret volume and verify it uses the custom key
+				var secretVolume *corev1.Volume
+				for i := range pts.Spec.Volumes {
+					if pts.Spec.Volumes[i].Name == PGPassSecretVolumeName {
+						secretVolume = &pts.Spec.Volumes[i]
+						break
+					}
+				}
+				require.NotNil(t, secretVolume)
+				require.NotNil(t, secretVolume.Secret)
+				assert.Equal(t, "custom-secret", secretVolume.Secret.SecretName)
+				require.Len(t, secretVolume.Secret.Items, 1)
+				// The key should match secretRef.Key, not a hardcoded value
+				assert.Equal(t, "custom-key", secretVolume.Secret.Items[0].Key)
+				// The path is always .pgpass (the filename is fixed)
+				assert.Equal(t, ".pgpass", secretVolume.Secret.Items[0].Path)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := NewPodTemplateSpecBuilderFrom(nil)
+			pts := builder.Apply(
+				WithContainer(corev1.Container{Name: RegistryAPIContainerName}),
+				WithPGPassSecretRefMount(RegistryAPIContainerName, tt.secretRef),
+			).Build()
+
+			tt.assertions(t, pts)
+		})
+	}
 }

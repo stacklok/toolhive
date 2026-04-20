@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package environment
@@ -41,6 +41,10 @@ func (*mockSecretsProvider) DeleteSecret(_ context.Context, _ string) error {
 
 func (*mockSecretsProvider) ListSecrets(_ context.Context) ([]secrets.SecretDescription, error) {
 	return nil, nil
+}
+
+func (*mockSecretsProvider) DeleteSecrets(_ context.Context, _ []string) error {
+	return nil
 }
 
 func (*mockSecretsProvider) Cleanup() error {

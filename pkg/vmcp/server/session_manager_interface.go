@@ -48,4 +48,15 @@ type SessionManager interface {
 
 	// Terminate terminates the session with the given ID, closing all backend connections.
 	Terminate(sessionID string) (bool, error)
+
+	// NotifyBackendExpired updates session metadata in storage to reflect that the
+	// backend identified by workloadID is no longer connected. The caller must
+	// supply the session metadata it already holds (e.g. from MultiSession.GetMetadata);
+	// passing nil is treated as "no metadata available" and is a silent no-op.
+	// The metadata map is treated as read-only; the implementation copies it before
+	// making any modifications.
+	// It is a best-effort, metadata-only operation intended to be called by keepalive
+	// or health-monitoring components when they detect that a backend session has
+	// expired or been lost. Storage errors are logged but not returned.
+	NotifyBackendExpired(sessionID, workloadID string, metadata map[string]string)
 }

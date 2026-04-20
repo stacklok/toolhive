@@ -18,38 +18,36 @@ import (
 // under it must be accessible without authentication. This handler ensures proper
 // routing of discovery requests while returning 404 for unknown paths.
 //
-// If authInfoHandler is nil, this function returns nil (no handler registration needed).
+// If authInfoHandler is nil, the returned handler responds with HTTP 404 and a
+// JSON body for all /.well-known/ paths. This ensures OAuth discovery clients
+// (e.g., Claude Code) receive a clean, parseable "not found" instead of falling
+// through to the MCP handler, which would reject the GET with an HTTP 406
+// JSON-RPC error that breaks OAuth error parsing.
 //
 // Usage:
 //
 //	authInfoHandler := auth.NewAuthInfoHandler(issuer, resourceURL, scopes)
 //	wellKnownHandler := auth.NewWellKnownHandler(authInfoHandler)
-//	if wellKnownHandler != nil {
-//	    mux.Handle("/.well-known/", wellKnownHandler)
-//	}
+//	mux.Handle("/.well-known/", wellKnownHandler)
 //
 // This handler matches:
 //   - /.well-known/oauth-protected-resource (exact)
 //   - /.well-known/oauth-protected-resource/* (subpaths)
 //
-// Returns 404 for other /.well-known/* paths.
+// Returns 404 for other /.well-known/* paths or when auth is not configured.
 func NewWellKnownHandler(authInfoHandler http.Handler) http.Handler {
-	if authInfoHandler == nil {
-		return nil
-	}
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// RFC 9728: Match /.well-known/oauth-protected-resource and any subpaths
-		// Examples:
-		//   ✓ /.well-known/oauth-protected-resource
-		//   ✓ /.well-known/oauth-protected-resource/mcp
-		//   ✗ /.well-known/other-endpoint
-		if strings.HasPrefix(r.URL.Path, oauthproto.WellKnownOAuthResourcePath) {
+		// When auth is configured, route discovery requests to the auth handler.
+		if authInfoHandler != nil &&
+			strings.HasPrefix(r.URL.Path, oauthproto.WellKnownOAuthResourcePath) {
 			authInfoHandler.ServeHTTP(w, r)
 			return
 		}
 
-		// Unknown .well-known path
-		http.NotFound(w, r)
+		// No auth configured, or unknown .well-known path — return JSON 404
+		// so OAuth discovery clients can parse the response cleanly.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not_found"}`))
 	})
 }

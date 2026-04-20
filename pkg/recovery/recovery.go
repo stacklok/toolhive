@@ -5,11 +5,16 @@
 package recovery
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	sentrypkg "github.com/stacklok/toolhive/pkg/sentry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -28,11 +33,20 @@ func Middleware(next http.Handler) http.Handler {
 				// ReverseProxy panics with this sentinel when a streaming
 				// response breaks mid-copy; catching it would log noisy
 				// stack traces and corrupt the already-in-flight response.
-				if rec == http.ErrAbortHandler {
+				if isErrAbortHandler(rec) {
 					panic(http.ErrAbortHandler)
 				}
 				stack := debug.Stack()
 				slog.Error(fmt.Sprintf("Panic recovered: %v\nStack trace:\n%s", rec, stack))
+				span := trace.SpanFromContext(r.Context())
+				// Use a generic message on the span to avoid sending potentially
+				// sensitive panic values (which may embed credentials or internal
+				// state) to external telemetry backends. Full details are in the log.
+				span.RecordError(errors.New("panic recovered"))
+				span.SetStatus(codes.Error, "panic recovered")
+				// Sentry span processor only creates transactions; call RecoverPanic
+				// explicitly so panics also appear as Issues in the Sentry Issues tab.
+				sentrypkg.RecoverPanic(r, rec)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()
@@ -60,4 +74,26 @@ func CreateMiddleware(_ *types.MiddlewareConfig, runner types.MiddlewareRunner) 
 	recoveryMw := &FactoryMiddleware{}
 	runner.AddMiddleware(MiddlewareType, recoveryMw)
 	return nil
+}
+
+// isErrAbortHandler reports whether rec is the net/http abort-handler sentinel
+// or an error wrapping it (see errors.Is). httputil.ReverseProxy uses this
+// panic to stop copying a streaming response when the backend or client drops
+// the connection.
+//
+// We must not treat it as a normal panic: logging it as ERROR and calling
+// http.Error would run after headers may already be sent (SSE), which produces
+// "superfluous response.WriteHeader" and corrupts the response.
+func isErrAbortHandler(rec any) bool {
+	if rec == nil {
+		return false
+	}
+	if rec == http.ErrAbortHandler {
+		return true
+	}
+	err, ok := rec.(error)
+	if !ok {
+		return false
+	}
+	return errors.Is(err, http.ErrAbortHandler)
 }

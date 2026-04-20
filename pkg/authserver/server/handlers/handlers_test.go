@@ -35,8 +35,19 @@ import (
 	sharedobauth "github.com/stacklok/toolhive/pkg/oauth"
 )
 
+// testSetupOptions allows customizing the test handler setup.
+type testSetupOptions struct {
+	AuthorizationEndpointBaseURL string
+}
+
 // testSetup creates a Handler with all dependencies for testing.
 func testSetup(t *testing.T) *Handler {
+	t.Helper()
+	return testSetupWithOptions(t, testSetupOptions{})
+}
+
+// testSetupWithOptions creates a Handler with customizable configuration.
+func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -53,14 +64,15 @@ func testSetup(t *testing.T) *Handler {
 	require.NoError(t, err)
 
 	cfg := &server.AuthorizationServerParams{
-		Issuer:               "https://auth.example.com",
-		AccessTokenLifespan:  time.Hour,
-		RefreshTokenLifespan: time.Hour * 24,
-		AuthCodeLifespan:     time.Minute * 10,
-		HMACSecrets:          servercrypto.NewHMACSecrets(secret),
-		SigningKeyID:         "test-key-1",
-		SigningKeyAlgorithm:  "RS256",
-		SigningKey:           rsaKey,
+		Issuer:                       "https://auth.example.com",
+		AuthorizationEndpointBaseURL: opts.AuthorizationEndpointBaseURL,
+		AccessTokenLifespan:          time.Hour,
+		RefreshTokenLifespan:         time.Hour * 24,
+		AuthCodeLifespan:             time.Minute * 10,
+		HMACSecrets:                  servercrypto.NewHMACSecrets(secret),
+		SigningKeyID:                 "test-key-1",
+		SigningKeyAlgorithm:          "RS256",
+		SigningKey:                   rsaKey,
 	}
 
 	oauth2Config, err := server.NewAuthorizationServerConfig(cfg)
@@ -72,8 +84,10 @@ func testSetup(t *testing.T) *Handler {
 
 	provider := fosite.NewOAuth2Provider(stor, oauth2Config.Config)
 
-	// Use nil upstream for basic handler tests that don't need IDP functionality
-	handler, err := NewHandler(provider, oauth2Config, stor, nil, "", NewUserResolver(stor))
+	// Use a dummy upstream for basic handler tests that don't need IDP functionality
+	dummyUpstream := &mockIDPProvider{}
+	handler, err := NewHandler(provider, oauth2Config, stor,
+		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}})
 	require.NoError(t, err)
 
 	return handler
@@ -127,7 +141,9 @@ func TestJWKSHandler_NilJWKS(t *testing.T) {
 
 	stor := mocks.NewMockStorage(ctrl)
 	provider := fosite.NewOAuth2Provider(stor, cfg.Config)
-	handler, err := NewHandler(provider, cfg, stor, nil, "", NewUserResolver(stor))
+	dummyUpstream := &mockIDPProvider{}
+	handler, err := NewHandler(provider, cfg, stor,
+		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
@@ -232,6 +248,59 @@ func TestOIDCDiscoveryHandler(t *testing.T) {
 	assert.Contains(t, discovery.GrantTypesSupported, "refresh_token")
 	assert.Contains(t, discovery.CodeChallengeMethodsSupported, "S256")
 	assert.Contains(t, discovery.TokenEndpointAuthMethodsSupported, "none")
+}
+
+func TestOAuthDiscoveryHandler_WithAuthorizationEndpointBaseURL(t *testing.T) {
+	t.Parallel()
+	handler := testSetupWithOptions(t, testSetupOptions{
+		AuthorizationEndpointBaseURL: "https://login.example.com",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	rec := httptest.NewRecorder()
+
+	handler.OAuthDiscoveryHandler(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var metadata sharedobauth.AuthorizationServerMetadata
+	err := json.NewDecoder(rec.Body).Decode(&metadata)
+	require.NoError(t, err)
+
+	// Authorization endpoint should use the override base URL
+	assert.Equal(t, "https://login.example.com/oauth/authorize", metadata.AuthorizationEndpoint)
+
+	// All other endpoints should still use the issuer
+	assert.Equal(t, "https://auth.example.com", metadata.Issuer)
+	assert.Equal(t, "https://auth.example.com/oauth/token", metadata.TokenEndpoint)
+	assert.Equal(t, "https://auth.example.com/.well-known/jwks.json", metadata.JWKSURI)
+	assert.Equal(t, "https://auth.example.com/oauth/register", metadata.RegistrationEndpoint)
+}
+
+func TestOIDCDiscoveryHandler_WithAuthorizationEndpointBaseURL(t *testing.T) {
+	t.Parallel()
+	handler := testSetupWithOptions(t, testSetupOptions{
+		AuthorizationEndpointBaseURL: "https://login.example.com",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil)
+	rec := httptest.NewRecorder()
+
+	handler.OIDCDiscoveryHandler(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var discovery sharedobauth.OIDCDiscoveryDocument
+	err := json.NewDecoder(rec.Body).Decode(&discovery)
+	require.NoError(t, err)
+
+	// Authorization endpoint should use the override base URL
+	assert.Equal(t, "https://login.example.com/oauth/authorize", discovery.AuthorizationEndpoint)
+
+	// All other endpoints should still use the issuer
+	assert.Equal(t, "https://auth.example.com", discovery.Issuer)
+	assert.Equal(t, "https://auth.example.com/oauth/token", discovery.TokenEndpoint)
+	assert.Equal(t, "https://auth.example.com/.well-known/jwks.json", discovery.JWKSURI)
 }
 
 // TODO: Add tests for TokenHandler once implemented:

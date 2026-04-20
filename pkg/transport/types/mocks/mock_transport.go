@@ -15,6 +15,7 @@ import (
 	reflect "reflect"
 
 	upstreamtoken "github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	keys "github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	types "github.com/stacklok/toolhive/pkg/transport/types"
 	gomock "go.uber.org/mock/gomock"
 	jsonrpc2 "golang.org/x/exp/jsonrpc2"
@@ -123,18 +124,32 @@ func (mr *MockMiddlewareRunnerMockRecorder) GetConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetConfig", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetConfig))
 }
 
-// GetUpstreamTokenService mocks base method.
-func (m *MockMiddlewareRunner) GetUpstreamTokenService() func() upstreamtoken.Service {
+// GetKeyProvider mocks base method.
+func (m *MockMiddlewareRunner) GetKeyProvider() keys.PublicKeyProvider {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetUpstreamTokenService")
-	ret0, _ := ret[0].(func() upstreamtoken.Service)
+	ret := m.ctrl.Call(m, "GetKeyProvider")
+	ret0, _ := ret[0].(keys.PublicKeyProvider)
 	return ret0
 }
 
-// GetUpstreamTokenService indicates an expected call of GetUpstreamTokenService.
-func (mr *MockMiddlewareRunnerMockRecorder) GetUpstreamTokenService() *gomock.Call {
+// GetKeyProvider indicates an expected call of GetKeyProvider.
+func (mr *MockMiddlewareRunnerMockRecorder) GetKeyProvider() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokenService", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetUpstreamTokenService))
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetKeyProvider", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetKeyProvider))
+}
+
+// GetUpstreamTokenReader mocks base method.
+func (m *MockMiddlewareRunner) GetUpstreamTokenReader() upstreamtoken.TokenReader {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetUpstreamTokenReader")
+	ret0, _ := ret[0].(upstreamtoken.TokenReader)
+	return ret0
+}
+
+// GetUpstreamTokenReader indicates an expected call of GetUpstreamTokenReader.
+func (mr *MockMiddlewareRunnerMockRecorder) GetUpstreamTokenReader() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpstreamTokenReader", reflect.TypeOf((*MockMiddlewareRunner)(nil).GetUpstreamTokenReader))
 }
 
 // SetAuthInfoHandler mocks base method.

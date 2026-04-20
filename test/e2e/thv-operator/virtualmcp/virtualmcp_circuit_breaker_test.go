@@ -52,11 +52,11 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				Env: []mcpv1alpha1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
@@ -71,11 +71,11 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				Env: []mcpv1alpha1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
@@ -92,7 +92,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}, server1); err != nil {
 				return err
 			}
-			if server1.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server1.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("backend1 not running, phase: %s", server1.Status.Phase)
 			}
 
@@ -103,7 +103,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}, server2); err != nil {
 				return err
 			}
-			if server2.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server2.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("backend2 not running, phase: %s", server2.Status.Phase)
 			}
 
@@ -154,6 +154,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -487,7 +488,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			}, server); err != nil {
 				return err
 			}
-			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("backend not running yet, phase: %s", server.Status.Phase)
 			}
 			return nil

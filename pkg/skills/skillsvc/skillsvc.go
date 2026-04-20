@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -23,8 +24,11 @@ import (
 
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -73,6 +77,26 @@ func WithGroupManager(mgr groups.Manager) Option {
 	}
 }
 
+// SkillLookup resolves a plain skill name against a registry/index.
+// registry.Provider implicitly satisfies this interface.
+type SkillLookup interface {
+	SearchSkills(query string) ([]regtypes.Skill, error)
+}
+
+// WithSkillLookup sets the registry-based skill lookup for name resolution.
+func WithSkillLookup(sl SkillLookup) Option {
+	return func(s *service) {
+		s.skillLookup = sl
+	}
+}
+
+// WithGitResolver sets the git resolver for git:// skill installations.
+func WithGitResolver(gr gitresolver.Resolver) Option {
+	return func(s *service) {
+		s.gitResolver = gr
+	}
+}
+
 // skillLock provides per-skill mutual exclusion keyed by scope/name/projectRoot.
 // Entries are never evicted. This is acceptable because the number of distinct
 // skills on a single machine is expected to remain small (< 1000).
@@ -109,6 +133,8 @@ type service struct {
 	ociStore     *ociskills.Store
 	packager     ociskills.SkillPackager
 	registry     ociskills.RegistryClient
+	skillLookup  SkillLookup
+	gitResolver  gitresolver.Resolver
 }
 
 // New creates a new SkillService backed by the given store.
@@ -122,6 +148,9 @@ func New(store storage.SkillStore, opts ...Option) skills.SkillService {
 	}
 	if s.installer == nil {
 		s.installer = skills.NewInstaller()
+	}
+	if s.gitResolver == nil {
+		s.gitResolver = gitresolver.NewResolver()
 	}
 	return s
 }
@@ -188,10 +217,14 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	// the same lock key and DB record.
 	opts.ProjectRoot = projectRoot
 
-	// Default to the "default" group when none is specified, matching
-	// workload behavior (pkg/api/v1/workload_service.go).
-	if opts.Group == "" {
-		opts.Group = groups.DefaultGroup
+	// Git references (git://host/owner/repo[@ref][#path]) are dispatched first;
+	// the prefix is unambiguous and cannot collide with OCI references.
+	if gitresolver.IsGitReference(opts.Name) {
+		result, err := s.installFromGit(ctx, opts, scope)
+		if err != nil {
+			return nil, err
+		}
+		return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
 	}
 
 	ref, isOCI, err := parseOCIReference(opts.Name)
@@ -202,11 +235,26 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 		)
 	}
 	if isOCI {
-		result, err := s.installFromOCI(ctx, opts, scope, ref)
-		if err != nil {
-			return nil, err
+		result, ociErr := s.installFromOCI(ctx, opts, scope, ref)
+		if ociErr == nil {
+			return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
 		}
-		return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+		// OCI pull failed — fall back to registry lookup for names that look
+		// like a qualified "namespace/name". Names that are unambiguously OCI
+		// (digest, explicit tag, or multi-segment path) must not trigger a
+		// registry search. See isUnambiguousOCIRef for the full rule set.
+		if isUnambiguousOCIRef(opts.Name, ref) {
+			return nil, ociErr
+		}
+		slog.Debug("OCI pull failed, attempting registry fallback", "name", opts.Name, "error", ociErr)
+		resolved, regErr := s.resolveFromRegistry(opts.Name)
+		if regErr != nil {
+			return nil, regErr
+		}
+		if resolved != nil {
+			return s.installFromResolvedRegistry(ctx, opts, scope, resolved)
+		}
+		return nil, ociErr
 	}
 
 	// Plain skill name — validate and proceed with existing flow.
@@ -214,14 +262,26 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 		return nil, httperr.WithCode(err, http.StatusBadRequest)
 	}
 
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
-	defer unlock()
+	return s.installByName(ctx, opts, scope)
+}
 
-	// Without layer data, check the local OCI store for a matching tag
-	// before falling back to a pending record. This enables the
-	// build → install workflow where `thv skill build` tags the artifact
-	// with the skill name and a subsequent `thv skill install <name>`
-	// resolves it locally.
+// installByName handles installation for a validated plain skill name. It
+// checks the local OCI store and registry before falling back to an error.
+func (s *service) installByName(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+) (*skills.InstallResult, error) {
+	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
+
+	// Without layer data, check the local OCI store for a matching tag,
+	// then the registry/index, before returning an error.
 	if len(opts.LayerData) == 0 {
 		resolved := false
 		if s.ociStore != nil {
@@ -233,11 +293,14 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 			}
 		}
 		if !resolved {
-			result, err := s.installPending(ctx, opts, scope)
-			if err != nil {
-				return nil, err
-			}
-			return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+			// Release lock before registry lookup -- installFromOCI
+			// acquires its own lock on the artifact's skill name, which
+			// could be the same key, causing deadlock since sync.Mutex
+			// is not re-entrant.
+			unlock()
+			locked = false
+
+			return s.installFromRegistryLookup(ctx, opts, scope)
 		}
 		// resolved: opts hydrated, fall through to installWithExtraction
 	}
@@ -246,7 +309,65 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	if err != nil {
 		return nil, err
 	}
-	return result, s.registerSkillInGroup(ctx, opts.Group, opts.Name)
+	return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
+}
+
+// installFromRegistryLookup resolves a plain skill name via the registry and
+// dispatches to the appropriate installer (OCI or git).
+func (s *service) installFromRegistryLookup(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+) (*skills.InstallResult, error) {
+	resolved, regErr := s.resolveFromRegistry(opts.Name)
+	if regErr != nil {
+		return nil, regErr
+	}
+	if resolved != nil {
+		return s.installFromResolvedRegistry(ctx, opts, scope, resolved)
+	}
+
+	return nil, httperr.WithCode(
+		fmt.Errorf("skill %q not found in local store or registry;"+
+			" install by OCI reference:\n  thv skill install ghcr.io/<namespace>/%s:<version>",
+			opts.Name, opts.Name),
+		http.StatusNotFound,
+	)
+}
+
+// installFromResolvedRegistry dispatches an install to the appropriate
+// backend (OCI or git) based on the result of a registry lookup.
+func (s *service) installFromResolvedRegistry(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+	resolved *registryResolveResult,
+) (*skills.InstallResult, error) {
+	switch {
+	case resolved.OCIRef != nil:
+		slog.Info("resolved skill from registry (OCI)", "name", opts.Name, "oci_reference", resolved.OCIRef.String())
+		opts.Name = resolved.OCIRef.String()
+		result, ociErr := s.installFromOCI(ctx, opts, scope, resolved.OCIRef)
+		if ociErr != nil {
+			return nil, ociErr
+		}
+		// Use the skill name extracted from the artifact, not opts.Name which
+		// holds the OCI ref string. installFromOCI mutates its own copy of opts
+		// (Go pass-by-value), so the caller never sees the updated name.
+		return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
+	case resolved.GitURL != "":
+		slog.Info("resolved skill from registry (git)", "name", opts.Name, "git_url", resolved.GitURL)
+		opts.Name = resolved.GitURL
+		result, gitErr := s.installFromGit(ctx, opts, scope)
+		if gitErr != nil {
+			return nil, gitErr
+		}
+		return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
+	}
+	return nil, httperr.WithCode(
+		fmt.Errorf("skill %q resolved from registry but has no installable package", opts.Name),
+		http.StatusUnprocessableEntity,
+	)
 }
 
 // Uninstall removes an installed skill and cleans up files for all clients.
@@ -271,6 +392,14 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 		return err
 	}
 
+	// Determine the boundary directory for empty-parent cleanup.
+	stopDir := opts.ProjectRoot
+	if scope == skills.ScopeUser {
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			stopDir = homeDir
+		}
+	}
+
 	// Remove files for each client — best-effort: collect errors but don't
 	// abort on the first failure so we clean up as much as possible.
 	var cleanupErrs []error
@@ -283,6 +412,10 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 			}
 			if rmErr := s.installer.Remove(skillPath); rmErr != nil {
 				cleanupErrs = append(cleanupErrs, fmt.Errorf("removing files for client %q: %w", clientType, rmErr))
+				continue
+			}
+			if stopDir != "" {
+				skills.RemoveEmptyParents(filepath.Dir(skillPath), stopDir)
 			}
 		}
 	}
@@ -322,6 +455,200 @@ func (s *service) Info(ctx context.Context, opts skills.InfoOptions) (*skills.Sk
 		Metadata:       skill.Metadata,
 		InstalledSkill: &skill,
 	}, nil
+}
+
+// GetContent retrieves the SKILL.md body and file listing from a skill artifact
+// without installing it. The reference may be:
+//   - A local build tag (e.g. "my-skill")
+//   - A fully-qualified OCI reference (e.g. "ghcr.io/org/skill:v1")
+//   - A git:// reference (e.g. "git://github.com/org/repo#path/to/skill")
+//   - An https:// URL (converted to git:// internally)
+//
+// Resolution order: git (git:// and https://) → OCI (local store, then remote
+// pull) → registry catalog lookup.
+func (s *service) GetContent(ctx context.Context, opts skills.ContentOptions) (*skills.SkillContent, error) {
+	ref := opts.Reference
+	if ref == "" {
+		return nil, httperr.WithCode(
+			errors.New("reference is required"),
+			http.StatusBadRequest,
+		)
+	}
+
+	// Git references (git:// or https://) are dispatched first since their
+	// scheme prefix is unambiguous and cannot collide with OCI references.
+	if gitresolver.IsGitReference(ref) {
+		return s.getContentFromGit(ctx, ref)
+	}
+	if isHTTPURL(ref) {
+		gitURL, err := buildGitReferenceFromRegistryURL(ref)
+		if err != nil {
+			return nil, httperr.WithCode(
+				fmt.Errorf("invalid URL %q: %w", ref, err),
+				http.StatusBadRequest,
+			)
+		}
+		return s.getContentFromGit(ctx, gitURL)
+	}
+
+	// Try OCI resolution (local store + remote pull). If this succeeds, return.
+	content, ociErr := s.getContentFromOCI(ctx, ref)
+	if ociErr == nil {
+		return content, nil
+	}
+
+	// OCI failed — try resolving via registry name lookup (e.g. "skill-creator"
+	// or "io.github.stacklok/skill-creator" from the catalog index). Skip for
+	// refs that are unambiguously OCI (digest, explicit tag, or multi-segment
+	// path) to avoid a wasted network round-trip.
+	if parsedRef, isOCI, parseErr := parseOCIReference(ref); parseErr == nil && isOCI &&
+		isUnambiguousOCIRef(ref, parsedRef) {
+		return nil, ociErr
+	}
+	resolved, regErr := s.resolveFromRegistry(ref)
+	if regErr != nil {
+		return nil, regErr
+	}
+	if resolved != nil {
+		switch {
+		case resolved.OCIRef != nil:
+			return s.getContentFromOCI(ctx, resolved.OCIRef.String())
+		case resolved.GitURL != "":
+			return s.getContentFromGit(ctx, resolved.GitURL)
+		}
+	}
+
+	// Nothing matched — return the original OCI error.
+	return nil, ociErr
+}
+
+// getContentFromGit clones a git repository and extracts the SKILL.md content.
+func (s *service) getContentFromGit(ctx context.Context, ref string) (*skills.SkillContent, error) {
+	if s.gitResolver == nil {
+		return nil, httperr.WithCode(
+			errors.New("git resolver is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+
+	gitRef, err := gitresolver.ParseGitReference(ref)
+	if err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("invalid git reference: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	resolved, err := s.gitResolver.Resolve(ctx, gitRef)
+	if err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("resolving git skill: %w", err),
+			http.StatusBadGateway,
+		)
+	}
+
+	content := &skills.SkillContent{
+		Name:        resolved.SkillConfig.Name,
+		Description: resolved.SkillConfig.Description,
+		Version:     resolved.SkillConfig.Version,
+		License:     resolved.SkillConfig.License,
+		Body:        string(resolved.SkillConfig.Body),
+		Files:       make([]skills.SkillFileEntry, 0, len(resolved.Files)),
+	}
+
+	for _, f := range resolved.Files {
+		content.Files = append(content.Files, skills.SkillFileEntry{
+			Path: f.Path,
+			Size: len(f.Content),
+		})
+	}
+
+	return content, nil
+}
+
+// getContentFromOCI resolves a reference from the local OCI store or pulls it
+// from a remote registry, then extracts the SKILL.md content.
+func (s *service) getContentFromOCI(ctx context.Context, ref string) (*skills.SkillContent, error) {
+	if s.ociStore == nil {
+		return nil, httperr.WithCode(
+			errors.New("OCI store is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+
+	// Try the local store first (covers local builds by tag name and
+	// previously pulled remote refs tagged by Pull).
+	d, resolveErr := s.ociStore.Resolve(ctx, ref)
+	if resolveErr != nil {
+		if s.registry == nil {
+			return nil, httperr.WithCode(
+				fmt.Errorf("reference %q not found in local store and OCI registry is not configured", ref),
+				http.StatusBadRequest,
+			)
+		}
+
+		ociRef, isOCI, parseErr := parseOCIReference(ref)
+		if parseErr != nil {
+			return nil, httperr.WithCode(
+				fmt.Errorf("invalid reference %q: %w", ref, parseErr),
+				http.StatusBadRequest,
+			)
+		}
+		if !isOCI {
+			return nil, httperr.WithCode(
+				fmt.Errorf("reference %q not found in local store and is not a valid OCI reference", ref),
+				http.StatusBadRequest,
+			)
+		}
+
+		qualifiedRef := qualifiedOCIRef(ociRef)
+		pullCtx, cancel := context.WithTimeout(ctx, ociPullTimeout)
+		defer cancel()
+
+		var pullErr error
+		d, pullErr = s.registry.Pull(pullCtx, s.ociStore, qualifiedRef)
+		if pullErr != nil {
+			return nil, httperr.WithCode(
+				fmt.Errorf("pulling OCI artifact %q: %w", qualifiedRef, pullErr),
+				http.StatusBadRequest,
+			)
+		}
+	}
+
+	layerData, skillConfig, err := s.extractOCIContent(ctx, d)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := ociskills.DecompressTar(layerData)
+	if err != nil {
+		return nil, fmt.Errorf("decompressing skill layer: %w", err)
+	}
+
+	content := &skills.SkillContent{
+		Name:        skillConfig.Name,
+		Description: skillConfig.Description,
+		Version:     skillConfig.Version,
+		License:     skillConfig.License,
+		Files:       make([]skills.SkillFileEntry, 0, len(entries)),
+	}
+
+	for _, entry := range entries {
+		content.Files = append(content.Files, skills.SkillFileEntry{
+			Path: entry.Path,
+			Size: len(entry.Content),
+		})
+		if strings.EqualFold(filepath.Base(entry.Path), "SKILL.md") {
+			content.Body = string(entry.Content)
+		}
+	}
+
+	return content, nil
+}
+
+// isHTTPURL returns true if the reference starts with http:// or https://.
+func isHTTPURL(ref string) bool {
+	return strings.HasPrefix(ref, "https://") || strings.HasPrefix(ref, "http://")
 }
 
 // Validate checks whether a skill definition is valid.
@@ -415,6 +742,70 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 	return nil
 }
 
+// ListBuilds returns all locally-built OCI skill artifacts in the local store.
+func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
+	if s.ociStore == nil {
+		return nil, httperr.WithCode(
+			errors.New("OCI packaging is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+
+	tags, err := s.ociStore.ListTags(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing local OCI builds: %w", err)
+	}
+
+	builds := make([]skills.LocalBuild, 0, len(tags))
+	for _, tag := range tags {
+		d, resolveErr := s.ociStore.Resolve(ctx, tag)
+		if resolveErr != nil {
+			slog.Debug("failed to resolve tag in local OCI store", "tag", tag, "error", resolveErr)
+			continue
+		}
+
+		isSkill, typeErr := s.isSkillArtifact(ctx, d)
+		if typeErr != nil {
+			slog.Debug("failed to check artifact type in local OCI store", "tag", tag, "error", typeErr)
+			continue
+		}
+		if !isSkill {
+			continue
+		}
+
+		build := skills.LocalBuild{
+			Tag:    tag,
+			Digest: d.String(),
+		}
+
+		// Best-effort: enrich with skill metadata from the OCI config labels.
+		if _, cfg, extractErr := s.extractOCIContent(ctx, d); extractErr == nil && cfg != nil {
+			build.Name = cfg.Name
+			build.Description = cfg.Description
+			build.Version = cfg.Version
+		} else if extractErr != nil {
+			slog.Debug("failed to extract skill config from local build", "tag", tag, "error", extractErr)
+		}
+
+		builds = append(builds, build)
+	}
+
+	return builds, nil
+}
+
+// DeleteBuild removes a locally-built OCI skill artifact from the local store.
+// It deletes the tag and, when no other tag shares the same digest, also
+// garbage-collects all associated blobs.
+func (s *service) DeleteBuild(ctx context.Context, tag string) error {
+	if s.ociStore == nil {
+		return httperr.WithCode(
+			errors.New("OCI packaging is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+	return s.ociStore.DeleteBuild(ctx, tag)
+}
+
 // ociPullTimeout is the maximum time allowed for pulling an OCI artifact.
 const ociPullTimeout = 5 * time.Minute
 
@@ -422,6 +813,22 @@ const ociPullTimeout = 5 * time.Minute
 // memory. Skills are typically small (< 1MB compressed); this limit prevents a
 // malicious artifact from causing OOM before the decompression limits kick in.
 const maxCompressedLayerSize int64 = 50 * 1024 * 1024 // 50 MB
+
+// qualifiedOCIRef returns the full OCI reference string including the tag or
+// digest. When the user omits a tag (e.g. "ghcr.io/org/skill"),
+// go-containerregistry's ParseReference defaults to "latest" internally but
+// String() omits it. This function only appends the implicit tag when the
+// original string does not already include one.
+func qualifiedOCIRef(ref nameref.Reference) string {
+	s := ref.String()
+	if _, ok := ref.(nameref.Digest); ok {
+		return s // already has @sha256:...
+	}
+	if strings.Contains(s, ":") {
+		return s // already has an explicit tag
+	}
+	return s + ":" + ref.Identifier()
+}
 
 func parseOCIReference(name string) (nameref.Reference, bool, error) {
 	// Structural check: skill names never contain '/', ':', or '@'.
@@ -435,6 +842,27 @@ func parseOCIReference(name string) (nameref.Reference, bool, error) {
 		return nil, true, err
 	}
 	return ref, true, nil
+}
+
+// isUnambiguousOCIRef reports whether raw was clearly intended by the user as
+// an OCI reference, meaning a failed pull must NOT fall back to a registry
+// catalogue lookup. A ref is unambiguous if any of the following hold:
+//
+//   - the parsed form is a digest reference (e.g. "name@sha256:...")
+//   - the raw string contains ':' (explicit tag such as "name:v1")
+//   - the raw string has more than one '/' (multi-segment path such as
+//     "ghcr.io/org/skill")
+//
+// The parsed Reference alone is insufficient for the tag case:
+// nameref.ParseReference normalizes "foo/bar" to "foo/bar:latest" (a name.Tag),
+// making it indistinguishable from an explicitly tagged reference. We therefore
+// rely on the parsed form for the digest check and fall back to string
+// inspection for the tag and segment-count checks.
+func isUnambiguousOCIRef(raw string, ref nameref.Reference) bool {
+	if _, isDigest := ref.(nameref.Digest); isDigest {
+		return true
+	}
+	return strings.Contains(raw, ":") || strings.Count(raw, "/") > 1
 }
 
 // installFromOCI pulls a skill artifact from a remote registry, extracts
@@ -458,7 +886,7 @@ func (s *service) installFromOCI(
 		)
 	}
 
-	ociRef := opts.Name
+	ociRef := qualifiedOCIRef(ref)
 
 	pullCtx, cancel := context.WithTimeout(ctx, ociPullTimeout)
 	defer cancel()
@@ -467,7 +895,7 @@ func (s *service) installFromOCI(
 	if err != nil {
 		return nil, httperr.WithCode(
 			fmt.Errorf("pulling OCI artifact %q: %w", ociRef, err),
-			http.StatusBadGateway,
+			http.StatusBadRequest,
 		)
 	}
 
@@ -519,6 +947,233 @@ func (s *service) installFromOCI(
 	return s.installWithExtraction(ctx, opts, scope)
 }
 
+// installFromGit clones a git repository, extracts the skill, writes files to
+// disk, and creates a DB record. The digest is the git commit hash, enabling
+// same-commit no-op and upgrade detection.
+func (s *service) installFromGit(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+) (*skills.InstallResult, error) {
+	if s.gitResolver == nil {
+		return nil, httperr.WithCode(
+			errors.New("git resolver is not configured"),
+			http.StatusInternalServerError,
+		)
+	}
+	if s.pathResolver == nil {
+		return nil, httperr.WithCode(
+			errors.New("path resolver is required for git installs"),
+			http.StatusInternalServerError,
+		)
+	}
+
+	// Parse the git:// reference.
+	gitRef, err := gitresolver.ParseGitReference(opts.Name)
+	if err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("invalid git reference: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	// Preserve the original git:// URL for provenance tracking.
+	gitURL := opts.Name
+
+	// Clone, read SKILL.md, collect files.
+	resolved, err := s.gitResolver.Resolve(ctx, gitRef)
+	if err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("resolving git skill: %w", err),
+			http.StatusBadGateway,
+		)
+	}
+
+	if err := skills.ValidateSkillName(resolved.SkillConfig.Name); err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("skill contains invalid name: %w", err),
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	// Hydrate install options from the git result.
+	opts.Name = resolved.SkillConfig.Name
+	opts.Reference = gitURL
+	opts.Digest = resolved.CommitHash
+	if opts.Version == "" && resolved.SkillConfig.Version != "" {
+		opts.Version = resolved.SkillConfig.Version
+	}
+
+	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
+	defer unlock()
+
+	clientTypes, clientDirs, err := s.resolveAndValidateClients(opts, opts.Name, scope, opts.ProjectRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.applyGitInstall(ctx, opts, scope, clientTypes, clientDirs, resolved.Files)
+}
+
+// applyGitInstall handles the create/upgrade/no-op logic for a git-based skill
+// install. It checks the store for an existing record, writes files, and
+// persists the result.
+func (s *service) applyGitInstall(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+	clientTypes []string,
+	clientDirs map[string]string,
+	files []gitresolver.FileEntry,
+) (*skills.InstallResult, error) {
+	existing, storeErr := s.store.Get(ctx, opts.Name, scope, opts.ProjectRoot)
+	isNotFound := errors.Is(storeErr, storage.ErrNotFound)
+	if storeErr != nil && !isNotFound {
+		return nil, fmt.Errorf("checking existing skill: %w", storeErr)
+	}
+	if !isNotFound {
+		return s.applyGitInstallExisting(ctx, opts, scope, existing, clientTypes, clientDirs, files)
+	}
+	return s.applyGitInstallFresh(ctx, opts, scope, clientTypes, clientDirs, files)
+}
+
+func (s *service) applyGitInstallExisting(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+	existing skills.InstalledSkill,
+	clientTypes []string,
+	clientDirs map[string]string,
+	files []gitresolver.FileEntry,
+) (*skills.InstallResult, error) {
+	if existing.Digest != opts.Digest {
+		allClients, allDirs, err := s.expandToExistingClients(
+			existing.Clients, clientTypes, clientDirs, opts.Name, scope, opts.ProjectRoot)
+		if err != nil {
+			return nil, err
+		}
+		// Deduplicate so clients sharing the same directory don't conflict.
+		dirsToWrite := uniqueDirClients(allClients, allDirs, nil)
+		return s.gitWriteMultiAndPersist(ctx, opts, scope, allClients, allDirs, files,
+			dirsToWrite, nil, true, true)
+	}
+	clientsExplicit := len(opts.Clients) > 0
+	if clientsContainAll(existing.Clients, clientTypes) ||
+		(len(existing.Clients) == 0 && len(clientTypes) <= 1 && !clientsExplicit) {
+		return &skills.InstallResult{Skill: existing}, nil
+	}
+	toWrite := missingClients(existing.Clients, clientTypes)
+	if len(toWrite) == 0 {
+		return &skills.InstallResult{Skill: existing}, nil
+	}
+	// Deduplicate and skip directories already owned by existing clients.
+	dirsToWrite := uniqueDirClients(toWrite, clientDirs, existingClientDirs(existing.Clients, clientDirs))
+	if len(dirsToWrite) == 0 {
+		return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files,
+			nil, existing.Clients, true, false)
+	}
+	for _, ct := range dirsToWrite {
+		dir := filepath.Clean(clientDirs[ct])
+		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
+			return nil, httperr.WithCode(
+				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
+				http.StatusConflict,
+			)
+		}
+	}
+	return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files,
+		dirsToWrite, existing.Clients, true, false)
+}
+
+func missingClients(existing, requested []string) []string {
+	var out []string
+	for _, ct := range requested {
+		if !slices.Contains(existing, ct) {
+			out = append(out, ct)
+		}
+	}
+	return out
+}
+
+func (s *service) applyGitInstallFresh(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+	clientTypes []string,
+	clientDirs map[string]string,
+	files []gitresolver.FileEntry,
+) (*skills.InstallResult, error) {
+	// Deduplicate so clients sharing the same directory don't conflict.
+	dirsToCheck := uniqueDirClients(clientTypes, clientDirs, nil)
+	for _, ct := range dirsToCheck {
+		dir := filepath.Clean(clientDirs[ct])
+		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
+			return nil, httperr.WithCode(
+				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
+				http.StatusConflict,
+			)
+		}
+	}
+	return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files,
+		dirsToCheck, nil, false, false)
+}
+
+// gitWriteMultiAndPersist writes git files to the given client directories,
+// verifies each tree, then creates or updates the store record. On failure
+// after any write, previously written directories in this call are removed.
+func (s *service) gitWriteMultiAndPersist(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+	allRequested []string,
+	clientDirs map[string]string,
+	files []gitresolver.FileEntry,
+	dirsToWrite []string,
+	existingClients []string,
+	isUpgrade, writeAggressive bool,
+) (*skills.InstallResult, error) {
+	var written []string
+	for _, ct := range dirsToWrite {
+		dir := filepath.Clean(clientDirs[ct])
+		writeMode := opts.Force
+		if writeAggressive {
+			writeMode = true
+		}
+		if writeErr := gitresolver.WriteFiles(files, dir, writeMode); writeErr != nil {
+			for _, wct := range written {
+				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
+			}
+			return nil, fmt.Errorf("writing git skill: %w", writeErr)
+		}
+		if checkErr := skills.CheckFilesystem(dir); checkErr != nil {
+			_ = s.installer.Remove(dir)
+			for _, wct := range written {
+				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
+			}
+			return nil, fmt.Errorf("post-extraction verification failed: %w", checkErr)
+		}
+		written = append(written, ct)
+	}
+
+	sk := buildInstalledSkill(opts, scope, allRequested, existingClients)
+	if isUpgrade {
+		if err := s.store.Update(ctx, sk); err != nil {
+			for _, wct := range written {
+				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
+			}
+			return nil, err
+		}
+	} else {
+		if err := s.store.Create(ctx, sk); err != nil {
+			for _, wct := range written {
+				_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
+			}
+			return nil, err
+		}
+	}
+	return &skills.InstallResult{Skill: sk}, nil
+}
+
 // resolveFromLocalStore attempts to resolve a skill name as a tag in the local
 // OCI store. On success it hydrates opts with layer data, digest, and version
 // from the artifact. Returns (true, nil) when resolved, (false, nil) when the
@@ -566,6 +1221,187 @@ func (s *service) resolveFromLocalStore(ctx context.Context, opts *skills.Instal
 	}
 
 	return true, nil
+}
+
+// registryResolveResult holds the outcome of a registry skill name lookup.
+// Exactly one of OCIRef or GitURL will be set.
+type registryResolveResult struct {
+	OCIRef nameref.Reference
+	GitURL string // raw git:// URL for installFromGit
+}
+
+// resolveFromRegistry attempts to resolve a skill name by querying the
+// configured skill registry/index. Accepts either a plain name ("skill-creator")
+// or a qualified "namespace/name" ("io.github.stacklok/skill-creator").
+// Returns (result, nil) on success, (nil, nil) when no match is found or no
+// lookup is configured, or (nil, err) on ambiguity.
+func (s *service) resolveFromRegistry(name string) (*registryResolveResult, error) {
+	if s.skillLookup == nil {
+		return nil, nil
+	}
+
+	// Split qualified "namespace/name" if present. Use the last segment as
+	// the search query since SearchSkills matches on name substring.
+	wantNamespace, searchName := splitQualifiedName(name)
+
+	results, err := s.skillLookup.SearchSkills(searchName)
+	if err != nil {
+		slog.Warn("registry skill lookup failed, falling back to not-found", "name", name, "error", err)
+		return nil, nil
+	}
+
+	// Filter for exact match. Case-insensitive because registry data
+	// may not be normalized to lowercase even though local skill names are.
+	var matches []regtypes.Skill
+	for _, sk := range results {
+		if !strings.EqualFold(sk.Name, searchName) {
+			continue
+		}
+		if wantNamespace != "" && !strings.EqualFold(sk.Namespace, wantNamespace) {
+			continue
+		}
+		matches = append(matches, sk)
+	}
+
+	if len(matches) == 0 {
+		return nil, nil
+	}
+
+	if len(matches) > 1 {
+		const maxCandidates = 5
+		var candidates []string
+		for _, sk := range matches {
+			candidates = append(candidates, sk.Namespace+"/"+sk.Name)
+		}
+		suffix := ""
+		if len(candidates) > maxCandidates {
+			suffix = fmt.Sprintf(" and %d more", len(candidates)-maxCandidates)
+			candidates = candidates[:maxCandidates]
+		}
+		return nil, httperr.WithCode(
+			fmt.Errorf("ambiguous skill name %q matches multiple registry entries: %s%s; install by full OCI reference instead",
+				name, strings.Join(candidates, ", "), suffix),
+			http.StatusConflict,
+		)
+	}
+
+	return resolveRegistryPackages(name, matches[0].Packages)
+}
+
+// splitQualifiedName splits "namespace/name" into (namespace, name).
+// If the input has no "/" it returns ("", name) unchanged.
+func splitQualifiedName(s string) (namespace, name string) {
+	idx := strings.LastIndex(s, "/")
+	if idx < 0 {
+		return "", s
+	}
+	return s[:idx], s[idx+1:]
+}
+
+// resolveRegistryPackages selects the best installable package from a registry
+// entry. OCI packages are preferred; git is the fallback.
+func resolveRegistryPackages(name string, packages []regtypes.SkillPackage) (*registryResolveResult, error) {
+	// Try OCI packages first (preferred).
+	for _, pkg := range packages {
+		if pkg.RegistryType == "oci" && pkg.Identifier != "" {
+			ref, parseErr := nameref.ParseReference(pkg.Identifier)
+			if parseErr != nil {
+				id := truncate(pkg.Identifier, 256)
+				return nil, httperr.WithCode(
+					fmt.Errorf("registry skill %q has invalid OCI identifier %q: %w", name, id, parseErr),
+					http.StatusUnprocessableEntity,
+				)
+			}
+			return &registryResolveResult{OCIRef: ref}, nil
+		}
+	}
+
+	// Fallback: look for git packages.
+	for _, pkg := range packages {
+		if pkg.RegistryType == "git" && pkg.URL != "" {
+			gitURL, gitErr := buildGitReferenceFromRegistryURL(pkg.URL)
+			if gitErr != nil {
+				u := truncate(pkg.URL, 256)
+				return nil, httperr.WithCode(
+					fmt.Errorf("registry skill %q has invalid git URL %q: %w", name, u, gitErr),
+					http.StatusUnprocessableEntity,
+				)
+			}
+			if pkg.Subfolder != "" {
+				gitURL += "#" + pkg.Subfolder
+			}
+			return &registryResolveResult{GitURL: gitURL}, nil
+		}
+	}
+
+	return nil, httperr.WithCode(
+		fmt.Errorf("skill %q found in registry but has no installable package (OCI or git)", name),
+		http.StatusUnprocessableEntity,
+	)
+}
+
+// truncate returns s shortened to maxLen with an ellipsis appended if needed.
+func truncate(s string, maxLen int) string {
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
+}
+
+// buildGitReferenceFromRegistryURL converts a registry URL (typically HTTPS)
+// to a git:// scheme reference that ParseGitReference can handle.
+func buildGitReferenceFromRegistryURL(rawURL string) (string, error) {
+	// The registry may store URLs as "https://github.com/org/repo" or
+	// already as "git://github.com/org/repo".
+	if gitresolver.IsGitReference(rawURL) {
+		// Already a git:// URL — validate it.
+		if _, err := gitresolver.ParseGitReference(rawURL); err != nil {
+			return "", err
+		}
+		return rawURL, nil
+	}
+
+	// Convert https://host/path → git://host/path
+	stripped := strings.TrimPrefix(rawURL, "https://")
+	stripped = strings.TrimPrefix(stripped, "http://")
+	if stripped == rawURL {
+		return "", fmt.Errorf("unsupported URL scheme; expected https:// or git://")
+	}
+	gitURL := "git://" + stripped
+
+	// Validate the constructed reference.
+	if _, err := gitresolver.ParseGitReference(gitURL); err != nil {
+		return "", err
+	}
+	return gitURL, nil
+}
+
+// isSkillArtifact reports whether the OCI descriptor at digest d carries
+// ArtifactType == ArtifactTypeSkill. It inspects the top-level index or
+// manifest without descending into layers, so it is cheap to call.
+func (s *service) isSkillArtifact(ctx context.Context, d digest.Digest) (bool, error) {
+	isIndex, err := s.ociStore.IsIndex(ctx, d)
+	if err != nil {
+		return false, fmt.Errorf("checking OCI content type: %w", err)
+	}
+
+	if isIndex {
+		index, indexErr := s.ociStore.GetIndex(ctx, d)
+		if indexErr != nil {
+			return false, fmt.Errorf("reading OCI index: %w", indexErr)
+		}
+		return index.ArtifactType == ociskills.ArtifactTypeSkill, nil
+	}
+
+	manifestBytes, err := s.ociStore.GetManifest(ctx, d)
+	if err != nil {
+		return false, fmt.Errorf("reading OCI manifest: %w", err)
+	}
+	var manifest ocispec.Manifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return false, fmt.Errorf("parsing OCI manifest: %w", err)
+	}
+	return manifest.ArtifactType == ociskills.ArtifactTypeSkill, nil
 }
 
 // extractOCIContent navigates the OCI content graph from a pulled digest,
@@ -654,24 +1490,162 @@ func (s *service) extractOCIContent(ctx context.Context, d digest.Digest) ([]byt
 	return layerData, skillConfig, nil
 }
 
-// installPending creates a pending skill record (no extraction).
-func (s *service) installPending(
-	ctx context.Context, opts skills.InstallOptions, scope skills.Scope,
-) (*skills.InstallResult, error) {
-	sk := skills.InstalledSkill{
-		Metadata: skills.SkillMetadata{
-			Name:    opts.Name,
-			Version: opts.Version,
-		},
-		Scope:       scope,
-		ProjectRoot: opts.ProjectRoot,
-		Status:      skills.InstallStatusPending,
-		InstalledAt: time.Now().UTC(),
+// clientsAllSentinel is the reserved value that expands to all skill-supporting clients.
+const clientsAllSentinel = "all"
+
+// resolveAndValidateClients returns the deduplicated client list and a map of
+// client identifier to install directory. Empty opts.Clients (or the sentinel
+// value "all") expands to every skill-supporting client returned by the path resolver.
+func (s *service) resolveAndValidateClients(
+	opts skills.InstallOptions,
+	skillName string,
+	scope skills.Scope,
+	projectRoot string,
+) ([]string, map[string]string, error) {
+	if s.pathResolver == nil {
+		return nil, nil, httperr.WithCode(
+			fmt.Errorf("path resolver is required for skill installs"),
+			http.StatusInternalServerError,
+		)
 	}
-	if err := s.store.Create(ctx, sk); err != nil {
-		return nil, err
+
+	var requested []string
+	switch {
+	case len(opts.Clients) == 0 || (len(opts.Clients) == 1 && strings.EqualFold(opts.Clients[0], clientsAllSentinel)):
+		clients := s.pathResolver.ListSkillSupportingClients()
+		if len(clients) == 0 {
+			return nil, nil, httperr.WithCode(
+				errors.New("no supported clients detected on this system; "+
+					"use --clients to target a specific client explicitly"),
+				http.StatusBadRequest,
+			)
+		}
+		requested = clients
+	default:
+		for _, c := range opts.Clients {
+			if c == "" {
+				return nil, nil, httperr.WithCode(
+					errors.New("clients entries must be non-empty strings"),
+					http.StatusBadRequest,
+				)
+			}
+			if strings.EqualFold(c, clientsAllSentinel) {
+				return nil, nil, httperr.WithCode(
+					fmt.Errorf("%q cannot be combined with other client names", clientsAllSentinel),
+					http.StatusBadRequest,
+				)
+			}
+		}
+		requested = dedupeStringsPreserveOrder(opts.Clients)
 	}
-	return &skills.InstallResult{Skill: sk}, nil
+
+	paths := make(map[string]string, len(requested))
+	for _, ct := range requested {
+		dir, err := s.pathResolver.GetSkillPath(ct, skillName, scope, projectRoot)
+		if err != nil {
+			if errors.Is(err, client.ErrUnsupportedClientType) || errors.Is(err, client.ErrSkillsNotSupported) {
+				return nil, nil, httperr.WithCode(
+					fmt.Errorf("invalid client %q: %w", ct, err),
+					http.StatusBadRequest,
+				)
+			}
+			return nil, nil, fmt.Errorf("resolving skill path for client %q: %w", ct, err)
+		}
+		dir = filepath.Clean(dir)
+		if err := validateResolvedDir(dir); err != nil {
+			return nil, nil, fmt.Errorf("resolved path for client %q is unsafe: %w", ct, err)
+		}
+		paths[ct] = dir
+	}
+	return requested, paths, nil
+}
+
+// expandToExistingClients merges existingClients into requestedClients and
+// resolves paths for any existing client not already in clientDirs. This
+// ensures upgrades write new files to all clients, not just the requested set.
+func (s *service) expandToExistingClients(
+	existingClients, requestedClients []string,
+	clientDirs map[string]string,
+	skillName string, scope skills.Scope, projectRoot string,
+) ([]string, map[string]string, error) {
+	allClients := mergeClientLists(requestedClients, existingClients)
+	allDirs := make(map[string]string, len(allClients))
+	for k, v := range clientDirs {
+		allDirs[k] = v
+	}
+	for _, ct := range allClients {
+		if _, ok := allDirs[ct]; ok {
+			continue
+		}
+		dir, err := s.pathResolver.GetSkillPath(ct, skillName, scope, projectRoot)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving skill path for existing client %q: %w", ct, err)
+		}
+		dir = filepath.Clean(dir)
+		if err := validateResolvedDir(dir); err != nil {
+			return nil, nil, fmt.Errorf("resolved path for client %q is unsafe: %w", ct, err)
+		}
+		allDirs[ct] = dir
+	}
+	return allClients, allDirs, nil
+}
+
+// validateResolvedDir ensures a directory path is absolute and free of
+// path-traversal segments. Callers must pass a filepath.Clean'd value.
+func validateResolvedDir(dir string) error {
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("path must be absolute, got %q", dir)
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(dir), "/") {
+		if seg == ".." {
+			return fmt.Errorf("path contains traversal segment: %q", dir)
+		}
+	}
+	return nil
+}
+
+func dedupeStringsPreserveOrder(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+// clientsContainAll reports whether every value in requested appears in existing.
+func clientsContainAll(existing, requested []string) bool {
+	for _, r := range requested {
+		if !slices.Contains(existing, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeClientLists returns existing followed by any requested entries not already present.
+func mergeClientLists(existing, requested []string) []string {
+	out := make([]string, len(existing))
+	copy(out, existing)
+	seen := make(map[string]struct{}, len(existing)+len(requested))
+	for _, c := range existing {
+		seen[c] = struct{}{}
+	}
+	for _, c := range requested {
+		if _, ok := seen[c]; ok {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // installWithExtraction handles the full install flow: managed/unmanaged
@@ -679,131 +1653,216 @@ func (s *service) installPending(
 func (s *service) installWithExtraction(
 	ctx context.Context, opts skills.InstallOptions, scope skills.Scope,
 ) (*skills.InstallResult, error) {
-	if s.pathResolver == nil {
-		return nil, httperr.WithCode(
-			fmt.Errorf("path resolver is required for extraction-based installs"),
-			http.StatusInternalServerError,
-		)
-	}
-
-	clientType := s.resolveClient(opts.Client)
-
-	targetDir, err := s.pathResolver.GetSkillPath(clientType, opts.Name, scope, opts.ProjectRoot)
+	clientTypes, clientDirs, err := s.resolveAndValidateClients(opts, opts.Name, scope, opts.ProjectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("resolving skill path: %w", err)
+		return nil, err
 	}
 
-	// Check store for existing managed record.
 	existing, storeErr := s.store.Get(ctx, opts.Name, scope, opts.ProjectRoot)
 	isNotFound := errors.Is(storeErr, storage.ErrNotFound)
-
-	switch {
-	case storeErr != nil && !isNotFound:
-		// Unexpected store error.
+	if storeErr != nil && !isNotFound {
 		return nil, fmt.Errorf("checking existing skill: %w", storeErr)
+	}
 
-	case storeErr == nil && existing.Digest == opts.Digest:
-		// Same digest — already installed, no-op.
+	if isExtractionNoOp(existing, storeErr, opts, clientTypes) {
 		return &skills.InstallResult{Skill: existing}, nil
-
-	case storeErr == nil:
-		// Different digest — upgrade path.
-		return s.upgradeSkill(ctx, opts, scope, clientType, targetDir, existing)
-
-	default:
-		// Not found in store — check for unmanaged directory.
-		return s.freshInstall(ctx, opts, scope, clientType, targetDir)
 	}
+
+	digestMatches := storeErr == nil && existing.Digest == opts.Digest
+	if digestMatches && storeErr == nil {
+		return s.installExtractionSameDigestNewClients(ctx, opts, scope, existing, clientTypes, clientDirs)
+	}
+
+	if storeErr == nil {
+		return s.installExtractionUpgradeDigest(ctx, opts, scope, existing, clientTypes, clientDirs)
+	}
+
+	return s.installExtractionFresh(ctx, opts, scope, clientTypes, clientDirs)
 }
 
-// upgradeSkill handles re-extraction when the digest differs from the stored record.
-func (s *service) upgradeSkill(
+// isExtractionNoOp reports whether the install can be short-circuited because
+// the same digest and all requested clients are already present. Legacy store
+// rows (empty Clients slice) are treated as satisfied only when the user did
+// not explicitly specify --clients.
+func isExtractionNoOp(existing skills.InstalledSkill, storeErr error, opts skills.InstallOptions, clientTypes []string) bool {
+	if storeErr != nil || existing.Digest != opts.Digest {
+		return false
+	}
+	if clientsContainAll(existing.Clients, clientTypes) {
+		return true
+	}
+	return len(existing.Clients) == 0 && len(clientTypes) <= 1 && len(opts.Clients) == 0
+}
+
+func (s *service) installExtractionSameDigestNewClients(
 	ctx context.Context,
 	opts skills.InstallOptions,
 	scope skills.Scope,
-	clientType, targetDir string,
 	existing skills.InstalledSkill,
+	clientTypes []string,
+	clientDirs map[string]string,
 ) (*skills.InstallResult, error) {
-	if _, err := s.installer.Extract(opts.LayerData, targetDir, true); err != nil {
-		return nil, fmt.Errorf("extracting skill upgrade: %w", err)
+	toWrite := missingClients(existing.Clients, clientTypes)
+	if len(toWrite) == 0 {
+		return &skills.InstallResult{Skill: existing}, nil
 	}
-
-	sk := buildInstalledSkill(opts, scope, clientType, existing.Clients)
+	// Deduplicate and skip directories already owned by existing clients.
+	dirsToWrite := uniqueDirClients(toWrite, clientDirs, existingClientDirs(existing.Clients, clientDirs))
+	if len(dirsToWrite) == 0 {
+		// All new clients share directories with existing ones — no-op.
+		sk := buildInstalledSkill(opts, scope, clientTypes, existing.Clients)
+		if err := s.store.Update(ctx, sk); err != nil {
+			return nil, err
+		}
+		return &skills.InstallResult{Skill: sk}, nil
+	}
+	var written []string
+	for _, ct := range dirsToWrite {
+		dir := filepath.Clean(clientDirs[ct])
+		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
+			removeSkillDirs(s.installer, clientDirs, written)
+			return nil, httperr.WithCode(
+				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
+				http.StatusConflict,
+			)
+		}
+		if _, exErr := s.installer.Extract(opts.LayerData, dir, opts.Force); exErr != nil {
+			removeSkillDirs(s.installer, clientDirs, written)
+			return nil, fmt.Errorf("extracting skill: %w", exErr)
+		}
+		written = append(written, ct)
+	}
+	sk := buildInstalledSkill(opts, scope, clientTypes, existing.Clients)
 	if err := s.store.Update(ctx, sk); err != nil {
-		// Rollback: clean up extracted files since the store record wasn't updated.
-		_ = s.installer.Remove(targetDir)
+		removeSkillDirs(s.installer, clientDirs, written)
 		return nil, err
 	}
 	return &skills.InstallResult{Skill: sk}, nil
 }
 
-// freshInstall handles first-time installation when no store record exists.
-func (s *service) freshInstall(
-	ctx context.Context,
-	opts skills.InstallOptions,
-	scope skills.Scope,
-	clientType, targetDir string,
-) (*skills.InstallResult, error) {
-	// Check for unmanaged directory on disk.
-	if _, statErr := os.Stat(targetDir); statErr == nil && !opts.Force {
-		return nil, httperr.WithCode(
-			fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", targetDir),
-			http.StatusConflict,
-		)
+func removeSkillDirs(inst skills.Installer, clientDirs map[string]string, clients []string) {
+	for _, ct := range clients {
+		_ = inst.Remove(filepath.Clean(clientDirs[ct]))
 	}
-
-	if _, err := s.installer.Extract(opts.LayerData, targetDir, opts.Force); err != nil {
-		return nil, fmt.Errorf("extracting skill: %w", err)
-	}
-
-	sk := buildInstalledSkill(opts, scope, clientType, nil)
-	if err := s.store.Create(ctx, sk); err != nil {
-		// Rollback: clean up extracted files since the store record wasn't created.
-		_ = s.installer.Remove(targetDir)
-		return nil, err
-	}
-	return &skills.InstallResult{Skill: sk}, nil
 }
 
-// resolveClient returns the provided client type, or falls back to the first
-// skill-supporting client from the path resolver.
-func (s *service) resolveClient(clientType string) string {
-	if clientType != "" {
-		return clientType
+// uniqueDirClients returns the subset of clients whose resolved directory is
+// unique. When multiple clients share the same path (e.g. vscode and
+// vscode-insider both using ~/.copilot/skills), only the first is returned.
+// This prevents double-extraction while still recording all clients in the DB.
+//
+// occupiedDirs is pre-seeded into the seen set so that new clients whose
+// directory is already owned by an existing installed client are also skipped.
+// Pass nil when there are no pre-existing directories to exclude.
+func uniqueDirClients(clients []string, clientDirs map[string]string, occupiedDirs map[string]struct{}) []string {
+	seen := make(map[string]struct{}, len(clients)+len(occupiedDirs))
+	for dir := range occupiedDirs {
+		seen[dir] = struct{}{}
 	}
-	if s.pathResolver != nil {
-		clients := s.pathResolver.ListSkillSupportingClients()
-		if len(clients) > 0 {
-			return clients[0]
+	out := make([]string, 0, len(clients))
+	for _, ct := range clients {
+		dir := filepath.Clean(clientDirs[ct])
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+		seen[dir] = struct{}{}
+		out = append(out, ct)
+	}
+	return out
+}
+
+// existingClientDirs builds the set of directories already occupied by the
+// given installed clients. Used to seed uniqueDirClients so that new clients
+// sharing a directory with an existing client are skipped rather than
+// triggering a false "directory exists" conflict.
+func existingClientDirs(existing []string, clientDirs map[string]string) map[string]struct{} {
+	dirs := make(map[string]struct{}, len(existing))
+	for _, ct := range existing {
+		if dir, ok := clientDirs[ct]; ok {
+			dirs[filepath.Clean(dir)] = struct{}{}
 		}
 	}
-	return ""
+	return dirs
+}
+
+func (s *service) installExtractionUpgradeDigest(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+	existing skills.InstalledSkill,
+	clientTypes []string,
+	clientDirs map[string]string,
+) (*skills.InstallResult, error) {
+	allClients, allDirs, err := s.expandToExistingClients(
+		existing.Clients, clientTypes, clientDirs, opts.Name, scope, opts.ProjectRoot)
+	if err != nil {
+		return nil, err
+	}
+	// Deduplicate so clients sharing the same directory don't conflict.
+	dirsToWrite := uniqueDirClients(allClients, allDirs, nil)
+	var written []string
+	for _, ct := range dirsToWrite {
+		dir := filepath.Clean(allDirs[ct])
+		if _, exErr := s.installer.Extract(opts.LayerData, dir, true); exErr != nil {
+			removeSkillDirs(s.installer, allDirs, written)
+			return nil, fmt.Errorf("extracting skill upgrade: %w", exErr)
+		}
+		written = append(written, ct)
+	}
+	sk := buildInstalledSkill(opts, scope, allClients, nil)
+	if err := s.store.Update(ctx, sk); err != nil {
+		removeSkillDirs(s.installer, allDirs, dirsToWrite)
+		return nil, err
+	}
+	return &skills.InstallResult{Skill: sk}, nil
+}
+
+func (s *service) installExtractionFresh(
+	ctx context.Context,
+	opts skills.InstallOptions,
+	scope skills.Scope,
+	clientTypes []string,
+	clientDirs map[string]string,
+) (*skills.InstallResult, error) {
+	// Deduplicate so clients sharing the same directory don't conflict.
+	dirsToWrite := uniqueDirClients(clientTypes, clientDirs, nil)
+
+	for _, ct := range dirsToWrite {
+		dir := filepath.Clean(clientDirs[ct])
+		if _, statErr := os.Stat(dir); statErr == nil && !opts.Force { // lgtm[go/path-injection]
+			return nil, httperr.WithCode(
+				fmt.Errorf("directory %q exists but is not managed by ToolHive; use force to overwrite", dir),
+				http.StatusConflict,
+			)
+		}
+	}
+	var written []string
+	for _, ct := range dirsToWrite {
+		dir := filepath.Clean(clientDirs[ct])
+		if _, exErr := s.installer.Extract(opts.LayerData, dir, opts.Force); exErr != nil {
+			removeSkillDirs(s.installer, clientDirs, written)
+			return nil, fmt.Errorf("extracting skill: %w", exErr)
+		}
+		written = append(written, ct)
+	}
+	sk := buildInstalledSkill(opts, scope, clientTypes, nil)
+	if err := s.store.Create(ctx, sk); err != nil {
+		removeSkillDirs(s.installer, clientDirs, dirsToWrite)
+		return nil, err
+	}
+	return &skills.InstallResult{Skill: sk}, nil
 }
 
 // buildInstalledSkill constructs an InstalledSkill from install options.
+// requestedClientTypes is the set of clients targeted by this install; they
+// are merged with existingClients for the persisted Clients field.
 func buildInstalledSkill(
 	opts skills.InstallOptions,
 	scope skills.Scope,
-	clientType string,
+	requestedClientTypes []string,
 	existingClients []string,
 ) skills.InstalledSkill {
-	clients := func() []string {
-		if len(existingClients) > 0 {
-			for _, c := range existingClients {
-				if c == clientType {
-					return existingClients
-				}
-			}
-			// Defensive copy to avoid mutating the caller's slice.
-			newClients := make([]string, len(existingClients), len(existingClients)+1)
-			copy(newClients, existingClients)
-			return append(newClients, clientType)
-		}
-		if clientType != "" {
-			return []string{clientType}
-		}
-		return nil
-	}()
+	clients := mergeClientLists(existingClients, requestedClientTypes)
 
 	return skills.InstalledSkill{
 		Metadata: skills.SkillMetadata{
@@ -888,11 +1947,36 @@ func defaultScope(s skills.Scope) skills.Scope {
 }
 
 // registerSkillInGroup adds the skill to the requested group when a group
-// manager is configured. It is a no-op when groupName is empty or the manager
-// is nil (group support is optional).
+// manager is configured. When groupName is empty it defaults to the
+// "default" group, matching workload behavior.
 func (s *service) registerSkillInGroup(ctx context.Context, groupName string, skillName string) error {
-	if groupName == "" || s.groupManager == nil {
+	if s.groupManager == nil {
 		return nil
 	}
+	if groupName == "" {
+		groupName = groups.DefaultGroup
+	}
 	return groups.AddSkillToGroup(ctx, s.groupManager, groupName, skillName)
+}
+
+// installAndRegister registers the just-installed skill in the target group.
+// If group registration fails, the DB record is rolled back so that a retry
+// starts fresh rather than leaving the system in an inconsistent state (skill
+// installed but not in the expected group).
+func (s *service) installAndRegister(
+	ctx context.Context,
+	result *skills.InstallResult,
+	groupName string,
+	skillName string,
+	scope skills.Scope,
+	projectRoot string,
+) (*skills.InstallResult, error) {
+	if err := s.registerSkillInGroup(ctx, groupName, skillName); err != nil {
+		// Best-effort rollback: remove the DB record so retries start fresh.
+		// Files on disk are left in place; a fresh install will detect them
+		// and either overwrite (force) or return a conflict.
+		_ = s.store.Delete(ctx, skillName, scope, projectRoot)
+		return nil, fmt.Errorf("registering skill in group: %w", err)
+	}
+	return result, nil
 }

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package config contains the definition of the application config structure
@@ -39,6 +39,7 @@ type Config struct {
 	DefaultGroupMigration        bool                                `yaml:"default_group_migration,omitempty"`
 	TelemetryConfigMigration     bool                                `yaml:"telemetry_config_migration,omitempty"`
 	MiddlewareTelemetryMigration bool                                `yaml:"middleware_telemetry_migration,omitempty"`
+	SecretScopeMigration         bool                                `yaml:"secret_scope_migration,omitempty"`
 	DisableUsageMetrics          bool                                `yaml:"disable_usage_metrics,omitempty"`
 	BuildEnv                     map[string]string                   `yaml:"build_env,omitempty"`
 	BuildEnvFromSecrets          map[string]string                   `yaml:"build_env_from_secrets,omitempty"`
@@ -334,7 +335,7 @@ func (c *Config) saveToPath(configPath string) error {
 
 // UpdateConfig locks a separate lock file, reads from disk, applies the changes
 // from the anonymous function, writes to disk and unlocks the file.
-func UpdateConfig(updateFn func(*Config)) error {
+func UpdateConfig(updateFn func(*Config) error) error {
 	provider := NewProvider()
 	return provider.UpdateConfig(updateFn)
 }
@@ -342,7 +343,7 @@ func UpdateConfig(updateFn func(*Config)) error {
 // UpdateConfigAtPath locks a separate lock file, reads from disk, applies the changes
 // from the anonymous function, writes to disk and unlocks the file.
 // If configPath is empty, it uses the default path.
-func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
+func UpdateConfigAtPath(configPath string, updateFn func(*Config) error) error {
 	if configPath == "" {
 		var err error
 		configPath, err = getConfigPath()
@@ -374,7 +375,9 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 	}
 
 	// Apply changes to the config file.
-	updateFn(c)
+	if err := updateFn(c); err != nil {
+		return err
+	}
 
 	// Write the updated config to disk.
 	err = c.saveToPath(configPath)
@@ -387,12 +390,18 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 }
 
 // OpenTelemetryConfig contains the settings for OpenTelemetry configuration.
+//
+// Fields whose CLI default is true use *bool so that "never set" (nil) is
+// distinguishable from "explicitly set to false". Without this, the config
+// zero value (false) would silently override the CLI default (true) for
+// every user who never touched the field. Plain bool with omitempty is fine
+// for fields that default to false on both the CLI and config sides.
 type OpenTelemetryConfig struct {
 	Endpoint                    string   `yaml:"endpoint,omitempty"`
 	SamplingRate                float64  `yaml:"sampling-rate,omitempty"`
 	EnvVars                     []string `yaml:"env-vars,omitempty"`
-	MetricsEnabled              bool     `yaml:"metrics-enabled,omitempty"`
-	TracingEnabled              bool     `yaml:"tracing-enabled,omitempty"`
+	MetricsEnabled              *bool    `yaml:"metrics-enabled"`
+	TracingEnabled              *bool    `yaml:"tracing-enabled"`
 	Insecure                    bool     `yaml:"insecure,omitempty"`
 	EnablePrometheusMetricsPath bool     `yaml:"enable-prometheus-metrics-path,omitempty"`
 	UseLegacyAttributes         *bool    `yaml:"use-legacy-attributes"`
@@ -423,10 +432,11 @@ func setRuntimeConfig(provider Provider, transportType string, runtimeConfig *te
 		}
 	}
 
-	return provider.UpdateConfig(func(c *Config) {
+	return provider.UpdateConfig(func(c *Config) error {
 		if c.RuntimeConfigs == nil {
 			c.RuntimeConfigs = make(map[string]*templates.RuntimeConfig)
 		}
 		c.RuntimeConfigs[transportType] = runtimeConfig
+		return nil
 	})
 }

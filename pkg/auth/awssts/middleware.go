@@ -260,6 +260,17 @@ func signRequestForTarget(r *http.Request, signer *requestSigner, creds *aws.Cre
 	signingReq.URL.Scheme = targetURL.Scheme
 	signingReq.URL.Host = targetURL.Host
 	signingReq.Host = targetURL.Host
+
+	// Strip headers that upstream gateways inject and that
+	// httputil.ReverseProxy.SetXForwarded() rewrites after signing.
+	// Including them in the SigV4 canonical headers produces a
+	// signature mismatch because the values change in flight.
+	signingReq.Header.Del("X-Forwarded-For")
+	signingReq.Header.Del("X-Forwarded-Host")
+	signingReq.Header.Del("X-Forwarded-Proto")
+	signingReq.Header.Del("X-Real-Ip")
+	signingReq.Header.Del("Forwarded") // RFC 7239
+
 	if bodyBytes != nil {
 		signingReq.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		signingReq.ContentLength = int64(len(bodyBytes))

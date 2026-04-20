@@ -160,7 +160,7 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (back
 		return nil, fmt.Errorf("failed to check if group exists: %w", err)
 	}
 	if !exists {
-		return nil, fmt.Errorf("group %s not found", groupRef)
+		return nil, fmt.Errorf("%w: %s", groups.ErrGroupNotFound, groupRef)
 	}
 
 	// Get all typedWorkloads in the group
@@ -269,6 +269,8 @@ func (d *backendDiscoverer) discoverFromStaticConfig() []vmcp.Backend {
 			Name:          staticBackend.Name,
 			BaseURL:       staticBackend.URL,
 			TransportType: staticBackend.Transport,
+			Type:          vmcp.BackendType(staticBackend.Type),
+			CABundlePath:  staticBackend.CABundlePath,
 			HealthStatus:  vmcp.BackendHealthy, // Assume healthy, actual health check happens later
 			Metadata:      staticBackend.Metadata,
 		}

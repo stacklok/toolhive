@@ -84,11 +84,11 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 	// Set target port if specified
 	if config.TargetPort > 0 {
 		// #nosec G115 -- Port values are validated elsewhere, safe conversion
-		mcpServer.Spec.McpPort = int32(config.TargetPort)
+		mcpServer.Spec.MCPPort = int32(config.TargetPort)
 	}
 
 	// Set proxy mode if transport is stdio
-	if config.Transport == types.TransportTypeStdio && config.ProxyMode != "" {
+	if config.Transport == types.TransportTypeStdio {
 		mcpServer.Spec.ProxyMode = string(config.ProxyMode)
 	}
 
@@ -125,20 +125,9 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 		}
 	}
 
-	// Convert OIDC config
-	if config.OIDCConfig != nil {
-		mcpServer.Spec.OIDCConfig = &v1alpha1.OIDCConfigRef{
-			Type: v1alpha1.OIDCConfigTypeInline,
-			Inline: &v1alpha1.InlineOIDCConfig{
-				Issuer:   config.OIDCConfig.Issuer,
-				Audience: config.OIDCConfig.Audience,
-			},
-		}
-
-		if config.OIDCConfig.JWKSURL != "" {
-			mcpServer.Spec.OIDCConfig.Inline.JWKSURL = config.OIDCConfig.JWKSURL
-		}
-	}
+	// Note: OIDC authentication requires a separate MCPOIDCConfig resource
+	// and an oidcConfigRef on the MCPServer. This export does not generate
+	// the MCPOIDCConfig resource — create it manually and reference it.
 
 	// Convert authz config
 	if config.AuthzConfig != nil && len(config.AuthzConfig.RawConfig()) > 0 {
@@ -166,35 +155,11 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 		}
 	}
 
-	// Convert telemetry config
-	if config.TelemetryConfig != nil {
-		mcpServer.Spec.Telemetry = &v1alpha1.TelemetryConfig{}
+	// Note: Telemetry configuration requires a separate MCPTelemetryConfig resource
+	// and a telemetryConfigRef on the MCPServer. This export does not generate
+	// the MCPTelemetryConfig resource — create it manually and reference it.
 
-		if config.TelemetryConfig.Endpoint != "" {
-			mcpServer.Spec.Telemetry.OpenTelemetry = &v1alpha1.OpenTelemetryConfig{
-				Enabled:  true,
-				Endpoint: config.TelemetryConfig.Endpoint,
-				Insecure: config.TelemetryConfig.Insecure,
-			}
-
-			if config.TelemetryConfig.ServiceName != "" {
-				mcpServer.Spec.Telemetry.OpenTelemetry.ServiceName = config.TelemetryConfig.ServiceName
-			}
-		}
-
-		// Convert Prometheus metrics path setting
-		if config.TelemetryConfig.EnablePrometheusMetricsPath {
-			if mcpServer.Spec.Telemetry.Prometheus == nil {
-				mcpServer.Spec.Telemetry.Prometheus = &v1alpha1.PrometheusConfig{}
-			}
-			mcpServer.Spec.Telemetry.Prometheus.Enabled = true
-		}
-	}
-
-	// Convert tools filter
-	if len(config.ToolsFilter) > 0 {
-		mcpServer.Spec.ToolsFilter = config.ToolsFilter
-	}
+	// Note: ToolsFilter is not exported to CRD; use MCPToolConfig resource with toolConfigRef instead
 
 	return mcpServer, nil
 }

@@ -23,4 +23,11 @@ type SkillService interface {
 	Build(ctx context.Context, opts BuildOptions) (*BuildResult, error)
 	// Push pushes a built skill artifact to a remote registry.
 	Push(ctx context.Context, opts PushOptions) error
+	// ListBuilds returns all locally-built OCI skill artifacts in the local store.
+	ListBuilds(ctx context.Context) ([]LocalBuild, error)
+	// DeleteBuild removes a locally-built OCI skill artifact from the local store.
+	DeleteBuild(ctx context.Context, tag string) error
+	// GetContent retrieves the SKILL.md body and file listing from an OCI artifact
+	// without installing it. Works for both remote registry references and local build tags.
+	GetContent(ctx context.Context, opts ContentOptions) (*SkillContent, error)
 }

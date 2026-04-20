@@ -250,6 +250,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 				},
 			},
 			oidcConfig: &oidc.OIDCConfig{
+				Audience:    "http://test-server.default.svc.cluster.local:8080",
 				ResourceURL: "http://test-server.default.svc.cluster.local:8080",
 				Scopes:      []string{"openid", "offline_access"},
 			},
@@ -654,7 +655,7 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "test:v1",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "oauth-config",
 					},
@@ -730,7 +731,7 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "test:v1",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "non-existent",
 					},
@@ -748,19 +749,14 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "test:v1",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "embedded-auth-config",
 					},
-					// OIDCConfig is required for embedded auth server
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type:        mcpv1alpha1.OIDCConfigTypeInline,
-						ResourceURL: "http://embedded-auth-server.default.svc.cluster.local:8080",
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://kubernetes.default.svc",
-							Audience: "toolhive",
-							Scopes:   []string{"openid", "offline_access", "mcp:tools"},
-						},
+					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+						Name:     "embedded-oidc",
+						Audience: "http://embedded-auth-server.default.svc.cluster.local:8080",
+						Scopes:   []string{"openid", "offline_access", "mcp:tools"},
 					},
 				},
 			},
@@ -841,6 +837,21 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 			}
 			if tt.clientSecret != nil {
 				objects = append(objects, tt.clientSecret)
+			}
+			// Add MCPOIDCConfig if the MCPServer references one
+			if tt.mcpServer.Spec.OIDCConfigRef != nil {
+				objects = append(objects, &mcpv1alpha1.MCPOIDCConfig{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      tt.mcpServer.Spec.OIDCConfigRef.Name,
+						Namespace: tt.mcpServer.Namespace,
+					},
+					Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+						Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+							Issuer: "https://kubernetes.default.svc",
+						},
+					},
+				})
 			}
 
 			fakeClient := fake.NewClientBuilder().

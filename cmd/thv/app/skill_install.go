@@ -4,6 +4,8 @@
 package app
 
 import (
+	"strings"
+
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/skills"
@@ -11,7 +13,7 @@ import (
 
 var (
 	skillInstallScope       string
-	skillInstallClient      string
+	skillInstallClientsRaw  string
 	skillInstallForce       bool
 	skillInstallProjectRoot string
 	skillInstallGroup       string
@@ -34,7 +36,8 @@ The skill will be fetched from a remote registry and installed locally.`,
 func init() {
 	skillCmd.AddCommand(skillInstallCmd)
 
-	skillInstallCmd.Flags().StringVar(&skillInstallClient, "client", "", "Target client application (e.g. claude-code)")
+	skillInstallCmd.Flags().StringVar(&skillInstallClientsRaw, "clients", "",
+		`Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client`)
 	skillInstallCmd.Flags().StringVar(&skillInstallScope, "scope", string(skills.ScopeUser), "Installation scope (user, project)")
 	skillInstallCmd.Flags().BoolVar(&skillInstallForce, "force", false, "Overwrite existing skill directory")
 	skillInstallCmd.Flags().StringVar(&skillInstallProjectRoot, "project-root", "", "Project root path for project-scoped installs")
@@ -42,12 +45,12 @@ func init() {
 }
 
 func skillInstallCmdFunc(cmd *cobra.Command, args []string) error {
-	c := newSkillClient()
+	c := newSkillClient(cmd.Context())
 
 	_, err := c.Install(cmd.Context(), skills.InstallOptions{
 		Name:        args[0],
 		Scope:       skills.Scope(skillInstallScope),
-		Client:      skillInstallClient,
+		Clients:     parseSkillInstallClients(skillInstallClientsRaw),
 		Force:       skillInstallForce,
 		ProjectRoot: skillInstallProjectRoot,
 		Group:       skillInstallGroup,
@@ -57,4 +60,24 @@ func skillInstallCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// parseSkillInstallClients splits a comma-separated --clients flag value.
+// Empty input yields nil so the server applies its default client.
+func parseSkillInstallClients(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

@@ -127,6 +127,9 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 			Discoverer: discoverer,
 		}
 
+		err = reconciler.SetupIndexes(ctx, reconcilerMgr)
+		Expect(err).NotTo(HaveOccurred())
+
 		err = reconciler.SetupWithManager(reconcilerMgr)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -169,7 +172,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  testGroupRef,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
 					Image:     "test-image:latest",
 					Transport: "streamable-http",
 				},
@@ -197,7 +200,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  "different-group", // Does NOT match testGroupRef
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "different-group"}, // Does NOT match testGroupRef
 					Image:     "test-image:latest",
 					Transport: "streamable-http",
 				},
@@ -222,7 +225,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  testGroupRef,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
 					Image:     "test-image:latest",
 					Transport: "streamable-http",
 				},
@@ -257,7 +260,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					GroupRef:  testGroupRef,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
 					RemoteURL: "https://example.com/mcp",
 				},
 			}
@@ -282,7 +285,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					GroupRef:  "other-group",
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "other-group"},
 					RemoteURL: "https://example.com/mcp",
 				},
 			}
@@ -310,7 +313,7 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef: testGroupRef,
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
 					Image:    "test-image:latest",
 					Transport: "streamable-http",
 				},
@@ -326,6 +329,133 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 			// Delete and verify version increments again
 			currentVersion := registry.Version()
 			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
+
+			Eventually(func() uint64 {
+				return registry.Version()
+			}, timeout, interval).Should(BeNumerically(">", currentVersion))
+		})
+	})
+
+	Context("MCPServerEntry Lifecycle", func() {
+		It("should add MCPServerEntry to registry when created with matching groupRef", func() {
+			entry := &mcpv1alpha1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-entry-add",
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPServerEntrySpec{
+					RemoteURL: "https://mcp.example.com/mcp",
+					Transport: "streamable-http",
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, entry)).Should(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, entry)
+			}()
+
+			// Set status to Valid so the discoverer accepts it
+			entry.Status.Phase = mcpv1alpha1.MCPServerEntryPhaseValid
+			Expect(k8sClient.Status().Update(ctx, entry)).Should(Succeed())
+
+			// MCPServerEntry uses Spec.RemoteURL directly (no K8s Service needed),
+			// so unlike MCPServer/MCPRemoteProxy, the backend should actually be added
+			Eventually(func() int {
+				return registry.Count()
+			}, timeout, interval).Should(Equal(1))
+
+			// Verify the backend has the correct fields
+			backend := registry.Get(ctx, "test-entry-add")
+			Expect(backend).NotTo(BeNil())
+			Expect(backend.BaseURL).To(Equal("https://mcp.example.com/mcp"))
+			Expect(backend.TransportType).To(Equal("streamable-http"))
+		})
+
+		It("should NOT add MCPServerEntry with mismatched groupRef", func() {
+			entry := &mcpv1alpha1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-entry-mismatch",
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPServerEntrySpec{
+					RemoteURL: "https://mcp.example.com/mcp",
+					Transport: "streamable-http",
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "other-group"},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, entry)).Should(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, entry)
+			}()
+
+			entry.Status.Phase = mcpv1alpha1.MCPServerEntryPhaseValid
+			Expect(k8sClient.Status().Update(ctx, entry)).Should(Succeed())
+
+			Consistently(func() int {
+				return registry.Count()
+			}, time.Second*2, interval).Should(Equal(0))
+		})
+
+		It("should remove MCPServerEntry from registry when deleted", func() {
+			entry := &mcpv1alpha1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-entry-delete",
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPServerEntrySpec{
+					RemoteURL: "https://mcp.example.com/mcp",
+					Transport: "streamable-http",
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, entry)).Should(Succeed())
+
+			entry.Status.Phase = mcpv1alpha1.MCPServerEntryPhaseValid
+			Expect(k8sClient.Status().Update(ctx, entry)).Should(Succeed())
+
+			// Wait for backend to appear
+			Eventually(func() int {
+				return registry.Count()
+			}, timeout, interval).Should(Equal(1))
+
+			// Delete the entry
+			Expect(k8sClient.Delete(ctx, entry)).Should(Succeed())
+
+			// Wait for backend to be removed
+			Eventually(func() int {
+				return registry.Count()
+			}, timeout, interval).Should(Equal(0))
+		})
+
+		It("should increment registry version on MCPServerEntry events", func() {
+			initialVersion := registry.Version()
+
+			entry := &mcpv1alpha1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-entry-version",
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPServerEntrySpec{
+					RemoteURL: "https://mcp.example.com/mcp",
+					Transport: "streamable-http",
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: testGroupRef},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, entry)).Should(Succeed())
+
+			entry.Status.Phase = mcpv1alpha1.MCPServerEntryPhaseValid
+			Expect(k8sClient.Status().Update(ctx, entry)).Should(Succeed())
+
+			Eventually(func() uint64 {
+				return registry.Version()
+			}, timeout, interval).Should(BeNumerically(">", initialVersion))
+
+			currentVersion := registry.Version()
+			Expect(k8sClient.Delete(ctx, entry)).Should(Succeed())
 
 			Eventually(func() uint64 {
 				return registry.Version()

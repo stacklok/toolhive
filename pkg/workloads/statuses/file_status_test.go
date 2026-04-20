@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	rtmocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
@@ -99,12 +101,13 @@ func TestFileStatusManager_GetWorkload(t *testing.T) {
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
 
-	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	// Mock the run config store Exists for isRemoteWorkload check
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Create a workload status
 	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
@@ -132,12 +135,13 @@ func TestFileStatusManager_GetWorkloadSlashes(t *testing.T) {
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
 
-	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	// Mock the run config store Exists for isRemoteWorkload check
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadName).Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "` + testWorkloadWithSlash + `", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "` + testWorkloadWithSlash + `", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Create a workload status
 	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStarting, "")
@@ -163,8 +167,8 @@ func TestFileStatusManager_GetWorkload_NotFound(t *testing.T) {
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
 
-	// Mock the run config store to return false for exists (not a remote workload)
-	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "non-existent").Return(false, nil).AnyTimes()
+	// Mock the run config store to return not-found for GetReader (not a remote workload)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "non-existent").Return(nil, httperr.WithCode(errors.New("not found"), http.StatusNotFound)).AnyTimes()
 
 	// Mock runtime to return error for non-existent workload
 	mockRuntime.EXPECT().GetWorkloadInfo(gomock.Any(), "non-existent").Return(rt.ContainerInfo{}, errors.New("workload not found in runtime"))
@@ -184,8 +188,8 @@ func TestFileStatusManager_GetWorkload_RuntimeFallback(t *testing.T) {
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
 
-	// Mock the run config store to return false for exists (not a remote workload)
-	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "runtime-only-workload").Return(false, nil).AnyTimes()
+	// Mock the run config store to return not-found for GetReader (not a remote workload)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "runtime-only-workload").Return(nil, httperr.WithCode(errors.New("not found"), http.StatusNotFound)).AnyTimes()
 
 	// Mock runtime to return a workload when file doesn't exist
 	info := rt.ContainerInfo{
@@ -221,12 +225,13 @@ func TestFileStatusManager_GetWorkload_FileAndRuntimeCombination(t *testing.T) {
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
 
-	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	// Mock the run config store Exists for isRemoteWorkload check
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "running-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "running-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "running-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "running-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "running-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Create a workload status file and set it to running
 	err := manager.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusStarting, "")
@@ -464,7 +469,7 @@ func TestFileStatusManager_ConcurrentAccess(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	// Mock the run config store Exists for isRemoteWorkload check
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
 
 	// Create a new mock reader for each call to avoid race conditions
@@ -790,8 +795,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 			tt.setupRuntimeMock(mockRuntime)
 
-			// Mock the run config store to return true for exists and provide readers with non-remote data
-			// This is a flexible mock that will handle any workload name
+			// Mock the run config store Exists for isRemoteWorkload check
 			mockRunConfigStore.EXPECT().Exists(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
 
 			// Create a flexible mock reader that returns non-remote configuration data for any workload
@@ -831,12 +835,13 @@ func TestFileStatusManager_GetWorkload_UnhealthyDetection(t *testing.T) {
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
 
-	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	// Mock the run config store Exists for isRemoteWorkload check
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// First, set the workload status to running in the file
 	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "container started")
@@ -902,12 +907,13 @@ func TestFileStatusManager_GetWorkload_HealthyRunningWorkload(t *testing.T) {
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
 
-	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	// Mock the run config store Exists for isRemoteWorkload check
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "healthy-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "healthy-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "healthy-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Set the workload status to running in the file
 	err := manager.SetWorkloadStatus(ctx, "healthy-workload", rt.WorkloadStatusRunning, "container started")
@@ -950,12 +956,13 @@ func TestFileStatusManager_GetWorkload_ProxyNotRunning(t *testing.T) {
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
 
-	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	// Mock the run config store Exists for isRemoteWorkload check
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "proxy-down-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "proxy-down-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "proxy-down-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "proxy-down-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "proxy-down-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// First, create a status file manually to ensure file is found
 	statusFile := workloadStatusFile{
@@ -1026,12 +1033,13 @@ func TestFileStatusManager_GetWorkload_HealthyWithProxy(t *testing.T) {
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
 
-	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	// Mock the run config store Exists for isRemoteWorkload check
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "healthy-with-proxy").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "healthy-with-proxy", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-with-proxy").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-with-proxy").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "healthy-with-proxy", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Set the workload status to running in the file
 	err := manager.SetWorkloadStatus(ctx, "healthy-with-proxy", rt.WorkloadStatusRunning, "container started")
@@ -1075,18 +1083,13 @@ func TestFileStatusManager_ListWorkloads_WithValidation(t *testing.T) {
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
 
-	// Mock the run config store to return true for exists and provide readers with non-remote data
-	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "healthy-workload").Return(true, nil).AnyTimes()
-	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "runtime-mismatch").Return(true, nil).AnyTimes()
-	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "proxy-down").Return(true, nil).AnyTimes()
+	// Mock the run config store Exists for isRemoteWorkload check
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
 
-	// Create mock readers that return non-remote configuration data
-	mockReader1 := io.NopCloser(strings.NewReader(`{"name": "healthy-workload", "transport": "sse"}`))
-	mockReader2 := io.NopCloser(strings.NewReader(`{"name": "runtime-mismatch", "transport": "sse"}`))
-	mockReader3 := io.NopCloser(strings.NewReader(`{"name": "proxy-down", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-workload").Return(mockReader1, nil).AnyTimes()
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "runtime-mismatch").Return(mockReader2, nil).AnyTimes()
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "proxy-down").Return(mockReader3, nil).AnyTimes()
+	// Create mock readers that return non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, name string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(fmt.Sprintf(`{"name": "%s", "transport": "sse"}`, name))), nil
+	}).AnyTimes()
 
 	// Create file workloads - one healthy running, one with runtime mismatch, one with proxy down
 	err := manager.SetWorkloadStatus(ctx, "healthy-workload", rt.WorkloadStatusRunning, "container started")
@@ -1180,12 +1183,13 @@ func TestFileStatusManager_GetWorkload_vs_ListWorkloads_Consistency(t *testing.T
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
 
-	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	// Mock the run config store Exists for isRemoteWorkload check
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Create a workload status file
 	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
@@ -1224,12 +1228,13 @@ func TestFileStatusManager_ListWorkloads_CorruptedFile(t *testing.T) {
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
 
-	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	// Mock the run config store Exists for isRemoteWorkload check
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "good-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "good-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "good-workload").Return(mockReader, nil).AnyTimes()
+	// Create a mock reader that returns non-remote configuration data (fresh reader each call)
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "good-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "good-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Create a valid workload first
 	err := manager.SetWorkloadStatus(ctx, "good-workload", rt.WorkloadStatusStarting, "")
@@ -1682,6 +1687,76 @@ func TestFileStatusManager_ResetWorkloadPID_WithSlashes(t *testing.T) {
 	assert.Equal(t, 0, statusFileData.ProcessID) // PID should be reset to 0
 }
 
+func TestFileStatusManager_ResetWorkloadPIDIfMatch_MatchingPID(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Create a workload and set its PID
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "started")
+	require.NoError(t, err)
+
+	err = manager.SetWorkloadPID(ctx, "test-workload", 12345)
+	require.NoError(t, err)
+
+	// Reset with matching PID — should reset to 0
+	err = manager.ResetWorkloadPIDIfMatch(ctx, "test-workload", 12345)
+	require.NoError(t, err)
+
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+	assert.Equal(t, 0, statusFileData.ProcessID)
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+}
+
+func TestFileStatusManager_ResetWorkloadPIDIfMatch_NonMatchingPID(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Create a workload and set its PID to simulate the new process
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "started")
+	require.NoError(t, err)
+
+	err = manager.SetWorkloadPID(ctx, "test-workload", 99999)
+	require.NoError(t, err)
+
+	// Reset with a different (old) PID — should be a no-op
+	err = manager.ResetWorkloadPIDIfMatch(ctx, "test-workload", 12345)
+	require.NoError(t, err)
+
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+	assert.Equal(t, 99999, statusFileData.ProcessID) // PID unchanged
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+}
+
+func TestFileStatusManager_ResetWorkloadPIDIfMatch_NonExistentWorkload(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Reset for non-existent workload — should be a no-op
+	err := manager.ResetWorkloadPIDIfMatch(ctx, "test-workload", 12345)
+	require.NoError(t, err)
+
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	require.NoFileExists(t, statusFile)
+}
+
 // TestFileStatusManager_GetWorkload_PIDMigration tests PID migration from legacy PID files to status files
 func TestFileStatusManager_GetWorkload_PIDMigration(t *testing.T) {
 	t.Parallel()
@@ -1733,7 +1808,7 @@ func TestFileStatusManager_GetWorkload_PIDMigration(t *testing.T) {
 
 			// Mock the run config store to return false for exists (not a remote workload)
 			mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadName).Return(false, nil).AnyTimes()
-			mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).Return(nil, errors.New("not found")).AnyTimes()
+			mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).Return(nil, httperr.WithCode(errors.New("not found"), http.StatusNotFound)).AnyTimes()
 
 			// Mock GetWorkloadInfo for runtime validation (when status is running after migration)
 			if tt.workloadStatus == rt.WorkloadStatusRunning {
@@ -1806,9 +1881,9 @@ func TestFileStatusManager_ListWorkloads_PIDMigration(t *testing.T) {
 
 	// Mock the run config store for both workloads
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadMigrate).Return(false, nil).AnyTimes()
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadMigrate).Return(nil, errors.New("not found")).AnyTimes()
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadMigrate).Return(nil, httperr.WithCode(errors.New("not found"), http.StatusNotFound)).AnyTimes()
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadNoMigrate).Return(false, nil).AnyTimes()
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadNoMigrate).Return(nil, errors.New("not found")).AnyTimes()
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadNoMigrate).Return(nil, httperr.WithCode(errors.New("not found"), http.StatusNotFound)).AnyTimes()
 
 	// Setup workload that should trigger migration (running + ProcessID = 0)
 	err := manager.setWorkloadStatusInternal(ctx, workloadMigrate, rt.WorkloadStatusRunning, "running", &[]int{0}[0])

@@ -55,8 +55,6 @@ metadata:
 spec:
   image: ghcr.io/stackloklabs/gofetch/server
   transport: streamable-http
-  tools:
-    - fetch
   proxyPort: 8080
   mcpPort: 8080
 

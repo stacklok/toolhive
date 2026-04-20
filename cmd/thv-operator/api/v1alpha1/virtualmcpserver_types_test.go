@@ -4,6 +4,7 @@
 package v1alpha1
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -145,8 +146,8 @@ func TestVirtualMCPServerDefaultValues(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: VirtualMCPServerSpec{
+			GroupRef: &MCPGroupRef{Name: "test-group"},
 			Config: config.Config{
-				Group: "test-group",
 				Aggregation: &config.AggregationConfig{
 					ConflictResolution: "", // Should default to "prefix"
 				},
@@ -173,7 +174,7 @@ func TestVirtualMCPServerNamespaceIsolation(t *testing.T) {
 			Namespace: "team-a",
 		},
 		Spec: VirtualMCPServerSpec{
-			Config: config.Config{Group: "backend-group"}, // Must be in team-a namespace
+			GroupRef: &MCPGroupRef{Name: "backend-group"},
 		},
 	}
 
@@ -184,7 +185,7 @@ func TestVirtualMCPServerNamespaceIsolation(t *testing.T) {
 			Namespace: "team-b",
 		},
 		Spec: VirtualMCPServerSpec{
-			Config: config.Config{Group: "backend-group"}, // Different group in team-b namespace
+			GroupRef: &MCPGroupRef{Name: "backend-group"},
 		},
 	}
 
@@ -194,8 +195,8 @@ func TestVirtualMCPServerNamespaceIsolation(t *testing.T) {
 	assert.NotEqual(t, vmcpTeamA.Namespace, vmcpTeamB.Namespace)
 
 	// Group names can be the same but refer to different groups in different namespaces
-	assert.Equal(t, "backend-group", vmcpTeamA.Spec.Config.Group)
-	assert.Equal(t, "backend-group", vmcpTeamB.Spec.Config.Group)
+	assert.Equal(t, "backend-group", vmcpTeamA.ResolveGroupName())
+	assert.Equal(t, "backend-group", vmcpTeamB.ResolveGroupName())
 }
 
 func TestConflictResolutionStrategies(t *testing.T) {
@@ -237,8 +238,8 @@ func TestConflictResolutionStrategies(t *testing.T) {
 
 			vmcpServer := &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
+					GroupRef: &MCPGroupRef{Name: "test-group"},
 					Config: config.Config{
-						Group: "test-group",
 						Aggregation: &config.AggregationConfig{
 							ConflictResolution:       tt.strategy,
 							ConflictResolutionConfig: tt.configValue,
@@ -275,7 +276,7 @@ func TestBackendAuthConfigTypes(t *testing.T) {
 			isValid: true,
 		},
 		{
-			name: "external_auth_config_ref_valid",
+			name: "externalAuthConfigRef_valid",
 			authConfig: BackendAuthConfig{
 				Type: BackendAuthTypeExternalAuthConfigRef,
 				ExternalAuthConfigRef: &ExternalAuthConfigRef{
@@ -292,7 +293,7 @@ func TestBackendAuthConfigTypes(t *testing.T) {
 
 			vmcp := &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					Config: config.Config{Group: "test-group"},
+					GroupRef: &MCPGroupRef{Name: "test-group"},
 					OutgoingAuth: &OutgoingAuthConfig{
 						Backends: map[string]BackendAuthConfig{
 							"test-backend": tt.authConfig,
@@ -357,8 +358,8 @@ func TestCompositeToolStepDependencies(t *testing.T) {
 
 			server := &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
+					GroupRef: &MCPGroupRef{Name: "test-group"},
 					Config: config.Config{
-						Group: "test-group",
 						CompositeTools: []config.CompositeToolConfig{
 							{
 								Name:        "test-workflow",
@@ -397,7 +398,7 @@ func TestValidateEmbeddingServer(t *testing.T) {
 			name: "ref_without_optimizer_auto_populates_defaults",
 			server: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					Config: config.Config{Group: "test-group"},
+					GroupRef: &MCPGroupRef{Name: "test-group"},
 					EmbeddingServerRef: &EmbeddingServerRef{
 						Name: "my-embedding",
 					},
@@ -409,8 +410,8 @@ func TestValidateEmbeddingServer(t *testing.T) {
 			name: "ref_with_optimizer_keeps_existing",
 			server: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
+					GroupRef: &MCPGroupRef{Name: "test-group"},
 					Config: config.Config{
-						Group:     "test-group",
 						Optimizer: &config.OptimizerConfig{},
 					},
 					EmbeddingServerRef: &EmbeddingServerRef{
@@ -424,8 +425,8 @@ func TestValidateEmbeddingServer(t *testing.T) {
 			name: "optimizer_without_ref_or_service_errors",
 			server: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
+					GroupRef: &MCPGroupRef{Name: "test-group"},
 					Config: config.Config{
-						Group:     "test-group",
 						Optimizer: &config.OptimizerConfig{},
 					},
 				},
@@ -437,7 +438,7 @@ func TestValidateEmbeddingServer(t *testing.T) {
 			name: "empty_ref_name_errors",
 			server: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					Config:             config.Config{Group: "test-group"},
+					GroupRef:           &MCPGroupRef{Name: "test-group"},
 					EmbeddingServerRef: &EmbeddingServerRef{Name: ""},
 				},
 			},
@@ -448,7 +449,7 @@ func TestValidateEmbeddingServer(t *testing.T) {
 			name: "no_ref_no_optimizer_succeeds",
 			server: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
-					Config: config.Config{Group: "test-group"},
+					GroupRef: &MCPGroupRef{Name: "test-group"},
 				},
 			},
 			expectOptimizer: false,
@@ -476,6 +477,159 @@ func TestValidateEmbeddingServer(t *testing.T) {
 				assert.Nil(t, tt.server.Spec.Config.Optimizer,
 					"Optimizer should remain nil")
 			}
+		})
+	}
+}
+
+func TestVirtualMCPServerSpecScalingFieldsJSONRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	replicas := int32(2)
+
+	tests := []struct {
+		name       string
+		spec       VirtualMCPServerSpec
+		wantKeys   []string
+		wantAbsent []string
+	}{
+		{
+			name: "nil replicas are omitted",
+			spec: VirtualMCPServerSpec{
+				IncomingAuth: &IncomingAuthConfig{Type: "anonymous"},
+			},
+			wantAbsent: []string{`"replicas"`, `"sessionStorage"`},
+		},
+		{
+			name: "set replicas are serialized",
+			spec: VirtualMCPServerSpec{
+				IncomingAuth: &IncomingAuthConfig{Type: "anonymous"},
+				Replicas:     &replicas,
+			},
+			wantKeys: []string{`"replicas":2`},
+		},
+		{
+			name: "sessionStorage is serialized when set",
+			spec: VirtualMCPServerSpec{
+				IncomingAuth: &IncomingAuthConfig{Type: "anonymous"},
+				SessionStorage: &SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6379",
+				},
+			},
+			wantKeys: []string{`"sessionStorage"`, `"provider":"redis"`},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b, err := json.Marshal(tc.spec)
+			require.NoError(t, err)
+			out := string(b)
+			for _, key := range tc.wantKeys {
+				assert.Contains(t, out, key)
+			}
+			for _, key := range tc.wantAbsent {
+				assert.NotContains(t, out, key)
+			}
+		})
+	}
+}
+
+func TestMCPGroupRef_GetName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ref  *MCPGroupRef
+		want string
+	}{
+		{name: "nil receiver", ref: nil, want: ""},
+		{name: "empty name", ref: &MCPGroupRef{Name: ""}, want: ""},
+		{name: "non-empty name", ref: &MCPGroupRef{Name: "my-group"}, want: "my-group"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.ref.GetName())
+		})
+	}
+}
+
+func TestVirtualMCPServer_Validate_RequiresGroupRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		groupRef  *MCPGroupRef
+		expectErr bool
+		errMsg    string
+	}{
+		{
+			name:      "valid with groupRef set",
+			groupRef:  &MCPGroupRef{Name: "my-group"},
+			expectErr: false,
+		},
+		{
+			name:      "rejected when groupRef is nil",
+			groupRef:  nil,
+			expectErr: true,
+			errMsg:    "spec.groupRef.name is required",
+		},
+		{
+			name:      "rejected when groupRef name is empty",
+			groupRef:  &MCPGroupRef{Name: ""},
+			expectErr: true,
+			errMsg:    "spec.groupRef.name is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vmcp := &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: tt.groupRef,
+				},
+			}
+			err := vmcp.Validate()
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestVirtualMCPServer_ResolveGroupName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		groupRef *MCPGroupRef
+		want     string
+	}{
+		{
+			name:     "returns spec.groupRef name",
+			groupRef: &MCPGroupRef{Name: "from-spec"},
+			want:     "from-spec",
+		},
+		{
+			name:     "returns empty when spec.groupRef is nil",
+			groupRef: nil,
+			want:     "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vmcp := &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: tt.groupRef,
+				},
+			}
+			assert.Equal(t, tt.want, vmcp.ResolveGroupName())
 		})
 	}
 }

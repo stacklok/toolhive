@@ -5,7 +5,9 @@ package authz
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,12 +21,34 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/test/testkit"
 )
+
+// stubAuthorizer is a minimal Authorizer for unit tests, avoiding Cedar setup overhead.
+type stubAuthorizer struct {
+	allowed    bool
+	err        error
+	lastToolID string
+	lastCtx    context.Context
+}
+
+func (s *stubAuthorizer) AuthorizeWithJWTClaims(
+	ctx context.Context,
+	_ authorizers.MCPFeature,
+	_ authorizers.MCPOperation,
+	resourceID string,
+	_ map[string]interface{},
+) (bool, error) {
+	s.lastToolID = resourceID
+	s.lastCtx = ctx
+	return s.allowed, s.err
+}
 
 func TestMiddleware(t *testing.T) {
 	t.Parallel()
@@ -37,7 +61,7 @@ func TestMiddleware(t *testing.T) {
 			`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Test cases
@@ -384,7 +408,7 @@ func TestMiddleware(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 
 			// Add claims to the request context
-			identity := &auth.Identity{Subject: "test-user", Claims: tc.claims}
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "test-user", Claims: tc.claims}}
 			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 			// Create a response recorder
@@ -398,7 +422,7 @@ func TestMiddleware(t *testing.T) {
 			})
 
 			// Apply the middleware chain: MCP parsing first, then authorization
-			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler))
+			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil))
 
 			// Serve the request
 			middleware.ServeHTTP(rr, req)
@@ -419,7 +443,7 @@ func TestMiddlewareWithGETRequest(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Create a handler that records if it was called
@@ -430,7 +454,7 @@ func TestMiddlewareWithGETRequest(t *testing.T) {
 	})
 
 	// Apply the middleware chain: MCP parsing first, then authorization
-	middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler))
+	middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil))
 
 	// Create a GET request
 	req, err := http.NewRequest(http.MethodGet, "/messages", nil)
@@ -784,7 +808,7 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 				cedar.ConfigOptions{
 					Policies:     tc.policies,
 					EntitiesJSON: `[]`,
-				},
+				}, "",
 			)
 			require.NoError(t, err, "Failed to create Cedar authorizer")
 
@@ -797,17 +821,17 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 			opts = append(opts, testkit.WithMiddlewares(
 				func(h http.Handler) http.Handler {
 					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						identity := &auth.Identity{
+						identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
 							Subject: claims["sub"].(string),
 							Name:    claims["name"].(string),
 							Claims:  claims,
-						}
+						}}
 						r = r.WithContext(auth.WithIdentity(r.Context(), identity))
 						h.ServeHTTP(w, r)
 					})
 				},
 				mcpparser.ParsingMiddleware,
-				func(h http.Handler) http.Handler { return Middleware(authorizer, h) },
+				func(h http.Handler) http.Handler { return Middleware(authorizer, h, nil) },
 			))
 			server, client, err := testkit.NewStreamableTestServer(opts...)
 			require.NoError(t, err)
@@ -954,7 +978,7 @@ func TestMiddlewareToolsCallTestkit(t *testing.T) {
 				cedar.ConfigOptions{
 					Policies:     tc.policies,
 					EntitiesJSON: `[]`,
-				},
+				}, "",
 			)
 			require.NoError(t, err, "Failed to create Cedar authorizer")
 
@@ -967,17 +991,17 @@ func TestMiddlewareToolsCallTestkit(t *testing.T) {
 			opts = append(opts, testkit.WithMiddlewares(
 				func(h http.Handler) http.Handler {
 					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						identity := &auth.Identity{
+						identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
 							Subject: claims["sub"].(string),
 							Name:    claims["name"].(string),
 							Claims:  claims,
-						}
+						}}
 						r = r.WithContext(auth.WithIdentity(r.Context(), identity))
 						h.ServeHTTP(w, r)
 					})
 				},
 				mcpparser.ParsingMiddleware,
-				func(h http.Handler) http.Handler { return Middleware(authorizer, h) },
+				func(h http.Handler) http.Handler { return Middleware(authorizer, h, nil) },
 			))
 			server, client, err := testkit.NewStreamableTestServer(opts...)
 			require.NoError(t, err)
@@ -1010,6 +1034,173 @@ func TestMiddlewareToolsCallTestkit(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMiddlewareOptimizerMetaTools tests the optimizer meta-tool interception logic.
+// When a tool is in the passThroughTools set, the middleware handles it specially:
+//   - call_tool (has "tool_name" in arguments): authorize the inner backend tool
+//   - find_tool (no "tool_name" in arguments): allow through as a discovery operation
+func TestMiddlewareOptimizerMetaTools(t *testing.T) {
+	t.Parallel()
+
+	// Cedar policy that only permits "allowed_backend" — not "call_tool" or "find_tool".
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"allowed_backend");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	passThroughTools := map[string]struct{}{
+		"call_tool": {},
+		"find_tool": {},
+	}
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "test-user",
+		Claims:  jwt.MapClaims{"sub": "test-user"},
+	}}
+
+	makeReq := func(t *testing.T, toolName string, arguments map[string]interface{}) *http.Request {
+		t.Helper()
+		params := map[string]interface{}{
+			"name":      toolName,
+			"arguments": arguments,
+		}
+		paramsJSON, err := json.Marshal(params)
+		require.NoError(t, err)
+		call, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "tools/call", json.RawMessage(paramsJSON))
+		require.NoError(t, err)
+		body, err := jsonrpc2.EncodeMessage(call)
+		require.NoError(t, err)
+		req, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBuffer(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		return req.WithContext(auth.WithIdentity(req.Context(), identity))
+	}
+
+	testCases := []struct {
+		name             string
+		toolName         string
+		arguments        map[string]interface{}
+		expectStatus     int
+		expectHandlerHit bool
+	}{
+		{
+			name:     "call_tool with authorized inner tool passes through",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"tool_name":  "allowed_backend",
+				"parameters": map[string]interface{}{},
+			},
+			expectStatus:     http.StatusOK,
+			expectHandlerHit: true,
+		},
+		{
+			name:     "call_tool with unauthorized inner tool is blocked",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"tool_name":  "forbidden_backend",
+				"parameters": map[string]interface{}{},
+			},
+			expectStatus:     http.StatusForbidden,
+			expectHandlerHit: false,
+		},
+		{
+			name:     "find_tool request reaches handler (response filtering applied separately)",
+			toolName: "find_tool",
+			arguments: map[string]interface{}{
+				"tool_description": "search for web tools",
+			},
+			expectStatus:     http.StatusOK,
+			expectHandlerHit: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var handlerCalled bool
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+			})
+
+			mw := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, passThroughTools))
+			rr := httptest.NewRecorder()
+			mw.ServeHTTP(rr, makeReq(t, tc.toolName, tc.arguments))
+
+			assert.Equal(t, tc.expectStatus, rr.Code)
+			assert.Equal(t, tc.expectHandlerHit, handlerCalled)
+		})
+	}
+}
+
+// TestMiddlewareOptimizerCallToolJSONRoundTrip verifies that the middleware correctly
+// extracts tool_name from call_tool arguments that have been serialized via
+// optimizer.CallToolInput. This catches argument key mismatches between the struct's
+// JSON tag ("tool_name") and what the middleware looks up in the parsed arguments map.
+func TestMiddlewareOptimizerCallToolJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"backend_fetch");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	passThroughTools := map[string]struct{}{
+		"call_tool": {},
+		"find_tool": {},
+	}
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "test-user",
+		Claims:  jwt.MapClaims{"sub": "test-user"},
+	}}
+
+	// Simulate what the optimizer client sends on the wire: marshal CallToolInput to
+	// JSON, then unmarshal into the generic arguments map that the middleware receives.
+	input := optimizer.CallToolInput{
+		ToolName:   "backend_fetch",
+		Parameters: map[string]any{"url": "https://example.com"},
+	}
+	inputJSON, err := json.Marshal(input)
+	require.NoError(t, err)
+	var arguments map[string]interface{}
+	require.NoError(t, json.Unmarshal(inputJSON, &arguments))
+
+	params := map[string]interface{}{
+		"name":      "call_tool",
+		"arguments": arguments,
+	}
+	paramsJSON, err := json.Marshal(params)
+	require.NoError(t, err)
+	call, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "tools/call", json.RawMessage(paramsJSON))
+	require.NoError(t, err)
+	body, err := jsonrpc2.EncodeMessage(call)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+	var handlerCalled bool
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, passThroughTools))
+	rr := httptest.NewRecorder()
+	mw.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code, "authorized call_tool should pass through")
+	assert.True(t, handlerCalled, "handler should be called for authorized call_tool")
 }
 
 // TestConvertToJSONRPC2ID tests the convertToJSONRPC2ID function with various ID types
@@ -1067,7 +1258,7 @@ func TestConvertToJSONRPC2ID(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := convertToJSONRPC2ID(tc.input)
+			result, err := mcpparser.ConvertToJSONRPC2ID(tc.input)
 
 			if tc.expectError {
 				assert.Error(t, err)
@@ -1081,6 +1272,246 @@ func TestConvertToJSONRPC2ID(t *testing.T) {
 					// For other valid inputs, we just verify no error
 					assert.NotNil(t, result)
 				}
+			}
+		})
+	}
+}
+
+func TestAuthorizeAndServe(t *testing.T) {
+	t.Parallel()
+
+	featureOp := featureOperation{Feature: authorizers.MCPFeatureTool, Operation: authorizers.MCPOperationCall}
+
+	testCases := []struct {
+		name              string
+		allowed           bool
+		authErr           error
+		cacheAnnotation   *authorizers.ToolAnnotations // nil = no cache entry
+		expectHandlerHit  bool
+		expectStatus      int
+		expectAnnotations bool // whether annotations should be in handler context
+	}{
+		{
+			name:             "authorized with cache miss — next called, no annotations",
+			allowed:          true,
+			expectHandlerHit: true,
+			expectStatus:     http.StatusOK,
+		},
+		{
+			name:              "authorized with cache hit — next called and annotations injected",
+			allowed:           true,
+			cacheAnnotation:   &authorizers.ToolAnnotations{ReadOnlyHint: boolPtr(true)},
+			expectHandlerHit:  true,
+			expectStatus:      http.StatusOK,
+			expectAnnotations: true,
+		},
+		{
+			name:             "unauthorized (deny) — 403, next not called",
+			allowed:          false,
+			expectHandlerHit: false,
+			expectStatus:     http.StatusForbidden,
+		},
+		{
+			name:             "authorizer error — 403, next not called",
+			allowed:          false,
+			authErr:          errors.New("policy evaluation failed"),
+			expectHandlerHit: false,
+			expectStatus:     http.StatusForbidden,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cache := NewAnnotationCache()
+			if tc.cacheAnnotation != nil {
+				cache.Set("weather", tc.cacheAnnotation)
+			}
+
+			stub := &stubAuthorizer{allowed: tc.allowed, err: tc.authErr}
+
+			var (
+				handlerCalled bool
+				ctxInHandler  context.Context
+			)
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				ctxInHandler = r.Context()
+				w.WriteHeader(http.StatusOK)
+			})
+
+			req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+			require.NoError(t, err)
+			rr := httptest.NewRecorder()
+
+			authorizeAndServe(rr, req, stub, cache, featureOp.Feature, featureOp.Operation, 1, "weather", nil, next)
+
+			assert.Equal(t, tc.expectHandlerHit, handlerCalled)
+			assert.Equal(t, tc.expectStatus, rr.Code)
+			if tc.expectAnnotations {
+				ann := authorizers.ToolAnnotationsFromContext(ctxInHandler)
+				require.NotNil(t, ann)
+				assert.Equal(t, tc.cacheAnnotation, ann)
+			}
+		})
+	}
+}
+
+func TestHandleToolsCall(t *testing.T) {
+	t.Parallel()
+
+	featureOp := featureOperation{Feature: authorizers.MCPFeatureTool, Operation: authorizers.MCPOperationCall}
+
+	passThroughTools := map[string]struct{}{
+		"call_tool": {},
+		"find_tool": {},
+	}
+
+	testCases := []struct {
+		name              string
+		toolName          string // parsedRequest.ResourceID
+		arguments         map[string]interface{}
+		allowed           bool
+		cacheAnnotation   *authorizers.ToolAnnotations // keyed by inner tool name
+		expectHandlerHit  bool
+		expectStatus      int
+		expectAnnotations bool
+	}{
+		{
+			name:     "call_tool with authorized inner tool — next called",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"tool_name":  "allowed_backend",
+				"parameters": map[string]interface{}{"k": "v"},
+			},
+			allowed:          true,
+			expectHandlerHit: true,
+			expectStatus:     http.StatusOK,
+		},
+		{
+			name:     "call_tool with unauthorized inner tool — 403",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"tool_name":  "forbidden_backend",
+				"parameters": map[string]interface{}{},
+			},
+			allowed:          false,
+			expectHandlerHit: false,
+			expectStatus:     http.StatusForbidden,
+		},
+		{
+			name:     "call_tool injects inner tool annotations from cache",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"tool_name":  "annotated_backend",
+				"parameters": map[string]interface{}{},
+			},
+			allowed:           true,
+			cacheAnnotation:   &authorizers.ToolAnnotations{DestructiveHint: boolPtr(true)},
+			expectHandlerHit:  true,
+			expectStatus:      http.StatusOK,
+			expectAnnotations: true,
+		},
+		{
+			// call_tool with no tool_name arg falls through to the find_tool path:
+			// it is allowed through as a discovery operation with no auth check.
+			name:     "call_tool with empty tool_name — passes through as discovery",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"tool_name": "",
+			},
+			allowed:          false, // auth would deny, but it should never be reached
+			expectHandlerHit: true,
+			expectStatus:     http.StatusOK,
+		},
+		{
+			// find_tool has no tool_name argument — the request reaches the handler
+			// and the response is filtered by Cedar before being returned.
+			name:     "find_tool — request reaches handler, response filtering applied",
+			toolName: "find_tool",
+			arguments: map[string]interface{}{
+				"tool_description": "search for web tools",
+			},
+			allowed:          false, // auth is not checked on the request itself
+			expectHandlerHit: true,
+			expectStatus:     http.StatusOK,
+		},
+		{
+			name:     "normal tool (not pass-through) — authorized, next called",
+			toolName: "weather",
+			arguments: map[string]interface{}{
+				"location": "NYC",
+			},
+			allowed:          true,
+			expectHandlerHit: true,
+			expectStatus:     http.StatusOK,
+		},
+		{
+			name:     "normal tool (not pass-through) — denied, 403",
+			toolName: "weather",
+			arguments: map[string]interface{}{
+				"location": "NYC",
+			},
+			allowed:          false,
+			expectHandlerHit: false,
+			expectStatus:     http.StatusForbidden,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cache := NewAnnotationCache()
+			// For call_tool tests that expect annotations, cache them under the inner tool name.
+			if tc.cacheAnnotation != nil {
+				innerName, _ := tc.arguments["tool_name"].(string)
+				cache.Set(innerName, tc.cacheAnnotation)
+			}
+
+			stub := &stubAuthorizer{allowed: tc.allowed}
+
+			var (
+				handlerCalled bool
+				ctxInHandler  context.Context
+			)
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				ctxInHandler = r.Context()
+				w.WriteHeader(http.StatusOK)
+			})
+
+			params := map[string]interface{}{
+				"name":      tc.toolName,
+				"arguments": tc.arguments,
+			}
+			paramsJSON, err := json.Marshal(params)
+			require.NoError(t, err)
+			call, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), "tools/call", json.RawMessage(paramsJSON))
+			require.NoError(t, err)
+			body, err := jsonrpc2.EncodeMessage(call)
+			require.NoError(t, err)
+			req, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBuffer(body))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+
+			parsedReq := &mcpparser.ParsedMCPRequest{
+				Method:     "tools/call",
+				ResourceID: tc.toolName,
+				Arguments:  tc.arguments,
+				ID:         float64(1),
+			}
+
+			rr := httptest.NewRecorder()
+			handleToolsCall(rr, req, stub, parsedReq, featureOp, cache, passThroughTools, next)
+
+			assert.Equal(t, tc.expectHandlerHit, handlerCalled)
+			assert.Equal(t, tc.expectStatus, rr.Code)
+			if tc.expectAnnotations {
+				ann := authorizers.ToolAnnotationsFromContext(ctxInHandler)
+				require.NotNil(t, ann)
+				assert.Equal(t, tc.cacheAnnotation, ann)
 			}
 		})
 	}

@@ -32,8 +32,9 @@ func CheckAndPerformMiddlewareTelemetryMigration() {
 		}
 
 		// Mark migration as completed
-		if err := config.UpdateConfig(func(c *config.Config) {
+		if err := config.UpdateConfig(func(c *config.Config) error {
 			c.MiddlewareTelemetryMigration = true
+			return nil
 		}); err != nil {
 			slog.Error("failed to update config after middleware telemetry migration", "error", err)
 		}

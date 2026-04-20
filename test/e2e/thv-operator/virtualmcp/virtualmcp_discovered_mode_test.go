@@ -55,11 +55,11 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 			},
 		}
 		Expect(k8sClient.Create(ctx, backend1)).To(Succeed())
@@ -71,11 +71,11 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.OSVMCPServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 			},
 		}
 		Expect(k8sClient.Create(ctx, backend2)).To(Succeed())
@@ -92,7 +92,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			}
 
 			// Check for Running phase
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend 1 not ready yet, phase: %s", server.Status.Phase)
@@ -109,7 +109,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			}
 
 			// Check for Running phase
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend 2 not ready yet, phase: %s", server.Status.Phase)
@@ -126,6 +126,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					// Discovered mode is the default - tools from all backends in the group are automatically discovered
@@ -478,11 +479,11 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  mcpGroupName,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.GofetchServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
-					McpPort:   8080,
+					MCPPort:   8080,
 				},
 			}
 			Expect(k8sClient.Create(ctx, backend3)).To(Succeed())
@@ -497,7 +498,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				if err != nil {
 					return err
 				}
-				if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+				if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 					return fmt.Errorf("backend not ready, phase: %s", server.Status.Phase)
 				}
 				return nil

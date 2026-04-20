@@ -10,10 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -28,14 +26,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/test/e2e/images"
+	"github.com/stacklok/toolhive/test/e2e/thv-operator/testutil"
+)
+
+// Shared test constants used across all e2e test files in this package.
+const (
+	defaultNamespace = "default"
+	e2eTimeout       = 5 * time.Minute
+	e2ePollInterval  = 2 * time.Second
 )
 
 // WaitForVirtualMCPServerReady waits for a VirtualMCPServer to reach Ready status
@@ -79,59 +82,8 @@ func WaitForVirtualMCPServerReady(
 }
 
 // checkPodsReady waits for at least one pod matching the given labels to be ready.
-// This is used when checking for a single expected pod (e.g., one replica deployment).
-// Pods not in Running phase are skipped (e.g., Succeeded, Failed from previous deployments).
 func checkPodsReady(ctx context.Context, c client.Client, namespace string, labels map[string]string) error {
-	podList := &corev1.PodList{}
-	if err := c.List(ctx, podList,
-		client.InNamespace(namespace),
-		client.MatchingLabels(labels)); err != nil {
-		return fmt.Errorf("failed to list pods: %w", err)
-	}
-
-	if len(podList.Items) == 0 {
-		return fmt.Errorf("no pods found with labels %v", labels)
-	}
-
-	for _, pod := range podList.Items {
-		// Skip pods that are not running (e.g., Succeeded, Failed from old deployments)
-		if pod.Status.Phase != corev1.PodRunning {
-			continue
-		}
-
-		containerReady := false
-		podReady := false
-
-		for _, condition := range pod.Status.Conditions {
-			if condition.Type == corev1.ContainersReady {
-				containerReady = condition.Status == corev1.ConditionTrue
-			}
-
-			if condition.Type == corev1.PodReady {
-				podReady = condition.Status == corev1.ConditionTrue
-			}
-		}
-
-		if !containerReady {
-			return fmt.Errorf("pod %s containers not ready", pod.Name)
-		}
-
-		if !podReady {
-			return fmt.Errorf("pod %s not ready", pod.Name)
-		}
-	}
-
-	// After filtering, ensure we found at least one running pod
-	runningPods := 0
-	for _, pod := range podList.Items {
-		if pod.Status.Phase == corev1.PodRunning {
-			runningPods++
-		}
-	}
-	if runningPods == 0 {
-		return fmt.Errorf("no running pods found with labels %v", labels)
-	}
-	return nil
+	return testutil.CheckPodsReady(ctx, c, namespace, labels)
 }
 
 // InitializedMCPClient holds an initialized MCP client with its associated context
@@ -190,53 +142,9 @@ func CreateInitializedMCPClient(nodePort int32, clientName string, timeout time.
 	}, nil
 }
 
-// getPodLogs retrieves logs from a specific pod container
+// getPodLogs retrieves logs from a specific pod container.
 func getPodLogs(ctx context.Context, namespace, podName, containerName string, previous bool) (string, error) {
-	// Get the rest config - try in-cluster first, then fall back to kubeconfig
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		// If not in cluster, try to load from kubeconfig file (from KUBECONFIG env or default location)
-		kubeconfigPath := os.Getenv("KUBECONFIG")
-		if kubeconfigPath == "" {
-			kubeconfigPath = clientcmd.RecommendedHomeFile
-		}
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to get rest config: %w", err)
-		}
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return "", fmt.Errorf("failed to create clientset: %w", err)
-	}
-
-	// Set up log options
-	logOptions := &corev1.PodLogOptions{
-		Container: containerName,
-		Previous:  previous,
-		TailLines: func(i int64) *int64 { return &i }(50), // Last 50 lines
-	}
-
-	// Get the logs
-	req := clientset.CoreV1().Pods(namespace).GetLogs(podName, logOptions)
-	podLogs, err := req.Stream(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to get log stream: %w", err)
-	}
-	defer func() {
-		// Error ignored in test cleanup
-		_ = podLogs.Close()
-	}()
-
-	// Read logs
-	buf := new(bytes.Buffer)
-	_, err = io.Copy(buf, podLogs)
-	if err != nil {
-		return "", fmt.Errorf("failed to read logs: %w", err)
-	}
-
-	return buf.String(), nil
+	return testutil.GetPodLogs(ctx, namespace, podName, containerName, previous)
 }
 
 // GetVirtualMCPServerPods returns all pods for a VirtualMCPServer
@@ -287,7 +195,7 @@ func GetMCPGroupBackends(ctx context.Context, c client.Client, groupName, namesp
 	// Filter MCPServers that reference this group
 	var backends []mcpv1alpha1.MCPServer
 	for _, mcpServer := range mcpServerList.Items {
-		if mcpServer.Spec.GroupRef == groupName {
+		if mcpServer.Spec.GroupRef.GetName() == groupName {
 			backends = append(backends, mcpServer)
 		}
 	}
@@ -766,11 +674,11 @@ func CreateMCPServerAndWait(
 			Namespace: namespace,
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef:  groupRef,
+			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: groupRef},
 			Image:     image,
 			Transport: "streamable-http",
 			ProxyPort: 8080,
-			McpPort:   8080,
+			MCPPort:   8080,
 			Resources: defaultMCPServerResources(),
 			Env: []mcpv1alpha1.EnvVar{
 				{Name: "TRANSPORT", Value: "streamable-http"},
@@ -788,7 +696,7 @@ func CreateMCPServerAndWait(
 		if err != nil {
 			return fmt.Errorf("failed to get server: %w", err)
 		}
-		if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+		if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
 			return nil
 		}
 		return fmt.Errorf("%s not ready yet, phase: %s", name, server.Status.Phase)
@@ -856,11 +764,11 @@ func CreateMultipleMCPServersInParallel(
 				Namespace: backends[idx].Namespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:              backends[idx].GroupRef,
+				GroupRef:              &mcpv1alpha1.MCPGroupRef{Name: backends[idx].GroupRef},
 				Image:                 backends[idx].Image,
 				Transport:             backendTransport,
 				ProxyPort:             8080,
-				McpPort:               8080,
+				MCPPort:               8080,
 				ExternalAuthConfigRef: backends[idx].ExternalAuthConfigRef,
 				Secrets:               backends[idx].Secrets,
 				Resources:             resources,
@@ -887,7 +795,7 @@ func CreateMultipleMCPServersInParallel(
 			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseFailed {
 				return gomega.StopTrying(fmt.Sprintf("%s failed: %s", cfg.Name, server.Status.Message))
 			}
-			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("%s not ready yet, phase: %s", cfg.Name, server.Status.Phase)
 			}
 		}
@@ -927,7 +835,7 @@ func GetVMCPNodePort(
 		}
 
 		// Verify the HTTP server is ready to handle requests
-		if err := checkHTTPHealthReady(nodePort, 2*time.Second); err != nil {
+		if err := checkHTTPHealthReady(nodePort); err != nil {
 			return fmt.Errorf("nodePort %d accessible but HTTP server not ready: %w", nodePort, err)
 		}
 
@@ -946,25 +854,21 @@ func checkPortAccessible(nodePort int32, timeout time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("port %d not accessible: %w", nodePort, err)
 	}
-	// Port is accessible - close connection (ignore errors as port accessibility is confirmed)
 	_ = conn.Close()
 	return nil
 }
 
 // checkHTTPHealthReady verifies the HTTP server is ready by checking the /health endpoint.
 // This is more reliable than just TCP check as it ensures the application is serving requests.
-func checkHTTPHealthReady(nodePort int32, timeout time.Duration) error {
-	httpClient := &http.Client{Timeout: timeout}
+func checkHTTPHealthReady(nodePort int32) error {
+	httpClient := &http.Client{Timeout: 2 * time.Second}
 	url := fmt.Sprintf("http://localhost:%d/health", nodePort)
 
 	resp, err := httpClient.Get(url)
 	if err != nil {
 		return fmt.Errorf("health check failed for port %d: %w", nodePort, err)
 	}
-	defer func() {
-		// Error ignored in test cleanup
-		_ = resp.Body.Close()
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("health check returned status %d for port %d", resp.StatusCode, nodePort)
@@ -1294,188 +1198,15 @@ with socketserver.TCPServer(("", 8080), Handler) as httpd:
 	}
 }
 
-// ParameterizedOIDCServerScript is a minimal Python OIDC server that issues
-// RSA-signed RS256 JWTs with a caller-controlled subject.
-//
-// Usage: POST /token?subject=alice  → returns {"access_token": "<jwt>", ...}
-// The subject defaults to "test-user" when the query parameter is omitted.
-//
-// The issuer is derived from the service name: the server reads the HOST
-// environment variable set by the caller via the ISSUER constant below. Tests
-// that deploy this script must set the correct issuer URL in the VirtualMCPServer
-// InlineOIDCConfig.Issuer field.
-const ParameterizedOIDCServerScript = `
-import base64, json, time, http.server, socketserver
-from urllib.parse import urlparse, parse_qs
-from cryptography.hazmat.primitives.asymmetric import rsa, padding as asym_padding
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.backends import default_backend
-
-private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
-public_key = private_key.public_key()
-pub_numbers = public_key.public_numbers()
-
-def to_b64url(num):
-    b = num.to_bytes((num.bit_length() + 7) // 8, byteorder="big")
-    return base64.urlsafe_b64encode(b).decode().rstrip("=")
-
-n_b64 = to_b64url(pub_numbers.n)
-e_b64 = to_b64url(pub_numbers.e)
-ISSUER = "http://OIDC_SERVICE_NAME.OIDC_NAMESPACE.svc.cluster.local"
-
-class H(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/.well-known/openid-configuration":
-            self._json({"issuer": ISSUER, "authorization_endpoint": ISSUER+"/auth",
-                "token_endpoint": ISSUER+"/token", "jwks_uri": ISSUER+"/jwks",
-                "response_types_supported": ["code"], "subject_types_supported": ["public"],
-                "id_token_signing_alg_values_supported": ["RS256"]})
-        elif self.path == "/jwks":
-            self._json({"keys": [{"kty": "RSA", "use": "sig", "kid": "k1", "alg": "RS256", "n": n_b64, "e": e_b64}]})
-        else:
-            self.send_response(404); self.end_headers()
-    def do_POST(self):
-        if self.path.startswith("/token"):
-            params = parse_qs(urlparse(self.path).query)
-            sub = params.get("subject", ["test-user"])[0]
-            hdr = {"alg": "RS256", "typ": "JWT", "kid": "k1"}
-            pay = {"sub": sub, "iss": ISSUER, "aud": "vmcp-audience", "exp": int(time.time())+3600, "iat": int(time.time())}
-            def enc(d): return base64.urlsafe_b64encode(json.dumps(d, separators=(",",":")).encode()).decode().rstrip("=")
-            h64, p64 = enc(hdr), enc(pay)
-            sig = private_key.sign((h64+"."+p64).encode(), asym_padding.PKCS1v15(), hashes.SHA256())
-            jwt = h64 + "." + p64 + "." + base64.urlsafe_b64encode(sig).decode().rstrip("=")
-            print(f"Issued JWT for sub={sub}", flush=True)
-            self._json({"access_token": jwt, "token_type": "Bearer", "expires_in": 3600})
-        else:
-            self.send_response(404); self.end_headers()
-    def _json(self, obj):
-        body = json.dumps(obj).encode()
-        self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers(); self.wfile.write(body)
-    def log_message(self, f, *a): pass
-
-with socketserver.TCPServer(("", 8080), H) as s:
-    print("OIDC server ready on 8080", flush=True)
-    s.serve_forever()
-`
-
-// DeployParameterizedOIDCServer deploys an in-cluster mock OIDC server that
-// issues RSA-signed JWTs with a caller-controlled subject claim (via
-// POST /token?subject=<name>). The server is exposed via a fixed NodePort so
-// the test process (running outside the cluster) can reach it.
-//
-// Returns the in-cluster issuer URL (http://<name>.<namespace>.svc.cluster.local)
-// and a cleanup function that removes all created resources.
+// DeployParameterizedOIDCServer delegates to testutil.DeployParameterizedOIDCServer.
+// Kept here for backwards compatibility with existing virtualmcp tests.
 func DeployParameterizedOIDCServer(
 	ctx context.Context,
 	c client.Client,
 	name, namespace string,
 	timeout, pollingInterval time.Duration,
 ) (issuerURL string, allocatedNodePort int32, cleanup func()) {
-	configMapName := name + "-code"
-
-	// Patch the placeholder issuer into the script so the JWT iss claim and
-	// the OIDC discovery document match the in-cluster service URL.
-	issuerURL = fmt.Sprintf("http://%s.%s.svc.cluster.local", name, namespace)
-	script := strings.ReplaceAll(ParameterizedOIDCServerScript,
-		"http://OIDC_SERVICE_NAME.OIDC_NAMESPACE.svc.cluster.local", issuerURL)
-
-	ginkgo.By("Creating ConfigMap with parameterized OIDC server code")
-	gomega.Expect(c.Create(ctx, &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace},
-		Data:       map[string]string{"server.py": script},
-	})).To(gomega.Succeed())
-
-	ginkgo.By("Creating parameterized OIDC server pod")
-	mode := int32Ptr(0755)
-	gomega.Expect(c.Create(ctx, &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels:    map[string]string{"app": name},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{
-				Name:    "oidc",
-				Image:   "python:3.11-slim",
-				Command: []string{"sh", "-c", "pip install --no-cache-dir cryptography && python3 /app/server.py"},
-				Ports:   []corev1.ContainerPort{{ContainerPort: 8080}},
-				ReadinessProbe: &corev1.Probe{
-					ProbeHandler: corev1.ProbeHandler{
-						HTTPGet: &corev1.HTTPGetAction{
-							Path: "/.well-known/openid-configuration",
-							Port: intstr.FromInt(8080),
-						},
-					},
-					InitialDelaySeconds: 5,
-					PeriodSeconds:       2,
-					FailureThreshold:    30,
-				},
-				VolumeMounts: []corev1.VolumeMount{{Name: "code", MountPath: "/app"}},
-			}},
-			Volumes: []corev1.Volume{{
-				Name: "code",
-				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
-						DefaultMode:          mode,
-					},
-				},
-			}},
-		},
-	})).To(gomega.Succeed())
-
-	ginkgo.By("Creating parameterized OIDC server service with auto-assigned NodePort")
-	oidcSvc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec: corev1.ServiceSpec{
-			Type:     corev1.ServiceTypeNodePort,
-			Selector: map[string]string{"app": name},
-			Ports: []corev1.ServicePort{{
-				Port:       80,
-				TargetPort: intstr.FromInt(8080),
-				Protocol:   corev1.ProtocolTCP,
-			}},
-		},
-	}
-	gomega.Expect(c.Create(ctx, oidcSvc)).To(gomega.Succeed())
-
-	// Read back the auto-assigned NodePort
-	gomega.Expect(c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, oidcSvc)).To(gomega.Succeed())
-	allocatedNodePort = oidcSvc.Spec.Ports[0].NodePort
-	gomega.Expect(allocatedNodePort).NotTo(gomega.BeZero(), "Kubernetes should auto-assign a NodePort")
-
-	ginkgo.By("Waiting for parameterized OIDC server to be ready")
-	gomega.Eventually(func() bool {
-		pod := &corev1.Pod{}
-		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, pod); err != nil {
-			return false
-		}
-		if pod.Status.Phase != corev1.PodRunning {
-			return false
-		}
-		for _, cond := range pod.Status.Conditions {
-			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
-				return true
-			}
-		}
-		return false
-	}, timeout, pollingInterval).Should(gomega.BeTrue(), "parameterized OIDC server should be ready")
-
-	cleanup = func() {
-		_ = c.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
-		_ = c.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
-		_ = c.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace}})
-		// Wait for the Pod and Service to be fully removed so their fixed NodePort
-		// and name can be reused immediately in a subsequent test run.
-		gomega.Eventually(func() bool {
-			pod := &corev1.Pod{}
-			svc := &corev1.Service{}
-			podGone := apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, pod))
-			svcGone := apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, svc))
-			return podGone && svcGone
-		}, timeout, pollingInterval).Should(gomega.BeTrue(), "OIDC server pod and service should be fully deleted")
-	}
-	return issuerURL, allocatedNodePort, cleanup
+	return testutil.DeployParameterizedOIDCServer(ctx, c, name, namespace, timeout, pollingInterval)
 }
 
 // CleanupMockHTTPServer removes the mock HTTP server resources

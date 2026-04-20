@@ -6,10 +6,11 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -78,6 +79,15 @@ func (r *ToolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{RequeueAfter: finalizerRequeueDelay}, nil
 	}
 
+	// Validation succeeded - set Valid=True condition
+	conditionChanged := meta.SetStatusCondition(&toolConfig.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionToolConfigValid,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1alpha1.ConditionReasonToolConfigValidationSucceeded,
+		Message:            "Spec validation passed",
+		ObservedGeneration: toolConfig.Generation,
+	})
+
 	// Calculate the hash of the current configuration
 	configHash := r.calculateConfigHash(toolConfig.Spec)
 
@@ -87,9 +97,24 @@ func (r *ToolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.handleConfigHashChange(ctx, toolConfig, configHash)
 	}
 
-	// Even when hash hasn't changed, update referencing servers list.
-	// This ensures ReferencingServers is updated when MCPServers are created or deleted.
-	return r.updateReferencingServers(ctx, toolConfig)
+	// Refresh ReferencingWorkloads list
+	referencingWorkloads, err := r.findReferencingWorkloads(ctx, toolConfig)
+	if err != nil {
+		logger.Error(err, "Failed to find referencing workloads")
+	} else if !ctrlutil.WorkloadRefsEqual(toolConfig.Status.ReferencingWorkloads, referencingWorkloads) {
+		toolConfig.Status.ReferencingWorkloads = referencingWorkloads
+		conditionChanged = true
+	}
+
+	// Update condition if it changed (even without hash change)
+	if conditionChanged {
+		if err := r.Status().Update(ctx, toolConfig); err != nil {
+			logger.Error(err, "Failed to update MCPToolConfig status after condition change")
+			return ctrl.Result{}, err
+		}
+	}
+
+	return ctrl.Result{}, nil
 }
 
 // handleConfigHashChange handles the logic when the config hash changes
@@ -101,24 +126,27 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	logger := log.FromContext(ctx)
 	logger.Info("MCPToolConfig configuration changed", "oldHash", toolConfig.Status.ConfigHash, "newHash", configHash)
 
-	// Update the status with the new hash
-	toolConfig.Status.ConfigHash = configHash
-	toolConfig.Status.ObservedGeneration = toolConfig.Generation
-
 	// Find all MCPServers that reference this MCPToolConfig
 	referencingServers, err := r.findReferencingMCPServers(ctx, toolConfig)
 	if err != nil {
 		logger.Error(err, "Failed to find referencing MCPServers")
+		// Don't persist the new hash on error — returning the error will requeue,
+		// and on the next attempt handleConfigHashChange will be re-entered so that
+		// MCPServer annotation updates are not permanently skipped.
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
 	}
 
-	// Update the status with the list of referencing servers
-	serverNames := make([]string, 0, len(referencingServers))
+	// Update the status with the new hash only after successful server lookup
+	toolConfig.Status.ConfigHash = configHash
+	toolConfig.Status.ObservedGeneration = toolConfig.Generation
+
+	// Update the status with the list of referencing workloads
+	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(referencingServers))
 	for _, server := range referencingServers {
-		serverNames = append(serverNames, server.Name)
+		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPServer, Name: server.Name})
 	}
-	slices.Sort(serverNames)
-	toolConfig.Status.ReferencingServers = serverNames
+	ctrlutil.SortWorkloadRefs(refs)
+	toolConfig.Status.ReferencingWorkloads = refs
 
 	// Update the MCPToolConfig status
 	if err := r.Status().Update(ctx, toolConfig); err != nil {
@@ -144,36 +172,6 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	return ctrl.Result{}, nil
 }
 
-// updateReferencingServers finds referencing MCPServers and updates the status if the list changed
-func (r *ToolConfigReconciler) updateReferencingServers(
-	ctx context.Context,
-	toolConfig *mcpv1alpha1.MCPToolConfig,
-) (ctrl.Result, error) {
-	referencingServers, err := r.findReferencingMCPServers(ctx, toolConfig)
-	if err != nil {
-		logger := log.FromContext(ctx)
-		logger.Error(err, "Failed to find referencing MCPServers")
-		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
-	}
-
-	serverNames := make([]string, 0, len(referencingServers))
-	for _, server := range referencingServers {
-		serverNames = append(serverNames, server.Name)
-	}
-	slices.Sort(serverNames)
-
-	if !slices.Equal(toolConfig.Status.ReferencingServers, serverNames) {
-		toolConfig.Status.ReferencingServers = serverNames
-		if err := r.Status().Update(ctx, toolConfig); err != nil {
-			logger := log.FromContext(ctx)
-			logger.Error(err, "Failed to update MCPToolConfig status")
-			return ctrl.Result{}, err
-		}
-	}
-
-	return ctrl.Result{}, nil
-}
-
 // calculateConfigHash calculates a hash of the MCPToolConfig spec using Kubernetes utilities
 func (*ToolConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPToolConfigSpec) string {
 	return ctrlutil.CalculateConfigHash(spec)
@@ -184,31 +182,32 @@ func (r *ToolConfigReconciler) handleDeletion(ctx context.Context, toolConfig *m
 	logger := log.FromContext(ctx)
 
 	if controllerutil.ContainsFinalizer(toolConfig, ToolConfigFinalizerName) {
-		// Check if any MCPServers are still referencing this MCPToolConfig
-		referencingServers, err := r.findReferencingMCPServers(ctx, toolConfig)
+		// Check if any workloads still reference this MCPToolConfig
+		referencingWorkloads, err := r.findReferencingWorkloads(ctx, toolConfig)
 		if err != nil {
-			logger.Error(err, "Failed to find referencing MCPServers during deletion")
+			logger.Error(err, "Failed to check referencing workloads during deletion")
 			return ctrl.Result{}, err
 		}
 
-		if len(referencingServers) > 0 {
-			// Cannot delete - still referenced
-			serverNames := make([]string, 0, len(referencingServers))
-			for _, server := range referencingServers {
-				serverNames = append(serverNames, server.Name)
-			}
-			logger.Info("Cannot delete MCPToolConfig - still referenced by MCPServers",
-				"toolconfig", toolConfig.Name, "referencingServers", serverNames)
+		if len(referencingWorkloads) > 0 {
+			logger.Info("MCPToolConfig is still referenced by workloads, blocking deletion",
+				"toolconfig", toolConfig.Name,
+				"referencingWorkloads", referencingWorkloads)
 
-			// Update status to show it's still referenced
-			toolConfig.Status.ReferencingServers = serverNames
-			if err := r.Status().Update(ctx, toolConfig); err != nil {
-				logger.Error(err, "Failed to update MCPToolConfig status during deletion")
+			meta.SetStatusCondition(&toolConfig.Status.Conditions, metav1.Condition{
+				Type:               mcpv1alpha1.ConditionTypeDeletionBlocked,
+				Status:             metav1.ConditionTrue,
+				Reason:             "ReferencedByWorkloads",
+				Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
+				ObservedGeneration: toolConfig.Generation,
+			})
+			toolConfig.Status.ReferencingWorkloads = referencingWorkloads
+			if updateErr := r.Status().Update(ctx, toolConfig); updateErr != nil {
+				logger.Error(updateErr, "Failed to update status during deletion block")
 			}
 
-			// Return an error to prevent deletion
-			return ctrl.Result{}, fmt.Errorf("MCPToolConfig %s is still referenced by MCPServers: %v",
-				toolConfig.Name, serverNames)
+			// Requeue to check again later
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 
 		// No references, safe to remove finalizer and allow deletion
@@ -223,7 +222,23 @@ func (r *ToolConfigReconciler) handleDeletion(ctx context.Context, toolConfig *m
 	return ctrl.Result{}, nil
 }
 
-// findReferencingMCPServers finds all MCPServers that reference the given MCPToolConfig
+// findReferencingWorkloads returns the workload resources (MCPServer)
+// that reference this MCPToolConfig via their ToolConfigRef field.
+func (r *ToolConfigReconciler) findReferencingWorkloads(
+	ctx context.Context,
+	toolConfig *mcpv1alpha1.MCPToolConfig,
+) ([]mcpv1alpha1.WorkloadReference, error) {
+	return ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, toolConfig.Namespace, toolConfig.Name,
+		func(server *mcpv1alpha1.MCPServer) *string {
+			if server.Spec.ToolConfigRef != nil {
+				return &server.Spec.ToolConfigRef.Name
+			}
+			return nil
+		})
+}
+
+// findReferencingMCPServers finds all MCPServers that reference the given MCPToolConfig.
+// Returns the full MCPServer objects, used by handleConfigHashChange to update server annotations.
 func (r *ToolConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
 	toolConfig *mcpv1alpha1.MCPToolConfig,
@@ -238,33 +253,59 @@ func (r *ToolConfigReconciler) findReferencingMCPServers(
 }
 
 // SetupWithManager sets up the controller with the Manager.
+// Watches MCPServer changes to maintain accurate ReferencingWorkloads status.
 func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Create a handler that maps MCPServer changes to MCPToolConfig reconciliation requests.
-	// When an MCPServer is created/updated/deleted, we need to reconcile the MCPToolConfig
-	// it references so that the ReferencingServers status field stays up to date.
+	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPToolConfigs.
+	// This handler enqueues both the currently-referenced MCPToolConfig AND any
+	// MCPToolConfig that still lists this server in ReferencingWorkloads (covers the
+	// case where a server removes its toolConfigRef — the previously-referenced
+	// config needs to reconcile and clean up the stale entry).
 	toolConfigHandler := handler.EnqueueRequestsFromMapFunc(
-		func(_ context.Context, obj client.Object) []reconcile.Request {
-			mcpServer, ok := obj.(*mcpv1alpha1.MCPServer)
+		func(ctx context.Context, obj client.Object) []reconcile.Request {
+			server, ok := obj.(*mcpv1alpha1.MCPServer)
 			if !ok {
 				return nil
 			}
 
-			if mcpServer.Spec.ToolConfigRef == nil {
-				return nil
+			seen := make(map[types.NamespacedName]struct{})
+			var requests []reconcile.Request
+
+			// Enqueue the currently-referenced MCPToolConfig (if any)
+			if server.Spec.ToolConfigRef != nil {
+				nn := types.NamespacedName{
+					Name:      server.Spec.ToolConfigRef.Name,
+					Namespace: server.Namespace,
+				}
+				seen[nn] = struct{}{}
+				requests = append(requests, reconcile.Request{NamespacedName: nn})
 			}
 
-			return []reconcile.Request{{
-				NamespacedName: types.NamespacedName{
-					Name:      mcpServer.Spec.ToolConfigRef.Name,
-					Namespace: mcpServer.Namespace,
-				},
-			}}
+			// Also enqueue any MCPToolConfig that still lists this server in
+			// ReferencingWorkloads — handles ref-removal and server-deletion cases.
+			toolConfigList := &mcpv1alpha1.MCPToolConfigList{}
+			if err := r.List(ctx, toolConfigList, client.InNamespace(server.Namespace)); err != nil {
+				log.FromContext(ctx).Error(err, "Failed to list MCPToolConfigs for MCPServer watch")
+				return requests
+			}
+			for _, cfg := range toolConfigList.Items {
+				nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
+				if _, already := seen[nn]; already {
+					continue
+				}
+				for _, ref := range cfg.Status.ReferencingWorkloads {
+					if ref.Kind == mcpv1alpha1.WorkloadKindMCPServer && ref.Name == server.Name {
+						requests = append(requests, reconcile.Request{NamespacedName: nn})
+						break
+					}
+				}
+			}
+
+			return requests
 		},
 	)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPToolConfig{}).
-		// Watch for MCPServers and reconcile the MCPToolConfig when they change
 		Watches(&mcpv1alpha1.MCPServer{}, toolConfigHandler).
 		Complete(r)
 }

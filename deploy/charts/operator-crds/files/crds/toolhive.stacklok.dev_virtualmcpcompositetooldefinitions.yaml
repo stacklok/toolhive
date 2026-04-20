@@ -8,6 +8,8 @@ metadata:
 spec:
   group: toolhive.stacklok.dev
   names:
+    categories:
+    - toolhive
     kind: VirtualMCPCompositeToolDefinition
     listKind: VirtualMCPCompositeToolDefinitionList
     plural: virtualmcpcompositetooldefinitions
@@ -174,6 +176,11 @@ spec:
                         Note: the templating is only supported on the first level of the key-value pairs.
                       type: object
                       x-kubernetes-preserve-unknown-fields: true
+                    collection:
+                      description: |-
+                        Collection is a Go template expression that resolves to a JSON array or a slice.
+                        Only used when Type is "forEach".
+                      type: string
                     condition:
                       description: Condition is a template expression that determines
                         if the step should execute
@@ -194,6 +201,24 @@ spec:
                     id:
                       description: ID is the unique identifier for this step.
                       type: string
+                    itemVar:
+                      description: |-
+                        ItemVar is the variable name used to reference the current item in forEach templates.
+                        Defaults to "item" if not specified.
+                        Only used when Type is "forEach".
+                      type: string
+                    maxIterations:
+                      description: |-
+                        MaxIterations limits the number of items that can be iterated over.
+                        Defaults to 100, hard cap at 1000.
+                        Only used when Type is "forEach".
+                      type: integer
+                    maxParallel:
+                      description: |-
+                        MaxParallel limits the number of concurrent iterations in a forEach step.
+                        Defaults to the DAG executor's maxParallel (10).
+                        Only used when Type is "forEach".
+                      type: integer
                     message:
                       description: |-
                         Message is the elicitation message
@@ -263,6 +288,12 @@ spec:
                         elicitation
                       type: object
                       x-kubernetes-preserve-unknown-fields: true
+                    step:
+                      description: |-
+                        InnerStep defines the step to execute for each item in the collection.
+                        Only used when Type is "forEach". Only tool-type inner steps are supported.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
                     timeout:
                       description: Timeout is the maximum execution time for this
                         step
@@ -279,6 +310,7 @@ spec:
                       enum:
                       - tool
                       - elicitation
+                      - forEach
                       type: string
                   required:
                   - id
@@ -354,6 +386,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this VirtualMCPCompositeToolDefinition
@@ -367,12 +402,14 @@ spec:
                 items:
                   type: string
                 type: array
+                x-kubernetes-list-type: set
               validationErrors:
                 description: ValidationErrors contains validation error messages if
                   ValidationStatus is Invalid
                 items:
                   type: string
                 type: array
+                x-kubernetes-list-type: atomic
               validationStatus:
                 description: |-
                   ValidationStatus indicates the validation state of the workflow

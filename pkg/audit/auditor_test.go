@@ -482,10 +482,12 @@ func TestExtractSubjects(t *testing.T) {
 
 		req := httptest.NewRequest("GET", "/test", nil)
 		identity := &auth.Identity{
-			Subject: claims["sub"].(string),
-			Name:    claims["name"].(string),
-			Email:   claims["email"].(string),
-			Claims:  claims,
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: claims["sub"].(string),
+				Name:    claims["name"].(string),
+				Email:   claims["email"].(string),
+				Claims:  claims,
+			},
 		}
 		ctx := auth.WithIdentity(req.Context(), identity)
 		req = req.WithContext(ctx)
@@ -507,8 +509,10 @@ func TestExtractSubjects(t *testing.T) {
 
 		req := httptest.NewRequest("GET", "/test", nil)
 		identity := &auth.Identity{
-			Subject: claims["sub"].(string),
-			Claims:  claims,
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: claims["sub"].(string),
+				Claims:  claims,
+			},
 		}
 		ctx := auth.WithIdentity(req.Context(), identity)
 		req = req.WithContext(ctx)
@@ -528,9 +532,11 @@ func TestExtractSubjects(t *testing.T) {
 
 		req := httptest.NewRequest("GET", "/test", nil)
 		identity := &auth.Identity{
-			Subject: claims["sub"].(string),
-			Email:   claims["email"].(string),
-			Claims:  claims,
+			PrincipalInfo: auth.PrincipalInfo{
+				Subject: claims["sub"].(string),
+				Email:   claims["email"].(string),
+				Claims:  claims,
+			},
 		}
 		ctx := auth.WithIdentity(req.Context(), identity)
 		req = req.WithContext(ctx)
@@ -796,4 +802,203 @@ func TestExtractSourceWithHeaders(t *testing.T) {
 	assert.Equal(t, "192.168.1.100", source.Value)
 	assert.Equal(t, "TestAgent/1.0", source.Extra[SourceExtraKeyUserAgent])
 	assert.Equal(t, "req-12345", source.Extra[SourceExtraKeyRequestID])
+}
+
+func TestErrorDetectionBodyCapture(t *testing.T) {
+	t.Parallel()
+
+	t.Run("captures prefix when DetectApplicationErrors is enabled", func(t *testing.T) {
+		t.Parallel()
+		detectErrors := true
+		config := &Config{
+			DetectApplicationErrors: &detectErrors,
+		}
+		auditor, err := NewAuditorWithTransport(config, "streamable-http")
+		require.NoError(t, err)
+
+		rw := &responseWriter{
+			ResponseWriter:     httptest.NewRecorder(),
+			statusCode:         http.StatusOK,
+			auditor:            auditor,
+			errorDetectionBody: &bytes.Buffer{},
+		}
+
+		responseData := `{"jsonrpc":"2.0","id":"1","error":{"code":-32603,"message":"test error"}}`
+		_, err = rw.Write([]byte(responseData))
+		require.NoError(t, err)
+
+		assert.Equal(t, responseData, rw.errorDetectionBody.String())
+	})
+
+	t.Run("does not capture when DetectApplicationErrors is disabled", func(t *testing.T) {
+		t.Parallel()
+		detectErrors := false
+		config := &Config{
+			DetectApplicationErrors: &detectErrors,
+		}
+		auditor, err := NewAuditorWithTransport(config, "streamable-http")
+		require.NoError(t, err)
+
+		rw := &responseWriter{
+			ResponseWriter: httptest.NewRecorder(),
+			statusCode:     http.StatusOK,
+			auditor:        auditor,
+			// errorDetectionBody is nil when detection is disabled
+		}
+
+		_, err = rw.Write([]byte(`{"error":{"code":-32603}}`))
+		require.NoError(t, err)
+
+		assert.Nil(t, rw.errorDetectionBody)
+	})
+
+	t.Run("truncates capture at buffer size limit", func(t *testing.T) {
+		t.Parallel()
+		detectErrors := true
+		config := &Config{
+			DetectApplicationErrors: &detectErrors,
+		}
+		auditor, err := NewAuditorWithTransport(config, "streamable-http")
+		require.NoError(t, err)
+
+		rw := &responseWriter{
+			ResponseWriter:     httptest.NewRecorder(),
+			statusCode:         http.StatusOK,
+			auditor:            auditor,
+			errorDetectionBody: &bytes.Buffer{},
+		}
+
+		// Write more than errorDetectionBufferSize bytes
+		largeData := bytes.Repeat([]byte("x"), errorDetectionBufferSize+100)
+		_, err = rw.Write(largeData)
+		require.NoError(t, err)
+
+		assert.Equal(t, errorDetectionBufferSize, rw.errorDetectionBody.Len())
+	})
+
+	t.Run("captures independently of IncludeResponseData", func(t *testing.T) {
+		t.Parallel()
+		detectErrors := true
+		config := &Config{
+			IncludeResponseData:     false,
+			DetectApplicationErrors: &detectErrors,
+		}
+		auditor, err := NewAuditorWithTransport(config, "streamable-http")
+		require.NoError(t, err)
+
+		rw := &responseWriter{
+			ResponseWriter:     httptest.NewRecorder(),
+			statusCode:         http.StatusOK,
+			auditor:            auditor,
+			errorDetectionBody: &bytes.Buffer{},
+			// body is nil because IncludeResponseData is false
+		}
+
+		responseData := `{"jsonrpc":"2.0","id":"1","error":{"code":-32603,"message":"unauthorized"}}`
+		_, err = rw.Write([]byte(responseData))
+		require.NoError(t, err)
+
+		// errorDetectionBody should capture even though body is nil
+		assert.Equal(t, responseData, rw.errorDetectionBody.String())
+		assert.Nil(t, rw.body)
+	})
+}
+
+func TestMiddlewareDetectsJSONRPCErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("overrides outcome to application_error for JSON-RPC error response", func(t *testing.T) {
+		t.Parallel()
+		var logBuf bytes.Buffer
+		detectErrors := true
+		config := &Config{
+			DetectApplicationErrors: &detectErrors,
+		}
+		auditor, err := NewAuditorWithTransport(config, "streamable-http")
+		require.NoError(t, err)
+		auditor.auditLogger = NewAuditLogger(&logBuf)
+
+		errorResponse := `{"jsonrpc":"2.0","id":"1","error":{"code":-32603,"message":"GitLab API error: 401 Unauthorized"}}`
+		handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, err := w.Write([]byte(errorResponse))
+			require.NoError(t, err)
+		})
+
+		middleware := auditor.Middleware(handler)
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"test"}}`))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+
+		middleware.ServeHTTP(rr, req)
+
+		// The response should still be passed through unchanged
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, errorResponse, rr.Body.String())
+
+		// The audit log should contain application_error
+		logOutput := logBuf.String()
+		assert.Contains(t, logOutput, OutcomeApplicationError)
+		assert.Contains(t, logOutput, "jsonrpc_error_code")
+	})
+
+	t.Run("keeps outcome=success for valid JSON-RPC result", func(t *testing.T) {
+		t.Parallel()
+		var logBuf bytes.Buffer
+		detectErrors := true
+		config := &Config{
+			DetectApplicationErrors: &detectErrors,
+		}
+		auditor, err := NewAuditorWithTransport(config, "streamable-http")
+		require.NoError(t, err)
+		auditor.auditLogger = NewAuditLogger(&logBuf)
+
+		successResponse := `{"jsonrpc":"2.0","id":"1","result":{"content":[{"type":"text","text":"hello"}]}}`
+		handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, err := w.Write([]byte(successResponse))
+			require.NoError(t, err)
+		})
+
+		middleware := auditor.Middleware(handler)
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"test"}}`))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+
+		middleware.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		logOutput := logBuf.String()
+		assert.NotContains(t, logOutput, OutcomeApplicationError)
+	})
+
+	t.Run("does not inspect body when DetectApplicationErrors is disabled", func(t *testing.T) {
+		t.Parallel()
+		var logBuf bytes.Buffer
+		detectErrors := false
+		config := &Config{
+			DetectApplicationErrors: &detectErrors,
+		}
+		auditor, err := NewAuditorWithTransport(config, "streamable-http")
+		require.NoError(t, err)
+		auditor.auditLogger = NewAuditLogger(&logBuf)
+
+		errorResponse := `{"jsonrpc":"2.0","id":"1","error":{"code":-32603,"message":"should not be detected"}}`
+		handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, err := w.Write([]byte(errorResponse))
+			require.NoError(t, err)
+		})
+
+		middleware := auditor.Middleware(handler)
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"test"}}`))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+
+		middleware.ServeHTTP(rr, req)
+
+		logOutput := logBuf.String()
+		assert.NotContains(t, logOutput, OutcomeApplicationError)
+	})
 }

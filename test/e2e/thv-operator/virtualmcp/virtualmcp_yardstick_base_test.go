@@ -46,11 +46,11 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				Env: []mcpv1alpha1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
@@ -64,11 +64,11 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				Env: []mcpv1alpha1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
@@ -86,7 +86,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			}, server1); err != nil {
 				return fmt.Errorf("backend1: failed to get server: %w", err)
 			}
-			if server1.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server1.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("backend1 not ready yet, phase: %s", server1.Status.Phase)
 			}
 
@@ -97,7 +97,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			}, server2); err != nil {
 				return fmt.Errorf("backend2: failed to get server: %w", err)
 			}
-			if server2.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server2.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("backend2 not ready yet, phase: %s", server2.Status.Phase)
 			}
 
@@ -111,6 +111,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Aggregation: &vmcpconfig.AggregationConfig{
@@ -366,7 +367,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		It("should have two discovered backends initially", func() {
 			status, err := GetVirtualMCPServerStatus(ctx, k8sClient, vmcpServerName, testNamespace)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(status.BackendCount).To(Equal(2), "Should have 2 initial backends")
+			Expect(status.BackendCount).To(Equal(int32(2)), "Should have 2 initial backends")
 			Expect(status.DiscoveredBackends).To(HaveLen(2), "Should have 2 discovered backends")
 
 			backendNames := make([]string, len(status.DiscoveredBackends))
@@ -404,7 +405,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 					return fmt.Errorf("new backend %s not found in discovered backends: %v", backend3Name, backendNames)
 				}
 
-				// BackendCount only includes healthy backends, so check this separately
+				// BackendCount includes routable backends (healthy + unauthenticated), so check this separately
 				// We expect all backends to eventually become healthy
 				if status.BackendCount != 3 {
 					return fmt.Errorf("expected 3 healthy backends, got %d (discovered: %v)", status.BackendCount, backendNames)

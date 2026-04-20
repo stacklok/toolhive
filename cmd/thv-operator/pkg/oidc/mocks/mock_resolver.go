@@ -18,86 +18,6 @@ import (
 	gomock "go.uber.org/mock/gomock"
 )
 
-// MockOIDCConfigurable is a mock of OIDCConfigurable interface.
-type MockOIDCConfigurable struct {
-	ctrl     *gomock.Controller
-	recorder *MockOIDCConfigurableMockRecorder
-	isgomock struct{}
-}
-
-// MockOIDCConfigurableMockRecorder is the mock recorder for MockOIDCConfigurable.
-type MockOIDCConfigurableMockRecorder struct {
-	mock *MockOIDCConfigurable
-}
-
-// NewMockOIDCConfigurable creates a new mock instance.
-func NewMockOIDCConfigurable(ctrl *gomock.Controller) *MockOIDCConfigurable {
-	mock := &MockOIDCConfigurable{ctrl: ctrl}
-	mock.recorder = &MockOIDCConfigurableMockRecorder{mock}
-	return mock
-}
-
-// EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockOIDCConfigurable) EXPECT() *MockOIDCConfigurableMockRecorder {
-	return m.recorder
-}
-
-// GetName mocks base method.
-func (m *MockOIDCConfigurable) GetName() string {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetName")
-	ret0, _ := ret[0].(string)
-	return ret0
-}
-
-// GetName indicates an expected call of GetName.
-func (mr *MockOIDCConfigurableMockRecorder) GetName() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetName", reflect.TypeOf((*MockOIDCConfigurable)(nil).GetName))
-}
-
-// GetNamespace mocks base method.
-func (m *MockOIDCConfigurable) GetNamespace() string {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetNamespace")
-	ret0, _ := ret[0].(string)
-	return ret0
-}
-
-// GetNamespace indicates an expected call of GetNamespace.
-func (mr *MockOIDCConfigurableMockRecorder) GetNamespace() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetNamespace", reflect.TypeOf((*MockOIDCConfigurable)(nil).GetNamespace))
-}
-
-// GetOIDCConfig mocks base method.
-func (m *MockOIDCConfigurable) GetOIDCConfig() *v1alpha1.OIDCConfigRef {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetOIDCConfig")
-	ret0, _ := ret[0].(*v1alpha1.OIDCConfigRef)
-	return ret0
-}
-
-// GetOIDCConfig indicates an expected call of GetOIDCConfig.
-func (mr *MockOIDCConfigurableMockRecorder) GetOIDCConfig() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetOIDCConfig", reflect.TypeOf((*MockOIDCConfigurable)(nil).GetOIDCConfig))
-}
-
-// GetProxyPort mocks base method.
-func (m *MockOIDCConfigurable) GetProxyPort() int32 {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetProxyPort")
-	ret0, _ := ret[0].(int32)
-	return ret0
-}
-
-// GetProxyPort indicates an expected call of GetProxyPort.
-func (mr *MockOIDCConfigurableMockRecorder) GetProxyPort() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetProxyPort", reflect.TypeOf((*MockOIDCConfigurable)(nil).GetProxyPort))
-}
-
 // MockResolver is a mock of Resolver interface.
 type MockResolver struct {
 	ctrl     *gomock.Controller
@@ -122,17 +42,17 @@ func (m *MockResolver) EXPECT() *MockResolverMockRecorder {
 	return m.recorder
 }
 
-// Resolve mocks base method.
-func (m *MockResolver) Resolve(ctx context.Context, resource oidc.OIDCConfigurable) (*oidc.OIDCConfig, error) {
+// ResolveFromConfigRef mocks base method.
+func (m *MockResolver) ResolveFromConfigRef(ctx context.Context, oidcConfigRef *v1alpha1.MCPOIDCConfigReference, oidcConfig *v1alpha1.MCPOIDCConfig, serverName, namespace string, proxyPort int32) (*oidc.OIDCConfig, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Resolve", ctx, resource)
+	ret := m.ctrl.Call(m, "ResolveFromConfigRef", ctx, oidcConfigRef, oidcConfig, serverName, namespace, proxyPort)
 	ret0, _ := ret[0].(*oidc.OIDCConfig)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// Resolve indicates an expected call of Resolve.
-func (mr *MockResolverMockRecorder) Resolve(ctx, resource any) *gomock.Call {
+// ResolveFromConfigRef indicates an expected call of ResolveFromConfigRef.
+func (mr *MockResolverMockRecorder) ResolveFromConfigRef(ctx, oidcConfigRef, oidcConfig, serverName, namespace, proxyPort any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Resolve", reflect.TypeOf((*MockResolver)(nil).Resolve), ctx, resource)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResolveFromConfigRef", reflect.TypeOf((*MockResolver)(nil).ResolveFromConfigRef), ctx, oidcConfigRef, oidcConfig, serverName, namespace, proxyPort)
 }

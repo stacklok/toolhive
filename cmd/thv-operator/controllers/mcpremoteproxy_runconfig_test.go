@@ -54,14 +54,7 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.salesforce.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://login.salesforce.com",
-							Audience: "mcp.salesforce.com",
-						},
-					},
+					ProxyPort: 8080,
 				},
 			},
 			expectError: false,
@@ -72,9 +65,7 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 				assert.Empty(t, config.Image, "Image should be empty for remote proxy")
 				assert.Equal(t, transporttypes.TransportTypeStreamableHTTP, config.Transport, "Should default to streamable-http")
 				assert.Equal(t, 8080, config.Port)
-				assert.NotNil(t, config.OIDCConfig)
-				assert.Equal(t, "https://login.salesforce.com", config.OIDCConfig.Issuer)
-				assert.Equal(t, "mcp.salesforce.com", config.OIDCConfig.Audience)
+				assert.Nil(t, config.OIDCConfig, "OIDCConfig should be nil when no OIDCConfigRef is set")
 			},
 		},
 		{
@@ -86,14 +77,7 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
 						Name: "filter-config",
 					},
@@ -134,14 +118,7 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
 						Type: mcpv1alpha1.AuthzConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineAuthzConfig{
@@ -175,15 +152,8 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					RemoteURL:         "https://mcp.example.com",
+					ProxyPort:         8080,
 					TrustProxyHeaders: true,
 				},
 			},
@@ -203,14 +173,7 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
 						AddPlaintextHeaders: map[string]string{
 							"X-Tenant-ID":   "tenant-123",
@@ -238,14 +201,7 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
 						AddHeadersFromSecret: []mcpv1alpha1.HeaderFromSecret{
 							{
@@ -287,14 +243,7 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					HeaderForward: &mcpv1alpha1.HeaderForwardConfig{
 						AddPlaintextHeaders: map[string]string{
 							"X-Tenant-ID": "tenant-456",
@@ -344,7 +293,7 @@ func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			config, err := reconciler.createRunConfigFromMCPRemoteProxy(tt.proxy)
+			config, err := reconciler.createRunConfigFromMCPRemoteProxy(t.Context(), tt.proxy)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -381,14 +330,7 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithTokenExchange(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.salesforce.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.company.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "salesforce-exchange",
 					},
@@ -457,14 +399,7 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithTokenExchange(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "non-existent",
 					},
@@ -497,7 +432,7 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithTokenExchange(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			runConfig, err := reconciler.createRunConfigFromMCPRemoteProxy(tt.proxy)
+			runConfig, err := reconciler.createRunConfigFromMCPRemoteProxy(t.Context(), tt.proxy)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -533,14 +468,7 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithBearerToken(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com/api",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "api-bearer-auth",
 					},
@@ -590,14 +518,7 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithBearerToken(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "broken-bearer",
 					},
@@ -626,14 +547,7 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithBearerToken(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "missing-secret-bearer",
 					},
@@ -665,14 +579,7 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithBearerToken(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "missing-key-bearer",
 					},
@@ -730,7 +637,7 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithBearerToken(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			runConfig, err := reconciler.createRunConfigFromMCPRemoteProxy(tt.proxy)
+			runConfig, err := reconciler.createRunConfigFromMCPRemoteProxy(t.Context(), tt.proxy)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -791,7 +698,7 @@ func TestValidateRunConfigForRemoteProxy(t *testing.T) {
 				Host:      "0.0.0.0",
 			},
 			expectErr: true,
-			errMsg:    "remoteURL is required",
+			errMsg:    "remoteUrl is required",
 		},
 		{
 			name: "missing name",
@@ -877,14 +784,7 @@ func TestEnsureRunConfigConfigMapForRemoteProxy(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
-					Port:      8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
+					ProxyPort: 8080,
 				},
 			},
 			existingCM:  nil,

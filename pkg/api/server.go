@@ -17,6 +17,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -30,16 +32,25 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/recovery"
+	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/server/discovery"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
 	"github.com/stacklok/toolhive/pkg/updates"
@@ -50,6 +61,8 @@ import (
 const (
 	middlewareTimeout  = 60 * time.Second
 	readHeaderTimeout  = 10 * time.Second
+	shutdownTimeout    = 30 * time.Second
+	nonceBytes         = 16
 	socketPermissions  = 0660    // Socket file permissions (owner/group read-write)
 	maxRequestBodySize = 1 << 20 // 1MB - Maximum request body size
 )
@@ -60,7 +73,9 @@ type ServerBuilder struct {
 	isUnixSocket     bool
 	debugMode        bool
 	enableDocs       bool
+	nonce            string
 	oidcConfig       *auth.TokenValidatorConfig
+	otelEnabled      bool
 	middlewares      []func(http.Handler) http.Handler
 	customRoutes     map[string]http.Handler
 	containerRuntime runtime.Runtime
@@ -103,9 +118,26 @@ func (b *ServerBuilder) WithDocs(enableDocs bool) *ServerBuilder {
 	return b
 }
 
+// WithNonce sets the server instance nonce used for discovery verification.
+// When non-empty, the server writes a discovery file on startup and returns
+// the nonce in the X-Toolhive-Nonce health check header.
+func (b *ServerBuilder) WithNonce(nonce string) *ServerBuilder {
+	b.nonce = nonce
+	return b
+}
+
 // WithOIDCConfig sets the OIDC configuration
 func (b *ServerBuilder) WithOIDCConfig(oidcConfig *auth.TokenValidatorConfig) *ServerBuilder {
 	b.oidcConfig = oidcConfig
+	return b
+}
+
+// WithOtelEnabled enables OTEL HTTP middleware for distributed tracing.
+// When enabled, the server extracts W3C traceparent headers from incoming requests
+// and creates child OTEL spans for each request. Requires OTEL to be initialized
+// (via telemetry.NewProvider) before the server starts.
+func (b *ServerBuilder) WithOtelEnabled(enabled bool) *ServerBuilder {
+	b.otelEnabled = enabled
 	return b
 }
 
@@ -157,7 +189,29 @@ func (b *ServerBuilder) WithSkillManager(manager skills.SkillService) *ServerBui
 func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r := chi.NewRouter()
 
-	// Apply recovery middleware first to catch panics from all other middleware and handlers
+	// OTEL middleware must be outermost so its span is still active when recovery
+	// middleware catches a panic. If recovery were outer, otelhttp's defer span.End()
+	// would fire during panic unwinding — before recover() — leaving the span ended
+	// and making span.RecordError a no-op. With otelhttp outer:
+	//   1. otelhttp starts span with a provisional name, calls next
+	//   2. chiRouteTagMiddleware renames the span after routing has resolved
+	//   3. recovery catches any panic, calls span.RecordError, returns 500 normally
+	//   4. otelhttp's defer fires: span has error recorded + 500 status, then ends
+	//
+	// Note: otelhttp reads W3C traceparent/tracestate headers before authentication.
+	// Untrusted clients can inject trace IDs or set sampled=1 to influence sampling.
+	// The ParentBased sampler (in otlp/tracing.go) partially mitigates forced sampling
+	// by delegating root decisions to TraceIDRatioBased.
+	if b.otelEnabled {
+		r.Use(otelhttp.NewMiddleware("thv-api"))
+		// chiRouteTagMiddleware runs after routing so RoutePattern() is populated.
+		// It renames the span from the provisional "thv-api" to e.g.
+		// "GET /api/v1beta/workloads/{name}" for clean grouping in OTEL backends.
+		r.Use(chiRouteSpanNamer)
+	}
+
+	// Recovery middleware is inner so it runs inside the OTEL span lifetime,
+	// allowing panic details to be recorded on the span before it ends.
 	r.Use(recovery.Middleware)
 
 	// Apply default middleware
@@ -251,7 +305,7 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 			_ = store.Close()
 			return fmt.Errorf("failed to create OCI skill store: %w", ociErr)
 		}
-		registry, regErr := ociskills.NewRegistry()
+		ociRegistry, regErr := newOCIRegistryClient()
 		if regErr != nil {
 			_ = store.Close()
 			// ociStore is directory-backed with no open handles; no cleanup needed.
@@ -259,13 +313,20 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 		}
 		packager := ociskills.NewPackager(ociStore)
 
-		b.skillManager = skillsvc.New(store,
+		skillOpts := []skillsvc.Option{
 			skillsvc.WithPathResolver(&clientPathAdapter{cm: cm}),
 			skillsvc.WithOCIStore(ociStore),
 			skillsvc.WithPackager(packager),
-			skillsvc.WithRegistryClient(registry),
+			skillsvc.WithRegistryClient(ociRegistry),
 			skillsvc.WithGroupManager(b.groupManager),
+		}
+
+		skillOpts = append(skillOpts,
+			skillsvc.WithSkillLookup(lazySkillLookup{}),
+			skillsvc.WithGitResolver(gitresolver.NewResolver()),
 		)
+
+		b.skillManager = skillsvc.New(store, skillOpts...)
 	}
 
 	return nil
@@ -285,7 +346,7 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 
 	// All other routes get standard timeout
 	standardRouters := map[string]http.Handler{
-		"/health":               v1.HealthcheckRouter(b.containerRuntime),
+		"/health":               v1.HealthcheckRouter(b.containerRuntime, b.nonce),
 		"/api/v1beta/version":   v1.VersionRouter(),
 		"/api/v1beta/registry":  v1.RegistryRouter(true),
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
@@ -293,6 +354,7 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
 		"/api/v1beta/groups":    v1.GroupsRouter(b.groupManager, b.workloadManager, b.clientManager),
 		"/api/v1beta/skills":    v1.SkillsRouter(b.skillManager),
+		"/registry":             v1.RegistryV01Router(),
 	}
 	for prefix, router := range standardRouters {
 		r.Mount(prefix, standardTimeout(router))
@@ -492,6 +554,7 @@ type Server struct {
 	address      string
 	isUnixSocket bool
 	addrType     string
+	nonce        string
 	storeCloser  io.Closer
 }
 
@@ -520,13 +583,28 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 		address:      builder.address,
 		isUnixSocket: builder.isUnixSocket,
 		addrType:     addrType,
+		nonce:        builder.nonce,
 		storeCloser:  builder.skillStoreCloser,
 	}, nil
+}
+
+// ListenURL returns the URL where the server is listening, using the actual
+// bound address from the listener (important when binding to port 0).
+func (s *Server) ListenURL() string {
+	if s.isUnixSocket {
+		return fmt.Sprintf("unix://%s", s.address)
+	}
+	return fmt.Sprintf("http://%s", s.listener.Addr().String())
 }
 
 // Start starts the server and blocks until the context is cancelled
 func (s *Server) Start(ctx context.Context) error {
 	slog.Info("starting server", "type", s.addrType, "address", s.address)
+
+	// Write server discovery file so clients can find this instance.
+	if err := s.writeDiscoveryFile(ctx); err != nil {
+		return err
+	}
 
 	// Start server in a goroutine
 	serverErr := make(chan error, 1)
@@ -550,9 +628,67 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
+// writeDiscoveryFile writes the server discovery file if a nonce is configured.
+// It checks for an existing healthy server first to prevent silent orphaning.
+// The entire check-then-write sequence is wrapped in a file lock to prevent
+// TOCTOU races when two servers start simultaneously.
+func (s *Server) writeDiscoveryFile(ctx context.Context) error {
+	if s.nonce == "" {
+		return nil
+	}
+
+	// Ensure the discovery directory exists before acquiring the lock,
+	// since the lock file is created in the same directory.
+	discoveryPath := discovery.FilePath()
+	if err := os.MkdirAll(filepath.Dir(discoveryPath), 0700); err != nil {
+		return fmt.Errorf("failed to create discovery directory: %w", err)
+	}
+
+	return fileutils.WithFileLock(discoveryPath, func() error {
+		// Guard against overwriting another server's discovery file.
+		result, err := discovery.Discover(ctx)
+		if err != nil {
+			slog.Debug("discovery check failed, proceeding with startup", "error", err)
+		} else {
+			switch result.State {
+			case discovery.StateRunning:
+				return fmt.Errorf("another ToolHive server is already running at %s (PID %d)", result.Info.URL, result.Info.PID)
+			case discovery.StateStale:
+				slog.Debug("cleaning up stale discovery file", "pid", result.Info.PID)
+				if err := discovery.CleanupStale(); err != nil {
+					slog.Warn("failed to clean up stale discovery file", "error", err)
+				}
+			case discovery.StateUnhealthy:
+				// The process is alive but not responding to health checks.
+				// This can happen after a crash-restart where the old process
+				// is hung. We intentionally overwrite the discovery file so
+				// this new server becomes discoverable.
+				slog.Warn("existing server is unhealthy, overwriting discovery file", "pid", result.Info.PID)
+			case discovery.StateNotFound:
+				// No existing server, proceed normally.
+			}
+		}
+
+		info := &discovery.ServerInfo{
+			URL:       s.ListenURL(),
+			PID:       os.Getpid(),
+			Nonce:     s.nonce,
+			StartedAt: time.Now().UTC(),
+		}
+		if err := discovery.WriteServerInfo(info); err != nil {
+			return fmt.Errorf("failed to write discovery file: %w", err)
+		}
+		slog.Debug("wrote discovery file", "url", info.URL, "pid", info.PID)
+		return nil
+	})
+}
+
 // shutdown gracefully shuts down the server
 func (s *Server) shutdown() error {
-	if err := s.httpServer.Shutdown(context.Background()); err != nil {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
 		s.cleanup()
 		return fmt.Errorf("server shutdown failed: %w", err)
 	}
@@ -564,6 +700,11 @@ func (s *Server) shutdown() error {
 
 // cleanup performs cleanup operations
 func (s *Server) cleanup() {
+	if s.nonce != "" {
+		if err := discovery.RemoveServerInfo(); err != nil {
+			slog.Warn("failed to remove discovery file", "error", err)
+		}
+	}
 	if s.storeCloser != nil {
 		if err := s.storeCloser.Close(); err != nil {
 			slog.Warn("failed to close skill store", "error", err)
@@ -595,6 +736,31 @@ func createListener(address string, isUnixSocket bool) (net.Listener, string, er
 	return listener, addrType, nil
 }
 
+// newOCIRegistryClient creates an OCI registry client. In dev mode
+// (TOOLHIVE_DEV=true), plain HTTP is enabled for local test registries.
+func newOCIRegistryClient() (ociskills.RegistryClient, error) {
+	var opts []ociskills.RegistryOption
+	if os.Getenv("TOOLHIVE_DEV") == "true" {
+		opts = append(opts, ociskills.WithPlainHTTP(true))
+	}
+	return ociskills.NewRegistry(opts...)
+}
+
+// lazySkillLookup implements skillsvc.SkillLookup by resolving the registry
+// provider on each call. This ensures that registry config changes (via
+// thv config set-registry or the API) are picked up without restarting
+// the server, because ResetDefaultProvider clears the cached provider and
+// the next GetDefaultProviderWithConfig call creates a fresh one.
+type lazySkillLookup struct{}
+
+func (lazySkillLookup) SearchSkills(query string) ([]regtypes.Skill, error) {
+	provider, err := registry.GetDefaultProviderWithConfig(config.NewDefaultProvider())
+	if err != nil {
+		return nil, err
+	}
+	return provider.SearchSkills(query)
+}
+
 // clientPathAdapter adapts *client.ClientManager to the skills.PathResolver interface.
 type clientPathAdapter struct {
 	cm *client.ClientManager
@@ -606,17 +772,67 @@ func (a *clientPathAdapter) GetSkillPath(clientType, skillName string, scope ski
 
 func (a *clientPathAdapter) ListSkillSupportingClients() []string {
 	clients := a.cm.ListSkillSupportingClients()
-	result := make([]string, len(clients))
-	for i, c := range clients {
-		result[i] = string(c)
+	var result []string
+	for _, c := range clients {
+		if a.cm.IsClientInstalled(c) {
+			result = append(result, string(c))
+		} else {
+			slog.Debug("skipping client for skill install: not detected on system", "client", c)
+		}
 	}
 	return result
+}
+
+// chiRouteSpanNamer is a middleware that renames the active OTEL span to reflect
+// the matched chi route pattern (e.g. "GET /api/v1beta/workloads/{name}") and
+// records each URL path parameter as a span attribute for drill-down visibility.
+//
+// otelhttp creates the span with a provisional name at request start, before
+// chi has matched the route. This middleware runs after chi routing completes
+// (i.e. it wraps next.ServeHTTP and renames the span on the way back up), so
+// RouteContext.RoutePattern() is guaranteed to be populated.
+//
+// Low-cardinality span names group spans in OTEL/Sentry backends; the path
+// parameter attributes (e.g. url.path_param.name="my-server") retain the
+// concrete values for trace-level debugging without inflating cardinality.
+func chiRouteSpanNamer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+		rctx := chi.RouteContext(r.Context())
+		if rctx == nil || rctx.RoutePattern() == "" {
+			return
+		}
+		span := trace.SpanFromContext(r.Context())
+		span.SetName(r.Method + " " + rctx.RoutePattern())
+		// Add each matched URL parameter as a span attribute so the actual
+		// value (e.g. the workload/MCP name) is visible in the trace without
+		// raising span-name cardinality.
+		attrs := make([]attribute.KeyValue, 0, len(rctx.URLParams.Keys))
+		for i, key := range rctx.URLParams.Keys {
+			attrs = append(attrs, attribute.String("url.path_param."+key, rctx.URLParams.Values[i]))
+		}
+		if len(attrs) > 0 {
+			span.SetAttributes(attrs...)
+		}
+	})
+}
+
+// GenerateNonce generates a random nonce for server instance identification.
+func GenerateNonce() (string, error) {
+	b := make([]byte, nonceBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate server nonce: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // Serve starts the server on the given address and serves the API.
 // It is assumed that the caller sets up appropriate signal handling.
 // If isUnixSocket is true, address is treated as a UNIX socket path.
 // If oidcConfig is provided, OIDC authentication will be enabled for all API endpoints.
+// Serve is a convenience wrapper that builds and starts the API server.
+// For callers that need to configure OTEL or other builder options not exposed
+// here, use NewServerBuilder and NewServer directly.
 func Serve(
 	ctx context.Context,
 	address string,
@@ -626,11 +842,17 @@ func Serve(
 	oidcConfig *auth.TokenValidatorConfig,
 	middlewares ...func(http.Handler) http.Handler,
 ) error {
+	nonce, err := GenerateNonce()
+	if err != nil {
+		return err
+	}
+
 	builder := NewServerBuilder().
 		WithAddress(address).
 		WithUnixSocket(isUnixSocket).
 		WithDebugMode(debugMode).
 		WithDocs(enableDocs).
+		WithNonce(nonce).
 		WithOIDCConfig(oidcConfig).
 		WithMiddleware(middlewares...)
 

@@ -141,6 +141,43 @@ Request user input during workflow execution.
   defaultResponse: false
 ```
 
+#### forEach
+Iterate over a collection produced by a previous step, executing an inner tool step for each item with configurable parallelism.
+
+```yaml
+- id: check_vulns
+  type: forEach
+  collection: "{{json .steps.get_packages.output.packages}}"
+  itemVar: pkg                 # optional, defaults to "item"
+  maxParallel: 5               # optional, defaults to DAG maxParallel (10), cap 50
+  maxIterations: 200           # optional, defaults to 100, hard cap 1000
+  step:                        # single inner step definition (tool type only)
+    type: tool
+    tool: osv.query_vulnerability
+    arguments:
+      package_name: "{{.forEach.pkg.name}}"
+      version: "{{.forEach.pkg.version}}"
+  dependsOn: [get_packages]
+  onError:
+    action: continue           # per-iteration: skip failed items, don't abort workflow
+```
+
+**Template context** within inner step arguments:
+- `{{.forEach.<itemVar>}}` -- the current item from the collection
+- `{{.forEach.index}}` -- zero-based iteration index
+- Standard `{{.params.*}}`, `{{.steps.*}}`, `{{.vars.*}}`, `{{.workflow.*}}` are also available
+
+**Output structure** (accessible by downstream steps):
+- `{{.steps.<id>.output.iterations}}` -- array of `{index, item, status, output, error}`
+- `{{.steps.<id>.output.count}}` -- total items
+- `{{.steps.<id>.output.completed}}` -- successful iterations
+- `{{.steps.<id>.output.failed}}` -- failed iterations
+
+**Constraints**:
+- Inner step must be type `tool` (no elicitation or nested forEach)
+- `itemVar` must be a valid Go identifier and cannot be `index` (reserved)
+- Collection must resolve to a JSON array via template expansion
+
 ### Dependencies
 
 Define execution order using `dependsOn`:
@@ -696,8 +733,8 @@ metadata:
   name: production-vmcp
   namespace: default
 spec:
-  config:
-    groupRef: production-backends
+  groupRef:
+    name: production-backends
 
   # Reference composite tool definitions
   compositeToolRefs:
@@ -769,7 +806,7 @@ The CRD includes comprehensive validation:
 
 ### Step Validation
 - Unique step IDs
-- Valid step types (`tool`, `elicitation`)
+- Valid step types (`tool`, `elicitation`, `forEach`)
 - Tool references in format `workload.tool_name`
 - Valid Go template syntax in arguments
 - No circular dependencies

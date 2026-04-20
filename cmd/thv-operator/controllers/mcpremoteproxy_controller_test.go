@@ -57,13 +57,6 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.salesforce.com",
 					ProxyPort: 8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://login.salesforce.com",
-							Audience: "mcp.salesforce.com",
-						},
-					},
 				},
 			},
 			expectError: false,
@@ -77,13 +70,6 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					ProxyPort: 8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.example.com",
-							Audience: "mcp-proxy",
-						},
-					},
 				},
 			},
 			expectError: true,
@@ -101,13 +87,6 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 				Spec: mcpv1alpha1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
 					ProxyPort: 8080,
-					OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   "https://auth.company.com",
-							Audience: "mcp-proxy",
-						},
-					},
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: "exchange-config",
 					},
@@ -159,13 +138,6 @@ func TestMCPRemoteProxyReconcile_CreateResources(t *testing.T) {
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.salesforce.com",
 			ProxyPort: 8080,
-			OIDCConfig: mcpv1alpha1.OIDCConfigRef{
-				Type: mcpv1alpha1.OIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCConfig{
-					Issuer:   "https://login.salesforce.com",
-					Audience: "mcp.salesforce.com",
-				},
-			},
 		},
 	}
 
@@ -699,6 +671,43 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 			expectedCondStatus: metav1.ConditionFalse,
 			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError,
 		},
+		{
+			name: "embedded auth server with multiple upstreams rejected",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "multi-upstream-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "multi-upstream-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "multi-upstream-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+							{Name: "github", Type: mcpv1alpha1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "id1"}},
+							{Name: "google", Type: mcpv1alpha1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{IssuerURL: "https://accounts.google.com", ClientID: "id2"}},
+						},
+					},
+				},
+				Status: mcpv1alpha1.MCPExternalAuthConfigStatus{ConfigHash: "multi-hash"},
+			},
+			expectError:        true,
+			errContains:        "only 1 is supported",
+			expectCondition:    true,
+			expectedCondStatus: metav1.ConditionFalse,
+			expectedCondReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream,
+		},
 	}
 
 	for _, tt := range tests {
@@ -848,7 +857,7 @@ func TestEnsureRBACResources(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -908,7 +917,7 @@ func TestMCPRemoteProxyEnsureRBACResources_Update(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -990,7 +999,7 @@ func TestMCPRemoteProxyEnsureRBACResources_Idempotency(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -1052,7 +1061,7 @@ func TestMCPRemoteProxyEnsureRBACResources_CustomServiceAccount(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPRemoteProxySpec{
 			RemoteURL:      "https://mcp.example.com",
-			Port:           8080,
+			ProxyPort:      8080,
 			ServiceAccount: &customSA,
 		},
 	}

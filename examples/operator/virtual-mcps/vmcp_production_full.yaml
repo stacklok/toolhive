@@ -64,7 +64,8 @@ metadata:
   labels:
     environment: production
 spec:
-  groupRef: production-services
+  groupRef:
+    name: production-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: streamable-http
   env:
@@ -90,7 +91,8 @@ metadata:
   labels:
     environment: production
 spec:
-  groupRef: production-services
+  groupRef:
+    name: production-services
   image: ghcr.io/stackloklabs/gofetch/server
   transport: streamable-http
   proxyPort: 8080
@@ -113,7 +115,8 @@ metadata:
   labels:
     environment: production
 spec:
-  groupRef: production-services
+  groupRef:
+    name: production-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
   transport: sse
   env:
@@ -140,8 +143,9 @@ metadata:
     environment: production
 spec:
   # Reference to the MCPGroup containing backend MCPServers
+  groupRef:
+    name: production-services
   config:
-    groupRef: production-services
     # Aggregation configuration with priority conflict resolution
     aggregation:
       conflictResolution: priority
@@ -162,17 +166,9 @@ spec:
   # Using OIDC for secure authentication
   incomingAuth:
     type: oidc
-    oidcConfig:
-      type: inline
-      resourceUrl: http://production-vmcp.production.svc.cluster.local:4483
-      inline:
-        issuer: https://auth.example.com
-        clientId: production-vmcp-client
-        audience: vmcp-production
-        # Reference to Kubernetes Secret containing client secret
-        clientSecretRef:
-          name: oidc-client-secret
-          key: clientSecret
+    oidcConfigRef:
+      name: production-oidc-config
+      audience: vmcp-production
     authzConfig:
       type: inline
       inline:

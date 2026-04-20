@@ -68,12 +68,31 @@ type HTTPProxy struct {
 	stopOnce sync.Once
 }
 
+// Option configures an HTTPProxy.
+type Option func(*HTTPProxy)
+
+// WithSessionStorage injects a custom storage backend into the session manager.
+// When not provided, the proxy uses in-memory LocalStorage (single-replica default).
+func WithSessionStorage(storage session.Storage) Option {
+	return func(p *HTTPProxy) {
+		if storage == nil {
+			return
+		}
+		if p.sessionManager != nil {
+			_ = p.sessionManager.Stop()
+		}
+		sFactory := func(id string) session.Session { return session.NewStreamableSession(id) }
+		p.sessionManager = session.NewManagerWithStorage(session.DefaultSessionTTL, sFactory, storage)
+	}
+}
+
 // NewHTTPProxy creates a new HTTPProxy for streamable HTTP transport.
 func NewHTTPProxy(
 	host string,
 	port int,
 	prometheusHandler http.Handler,
-	middlewares ...types.NamedMiddleware,
+	middlewares []types.NamedMiddleware,
+	opts ...Option,
 ) *HTTPProxy {
 	// Use typed Streamable sessions
 	sFactory := func(id string) session.Session { return session.NewStreamableSession(id) }
@@ -88,6 +107,10 @@ func NewHTTPProxy(
 		messageCh:         make(chan jsonrpc2.Message, 100),
 		responseCh:        make(chan jsonrpc2.Message, 100),
 		sessionManager:    session.NewManager(session.DefaultSessionTTL, sFactory),
+	}
+
+	for _, opt := range opts {
+		opt(proxy)
 	}
 
 	// Create health checker without MCP pinger
@@ -140,17 +163,11 @@ func (p *HTTPProxy) Stop(ctx context.Context) error {
 	p.stopOnce.Do(func() {
 		close(p.shutdownCh)
 
-		// Stop session manager cleanup and disconnect sessions
+		// Stop session manager cleanup; active sessions expire via TTL
 		if p.sessionManager != nil {
 			if err := p.sessionManager.Stop(); err != nil {
 				slog.Error("failed to stop session manager", "error", err)
 			}
-			p.sessionManager.Range(func(_, value interface{}) bool {
-				if ss, ok := value.(*session.StreamableSession); ok {
-					ss.Disconnect()
-				}
-				return true
-			})
 		}
 
 		if p.server != nil {
@@ -236,7 +253,7 @@ func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := p.sessionManager.Get(sessID); !ok {
-		writeHTTPError(w, http.StatusNotFound, "session not found")
+		session.WriteNotFound(w, nil)
 		return
 	}
 	if err := p.sessionManager.Delete(sessID); err != nil {
@@ -615,7 +632,7 @@ func (p *HTTPProxy) resolveSessionForBatch(w http.ResponseWriter, r *http.Reques
 		return sessID, nil
 	}
 	if _, ok := p.sessionManager.Get(sessID); !ok {
-		writeHTTPError(w, http.StatusNotFound, "session not found")
+		session.WriteNotFound(w, nil)
 		return "", fmt.Errorf("session not found")
 	}
 	return sessID, nil
@@ -657,7 +674,7 @@ func (p *HTTPProxy) resolveSessionForRequest(
 
 	// If session is provided, ensure it exists
 	if _, ok := p.sessionManager.Get(sessID); !ok {
-		writeHTTPError(w, http.StatusNotFound, "session not found")
+		session.WriteNotFound(w, req.ID.Raw())
 		return "", false, fmt.Errorf("session not found")
 	}
 	return sessID, false, nil

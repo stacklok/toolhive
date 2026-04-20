@@ -404,7 +404,3 @@ func TestProxyRunnerStructuredLogsEnvVar(t *testing.T) {
 func boolPtr(b bool) *bool {
 	return &b
 }
-
-func int64Ptr(i int64) *int64 {
-	return &i
-}

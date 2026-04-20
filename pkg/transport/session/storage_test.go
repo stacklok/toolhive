@@ -14,6 +14,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// storeAged stores a session in LocalStorage with a backdated last-access
+// timestamp so it appears stale in eviction checks. It bypasses Store() to
+// avoid resetting the last-access time to "now".
+func storeAged(storage *LocalStorage, session Session) {
+	entry := newLocalEntry(session)
+	entry.lastAccessNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	storage.sessions.Store(session.ID(), entry)
+}
+
 // mockClosableSession is a test session that implements io.Closer
 type mockClosableSession struct {
 	*ProxySession
@@ -164,64 +173,52 @@ func TestLocalStorage(t *testing.T) {
 
 		ctx := context.Background()
 
-		// Create sessions with different update times
+		// Store old session with a backdated last-access time and a fresh new session.
 		oldSession := NewProxySession("old-session")
+		storeAged(storage, oldSession)
+
 		newSession := NewProxySession("new-session")
-
-		// Store both sessions
-		err := storage.Store(ctx, oldSession)
-		require.NoError(t, err)
-		err = storage.Store(ctx, newSession)
+		err := storage.Store(ctx, newSession)
 		require.NoError(t, err)
 
-		// Manually set the old session's updated time to the past
-		oldSession.updated = time.Now().Add(-2 * time.Hour)
-
-		// Store the old session again with the old timestamp
-		err = storage.Store(ctx, oldSession)
-		require.NoError(t, err)
-
-		// Delete sessions older than 1 hour
+		// Delete sessions whose last-access is older than 1 hour.
 		cutoff := time.Now().Add(-1 * time.Hour)
 		err = storage.DeleteExpired(ctx, cutoff)
 		require.NoError(t, err)
 
-		// Old session should be gone
+		// Old session should be gone.
 		_, err = storage.Load(ctx, "old-session")
 		assert.Equal(t, ErrSessionNotFound, err)
 
-		// New session should still exist
+		// New session should still exist.
 		loaded, err := storage.Load(ctx, "new-session")
 		assert.NoError(t, err)
 		assert.NotNil(t, loaded)
 	})
 
-	t.Run("Load does not auto-touch", func(t *testing.T) {
+	t.Run("Load prevents eviction by refreshing last-access", func(t *testing.T) {
 		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
-		// Create and store a session
-		session := NewProxySession("test-id-3")
-		originalUpdated := session.UpdatedAt()
-
 		ctx := context.Background()
-		err := storage.Store(ctx, session)
-		require.NoError(t, err)
+		session := NewProxySession("test-id-3")
 
-		// Wait a bit to ensure time difference
-		time.Sleep(10 * time.Millisecond)
+		// Store with a backdated timestamp so the entry looks expired without sleeping.
+		storeAged(storage, session)
 
-		// Load the session (should NOT auto-touch)
+		// Load refreshes the entry's internal last-access timestamp.
 		loaded, err := storage.Load(ctx, "test-id-3")
 		require.NoError(t, err)
+		assert.Equal(t, session.ID(), loaded.ID())
 
-		// Updated time should be the same (not auto-touched)
-		assert.Equal(t, originalUpdated, loaded.UpdatedAt())
+		// A cleanup with cutoff = now-1h should NOT evict the session because
+		// Load just reset its last-access to roughly now.
+		err = storage.DeleteExpired(ctx, time.Now().Add(-1*time.Hour))
+		require.NoError(t, err)
 
-		// But manual Touch should update the time
-		loaded.Touch()
-		assert.True(t, loaded.UpdatedAt().After(originalUpdated))
+		_, err = storage.Load(ctx, "test-id-3")
+		assert.NoError(t, err, "session should survive cleanup after a recent Load")
 	})
 
 	t.Run("Count helper method", func(t *testing.T) {
@@ -329,32 +326,22 @@ func TestLocalStorage(t *testing.T) {
 
 		ctx := context.Background()
 
-		// Create a closable session (implements io.Closer)
 		closableSession := newMockClosableSession("closable-session")
-		closableSession.updated = time.Now().Add(-2 * time.Hour)
+		storeAged(storage, closableSession)
 
-		// Create a regular session (does not implement io.Closer)
 		regularSession := NewProxySession("regular-session")
-		regularSession.updated = time.Now().Add(-2 * time.Hour)
+		storeAged(storage, regularSession)
 
-		// Store both sessions
-		err := storage.Store(ctx, closableSession)
-		require.NoError(t, err)
-		err = storage.Store(ctx, regularSession)
-		require.NoError(t, err)
-
-		// Delete sessions older than 1 hour
+		// Delete sessions whose last-access is older than 1 hour.
 		cutoff := time.Now().Add(-1 * time.Hour)
-		err = storage.DeleteExpired(ctx, cutoff)
+		err := storage.DeleteExpired(ctx, cutoff)
 		require.NoError(t, err)
 
-		// Both sessions should be deleted
 		_, err = storage.Load(ctx, "closable-session")
 		assert.Equal(t, ErrSessionNotFound, err)
 		_, err = storage.Load(ctx, "regular-session")
 		assert.Equal(t, ErrSessionNotFound, err)
 
-		// Close() is called synchronously, so it should already be done
 		assert.True(t, closableSession.closeCalled,
 			"Close() should have been called on closable session")
 	})
@@ -366,30 +353,19 @@ func TestLocalStorage(t *testing.T) {
 
 		ctx := context.Background()
 
-		// Create a closable session that returns an error on Close()
 		failingSession := newMockClosableSession("failing-session")
 		failingSession.closeError = errors.New("close failed")
-		failingSession.updated = time.Now().Add(-2 * time.Hour)
+		storeAged(storage, failingSession)
 
-		// Store the session
-		err := storage.Store(ctx, failingSession)
-		require.NoError(t, err)
-
-		// Delete expired sessions - should not fail even if Close() returns an error
 		cutoff := time.Now().Add(-1 * time.Hour)
-		err = storage.DeleteExpired(ctx, cutoff)
+		err := storage.DeleteExpired(ctx, cutoff)
 		require.NoError(t, err)
 
-		// Session should be deleted from storage even though Close() failed
 		_, err = storage.Load(ctx, "failing-session")
 		assert.Equal(t, ErrSessionNotFound, err)
 
-		// Close() is called synchronously, so it should already be done
 		assert.True(t, failingSession.closeCalled,
 			"Close() should have been called even though it returned an error")
-
-		// Note: We don't verify log output to maintain t.Parallel() compatibility.
-		// The important behavior is that deletion continues even when Close() fails.
 	})
 
 	t.Run("DeleteExpired handles non-io.Closer sessions without error", func(t *testing.T) {
@@ -399,20 +375,14 @@ func TestLocalStorage(t *testing.T) {
 
 		ctx := context.Background()
 
-		// Create multiple regular sessions (do not implement io.Closer)
 		for i := 0; i < 5; i++ {
-			session := NewProxySession(fmt.Sprintf("session-%d", i))
-			session.updated = time.Now().Add(-2 * time.Hour)
-			err := storage.Store(ctx, session)
-			require.NoError(t, err)
+			storeAged(storage, NewProxySession(fmt.Sprintf("session-%d", i)))
 		}
 
-		// Delete expired sessions
 		cutoff := time.Now().Add(-1 * time.Hour)
 		err := storage.DeleteExpired(ctx, cutoff)
 		require.NoError(t, err)
 
-		// All sessions should be deleted
 		for i := 0; i < 5; i++ {
 			_, err := storage.Load(ctx, fmt.Sprintf("session-%d", i))
 			assert.Equal(t, ErrSessionNotFound, err)
@@ -426,33 +396,17 @@ func TestLocalStorage(t *testing.T) {
 
 		ctx := context.Background()
 
-		// Create a mix of closable and regular expired sessions
 		closable1 := newMockClosableSession("closable-1")
-		closable1.updated = time.Now().Add(-2 * time.Hour)
 		closable2 := newMockClosableSession("closable-2")
-		closable2.updated = time.Now().Add(-2 * time.Hour)
+		storeAged(storage, closable1)
+		storeAged(storage, closable2)
+		storeAged(storage, NewProxySession("regular-1"))
+		storeAged(storage, NewProxySession("regular-2"))
 
-		regular1 := NewProxySession("regular-1")
-		regular1.updated = time.Now().Add(-2 * time.Hour)
-		regular2 := NewProxySession("regular-2")
-		regular2.updated = time.Now().Add(-2 * time.Hour)
-
-		// Store all sessions
-		err := storage.Store(ctx, closable1)
-		require.NoError(t, err)
-		err = storage.Store(ctx, closable2)
-		require.NoError(t, err)
-		err = storage.Store(ctx, regular1)
-		require.NoError(t, err)
-		err = storage.Store(ctx, regular2)
-		require.NoError(t, err)
-
-		// Delete expired sessions
 		cutoff := time.Now().Add(-1 * time.Hour)
-		err = storage.DeleteExpired(ctx, cutoff)
+		err := storage.DeleteExpired(ctx, cutoff)
 		require.NoError(t, err)
 
-		// All sessions should be deleted
 		_, err = storage.Load(ctx, "closable-1")
 		assert.Equal(t, ErrSessionNotFound, err)
 		_, err = storage.Load(ctx, "closable-2")
@@ -462,11 +416,8 @@ func TestLocalStorage(t *testing.T) {
 		_, err = storage.Load(ctx, "regular-2")
 		assert.Equal(t, ErrSessionNotFound, err)
 
-		// Close() is called synchronously, so it should already be done
-		assert.True(t, closable1.closeCalled,
-			"Close() should have been called on closable-1")
-		assert.True(t, closable2.closeCalled,
-			"Close() should have been called on closable-2")
+		assert.True(t, closable1.closeCalled, "Close() should have been called on closable-1")
+		assert.True(t, closable2.closeCalled, "Close() should have been called on closable-2")
 	})
 
 	t.Run("DeleteExpired respects context cancellation during deletion", func(t *testing.T) {
@@ -474,14 +425,9 @@ func TestLocalStorage(t *testing.T) {
 		storage := NewLocalStorage()
 		defer storage.Close()
 
-		ctx := context.Background()
-
 		// Create many expired sessions to increase chance of context check
 		for i := 0; i < 10000; i++ {
-			session := NewProxySession(fmt.Sprintf("session-%d", i))
-			session.updated = time.Now().Add(-2 * time.Hour)
-			err := storage.Store(ctx, session)
-			require.NoError(t, err)
+			storeAged(storage, NewProxySession(fmt.Sprintf("session-%d", i)))
 		}
 
 		// Create a context with a very short timeout
@@ -505,54 +451,42 @@ func TestLocalStorage(t *testing.T) {
 		}
 	})
 
-	t.Run("DeleteExpired handles concurrent Touch() race condition", func(t *testing.T) {
+	t.Run("DeleteExpired handles concurrent Load() race condition", func(t *testing.T) {
 		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
 		ctx := context.Background()
+		ttl := 20 * time.Millisecond
 
-		// Create an expired session
-		session := NewProxySession("race-session")
-		session.updated = time.Now().Add(-2 * time.Hour)
-		err := storage.Store(ctx, session)
+		// Store target session and many dummy sessions, then let them all age past the TTL.
+		err := storage.Store(ctx, NewProxySession("race-session"))
 		require.NoError(t, err)
-
-		// Create many other expired sessions to slow down the deletion loop
-		for i := 0; i < 1000; i++ {
-			dummySession := NewProxySession(fmt.Sprintf("dummy-%d", i))
-			dummySession.updated = time.Now().Add(-2 * time.Hour)
-			err := storage.Store(ctx, dummySession)
+		for i := 0; i < 200; i++ {
+			err := storage.Store(ctx, NewProxySession(fmt.Sprintf("dummy-%d", i)))
 			require.NoError(t, err)
 		}
+		time.Sleep(ttl * 3) // age all entries past the TTL
 
-		// Start DeleteExpired in a goroutine
+		// Start DeleteExpired in a goroutine.
 		done := make(chan error, 1)
 		go func() {
-			cutoff := time.Now().Add(-1 * time.Hour)
+			cutoff := time.Now().Add(-ttl)
 			done <- storage.DeleteExpired(ctx, cutoff)
 		}()
 
-		// Concurrently touch the session to make it non-expired
-		// This simulates Manager.Get().Touch() being called during cleanup
-		session.Touch()
+		// Concurrently call Load on the target session. LocalStorage.Load refreshes the
+		// entry's last-access timestamp so the entry may no longer be expired by the time
+		// DeleteExpired reaches its second-pass re-check.
+		_, _ = storage.Load(ctx, "race-session")
 
-		// Wait for DeleteExpired to complete
 		err = <-done
 		require.NoError(t, err)
 
-		// The session should NOT be deleted because it was touched
-		// (CompareAndDelete would fail due to updated timestamp or re-check would skip it)
-		loaded, err := storage.Load(ctx, "race-session")
-		if err == nil {
-			// Session still exists - this is correct behavior
-			assert.NotNil(t, loaded)
-			assert.True(t, loaded.UpdatedAt().After(time.Now().Add(-1*time.Hour)),
-				"Session should have recent timestamp after Touch()")
-		}
-		// Note: Due to timing, the session might still be deleted if Touch() happened
-		// after the re-check but before CompareAndDelete. This is acceptable as the
-		// important thing is we don't close a session that's been replaced.
+		// Either outcome (session present or absent) is valid depending on timing —
+		// what matters is that DeleteExpired completes without error and does not
+		// delete a session that was refreshed after the second-pass re-check.
+		// The important invariant: no panic, no corruption.
 	})
 
 	t.Run("DeleteExpired handles concurrent Store() replacement race condition", func(t *testing.T) {
@@ -562,18 +496,11 @@ func TestLocalStorage(t *testing.T) {
 
 		ctx := context.Background()
 
-		// Create an expired closable session
+		// Create an expired closable session and many dummy sessions.
 		oldSession := newMockClosableSession("replace-session")
-		oldSession.updated = time.Now().Add(-2 * time.Hour)
-		err := storage.Store(ctx, oldSession)
-		require.NoError(t, err)
-
-		// Create many other expired sessions to slow down the deletion loop
+		storeAged(storage, oldSession)
 		for i := 0; i < 1000; i++ {
-			dummySession := NewProxySession(fmt.Sprintf("dummy-%d", i))
-			dummySession.updated = time.Now().Add(-2 * time.Hour)
-			err := storage.Store(ctx, dummySession)
-			require.NoError(t, err)
+			storeAged(storage, NewProxySession(fmt.Sprintf("dummy-%d", i)))
 		}
 
 		// Start DeleteExpired in a goroutine
@@ -586,7 +513,7 @@ func TestLocalStorage(t *testing.T) {
 		// Concurrently replace the session with a new one (same ID, different object)
 		// This simulates UpsertSession being called during cleanup
 		newSession := newMockClosableSession("replace-session")
-		err = storage.Store(ctx, newSession)
+		err := storage.Store(ctx, newSession)
 		require.NoError(t, err)
 
 		// Wait for DeleteExpired to complete
@@ -619,21 +546,23 @@ func TestManagerWithStorage(t *testing.T) {
 		manager := NewManagerWithStorage(30*time.Minute, factory, storage)
 		defer manager.Stop()
 
+		const localMgrID = "aaaaaaaa-1001-1001-1001-000000000001"
+
 		// Add a session
-		err := manager.AddWithID("test-session-1")
+		err := manager.AddWithID(localMgrID)
 		require.NoError(t, err)
 
 		// Get the session
-		session, found := manager.Get("test-session-1")
+		session, found := manager.Get(localMgrID)
 		assert.True(t, found)
 		assert.NotNil(t, session)
-		assert.Equal(t, "test-session-1", session.ID())
+		assert.Equal(t, localMgrID, session.ID())
 
 		// Delete the session
-		manager.Delete("test-session-1")
+		manager.Delete(localMgrID)
 
 		// Should not be found
-		session, found = manager.Get("test-session-1")
+		session, found = manager.Get(localMgrID)
 		assert.False(t, found)
 		assert.Nil(t, session)
 	})
@@ -649,12 +578,14 @@ func TestManagerWithStorage(t *testing.T) {
 		manager := NewManagerWithStorage(30*time.Minute, factory, storage)
 		defer manager.Stop()
 
+		const sseMgrID = "aaaaaaaa-1002-1002-1002-000000000002"
+
 		// Add a session
-		err := manager.AddWithID("sse-session-1")
+		err := manager.AddWithID(sseMgrID)
 		require.NoError(t, err)
 
 		// Get the session
-		session, found := manager.Get("sse-session-1")
+		session, found := manager.Get(sseMgrID)
 		assert.True(t, found)
 		assert.NotNil(t, session)
 		assert.Equal(t, SessionTypeSSE, session.Type())
@@ -670,8 +601,10 @@ func TestManagerWithStorage(t *testing.T) {
 		manager := NewManagerWithStorage(30*time.Minute, factory, storage)
 		defer manager.Stop()
 
+		const customMgrID = "aaaaaaaa-1003-1003-1003-000000000003"
+
 		// Create a custom session
-		customSession := NewTypedProxySession("custom-1", SessionTypeStreamable)
+		customSession := NewTypedProxySession(customMgrID, SessionTypeStreamable)
 		customSession.SetMetadata("custom", "metadata")
 
 		// Add the custom session
@@ -679,7 +612,7 @@ func TestManagerWithStorage(t *testing.T) {
 		require.NoError(t, err)
 
 		// Get the session
-		session, found := manager.Get("custom-1")
+		session, found := manager.Get(customMgrID)
 		assert.True(t, found)
 		assert.NotNil(t, session)
 		assert.Equal(t, SessionTypeStreamable, session.Type())
@@ -701,9 +634,15 @@ func TestManagerWithStorage(t *testing.T) {
 		// Initially empty
 		assert.Equal(t, 0, manager.Count())
 
+		countIDs := []string{
+			"aaaaaaaa-1004-1004-1004-000000000001",
+			"aaaaaaaa-1004-1004-1004-000000000002",
+			"aaaaaaaa-1004-1004-1004-000000000003",
+		}
+
 		// Add sessions
-		for i := 0; i < 3; i++ {
-			err := manager.AddWithID(fmt.Sprintf("session-%d", i))
+		for _, id := range countIDs {
+			err := manager.AddWithID(id)
 			require.NoError(t, err)
 		}
 
@@ -711,7 +650,7 @@ func TestManagerWithStorage(t *testing.T) {
 		assert.Equal(t, 3, manager.Count())
 	})
 
-	t.Run("Manager Range with LocalStorage", func(t *testing.T) {
+	t.Run("LocalStorage Range", func(t *testing.T) {
 		t.Parallel()
 		storage := NewLocalStorage()
 		factory := func(id string) Session {
@@ -722,15 +661,19 @@ func TestManagerWithStorage(t *testing.T) {
 		defer manager.Stop()
 
 		// Add sessions
-		ids := []string{"one", "two", "three"}
+		ids := []string{
+			"aaaaaaaa-1005-1005-1005-000000000001",
+			"aaaaaaaa-1005-1005-1005-000000000002",
+			"aaaaaaaa-1005-1005-1005-000000000003",
+		}
 		for _, id := range ids {
 			err := manager.AddWithID(id)
 			require.NoError(t, err)
 		}
 
-		// Use Range to collect all IDs
+		// Use LocalStorage.Range directly to collect all IDs
 		var collected []string
-		manager.Range(func(key, _ interface{}) bool {
+		storage.Range(func(key, _ interface{}) bool {
 			if id, ok := key.(string); ok {
 				collected = append(collected, id)
 			}

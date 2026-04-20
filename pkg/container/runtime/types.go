@@ -264,6 +264,26 @@ type DeployWorkloadOptions struct {
 	// IgnoreConfig contains configuration for ignore patterns and tmpfs overlays
 	// Used to filter bind mount contents by hiding sensitive files
 	IgnoreConfig *ignore.Config
+
+	// ScalingConfig contains scaling-related configuration for the workload.
+	// Only applicable to Kubernetes deployments.
+	ScalingConfig *ScalingConfig
+
+	// AllowDockerGateway permits outbound connections to Docker gateway addresses
+	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// blocked by default in the egress proxy even when InsecureAllowAll is set.
+	// Only applicable to Docker deployments with network isolation enabled.
+	AllowDockerGateway bool
+}
+
+// ScalingConfig holds horizontal-scaling knobs threaded from RunConfig down to
+// the Kubernetes client. Fields mirror runner.ScalingConfig but are defined here
+// to avoid an import cycle between pkg/runner and pkg/container/runtime.
+type ScalingConfig struct {
+	// BackendReplicas is the desired StatefulSet replica count.
+	// When nil, the replicas field is omitted from the server-side apply spec so that
+	// HPA or kubectl retains control of scaling.
+	BackendReplicas *int32
 }
 
 // PortBinding represents a host port binding

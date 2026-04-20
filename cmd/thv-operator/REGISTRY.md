@@ -2,7 +2,7 @@
 
 ## Overview
 
-MCPRegistry is a Kubernetes Custom Resource that manages MCP (Model Context Protocol) server registries. It provides centralized server discovery, automated synchronization, and image validation for MCP servers in your cluster.
+MCPRegistry is a Kubernetes Custom Resource that manages MCP (Model Context Protocol) server registries. It provides centralized server discovery and automated synchronization for MCP servers in your cluster.
 
 ## Quick Start
 
@@ -40,11 +40,15 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "My MCP Registry"
-  registries:
-    - name: configmap-registry
+  sources:
+    - name: configmap-source
       configMapRef:
         name: my-registry-data
         key: registry.json
+  registries:
+    - name: default
+      sources:
+        - configmap-source
 ```
 
 Apply with:
@@ -60,7 +64,7 @@ Configure automatic synchronization with interval-based policies per registry:
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: default
       format: toolhive
       configMapRef:
@@ -68,6 +72,10 @@ spec:
         key: registry.json
       syncPolicy:
         interval: "1h"  # Sync every hour
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 Supported intervals:
@@ -91,16 +99,16 @@ metadata:
 
 ### Sync Status
 
-Check sync status:
+Check registry status:
 ```bash
-kubectl get mcpregistry my-registry -o jsonpath='{.status.syncStatus}'
+kubectl get mcpregistry my-registry -o jsonpath='{.status.phase}'
 ```
 
 Status phases:
-- `Idle`: No sync needed
-- `Syncing`: Sync in progress
-- `Complete`: Sync completed successfully
-- `Failed`: Sync failed (check `.status.syncStatus.message`)
+- `Pending`: Registry API deployment is not ready yet
+- `Ready`: Registry API is ready and serving requests
+- `Failed`: Operation failed (check `.status.message`)
+- `Terminating`: Being deleted
 
 ## Data Sources
 
@@ -110,12 +118,16 @@ Store registry data in Kubernetes ConfigMaps:
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: default
       format: toolhive  # or "upstream"
       configMapRef:
         name: registry-data
         key: registry.json  # required
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 ### Git Source
@@ -124,13 +136,17 @@ Synchronize from Git repositories:
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: default
       format: toolhive
       git:
         repository: "https://github.com/org/mcp-registry"
         branch: "main"
         path: "registry.json"  # optional, defaults to "registry.json"
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 Supported repository URL formats:
@@ -162,7 +178,7 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Private MCP Registry"
-  registries:
+  sources:
     - name: default
       format: toolhive
       git:
@@ -176,6 +192,10 @@ spec:
             key: password
       syncPolicy:
         interval: "1h"
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 **Authentication notes:**
@@ -192,11 +212,15 @@ Synchronize from HTTP/HTTPS API endpoints compatible with
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: default
       format: toolhive
       api:
         endpoint: "https://registry.example.com"
+  registries:
+    - name: default
+      sources:
+        - default
 ```
 
 The API source automatically detects the registry format by probing the endpoint:
@@ -218,25 +242,33 @@ Example configurations:
 **Internal ToolHive Registry API:**
 ```yaml
 spec:
-  registries:
-    - name: default
+  sources:
+    - name: internal-api
       format: toolhive
       api:
         endpoint: "http://my-registry-api.default.svc.cluster.local:8080"
       syncPolicy:
         interval: "30m"
+  registries:
+    - name: default
+      sources:
+        - internal-api
 ```
 
 **External Registry API:**
 ```yaml
 spec:
-  registries:
-    - name: default
+  sources:
+    - name: upstream
       format: toolhive
       api:
         endpoint: "https://registry.modelcontextprotocol.io/"
       syncPolicy:
         interval: "1h"
+  registries:
+    - name: default
+      sources:
+        - upstream
 ```
 
 **Notes:**
@@ -244,89 +276,6 @@ spec:
 - Format detection is automatic (ToolHive vs Upstream)
 - HTTPS is recommended for production use
 - Authentication support planned for future release
-
-### PVC Source
-
-Store registry data in PersistentVolumeClaims for dynamic, persistent storage:
-
-```yaml
-spec:
-  registries:
-    - name: production
-      format: toolhive
-      pvcRef:
-        claimName: registry-data-pvc
-        path: production/registry.json  # Path within the PVC
-      syncPolicy:
-        interval: "1h"
-```
-
-**How PVC mounting works:**
-- Each registry gets its own volume mount at `/config/registry/{registryName}/`
-- File path becomes: `/config/registry/{registryName}/{path}`
-- Multiple registries can share the same PVC by mounting it at different paths
-- Consistent with ConfigMap source behavior (all sources use `{registryName}` pattern)
-
-**PVC Structure Examples:**
-
-Single PVC with multiple registries:
-```
-PVC "shared-data":
-  /prod-data/registry.json
-  /dev-data/registry.json
-
-Registry "production": pvcRef: {claimName: shared-data, path: prod-data/registry.json}
-→ Mounted at: /config/registry/production/
-→ File path: /config/registry/production/prod-data/registry.json
-
-Registry "development": pvcRef: {claimName: shared-data, path: dev-data/registry.json}
-→ Mounted at: /config/registry/development/
-→ File path: /config/registry/development/dev-data/registry.json
-
-Note: Same PVC mounted twice at different paths, allowing independent registry access
-```
-
-**Populating PVC Data:**
-
-The PVC can be populated using:
-- **Kubernetes Job** (recommended for initial setup)
-- **Init container** in a deployment
-- **Manual copy**: `kubectl cp registry.json pod:/path`
-- **CSI driver** that provides pre-populated data
-- **External sync process** that writes to the PVC
-
-Example populate Job:
-```yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: populate-registry
-spec:
-  template:
-    spec:
-      containers:
-      - name: populate
-        image: busybox
-        command: ["/bin/sh", "-c"]
-        args:
-        - |
-          mkdir -p /data/production
-          cat > /data/production/registry.json <<EOF
-          {"version": "1.0.0", "servers": {...}}
-          EOF
-        volumeMounts:
-        - name: data
-          mountPath: /data
-      volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: registry-data-pvc
-      restartPolicy: OnFailure
-```
-
-**See Also:**
-- Complete PVC example: [examples/operator/mcp-registries/mcpregistry-pvc.yaml](../../examples/operator/mcp-registries/mcpregistry-pvc.yaml)
-- Multi-source example: [examples/operator/mcp-registries/mcpregistry-multi-source.yaml](../../examples/operator/mcp-registries/mcpregistry-multi-source.yaml)
 
 ### Registry Formats
 
@@ -347,7 +296,7 @@ Each registry configuration can define its own filtering rules:
 
 ```yaml
 spec:
-  registries:
+  sources:
     - name: production
       format: toolhive
       configMapRef:
@@ -365,58 +314,13 @@ spec:
           exclude:
             - "experimental"
             - "deprecated"
+  registries:
+    - name: default
+      sources:
+        - production
 ```
 
-Filtering is applied per-registry, allowing different filtering rules for different registry sources in the same MCPRegistry.
-
-## Image Validation
-
-### Registry-Based Enforcement
-
-Enforce that MCPServer images must be present in at least one registry:
-
-```yaml
-spec:
-  enforceServers: true
-```
-
-When enabled:
-- MCPServers in the namespace are validated against registry content
-- Only images present in any registry with `enforceServers: true` are allowed
-- MCPServers are matched to registry entries by the `server-registry-name` label
-- Invalid images cause MCPServer creation to fail
-
-### MCPServer Matching
-
-MCPServers are matched to registry entries using the `server-registry-name` label:
-
-```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPServer
-metadata:
-  name: github-server
-  labels:
-    server-registry-name: "github"  # Must match registry entry name
-spec:
-  image: ghcr.io/github/github-mcp-server:latest
-```
-
-### Validation Workflow
-
-1. MCPServer is created/updated in namespace
-2. Operator checks if any registry in namespace has `enforceServers: true`
-3. If yes, validates that the MCPServer's image matches a registry entry
-4. Registry matching is done by `server-registry-name` label
-5. Allows or rejects based on validation result
-
-### Error Handling
-
-**Note**: Current implementation does not emit Kubernetes events for validation failures. Error details are available in operator logs:
-
-```bash
-# Check operator logs for validation errors
-kubectl logs -n toolhive-system deployment/toolhive-operator | grep validation
-```
+Filtering is applied per-source, allowing different filtering rules for different data sources in the same MCPRegistry.
 
 ## Registry API Service
 
@@ -456,15 +360,15 @@ curl http://localhost:8080/servers
 
 ### API Status
 
-Check API deployment status:
+Check API endpoint:
 ```bash
-kubectl get mcpregistry my-registry -o jsonpath='{.status.apiStatus}'
+kubectl get mcpregistry my-registry -o jsonpath='{.status.url}'
 ```
 
-API phases:
-- `Deploying`: API deployment in progress
-- `Ready`: API service is available
-- `Error`: API deployment failed
+Check ready replicas:
+```bash
+kubectl get mcpregistry my-registry -o jsonpath='{.status.readyReplicas}'
+```
 
 ## Status Management
 
@@ -490,31 +394,15 @@ Phases:
 ```yaml
 status:
   phase: Ready
-  message: "Registry is ready and API is serving requests"
-  syncStatus:
-    phase: Complete
-    message: "Registry data synchronized successfully"
-    serverCount: 5
-    lastSyncTime: "2025-01-14T10:30:00Z"
-    lastSyncHash: "abc123"
-  apiStatus:
-    phase: Ready
-    endpoint: "http://my-registry-api.toolhive-system.svc.cluster.local:8080"
-    readySince: "2025-01-14T10:25:00Z"
-  storageRef:
-    type: configmap
-    configMapRef:
-      name: "my-registry-registry-storage"
-    configMapRef:
-      name: "my-registry-registry-storage"
-  lastManualSyncTrigger: "1704110400"
+  message: "Registry API is ready and serving requests"
+  url: "http://my-registry-api.toolhive-system:8080"
+  readyReplicas: 1
+  observedGeneration: 1
   conditions:
-    - type: SyncSuccessful
+    - type: Ready
       status: "True"
-      reason: SyncComplete
-    - type: APIReady
-      status: "True"
-      reason: DeploymentReady
+      reason: RegistryReady
+      message: "Registry API is ready and serving requests"
 ```
 
 ## Security Best Practices
@@ -549,9 +437,8 @@ stringData:
 
 ### Image Security
 
-1. **Enable enforcement**: Use `enforceServers: true` to validate images
-2. **Registry trust**: Only include trusted registries
-3. **Regular updates**: Keep registry data current with security patches
+1. **Registry trust**: Only include trusted registries
+2. **Regular updates**: Keep registry data current with security patches
 
 ## Troubleshooting
 
@@ -559,8 +446,8 @@ stringData:
 
 **Sync Failures**:
 ```bash
-# Check sync status
-kubectl get mcpregistry my-registry -o jsonpath='{.status.syncStatus.message}'
+# Check registry status message
+kubectl get mcpregistry my-registry -o jsonpath='{.status.message}'
 
 # Common causes:
 # - Invalid ConfigMap/Git source
@@ -570,8 +457,8 @@ kubectl get mcpregistry my-registry -o jsonpath='{.status.syncStatus.message}'
 
 **API Not Ready**:
 ```bash
-# Check API status
-kubectl get mcpregistry my-registry -o jsonpath='{.status.apiStatus}'
+# Check phase and message
+kubectl get mcpregistry my-registry -o jsonpath='{.status.phase}: {.status.message}'
 
 # Check deployment
 kubectl get deployment my-registry-api
@@ -580,17 +467,6 @@ kubectl get deployment my-registry-api
 # - Resource constraints
 # - Image pull failures
 # - Configuration errors
-```
-
-**Image Validation Errors**:
-```bash
-# Check MCPServer events
-kubectl describe mcpserver problematic-server
-
-# Common causes:
-# - Image not in registry
-# - Registry not synced
-# - Typo in image name
 ```
 
 ### Debug Commands
@@ -614,7 +490,6 @@ kubectl annotate mcpregistry my-registry toolhive.stacklok.dev/manual-sync="$(da
 Operator logs show:
 - Sync operations and results
 - API deployment status
-- Image validation attempts
 - Error details with context
 
 Filter for specific registry:
@@ -632,15 +507,18 @@ metadata:
   name: production-registry
 spec:
   displayName: "Production MCP Servers"
-  registries:
-    - name: default
+  sources:
+    - name: prod-source
       format: toolhive
       configMapRef:
         name: prod-registry-data
         key: registry.json
       syncPolicy:
         interval: "1h"
-  enforceServers: true
+  registries:
+    - name: default
+      sources:
+        - prod-source
 ```
 
 ### Development Registry
@@ -651,14 +529,18 @@ metadata:
   name: dev-registry
 spec:
   displayName: "Development MCP Servers"
-  registries:
-    - name: default
+  sources:
+    - name: dev-source
       format: toolhive
       git:
         repository: "https://github.com/org/dev-mcp-registry"
         branch: "develop"
         path: "registry.json"
   # No sync policy = manual sync only
+  registries:
+    - name: default
+      sources:
+        - dev-source
 ```
 
 ### Private Git Repository Registry
@@ -679,8 +561,8 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Private Organization Registry"
-  registries:
-    - name: default
+  sources:
+    - name: private-source
       format: toolhive
       git:
         repository: "https://github.com/myorg/private-mcp-servers"
@@ -693,11 +575,15 @@ spec:
             key: token
       syncPolicy:
         interval: "30m"
+  registries:
+    - name: default
+      sources:
+        - private-source
 ```
 
-### Multiple Registries
+### Multiple Sources
 
-You can configure multiple registry sources in a single MCPRegistry:
+You can configure multiple data sources in a single MCPRegistry and aggregate them into registry views:
 
 ```yaml
 apiVersion: toolhive.stacklok.dev/v1alpha1
@@ -706,7 +592,7 @@ metadata:
   name: multi-source-registry
 spec:
   displayName: "Multi-Source Registry"
-  registries:
+  sources:
     - name: production
       format: toolhive
       git:
@@ -728,9 +614,14 @@ spec:
         tags:
           include:
             - "development"
+  registries:
+    - name: default
+      sources:
+        - production
+        - development
 ```
 
-Each registry configuration must have a unique `name` within the MCPRegistry.
+Each source must have a unique `name` within the MCPRegistry. Registry views reference sources by name.
 
 ## See Also
 

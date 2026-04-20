@@ -509,6 +509,7 @@ type OAuthFlowConfig struct {
 	SkipBrowser          bool
 	Resource             string // RFC 8707 resource indicator (optional)
 	OAuthParams          map[string]string
+	ScopeParamName       string // Override scope query parameter name (e.g., "user_scope" for Slack)
 
 	// DCR renewal metadata — populated by handleDynamicRegistration and threaded
 	// into OAuthFlowResult so callers can persist the data for RFC 7592 operations.
@@ -677,12 +678,13 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 			config.CallbackPort,
 			config.Resource,
 			config.OAuthParams,
+			config.ScopeParamName,
 		)
 	}
 
 	// Fall back to OIDC discovery
 	slog.Debug("Using OIDC discovery")
-	return oauth.CreateOAuthConfigFromOIDC(
+	cfg, err := oauth.CreateOAuthConfigFromOIDC(
 		ctx,
 		issuer,
 		config.ClientID,
@@ -692,6 +694,11 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 		config.CallbackPort,
 		config.Resource,
 	)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ScopeParamName = config.ScopeParamName
+	return cfg, nil
 }
 
 func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthFlowConfig) (*OAuthFlowResult, error) {

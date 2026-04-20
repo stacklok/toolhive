@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 )
 
 // External auth configuration types
@@ -32,6 +34,10 @@ const (
 
 	// ExternalAuthTypeAWSSts is the type for AWS STS authentication
 	ExternalAuthTypeAWSSts ExternalAuthType = "awsSts"
+
+	// ExternalAuthTypeUpstreamInject is the type for upstream token injection
+	// This injects an upstream IDP access token as the Authorization: Bearer header
+	ExternalAuthTypeUpstreamInject ExternalAuthType = "upstreamInject"
 )
 
 // ExternalAuthType represents the type of external authentication
@@ -46,12 +52,13 @@ type ExternalAuthType string
 // +kubebuilder:validation:XValidation:rule="self.type == 'bearerToken' ? has(self.bearerToken) : !has(self.bearerToken)",message="bearerToken configuration must be set if and only if type is 'bearerToken'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'embeddedAuthServer' ? has(self.embeddedAuthServer) : !has(self.embeddedAuthServer)",message="embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'awsSts' ? has(self.awsSts) : !has(self.awsSts)",message="awsSts configuration must be set if and only if type is 'awsSts'"
-// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts)) : true",message="no configuration must be set when type is 'unauthenticated'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'upstreamInject' ? has(self.upstreamInject) : !has(self.upstreamInject)",message="upstreamInject configuration must be set if and only if type is 'upstreamInject'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts) && !has(self.upstreamInject)) : true",message="no configuration must be set when type is 'unauthenticated'"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure
-	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts
+	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
 
@@ -79,6 +86,11 @@ type MCPExternalAuthConfigSpec struct {
 	// Only used when Type is "awsSts"
 	// +optional
 	AWSSts *AWSStsConfig `json:"awsSts,omitempty"`
+
+	// UpstreamInject configures upstream token injection for backend requests.
+	// Only used when Type is "upstreamInject".
+	// +optional
+	UpstreamInject *UpstreamInjectSpec `json:"upstreamInject,omitempty"`
 }
 
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
@@ -105,6 +117,7 @@ type TokenExchangeConfig struct {
 	Audience string `json:"audience"`
 
 	// Scopes is a list of OAuth 2.0 scopes to request for the exchanged token
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 
@@ -123,6 +136,15 @@ type TokenExchangeConfig struct {
 	// If empty or not set, the exchanged token will replace the Authorization header (default behavior).
 	// +optional
 	ExternalTokenHeaderName string `json:"externalTokenHeaderName,omitempty"`
+
+	// SubjectProviderName is the name of the upstream provider whose token is used as the
+	// RFC 8693 subject token instead of identity.Token when performing token exchange.
+	// When left empty and an embedded authorization server is configured on the VirtualMCPServer,
+	// the controller automatically populates this field with the first configured upstream
+	// provider name. Set it explicitly to override that default or to select a specific
+	// provider when multiple upstreams are configured.
+	// +optional
+	SubjectProviderName string `json:"subjectProviderName,omitempty"`
 }
 
 // HeaderInjectionConfig holds configuration for custom HTTP header injection authentication.
@@ -158,11 +180,23 @@ type EmbeddedAuthServerConfig struct {
 	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
 	Issuer string `json:"issuer"`
 
+	// AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
+	// in the OAuth discovery document. When set, the discovery document will advertise
+	// `{authorizationEndpointBaseUrl}/oauth/authorize` instead of `{issuer}/oauth/authorize`.
+	// All other endpoints (token, registration, JWKS) remain derived from the issuer.
+	// This is useful when the browser-facing authorization endpoint needs to be on a
+	// different host than the issuer used for backend-to-backend calls.
+	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
+	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
+	// +optional
+	AuthorizationEndpointBaseURL string `json:"authorizationEndpointBaseUrl,omitempty"`
+
 	// SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
 	// Supports key rotation by allowing multiple keys (oldest keys are used for verification only).
 	// If not specified, an ephemeral signing key will be auto-generated (development only -
 	// JWTs will be invalid after restart).
 	// +kubebuilder:validation:MaxItems=5
+	// +listType=atomic
 	// +optional
 	SigningKeySecretRefs []SecretKeyRef `json:"signingKeySecretRefs,omitempty"`
 
@@ -172,6 +206,7 @@ type EmbeddedAuthServerConfig struct {
 	// Supports secret rotation via multiple entries (first is current, rest are for verification).
 	// If not specified, an ephemeral secret will be auto-generated (development only -
 	// auth codes and refresh tokens will be invalid after restart).
+	// +listType=atomic
 	// +optional
 	HMACSecretRefs []SecretKeyRef `json:"hmacSecretRefs,omitempty"`
 
@@ -182,9 +217,11 @@ type EmbeddedAuthServerConfig struct {
 
 	// UpstreamProviders configures connections to upstream Identity Providers.
 	// The embedded auth server delegates authentication to these providers.
-	// Currently only a single upstream provider is supported (validated at runtime).
+	// MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
 	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
 
 	// Storage configures the storage backend for the embedded auth server.
@@ -238,8 +275,11 @@ const (
 type UpstreamProviderConfig struct {
 	// Name uniquely identifies this upstream provider.
 	// Used for routing decisions and session binding in multi-upstream scenarios.
+	// Must be lowercase alphanumeric with hyphens (DNS-label-like).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
 	Name string `json:"name"`
 
 	// Type specifies the provider type: "oidc" or "oauth2"
@@ -284,6 +324,10 @@ type OIDCUpstreamConfig struct {
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	// If not specified, defaults to ["openid", "offline_access"].
+	// When using additionalAuthorizationParams with provider-specific refresh token
+	// mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
+	// sending both offline_access and the provider-specific parameter.
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 
@@ -293,6 +337,18 @@ type OIDCUpstreamConfig struct {
 	// that return non-standard claim names in their UserInfo response.
 	// +optional
 	UserInfoOverride *UserInfoConfig `json:"userInfoOverride,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests sent to the upstream provider.
+	// This is useful for providers that require custom parameters, such as
+	// Google's access_type=offline for obtaining refresh tokens.
+	// Note: when using access_type=offline, also set explicit scopes to avoid
+	// the default offline_access scope being sent alongside it.
+	// Framework-managed parameters (response_type, client_id, redirect_uri,
+	// scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+	// +kubebuilder:validation:MaxProperties=16
+	// +optional
+	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
@@ -329,6 +385,7 @@ type OAuth2UpstreamConfig struct {
 	RedirectURI string `json:"redirectUri,omitempty"`
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
+	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 
@@ -339,6 +396,16 @@ type OAuth2UpstreamConfig struct {
 	// If nil, standard OAuth 2.0 token response parsing is used.
 	// +optional
 	TokenResponseMapping *TokenResponseMapping `json:"tokenResponseMapping,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests sent to the upstream provider.
+	// This is useful for providers that require custom parameters, such as
+	// Google's access_type=offline for obtaining refresh tokens.
+	// Framework-managed parameters (response_type, client_id, redirect_uri,
+	// scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+	// +kubebuilder:validation:MaxProperties=16
+	// +optional
+	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
 }
 
 // TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields
@@ -408,18 +475,21 @@ type UserInfoFieldMapping struct {
 	// SubjectFields is an ordered list of field names to try for the user ID.
 	// The first non-empty value found will be used.
 	// Default: ["sub"]
+	// +listType=atomic
 	// +optional
 	SubjectFields []string `json:"subjectFields,omitempty"`
 
 	// NameFields is an ordered list of field names to try for the display name.
 	// The first non-empty value found will be used.
 	// Default: ["name"]
+	// +listType=atomic
 	// +optional
 	NameFields []string `json:"nameFields,omitempty"`
 
 	// EmailFields is an ordered list of field names to try for the email address.
 	// The first non-empty value found will be used.
 	// Default: ["email"]
+	// +listType=atomic
 	// +optional
 	EmailFields []string `json:"emailFields,omitempty"`
 }
@@ -502,6 +572,7 @@ type RedisSentinelConfig struct {
 
 	// SentinelAddrs is a list of Sentinel host:port addresses.
 	// Mutually exclusive with SentinelService.
+	// +listType=atomic
 	// +optional
 	SentinelAddrs []string `json:"sentinelAddrs,omitempty"`
 
@@ -594,6 +665,7 @@ type AWSStsConfig struct {
 	// RoleMappings defines claim-based role selection rules
 	// Allows mapping JWT claims (e.g., groups, roles) to specific IAM roles
 	// Lower priority values are evaluated first (higher priority)
+	// +listType=atomic
 	// +optional
 	RoleMappings []RoleMapping `json:"roleMappings,omitempty"`
 
@@ -657,9 +729,22 @@ type RoleMapping struct {
 	Priority *int32 `json:"priority,omitempty"`
 }
 
+// UpstreamInjectSpec holds configuration for upstream token injection.
+// This strategy injects an upstream IDP access token obtained by the embedded
+// authorization server into backend requests as the Authorization: Bearer header.
+type UpstreamInjectSpec struct {
+	// ProviderName is the name of the upstream IDP provider whose access token
+	// should be injected as the Authorization: Bearer header.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ProviderName string `json:"providerName"`
+}
+
 // MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
 type MCPExternalAuthConfigStatus struct {
 	// Conditions represent the latest available observations of the MCPExternalAuthConfig's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
@@ -672,16 +757,20 @@ type MCPExternalAuthConfigStatus struct {
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
 
-	// ReferencingServers is a list of MCPServer resources that reference this MCPExternalAuthConfig
-	// This helps track which servers need to be reconciled when this config changes
+	// ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.
+	// Each entry identifies the workload by kind and name.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
-	ReferencingServers []string `json:"referencingServers,omitempty"`
+	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=extauth;mcpextauth
+// +kubebuilder:resource:shortName=extauth;mcpextauth,categories=toolhive
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
+// +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+// +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.
@@ -723,6 +812,11 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		return r.validateEmbeddedAuthServer()
 	case ExternalAuthTypeAWSSts:
 		return r.validateAWSSts()
+	case ExternalAuthTypeUpstreamInject:
+		if r.Spec.UpstreamInject == nil || r.Spec.UpstreamInject.ProviderName == "" {
+			return fmt.Errorf("upstreamInject requires a non-empty providerName")
+		}
+		return nil
 	case ExternalAuthTypeTokenExchange,
 		ExternalAuthTypeHeaderInjection,
 		ExternalAuthTypeBearerToken,
@@ -754,6 +848,9 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	if (r.Spec.AWSSts == nil) == (r.Spec.Type == ExternalAuthTypeAWSSts) {
 		return fmt.Errorf("awsSts configuration must be set if and only if type is 'awsSts'")
 	}
+	if (r.Spec.UpstreamInject == nil) == (r.Spec.Type == ExternalAuthTypeUpstreamInject) {
+		return fmt.Errorf("upstreamInject configuration must be set if and only if type is 'upstreamInject'")
+	}
 
 	// Check that unauthenticated has no config
 	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
@@ -761,7 +858,8 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 			r.Spec.HeaderInjection != nil ||
 			r.Spec.BearerToken != nil ||
 			r.Spec.EmbeddedAuthServer != nil ||
-			r.Spec.AWSSts != nil {
+			r.Spec.AWSSts != nil ||
+			r.Spec.UpstreamInject != nil {
 			return fmt.Errorf("no configuration must be set when type is 'unauthenticated'")
 		}
 	}
@@ -783,12 +881,17 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	if len(cfg.UpstreamProviders) == 0 {
 		return fmt.Errorf("at least one upstream provider is required")
 	}
-	// Note: we add runtime validation for 'max items = 1' here since multi-provider support is not yet implemented.
-	if len(cfg.UpstreamProviders) > 1 {
-		return fmt.Errorf("currently only one upstream provider is supported (found %d)", len(cfg.UpstreamProviders))
-	}
+	// Note: multi-upstream is accepted at the CRD level. Consumer controllers
+	// (MCPServer, MCPRemoteProxy) enforce single-upstream restrictions;
+	// VirtualMCPServer allows multiple upstreams.
 
+	seen := make(map[string]bool, len(cfg.UpstreamProviders))
 	for i, provider := range cfg.UpstreamProviders {
+		if seen[provider.Name] {
+			return fmt.Errorf("upstreamProviders[%d]: duplicate name %q", i, provider.Name)
+		}
+		seen[provider.Name] = true
+
 		if err := r.validateUpstreamProvider(i, &provider); err != nil {
 			return err
 		}
@@ -811,6 +914,28 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
 	}
 
+	// Validate additionalAuthorizationParams does not contain reserved keys
+	return ValidateAdditionalAuthorizationParams(prefix, provider.AdditionalAuthorizationParams())
+}
+
+// AdditionalAuthorizationParams returns the additional authorization parameters
+// from whichever upstream config is set, or nil if none.
+func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]string {
+	if p.OIDCConfig != nil {
+		return p.OIDCConfig.AdditionalAuthorizationParams
+	}
+	if p.OAuth2Config != nil {
+		return p.OAuth2Config.AdditionalAuthorizationParams
+	}
+	return nil
+}
+
+// ValidateAdditionalAuthorizationParams checks that no reserved OAuth2 parameters
+// are present in the additional authorization params map.
+func ValidateAdditionalAuthorizationParams(prefix string, params map[string]string) error {
+	if err := oauthparams.Validate(params); err != nil {
+		return fmt.Errorf("%s.additionalAuthorizationParams: %w", prefix, err)
+	}
 	return nil
 }
 

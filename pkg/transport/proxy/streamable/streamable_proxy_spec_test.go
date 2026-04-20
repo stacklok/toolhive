@@ -22,7 +22,7 @@ import (
 func startProxyWithBackend(t *testing.T, port int) (*HTTPProxy, context.Context, context.CancelFunc) {
 	t.Helper()
 
-	proxy := NewHTTPProxy("127.0.0.1", port, nil)
+	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	require.NoError(t, proxy.Start(ctx), "proxy start")
@@ -56,7 +56,7 @@ func TestGETReturns405(t *testing.T) {
 	t.Parallel()
 
 	const port = 8101
-	proxy := NewHTTPProxy("127.0.0.1", port, nil)
+	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -112,6 +112,11 @@ func TestDeleteTerminatesSession(t *testing.T) {
 	require.NoError(t, err)
 	defer postResp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, postResp.StatusCode)
+	assert.Equal(t, "application/json", postResp.Header.Get("Content-Type"))
+	postBody, err := io.ReadAll(postResp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(postBody), `"code":-32001`)
+	assert.Contains(t, string(postBody), `"id":"2"`)
 }
 
 // TestInitializeSetsSessionHeader ensures server assigns Mcp-Session-Id on initialize when client omits it.
@@ -143,7 +148,7 @@ func TestPOSTNotificationOnlyAccepted(t *testing.T) {
 
 	const port = 8104
 	// No backend needed for notification-only submission, but starting is fine.
-	proxy := NewHTTPProxy("127.0.0.1", port, nil)
+	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, proxy.Start(ctx), "proxy start")
@@ -171,7 +176,7 @@ func TestBatchOnlyNotificationsAccepted(t *testing.T) {
 	t.Parallel()
 
 	const port = 8105
-	proxy := NewHTTPProxy("127.0.0.1", port, nil)
+	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, proxy.Start(ctx), "proxy start")
@@ -229,4 +234,89 @@ func TestBatchMixedNotificationsAndRequest(t *testing.T) {
 	// And include a result map as sent by backend
 	_, hasResult := arr[0]["result"]
 	assert.True(t, hasResult, "batch response should include result")
+}
+
+// TestDeleteUnknownSessionReturnsJSONRPCError verifies that DELETE with an
+// unknown session ID returns HTTP 404 with a JSON-RPC error body.
+func TestDeleteUnknownSessionReturnsJSONRPCError(t *testing.T) {
+	t.Parallel()
+
+	const port = 8107
+	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	defer cancel()
+	defer func() { _ = proxy.Stop(ctx) }()
+
+	url := "http://127.0.0.1:8107" + StreamableHTTPEndpoint
+
+	delReq, _ := http.NewRequest(http.MethodDelete, url, nil)
+	delReq.Header.Set("Mcp-Session-Id", "bogus-session-id")
+	resp, err := http.DefaultClient.Do(delReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"code":-32001`)
+	assert.Contains(t, string(body), `"id":null`)
+}
+
+// TestBatchWithStaleSessionReturnsJSONRPCError verifies that a batch POST
+// with a stale session ID returns HTTP 404 with a JSON-RPC error body.
+func TestBatchWithStaleSessionReturnsJSONRPCError(t *testing.T) {
+	t.Parallel()
+
+	const port = 8108
+	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	defer cancel()
+	defer func() { _ = proxy.Stop(ctx) }()
+
+	url := "http://127.0.0.1:8108" + StreamableHTTPEndpoint
+
+	batch := `[{"jsonrpc":"2.0","id":"b1","method":"tools/list","params":{}},{"jsonrpc":"2.0","id":"b2","method":"tools/list","params":{}}]`
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(batch)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", "expired-session-id")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"code":-32001`)
+}
+
+// TestSingleRequestWithStaleSessionIncludesRequestID verifies that a single
+// POST with a stale session ID returns a JSON-RPC error that includes the
+// request's original ID.
+func TestSingleRequestWithStaleSessionIncludesRequestID(t *testing.T) {
+	t.Parallel()
+
+	const port = 8109
+	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	defer cancel()
+	defer func() { _ = proxy.Stop(ctx) }()
+
+	url := "http://127.0.0.1:8109" + StreamableHTTPEndpoint
+
+	reqJSON := `{"jsonrpc":"2.0","id":"test-42","method":"tools/list","params":{}}`
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(reqJSON)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", "expired-session-id")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"code":-32001`)
+	assert.Contains(t, string(body), `"id":"test-42"`)
 }

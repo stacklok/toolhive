@@ -63,12 +63,12 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:      "example/mcp-server:latest",
-					Transport:  "stdio",
-					ProxyMode:  "sse",
-					Port:       8080,
-					TargetPort: 8080,
-					Args:       []string{"--verbose"},
+					Image:     "example/mcp-server:latest",
+					Transport: "stdio",
+					ProxyMode: "sse",
+					ProxyPort: 8080,
+					MCPPort:   8080,
+					Args:      []string{"--verbose"},
 					Env: []mcpv1alpha1.EnvVar{
 						{
 							Name:  "DEBUG",
@@ -323,6 +323,41 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 		})
 
+		It("Should set ObservedGeneration in status after reconciliation", func() {
+			Eventually(func() int64 {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer); err != nil {
+					return -1
+				}
+				return updatedMCPServer.Status.ObservedGeneration
+			}, timeout, interval).Should(Equal(createdMCPServer.Generation))
+		})
+
+		It("Should set the Ready condition", func() {
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+
+				for _, cond := range updatedMCPServer.Status.Conditions {
+					if cond.Type == mcpv1alpha1.ConditionTypeReady {
+						// In envtest, pods don't actually run, so the condition
+						// will be set (True if phase=Running, False if Pending)
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+		})
+
 		It("Should update Deployment when MCPServer spec changes", func() {
 
 			// Wait for Deployment to be created
@@ -403,7 +438,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					// Invalid PodTemplateSpec - containers should be an array, not a string
 					PodTemplateSpec: &runtime.RawExtension{
 						Raw: []byte(`{"spec": {"containers": "invalid-not-an-array"}}`),
@@ -489,6 +524,27 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 			Expect(updatedMCPServer.Status.Message).To(ContainSubstring("Invalid PodTemplateSpec"))
 		})
+
+		It("Should set Ready condition to False for invalid PodTemplateSpec", func() {
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+
+				for _, cond := range updatedMCPServer.Status.Conditions {
+					if cond.Type == mcpv1alpha1.ConditionTypeReady {
+						return cond.Status == metav1.ConditionFalse &&
+							cond.Reason == mcpv1alpha1.ConditionReasonNotReady
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+		})
 	})
 
 	Context("When creating an MCPServer with PodTemplateSpec resource limits", Ordered, func() {
@@ -520,7 +576,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					PodTemplateSpec: &runtime.RawExtension{
 						Raw: []byte(`{"spec":{"containers":[{"name":"mcp","resources":{"limits":{"cpu":"2","memory":"2Gi"},"requests":{"cpu":"500m","memory":"512Mi"}}}]}}`),
 					},
@@ -644,7 +700,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					PodTemplateSpec: &runtime.RawExtension{
 						Raw: []byte(`{"spec":{"securityContext":{"runAsUser":1000,"runAsGroup":1000,"fsGroup":1000}}}`),
 					},
@@ -755,7 +811,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 				},
 			}
 
@@ -876,7 +932,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					PodTemplateSpec: &runtime.RawExtension{
 						Raw: []byte(`{"spec":{"serviceAccountName":"custom-sa"}}`),
 					},
@@ -961,8 +1017,8 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
-					GroupRef:  "non-existent-group", // This group doesn't exist
+					ProxyPort: 8080,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "non-existent-group"}, // This group doesn't exist
 				},
 			}
 
@@ -1029,6 +1085,28 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			// Verify the deployment was created successfully
 			Expect(deployment.Name).To(Equal(mcpServerName))
 		})
+
+		It("Should set Ready condition even with invalid GroupRef", func() {
+			// GroupRef validation doesn't block deployment creation,
+			// so the Ready condition should eventually be set based on pod status
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+
+				for _, cond := range updatedMCPServer.Status.Conditions {
+					if cond.Type == mcpv1alpha1.ConditionTypeReady {
+						return true // Condition exists, regardless of status
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+		})
 	})
 
 	Context("When creating an MCPServer with valid GroupRef", Ordered, func() {
@@ -1084,8 +1162,8 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
-					GroupRef:  mcpGroupName, // This group exists
+					ProxyPort: 8080,
+					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName}, // This group exists
 				},
 			}
 

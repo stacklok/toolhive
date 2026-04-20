@@ -12,8 +12,9 @@ type installRequest struct {
 	Version     string       `json:"version,omitempty"`
 	Scope       skills.Scope `json:"scope,omitempty"`
 	ProjectRoot string       `json:"project_root,omitempty"`
-	Client      string       `json:"client,omitempty"`
+	Clients     []string     `json:"clients,omitempty"`
 	Force       bool         `json:"force,omitempty"`
+	Group       string       `json:"group,omitempty"`
 }
 
 type validateRequest struct {
@@ -35,4 +36,8 @@ type listResponse struct {
 
 type installResponse struct {
 	Skill skills.InstalledSkill `json:"skill"`
+}
+
+type listBuildsResponse struct {
+	Builds []skills.LocalBuild `json:"builds"`
 }

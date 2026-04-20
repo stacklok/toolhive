@@ -6,8 +6,10 @@ package controllerutil
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -51,7 +53,9 @@ const (
 	// AuthServerHMACFilePattern is the pattern for HMAC secret filenames
 	AuthServerHMACFilePattern = "hmac-%d"
 
-	// UpstreamClientSecretEnvVar is the environment variable name for the upstream client secret
+	// UpstreamClientSecretEnvVar is the prefix for upstream client secret environment variables.
+	// Actual names are TOOLHIVE_UPSTREAM_CLIENT_SECRET_<PROVIDER> where PROVIDER is the
+	// upstream name uppercased with hyphens replaced by underscores.
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
 	UpstreamClientSecretEnvVar = "TOOLHIVE_UPSTREAM_CLIENT_SECRET"
 
@@ -59,30 +63,67 @@ const (
 	DefaultSentinelPort = 26379
 )
 
-// GenerateAuthServerConfig generates volumes, volume mounts, and environment variables
-// for the embedded auth server if the external auth config is of type embeddedAuthServer.
-//
-// This is a convenience function that combines GenerateAuthServerVolumes and GenerateAuthServerEnvVars,
-// with the added logic to fetch and check the MCPExternalAuthConfig type.
-//
-// Returns empty slices if externalAuthConfigRef is nil or if the auth type is not embeddedAuthServer.
-func GenerateAuthServerConfig(
+// upstreamSecretBinding binds an upstream provider to its env var name for the
+// client secret. Both GenerateAuthServerEnvVars (Pod env) and
+// buildUpstreamRunConfig (runtime config) MUST use these bindings so the
+// env var names stay consistent.
+type upstreamSecretBinding struct {
+	Provider   *mcpv1alpha1.UpstreamProviderConfig
+	EnvVarName string
+}
+
+// buildUpstreamSecretBindings computes the canonical env var name for each
+// upstream provider's client secret. The env var name is derived from the
+// provider's Name field (uppercased, hyphens replaced with underscores) to
+// keep bindings stable across provider reordering in the CRD.
+func buildUpstreamSecretBindings(
+	providers []mcpv1alpha1.UpstreamProviderConfig,
+) []upstreamSecretBinding {
+	bindings := make([]upstreamSecretBinding, len(providers))
+	for i := range providers {
+		suffix := strings.ToUpper(strings.ReplaceAll(providers[i].Name, "-", "_"))
+		bindings[i] = upstreamSecretBinding{
+			Provider:   &providers[i],
+			EnvVarName: fmt.Sprintf("%s_%s", UpstreamClientSecretEnvVar, suffix),
+		}
+	}
+	return bindings
+}
+
+// EmbeddedAuthServerConfigName returns the config name that should be used for
+// embedded auth server volume/env generation, or empty string if neither ref applies.
+// AuthServerRef takes precedence; externalAuthConfigRef is used as a fallback.
+func EmbeddedAuthServerConfigName(
+	extAuthRef *mcpv1alpha1.ExternalAuthConfigRef,
+	authServerRef *mcpv1alpha1.AuthServerRef,
+) string {
+	if authServerRef != nil {
+		return authServerRef.Name
+	}
+	if extAuthRef != nil {
+		return extAuthRef.Name
+	}
+	return ""
+}
+
+// GenerateAuthServerConfigByName fetches an MCPExternalAuthConfig by name and, if its type
+// is embeddedAuthServer, returns the corresponding volumes, volume mounts, and env vars.
+// Returns empty slices (no error) if the config type is not embeddedAuthServer, because
+// this function may be called via the externalAuthConfigRef fallback path where non-embedded
+// types (headerInjection, tokenExchange, etc.) are valid — they simply don't need auth
+// server volumes. Type validation for the authServerRef path is handled earlier by
+// handleAuthServerRef which sets an InvalidType condition.
+func GenerateAuthServerConfigByName(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
-	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	configName string,
 ) ([]corev1.Volume, []corev1.VolumeMount, []corev1.EnvVar, error) {
-	if externalAuthConfigRef == nil {
-		return nil, nil, nil, nil
-	}
-
-	// Fetch the MCPExternalAuthConfig
-	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, externalAuthConfigRef.Name)
+	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, configName)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
 	}
 
-	// Only process embeddedAuthServer type
 	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
 		return nil, nil, nil, nil
 	}
@@ -92,10 +133,7 @@ func GenerateAuthServerConfig(
 		return nil, nil, nil, fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer")
 	}
 
-	// Generate volumes and mounts
 	volumes, volumeMounts := GenerateAuthServerVolumes(authServerConfig)
-
-	// Generate environment variables
 	envVars := GenerateAuthServerEnvVars(authServerConfig)
 
 	return volumes, volumeMounts, envVars, nil
@@ -228,13 +266,11 @@ func GenerateAuthServerVolumes(
 }
 
 // GenerateAuthServerEnvVars creates environment variables for embedded auth server.
-// Currently generates TOOLHIVE_UPSTREAM_CLIENT_SECRET from the upstream provider's
-// client secret reference.
+// Generates TOOLHIVE_UPSTREAM_CLIENT_SECRET_<PROVIDER> env vars for each upstream
+// provider that has a client secret reference configured, where PROVIDER is the
+// provider name uppercased with hyphens replaced by underscores.
 //
-// The function looks at the first upstream provider (currently only one is supported)
-// and generates an environment variable for its client secret if one is configured.
-//
-// Returns nil slice if authConfig is nil or if no client secret is configured.
+// Returns nil slice if authConfig is nil or if no client secrets are configured.
 func GenerateAuthServerEnvVars(
 	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
 ) []corev1.EnvVar {
@@ -244,27 +280,25 @@ func GenerateAuthServerEnvVars(
 
 	var envVars []corev1.EnvVar
 
-	// Generate env var for upstream client secret if provided
-	if len(authConfig.UpstreamProviders) > 0 {
-		provider := authConfig.UpstreamProviders[0]
-
+	// Generate env vars for upstream client secrets using shared bindings
+	for _, b := range buildUpstreamSecretBindings(authConfig.UpstreamProviders) {
 		// Extract client secret reference based on provider type
 		var clientSecretRef *mcpv1alpha1.SecretKeyRef
 
-		switch provider.Type {
+		switch b.Provider.Type {
 		case mcpv1alpha1.UpstreamProviderTypeOIDC:
-			if provider.OIDCConfig != nil {
-				clientSecretRef = provider.OIDCConfig.ClientSecretRef
+			if b.Provider.OIDCConfig != nil {
+				clientSecretRef = b.Provider.OIDCConfig.ClientSecretRef
 			}
 		case mcpv1alpha1.UpstreamProviderTypeOAuth2:
-			if provider.OAuth2Config != nil {
-				clientSecretRef = provider.OAuth2Config.ClientSecretRef
+			if b.Provider.OAuth2Config != nil {
+				clientSecretRef = b.Provider.OAuth2Config.ClientSecretRef
 			}
 		}
 
 		if clientSecretRef != nil {
 			envVars = append(envVars, corev1.EnvVar{
-				Name: UpstreamClientSecretEnvVar,
+				Name: b.EnvVarName,
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{
@@ -361,16 +395,15 @@ func AddEmbeddedAuthServerConfigOptions(
 		return fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer")
 	}
 
-	// Validate OIDC config is provided with ResourceURL (required for embedded auth server)
-	if oidcConfig == nil {
-		return fmt.Errorf("OIDC config is required for embedded auth server: OIDCConfigRef must be set on the MCPServer")
-	}
-	if oidcConfig.ResourceURL == "" {
-		return fmt.Errorf("OIDC config resourceUrl is required for embedded auth server: set resourceUrl in OIDCConfigRef")
+	if err := validateOIDCConfigForEmbeddedAuthServer(oidcConfig); err != nil {
+		return err
 	}
 
 	// Build the embedded auth server config for runner
-	embeddedConfig, err := buildEmbeddedAuthServerRunnerConfig(namespace, mcpServerName, authServerConfig, oidcConfig)
+	embeddedConfig, err := BuildAuthServerRunConfig(
+		namespace, mcpServerName, authServerConfig,
+		[]string{oidcConfig.ResourceURL}, oidcConfig.Scopes,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to build embedded auth server config: %w", err)
 	}
@@ -381,23 +414,61 @@ func AddEmbeddedAuthServerConfigOptions(
 	return nil
 }
 
-// buildEmbeddedAuthServerRunnerConfig converts CRD EmbeddedAuthServerConfig to authserver.RunConfig.
+// validateOIDCConfigForEmbeddedAuthServer validates OIDC configuration
+// requirements when an embedded auth server is active.
+//
+// The embedded auth server mints tokens with aud = ResourceURL (the value
+// clients send as the RFC 8707 resource parameter via discovery). The token
+// validator checks aud against Audience. If these differ, every authenticated
+// request fails with an audience mismatch.
+//
+// We validate consistency at reconciliation time (rather than silently
+// overriding Audience with ResourceURL) so that operators see exactly what
+// values are in play and control both sides explicitly. This mirrors the
+// existing vMCP inline config validation (ValidateAuthServerIntegration).
+func validateOIDCConfigForEmbeddedAuthServer(oidcConfig *oidc.OIDCConfig) error {
+	if oidcConfig == nil {
+		return fmt.Errorf("OIDC config is required for embedded auth server: OIDCConfigRef must be set on the MCPServer")
+	}
+	if oidcConfig.ResourceURL == "" {
+		return fmt.Errorf("OIDC config resourceUrl is required for embedded auth server: set resourceUrl in OIDCConfigRef")
+	}
+	if oidcConfig.Audience == "" {
+		return fmt.Errorf(
+			"oidcConfigRef.audience is required when an embedded auth server is active; "+
+				"set audience to %q to match resourceUrl",
+			oidcConfig.ResourceURL,
+		)
+	}
+	if oidcConfig.Audience != oidcConfig.ResourceURL {
+		return fmt.Errorf(
+			"oidcConfigRef.audience %q must match resourceUrl %q when an embedded auth server is active; "+
+				"set audience to %q or set resourceUrl to match audience",
+			oidcConfig.Audience, oidcConfig.ResourceURL, oidcConfig.ResourceURL,
+		)
+	}
+	return nil
+}
+
+// BuildAuthServerRunConfig converts CRD EmbeddedAuthServerConfig to authserver.RunConfig.
 // The RunConfig is serializable and contains file paths for secrets (not the secrets themselves).
 //
-// The oidcConfig parameter provides:
-//   - AllowedAudiences: from oidcConfig.ResourceURL (required, validated in AddEmbeddedAuthServerConfigOptions)
-//   - ScopesSupported: from oidcConfig.Scopes (optional, nil uses auth server defaults)
-func buildEmbeddedAuthServerRunnerConfig(
+// AllowedAudiences and ScopesSupported are caller-provided because different controllers
+// derive them from different sources (MCPServer uses oidcConfig.ResourceURL/Scopes;
+// VirtualMCPServer derives from the resolved vmcp Config).
+func BuildAuthServerRunConfig(
 	namespace string,
-	mcpServerName string,
+	name string,
 	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
-	oidcConfig *oidc.OIDCConfig,
+	allowedAudiences []string,
+	scopesSupported []string,
 ) (*authserver.RunConfig, error) {
 	config := &authserver.RunConfig{
-		SchemaVersion:    authserver.CurrentSchemaVersion,
-		Issuer:           authConfig.Issuer,
-		AllowedAudiences: []string{oidcConfig.ResourceURL},
-		ScopesSupported:  oidcConfig.Scopes,
+		SchemaVersion:                authserver.CurrentSchemaVersion,
+		Issuer:                       authConfig.Issuer,
+		AuthorizationEndpointBaseURL: authConfig.AuthorizationEndpointBaseURL,
+		AllowedAudiences:             allowedAudiences,
+		ScopesSupported:              scopesSupported,
 	}
 
 	// Build signing key configuration
@@ -431,14 +502,15 @@ func buildEmbeddedAuthServerRunnerConfig(
 		}
 	}
 
-	// Build upstream provider config (currently only one supported)
-	if len(authConfig.UpstreamProviders) > 0 {
-		provider := authConfig.UpstreamProviders[0]
-		config.Upstreams = []authserver.UpstreamRunConfig{*buildUpstreamRunConfig(&provider)}
+	// Build upstream provider configs using shared bindings
+	bindings := buildUpstreamSecretBindings(authConfig.UpstreamProviders)
+	config.Upstreams = make([]authserver.UpstreamRunConfig, 0, len(bindings))
+	for _, b := range bindings {
+		config.Upstreams = append(config.Upstreams, *buildUpstreamRunConfig(b.Provider, b.EnvVarName))
 	}
 
 	// Build storage configuration
-	storageCfg, err := buildStorageRunConfig(namespace, mcpServerName, authConfig)
+	storageCfg, err := buildStorageRunConfig(namespace, name, authConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build storage config: %w", err)
 	}
@@ -561,9 +633,11 @@ func resolveSentinelAddrs(
 }
 
 // buildUpstreamRunConfig converts CRD UpstreamProviderConfig to authserver.UpstreamRunConfig.
-// Client secrets are passed via environment variable reference (UpstreamClientSecretEnvVar).
+// The envVarName is computed by buildUpstreamSecretBindings to keep Pod env
+// and runtime config in sync.
 func buildUpstreamRunConfig(
 	provider *mcpv1alpha1.UpstreamProviderConfig,
+	envVarName string,
 ) *authserver.UpstreamRunConfig {
 	config := &authserver.UpstreamRunConfig{
 		Name: provider.Name,
@@ -574,14 +648,15 @@ func buildUpstreamRunConfig(
 	case mcpv1alpha1.UpstreamProviderTypeOIDC:
 		if provider.OIDCConfig != nil {
 			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
-				IssuerURL:   provider.OIDCConfig.IssuerURL,
-				ClientID:    provider.OIDCConfig.ClientID,
-				RedirectURI: provider.OIDCConfig.RedirectURI,
-				Scopes:      provider.OIDCConfig.Scopes,
+				IssuerURL:                     provider.OIDCConfig.IssuerURL,
+				ClientID:                      provider.OIDCConfig.ClientID,
+				RedirectURI:                   provider.OIDCConfig.RedirectURI,
+				Scopes:                        provider.OIDCConfig.Scopes,
+				AdditionalAuthorizationParams: provider.OIDCConfig.AdditionalAuthorizationParams,
 			}
 			// If client secret is configured, reference it via env var
 			if provider.OIDCConfig.ClientSecretRef != nil {
-				config.OIDCConfig.ClientSecretEnvVar = UpstreamClientSecretEnvVar
+				config.OIDCConfig.ClientSecretEnvVar = envVarName
 			}
 			if provider.OIDCConfig.UserInfoOverride != nil {
 				config.OIDCConfig.UserInfoOverride = buildUserInfoRunConfig(provider.OIDCConfig.UserInfoOverride)
@@ -590,15 +665,16 @@ func buildUpstreamRunConfig(
 	case mcpv1alpha1.UpstreamProviderTypeOAuth2:
 		if provider.OAuth2Config != nil {
 			config.OAuth2Config = &authserver.OAuth2UpstreamRunConfig{
-				AuthorizationEndpoint: provider.OAuth2Config.AuthorizationEndpoint,
-				TokenEndpoint:         provider.OAuth2Config.TokenEndpoint,
-				ClientID:              provider.OAuth2Config.ClientID,
-				RedirectURI:           provider.OAuth2Config.RedirectURI,
-				Scopes:                provider.OAuth2Config.Scopes,
+				AuthorizationEndpoint:         provider.OAuth2Config.AuthorizationEndpoint,
+				TokenEndpoint:                 provider.OAuth2Config.TokenEndpoint,
+				ClientID:                      provider.OAuth2Config.ClientID,
+				RedirectURI:                   provider.OAuth2Config.RedirectURI,
+				Scopes:                        provider.OAuth2Config.Scopes,
+				AdditionalAuthorizationParams: provider.OAuth2Config.AdditionalAuthorizationParams,
 			}
 			// If client secret is configured, reference it via env var
 			if provider.OAuth2Config.ClientSecretRef != nil {
-				config.OAuth2Config.ClientSecretEnvVar = UpstreamClientSecretEnvVar
+				config.OAuth2Config.ClientSecretEnvVar = envVarName
 			}
 			if provider.OAuth2Config.UserInfo != nil {
 				config.OAuth2Config.UserInfo = buildUserInfoRunConfig(provider.OAuth2Config.UserInfo)
@@ -637,4 +713,99 @@ func buildUserInfoRunConfig(
 	}
 
 	return config
+}
+
+// ValidateAndAddAuthServerRefOptions performs conflict validation between authServerRef
+// and externalAuthConfigRef, then resolves authServerRef if present.
+// Returns error if both fields point to an embedded auth server configuration.
+func ValidateAndAddAuthServerRefOptions(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	mcpServerName string,
+	authServerRef *mcpv1alpha1.AuthServerRef,
+	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	oidcConfig *oidc.OIDCConfig,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	// Conflict validation: both authServerRef and externalAuthConfigRef pointing to
+	// embedded auth server is an error (use one or the other, not both)
+	if authServerRef != nil && externalAuthConfigRef != nil {
+		extConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, externalAuthConfigRef.Name)
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed to fetch externalAuthConfigRef for conflict validation: %w", err)
+			}
+			// Not found - skip conflict check, will be caught by AddExternalAuthConfigOptions
+		} else if extConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+			return fmt.Errorf(
+				"conflict: both authServerRef and externalAuthConfigRef reference an embedded auth server; " +
+					"use authServerRef for the embedded auth server and externalAuthConfigRef for outgoing auth only",
+			)
+		}
+	}
+
+	// Add auth server ref configuration if specified
+	return AddAuthServerRefOptions(ctx, c, namespace, mcpServerName, authServerRef, oidcConfig, options)
+}
+
+// AddAuthServerRefOptions resolves an authServerRef (TypedLocalObjectReference),
+// validates the kind and type, and appends the corresponding RunConfigBuilderOption.
+// Returns nil if authServerRef is nil (no-op).
+// Returns error if the kind is not MCPExternalAuthConfig, the type is not embeddedAuthServer,
+// or if fetching or building the config fails.
+func AddAuthServerRefOptions(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	mcpServerName string,
+	authServerRef *mcpv1alpha1.AuthServerRef,
+	oidcConfig *oidc.OIDCConfig,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	if authServerRef == nil {
+		return nil
+	}
+
+	// Validate the Kind
+	if authServerRef.Kind != "MCPExternalAuthConfig" {
+		return fmt.Errorf("unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported", authServerRef.Kind)
+	}
+
+	// Fetch the MCPExternalAuthConfig
+	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, authServerRef.Name)
+	if err != nil {
+		return fmt.Errorf("failed to get MCPExternalAuthConfig for authServerRef: %w", err)
+	}
+
+	// Validate the type is embeddedAuthServer
+	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+		return fmt.Errorf(
+			"authServerRef must reference a MCPExternalAuthConfig with type %q, got %q",
+			mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer, externalAuthConfig.Spec.Type,
+		)
+	}
+
+	authServerConfig := externalAuthConfig.Spec.EmbeddedAuthServer
+	if authServerConfig == nil {
+		return fmt.Errorf("embedded auth server configuration is nil for type embeddedAuthServer")
+	}
+
+	if err := validateOIDCConfigForEmbeddedAuthServer(oidcConfig); err != nil {
+		return err
+	}
+
+	// Build the embedded auth server config for runner
+	embeddedConfig, err := BuildAuthServerRunConfig(
+		namespace, mcpServerName, authServerConfig,
+		[]string{oidcConfig.ResourceURL}, oidcConfig.Scopes,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to build embedded auth server config: %w", err)
+	}
+
+	// Add the configuration option
+	*options = append(*options, runner.WithEmbeddedAuthServerConfig(embeddedConfig))
+
+	return nil
 }

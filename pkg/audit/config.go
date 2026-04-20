@@ -40,6 +40,14 @@ type Config struct {
 	// +kubebuilder:default=false
 	// +optional
 	IncludeResponseData bool `json:"includeResponseData,omitempty" yaml:"includeResponseData,omitempty"`
+	// DetectApplicationErrors controls whether the audit middleware inspects
+	// JSON-RPC response bodies for application-level errors when the HTTP
+	// status code indicates success (2xx). When enabled, a small prefix of
+	// the response body is buffered to detect JSON-RPC error fields,
+	// independent of the IncludeResponseData setting.
+	// +kubebuilder:default=true
+	// +optional
+	DetectApplicationErrors *bool `json:"detectApplicationErrors,omitempty" yaml:"detectApplicationErrors,omitempty"`
 	// MaxDataSize limits the size of request/response data included in audit logs (in bytes).
 	// +kubebuilder:default=1024
 	// +optional
@@ -66,13 +74,24 @@ func (c *Config) GetLogWriter() (io.Writer, error) {
 
 // DefaultConfig returns a default audit configuration.
 func DefaultConfig() *Config {
+	detectErrors := true
 	return &Config{
 		// Note, these defaults are also present on the kubebuilder annotations above.
 		// If you change these defaults, you must also change the kubebuilder annotations.
-		IncludeRequestData:  false, // Disabled by default for privacy
-		IncludeResponseData: false, // Disabled by default for privacy
-		MaxDataSize:         1024,  // 1KB default limit
+		IncludeRequestData:      false,         // Disabled by default for privacy
+		IncludeResponseData:     false,         // Disabled by default for privacy
+		MaxDataSize:             1024,          // 1KB default limit
+		DetectApplicationErrors: &detectErrors, // Enabled by default to surface JSON-RPC errors
 	}
+}
+
+// ShouldDetectApplicationErrors returns whether JSON-RPC error detection is enabled.
+// Defaults to true when DetectApplicationErrors is nil.
+func (c *Config) ShouldDetectApplicationErrors() bool {
+	if c.DetectApplicationErrors == nil {
+		return true
+	}
+	return *c.DetectApplicationErrors
 }
 
 // LoadFromFile loads audit configuration from a file.

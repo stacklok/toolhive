@@ -17,6 +17,7 @@ package controllers
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -43,30 +46,34 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 
 	r := &VirtualMCPServerReconciler{
 		Scheme:           scheme,
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []workloads.TypedWorkload{})
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
 
 	require.NotNil(t, deployment)
 	assert.Equal(t, vmcp.Name, deployment.Name)
 	assert.Equal(t, vmcp.Namespace, deployment.Namespace)
-	assert.NotNil(t, deployment.Spec.Replicas)
-	assert.Equal(t, int32(1), *deployment.Spec.Replicas)
+	// spec.replicas is nil in this test — nil-passthrough for HPA compatibility
+	assert.Nil(t, deployment.Spec.Replicas)
 
 	// Verify labels
 	expectedLabels := labelsForVirtualMCPServer(vmcp.Name)
 	assert.Equal(t, expectedLabels, deployment.Labels)
 	assert.Equal(t, expectedLabels, deployment.Spec.Template.Labels)
+
+	// Verify terminationGracePeriodSeconds is always set
+	require.NotNil(t, deployment.Spec.Template.Spec.TerminationGracePeriodSeconds)
+	assert.Equal(t, vmcpTerminationGracePeriodSeconds, *deployment.Spec.Template.Spec.TerminationGracePeriodSeconds)
 
 	// Verify service account
 	assert.Equal(t, vmcpServiceAccountName(vmcp.Name), deployment.Spec.Template.Spec.ServiceAccountName)
@@ -82,6 +89,55 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 	assert.Equal(t, resource.MustParse("128Mi"), container.Resources.Requests[corev1.ResourceMemory])
 	assert.Equal(t, resource.MustParse("500m"), container.Resources.Limits[corev1.ResourceCPU])
 	assert.Equal(t, resource.MustParse("512Mi"), container.Resources.Limits[corev1.ResourceMemory])
+}
+
+// TestDeploymentForVirtualMCPServer_WithRedisPassword tests that the deployment pod
+// spec includes THV_SESSION_REDIS_PASSWORD when spec.sessionStorage has a passwordRef.
+func TestDeploymentForVirtualMCPServer_WithRedisPassword(t *testing.T) {
+	t.Parallel()
+
+	passwordRef := &mcpv1alpha1.SecretKeyRef{Name: "redis-secret", Key: "password"}
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp-redis",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+			SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+				Provider:    mcpv1alpha1.SessionStorageProviderRedis,
+				Address:     "redis:6379",
+				PasswordRef: passwordRef,
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	r := &VirtualMCPServerReconciler{
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+	require.NotNil(t, deployment)
+	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+
+	container := deployment.Spec.Template.Spec.Containers[0]
+	var found bool
+	for _, e := range container.Env {
+		if e.Name == vmcpconfig.RedisPasswordEnvVar {
+			found = true
+			assert.Empty(t, e.Value, "password must not appear as plaintext")
+			require.NotNil(t, e.ValueFrom)
+			require.NotNil(t, e.ValueFrom.SecretKeyRef)
+			assert.Equal(t, passwordRef.Name, e.ValueFrom.SecretKeyRef.Name)
+			assert.Equal(t, passwordRef.Key, e.ValueFrom.SecretKeyRef.Key)
+		}
+	}
+	assert.True(t, found, "deployment should contain %s env var", vmcpconfig.RedisPasswordEnvVar)
 }
 
 // TestBuildContainerArgsForVmcp tests container argument generation
@@ -101,7 +157,7 @@ func TestBuildContainerArgsForVmcp(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{Group: "test-group"},
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 				},
 			},
 			wantArgs: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483"},
@@ -114,8 +170,8 @@ func TestBuildContainerArgsForVmcp(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
-						Group: "test-group",
 						Operational: &vmcpconfig.OperationalConfig{
 							LogLevel: "debug",
 						},
@@ -148,12 +204,13 @@ func TestBuildVolumesForVmcp(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
 	r := &VirtualMCPServerReconciler{}
-	volumeMounts, volumes := r.buildVolumesForVmcp(vmcp)
+	volumeMounts, volumes, err := r.buildVolumesForVmcp(context.Background(), vmcp)
+	require.NoError(t, err)
 
 	// Verify vmcp config volume
 	require.Len(t, volumeMounts, 1)
@@ -177,12 +234,13 @@ func TestBuildEnvVarsForVmcp(t *testing.T) {
 			Namespace: "test-namespace",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
 	r := &VirtualMCPServerReconciler{}
-	env := r.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{})
+	env, err := r.buildEnvVarsForVmcp(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
+	require.NoError(t, err)
 
 	// Should have VMCP_NAME and VMCP_NAMESPACE
 	foundName := false
@@ -201,6 +259,64 @@ func TestBuildEnvVarsForVmcp(t *testing.T) {
 
 	assert.True(t, foundName, "Should have VMCP_NAME env var")
 	assert.True(t, foundNamespace, "Should have VMCP_NAMESPACE env var")
+}
+
+// TestBuildRedisPasswordEnvVar tests conditional Redis password env var injection.
+func TestBuildRedisPasswordEnvVar(t *testing.T) {
+	t.Parallel()
+
+	r := &VirtualMCPServerReconciler{}
+
+	passwordRef := &mcpv1alpha1.SecretKeyRef{Name: "redis-secret", Key: "password"}
+
+	tests := []struct {
+		name        string
+		storage     *mcpv1alpha1.SessionStorageConfig
+		expectEnVar bool
+	}{
+		{
+			name:        "nil sessionStorage produces no env var",
+			storage:     nil,
+			expectEnVar: false,
+		},
+		{
+			name:        "memory provider produces no env var",
+			storage:     &mcpv1alpha1.SessionStorageConfig{Provider: "memory"},
+			expectEnVar: false,
+		},
+		{
+			name:        "redis without passwordRef produces no env var",
+			storage:     &mcpv1alpha1.SessionStorageConfig{Provider: mcpv1alpha1.SessionStorageProviderRedis, Address: "redis:6379"},
+			expectEnVar: false,
+		},
+		{
+			name:        "redis with passwordRef produces THV_SESSION_REDIS_PASSWORD",
+			storage:     &mcpv1alpha1.SessionStorageConfig{Provider: mcpv1alpha1.SessionStorageProviderRedis, Address: "redis:6379", PasswordRef: passwordRef},
+			expectEnVar: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			vmcp := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+				Spec:       mcpv1alpha1.VirtualMCPServerSpec{SessionStorage: tc.storage},
+			}
+			env := r.buildRedisPasswordEnvVar(vmcp)
+			if tc.expectEnVar {
+				require.Len(t, env, 1)
+				assert.Equal(t, vmcpconfig.RedisPasswordEnvVar, env[0].Name)
+				assert.Empty(t, env[0].Value, "must not use plaintext Value")
+				require.NotNil(t, env[0].ValueFrom)
+				require.NotNil(t, env[0].ValueFrom.SecretKeyRef)
+				assert.Equal(t, passwordRef.Name, env[0].ValueFrom.SecretKeyRef.Name)
+				assert.Equal(t, passwordRef.Key, env[0].ValueFrom.SecretKeyRef.Key)
+			} else {
+				assert.Empty(t, env)
+			}
+		})
+	}
 }
 
 // TestBuildDeploymentMetadataForVmcp tests deployment metadata generation
@@ -293,13 +409,13 @@ func TestServiceForVirtualMCPServer(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{Group: "test-group"},
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
 
 	r := &VirtualMCPServerReconciler{
 		Scheme: scheme,
@@ -333,14 +449,14 @@ func TestServiceForVirtualMCPServerSessionAffinityNone(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			Config:          vmcpconfig.Config{Group: "test-group"},
+			GroupRef:        &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 			SessionAffinity: string(corev1.ServiceAffinityNone),
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
 
 	r := &VirtualMCPServerReconciler{
 		Scheme: scheme,
@@ -420,7 +536,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	}
 
 	// Test nil inputs
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", []workloads.TypedWorkload{}))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", nil, []workloads.TypedWorkload{}))
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -430,7 +546,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	}
 
 	// Test with nil deployment
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum", []workloads.TypedWorkload{}))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum", nil, []workloads.TypedWorkload{}))
 }
 
 // TestServiceNeedsUpdate tests service update detection
@@ -459,4 +575,296 @@ func TestServiceNeedsUpdate(t *testing.T) {
 		},
 	}
 	assert.True(t, r.serviceNeedsUpdate(service, vmcp))
+}
+
+// TestCABundleMountPath tests the CA bundle mount path generation helper
+func TestCABundleMountPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		entryName    string
+		caBundleRef  *mcpv1alpha1.CABundleSource
+		expectedPath string
+	}{
+		{
+			name:      "default key (no key specified)",
+			entryName: "my-entry",
+			caBundleRef: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "ca-configmap"},
+				},
+			},
+			expectedPath: "/etc/toolhive/ca-bundles/my-entry/ca.crt",
+		},
+		{
+			name:      "custom key specified",
+			entryName: "my-entry",
+			caBundleRef: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "ca-configmap"},
+					Key:                  "custom-ca.pem",
+				},
+			},
+			expectedPath: "/etc/toolhive/ca-bundles/my-entry/custom-ca.pem",
+		},
+		{
+			name:      "nil configMapRef uses default key",
+			entryName: "another-entry",
+			caBundleRef: &mcpv1alpha1.CABundleSource{
+				ConfigMapRef: nil,
+			},
+			expectedPath: "/etc/toolhive/ca-bundles/another-entry/ca.crt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := caBundleMountPath(tt.entryName, tt.caBundleRef)
+			assert.Equal(t, tt.expectedPath, result)
+		})
+	}
+}
+
+// TestCABundleVolumeName tests the CA bundle volume name generation helper
+func TestCABundleVolumeName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		entryName    string
+		expectedName string
+		validate     func(t *testing.T, result string)
+	}{
+		{
+			name:         "simple entry name",
+			entryName:    "my-entry",
+			expectedName: "ca-bundle-my-entry",
+		},
+		{
+			name:         "entry with dashes",
+			entryName:    "some-long-entry-name",
+			expectedName: "ca-bundle-some-long-entry-name",
+		},
+		{
+			name:      "long name is truncated with hash suffix and fits 63 chars",
+			entryName: "this-is-a-very-long-entry-name-that-exceeds-the-sixty-three-character-limit",
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+				assert.LessOrEqual(t, len(result), 63)
+				assert.True(t, strings.HasPrefix(result, "ca-bundle-"))
+				assert.False(t, strings.HasSuffix(result, "-"), "volume name should not end with hyphen")
+			},
+		},
+		{
+			name:      "two long names with same prefix produce different volume names",
+			entryName: "shared-prefix-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-suffix-one",
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+				other := caBundleVolumeName("shared-prefix-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-suffix-two")
+				assert.NotEqual(t, result, other, "different entry names must produce different volume names")
+				assert.LessOrEqual(t, len(result), 63)
+				assert.LessOrEqual(t, len(other), 63)
+			},
+		},
+		{
+			name:      "truncation does not leave trailing hyphen",
+			entryName: "entry-name-with-hyphens-placed-so-truncation-lands-on----------end",
+			validate: func(t *testing.T, result string) {
+				t.Helper()
+				assert.LessOrEqual(t, len(result), 63)
+				assert.False(t, strings.HasSuffix(result, "-"), "volume name should not end with hyphen")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := caBundleVolumeName(tt.entryName)
+			if tt.expectedName != "" {
+				assert.Equal(t, tt.expectedName, result)
+			}
+			if tt.validate != nil {
+				tt.validate(t, result)
+			}
+		})
+	}
+}
+
+// TestBuildCABundleVolumesForEntries tests volume and mount generation for MCPServerEntry CA bundles
+func TestBuildCABundleVolumesForEntries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		entries         []mcpv1alpha1.MCPServerEntry
+		workloads       []workloads.TypedWorkload
+		expectedVolumes int
+		expectedMounts  int
+		validateVolumes func(t *testing.T, volumes []corev1.Volume, mounts []corev1.VolumeMount)
+	}{
+		{
+			name:    "no MCPServerEntry workloads yields no volumes",
+			entries: nil,
+			workloads: []workloads.TypedWorkload{
+				{Name: "server1", Type: workloads.WorkloadTypeMCPServer},
+			},
+			expectedVolumes: 0,
+			expectedMounts:  0,
+		},
+		{
+			name: "entry without caBundleRef yields no volumes",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-no-ca", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+					},
+				},
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "entry-no-ca", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedVolumes: 0,
+			expectedMounts:  0,
+		},
+		{
+			name: "entry with caBundleRef produces volume and mount",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-with-ca", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+						CABundleRef: &mcpv1alpha1.CABundleSource{
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "my-ca-configmap"},
+								Key:                  "ca.crt",
+							},
+						},
+					},
+				},
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "entry-with-ca", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedVolumes: 1,
+			expectedMounts:  1,
+			validateVolumes: func(t *testing.T, volumes []corev1.Volume, mounts []corev1.VolumeMount) {
+				t.Helper()
+				assert.Equal(t, "ca-bundle-entry-with-ca", volumes[0].Name)
+				require.NotNil(t, volumes[0].ConfigMap)
+				assert.Equal(t, "my-ca-configmap", volumes[0].ConfigMap.Name)
+				require.Len(t, volumes[0].ConfigMap.Items, 1)
+				assert.Equal(t, "ca.crt", volumes[0].ConfigMap.Items[0].Key)
+
+				assert.Equal(t, "ca-bundle-entry-with-ca", mounts[0].Name)
+				assert.Equal(t, "/etc/toolhive/ca-bundles/entry-with-ca", mounts[0].MountPath)
+				assert.True(t, mounts[0].ReadOnly)
+			},
+		},
+		{
+			name: "entry with custom key in caBundleRef",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "custom-key-entry", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+						CABundleRef: &mcpv1alpha1.CABundleSource{
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "custom-ca"},
+								Key:                  "custom-cert.pem",
+							},
+						},
+					},
+				},
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "custom-key-entry", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedVolumes: 1,
+			expectedMounts:  1,
+			validateVolumes: func(t *testing.T, volumes []corev1.Volume, _ []corev1.VolumeMount) {
+				t.Helper()
+				require.Len(t, volumes[0].ConfigMap.Items, 1)
+				assert.Equal(t, "custom-cert.pem", volumes[0].ConfigMap.Items[0].Key)
+				assert.Equal(t, "custom-cert.pem", volumes[0].ConfigMap.Items[0].Path)
+			},
+		},
+		{
+			name: "mixed workload types only produces volumes for entries with CA bundles",
+			entries: []mcpv1alpha1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-with-ca", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+						CABundleRef: &mcpv1alpha1.CABundleSource{
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-without-ca", Namespace: "default"},
+					Spec: mcpv1alpha1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp2.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+					},
+				},
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "server1", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "entry-with-ca", Type: workloads.WorkloadTypeMCPServerEntry},
+				{Name: "entry-without-ca", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedVolumes: 1,
+			expectedMounts:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
+
+			objs := make([]client.Object, 0, len(tt.entries))
+			for i := range tt.entries {
+				objs = append(objs, &tt.entries[i])
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objs...).
+				Build()
+
+			r := &VirtualMCPServerReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			volumes, mounts, err := r.buildCABundleVolumesForEntries(t.Context(), "default", tt.workloads)
+			require.NoError(t, err)
+
+			assert.Len(t, volumes, tt.expectedVolumes)
+			assert.Len(t, mounts, tt.expectedMounts)
+
+			if tt.validateVolumes != nil {
+				tt.validateVolumes(t, volumes, mounts)
+			}
+		})
+	}
 }

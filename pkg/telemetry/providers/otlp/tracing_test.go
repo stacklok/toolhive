@@ -56,6 +56,16 @@ func TestCreateTraceExporter(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "endpoint with custom path",
+			config: Config{
+				Endpoint: "cloud.langfuse.com/api/public/otel",
+				Headers:  map[string]string{"Authorization": "Basic abc123"},
+				Insecure: false,
+			},
+			ctx:     func() context.Context { return context.Background() },
+			wantErr: false,
+		},
+		{
 			name: "error creating sdk-span-exporter due to error (cancelled context)",
 			config: Config{
 				Endpoint: "secure.example.com:4318",

@@ -37,9 +37,10 @@ const (
 // It handles configuration transformation from authserver.RunConfig to authserver.Config,
 // manages resource lifecycle, and provides HTTP handlers for OAuth/OIDC endpoints.
 type EmbeddedAuthServer struct {
-	server    authserver.Server
-	closeOnce sync.Once
-	closeErr  error
+	server      authserver.Server
+	keyProvider keys.KeyProvider
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 // NewEmbeddedAuthServer creates an EmbeddedAuthServer from authserver.RunConfig.
@@ -80,15 +81,16 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 
 	// 5. Build the resolved Config
 	resolvedCfg := authserver.Config{
-		Issuer:               cfg.Issuer,
-		KeyProvider:          keyProvider,
-		HMACSecrets:          hmacSecrets,
-		AccessTokenLifespan:  accessLifespan,
-		RefreshTokenLifespan: refreshLifespan,
-		AuthCodeLifespan:     authCodeLifespan,
-		Upstreams:            upstreams,
-		ScopesSupported:      cfg.ScopesSupported,
-		AllowedAudiences:     cfg.AllowedAudiences,
+		Issuer:                       cfg.Issuer,
+		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
+		KeyProvider:                  keyProvider,
+		HMACSecrets:                  hmacSecrets,
+		AccessTokenLifespan:          accessLifespan,
+		RefreshTokenLifespan:         refreshLifespan,
+		AuthCodeLifespan:             authCodeLifespan,
+		Upstreams:                    upstreams,
+		ScopesSupported:              cfg.ScopesSupported,
+		AllowedAudiences:             cfg.AllowedAudiences,
 	}
 
 	// 6. Create storage backend based on configuration
@@ -104,7 +106,8 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	}
 
 	return &EmbeddedAuthServer{
-		server: server,
+		server:      server,
+		keyProvider: keyProvider,
 	}, nil
 }
 
@@ -139,6 +142,44 @@ func (e *EmbeddedAuthServer) IDPTokenStorage() storage.UpstreamTokenStorage {
 // tokens using the upstream provider's refresh token grant.
 func (e *EmbeddedAuthServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
 	return e.server.UpstreamTokenRefresher()
+}
+
+// KeyProvider returns the signing key provider used by the authorization server.
+// This enables in-process JWKS key lookups, eliminating the need for
+// self-referential HTTP calls when the token validator runs in the same process.
+func (e *EmbeddedAuthServer) KeyProvider() keys.KeyProvider {
+	return e.keyProvider
+}
+
+// Routes returns the authorization server's HTTP route map.
+//
+// The /.well-known/ paths are registered explicitly because that namespace is shared:
+// the vMCP server owns /.well-known/oauth-protected-resource (RFC 9728) on the same
+// mux. Adding a new AS /.well-known/ endpoint therefore requires an explicit entry here.
+//
+// Discovery paths are registered with both exact and trailing-slash (prefix) patterns.
+// The trailing-slash variants support RFC 8414 Section 3.1 path-based issuers, where
+// the client constructs /.well-known/oauth-authorization-server/{issuer-path}.
+//
+// The /oauth/ subtree is registered as a prefix, so new /oauth/* endpoints added to
+// the chi router are picked up automatically without changes to this method.
+func (e *EmbeddedAuthServer) Routes() map[string]http.Handler {
+	handler := e.Handler()
+	return map[string]http.Handler{
+		"/.well-known/openid-configuration":        handler,
+		"/.well-known/openid-configuration/":       handler,
+		"/.well-known/oauth-authorization-server":  handler,
+		"/.well-known/oauth-authorization-server/": handler,
+		"/.well-known/jwks.json":                   handler,
+		"/oauth/":                                  handler,
+	}
+}
+
+// RegisterHandlers registers the authorization server's HTTP routes on the given mux.
+func (e *EmbeddedAuthServer) RegisterHandlers(mux *http.ServeMux) {
+	for pattern, handler := range e.Routes() {
+		mux.Handle(pattern, handler)
+	}
 }
 
 // createKeyProvider creates a KeyProvider from SigningKeyRunConfig.
@@ -303,7 +344,10 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 		return nil, fmt.Errorf("failed to resolve OIDC client secret: %w", err)
 	}
 
-	// Default scopes if not specified
+	// Default scopes if not specified. The default includes offline_access
+	// (standard OIDC mechanism for refresh tokens). Providers like Google that
+	// use access_type=offline instead should specify explicit scopes in their
+	// config to avoid sending both mechanisms.
 	scopes := oidc.Scopes
 	if len(scopes) == 0 {
 		scopes = []string{"openid", "offline_access"}
@@ -311,10 +355,11 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 
 	return &upstream.OIDCConfig{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{
-			ClientID:     oidc.ClientID,
-			ClientSecret: clientSecret,
-			RedirectURI:  oidc.RedirectURI,
-			Scopes:       scopes,
+			ClientID:                      oidc.ClientID,
+			ClientSecret:                  clientSecret,
+			RedirectURI:                   oidc.RedirectURI,
+			Scopes:                        scopes,
+			AdditionalAuthorizationParams: oidc.AdditionalAuthorizationParams,
 		},
 		Issuer: oidc.IssuerURL,
 	}, nil
@@ -334,10 +379,11 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 
 	cfg := &upstream.OAuth2Config{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{
-			ClientID:     oauth2.ClientID,
-			ClientSecret: clientSecret,
-			RedirectURI:  oauth2.RedirectURI,
-			Scopes:       oauth2.Scopes,
+			ClientID:                      oauth2.ClientID,
+			ClientSecret:                  clientSecret,
+			RedirectURI:                   oauth2.RedirectURI,
+			Scopes:                        oauth2.Scopes,
+			AdditionalAuthorizationParams: oauth2.AdditionalAuthorizationParams,
 		},
 		AuthorizationEndpoint: oauth2.AuthorizationEndpoint,
 		TokenEndpoint:         oauth2.TokenEndpoint,

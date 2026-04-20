@@ -25,6 +25,8 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/networking"
 	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
@@ -367,6 +369,16 @@ type TokenValidator struct {
 	registry          *Registry    // Token introspection providers
 	insecureAllowHTTP bool         // Allow HTTP (non-HTTPS) OIDC issuers for development/testing
 
+	// upstreamTokenReader loads upstream provider tokens for identity enrichment.
+	// nil means no enrichment (no embedded auth server).
+	upstreamTokenReader upstreamtoken.TokenReader
+
+	// keyProvider provides in-process JWKS key lookups from the embedded auth
+	// server's key provider. When set, getKeyFromJWKS resolves keys locally
+	// before falling back to HTTP. Eliminates self-referential HTTP calls.
+	// nil when no embedded auth server is configured.
+	keyProvider keys.PublicKeyProvider
+
 	// Lazy JWKS registration
 	jwksRegistered      bool
 	jwksRegistrationMu  sync.Mutex
@@ -540,7 +552,9 @@ func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret st
 
 // tokenValidatorOptions holds optional dependencies for NewTokenValidator.
 type tokenValidatorOptions struct {
-	envReader env.Reader
+	envReader           env.Reader
+	upstreamTokenReader upstreamtoken.TokenReader
+	keyProvider         keys.PublicKeyProvider
 }
 
 // TokenValidatorOption is a functional option for NewTokenValidator.
@@ -552,6 +566,41 @@ func WithEnvReader(reader env.Reader) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.envReader = reader
 	}
+}
+
+// WithUpstreamTokenReader configures the token validator to enrich Identity
+// with upstream provider tokens. When set, the Middleware extracts the token
+// session ID (tsid) from JWT claims and loads all upstream tokens into
+// Identity.UpstreamTokens before placing the Identity in the request context.
+func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOption {
+	return func(o *tokenValidatorOptions) {
+		o.upstreamTokenReader = reader
+	}
+}
+
+// WithKeyProvider configures the token validator to use an in-process key
+// provider for JWKS lookups instead of fetching keys over HTTP. This is used
+// when the embedded auth server's key provider is available in the same process,
+// eliminating self-referential HTTP calls and the need for insecureAllowHTTP
+// and jwksAllowPrivateIP flags.
+//
+// Only PublicKeyProvider is required — the validator never signs tokens.
+func WithKeyProvider(provider keys.PublicKeyProvider) TokenValidatorOption {
+	return func(o *tokenValidatorOptions) {
+		o.keyProvider = provider
+	}
+}
+
+// resolveClientSecret returns the client secret from the config, falling back
+// to the TOOLHIVE_OIDC_CLIENT_SECRET environment variable if not set.
+func resolveClientSecret(configSecret string, envReader env.Reader) string {
+	if configSecret != "" {
+		return configSecret
+	}
+	if envSecret := envReader.Getenv("TOOLHIVE_OIDC_CLIENT_SECRET"); envSecret != "" {
+		return envSecret
+	}
+	return ""
 }
 
 // NewTokenValidator creates a new token validator.
@@ -592,11 +641,18 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 			"issuer", config.Issuer,
 		)
 	} else if jwksURL == "" && config.Issuer != "" {
-		slog.Debug("OIDC discovery deferred - will discover on first validation request", "issuer", config.Issuer)
+		if o.keyProvider != nil {
+			slog.Debug("OIDC discovery deferred - failure non-fatal with local key provider",
+				"issuer", config.Issuer)
+		} else {
+			slog.Debug("OIDC discovery deferred - will discover on first validation request",
+				"issuer", config.Issuer)
+		}
 	}
 
-	// Ensure we have either an explicit JWKS URL or an issuer to discover from
-	if jwksURL == "" && config.Issuer == "" {
+	// Ensure we have either an explicit JWKS URL, an issuer to discover from,
+	// or a local key provider (embedded auth server).
+	if jwksURL == "" && config.Issuer == "" && o.keyProvider == nil {
 		return nil, ErrMissingIssuerAndJWKSURL
 	}
 
@@ -622,14 +678,8 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 
 	// Skip synchronous JWKS registration - will be done lazily on first use
 
-	// Load client secret from environment variable if not provided in config
-	// This allows secrets to be injected via Kubernetes Secret references
-	clientSecret := config.ClientSecret
-	if clientSecret == "" {
-		if envSecret := o.envReader.Getenv("TOOLHIVE_OIDC_CLIENT_SECRET"); envSecret != "" {
-			clientSecret = envSecret
-		}
-	}
+	// Resolve client secret from config or environment variable
+	clientSecret := resolveClientSecret(config.ClientSecret, o.envReader)
 
 	// Register introspection providers
 	registry, err := registerIntrospectionProviders(config, clientSecret)
@@ -638,18 +688,20 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	}
 
 	validator := &TokenValidator{
-		issuer:            config.Issuer,
-		audience:          config.Audience,
-		jwksURL:           jwksURL,
-		introspectURL:     config.IntrospectionURL,
-		clientID:          config.ClientID,
-		clientSecret:      clientSecret,
-		jwksClient:        cache,
-		client:            config.httpClient,
-		resourceURL:       config.ResourceURL,
-		scopes:            config.Scopes,
-		registry:          registry,
-		insecureAllowHTTP: config.InsecureAllowHTTP,
+		issuer:              config.Issuer,
+		audience:            config.Audience,
+		jwksURL:             jwksURL,
+		introspectURL:       config.IntrospectionURL,
+		clientID:            config.ClientID,
+		clientSecret:        clientSecret,
+		jwksClient:          cache,
+		client:              config.httpClient,
+		resourceURL:         config.ResourceURL,
+		scopes:              config.Scopes,
+		registry:            registry,
+		insecureAllowHTTP:   config.InsecureAllowHTTP,
+		upstreamTokenReader: o.upstreamTokenReader,
+		keyProvider:         o.keyProvider,
 	}
 
 	return validator, nil
@@ -785,11 +837,76 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 	return nil
 }
 
+// getKeyFromLocalProvider attempts to find a verification key from the local
+// key provider (embedded auth server). Returns (key, nil) on success,
+// (nil, nil) to signal fallback to HTTP, or (nil, error) for hard failures.
+// validateTokenHeader checks the signing method is supported (RSA or ECDSA) and
+// extracts the key ID from the token header. Returns an error for unsupported
+// methods or a missing kid claim.
+func validateTokenHeader(token *jwt.Token) (string, error) {
+	switch token.Method.(type) {
+	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
+		// Supported signing methods
+	default:
+		return "", fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+	}
+
+	kid, ok := token.Header["kid"].(string)
+	if !ok {
+		return "", fmt.Errorf("token header missing kid")
+	}
+	return kid, nil
+}
+
+func (v *TokenValidator) getKeyFromLocalProvider(ctx context.Context, token *jwt.Token) (interface{}, error) {
+	if v.keyProvider == nil {
+		return nil, nil
+	}
+
+	kid, err := validateTokenHeader(token)
+	if err != nil {
+		return nil, err
+	}
+
+	pubKeys, err := v.keyProvider.PublicKeys(ctx)
+	if err != nil {
+		slog.Debug("local JWKS provider failed, falling back to HTTP", "error", err)
+		return nil, nil
+	}
+
+	for _, k := range pubKeys {
+		if k.KeyID == kid {
+			slog.Debug("resolved JWKS key from embedded auth server", "kid", kid)
+			return k.PublicKey, nil
+		}
+	}
+
+	// Key not found locally — fall back to HTTP JWKS
+	slog.Debug("key not found in local JWKS provider, falling back to HTTP", "kid", kid)
+	return nil, nil
+}
+
 // getKeyFromJWKS gets the key from the JWKS.
 func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (interface{}, error) {
-	// Defensive check: JWKS URL must be set before calling this function.
-	// This invariant is normally guaranteed by ValidateToken calling ensureOIDCDiscovered first.
+	// Try local key provider first (embedded auth server in-process keys).
+	// This avoids self-referential HTTP calls when the auth server and
+	// token validator run in the same process.
+	if key, err := v.getKeyFromLocalProvider(ctx, token); err != nil {
+		return nil, err
+	} else if key != nil {
+		return key, nil
+	}
+
+	// Fall through to HTTP-based JWKS lookup.
+	// When a local key provider is present, OIDC discovery may have been
+	// skipped entirely, so jwksURL can legitimately be empty.
 	if v.jwksURL == "" {
+		if v.keyProvider != nil {
+			return nil, fmt.Errorf(
+				"local key provider could not resolve key and no JWKS URL is available: %w",
+				ErrMissingJWKSURL,
+			)
+		}
 		return nil, ErrMissingJWKSURL
 	}
 
@@ -798,18 +915,9 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 		return nil, fmt.Errorf("JWKS registration failed: %w", err)
 	}
 
-	// Validate the signing method
-	switch token.Method.(type) {
-	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
-		// Supported RSA signing methods
-	default:
-		return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-	}
-
-	// Get the key ID from the token header
-	kid, ok := token.Header["kid"].(string)
-	if !ok {
-		return nil, fmt.Errorf("token header missing kid")
+	kid, err := validateTokenHeader(token)
+	if err != nil {
+		return nil, err
 	}
 
 	// Get the key set from the JWKS
@@ -945,10 +1053,20 @@ func (v *TokenValidator) introspectOpaqueToken(ctx context.Context, tokenStr str
 
 // ValidateToken validates a token.
 func (v *TokenValidator) ValidateToken(ctx context.Context, tokenString string) (jwt.MapClaims, error) {
-	// Ensure OIDC discovery is complete (lazy discovery with retry)
-	// This is a no-op if discovery was already performed or if JWKS URL was provided directly
+	// Ensure OIDC discovery is complete (lazy discovery with retry).
+	// When a local key provider is configured (embedded auth server),
+	// discovery failure is non-fatal — signing keys can be resolved
+	// in-process and the issuer URL may not be reachable from within
+	// the cluster. Mark discovery as done to avoid per-request retries.
 	if err := v.ensureOIDCDiscovered(ctx); err != nil {
-		return nil, fmt.Errorf("OIDC discovery failed: %w", err)
+		if v.keyProvider == nil {
+			return nil, fmt.Errorf("OIDC discovery failed: %w", err)
+		}
+		slog.Warn("OIDC discovery failed, proceeding with local key provider",
+			"issuer", v.issuer, "error", err)
+		v.oidcDiscoveryMu.Lock()
+		v.oidcDiscovered = true
+		v.oidcDiscoveryMu.Unlock()
 	}
 
 	// Parse the token
@@ -1064,6 +1182,24 @@ func writeOAuthError(w http.ResponseWriter, errorCode, description string, statu
 	_, _ = w.Write(body)
 }
 
+// loadUpstreamTokens extracts the token session ID from claims and loads
+// all upstream provider tokens for that session. Returns (nil, nil) if no
+// tsid claim exists. Returns a non-nil error when a tsid claim is present
+// but token loading fails (infrastructure error).
+func (v *TokenValidator) loadUpstreamTokens(ctx context.Context, claims jwt.MapClaims) (map[string]string, error) {
+	tsid, ok := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
+	if !ok || tsid == "" {
+		return nil, nil
+	}
+
+	tokens, err := v.upstreamTokenReader.GetAllValidTokens(ctx, tsid)
+	if err != nil {
+		return nil, fmt.Errorf("load upstream tokens for session %s: %w", tsid, err)
+	}
+
+	return tokens, nil
+}
+
 // Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.
 func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1090,6 +1226,20 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, err.Error()))
 			writeOAuthError(w, OAuthErrInvalidToken, "Invalid authentication claims", http.StatusUnauthorized)
 			return
+		}
+
+		// Enrich Identity with upstream provider tokens when an embedded
+		// auth server is active (reader configured via WithUpstreamTokenReader).
+		if v.upstreamTokenReader != nil {
+			tokens, loadErr := v.loadUpstreamTokens(r.Context(), claims)
+			if loadErr != nil {
+				slog.WarnContext(r.Context(), "upstream token storage unavailable",
+					"error", loadErr,
+				)
+				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			identity.UpstreamTokens = tokens
 		}
 
 		// Add the Identity to the request context

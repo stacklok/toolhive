@@ -15,7 +15,8 @@
 package handlers
 
 import (
-	"errors"
+	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -26,40 +27,50 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
+// NamedUpstream pairs a logical provider name with its OAuth2Provider implementation.
+// The name is used as the storage key and must be unique within the upstream slice.
+type NamedUpstream struct {
+	Name     string
+	Provider upstream.OAuth2Provider
+}
+
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.
 type Handler struct {
 	provider     fosite.OAuth2Provider
 	config       *server.AuthorizationServerConfig
 	storage      storage.Storage
-	upstream     upstream.OAuth2Provider
-	upstreamName string
+	upstreams    []NamedUpstream
 	userResolver *UserResolver
 }
 
 // NewHandler creates a new Handler with the given dependencies.
-// The upstreamName identifies the logical upstream provider (matching UpstreamConfig.Name).
-// If empty, it defaults to "default".
+// upstreams defines the ordered sequence of upstream providers consulted
+// during multi-upstream authorization flows (e.g., sequential token acquisition).
+//
+// Returns an error if upstreams is empty or if any entry has an empty name or nil provider.
 func NewHandler(
 	provider fosite.OAuth2Provider,
 	config *server.AuthorizationServerConfig,
 	stor storage.Storage,
-	upstreamIDP upstream.OAuth2Provider,
-	upstreamName string,
-	userResolver *UserResolver,
+	upstreams []NamedUpstream,
 ) (*Handler, error) {
-	if userResolver == nil {
-		return nil, errors.New("userResolver must not be nil")
+	if len(upstreams) == 0 {
+		return nil, fmt.Errorf("handlers: upstreams must not be empty")
 	}
-	if upstreamName == "" {
-		upstreamName = "default"
+	for _, u := range upstreams {
+		if u.Name == "" {
+			return nil, fmt.Errorf("handlers: upstream entry has empty name")
+		}
+		if u.Provider == nil {
+			return nil, fmt.Errorf("handlers: upstream %q has nil provider", u.Name)
+		}
 	}
 	return &Handler{
 		provider:     provider,
 		config:       config,
 		storage:      stor,
-		upstream:     upstreamIDP,
-		upstreamName: upstreamName,
-		userResolver: userResolver,
+		upstreams:    upstreams,
+		userResolver: NewUserResolver(stor),
 	}, nil
 }
 
@@ -84,8 +95,44 @@ func (h *Handler) OAuthRoutes(r chi.Router) {
 // at least one discovery mechanism, with both supported for maximum interoperability:
 // - /.well-known/oauth-authorization-server (RFC 8414) for OAuth-only clients
 // - /.well-known/openid-configuration (OIDC Discovery 1.0) for OIDC clients
+//
+// The wildcard variants (/.well-known/oauth-authorization-server/*) handle RFC 8414
+// Section 3.1 path-based issuers, where clients insert /.well-known/ before the
+// issuer's path component (e.g., /.well-known/oauth-authorization-server/inject-test
+// for issuer https://example.com/inject-test).
 func (h *Handler) WellKnownRoutes(r chi.Router) {
 	r.Get("/.well-known/jwks.json", h.JWKSHandler)
 	r.Get("/.well-known/oauth-authorization-server", h.OAuthDiscoveryHandler)
+	r.Get("/.well-known/oauth-authorization-server/*", h.OAuthDiscoveryHandler)
 	r.Get("/.well-known/openid-configuration", h.OIDCDiscoveryHandler)
+	r.Get("/.well-known/openid-configuration/*", h.OIDCDiscoveryHandler)
+}
+
+// nextMissingUpstream returns the name of the next upstream provider in the
+// authorization chain that does not yet have stored tokens for this session.
+// Returns empty string if all upstreams are satisfied.
+// Returns an error if the storage lookup fails.
+func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string) (string, error) {
+	stored, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("failed to check upstream token state: %w", err)
+	}
+	for _, u := range h.upstreams {
+		if _, ok := stored[u.Name]; !ok {
+			return u.Name, nil
+		}
+	}
+	return "", nil
+}
+
+// upstreamByName returns the upstream provider with the given name.
+// It follows the (value, bool) convention: the second return value is false
+// if no upstream with that name exists.
+func (h *Handler) upstreamByName(name string) (upstream.OAuth2Provider, bool) {
+	for i := range h.upstreams {
+		if h.upstreams[i].Name == name {
+			return h.upstreams[i].Provider, true
+		}
+	}
+	return nil, false
 }

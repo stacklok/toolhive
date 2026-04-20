@@ -5,18 +5,33 @@ package runner
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/webhook"
+	"github.com/stacklok/toolhive/pkg/webhook/mutating"
+	"github.com/stacklok/toolhive/pkg/webhook/validating"
 )
 
 // createMinimalAuthServerConfig creates a minimal valid EmbeddedAuthServerConfig for testing.
@@ -570,4 +585,332 @@ func TestPopulateMiddlewareConfigs_AWSStsOrdering(t *testing.T) {
 	require.True(t, ok, "recovery middleware should be present")
 	assert.Less(t, awsStsIdx, recoveryIdx,
 		"awssts must appear before recovery middleware")
+}
+
+// makeCedarAuthzConfig is a helper that creates a valid Cedar authz.Config.
+func makeCedarAuthzConfig(t *testing.T) *authz.Config {
+	t.Helper()
+	cfg, err := authorizers.NewConfig(cedar.Config{
+		Version: "1.0",
+		Type:    cedar.ConfigType,
+		Options: &cedar.ConfigOptions{
+			Policies:     []string{`permit(principal, action, resource);`},
+			EntitiesJSON: "[]",
+		},
+	})
+	require.NoError(t, err)
+	return cfg
+}
+
+// TestInjectUpstreamProviderIfNeeded tests the injectUpstreamProviderIfNeeded helper.
+func TestInjectUpstreamProviderIfNeeded(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		authzCfg         *authz.Config
+		embeddedCfg      *authserver.RunConfig
+		wantErr          bool
+		wantProviderName string
+		wantSamePointer  bool
+	}{
+		{
+			name:            "nil_embedded_config_returns_authz_unchanged",
+			authzCfg:        nil,
+			embeddedCfg:     nil,
+			wantErr:         false,
+			wantSamePointer: true, // returns authzCfg unchanged (nil == nil)
+		},
+		{
+			name:            "non_nil_authz_nil_embedded_returns_unchanged",
+			authzCfg:        nil, // set in-test
+			embeddedCfg:     nil,
+			wantErr:         false,
+			wantSamePointer: true,
+		},
+		{
+			name: "named_upstream_is_used_as_provider",
+			embeddedCfg: &authserver.RunConfig{
+				Upstreams: []authserver.UpstreamRunConfig{
+					{Name: "github"},
+				},
+			},
+			wantErr:          false,
+			wantProviderName: "github",
+		},
+		{
+			name: "unnamed_upstream_falls_back_to_default",
+			embeddedCfg: &authserver.RunConfig{
+				Upstreams: []authserver.UpstreamRunConfig{
+					{Name: ""},
+				},
+			},
+			wantErr:          false,
+			wantProviderName: authserver.DefaultUpstreamName,
+		},
+		{
+			name: "empty_upstreams_falls_back_to_default",
+			embeddedCfg: &authserver.RunConfig{
+				Upstreams: []authserver.UpstreamRunConfig{},
+			},
+			wantErr:          false,
+			wantProviderName: authserver.DefaultUpstreamName,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Build a real Cedar authz.Config if the test case didn't override it.
+			authzCfg := tt.authzCfg
+			if authzCfg == nil && !tt.wantSamePointer {
+				authzCfg = makeCedarAuthzConfig(t)
+			}
+			if tt.name == "non_nil_authz_nil_embedded_returns_unchanged" {
+				authzCfg = makeCedarAuthzConfig(t)
+			}
+
+			result, err := injectUpstreamProviderIfNeeded(authzCfg, tt.embeddedCfg)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+
+			if tt.wantSamePointer {
+				assert.Same(t, authzCfg, result)
+				return
+			}
+
+			require.NotNil(t, result)
+
+			// Verify the injected provider name is in the Cedar config.
+			extracted, err := cedar.ExtractConfig(result)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantProviderName, extracted.Options.PrimaryUpstreamProvider)
+		})
+	}
+}
+
+// writeCedarConfigFile writes a minimal Cedar authorization config JSON file to a
+// temporary directory and returns the path. The file is suitable for use as the
+// authzConfigPath argument to addAuthzMiddleware.
+func writeCedarConfigFile(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "authz.json")
+	content := `{
+		"version": "1.0",
+		"type": "cedarv1",
+		"cedar": {
+			"policies": ["permit(principal, action, resource);"],
+			"entities_json": "[]"
+		}
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0600))
+	return path
+}
+
+func TestAddAuthzMiddleware_InjectsUpstreamProvider(t *testing.T) {
+	t.Parallel()
+
+	embeddedCfg := &authserver.RunConfig{
+		Upstreams: []authserver.UpstreamRunConfig{
+			{Name: "myidp"},
+		},
+	}
+
+	path := writeCedarConfigFile(t)
+	result, err := addAuthzMiddleware(nil, path, embeddedCfg)
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	require.Equal(t, authz.MiddlewareType, result[0].Type)
+
+	// Decode the params and verify the upstream provider was injected.
+	var params authz.FactoryMiddlewareParams
+	require.NoError(t, json.Unmarshal(result[0].Parameters, &params))
+	require.NotNil(t, params.ConfigData, "ConfigData should be populated from file")
+
+	extracted, err := cedar.ExtractConfig(params.ConfigData)
+	require.NoError(t, err)
+	assert.Equal(t, "myidp", extracted.Options.PrimaryUpstreamProvider)
+}
+
+func TestAddAuthzMiddleware_EmptyPath(t *testing.T) {
+	t.Parallel()
+
+	result, err := addAuthzMiddleware(nil, "", nil)
+	require.NoError(t, err)
+	assert.Empty(t, result, "empty path should produce no middleware")
+}
+
+func TestAddRateLimitMiddleware(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		config       *RunConfig
+		wantAppended bool
+		wantErr      bool
+	}{
+		{
+			name:         "nil RateLimitConfig returns input unchanged",
+			config:       &RunConfig{},
+			wantAppended: false,
+		},
+		{
+			name: "rate limit without Redis returns error",
+			config: &RunConfig{
+				RateLimitConfig: &v1alpha1.RateLimitConfig{
+					Shared: &v1alpha1.RateLimitBucket{
+						MaxTokens:    10,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid config appends middleware",
+			config: &RunConfig{
+				Name:               "test-server",
+				RateLimitNamespace: "default",
+				RateLimitConfig: &v1alpha1.RateLimitConfig{
+					Shared: &v1alpha1.RateLimitBucket{
+						MaxTokens:    10,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				},
+				ScalingConfig: &ScalingConfig{
+					SessionRedis: &SessionRedisConfig{
+						Address: "redis:6379",
+						DB:      0,
+					},
+				},
+			},
+			wantAppended: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			initial := []types.MiddlewareConfig{{Type: "existing"}}
+			got, err := addRateLimitMiddleware(initial, tt.config)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "sessionStorage")
+				return
+			}
+			require.NoError(t, err)
+
+			if !tt.wantAppended {
+				assert.Equal(t, initial, got)
+				return
+			}
+
+			require.Len(t, got, len(initial)+1)
+			added := got[len(got)-1]
+			assert.Equal(t, ratelimit.MiddlewareType, added.Type)
+
+			var params ratelimit.MiddlewareParams
+			require.NoError(t, json.Unmarshal(added.Parameters, &params))
+			assert.Equal(t, "default", params.Namespace)
+			assert.Equal(t, "test-server", params.ServerName)
+			assert.Equal(t, "redis:6379", params.RedisAddr)
+			assert.NotNil(t, params.Config)
+		})
+	}
+}
+
+func TestPopulateMiddlewareConfigs_RateLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		config        *RunConfig
+		wantRateLimit bool
+	}{
+		{
+			name: "rate limit config present includes middleware",
+			config: &RunConfig{
+				Name:               "test-server",
+				RateLimitNamespace: "default",
+				RateLimitConfig: &v1alpha1.RateLimitConfig{
+					Shared: &v1alpha1.RateLimitBucket{
+						MaxTokens:    5,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				},
+				ScalingConfig: &ScalingConfig{
+					SessionRedis: &SessionRedisConfig{Address: "redis:6379"},
+				},
+			},
+			wantRateLimit: true,
+		},
+		{
+			name:          "nil rate limit config omits middleware",
+			config:        &RunConfig{},
+			wantRateLimit: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := PopulateMiddlewareConfigs(tt.config)
+			require.NoError(t, err)
+
+			found := false
+			for _, mw := range tt.config.MiddlewareConfigs {
+				if mw.Type == ratelimit.MiddlewareType {
+					found = true
+					break
+				}
+			}
+			assert.Equal(t, tt.wantRateLimit, found)
+		})
+	}
+}
+
+func TestPopulateMiddlewareConfigs_FullCoverage(t *testing.T) {
+	t.Parallel()
+
+	config := NewRunConfig()
+	config.Name = "test-server"
+	config.Transport = types.TransportTypeStdio
+
+	// Setup options to hit all branches
+	config.MutatingWebhooks = []webhook.Config{{Name: "m-hook", URL: "http://example.com/m", Timeout: webhook.DefaultTimeout}}
+	config.ValidatingWebhooks = []webhook.Config{{Name: "v-hook", URL: "http://example.com/v", Timeout: webhook.DefaultTimeout}}
+
+	config.ToolsFilter = []string{"tool1"}
+	config.ToolsOverride = map[string]ToolOverride{"tool1": {Name: "newtool1"}}
+
+	config.TelemetryConfig = &telemetry.Config{}
+	config.AuthzConfig = &authz.Config{}
+
+	config.AuditConfig = &audit.Config{Component: "test-component"}
+
+	err := PopulateMiddlewareConfigs(config)
+	require.NoError(t, err)
+
+	// Ensure they are populated
+	typeIndex := make(map[string]bool)
+	for _, mw := range config.MiddlewareConfigs {
+		typeIndex[mw.Type] = true
+	}
+
+	assert.True(t, typeIndex[mutating.MiddlewareType])
+	assert.True(t, typeIndex[validating.MiddlewareType])
+	assert.True(t, typeIndex[mcp.ToolFilterMiddlewareType])
+	assert.True(t, typeIndex[mcp.ToolCallFilterMiddlewareType])
+	assert.True(t, typeIndex[telemetry.MiddlewareType])
+	assert.True(t, typeIndex[authz.MiddlewareType])
+	assert.True(t, typeIndex[audit.MiddlewareType])
 }

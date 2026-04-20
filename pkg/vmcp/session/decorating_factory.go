@@ -32,6 +32,21 @@ type decoratingMultiSessionFactory struct {
 	decorators []Decorator
 }
 
+// RestoreSession delegates to the base factory and re-applies all decorators,
+// just as MakeSessionWithID does for new sessions.
+func (f *decoratingMultiSessionFactory) RestoreSession(
+	ctx context.Context,
+	id string,
+	storedMetadata map[string]string,
+	allBackends []*vmcp.Backend,
+) (MultiSession, error) {
+	sess, err := f.base.RestoreSession(ctx, id, storedMetadata, allBackends)
+	if err != nil {
+		return nil, err
+	}
+	return f.applyDecorators(ctx, sess)
+}
+
 func (f *decoratingMultiSessionFactory) MakeSessionWithID(
 	ctx context.Context,
 	id string,
@@ -43,6 +58,13 @@ func (f *decoratingMultiSessionFactory) MakeSessionWithID(
 	if err != nil {
 		return nil, err
 	}
+	return f.applyDecorators(ctx, sess)
+}
+
+// applyDecorators runs the decorator chain over sess in order, closing sess on
+// any error and returning the fully-decorated session on success.
+func (f *decoratingMultiSessionFactory) applyDecorators(ctx context.Context, sess MultiSession) (MultiSession, error) {
+	var err error
 	for _, dec := range f.decorators {
 		var decorated MultiSession
 		decorated, err = dec(ctx, sess)

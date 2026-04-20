@@ -40,7 +40,7 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: "test-group",
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 				},
 			},
 			mcpGroups: []*mcpv1alpha1.MCPGroup{
@@ -66,7 +66,7 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: "non-existent-group",
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "non-existent-group"},
 				},
 			},
 			mcpGroups:               []*mcpv1alpha1.MCPGroup{},
@@ -82,7 +82,7 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: "test-group",
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 				},
 			},
 			mcpGroups: []*mcpv1alpha1.MCPGroup{
@@ -109,7 +109,7 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: "test-group",
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 				},
 			},
 			mcpGroups: []*mcpv1alpha1.MCPGroup{
@@ -221,7 +221,7 @@ func TestMCPServerReconciler_GroupRefValidation_Integration(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: "test-group",
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -244,7 +244,7 @@ func TestMCPServerReconciler_GroupRefValidation_Integration(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: "test-group",
+					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
@@ -314,7 +314,7 @@ func TestMCPServerReconciler_GroupRefCrossNamespace(t *testing.T) {
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:    "test-image",
-			GroupRef: "test-group",
+			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 

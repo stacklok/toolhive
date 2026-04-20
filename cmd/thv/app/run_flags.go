@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/webhook"
 )
 
 const (
@@ -45,6 +46,7 @@ type RunFlags struct {
 	ProxyPort  int
 	TargetPort int
 	TargetHost string
+	Publish    []string
 
 	// Server configuration
 	Name              string
@@ -56,6 +58,9 @@ type RunFlags struct {
 
 	// Remote MCP server support
 	RemoteURL string
+
+	// Stateless indicates the server is stateless (POST-only, no SSE)
+	Stateless bool
 
 	// Security and audit
 	AuthzConfig string
@@ -90,7 +95,8 @@ type RunFlags struct {
 	OtelUseLegacyAttributes         bool     // Emit legacy attribute names alongside new ones
 
 	// Network isolation
-	IsolateNetwork bool
+	IsolateNetwork     bool
+	AllowDockerGateway bool
 
 	// Proxy headers
 	TrustProxyHeaders bool
@@ -134,6 +140,10 @@ type RunFlags struct {
 	// Runtime configuration
 	RuntimeImage       string
 	RuntimeAddPackages []string
+
+	// WebhookConfigs is a list of paths to webhook configuration files.
+	// Each file may define validating and/or mutating webhooks.
+	WebhookConfigs []string
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -154,6 +164,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"target-host",
 		transport.LocalhostIPv4,
 		"Host to forward traffic to (only applicable to SSE or Streamable HTTP transport)")
+	cmd.Flags().StringArrayVarP(&config.Publish, "publish", "p", []string{},
+		"Publish a container's port(s) to the host (format: hostPort:containerPort)")
 	cmd.Flags().StringVar(
 		&config.PermissionProfile,
 		"permission-profile",
@@ -191,7 +203,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.RuntimeImage, "runtime-image", "",
 		"Override the default base image for protocol schemes (e.g., golang:1.24-alpine, node:20-alpine, python:3.11-slim)")
 	cmd.Flags().StringArrayVar(&config.RuntimeAddPackages, "runtime-add-package", []string{},
-		"Add additional packages to install in the builder stage (can be repeated)")
+		"Add additional packages to install in the builder and runtime stages (can be repeated)")
 	cmd.Flags().StringVar(&config.VerifyImage, "image-verification", retriever.VerifyImageWarn,
 		fmt.Sprintf("Set image verification mode (%s, %s, %s)",
 			retriever.VerifyImageWarn, retriever.VerifyImageEnabled, retriever.VerifyImageDisabled))
@@ -243,9 +255,15 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default false)")
+	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,
+		"Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). "+
+			"Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled.")
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
 		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) "+
 			"(default false)")
+	cmd.Flags().BoolVar(&config.Stateless, "stateless", false,
+		"Declare the server as stateless (POST-only, no SSE). "+
+			"Use for MCP servers implementing streamable-HTTP stateless mode.")
 	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
 		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
@@ -270,6 +288,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	// Environment file processing flags
 	cmd.Flags().StringVar(&config.EnvFile, "env-file", "", "Load environment variables from a single file")
 	cmd.Flags().StringVar(&config.EnvFileDir, "env-file-dir", "", "Load environment variables from all files in a directory")
+
+	// Webhook configuration flags
+	cmd.Flags().StringArrayVar(&config.WebhookConfigs, "webhook-config", nil,
+		"Path to webhook configuration file (can be specified multiple times to merge configs)")
 
 	// Ignore functionality flags
 	cmd.Flags().BoolVar(&config.IgnoreGlobally, "ignore-globally", true,
@@ -305,11 +327,18 @@ func BuildRunnerConfig(
 		return nil, err
 	}
 
+	// Load application config once for the entire build.
+	configProvider := cfg.NewProvider()
+	appConfig, err := configProvider.LoadOrCreateConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load application config: %w", err)
+	}
+
 	// Setup telemetry configuration
-	telemetryConfig := setupTelemetryConfiguration(cmd, runFlags)
+	telemetryConfig := setupTelemetryConfiguration(cmd, runFlags, appConfig)
 
 	// Setup runtime and validation
-	rt, envVarValidator, err := setupRuntimeAndValidation(ctx)
+	rt, envVarValidator, err := setupRuntimeAndValidation(ctx, configProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -317,11 +346,11 @@ func BuildRunnerConfig(
 	if runFlags.RemoteURL != "" {
 		slog.Debug(fmt.Sprintf("Attempting to run remote MCP server: %s", runFlags.RemoteURL))
 		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
-			nil, envVarValidator, oidcConfig, telemetryConfig)
+			nil, envVarValidator, oidcConfig, telemetryConfig, appConfig)
 	}
 
-	// Handle image retrieval
-	imageURL, serverMetadata, err := handleImageRetrieval(ctx, serverOrImage, runFlags, groupName)
+	// Resolve image from registry without pulling (fast registry lookup only).
+	imageURL, serverMetadata, err := handleImageResolution(ctx, serverOrImage, runFlags, groupName)
 	if err != nil {
 		return nil, err
 	}
@@ -337,9 +366,29 @@ func BuildRunnerConfig(
 		return nil, fmt.Errorf("failed to parse environment variables: %w", err)
 	}
 
+	// Resolve registry source URLs and server name when the server was discovered via registry lookup.
+	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, appConfig)
+	regServerName := runner.ResolveRegistryServerName(serverMetadata)
+
 	// Build the runner config
-	return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverMetadata,
-		envVars, envVarValidator, oidcConfig, telemetryConfig)
+	runConfig, err := buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverMetadata,
+		envVars, envVarValidator, oidcConfig, telemetryConfig, appConfig,
+		runner.WithRegistrySourceURLs(regAPIURL, regURL),
+		runner.WithRegistryServerName(regServerName))
+	if err != nil {
+		return nil, err
+	}
+
+	// Enforce policy gate and pull image before returning. The policy check
+	// runs before the pull so that a rejected server fails fast.
+	if err := retriever.EnforcePolicyAndPullImage(
+		ctx, runConfig, serverMetadata, imageURL, retriever.PullMCPServerImage, 0,
+		runner.IsImageProtocolScheme(serverOrImage),
+	); err != nil {
+		return nil, err
+	}
+
+	return runConfig, nil
 }
 
 // setupOIDCConfiguration sets up OIDC configuration and validates URLs
@@ -362,23 +411,25 @@ func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.Token
 }
 
 // setupTelemetryConfiguration sets up telemetry configuration with config fallbacks
-func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *telemetry.Config {
-	configProvider := cfg.NewDefaultProvider()
-	config := configProvider.GetConfig()
-	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables, finalOtelInsecure,
-		finalOtelEnablePrometheusMetricsPath, finalOtelUseLegacyAttributes := getTelemetryFromFlags(
-		cmd, config, runFlags.OtelEndpoint,
+func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags, appConfig *cfg.Config) *telemetry.Config {
+	finalTelemetry := getTelemetryFromFlags(
+		cmd, appConfig, runFlags.OtelEndpoint,
 		runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables, runFlags.OtelInsecure,
-		runFlags.OtelEnablePrometheusMetricsPath, runFlags.OtelUseLegacyAttributes)
+		runFlags.OtelEnablePrometheusMetricsPath, runFlags.OtelUseLegacyAttributes,
+		runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled)
 
-	return createTelemetryConfig(finalOtelEndpoint, finalOtelEnablePrometheusMetricsPath,
-		runFlags.OtelServiceName, runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, finalOtelSamplingRate,
-		runFlags.OtelHeaders, finalOtelInsecure, finalOtelEnvironmentVariables, runFlags.OtelCustomAttributes,
-		finalOtelUseLegacyAttributes)
+	return createTelemetryConfig(finalTelemetry.OtelEndpoint, finalTelemetry.OtelEnablePrometheusMetricsPath,
+		runFlags.OtelServiceName, finalTelemetry.OtelTracingEnabled, finalTelemetry.OtelMetricsEnabled,
+		finalTelemetry.OtelSamplingRate, runFlags.OtelHeaders, finalTelemetry.OtelInsecure,
+		finalTelemetry.OtelEnvironmentVariables, runFlags.OtelCustomAttributes,
+		finalTelemetry.OtelUseLegacyAttributes)
 }
 
-// setupRuntimeAndValidation creates container runtime and selects environment variable validator
-func setupRuntimeAndValidation(ctx context.Context) (runtime.Deployer, runner.EnvVarValidator, error) {
+// setupRuntimeAndValidation creates container runtime and selects environment variable validator.
+// The provided configProvider is reused so the factory-registered provider is not bypassed.
+func setupRuntimeAndValidation(
+	ctx context.Context, configProvider cfg.Provider,
+) (runtime.Deployer, runner.EnvVarValidator, error) {
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create container runtime: %w", err)
@@ -388,15 +439,15 @@ func setupRuntimeAndValidation(ctx context.Context) (runtime.Deployer, runner.En
 	if process.IsDetached() || runtime.IsKubernetesRuntime() {
 		envVarValidator = &runner.DetachedEnvVarValidator{}
 	} else {
-		cfgProvider := cfg.NewDefaultProvider()
-		envVarValidator = runner.NewCLIEnvVarValidator(cfgProvider)
+		envVarValidator = runner.NewCLIEnvVarValidator(configProvider)
 	}
 
 	return rt, envVarValidator, nil
 }
 
-// handleImageRetrieval handles image retrieval and metadata fetching
-func handleImageRetrieval(
+// handleImageResolution resolves the image from the registry without pulling it.
+// The actual image pull is deferred so that a policy check can run first.
+func handleImageResolution(
 	ctx context.Context,
 	serverOrImage string,
 	runFlags *RunFlags,
@@ -421,8 +472,8 @@ func handleImageRetrieval(
 		}
 	}
 
-	// Try to get server from registry (container or remote) or direct URL
-	imageURL, serverMetadata, err := retriever.GetMCPServer(
+	// Resolve server from registry (container or remote) without pulling the image.
+	imageURL, serverMetadata, err := retriever.ResolveMCPServer(
 		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage, groupName, runtimeOverride)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %w", serverOrImage, err)
@@ -433,13 +484,10 @@ func handleImageRetrieval(
 		return imageURL, serverMetadata, nil
 	}
 
-	// Only pull image if we are not running in Kubernetes mode.
+	// Only return server metadata if we are not running in Kubernetes mode.
 	// This split will go away if we implement a separate command or binary
 	// for running MCP servers in Kubernetes.
 	if !runtime.IsKubernetesRuntime() {
-		// Take the MCP server we were supplied and either fetch the image, or
-		// build it from a protocol scheme. If the server URI refers to an image
-		// in our trusted registry, we will also fetch the image metadata.
 		if serverMetadata != nil {
 			return imageURL, serverMetadata, nil
 		}
@@ -495,6 +543,25 @@ func loadToolsOverrideConfig(toolsOverridePath string) (map[string]runner.ToolOv
 		return nil, fmt.Errorf("failed to load tools override: %w", err)
 	}
 	return *loadedToolsOverride, nil
+}
+
+// loadAndMergeWebhookConfigs loads, merges, and validates webhook configuration files.
+// Each file may define validating and/or mutating webhooks. Later files override earlier
+// ones for webhooks with the same name.
+func loadAndMergeWebhookConfigs(paths []string) (*webhook.FileConfig, error) {
+	configs := make([]*webhook.FileConfig, 0, len(paths))
+	for _, path := range paths {
+		config, err := webhook.LoadConfig(path)
+		if err != nil {
+			return nil, err
+		}
+		configs = append(configs, config)
+	}
+	merged := webhook.MergeConfigs(configs...)
+	if err := webhook.ValidateConfig(merged); err != nil {
+		return nil, fmt.Errorf("invalid webhook configuration: %w", err)
+	}
+	return merged, nil
 }
 
 // configureRemoteHeaderOptions configures header forwarding options for remote servers
@@ -558,6 +625,8 @@ func buildRunnerConfig(
 	envVarValidator runner.EnvVarValidator,
 	oidcConfig *auth.TokenValidatorConfig,
 	telemetryConfig *telemetry.Config,
+	appConfig *cfg.Config,
+	extraOpts ...runner.RunConfigBuilderOption,
 ) (*runner.RunConfig, error) {
 	transportType := resolveTransportType(runFlags, serverMetadata)
 	serverName := resolveServerName(runFlags, serverMetadata)
@@ -593,7 +662,9 @@ func buildRunnerConfig(
 		runner.WithAuditConfigPath(runFlags.AuditConfig),
 		runner.WithPermissionProfileNameOrPath(runFlags.PermissionProfile),
 		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
+		runner.WithAllowDockerGateway(runFlags.AllowDockerGateway),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
+		runner.WithStateless(runFlags.Stateless),
 		runner.WithEndpointPrefix(runFlags.EndpointPrefix),
 		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
@@ -606,7 +677,9 @@ func buildRunnerConfig(
 			LoadGlobal:    runFlags.IgnoreGlobally,
 			PrintOverlays: runFlags.PrintOverlays,
 		}),
+		runner.WithPublish(runFlags.Publish),
 	}
+	opts = append(opts, extraOpts...)
 
 	// Load tools override configuration
 	toolsOverride, err := loadToolsOverrideConfig(runFlags.ToolsOverride)
@@ -633,9 +706,21 @@ func buildRunnerConfig(
 	}
 	opts = append(opts, runtimeOpts...)
 
+	// Load and merge webhook configurations
+	if len(runFlags.WebhookConfigs) > 0 {
+		whCfg, err := loadAndMergeWebhookConfigs(runFlags.WebhookConfigs)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts,
+			runner.WithValidatingWebhooks(whCfg.Validating),
+			runner.WithMutatingWebhooks(whCfg.Mutating),
+		)
+	}
+
 	// Configure middleware and additional options
 	additionalOpts, err := configureMiddlewareAndOptions(runFlags, serverMetadata, toolsOverride, oidcConfig,
-		telemetryConfig, serverName, transportType)
+		telemetryConfig, serverName, transportType, appConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -653,12 +738,9 @@ func configureMiddlewareAndOptions(
 	telemetryConfig *telemetry.Config,
 	serverName string,
 	transportType string,
+	appConfig *cfg.Config,
 ) ([]runner.RunConfigBuilderOption, error) {
 	var opts []runner.RunConfigBuilderOption
-
-	// Load application config for global settings
-	configProvider := cfg.NewDefaultProvider()
-	appConfig := configProvider.GetConfig()
 
 	// Resolve the OTel service name from the workload name when not explicitly set
 	telemetry.ResolveServiceName(telemetryConfig, serverName)
@@ -708,6 +790,18 @@ func configureMiddlewareAndOptions(
 		oidcScopes := extractOIDCValues(oidcConfig)
 	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := extractTelemetryValues(telemetryConfig)
 
+	// Extract resolved tracing/metrics values from the middleware telemetry config.
+	// These must match what setupTelemetryConfiguration resolved (with global config
+	// fallbacks) rather than the raw runFlags values, which ignore global config.
+	// Default to false when telemetryConfig is nil (both signals disabled or no endpoint)
+	// rather than falling back to runFlags defaults, which would re-enable signals
+	// that the user explicitly disabled via global config.
+	var finalTracingEnabled, finalMetricsEnabled bool
+	if telemetryConfig != nil {
+		finalTracingEnabled = telemetryConfig.TracingEnabled
+		finalMetricsEnabled = telemetryConfig.MetricsEnabled
+	}
+
 	// Set additional configurations that are still needed in old format for other parts of the system
 	opts = append(opts,
 		runner.WithOIDCConfig(
@@ -716,7 +810,7 @@ func configureMiddlewareAndOptions(
 			runFlags.JWKSAllowPrivateIP, runFlags.InsecureAllowHTTP, oidcScopes,
 		),
 		runner.WithTelemetryConfigFromFlags(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
-			runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, runFlags.OtelServiceName,
+			finalTracingEnabled, finalMetricsEnabled, runFlags.OtelServiceName,
 			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables,
 			runFlags.OtelUseLegacyAttributes,
 		),
@@ -868,6 +962,9 @@ func getRemoteAuthFromRemoteServerMetadata(
 		authCfg.OAuthParams = oc.OAuthParams
 	}
 
+	// ScopeParamName: from CLI flag only (not yet supported in registry metadata)
+	authCfg.ScopeParamName = f.RemoteAuthScopeParamName
+
 	// Resolve bearer token from multiple sources (flag, file, environment variable)
 	resolvedBearerToken, err := resolveSecret(
 		f.RemoteAuthBearerToken,
@@ -929,6 +1026,7 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 		ClientID:        runFlags.RemoteAuthFlags.RemoteAuthClientID,
 		ClientSecret:    clientSecret,
 		Scopes:          runFlags.RemoteAuthFlags.RemoteAuthScopes,
+		ScopeParamName:  runFlags.RemoteAuthFlags.RemoteAuthScopeParamName,
 		SkipBrowser:     runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
 		Timeout:         runFlags.RemoteAuthFlags.RemoteAuthTimeout,
 		CallbackPort:    runFlags.RemoteAuthFlags.RemoteAuthCallbackPort,
@@ -955,11 +1053,23 @@ func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, strin
 	return oidcIssuer, oidcAudience, oidcJwksURL, introspectionURL, oidcClientID, oidcClientSecret, oidcScopes
 }
 
+// finalTelemetry holds the telemetry configuration values after applying
+// global config fallbacks to CLI flag values.
+type finalTelemetry struct {
+	OtelEndpoint                    string
+	OtelSamplingRate                float64
+	OtelEnvironmentVariables        []string
+	OtelInsecure                    bool
+	OtelEnablePrometheusMetricsPath bool
+	OtelUseLegacyAttributes         bool
+	OtelTracingEnabled              bool
+	OtelMetricsEnabled              bool
+}
+
 // getTelemetryFromFlags extracts telemetry configuration from command flags
 func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint string, otelSamplingRate float64,
 	otelEnvironmentVariables []string, otelInsecure bool, otelEnablePrometheusMetricsPath bool,
-	otelUseLegacyAttributes bool) (
-	string, float64, []string, bool, bool, bool) {
+	otelUseLegacyAttributes bool, otelTracingEnabled bool, otelMetricsEnabled bool) finalTelemetry {
 	// Use config values as fallbacks for OTEL flags if not explicitly set
 	finalOtelEndpoint := otelEndpoint
 	if !cmd.Flags().Changed("otel-endpoint") && config.OTEL.Endpoint != "" {
@@ -986,6 +1096,16 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 		finalOtelEnablePrometheusMetricsPath = config.OTEL.EnablePrometheusMetricsPath
 	}
 
+	finalOtelTracingEnabled := otelTracingEnabled
+	if !cmd.Flags().Changed("otel-tracing-enabled") && config.OTEL.TracingEnabled != nil {
+		finalOtelTracingEnabled = *config.OTEL.TracingEnabled
+	}
+
+	finalOtelMetricsEnabled := otelMetricsEnabled
+	if !cmd.Flags().Changed("otel-metrics-enabled") && config.OTEL.MetricsEnabled != nil {
+		finalOtelMetricsEnabled = *config.OTEL.MetricsEnabled
+	}
+
 	// UseLegacyAttributes defaults to true for this release to avoid breaking existing
 	// dashboards and alerts. When the config file explicitly sets this field (non-nil),
 	// use the config value. Otherwise, use the CLI flag value (which defaults to true).
@@ -995,8 +1115,16 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 		finalOtelUseLegacyAttributes = *config.OTEL.UseLegacyAttributes
 	}
 
-	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables,
-		finalOtelInsecure, finalOtelEnablePrometheusMetricsPath, finalOtelUseLegacyAttributes
+	return finalTelemetry{
+		OtelEndpoint:                    finalOtelEndpoint,
+		OtelSamplingRate:                finalOtelSamplingRate,
+		OtelEnvironmentVariables:        finalOtelEnvironmentVariables,
+		OtelInsecure:                    finalOtelInsecure,
+		OtelEnablePrometheusMetricsPath: finalOtelEnablePrometheusMetricsPath,
+		OtelUseLegacyAttributes:         finalOtelUseLegacyAttributes,
+		OtelTracingEnabled:              finalOtelTracingEnabled,
+		OtelMetricsEnabled:              finalOtelMetricsEnabled,
+	}
 }
 
 // createOIDCConfig creates an OIDC configuration if any OIDC parameters are provided
@@ -1025,6 +1153,13 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 	otelInsecure bool, otelEnvironmentVariables []string, otelCustomAttributes string,
 	otelUseLegacyAttributes bool) *telemetry.Config {
 	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
+		return nil
+	}
+
+	// If both tracing and metrics are disabled, skip telemetry entirely.
+	// This allows users to disable telemetry via global config while keeping
+	// the endpoint configured for later re-enablement.
+	if !otelTracingEnabled && !otelMetricsEnabled && !otelEnablePrometheusMetricsPath {
 		return nil
 	}
 

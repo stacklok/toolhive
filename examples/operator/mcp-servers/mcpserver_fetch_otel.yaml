@@ -1,3 +1,29 @@
+# Shared MCPTelemetryConfig with OTLP tracing, metrics, and Prometheus.
+#
+# Define telemetry configuration once and reference it from multiple MCPServers.
+# Each MCPServer provides a unique serviceName for its traces and metrics.
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPTelemetryConfig
+metadata:
+  name: basic-telemetry
+  namespace: toolhive-system
+spec:
+  openTelemetry:
+    enabled: true
+    endpoint: otel-collector-opentelemetry-collector.monitoring.svc.cluster.local:4318
+    insecure: true
+    tracing:
+      enabled: true
+      samplingRate: "0.1"
+    metrics:
+      enabled: true
+  prometheus:
+    enabled: true
+---
+# MCPServer that references the shared MCPTelemetryConfig above.
+#
+# The telemetryConfigRef replaces the deprecated inline spec.telemetry field.
+# serviceName provides a unique OTel service name for this server's telemetry.
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
@@ -15,19 +41,6 @@ spec:
     requests:
       cpu: "50m"
       memory: "64Mi"
-  telemetry:
-    openTelemetry:
-      # Point to our OpenTelemetry Collector
-      enabled: true
-      endpoint: otel-collector-opentelemetry-collector.monitoring.svc.cluster.local:4318
-      serviceName: mcp-fetch-server
-      headers:
-        - "x-test-header=toolhive-demo"
-      insecure: true  # Using HTTP collector endpoint
-      metrics:
-        enabled: true
-      tracing:
-        enabled: true
-        samplingRate: "1.0"
-    prometheus:
-      enabled: true
+  telemetryConfigRef:
+    name: basic-telemetry
+    serviceName: mcp-fetch-server

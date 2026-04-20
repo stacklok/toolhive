@@ -1,0 +1,38 @@
+# MCPServerEntry with token exchange authentication.
+#
+# The externalAuthConfigRef configures how VirtualMCPServer authenticates
+# to the remote MCP server. Unlike MCPRemoteProxy, there is no proxy pod —
+# VirtualMCPServer applies the auth strategy directly.
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPExternalAuthConfig
+metadata:
+  name: salesforce-auth
+  namespace: toolhive-system
+spec:
+  type: tokenExchange
+  tokenExchange:
+    tokenUrl: https://login.salesforce.com/services/oauth2/token
+    clientId: toolhive-exchange
+    clientSecretRef:
+      name: salesforce-oauth
+      key: client-secret
+    audience: https://mcp.salesforce.com
+    scopes:
+      - mcp:read
+      - mcp:write
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServerEntry
+metadata:
+  name: salesforce-mcp
+  namespace: toolhive-system
+spec:
+  remoteUrl: https://mcp.salesforce.com/v1
+  transport: streamable-http
+  groupRef:
+    name: remote-tools
+  externalAuthConfigRef:
+    name: salesforce-auth

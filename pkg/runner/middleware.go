@@ -11,14 +11,19 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
+	"github.com/stacklok/toolhive/pkg/webhook/mutating"
+	"github.com/stacklok/toolhive/pkg/webhook/validating"
 )
 
 // GetSupportedMiddlewareFactories returns a map of supported middleware types to their factory functions
@@ -31,12 +36,15 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		mcp.ParserMiddlewareType:              mcp.CreateParserMiddleware,
 		mcp.ToolFilterMiddlewareType:          mcp.CreateToolFilterMiddleware,
 		mcp.ToolCallFilterMiddlewareType:      mcp.CreateToolCallFilterMiddleware,
+		ratelimit.MiddlewareType:              ratelimit.CreateMiddleware,
 		usagemetrics.MiddlewareType:           usagemetrics.CreateMiddleware,
 		telemetry.MiddlewareType:              telemetry.CreateMiddleware,
 		authz.MiddlewareType:                  authz.CreateMiddleware,
 		audit.MiddlewareType:                  audit.CreateMiddleware,
 		recovery.MiddlewareType:               recovery.CreateMiddleware,
 		headerfwd.HeaderForwardMiddlewareName: headerfwd.CreateMiddleware,
+		validating.MiddlewareType:             validating.CreateMiddleware,
+		mutating.MiddlewareType:               mutating.CreateMiddleware,
 	}
 }
 
@@ -113,6 +121,28 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	}
 	middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
 
+	// Rate limit middleware (if configured)
+	// Positioned after MCP parser (needs tool name from context).
+	// Will also need user identity from auth when per-user limits are added (#4550).
+	middlewareConfigs, err = addRateLimitMiddleware(middlewareConfigs, config)
+	if err != nil {
+		return err
+	}
+
+	// Mutating Webhooks middleware (if configured).
+	// Must run BEFORE validating webhooks:
+	// MCP Parser -> [Mutating Webhooks] -> [Validating Webhooks] -> Authz -> Audit
+	middlewareConfigs, err = addMutatingWebhookMiddleware(middlewareConfigs, config)
+	if err != nil {
+		return err
+	}
+
+	// Validating Webhooks middleware (if configured)
+	middlewareConfigs, err = addValidatingWebhookMiddleware(middlewareConfigs, config)
+	if err != nil {
+		return err
+	}
+
 	// Load application config for global settings
 	configProvider := cfg.NewDefaultProvider()
 	appConfig := configProvider.GetConfig()
@@ -139,9 +169,13 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 
 	// Authorization middleware (if enabled)
 	if config.AuthzConfig != nil {
+		authzCfgData, err := injectUpstreamProviderIfNeeded(config.AuthzConfig, config.EmbeddedAuthServerConfig)
+		if err != nil {
+			return fmt.Errorf("failed to inject upstream provider into authorization config: %w", err)
+		}
 		authzParams := authz.FactoryMiddlewareParams{
 			ConfigPath: config.AuthzConfigPath, // Keep for backwards compatibility
-			ConfigData: config.AuthzConfig,     // Use the loaded config data
+			ConfigData: authzCfgData,           // Use the (possibly-enriched) config data
 		}
 		authzConfig, err := types.NewMiddlewareConfig(authz.MiddlewareType, authzParams)
 		if err != nil {
@@ -195,6 +229,51 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// Set the populated middleware configs
 	config.MiddlewareConfigs = middlewareConfigs
 	return nil
+}
+
+// addMutatingWebhookMiddleware configures the mutating webhook middleware if any webhooks are defined.
+// It must be called before addValidatingWebhookMiddleware to preserve the RFC-specified ordering.
+func addMutatingWebhookMiddleware(configs []types.MiddlewareConfig, runConfig *RunConfig) ([]types.MiddlewareConfig, error) {
+	if len(runConfig.MutatingWebhooks) == 0 {
+		return configs, nil
+	}
+
+	params := mutating.FactoryMiddlewareParams{
+		MiddlewareParams: mutating.MiddlewareParams{
+			Webhooks: runConfig.MutatingWebhooks,
+		},
+		ServerName: runConfig.Name,
+		Transport:  runConfig.Transport.String(),
+	}
+
+	config, err := types.NewMiddlewareConfig(mutating.MiddlewareType, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create mutating webhook middleware config: %w", err)
+	}
+
+	return append(configs, *config), nil
+}
+
+// addValidatingWebhookMiddleware configures the validating webhook middleware if any webhooks are defined
+func addValidatingWebhookMiddleware(configs []types.MiddlewareConfig, runConfig *RunConfig) ([]types.MiddlewareConfig, error) {
+	if len(runConfig.ValidatingWebhooks) == 0 {
+		return configs, nil
+	}
+
+	params := validating.FactoryMiddlewareParams{
+		MiddlewareParams: validating.MiddlewareParams{
+			Webhooks: runConfig.ValidatingWebhooks,
+		},
+		ServerName: runConfig.Name,
+		Transport:  runConfig.Transport.String(),
+	}
+
+	config, err := types.NewMiddlewareConfig(validating.MiddlewareType, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create validating webhook middleware config: %w", err)
+	}
+
+	return append(configs, *config), nil
 }
 
 // addTokenExchangeMiddleware adds token exchange middleware if configured
@@ -272,10 +351,10 @@ func addUpstreamSwapMiddleware(
 	if upstreamSwapConfig.ProviderName == "" {
 		upstreamSwapConfig.ProviderName = func() string {
 			if cfg := config.EmbeddedAuthServerConfig; cfg != nil &&
-				len(cfg.Upstreams) > 0 && cfg.Upstreams[0].Name != "" {
-				return cfg.Upstreams[0].Name
+				len(cfg.Upstreams) > 0 {
+				return authserver.ResolveUpstreamName(cfg.Upstreams[0].Name)
 			}
-			return "default"
+			return authserver.DefaultUpstreamName
 		}()
 	}
 
@@ -290,6 +369,31 @@ func addUpstreamSwapMiddleware(
 		return nil, fmt.Errorf("failed to create upstream swap middleware config: %w", err)
 	}
 	return append(middlewares, *upstreamSwapMwConfig), nil
+}
+
+// injectUpstreamProviderIfNeeded enriches an authz.Config with the
+// PrimaryUpstreamProvider derived from the embedded auth server config.
+// When the embedded auth server is active, Cedar policies should evaluate
+// claims from the upstream IDP token rather than the ToolHive-issued JWT.
+// If embeddedCfg is nil the original authzCfg is returned unchanged.
+func injectUpstreamProviderIfNeeded(
+	authzCfg *authz.Config,
+	embeddedCfg *authserver.RunConfig,
+) (*authz.Config, error) {
+	if embeddedCfg == nil {
+		return authzCfg, nil
+	}
+
+	// Derive the provider name the same way addUpstreamSwapMiddleware does,
+	// delegating normalisation (empty-string → "default") to ResolveUpstreamName.
+	providerName := func() string {
+		if len(embeddedCfg.Upstreams) > 0 {
+			return authserver.ResolveUpstreamName(embeddedCfg.Upstreams[0].Name)
+		}
+		return authserver.DefaultUpstreamName
+	}()
+
+	return cedar.InjectUpstreamProvider(authzCfg, providerName)
 }
 
 // addAWSStsMiddleware adds AWS STS middleware if configured.
@@ -313,4 +417,30 @@ func addAWSStsMiddleware(middlewares []types.MiddlewareConfig, config *RunConfig
 		return nil, fmt.Errorf("failed to create AWS STS middleware config: %w", err)
 	}
 	return append(middlewares, *awsStsMwConfig), nil
+}
+
+// addRateLimitMiddleware adds rate limit middleware if configured.
+func addRateLimitMiddleware(middlewares []types.MiddlewareConfig, config *RunConfig) ([]types.MiddlewareConfig, error) {
+	if config.RateLimitConfig == nil {
+		return middlewares, nil
+	}
+
+	if config.ScalingConfig == nil || config.ScalingConfig.SessionRedis == nil {
+		return nil, fmt.Errorf("rate limiting requires sessionStorage with provider redis")
+	}
+	redisAddr := config.ScalingConfig.SessionRedis.Address
+	redisDB := config.ScalingConfig.SessionRedis.DB
+
+	params := ratelimit.MiddlewareParams{
+		Namespace:  config.RateLimitNamespace,
+		ServerName: config.Name,
+		Config:     config.RateLimitConfig,
+		RedisAddr:  redisAddr,
+		RedisDB:    redisDB,
+	}
+	mwConfig, err := types.NewMiddlewareConfig(ratelimit.MiddlewareType, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create rate limit middleware config: %w", err)
+	}
+	return append(middlewares, *mwConfig), nil
 }

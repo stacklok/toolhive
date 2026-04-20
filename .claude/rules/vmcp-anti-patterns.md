@@ -63,3 +63,27 @@ Storing a mutable struct in context and having multiple middleware modify it in 
 **Detect**: Middleware mutating fields on structs retrieved from context; structs stored in context with exported mutable fields; multiple middleware reading and writing the same context value.
 
 **Instead**: Treat context values as immutable; create new values with `context.WithValue` if downstream needs to add info. Better yet, pass data explicitly (see #1).
+
+## 8. Unnecessary Abstraction / Interface Modification
+
+Introducing new abstractions (caches, wrapper types, new interface methods) or modifying stable interfaces to accommodate a single implementation's concern. A stable interface being modified is a sign that implementation details are leaking across boundaries.
+
+**Detect**: New interface methods added to satisfy one implementation; wrapper types that add a layer but don't meaningfully change behavior; caches where every "hit" still requires a remote call; new abstractions without evidence (profiling, incidents) justifying the complexity; stable interfaces gaining methods that only one consumer needs.
+
+**Instead**: Solve the concern internally to the component that needs it — don't push implementation-specific concerns onto shared interfaces. Start with the simplest approach and add abstraction only when there is concrete evidence it's needed.
+
+## 9. Premature Optimization
+
+Adding caches, connection pools, or other performance optimizations without evidence that the unoptimized path is a problem. These add complexity (invalidation logic, staleness risks, lifecycle management) that must be maintained regardless of whether the optimization provides measurable benefit.
+
+**Detect**: Caches introduced without profiling data or load estimates showing the uncached path is too slow; connection pools or object pools where the allocation cost hasn't been measured; complexity added to avoid overhead (e.g., TLS handshakes, serialization) at request rates where the overhead is negligible.
+
+**Instead**: Start with the straightforward implementation. Measure under realistic load. Add optimization only when measurements show it's needed, and document the evidence in the commit or PR description.
+
+## 10. Mutable Domain Objects with Mutex Protection
+
+Adding a mutex to a domain object and mutating it in place when state changes. This grows in complexity with every new mutation and makes objects harder to reason about under concurrency.
+
+**Detect**: Mutex fields on domain structs; mutation methods on types that were previously read-only; in-place writes guarded by an object-level lock; multiple layers each holding their own mutex.
+
+**Instead**: Ask whether the object can be reconstructed rather than mutated — rebuild from the source of truth and replace the reference. If mutation is truly necessary, centralize synchronization at one layer rather than distributing mutexes across multiple layers; everything below that layer is then single-threaded and much easier to reason about. Sharded locks for performance should only be introduced after profiling shows contention (see anti-pattern #9).

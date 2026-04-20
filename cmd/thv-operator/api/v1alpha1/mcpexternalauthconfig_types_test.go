@@ -127,7 +127,7 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name: "invalid embeddedAuthServer with multiple providers",
+			name: "embeddedAuthServer with multiple providers - valid at CRD level",
 			config: &MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-embedded-multi",
@@ -152,8 +152,7 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 					},
 				},
 			},
-			expectErr: true,
-			errMsg:    "currently only one upstream provider is supported (found 2)",
+			expectErr: false,
 		},
 		{
 			name: "invalid embeddedAuthServer with no providers",
@@ -212,6 +211,50 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			},
 			expectErr: true,
 			errMsg:    "oauth2Config must be set when type is 'oauth2'",
+		},
+		{
+			name: "valid upstreamInject type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-upstream-inject",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:           ExternalAuthTypeUpstreamInject,
+					UpstreamInject: &UpstreamInjectSpec{ProviderName: "github"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "invalid upstreamInject with nil spec",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-upstream-inject-nil",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:           ExternalAuthTypeUpstreamInject,
+					UpstreamInject: nil,
+				},
+			},
+			expectErr: true,
+			errMsg:    "upstreamInject configuration must be set if and only if type is 'upstreamInject'",
+		},
+		{
+			name: "invalid upstreamInject with empty providerName",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-upstream-inject-empty",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:           ExternalAuthTypeUpstreamInject,
+					UpstreamInject: &UpstreamInjectSpec{ProviderName: ""},
+				},
+			},
+			expectErr: true,
+			errMsg:    "upstreamInject requires a non-empty providerName",
 		},
 		{
 			name: "invalid OIDC provider with oauth2Config instead",
@@ -312,7 +355,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name: "multiple providers - invalid",
+			name: "multiple providers - valid at CRD level",
 			config: &MCPExternalAuthConfig{
 				Spec: MCPExternalAuthConfigSpec{
 					Type: ExternalAuthTypeEmbeddedAuthServer,
@@ -343,8 +386,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 					},
 				},
 			},
-			expectErr: true,
-			errMsg:    "currently only one upstream provider is supported (found 3)",
+			expectErr: false,
 		},
 		{
 			name: "empty providers array - invalid",
@@ -461,6 +503,73 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 			},
 			expectErr: true,
 			errMsg:    "oidcConfig must be set when type is 'oidc' and must not be set otherwise",
+		},
+		{
+			name: "OIDC provider with valid additionalAuthorizationParams",
+			provider: UpstreamProviderConfig{
+				Name: "google",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://accounts.google.com",
+					ClientID:  "client-id",
+					AdditionalAuthorizationParams: map[string]string{
+						"access_type": "offline",
+						"prompt":      "consent",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OIDC provider with reserved param client_id",
+			provider: UpstreamProviderConfig{
+				Name: "google",
+				Type: UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{
+					IssuerURL: "https://accounts.google.com",
+					ClientID:  "client-id",
+					AdditionalAuthorizationParams: map[string]string{
+						"client_id": "override-attempt",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "reserved parameter \"client_id\" is managed by the framework",
+		},
+		{
+			name: "OAuth2 provider with reserved param response_type",
+			provider: UpstreamProviderConfig{
+				Name: "custom",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://oauth.example.com/authorize",
+					TokenEndpoint:         "https://oauth.example.com/token",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+					AdditionalAuthorizationParams: map[string]string{
+						"response_type": "token",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "reserved parameter \"response_type\" is managed by the framework",
+		},
+		{
+			name: "OAuth2 provider with valid additionalAuthorizationParams",
+			provider: UpstreamProviderConfig{
+				Name: "github",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+					TokenEndpoint:         "https://github.com/login/oauth/access_token",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://api.github.com/user"},
+					AdditionalAuthorizationParams: map[string]string{
+						"allow_signup": "false",
+					},
+				},
+			},
+			expectErr: false,
 		},
 	}
 

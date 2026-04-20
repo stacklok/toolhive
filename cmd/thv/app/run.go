@@ -243,6 +243,13 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 		return err
 	}
 
+	// Enforce policy in the main process before saving state or spawning a
+	// detached worker, so violations surface synchronously with a non-zero
+	// exit code rather than silently failing in the background log.
+	if err := runner.EagerCheckCreateServer(ctx, runnerConfig); err != nil {
+		return fmt.Errorf("server creation blocked by policy: %w", err)
+	}
+
 	// Always save the run config to disk before starting (both foreground and detached modes)
 	// NOTE: Save before secrets processing to avoid storing secrets in the state store
 	if err := runnerConfig.SaveState(ctx); err != nil {
@@ -467,6 +474,13 @@ func runFromConfigFile(ctx context.Context) error {
 	workloadManager, err := workloads.NewManagerFromRuntime(rt)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)
+	}
+
+	// Enforce policy in the main process before saving state or spawning a
+	// detached worker, so violations surface synchronously with a non-zero
+	// exit code rather than silently failing in the background log.
+	if err := runner.EagerCheckCreateServer(ctx, runConfig); err != nil {
+		return fmt.Errorf("server creation blocked by policy: %w", err)
 	}
 
 	// Save the run config to disk in the usual directory (before running)

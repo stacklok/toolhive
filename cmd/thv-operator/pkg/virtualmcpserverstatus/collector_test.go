@@ -73,6 +73,36 @@ func TestStatusCollector_SetObservedGeneration(t *testing.T) {
 	assert.Equal(t, int64(42), status.ObservedGeneration)
 }
 
+func TestStatusCollector_SetOIDCConfigHash(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetOIDCConfigHash("abc123hash")
+
+	status := &mcpv1alpha1.VirtualMCPServerStatus{}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Equal(t, "abc123hash", status.OIDCConfigHash)
+}
+
+func TestStatusCollector_SetOIDCConfigHash_Clear(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetOIDCConfigHash("")
+
+	status := &mcpv1alpha1.VirtualMCPServerStatus{OIDCConfigHash: "old-hash"}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Empty(t, status.OIDCConfigHash)
+}
+
 func TestStatusCollector_SetGroupRefValidatedCondition(t *testing.T) {
 	t.Parallel()
 
@@ -122,6 +152,7 @@ func TestStatusCollector_BatchedUpdates(t *testing.T) {
 	collector.SetMessage("test message")
 	collector.SetURL("http://test.example.com")
 	collector.SetObservedGeneration(42)
+	collector.SetOIDCConfigHash("oidc-hash-123")
 	collector.SetGroupRefValidatedCondition("TestReason", "group is valid", metav1.ConditionTrue)
 	collector.SetReadyCondition("DeploymentReady", "deployment is ready", metav1.ConditionTrue)
 
@@ -134,6 +165,7 @@ func TestStatusCollector_BatchedUpdates(t *testing.T) {
 	assert.Equal(t, "test message", status.Message)
 	assert.Equal(t, "http://test.example.com", status.URL)
 	assert.Equal(t, int64(42), status.ObservedGeneration)
+	assert.Equal(t, "oidc-hash-123", status.OIDCConfigHash)
 	assert.Len(t, status.Conditions, 2)
 }
 
@@ -167,6 +199,25 @@ func TestStatusCollector_SetAuthConfiguredCondition(t *testing.T) {
 	assert.Equal(t, metav1.ConditionTrue, status.Conditions[0].Status)
 	assert.Equal(t, "AuthValid", status.Conditions[0].Reason)
 	assert.Equal(t, "auth is configured", status.Conditions[0].Message)
+}
+
+func TestStatusCollector_SetAuthServerConfigValidatedCondition(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetAuthServerConfigValidatedCondition("AuthServerConfigValid", "AuthServerConfig is valid", metav1.ConditionTrue)
+
+	status := &mcpv1alpha1.VirtualMCPServerStatus{}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Len(t, status.Conditions, 1)
+	assert.Equal(t, mcpv1alpha1.ConditionTypeAuthServerConfigValidated, status.Conditions[0].Type)
+	assert.Equal(t, metav1.ConditionTrue, status.Conditions[0].Status)
+	assert.Equal(t, "AuthServerConfigValid", status.Conditions[0].Reason)
+	assert.Equal(t, "AuthServerConfig is valid", status.Conditions[0].Message)
 }
 
 func TestStatusCollector_MultipleConditions(t *testing.T) {
@@ -252,4 +303,54 @@ func TestStatusCollector_RemoveConditionsWithPrefix(t *testing.T) {
 	}
 	assert.True(t, foundBackend1, "backend-1 condition should remain")
 	assert.True(t, foundReady, "Ready condition should remain")
+}
+
+func TestStatusCollector_SetTelemetryConfigHash(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetTelemetryConfigHash("tel-hash-456")
+
+	status := &mcpv1alpha1.VirtualMCPServerStatus{}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Equal(t, "tel-hash-456", status.TelemetryConfigHash)
+}
+
+func TestStatusCollector_SetTelemetryConfigHash_Clear(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetTelemetryConfigHash("")
+
+	status := &mcpv1alpha1.VirtualMCPServerStatus{TelemetryConfigHash: "old-hash"}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Empty(t, status.TelemetryConfigHash)
+}
+
+func TestStatusCollector_SetTelemetryConfigRefValidatedCondition(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetTelemetryConfigRefValidatedCondition(
+		"TelemetryConfigRefValid", "MCPTelemetryConfig is valid", metav1.ConditionTrue)
+
+	status := &mcpv1alpha1.VirtualMCPServerStatus{}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Len(t, status.Conditions, 1)
+	assert.Equal(t, mcpv1alpha1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated, status.Conditions[0].Type)
+	assert.Equal(t, metav1.ConditionTrue, status.Conditions[0].Status)
+	assert.Equal(t, "TelemetryConfigRefValid", status.Conditions[0].Reason)
+	assert.Equal(t, "MCPTelemetryConfig is valid", status.Conditions[0].Message)
 }

@@ -24,7 +24,209 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
+
+// buildFindToolJSONRPCResponse creates a JSON-RPC tools/call response whose content
+// text is a serialised find_tool output containing the given tools.
+func buildFindToolJSONRPCResponse(t *testing.T, tools []mcp.Tool) []byte {
+	t.Helper()
+	output := optimizer.FindToolOutput{Tools: tools}
+	outputJSON, err := json.Marshal(output)
+	require.NoError(t, err)
+
+	callResult := map[string]interface{}{
+		"content": []map[string]interface{}{
+			{"type": "text", "text": string(outputJSON)},
+		},
+		"isError": false,
+	}
+	resultJSON, err := json.Marshal(callResult)
+	require.NoError(t, err)
+
+	resp := &jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(1),
+		Result: json.RawMessage(resultJSON),
+	}
+	encoded, err := jsonrpc2.EncodeMessage(resp)
+	require.NoError(t, err)
+	return encoded
+}
+
+// decodeFindToolOutput decodes a JSON-RPC response produced by buildFindToolJSONRPCResponse
+// and returns the optimizer.FindToolOutput embedded in the first text content item.
+func decodeFindToolOutput(t *testing.T, body []byte) optimizer.FindToolOutput {
+	t.Helper()
+	msg, err := jsonrpc2.DecodeMessage(body)
+	require.NoError(t, err)
+	rpcResp, ok := msg.(*jsonrpc2.Response)
+	require.True(t, ok)
+	require.Nil(t, rpcResp.Error)
+
+	var callResult struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	require.NoError(t, json.Unmarshal(rpcResp.Result, &callResult))
+	require.NotEmpty(t, callResult.Content)
+
+	var output optimizer.FindToolOutput
+	require.NoError(t, json.Unmarshal([]byte(callResult.Content[0].Text), &output))
+	return output
+}
+
+// TestFindToolResponseFilter verifies that find_tool results are filtered by Cedar
+// policy before being returned to the caller.
+func TestFindToolResponseFilter(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user1",
+		Claims:  map[string]interface{}{"sub": "user1"},
+	}}
+	newReq := func(t *testing.T) *http.Request {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+		require.NoError(t, err)
+		return req.WithContext(auth.WithIdentity(req.Context(), identity))
+	}
+	newWriter := func(t *testing.T, cache *AnnotationCache) (*httptest.ResponseRecorder, *ResponseFilteringWriter) {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		rr.Header().Set("Content-Type", "application/json")
+		fw := NewResponseFilteringWriter(rr, authorizer, newReq(t), optimizerdec.FindToolName, cache, nil)
+		fw.ResponseWriter.Header().Set("Content-Type", "application/json")
+		return rr, fw
+	}
+
+	t.Run("Cedar policy filters unauthorized tools", func(t *testing.T) {
+		t.Parallel()
+
+		// The optimizer returns two tools but the caller is only permitted "weather".
+		responseBytes := buildFindToolJSONRPCResponse(t, []mcp.Tool{
+			{Name: "weather", Description: "Get weather"},
+			{Name: "admin_tool", Description: "Admin operations"},
+		})
+
+		rr, fw := newWriter(t, nil)
+		_, err := fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		output := decodeFindToolOutput(t, rr.Body.Bytes())
+		require.Len(t, output.Tools, 1, "only the permitted tool should remain")
+		assert.Equal(t, "weather", output.Tools[0].Name)
+	})
+
+	t.Run("isError response passes through unfiltered", func(t *testing.T) {
+		t.Parallel()
+
+		// Build a CallToolResult with IsError set — the filter must not touch it.
+		errorResult := map[string]interface{}{
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "tool execution failed"},
+			},
+			"isError": true,
+		}
+		resultJSON, err := json.Marshal(errorResult)
+		require.NoError(t, err)
+		resp := &jsonrpc2.Response{ID: jsonrpc2.Int64ID(1), Result: json.RawMessage(resultJSON)}
+		responseBytes, err := jsonrpc2.EncodeMessage(resp)
+		require.NoError(t, err)
+
+		rr, fw := newWriter(t, nil)
+		_, err = fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		assert.Equal(t, responseBytes, rr.Body.Bytes(), "error response must pass through unchanged")
+	})
+
+	t.Run("response with no text content passes through unfiltered", func(t *testing.T) {
+		t.Parallel()
+
+		// A CallToolResult with no content items at all.
+		emptyResult := map[string]interface{}{"content": []interface{}{}, "isError": false}
+		resultJSON, err := json.Marshal(emptyResult)
+		require.NoError(t, err)
+		resp := &jsonrpc2.Response{ID: jsonrpc2.Int64ID(1), Result: json.RawMessage(resultJSON)}
+		responseBytes, err := jsonrpc2.EncodeMessage(resp)
+		require.NoError(t, err)
+
+		rr, fw := newWriter(t, nil)
+		_, err = fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		assert.Equal(t, responseBytes, rr.Body.Bytes(), "response with no content must pass through unchanged")
+	})
+
+	t.Run("text content that is not a FindToolOutput passes through unfiltered", func(t *testing.T) {
+		t.Parallel()
+
+		// A plain text content item that is not a valid FindToolOutput JSON.
+		plainText := map[string]interface{}{
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "this is a plain string, not a find_tool result"},
+			},
+			"isError": false,
+		}
+		resultJSON, err := json.Marshal(plainText)
+		require.NoError(t, err)
+		resp := &jsonrpc2.Response{ID: jsonrpc2.Int64ID(1), Result: json.RawMessage(resultJSON)}
+		responseBytes, err := jsonrpc2.EncodeMessage(resp)
+		require.NoError(t, err)
+
+		rr, fw := newWriter(t, nil)
+		_, err = fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		assert.Equal(t, responseBytes, rr.Body.Bytes(), "non-FindToolOutput text content must pass through unchanged")
+	})
+
+	t.Run("annotation cache is populated from unfiltered tool list", func(t *testing.T) {
+		t.Parallel()
+
+		readOnly := true
+		responseBytes := buildFindToolJSONRPCResponse(t, []mcp.Tool{
+			{
+				Name:        "weather",
+				Description: "Get weather",
+				Annotations: mcp.ToolAnnotation{ReadOnlyHint: &readOnly},
+			},
+			// admin_tool is not permitted by Cedar, but its annotations must still
+			// be cached so that a subsequent call_tool request can evaluate Cedar
+			// when-clauses against them.
+			{
+				Name:        "admin_tool",
+				Description: "Admin operations",
+				Annotations: mcp.ToolAnnotation{ReadOnlyHint: &readOnly},
+			},
+		})
+
+		cache := NewAnnotationCache()
+		_, fw := newWriter(t, cache)
+		_, err := fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		// Both tools must be in the cache even though admin_tool is filtered from the response.
+		assert.NotNil(t, cache.Get("weather"), "permitted tool annotation must be cached")
+		assert.NotNil(t, cache.Get("admin_tool"), "denied tool annotation must still be cached for future call_tool Cedar evaluation")
+	})
+}
 
 func TestResponseFilteringWriter(t *testing.T) {
 	t.Parallel()
@@ -37,7 +239,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 			`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	testCases := []struct {
@@ -144,14 +346,14 @@ func TestResponseFilteringWriter(t *testing.T) {
 			require.NoError(t, err, "Failed to create HTTP request")
 			sub := tc.claims["sub"].(string)
 			name, _ := tc.claims["name"].(string)
-			identity := &auth.Identity{Subject: sub, Name: name, Claims: tc.claims}
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: sub, Name: name, Claims: tc.claims}}
 			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 			// Create a response recorder
 			rr := httptest.NewRecorder()
 
 			// Create the response filtering writer
-			filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, tc.method, nil)
+			filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, tc.method, nil, nil)
 			filteringWriter.ResponseWriter.Header().Set("Content-Type", "application/json")
 
 			// Write the response data
@@ -230,7 +432,7 @@ func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Test that non-list operations pass through unchanged
@@ -257,7 +459,7 @@ func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	// Create the response filtering writer for a non-list operation
-	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/call", nil)
+	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/call", nil, nil)
 
 	// Write the response data
 	_, err = filteringWriter.Write(responseBytes)
@@ -279,7 +481,7 @@ func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Create an error response
@@ -299,7 +501,7 @@ func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	// Create the response filtering writer
-	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil)
+	filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, nil)
 
 	// Write the response data
 	_, err = filteringWriter.Write(responseBytes)
@@ -332,7 +534,7 @@ func TestResponseFilteringWriter_ContentLengthMismatch(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, "")
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Build the backend response: a tools/list result with 3 tools.
@@ -375,14 +577,14 @@ func TestResponseFilteringWriter_ContentLengthMismatch(t *testing.T) {
 	// 4. Calls FlushAndFilter after the proxy returns.
 	frontend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Inject identity into context (Cedar authorizer reads claims from it).
-		identity := &auth.Identity{
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
 			Subject: "user123",
 			Name:    "Test User",
 			Claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "Test User",
 			},
-		}
+		}}
 		ctx := auth.WithIdentity(r.Context(), identity)
 
 		// Inject parsed MCP request into context (authz middleware reads method from it).
@@ -395,7 +597,7 @@ func TestResponseFilteringWriter_ContentLengthMismatch(t *testing.T) {
 
 		// Wrap the real ResponseWriter with ResponseFilteringWriter,
 		// exactly as the authz middleware does in middleware.go.
-		filteringWriter := NewResponseFilteringWriter(w, authorizer, r, string(mcp.MethodToolsList), nil)
+		filteringWriter := NewResponseFilteringWriter(w, authorizer, r, string(mcp.MethodToolsList), nil, nil)
 
 		// Proxy to the backend. ReverseProxy will call w.Header() to copy
 		// the backend's Content-Length into the response header map. Since
@@ -497,4 +699,167 @@ func TestResponseFilteringWriter_ContentLengthMismatch(t *testing.T) {
 	if len(toolsResult.Tools) > 0 {
 		assert.Equal(t, "weather", toolsResult.Tools[0].Name)
 	}
+}
+
+// TestOptimizerPassThroughToolsInResponseFilter verifies the scenario where an
+// operator enables the optimizer alongside Cedar authorization policies.
+//
+// Scenario:
+//   - The optimizer replaces real backend tools with two meta-tools: find_tool
+//     and call_tool. These appear in tools/list instead of real tool names.
+//   - The operator's Cedar policies only reference real backend tool names
+//     (e.g., Tool::"weather"), not the optimizer meta-tool names.
+//   - Without pass-through, Cedar default-deny filters out find_tool and
+//     call_tool from tools/list because no policy permits them, leaving the
+//     client with zero tools.
+//   - With pass-through, the meta-tools appear in tools/list regardless of
+//     Cedar policies. Cedar enforcement for the underlying backend tools is
+//     handled inside the optimizer decorator (find_tool filters results,
+//     call_tool gates invocations).
+//
+// See: https://github.com/stacklok/toolhive/issues/4373
+func TestOptimizerPassThroughToolsInResponseFilter(t *testing.T) {
+	t.Parallel()
+
+	// Cedar policy: only "weather" is permitted. No policy mentions find_tool or call_tool.
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+		},
+		EntitiesJSON: "[]",
+	}, "")
+	require.NoError(t, err)
+
+	// Build a tools/list response as the optimizer would produce it:
+	// only find_tool and call_tool, no real backend tools.
+	toolsList := mcp.ListToolsResult{
+		Tools: []mcp.Tool{
+			{Name: "find_tool", Description: "Find a tool by description"},
+			{Name: "call_tool", Description: "Call a backend tool by name"},
+		},
+	}
+	result, err := json.Marshal(toolsList)
+	require.NoError(t, err)
+
+	response := &jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(1),
+		Result: json.RawMessage(result),
+	}
+	responseBytes, err := jsonrpc2.EncodeMessage(response)
+	require.NoError(t, err)
+
+	// Identity needed for Cedar evaluation.
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user1",
+		Claims:  map[string]interface{}{"sub": "user1"},
+	}}
+
+	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+	require.NoError(t, err)
+	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+	// Optimizer meta-tools that should pass through without policy checks.
+	passThroughTools := map[string]struct{}{
+		"find_tool": {},
+		"call_tool": {},
+	}
+
+	// decodeToolsListResponse is a helper that decodes a JSON-RPC response from
+	// the recorder and returns the tools list.
+	decodeToolsListResponse := func(t *testing.T, rr *httptest.ResponseRecorder) []mcp.Tool {
+		t.Helper()
+		msg, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+		require.NoError(t, err)
+		rpcResp, ok := msg.(*jsonrpc2.Response)
+		require.True(t, ok)
+		require.Nil(t, rpcResp.Error)
+		var result mcp.ListToolsResult
+		require.NoError(t, json.Unmarshal(rpcResp.Result, &result))
+		return result.Tools
+	}
+
+	t.Run("with pass-through both meta-tools appear in tools/list", func(t *testing.T) {
+		t.Parallel()
+
+		rr := httptest.NewRecorder()
+		fw := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, passThroughTools)
+		fw.ResponseWriter.Header().Set("Content-Type", "application/json")
+
+		_, err := fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		tools := decodeToolsListResponse(t, rr)
+
+		// Both meta-tools should survive despite no Cedar policy permitting them.
+		require.Len(t, tools, 2, "both optimizer meta-tools must pass through")
+		names := []string{tools[0].Name, tools[1].Name}
+		assert.Contains(t, names, "find_tool")
+		assert.Contains(t, names, "call_tool")
+	})
+
+	t.Run("without pass-through both meta-tools are filtered out", func(t *testing.T) {
+		t.Parallel()
+
+		rr := httptest.NewRecorder()
+		// nil passThroughTools = no pass-through, standard Cedar filtering.
+		fw := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, nil)
+		fw.ResponseWriter.Header().Set("Content-Type", "application/json")
+
+		_, err := fw.Write(responseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		tools := decodeToolsListResponse(t, rr)
+
+		// Without pass-through, Cedar default-deny removes both meta-tools.
+		assert.Empty(t, tools,
+			"without pass-through, meta-tools should be filtered out by Cedar default-deny")
+	})
+
+	t.Run("pass-through only affects listed meta-tools not real tools", func(t *testing.T) {
+		t.Parallel()
+
+		// Mix of optimizer meta-tools and real backend tools in tools/list.
+		// In practice this shouldn't happen (optimizer replaces all real tools),
+		// but this validates that pass-through is selective.
+		mixedToolsList := mcp.ListToolsResult{
+			Tools: []mcp.Tool{
+				{Name: "find_tool", Description: "Find a tool"},
+				{Name: "call_tool", Description: "Call a tool"},
+				{Name: "weather", Description: "Get weather"},        // permitted by policy
+				{Name: "admin_tool", Description: "Admin only tool"}, // NOT permitted
+			},
+		}
+		mixedResult, err := json.Marshal(mixedToolsList)
+		require.NoError(t, err)
+		mixedResponse := &jsonrpc2.Response{
+			ID:     jsonrpc2.Int64ID(2),
+			Result: json.RawMessage(mixedResult),
+		}
+		mixedResponseBytes, err := jsonrpc2.EncodeMessage(mixedResponse)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		fw := NewResponseFilteringWriter(rr, authorizer, req, "tools/list", nil, passThroughTools)
+		fw.ResponseWriter.Header().Set("Content-Type", "application/json")
+
+		_, err = fw.Write(mixedResponseBytes)
+		require.NoError(t, err)
+		require.NoError(t, fw.FlushAndFilter())
+
+		tools := decodeToolsListResponse(t, rr)
+
+		// find_tool + call_tool pass through, weather is permitted, admin_tool is denied.
+		require.Len(t, tools, 3)
+		names := make([]string, len(tools))
+		for i, tool := range tools {
+			names[i] = tool.Name
+		}
+		assert.Contains(t, names, "find_tool")
+		assert.Contains(t, names, "call_tool")
+		assert.Contains(t, names, "weather")
+		assert.NotContains(t, names, "admin_tool",
+			"admin_tool has no permit policy and is not a pass-through tool")
+	})
 }

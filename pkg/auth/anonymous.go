@@ -35,10 +35,12 @@ func AnonymousMiddleware(next http.Handler) http.Handler {
 
 		// Create Identity from claims
 		identity := &Identity{
-			Subject:   "anonymous",
-			Name:      "Anonymous User",
-			Email:     "anonymous@localhost",
-			Claims:    claims,
+			PrincipalInfo: PrincipalInfo{
+				Subject: "anonymous",
+				Name:    "Anonymous User",
+				Email:   "anonymous@localhost",
+				Claims:  claims,
+			},
 			Token:     "", // No token for anonymous auth
 			TokenType: "Bearer",
 		}

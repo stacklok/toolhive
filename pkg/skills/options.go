@@ -23,8 +23,8 @@ type InstallOptions struct {
 	Version string `json:"version,omitempty"`
 	// Scope is the installation scope.
 	Scope Scope `json:"scope,omitempty"`
-	// Client is the target client (e.g., "claude-code"). Empty means first skill-supporting client.
-	Client string `json:"client,omitempty"`
+	// Clients lists target clients (e.g., "claude-code"). Empty means first skill-supporting client.
+	Clients []string `json:"clients,omitempty"`
 	// Force allows overwriting unmanaged skill directories.
 	Force bool `json:"force,omitempty"`
 	// ProjectRoot is the project root path for project-scoped installs.
@@ -73,6 +73,36 @@ type SkillInfo struct {
 	InstalledSkill *InstalledSkill `json:"installed_skill,omitempty"`
 }
 
+// ContentOptions configures the behavior of the GetContent operation.
+type ContentOptions struct {
+	// Reference is an OCI reference (e.g. ghcr.io/org/skill:v1) or a local build tag.
+	Reference string `json:"reference"`
+}
+
+// SkillFileEntry represents a single file within a skill artifact.
+type SkillFileEntry struct {
+	// Path is the file path within the artifact.
+	Path string `json:"path"`
+	// Size is the uncompressed file size in bytes.
+	Size int `json:"size"`
+}
+
+// SkillContent contains the SKILL.md body and file listing extracted from an OCI artifact.
+type SkillContent struct {
+	// Name is the skill name from the OCI config labels.
+	Name string `json:"name"`
+	// Description is the skill description from the OCI config labels.
+	Description string `json:"description"`
+	// Version is the skill version from the OCI config labels.
+	Version string `json:"version,omitempty"`
+	// License is the SPDX license identifier from the OCI config labels.
+	License string `json:"license,omitempty"`
+	// Body is the raw SKILL.md markdown content.
+	Body string `json:"body"`
+	// Files is the list of all files in the artifact with their sizes.
+	Files []SkillFileEntry `json:"files"`
+}
+
 // ValidationResult contains the outcome of a Validate operation.
 type ValidationResult struct {
 	// Valid indicates whether the skill definition is valid.
@@ -101,4 +131,18 @@ type BuildResult struct {
 type PushOptions struct {
 	// Reference is the OCI reference to push.
 	Reference string `json:"reference"`
+}
+
+// LocalBuild represents a locally-built OCI skill artifact in the local store.
+type LocalBuild struct {
+	// Tag is the OCI tag or name used to reference the artifact.
+	Tag string `json:"tag"`
+	// Digest is the OCI digest of the artifact (sha256:...).
+	Digest string `json:"digest"`
+	// Name is the skill name extracted from the artifact metadata, if available.
+	Name string `json:"name,omitempty"`
+	// Description is the skill description extracted from the artifact metadata, if available.
+	Description string `json:"description,omitempty"`
+	// Version is the skill version extracted from the artifact metadata, if available.
+	Version string `json:"version,omitempty"`
 }

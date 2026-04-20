@@ -13,7 +13,7 @@ import (
 //go:generate mockgen -destination=mocks/mock_provider.go -package=mocks -source=interface.go Provider
 type Provider interface {
 	GetConfig() *Config
-	UpdateConfig(updateFn func(*Config)) error
+	UpdateConfig(updateFn func(*Config) error) error
 	LoadOrCreateConfig() (*Config, error)
 
 	// Registry operations
@@ -73,7 +73,7 @@ func (*DefaultProvider) GetConfig() *Config {
 }
 
 // UpdateConfig updates the config using the default path
-func (*DefaultProvider) UpdateConfig(updateFn func(*Config)) error {
+func (*DefaultProvider) UpdateConfig(updateFn func(*Config) error) error {
 	return UpdateConfigAtPath("", updateFn)
 }
 
@@ -244,7 +244,7 @@ func (p *PathProvider) GetConfig() *Config {
 }
 
 // UpdateConfig updates the config at the specific path
-func (p *PathProvider) UpdateConfig(updateFn func(*Config)) error {
+func (p *PathProvider) UpdateConfig(updateFn func(*Config) error) error {
 	return UpdateConfigAtPath(p.configPath, updateFn)
 }
 
@@ -409,7 +409,7 @@ func (*KubernetesProvider) GetConfig() *Config {
 }
 
 // UpdateConfig is a no-op for Kubernetes environments
-func (*KubernetesProvider) UpdateConfig(_ func(*Config)) error {
+func (*KubernetesProvider) UpdateConfig(_ func(*Config) error) error {
 	return nil
 }
 
@@ -559,8 +559,16 @@ func (*KubernetesProvider) SetRuntimeConfig(_ string, _ *templates.RuntimeConfig
 	return nil
 }
 
-// NewProvider creates the appropriate config provider based on the runtime environment
+// NewProvider creates the appropriate config provider based on the runtime environment.
+// If a custom ProviderFactory has been registered via RegisterProviderFactory and it
+// returns a non-nil Provider, that provider is used. Otherwise, the built-in selection
+// logic applies.
 func NewProvider() Provider {
+	if registeredFactory != nil {
+		if p := registeredFactory(); p != nil {
+			return p
+		}
+	}
 	if runtime.IsKubernetesRuntime() {
 		return NewKubernetesProvider()
 	}

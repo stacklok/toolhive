@@ -692,6 +692,26 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		}
 		Expect(k8sClient.Create(ctx, oidcClientSecret)).To(Succeed())
 
+		By("Creating MCPOIDCConfig for OIDC authentication")
+		oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "discovery-oidc-config",
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.MCPOIDCConfigSpec{
+				Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+				Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+					Issuer:                          fmt.Sprintf("http://mock-oidc-server.%s.svc.cluster.local", testNamespace),
+					ClientID:                        "vmcp-client",
+					ClientSecretRef:                 &mcpv1alpha1.SecretKeyRef{Name: oidcClientSecretName, Key: "client-secret"},
+					InsecureAllowHTTP:               true,
+					JWKSAllowPrivateIP:              true,
+					ProtectedResourceAllowPrivateIP: true,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, oidcConfig)).To(Succeed())
+
 		By("Creating MCPExternalAuthConfig for token exchange")
 		// Use the Kubernetes service URL for our mock auth server
 		tokenURL := fmt.Sprintf("http://mock-auth-server.%s.svc.cluster.local/token", testNamespace)
@@ -831,6 +851,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					// No TokenCache configured - tokens should be fetched on each request
@@ -842,20 +863,9 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				// vMCP will validate tokens and then exchange them for backend-specific tokens
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "oidc",
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: "inline",
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:   fmt.Sprintf("http://mock-oidc-server.%s.svc.cluster.local", testNamespace),
-							ClientID: "vmcp-client",
-							Audience: "vmcp-audience",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-								Name: oidcClientSecretName,
-								Key:  "client-secret",
-							},
-							InsecureAllowHTTP:               true,
-							JWKSAllowPrivateIP:              true,
-							ProtectedResourceAllowPrivateIP: true,
-						},
+					OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
+						Name:     "discovery-oidc-config",
+						Audience: "vmcp-audience",
 					},
 				},
 				// DISCOVERED MODE: vMCP will discover outgoing auth from backend MCPServers
@@ -1092,7 +1102,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			for _, backendName := range []string{backend1Name, backend2Name, backend3Name} {
 				backend := &mcpv1alpha1.MCPServer{}
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: backendName, Namespace: testNamespace}, backend)).To(Succeed())
-				Expect(backend.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseRunning))
+				Expect(backend.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseReady))
 			}
 
 			GinkgoWriter.Println("Discovered auth mode successfully aggregates backends with:")
@@ -1446,11 +1456,11 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: workingAuthConfigName,
 				},
@@ -1468,11 +1478,11 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				// Reference a non-existent auth config to trigger error
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: missingAuthConfigName,
@@ -1499,7 +1509,7 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 			if err != nil {
 				return fmt.Errorf("failed to get server %s: %w", backendValidAuthName, err)
 			}
-			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("%s not ready yet, phase: %s", backendValidAuthName, server.Status.Phase)
 			}
 			return nil
@@ -1512,7 +1522,7 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				Config: vmcpconfig.Config{Group: mcpGroupName},
+				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -1681,7 +1691,7 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 			}, validServer)
 		}, timeout, pollingInterval).Should(Succeed())
 		GinkgoWriter.Printf("Backend with valid auth config phase: %s\n", validServer.Status.Phase)
-		Expect(validServer.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseRunning),
+		Expect(validServer.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseReady),
 			"Backend with valid auth config should reach Running phase")
 
 		By("Checking MCPServer status for backend with missing auth config")

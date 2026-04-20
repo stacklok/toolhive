@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package v1
@@ -182,9 +182,10 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Update the secrets provider type and mark setup as completed
-	err := s.configProvider.UpdateConfig(func(c *config.Config) {
+	err := s.configProvider.UpdateConfig(func(c *config.Config) error {
 		c.Secrets.ProviderType = string(providerType)
 		c.Secrets.SetupCompleted = true
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -521,7 +522,7 @@ func (s *SecretsRoutes) getSecretsManager() (secrets.Provider, error) {
 		return nil, err
 	}
 
-	return secrets.CreateSecretProvider(providerType)
+	return secrets.CreateProvider(providerType, secrets.WithUserFacing())
 }
 
 // Request and response type definitions

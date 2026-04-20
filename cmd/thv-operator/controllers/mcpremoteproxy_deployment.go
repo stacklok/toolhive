@@ -30,16 +30,18 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	// Build deployment components using helper functions
 	args := r.buildContainerArgs()
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
+	r.addTelemetryCABundleVolumes(ctx, proxy, &volumes, &volumeMounts)
 	env := r.buildEnvVarsForProxy(ctx, proxy)
 
-	// Add embedded auth server volumes and env vars if configured (single call for efficiency)
-	if proxy.Spec.ExternalAuthConfigRef != nil {
-		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfig(
-			ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef,
+	// Add embedded auth server volumes and env vars. AuthServerRef takes precedence;
+	// externalAuthConfigRef is used as a fallback (legacy path).
+	configName := ctrlutil.EmbeddedAuthServerConfigName(proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef)
+	if configName != "" {
+		authServerVolumes, authServerMounts, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigByName(
+			ctx, r.Client, proxy.Namespace, configName,
 		)
 		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to generate embedded auth server configuration")
+			log.FromContext(ctx).Error(err, "Failed to generate auth server configuration")
 			return nil
 		}
 		volumes = append(volumes, authServerVolumes...)
@@ -142,17 +144,34 @@ func (*MCPRemoteProxyReconciler) buildVolumesForProxy(
 	return volumeMounts, volumes
 }
 
+// addTelemetryCABundleVolumes appends CA bundle volumes for the referenced MCPTelemetryConfig.
+// Must be called from deploymentForMCPRemoteProxy where the client is available.
+func (r *MCPRemoteProxyReconciler) addTelemetryCABundleVolumes(
+	ctx context.Context,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+	volumes *[]corev1.Volume,
+	volumeMounts *[]corev1.VolumeMount,
+) {
+	if proxy.Spec.TelemetryConfigRef == nil {
+		return
+	}
+	telCfg, err := ctrlutil.GetTelemetryConfigForMCPRemoteProxy(ctx, r.Client, proxy)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to fetch MCPTelemetryConfig for CA bundle volume")
+		return
+	}
+	if telCfg != nil {
+		caVolumes, caMounts := ctrlutil.AddTelemetryCABundleVolumes(telCfg)
+		*volumes = append(*volumes, caVolumes...)
+		*volumeMounts = append(*volumeMounts, caMounts...)
+	}
+}
+
 // buildEnvVarsForProxy builds environment variables for the proxy container
 func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
 ) []corev1.EnvVar {
-	env := []corev1.EnvVar{}
-
-	// Add OpenTelemetry environment variables
-	if proxy.Spec.Telemetry != nil && proxy.Spec.Telemetry.OpenTelemetry != nil {
-		otelEnvVars := ctrlutil.GenerateOpenTelemetryEnvVars(proxy.Spec.Telemetry, proxy.Name, proxy.Namespace)
-		env = append(env, otelEnvVars...)
-	}
+	env := r.buildOIDCClientSecretEnvVars(ctx, proxy)
 
 	// Add token exchange environment variables
 	// Note: Embedded auth server env vars are added separately in deploymentForMCPRemoteProxy
@@ -188,19 +207,6 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		}
 	}
 
-	// Add OIDC client secret environment variable if using inline config with secretRef
-	if proxy.Spec.OIDCConfig.Type == "inline" && proxy.Spec.OIDCConfig.Inline != nil {
-		oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
-			ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfig.Inline.ClientSecretRef,
-		)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to generate OIDC client secret environment variable")
-		} else if oidcClientSecretEnvVar != nil {
-			env = append(env, *oidcClientSecretEnvVar)
-		}
-	}
-
 	// Add header forward secret environment variables
 	if proxy.Spec.HeaderForward != nil && len(proxy.Spec.HeaderForward.AddHeadersFromSecret) > 0 {
 		// Set secrets provider to environment so runner uses environment variables for secrets.
@@ -226,6 +232,37 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 	}
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
+}
+
+// buildOIDCClientSecretEnvVars returns OIDC client secret env vars when the proxy
+// references an MCPOIDCConfig with an inline client secret. Returns nil otherwise.
+func (r *MCPRemoteProxyReconciler) buildOIDCClientSecretEnvVars(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) []corev1.EnvVar {
+	if proxy.Spec.OIDCConfigRef == nil {
+		return nil
+	}
+	oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to fetch MCPOIDCConfig for client secret")
+		return nil
+	}
+	if oidcCfg == nil ||
+		oidcCfg.Spec.Type != mcpv1alpha1.MCPOIDCConfigTypeInline ||
+		oidcCfg.Spec.Inline == nil {
+		return nil
+	}
+	envVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
+		ctx, r.Client, proxy.Namespace, oidcCfg.Spec.Inline.ClientSecretRef,
+	)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to generate OIDC client secret environment variable")
+		return nil
+	}
+	if envVar == nil {
+		return nil
+	}
+	return []corev1.EnvVar{*envVar}
 }
 
 // buildHeaderForwardSecretEnvVars builds environment variables for header forward secrets.

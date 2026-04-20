@@ -5,26 +5,33 @@
 package runconfig
 
 import (
-	"context"
-
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
-// AddTelemetryConfigOptions adds telemetry configuration options to the builder options
-func AddTelemetryConfigOptions(
-	ctx context.Context,
+// AddMCPTelemetryConfigRefOptions converts an MCPTelemetryConfig spec with per-server overrides
+// into a runner option. This is the preferred path for MCPServer.Spec.TelemetryConfigRef.
+// caBundleFilePath is the computed mount path for the CA bundle (empty if none configured).
+func AddMCPTelemetryConfigRefOptions(
 	options *[]runner.RunConfigBuilderOption,
-	telemetryConfig *mcpv1alpha1.TelemetryConfig,
-	mcpServerName string,
+	telemetrySpec *mcpv1alpha1.MCPTelemetryConfigSpec,
+	serviceNameOverride string,
+	defaultServiceName string,
+	caBundleFilePath string,
 ) {
-	if telemetryConfig == nil || options == nil {
+	if telemetrySpec == nil || options == nil {
 		return
 	}
 
-	config := spectoconfig.ConvertTelemetryConfig(ctx, telemetryConfig, mcpServerName)
+	config := spectoconfig.NormalizeMCPTelemetryConfig(telemetrySpec, serviceNameOverride, defaultServiceName)
+	if config == nil {
+		return
+	}
 
-	// Add telemetry config to options
+	if caBundleFilePath != "" {
+		config.CACertPath = caBundleFilePath
+	}
+
 	*options = append(*options, runner.WithTelemetryConfig(config))
 }

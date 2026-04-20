@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/stacklok/toolhive/pkg/container/templates"
 )
 
@@ -314,6 +317,120 @@ func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 	}
 }
 
+func TestMergeRuntimeConfig(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		transport    templates.TransportType
+		override     *templates.RuntimeConfig
+		wantImage    string
+		wantPackages []string
+	}{
+		{
+			name:      "only packages override, no image — image falls back to default",
+			transport: templates.TransportTypeNPX,
+			override: &templates.RuntimeConfig{
+				BuilderImage:       "",
+				AdditionalPackages: []string{"curl"},
+			},
+			wantImage:    "node:22-alpine",
+			wantPackages: []string{"git", "ca-certificates", "curl"},
+		},
+		{
+			name:      "both image and packages override — image from override, packages merged",
+			transport: templates.TransportTypeNPX,
+			override: &templates.RuntimeConfig{
+				BuilderImage:       "node:20-alpine",
+				AdditionalPackages: []string{"curl"},
+			},
+			wantImage:    "node:20-alpine",
+			wantPackages: []string{"git", "ca-certificates", "curl"},
+		},
+		{
+			name:      "duplicate package in override — not added twice",
+			transport: templates.TransportTypeNPX,
+			override: &templates.RuntimeConfig{
+				BuilderImage:       "",
+				AdditionalPackages: []string{"git"},
+			},
+			wantImage:    "node:22-alpine",
+			wantPackages: []string{"git", "ca-certificates"},
+		},
+		{
+			name:      "empty override — all defaults",
+			transport: templates.TransportTypeNPX,
+			override: &templates.RuntimeConfig{
+				BuilderImage:       "",
+				AdditionalPackages: nil,
+			},
+			wantImage:    "node:22-alpine",
+			wantPackages: []string{"git", "ca-certificates"},
+		},
+		{
+			name:      "go transport — defaults apply",
+			transport: templates.TransportTypeGO,
+			override: &templates.RuntimeConfig{
+				BuilderImage:       "",
+				AdditionalPackages: []string{"make"},
+			},
+			wantImage:    "golang:1.25-alpine",
+			wantPackages: []string{"ca-certificates", "git", "make"},
+		},
+		{
+			name:      "uvx transport — defaults apply",
+			transport: templates.TransportTypeUVX,
+			override: &templates.RuntimeConfig{
+				BuilderImage:       "",
+				AdditionalPackages: []string{"curl"},
+			},
+			wantImage:    "python:3.13-slim",
+			wantPackages: []string{"ca-certificates", "git", "curl"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := mergeRuntimeConfig(tt.transport, tt.override)
+
+			if got.BuilderImage != tt.wantImage {
+				t.Errorf("BuilderImage = %q, want %q", got.BuilderImage, tt.wantImage)
+			}
+			if len(got.AdditionalPackages) != len(tt.wantPackages) {
+				t.Errorf("AdditionalPackages = %v, want %v", got.AdditionalPackages, tt.wantPackages)
+			} else {
+				for i, pkg := range tt.wantPackages {
+					if got.AdditionalPackages[i] != pkg {
+						t.Errorf("AdditionalPackages[%d] = %q, want %q", i, got.AdditionalPackages[i], pkg)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestLoadRuntimeConfigMergesOverrideWithDefaults(t *testing.T) {
+	t.Parallel()
+
+	// Simulate the bug: --runtime-add-package without --runtime-image
+	override := &templates.RuntimeConfig{
+		BuilderImage:       "",
+		AdditionalPackages: []string{"curl"},
+	}
+
+	got, err := loadRuntimeConfig(templates.TransportTypeNPX, override)
+	if err != nil {
+		t.Fatalf("loadRuntimeConfig() error = %v", err)
+	}
+
+	if got.BuilderImage == "" {
+		t.Error("loadRuntimeConfig() returned empty BuilderImage — should fall back to default")
+	}
+	if got.BuilderImage != "node:22-alpine" {
+		t.Errorf("BuilderImage = %q, want %q", got.BuilderImage, "node:22-alpine")
+	}
+}
+
 func TestCreateTemplateData(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -441,4 +558,54 @@ func TestCreateTemplateData(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLoadRuntimeConfig_UsesBaseConfigWhenOverrideNil(t *testing.T) {
+	t.Parallel()
+
+	base, err := loadRuntimeConfig(templates.TransportTypeGO, nil)
+	require.NoError(t, err)
+	require.NotNil(t, base)
+	assert.NotEmpty(t, base.BuilderImage)
+}
+
+func TestLoadRuntimeConfig_MergesBaseConfigWithOverride(t *testing.T) {
+	t.Parallel()
+
+	base, err := loadRuntimeConfig(templates.TransportTypeGO, nil)
+	require.NoError(t, err)
+	require.NotNil(t, base)
+
+	override := &templates.RuntimeConfig{
+		BuilderImage:       "golang:1.24-alpine",
+		AdditionalPackages: []string{"curl"},
+	}
+	got, err := loadRuntimeConfig(templates.TransportTypeGO, override)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, override.BuilderImage, got.BuilderImage)
+	expectedPackages := append([]string{}, base.AdditionalPackages...)
+	expectedPackages = append(expectedPackages, "curl")
+	assert.Equal(t, expectedPackages, got.AdditionalPackages)
+
+	// Ensure the returned config is detached from input slices.
+	override.AdditionalPackages[0] = "git"
+	assert.Equal(t, expectedPackages, got.AdditionalPackages)
+}
+
+func TestLoadRuntimeConfig_UsesOverrideBuilderImage(t *testing.T) {
+	t.Parallel()
+
+	base, err := loadRuntimeConfig(templates.TransportTypeGO, nil)
+	require.NoError(t, err)
+	require.NotNil(t, base)
+
+	customImage := "golang:1.24-alpine"
+	got, err := loadRuntimeConfig(templates.TransportTypeGO, &templates.RuntimeConfig{
+		BuilderImage: customImage,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, customImage, got.BuilderImage)
+	assert.Equal(t, base.AdditionalPackages, got.AdditionalPackages)
 }

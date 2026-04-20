@@ -25,6 +25,12 @@ const (
 	FindToolName = "find_tool"
 	// CallToolName is the tool name for routing a call to any backend tool.
 	CallToolName = "call_tool"
+	// CallToolArgToolName is the JSON argument key for the backend tool name in a call_tool request.
+	// It must match the json tag on optimizer.CallToolInput.ToolName.
+	CallToolArgToolName = "tool_name"
+	// CallToolArgParameters is the JSON argument key for the backend tool parameters in a call_tool request.
+	// It must match the json tag on optimizer.CallToolInput.Parameters.
+	CallToolArgParameters = "parameters"
 )
 
 // Pre-generated schemas for find_tool and call_tool, computed at init time.
@@ -124,6 +130,7 @@ func (d *optimizerDecorator) handleFindTool(ctx context.Context, arguments map[s
 	}
 
 	var structured map[string]any
+	// Unmarshal cannot fail: jsonBytes was just produced by json.Marshal above.
 	_ = json.Unmarshal(jsonBytes, &structured)
 
 	return &vmcp.ToolCallResult{

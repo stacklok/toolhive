@@ -27,7 +27,11 @@ var LoadConfig = authorizers.LoadConfig
 var NewConfig = authorizers.NewConfig
 
 // CreateMiddlewareFromConfig creates an HTTP middleware from the configuration.
-func CreateMiddlewareFromConfig(c *Config, serverName string) (types.MiddlewareFunction, error) {
+// The passThroughTools parameter is optional (pass nil for none). Tool names in
+// this set bypass the response filter's policy check in tools/list responses.
+func CreateMiddlewareFromConfig(
+	c *Config, serverName string, passThroughTools map[string]struct{},
+) (types.MiddlewareFunction, error) {
 	// Get the factory for this config type
 	factory := authorizers.GetFactory(string(c.Type))
 	if factory == nil {
@@ -41,17 +45,18 @@ func CreateMiddlewareFromConfig(c *Config, serverName string) (types.MiddlewareF
 	}
 
 	// Return the middleware
-	return func(handler http.Handler) http.Handler { return Middleware(authz, handler) }, nil
+	return func(handler http.Handler) http.Handler { return Middleware(authz, handler, passThroughTools) }, nil
 }
 
 // GetMiddlewareFromFile loads the authorization configuration from a file and creates an HTTP middleware.
-func GetMiddlewareFromFile(serverName, path string) (func(http.Handler) http.Handler, error) {
-	// Load the configuration
+// The passThroughTools parameter is optional (pass nil for none). Tool names in
+// this set bypass the response filter's policy check in tools/list responses.
+func GetMiddlewareFromFile(serverName, path string, passThroughTools map[string]struct{}) (types.MiddlewareFunction, error) {
 	config, err := LoadConfig(path)
 	if err != nil {
 		return nil, err
 	}
 
 	// Create the middleware
-	return CreateMiddlewareFromConfig(config, serverName)
+	return CreateMiddlewareFromConfig(config, serverName, passThroughTools)
 }

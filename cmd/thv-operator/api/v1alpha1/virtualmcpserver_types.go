@@ -14,6 +14,8 @@ import (
 )
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type VirtualMCPServerSpec struct {
 	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
 	// Must be explicitly set - use "anonymous" type when no authentication is required.
@@ -59,13 +61,21 @@ type VirtualMCPServerSpec struct {
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
 
-	// Config is the Virtual MCP server configuration
-	// The only field currently required within config is `config.groupRef`.
-	// GroupRef references an existing MCPGroup that defines backend workloads.
+	// GroupRef references the MCPGroup that defines backend workloads.
 	// The referenced MCPGroup must exist in the same namespace.
-	// The telemetry and audit config from here are also supported, but not required.
+	// +kubebuilder:validation:Required
+	GroupRef *MCPGroupRef `json:"groupRef"`
+
+	// Config is the Virtual MCP server configuration.
+	// The audit config from here is also supported, but not required.
 	// +optional
 	Config config.Config `json:"config,omitempty"`
+
+	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
+	// The referenced MCPTelemetryConfig must exist in the same namespace as this VirtualMCPServer.
+	// Cross-namespace references are not supported for security and isolation reasons.
+	// +optional
+	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
 
 	// EmbeddingServerRef references an existing EmbeddingServer resource by name.
 	// When the optimizer is enabled, this field is required to point to a ready EmbeddingServer
@@ -73,6 +83,30 @@ type VirtualMCPServerSpec struct {
 	// The referenced EmbeddingServer must exist in the same namespace and be ready.
 	// +optional
 	EmbeddingServerRef *EmbeddingServerRef `json:"embeddingServerRef,omitempty"`
+
+	// AuthServerConfig configures an embedded OAuth authorization server.
+	// When set, the vMCP server acts as an OIDC issuer, drives users through
+	// upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the
+	// IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfigRef
+	// so that tokens it issues are accepted by the vMCP's incoming auth middleware.
+	// When nil, IncomingAuth uses an external IDP and behavior is unchanged.
+	// +optional
+	AuthServerConfig *EmbeddedAuthServerConfig `json:"authServerConfig,omitempty"`
+
+	// Replicas is the desired number of vMCP pod replicas.
+	// VirtualMCPServer creates a single Deployment for the vMCP aggregator process,
+	// so there is only one replicas field (unlike MCPServer which has separate
+	// Replicas and BackendReplicas for its two Deployments).
+	// When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+	// management to an HPA or other external controller.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// SessionStorage configures session storage for stateful horizontal scaling.
+	// When nil, no session storage is configured.
+	// +optional
+	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty"`
 }
 
 // EmbeddingServerRef references an existing EmbeddingServer resource by name.
@@ -85,9 +119,9 @@ type EmbeddingServerRef struct {
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
 //
-// +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? has(self.oidcConfig) : true",message="spec.incomingAuth.oidcConfig is required when type is oidc"
+// +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? has(self.oidcConfigRef) : true",message="spec.incomingAuth.oidcConfigRef is required when type is oidc"
 //
-//nolint:lll // CEL validation rule exceeds line length limit
+//nolint:lll // CEL validation rules exceed line length limit
 type IncomingAuthConfig struct {
 	// Type defines the authentication type: anonymous or oidc
 	// When no authentication is required, explicitly set this to "anonymous"
@@ -95,10 +129,12 @@ type IncomingAuthConfig struct {
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
-	// OIDCConfig defines OIDC authentication configuration
-	// Reuses MCPServer OIDC patterns
+	// OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
+	// The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.
+	// Per-server overrides (audience, scopes) are specified here; shared provider config
+	// lives in the MCPOIDCConfig resource.
 	// +optional
-	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
+	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
 	// AuthzConfig defines authorization policy configuration
 	// Reuses MCPServer authz patterns
@@ -129,12 +165,12 @@ type OutgoingAuthConfig struct {
 // BackendAuthConfig defines authentication configuration for a backend MCPServer
 type BackendAuthConfig struct {
 	// Type defines the authentication type
-	// +kubebuilder:validation:Enum=discovered;external_auth_config_ref
+	// +kubebuilder:validation:Enum=discovered;externalAuthConfigRef
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
 	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource
-	// Only used when Type is "external_auth_config_ref"
+	// Only used when Type is "externalAuthConfigRef"
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
 }
@@ -145,10 +181,11 @@ type BackendAuthConfig struct {
 // These are the user-facing values stored in VirtualMCPServer.Status.DiscoveredBackends.
 // Use BackendHealthStatus.ToCRDStatus() to convert from internal health status.
 const (
-	BackendStatusReady       = "ready"
-	BackendStatusUnavailable = "unavailable"
-	BackendStatusDegraded    = "degraded"
-	BackendStatusUnknown     = "unknown"
+	BackendStatusReady           = "ready"
+	BackendStatusUnavailable     = "unavailable"
+	BackendStatusDegraded        = "degraded"
+	BackendStatusUnknown         = "unknown"
+	BackendStatusUnauthenticated = "unauthenticated"
 )
 
 // DiscoveredBackend is an alias to the canonical definition in pkg/vmcp/types.go
@@ -158,6 +195,8 @@ type DiscoveredBackend = vmcptypes.DiscoveredBackend
 // VirtualMCPServerStatus defines the observed state of VirtualMCPServer
 type VirtualMCPServerStatus struct {
 	// Conditions represent the latest available observations of the VirtualMCPServer's state
+	// +listType=map
+	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
@@ -179,13 +218,25 @@ type VirtualMCPServerStatus struct {
 	URL string `json:"url,omitempty"`
 
 	// DiscoveredBackends lists discovered backend configurations from the MCPGroup
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
 
-	// BackendCount is the number of healthy/ready backends
-	// (excludes unavailable, degraded, and unknown backends)
+	// BackendCount is the number of routable backends (ready + unauthenticated).
+	// Excludes unavailable, degraded, and unknown backends.
 	// +optional
-	BackendCount int `json:"backendCount,omitempty"`
+	BackendCount int32 `json:"backendCount,omitempty"`
+
+	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection.
+	// Only populated when IncomingAuth.OIDCConfigRef is set.
+	// +optional
+	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
+
+	// TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection.
+	// Only populated when TelemetryConfigRef is set.
+	// +optional
+	TelemetryConfigHash string `json:"telemetryConfigHash,omitempty"`
 }
 
 // VirtualMCPServerPhase represents the lifecycle phase of a VirtualMCPServer
@@ -225,6 +276,12 @@ const (
 
 	// ConditionTypeEmbeddingServerReady indicates whether the EmbeddingServer is ready
 	ConditionTypeEmbeddingServerReady = "EmbeddingServerReady"
+
+	// ConditionTypeAuthServerConfigValidated indicates whether the AuthServerConfig has been validated
+	ConditionTypeAuthServerConfigValidated = "AuthServerConfigValidated"
+
+	// ConditionTypeVirtualMCPServerTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
+	ConditionTypeVirtualMCPServerTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
 )
 
 // Condition reasons for VirtualMCPServer
@@ -282,6 +339,24 @@ const (
 
 	// ConditionReasonEmbeddingServerNotReady indicates the referenced EmbeddingServer is not ready
 	ConditionReasonEmbeddingServerNotReady = "EmbeddingServerNotReady"
+
+	// ConditionReasonAuthServerConfigValid indicates the AuthServerConfig is valid
+	ConditionReasonAuthServerConfigValid = "AuthServerConfigValid"
+
+	// ConditionReasonAuthServerConfigInvalid indicates the AuthServerConfig is invalid
+	ConditionReasonAuthServerConfigInvalid = "AuthServerConfigInvalid"
+
+	// ConditionReasonVirtualMCPServerTelemetryConfigRefValid indicates the referenced MCPTelemetryConfig is valid
+	ConditionReasonVirtualMCPServerTelemetryConfigRefValid = "TelemetryConfigRefValid"
+
+	// ConditionReasonVirtualMCPServerTelemetryConfigRefNotFound indicates the referenced MCPTelemetryConfig was not found
+	ConditionReasonVirtualMCPServerTelemetryConfigRefNotFound = "TelemetryConfigRefNotFound"
+
+	// ConditionReasonVirtualMCPServerTelemetryConfigRefInvalid indicates the referenced MCPTelemetryConfig is not valid
+	ConditionReasonVirtualMCPServerTelemetryConfigRefInvalid = "TelemetryConfigRefInvalid"
+
+	// ConditionReasonVirtualMCPServerTelemetryConfigRefFetchError indicates a transient error occurred fetching the config
+	ConditionReasonVirtualMCPServerTelemetryConfigRefFetchError = "TelemetryConfigRefFetchError"
 )
 
 // Backend authentication types
@@ -290,7 +365,7 @@ const (
 	BackendAuthTypeDiscovered = "discovered"
 
 	// BackendAuthTypeExternalAuthConfigRef references an MCPExternalAuthConfig resource
-	BackendAuthTypeExternalAuthConfigRef = "external_auth_config_ref"
+	BackendAuthTypeExternalAuthConfigRef = "externalAuthConfigRef"
 )
 
 // Workflow step types
@@ -316,7 +391,7 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:shortName=vmcp;virtualmcp
+//+kubebuilder:resource:shortName=vmcp;virtualmcp,categories=toolhive
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="The phase of the VirtualMCPServer"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url",description="Virtual MCP server URL"
 //+kubebuilder:printcolumn:name="Backends",type="integer",JSONPath=".status.backendCount",description="Discovered backends count"
@@ -342,30 +417,24 @@ type VirtualMCPServerList struct {
 	Items           []VirtualMCPServer `json:"items"`
 }
 
-// GetOIDCConfig returns the OIDC configuration reference for incoming auth.
-// This implements the OIDCConfigurable interface to allow the OIDC resolver
-// to resolve Kubernetes and ConfigMap OIDC configurations.
-func (v *VirtualMCPServer) GetOIDCConfig() *OIDCConfigRef {
-	if v.Spec.IncomingAuth == nil {
-		return nil
-	}
-	return v.Spec.IncomingAuth.OIDCConfig
-}
-
 // GetProxyPort returns the proxy port for the VirtualMCPServer.
-// This implements the OIDCConfigurable interface.
 // vMCP uses port 4483 by default.
 func (*VirtualMCPServer) GetProxyPort() int32 {
 	return 4483
 }
 
+// ResolveGroupName returns the group name from spec.groupRef.
+func (r *VirtualMCPServer) ResolveGroupName() string {
+	return r.Spec.GroupRef.GetName()
+}
+
 // Validate performs validation for VirtualMCPServer
 // This method is called by the controller during reconciliation
 func (r *VirtualMCPServer) Validate() error {
-	// Validate Group is set (required field)
+	// Validate Group is set — spec.groupRef.name is required
 	// Note: CEL cannot validate embedded types from other packages
-	if r.Spec.Config.Group == "" {
-		return fmt.Errorf("spec.config.groupRef is required")
+	if r.Spec.GroupRef.GetName() == "" {
+		return fmt.Errorf("spec.groupRef.name is required")
 	}
 
 	// Note: IncomingAuth validation is handled by kubebuilder markers and CEL rules
@@ -392,6 +461,9 @@ func (r *VirtualMCPServer) Validate() error {
 			return err
 		}
 	}
+
+	// Note: AuthServerConfig validation is handled by the reconciler (validateAuthServerConfig)
+	// so it can set the AuthServerConfigValidated condition on failure.
 
 	// Validate EmbeddingServer / EmbeddingServerRef
 	return r.validateEmbeddingServer()
@@ -444,7 +516,7 @@ func (*VirtualMCPServer) validateBackendAuth(backendName string, auth BackendAut
 	case BackendAuthTypeExternalAuthConfigRef:
 		if auth.ExternalAuthConfigRef == nil {
 			return fmt.Errorf(
-				"spec.outgoingAuth.backends[%s].externalAuthConfigRef is required when type is external_auth_config_ref",
+				"spec.outgoingAuth.backends[%s].externalAuthConfigRef is required when type is externalAuthConfigRef",
 				backendName)
 		}
 		if auth.ExternalAuthConfigRef.Name == "" {
@@ -456,7 +528,7 @@ func (*VirtualMCPServer) validateBackendAuth(backendName string, auth BackendAut
 
 	default:
 		return fmt.Errorf(
-			"spec.outgoingAuth.backends[%s].type must be one of: discovered, external_auth_config_ref",
+			"spec.outgoingAuth.backends[%s].type must be one of: discovered, externalAuthConfigRef",
 			backendName)
 	}
 

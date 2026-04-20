@@ -324,27 +324,21 @@ func TestEnsureRegistryURL(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name:      "no config and no opts - error",
-			cfg:       &config.Config{},
-			opts:      LoginOptions{},
-			setupMock: func(_ *configmocks.MockProvider) {},
-			wantErr:   true,
-			errMsg:    "no registry URL configured",
-		},
-		{
-			name: "opts supply JSON URL - calls SetRegistryURL",
+			name: "opts supply JSON URL - clears auth then calls SetRegistryURL",
 			cfg:  &config.Config{},
 			opts: LoginOptions{RegistryURL: "https://registry.example.com/mcp.json"},
 			setupMock: func(m *configmocks.MockProvider) {
+				m.EXPECT().UpdateConfig(gomock.Any()).Return(nil)
 				m.EXPECT().SetRegistryURL(gomock.Any(), false).Return(nil)
 			},
 			wantErr: false,
 		},
 		{
-			name: "opts supply file path - calls SetRegistryFile",
+			name: "opts supply file path - clears auth then calls SetRegistryFile",
 			cfg:  &config.Config{},
 			opts: LoginOptions{RegistryURL: "file:///tmp/registry.json"},
 			setupMock: func(m *configmocks.MockProvider) {
+				m.EXPECT().UpdateConfig(gomock.Any()).Return(nil)
 				m.EXPECT().SetRegistryFile("/tmp/registry.json").Return(nil)
 			},
 			wantErr: false,
@@ -354,6 +348,7 @@ func TestEnsureRegistryURL(t *testing.T) {
 			cfg:  &config.Config{},
 			opts: LoginOptions{RegistryURL: "https://registry.example.com/mcp.json"},
 			setupMock: func(m *configmocks.MockProvider) {
+				m.EXPECT().UpdateConfig(gomock.Any()).Return(nil)
 				m.EXPECT().SetRegistryURL(gomock.Any(), false).Return(errors.New("disk full"))
 			},
 			wantErr: true,
@@ -364,10 +359,21 @@ func TestEnsureRegistryURL(t *testing.T) {
 			cfg:  &config.Config{},
 			opts: LoginOptions{RegistryURL: "file:///tmp/registry.json"},
 			setupMock: func(m *configmocks.MockProvider) {
+				m.EXPECT().UpdateConfig(gomock.Any()).Return(nil)
 				m.EXPECT().SetRegistryFile("/tmp/registry.json").Return(errors.New("permission denied"))
 			},
 			wantErr: true,
 			errMsg:  "saving registry file",
+		},
+		{
+			name: "UpdateConfig error when clearing auth",
+			cfg:  &config.Config{},
+			opts: LoginOptions{RegistryURL: "https://registry.example.com/mcp.json"},
+			setupMock: func(m *configmocks.MockProvider) {
+				m.EXPECT().UpdateConfig(gomock.Any()).Return(errors.New("disk full"))
+			},
+			wantErr: true,
+			errMsg:  "clearing stale auth config",
 		},
 	}
 
@@ -379,7 +385,7 @@ func TestEnsureRegistryURL(t *testing.T) {
 			mockCfg := configmocks.NewMockProvider(ctrl)
 			tt.setupMock(mockCfg)
 
-			err := ensureRegistryURL(tt.cfg, mockCfg, tt.opts)
+			err := ensureRegistryURL(mockCfg, tt.opts)
 			if !tt.wantErr {
 				require.NoError(t, err)
 				return
@@ -447,9 +453,9 @@ func TestEnsureOAuthConfig(t *testing.T) {
 			cfg:     &config.Config{},
 			useOIDC: true,
 			setupMock: func(m *configmocks.MockProvider) {
-				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config)) error {
+				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config) error) error {
 					c := &config.Config{}
-					fn(c)
+					require.NoError(t, fn(c))
 					// Verify the update function sets expected values.
 					require.Equal(t, config.RegistryAuthTypeOAuth, c.RegistryAuth.Type)
 					require.NotNil(t, c.RegistryAuth.OAuth)
@@ -467,9 +473,9 @@ func TestEnsureOAuthConfig(t *testing.T) {
 			useOIDC:        true,
 			overrideScopes: []string{"openid", "email"},
 			setupMock: func(m *configmocks.MockProvider) {
-				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config)) error {
+				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config) error) error {
 					c := &config.Config{}
-					fn(c)
+					require.NoError(t, fn(c))
 					require.Equal(t, []string{"openid", "email"}, c.RegistryAuth.OAuth.Scopes)
 					return nil
 				})
@@ -482,9 +488,9 @@ func TestEnsureOAuthConfig(t *testing.T) {
 			useOIDC:          true,
 			overrideAudience: "api://my-api",
 			setupMock: func(m *configmocks.MockProvider) {
-				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config)) error {
+				m.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config) error) error {
 					c := &config.Config{}
-					fn(c)
+					require.NoError(t, fn(c))
 					require.Equal(t, "api://my-api", c.RegistryAuth.OAuth.Audience)
 					return nil
 				})
@@ -647,8 +653,8 @@ func TestLogout_DeletesCachedToken(t *testing.T) {
 	derivedKey := DeriveSecretKey(cfg.RegistryApiUrl, cfg.RegistryAuth.OAuth.Issuer)
 	mockSecrets.EXPECT().DeleteSecret(gomock.Any(), derivedKey).Return(nil)
 
-	mockCfg.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config)) error {
-		fn(cfg)
+	mockCfg.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config) error) error {
+		require.NoError(t, fn(cfg))
 		require.Empty(t, cfg.RegistryAuth.OAuth.CachedRefreshTokenRef)
 		require.True(t, cfg.RegistryAuth.OAuth.CachedTokenExpiry.IsZero())
 		return nil

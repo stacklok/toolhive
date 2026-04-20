@@ -15,18 +15,20 @@ RUN cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt && \
 
 # Install build dependencies and uv package manager
 {{if isDebian .RuntimeConfig.BuilderImage}}
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}} \
+RUN apt-get update \
+    {{if .RuntimeConfig.AdditionalPackages}}&& apt-get install -y --no-install-recommends {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}}{{end}} \
     && pip install --no-cache-dir uv \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 {{else if isAlpine .RuntimeConfig.BuilderImage}}
-RUN apk add --no-cache {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}} \
-    && pip install --no-cache-dir uv
+{{if .RuntimeConfig.AdditionalPackages}}RUN apk add --no-cache {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}}&& \
+    pip install --no-cache-dir uv
+{{else}}RUN pip install --no-cache-dir uv
+{{end}}
 {{else}}
 # Default to Debian-based package manager
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}} \
+RUN apt-get update \
+    {{if .RuntimeConfig.AdditionalPackages}}&& apt-get install -y --no-install-recommends {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}}{{end}} \
     && pip install --no-cache-dir uv \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -90,18 +92,21 @@ RUN cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt && \
     rm /tmp/custom-ca.crt
 {{end}}
 
-# Install only runtime dependencies
+# Install runtime dependencies
 {{if isDebian .RuntimeConfig.BuilderImage}}
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    {{if .RuntimeConfig.AdditionalPackages}}&& apt-get install -y --no-install-recommends {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}}{{end}} \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 {{else if isAlpine .RuntimeConfig.BuilderImage}}
-RUN apk add --no-cache ca-certificates
+{{if .RuntimeConfig.AdditionalPackages}}RUN apk add --no-cache {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}}
+{{end}}
 {{else}}
 # Default to Debian-based package manager
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    {{if .RuntimeConfig.AdditionalPackages}}&& apt-get install -y --no-install-recommends {{range .RuntimeConfig.AdditionalPackages}}{{.}} {{end}}{{end}} \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 {{end}}
 
 # Set working directory

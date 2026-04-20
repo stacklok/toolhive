@@ -224,8 +224,8 @@ spec:
 
           PHASE=$(kubectl get virtualmcpserver test-vmcp-controller -n toolhive-system -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
 
-          if [ "$PHASE" = "Running" ]; then
-            echo "✓ VirtualMCPServer phase is Running"
+          if [ "$PHASE" = "Ready" ]; then
+            echo "✓ VirtualMCPServer phase is Ready"
           elif [ "$PHASE" = "Pending" ]; then
             echo "⚠ VirtualMCPServer phase is Pending (may need more time)"
             # This is acceptable in test environment
@@ -245,6 +245,10 @@ spec:
     - assert:
         file: oidc-client-secret.yaml
 
+    - apply:
+        file: vmcp-oidc-config.yaml
+    - assert:
+        file: vmcp-oidc-config.yaml
     - apply:
         file: vmcp-with-oidc.yaml
     - assert:

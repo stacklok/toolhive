@@ -26,7 +26,7 @@ type IdentityContextKey struct{}
 //
 // Example:
 //
-//	identity := &Identity{Subject: "user123", Name: "Alice"}
+//	identity := &Identity{PrincipalInfo: PrincipalInfo{Subject: "user123", Name: "Alice"}}
 //	ctx = WithIdentity(ctx, identity)
 func WithIdentity(ctx context.Context, identity *Identity) context.Context {
 	if identity == nil {
@@ -67,9 +67,17 @@ func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
 		return nil, errors.New("missing or invalid 'sub' claim (required by OIDC Core 1.0 § 5.1)")
 	}
 
+	// Filter internal claims that should not be externalized (e.g., in
+	// webhook payloads or audit logs). The tsid is a session identifier
+	// used to look up upstream tokens in storage; exposing it widens the
+	// attack surface if a webhook receiver is compromised.
+	filteredClaims := filterInternalClaims(claims)
+
 	identity := &Identity{
-		Subject:   sub,
-		Claims:    claims,
+		PrincipalInfo: PrincipalInfo{
+			Subject: sub,
+			Claims:  filteredClaims,
+		},
 		Token:     token,
 		TokenType: "Bearer",
 	}
@@ -83,4 +91,21 @@ func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
 	}
 
 	return identity, nil
+}
+
+// internalClaims are JWT claim keys used internally by the auth server
+// that must not be externalized in webhook payloads, audit logs, etc.
+// "tsid" is the token session ID used to look up upstream tokens in storage.
+var internalClaims = []string{"tsid"}
+
+// filterInternalClaims returns a copy of claims with internal keys removed.
+func filterInternalClaims(claims jwt.MapClaims) jwt.MapClaims {
+	filtered := make(jwt.MapClaims, len(claims))
+	for k, v := range claims {
+		filtered[k] = v
+	}
+	for _, key := range internalClaims {
+		delete(filtered, key)
+	}
+	return filtered
 }

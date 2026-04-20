@@ -184,7 +184,8 @@ metadata:
   name: github
   namespace: default
 spec:
-  groupRef: my-services  # Add this line
+  groupRef:
+    name: my-services  # Add this field
   image: ghcr.io/example/github-mcp
   transport: streamable-http
   proxyPort: 8080
@@ -205,12 +206,18 @@ metadata:
   name: my-vmcp
   namespace: default
 spec:
-  config:
-    groupRef: my-services
+  groupRef:
+    name: my-services
+  config: {}
 
   # Configure authentication (adjust from CLI if using OIDC)
+  # For OIDC, use oidcConfigRef with a shared MCPOIDCConfig resource:
+  #   type: oidc
+  #   oidcConfigRef:
+  #     name: my-oidc-config
+  #     audience: my-vmcp
   incomingAuth:
-    type: anonymous  # Or configure OIDC
+    type: anonymous  # Or configure OIDC (see above)
     authzConfig:
       type: inline
       inline:
@@ -329,10 +336,13 @@ thv run github \
 
 **Kubernetes**:
 
-Export and adjust URLs for cluster context. See example configurations:
+The preferred approach is to create a shared `MCPOIDCConfig` resource and reference it via `oidcConfigRef`. This lets you define OIDC provider settings once and reuse them across multiple servers.
 
-- [mcpserver_with_inline_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_inline_oidc.yaml)
-- [mcpserver_with_kubernetes_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_kubernetes_oidc.yaml)
+See example configurations:
+
+- [mcpserver_with_oidcconfig_ref.yaml](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml) — Shared MCPOIDCConfig (preferred)
+- [mcpserver_with_inline_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_inline_oidc.yaml) — Inline OIDC (deprecated)
+- [mcpserver_with_kubernetes_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_kubernetes_oidc.yaml) — Kubernetes SA OIDC (deprecated inline variant)
 
 #### Scenario 3: Grouped Servers (CLI) → VirtualMCPServer (K8s)
 
@@ -357,16 +367,16 @@ kind: MCPGroup
 metadata:
   name: services
 ---
-# Include backend1.yaml content with groupRef: services
-# Include backend2.yaml content with groupRef: services
+# Include backend1.yaml content with groupRef: {name: services}
+# Include backend2.yaml content with groupRef: {name: services}
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: VirtualMCPServer
 metadata:
   name: services-vmcp
 spec:
-  config:
-    groupRef: services
+  groupRef:
+    name: services
   incomingAuth:
     type: anonymous
   outgoingAuth:
@@ -399,7 +409,7 @@ kubectl apply -f resources.yaml
 #### Issue: Backend servers not discovered by VirtualMCPServer
 
 **Solution**:
-- Verify all MCPServers have `groupRef` set
+- Verify all MCPServers have `groupRef.name` set
 - Ensure all resources are in the same namespace
 - Check MCPServer status: `kubectl get mcpserver`
 - Review VirtualMCPServer conditions: `kubectl describe virtualmcpserver <name>`
@@ -421,6 +431,40 @@ kubectl apply -f resources.yaml
 5. **Monitor Closely**: Watch logs and metrics after migration
 6. **Plan Rollback**: Keep CLI configurations as backup until migration is stable
 7. **Use GitOps**: Store Kubernetes manifests in Git for versioning and rollback
+
+### Using MCPServerEntry for Remote Backends
+
+For remote MCP servers that don't need a dedicated proxy, use `MCPServerEntry` instead of `MCPRemoteProxy`. This avoids deploying unnecessary proxy pods.
+
+**Before (MCPRemoteProxy — deploys a proxy pod):**
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRemoteProxy
+metadata:
+  name: context7
+spec:
+  remoteUrl: https://mcp.context7.com/mcp
+  transport: streamable-http
+  groupRef:
+    name: engineering-team
+  # Requires OIDC config, deploys proxy pod
+```
+
+**After (MCPServerEntry — zero infrastructure):**
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServerEntry
+metadata:
+  name: context7
+spec:
+  remoteUrl: https://mcp.context7.com/mcp
+  transport: streamable-http
+  groupRef:
+    name: engineering-team
+  # No pods deployed, VirtualMCPServer connects directly
+```
+
+MCPServerEntry supports the same auth mechanisms as other backends via `externalAuthConfigRef`, and can use `caBundleRef` for internal CA certificates. See the [examples](../../examples/operator/mcp-server-entries/) for complete configurations.
 
 ## Troubleshooting
 
@@ -451,19 +495,20 @@ kubectl get virtualmcpserver my-vmcp -o yaml | grep -A 5 conditions
 kubectl get mcpgroup <group-name>
 ```
 
-Create if missing or fix `spec.config.groupRef` in VirtualMCPServer spec.
+Create if missing or fix `spec.groupRef.name` in VirtualMCPServer spec.
 
 **2. No Backend MCPServers in Group**
 
 ```bash
-kubectl get mcpserver -o custom-columns=NAME:.metadata.name,GROUP:.spec.groupRef
+kubectl get mcpserver -o custom-columns=NAME:.metadata.name,GROUP:.spec.groupRef.name
 ```
 
 **Solution**: Create MCPServers and link them to the group:
 
 ```yaml
 spec:
-  groupRef: <group-name>
+  groupRef:
+    name: <group-name>
 ```
 
 **3. Backend MCPServers Not Ready**
@@ -596,13 +641,13 @@ kubectl get virtualmcpserver my-vmcp -o jsonpath='{.status.discoveredBackends}' 
 **1. Backend Not in MCPGroup**
 
 ```bash
-kubectl get mcpserver <backend-name> -o yaml | grep groupRef
+kubectl get mcpserver <backend-name> -o yaml | grep -A1 groupRef
 ```
 
 **Solution**: Verify backend has correct `groupRef`:
 
 ```bash
-kubectl patch mcpserver <backend-name> -p '{"spec":{"groupRef":"<group-name>"}}'
+kubectl patch mcpserver <backend-name> --type merge -p '{"spec":{"groupRef":{"name":"<group-name>"}}}'
 ```
 
 **2. Namespace Mismatch**

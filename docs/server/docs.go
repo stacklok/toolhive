@@ -8,7 +8,141 @@ const docTemplate = `{
     "schemes": {{ marshal .Schemes }},
     "components": {
         "schemas": {
-            "auth.TokenValidatorConfig": {
+            "github_com_stacklok_toolhive-core_registry_types.Registry": {
+                "description": "Full registry data",
+                "properties": {
+                    "groups": {
+                        "description": "Groups is a slice of group definitions containing related MCP servers",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.Group"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "last_updated": {
+                        "description": "LastUpdated is the timestamp when the registry was last updated, in RFC3339 format",
+                        "type": "string"
+                    },
+                    "remote_servers": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/registry.RemoteServerMetadata"
+                        },
+                        "description": "RemoteServers is a map of server names to their corresponding remote server definitions\nThese are MCP servers accessed via HTTP/HTTPS using the thv proxy command",
+                        "type": "object"
+                    },
+                    "servers": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/registry.ImageMetadata"
+                        },
+                        "description": "Servers is a map of server names to their corresponding server definitions",
+                        "type": "object"
+                    },
+                    "version": {
+                        "description": "Version is the schema version of the registry",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket": {
+                "description": "PerUser token bucket configuration for this tool.\n+optional",
+                "properties": {
+                    "maxTokens": {
+                        "description": "MaxTokens is the maximum number of tokens (bucket capacity).\nThis is also the burst size: the maximum number of requests that can be served\ninstantaneously before the bucket is depleted.\n+kubebuilder:validation:Required\n+kubebuilder:validation:Minimum=1",
+                        "type": "integer"
+                    },
+                    "refillPeriod": {
+                        "$ref": "#/components/schemas/v1.Duration"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig": {
+                "description": "RateLimitConfig contains the CRD rate limiting configuration.\nWhen set, rate limiting middleware is added to the proxy middleware chain.",
+                "properties": {
+                    "perUser": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                    },
+                    "shared": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                    },
+                    "tools": {
+                        "description": "Tools defines per-tool rate limit overrides.\nEach entry applies additional rate limits to calls targeting a specific tool name.\nA request must pass both the server-level limit and the per-tool limit.\n+listType=map\n+listMapKey=name\n+optional",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig": {
+                "properties": {
+                    "name": {
+                        "description": "Name is the MCP tool name this limit applies to.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1",
+                        "type": "string"
+                    },
+                    "perUser": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                    },
+                    "shared": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_audit.Config": {
+                "description": "DEPRECATED: Middleware configuration.\nAuditConfig contains the audit logging configuration",
+                "properties": {
+                    "component": {
+                        "description": "Component is the component name to use in audit events.\n+optional",
+                        "type": "string"
+                    },
+                    "detectApplicationErrors": {
+                        "description": "DetectApplicationErrors controls whether the audit middleware inspects\nJSON-RPC response bodies for application-level errors when the HTTP\nstatus code indicates success (2xx). When enabled, a small prefix of\nthe response body is buffered to detect JSON-RPC error fields,\nindependent of the IncludeResponseData setting.\n+kubebuilder:default=true\n+optional",
+                        "type": "boolean"
+                    },
+                    "enabled": {
+                        "description": "Enabled controls whether audit logging is enabled.\nWhen true, enables audit logging with the configured options.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "eventTypes": {
+                        "description": "EventTypes specifies which event types to audit. If empty, all events are audited.\n+optional",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "excludeEventTypes": {
+                        "description": "ExcludeEventTypes specifies which event types to exclude from auditing.\nThis takes precedence over EventTypes.\n+optional",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "includeRequestData": {
+                        "description": "IncludeRequestData determines whether to include request data in audit logs.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "includeResponseData": {
+                        "description": "IncludeResponseData determines whether to include response data in audit logs.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
+                    "logFile": {
+                        "description": "LogFile specifies the file path for audit logs. If empty, logs to stdout.\n+optional",
+                        "type": "string"
+                    },
+                    "maxDataSize": {
+                        "description": "MaxDataSize limits the size of request/response data included in audit logs (in bytes).\n+kubebuilder:default=1024\n+optional",
+                        "type": "integer"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig": {
                 "description": "DEPRECATED: Middleware configuration.\nOIDCConfig contains OIDC configuration",
                 "properties": {
                     "allowPrivateIP": {
@@ -61,88 +195,6 @@ const docTemplate = `{
                             "type": "string"
                         },
                         "type": "array"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive-core_registry_types.Registry": {
-                "description": "Full registry data",
-                "properties": {
-                    "groups": {
-                        "description": "Groups is a slice of group definitions containing related MCP servers",
-                        "items": {
-                            "$ref": "#/components/schemas/registry.Group"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "last_updated": {
-                        "description": "LastUpdated is the timestamp when the registry was last updated, in RFC3339 format",
-                        "type": "string"
-                    },
-                    "remote_servers": {
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/registry.RemoteServerMetadata"
-                        },
-                        "description": "RemoteServers is a map of server names to their corresponding remote server definitions\nThese are MCP servers accessed via HTTP/HTTPS using the thv proxy command",
-                        "type": "object"
-                    },
-                    "servers": {
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/registry.ImageMetadata"
-                        },
-                        "description": "Servers is a map of server names to their corresponding server definitions",
-                        "type": "object"
-                    },
-                    "version": {
-                        "description": "Version is the schema version of the registry",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_pkg_audit.Config": {
-                "description": "DEPRECATED: Middleware configuration.\nAuditConfig contains the audit logging configuration",
-                "properties": {
-                    "component": {
-                        "description": "Component is the component name to use in audit events.\n+optional",
-                        "type": "string"
-                    },
-                    "enabled": {
-                        "description": "Enabled controls whether audit logging is enabled.\nWhen true, enables audit logging with the configured options.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "eventTypes": {
-                        "description": "EventTypes specifies which event types to audit. If empty, all events are audited.\n+optional",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "excludeEventTypes": {
-                        "description": "ExcludeEventTypes specifies which event types to exclude from auditing.\nThis takes precedence over EventTypes.\n+optional",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "includeRequestData": {
-                        "description": "IncludeRequestData determines whether to include request data in audit logs.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "includeResponseData": {
-                        "description": "IncludeResponseData determines whether to include response data in audit logs.\n+kubebuilder:default=false\n+optional",
-                        "type": "boolean"
-                    },
-                    "logFile": {
-                        "description": "LogFile specifies the file path for audit logs. If empty, logs to stdout.\n+optional",
-                        "type": "string"
-                    },
-                    "maxDataSize": {
-                        "description": "MaxDataSize limits the size of request/response data included in audit logs (in bytes).\n+kubebuilder:default=1024\n+optional",
-                        "type": "integer"
                     }
                 },
                 "type": "object"
@@ -276,6 +328,10 @@ const docTemplate = `{
                         "description": "Resource is the OAuth 2.0 resource indicator (RFC 8707).",
                         "type": "string"
                     },
+                    "scope_param_name": {
+                        "description": "ScopeParamName overrides the query parameter name used to send scopes in the\nauthorization URL. When empty, the standard \"scope\" parameter is used.\nSome providers require a non-standard name (e.g., Slack uses \"user_scope\").",
+                        "type": "string"
+                    },
                     "scopes": {
                         "items": {
                             "type": "string"
@@ -362,6 +418,13 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig": {
                 "description": "OAuth2Config contains OAuth 2.0-specific configuration.\nRequired when Type is \"oauth2\", must be nil when Type is \"oidc\".",
                 "properties": {
+                    "additional_authorization_params": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
+                        "type": "object"
+                    },
                     "authorization_endpoint": {
                         "description": "AuthorizationEndpoint is the URL for the OAuth authorization endpoint.",
                         "type": "string"
@@ -406,6 +469,13 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_authserver.OIDCUpstreamRunConfig": {
                 "description": "OIDCConfig contains OIDC-specific configuration.\nRequired when Type is \"oidc\", must be nil when Type is \"oauth2\".",
                 "properties": {
+                    "additional_authorization_params": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
+                        "type": "object"
+                    },
                     "client_id": {
                         "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.",
                         "type": "string"
@@ -427,7 +497,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "scopes": {
-                        "description": "Scopes are the OAuth scopes to request from the upstream IDP.\nIf not specified, defaults to [\"openid\", \"offline_access\"].",
+                        "description": "Scopes are the OAuth scopes to request from the upstream IDP.\nIf not specified, defaults to [\"openid\", \"offline_access\"].\nWhen using AdditionalAuthorizationParams with provider-specific refresh\ntoken mechanisms (e.g., Google's access_type=offline), set explicit scopes\nto avoid sending both offline_access and the provider-specific parameter.",
                         "items": {
                             "type": "string"
                         },
@@ -450,6 +520,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "authorization_endpoint_base_url": {
+                        "description": "AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint\nin the OAuth discovery document. When set, the discovery document will advertise\n` + "`" + `{authorization_endpoint_base_url}/oauth/authorize` + "`" + ` instead of ` + "`" + `{issuer}/oauth/authorize` + "`" + `.\nAll other endpoints remain derived from the issuer.",
+                        "type": "string"
                     },
                     "hmac_secret_files": {
                         "description": "HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes\nand refresh tokens (opaque tokens).\nFirst file is the current secret (must be at least 32 bytes), subsequent files\nare for rotation/verification of existing tokens.\nIf empty, an ephemeral secret will be auto-generated (development only).",
@@ -479,13 +553,13 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.SigningKeyRunConfig"
                     },
                     "storage": {
-                        "$ref": "#/components/schemas/storage.RunConfig"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RunConfig"
                     },
                     "token_lifespans": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.TokenLifespanRunConfig"
                     },
                     "upstreams": {
-                        "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nCurrently only a single upstream is supported.",
+                        "description": "Upstreams configures connections to upstream Identity Providers.\nAt least one upstream is required - the server delegates authentication to these providers.\nMultiple upstreams are supported for sequential authorization chains.",
                         "items": {
                             "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig"
                         },
@@ -641,6 +715,107 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig": {
+                "description": "ACLUserConfig contains ACL user authentication configuration.",
+                "properties": {
+                    "password_env_var": {
+                        "description": "PasswordEnvVar is the environment variable containing the Redis password.",
+                        "type": "string"
+                    },
+                    "username_env_var": {
+                        "description": "UsernameEnvVar is the environment variable containing the Redis username.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver_storage.RedisRunConfig": {
+                "description": "RedisConfig is the Redis-specific configuration when Type is \"redis\".",
+                "properties": {
+                    "acl_user_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig"
+                    },
+                    "auth_type": {
+                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
+                        "type": "string"
+                    },
+                    "dial_timeout": {
+                        "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
+                        "type": "string"
+                    },
+                    "key_prefix": {
+                        "description": "KeyPrefix for multi-tenancy, typically \"thv:auth:{ns}:{name}:\".",
+                        "type": "string"
+                    },
+                    "read_timeout": {
+                        "description": "ReadTimeout is the timeout for read operations (e.g., \"3s\").",
+                        "type": "string"
+                    },
+                    "sentinel_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig"
+                    },
+                    "sentinel_tls": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig"
+                    },
+                    "tls": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig"
+                    },
+                    "write_timeout": {
+                        "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig": {
+                "description": "SentinelTLS configures TLS for Sentinel connections.\nFalls back to TLS config when nil.",
+                "properties": {
+                    "ca_cert_file": {
+                        "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
+                        "type": "string"
+                    },
+                    "insecure_skip_verify": {
+                        "description": "InsecureSkipVerify skips certificate verification.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver_storage.RunConfig": {
+                "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
+                "properties": {
+                    "redis_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.RedisRunConfig"
+                    },
+                    "type": {
+                        "description": "Type specifies the storage backend type. Defaults to \"memory\".",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig": {
+                "description": "SentinelConfig contains Sentinel-specific configuration.",
+                "properties": {
+                    "db": {
+                        "description": "DB is the Redis database number (default: 0).",
+                        "type": "integer"
+                    },
+                    "master_name": {
+                        "description": "MasterName is the name of the Redis Sentinel master.",
+                        "type": "string"
+                    },
+                    "sentinel_addrs": {
+                        "description": "SentinelAddrs is the list of Sentinel addresses (host:port).",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_authz.Config": {
                 "description": "DEPRECATED: Middleware configuration.\nAuthzConfig contains the authorization configuration",
                 "properties": {
@@ -682,7 +857,9 @@ const docTemplate = `{
                     "gemini-cli",
                     "vscode-server",
                     "mistral-vibe",
-                    "codex"
+                    "codex",
+                    "kimi-cli",
+                    "factory"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -710,7 +887,9 @@ const docTemplate = `{
                     "GeminiCli",
                     "VSCodeServer",
                     "MistralVibe",
-                    "Codex"
+                    "Codex",
+                    "KimiCli",
+                    "Factory"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {
@@ -724,6 +903,10 @@ const docTemplate = `{
                     },
                     "registered": {
                         "description": "Registered indicates whether the client is registered in the ToolHive configuration",
+                        "type": "boolean"
+                    },
+                    "supports_skills": {
+                        "description": "SupportsSkills indicates whether ToolHive can install skills for this client",
                         "type": "boolean"
                     }
                 },
@@ -744,11 +927,55 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus": {
+                "description": "Current status of the workload",
+                "enum": [
+                    "running",
+                    "stopped",
+                    "error",
+                    "starting",
+                    "stopping",
+                    "unhealthy",
+                    "removing",
+                    "unknown",
+                    "unauthenticated",
+                    "running",
+                    "stopped",
+                    "error",
+                    "starting",
+                    "stopping",
+                    "unhealthy",
+                    "removing",
+                    "unknown",
+                    "unauthenticated",
+                    "running",
+                    "stopped",
+                    "error",
+                    "starting",
+                    "stopping",
+                    "unhealthy",
+                    "removing",
+                    "unknown",
+                    "unauthenticated"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "WorkloadStatusRunning",
+                    "WorkloadStatusStopped",
+                    "WorkloadStatusError",
+                    "WorkloadStatusStarting",
+                    "WorkloadStatusStopping",
+                    "WorkloadStatusUnhealthy",
+                    "WorkloadStatusRemoving",
+                    "WorkloadStatusUnknown",
+                    "WorkloadStatusUnauthenticated"
+                ]
+            },
             "github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig": {
                 "description": "RuntimeConfig allows overriding the default runtime configuration\nfor this specific workload (base images and packages)",
                 "properties": {
                     "additional_packages": {
-                        "description": "AdditionalPackages lists extra packages to install in builder stage\nExamples for Alpine: [\"git\", \"make\", \"gcc\"]\nExamples for Debian: [\"git\", \"build-essential\"]",
+                        "description": "AdditionalPackages lists extra packages to install in the builder and\nruntime stages.\nExamples for Alpine: [\"git\", \"make\", \"gcc\"]\nExamples for Debian: [\"git\", \"build-essential\"]",
                         "items": {
                             "type": "string"
                         },
@@ -756,7 +983,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "builder_image": {
-                        "description": "BuilderImage is the full image reference for the builder stage\nExamples: \"golang:1.25-alpine\", \"node:22-alpine\", \"python:3.13-slim\"",
+                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.25-alpine\", \"node:22-alpine\", \"python:3.13-slim\"",
                         "type": "string"
                     }
                 },
@@ -804,19 +1031,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "status": {
-                        "description": "Status is the current status of the workload.",
-                        "enum": [
-                            "running",
-                            "stopped",
-                            "error",
-                            "starting",
-                            "stopping",
-                            "unhealthy",
-                            "removing",
-                            "unknown",
-                            "unauthenticated"
-                        ],
-                        "type": "string"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus"
                     },
                     "status_context": {
                         "description": "StatusContext provides additional context about the workload's status.\nThe exact meaning is determined by the status and the underlying runtime.",
@@ -831,14 +1046,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "transport_type": {
-                        "description": "TransportType is the type of transport used for this workload.",
-                        "enum": [
-                            "stdio",
-                            "sse",
-                            "streamable-http",
-                            "inspector"
-                        ],
-                        "type": "string"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.TransportType"
                     },
                     "url": {
                         "description": "URL is the URL of the workload exposed by the ToolHive proxy.",
@@ -865,6 +1073,20 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_ignore.Config": {
+                "description": "IgnoreConfig contains configuration for ignore processing",
+                "properties": {
+                    "loadGlobal": {
+                        "description": "Whether to load global ignore patterns",
+                        "type": "boolean"
+                    },
+                    "printOverlays": {
+                        "description": "Whether to print resolved overlay paths for debugging",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -913,6 +1135,10 @@ const docTemplate = `{
             },
             "github_com_stacklok_toolhive_pkg_runner.RunConfig": {
                 "properties": {
+                    "allow_docker_gateway": {
+                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "type": "boolean"
+                    },
                     "audit_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_audit.Config"
                     },
@@ -987,7 +1213,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "ignore_config": {
-                        "$ref": "#/components/schemas/ignore.Config"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ignore.Config"
                     },
                     "image": {
                         "description": "Image is the Docker image to run",
@@ -1008,7 +1234,15 @@ const docTemplate = `{
                     "middleware_configs": {
                         "description": "MiddlewareConfigs contains the list of middleware to apply to the transport\nand the configuration for each middleware.",
                         "items": {
-                            "$ref": "#/components/schemas/types.MiddlewareConfig"
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "mutating_webhooks": {
+                        "description": "MutatingWebhooks contains the configuration for mutating webhook middleware.\nMutating webhooks run before validating webhooks, per RFC THV-0017 ordering.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.Config"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -1018,7 +1252,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "oidc_config": {
-                        "$ref": "#/components/schemas/auth.TokenValidatorConfig"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig"
                     },
                     "permission_profile_name_or_path": {
                         "description": "PermissionProfileNameOrPath is the name or path of the permission profile",
@@ -1029,11 +1263,33 @@ const docTemplate = `{
                         "type": "integer"
                     },
                     "proxy_mode": {
-                        "description": "ProxyMode is the proxy mode for stdio transport (\"sse\" or \"streamable-http\")\nNote: \"sse\" is deprecated; use \"streamable-http\" instead.",
-                        "enum": [
-                            "sse",
-                            "streamable-http"
-                        ],
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.ProxyMode"
+                    },
+                    "publish": {
+                        "description": "Publish lists ports to publish to the host in format \"hostPort:containerPort\"",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "rate_limit_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig"
+                    },
+                    "rate_limit_namespace": {
+                        "description": "RateLimitNamespace is the Kubernetes namespace for Redis key derivation.",
+                        "type": "string"
+                    },
+                    "registry_api_url": {
+                        "description": "RegistryAPIURL is the registry API URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
+                        "type": "string"
+                    },
+                    "registry_server_name": {
+                        "description": "RegistryServerName is the registry entry name used to look up this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
+                        "type": "string"
+                    },
+                    "registry_url": {
+                        "description": "RegistryURL is the registry URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
                         "type": "string"
                     },
                     "remote_auth_config": {
@@ -1060,6 +1316,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "stateless": {
+                        "description": "Stateless indicates the server only supports POST (no SSE/GET).\nWhen true, the proxy returns 405 for incoming GET requests and uses a\nPOST-based health check instead of the default GET probe.\nApplies to both remote URLs and local container workloads.",
+                        "type": "boolean"
                     },
                     "target_host": {
                         "description": "TargetHost is the host to forward traffic to (only applicable to SSE transport)",
@@ -1095,14 +1355,7 @@ const docTemplate = `{
                         "type": "object"
                     },
                     "transport": {
-                        "description": "Transport is the transport mode (stdio, sse, or streamable-http)",
-                        "enum": [
-                            "stdio",
-                            "sse",
-                            "streamable-http",
-                            "inspector"
-                        ],
-                        "type": "string"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.TransportType"
                     },
                     "trust_proxy_headers": {
                         "description": "TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies",
@@ -1110,6 +1363,14 @@ const docTemplate = `{
                     },
                     "upstream_swap_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config"
+                    },
+                    "validating_webhooks": {
+                        "description": "ValidatingWebhooks contains the configuration for validating webhook middleware.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.Config"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     },
                     "volumes": {
                         "description": "Volumes are the directory mounts to pass to the container\nFormat: \"host-path:container-path[:ro]\"",
@@ -1129,9 +1390,26 @@ const docTemplate = `{
                         "description": "BackendReplicas is the desired StatefulSet replica count for the proxy runner backend.\nWhen nil, replicas are unmanaged (preserving HPA or manual kubectl control).\nWhen set (including 0), the value is an explicit replica count.",
                         "type": "integer"
                     },
-                    "session_cache_size": {
-                        "description": "SessionCacheSize is the maximum number of sessions held in the local LRU cache.\nWhen nil, consuming code applies a sensible default (e.g. 1000).",
+                    "session_redis": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_runner.SessionRedisConfig"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_runner.SessionRedisConfig": {
+                "description": "SessionRedis holds non-sensitive Redis connection parameters for distributed session storage.\nPopulated only when MCPServer.spec.sessionStorage.provider == \"redis\".\nThe Redis password is not included — it is injected as env var THV_SESSION_REDIS_PASSWORD.\n+optional",
+                "properties": {
+                    "address": {
+                        "description": "Address is the Redis server address (host:port).",
+                        "type": "string"
+                    },
+                    "db": {
+                        "description": "DB is the Redis database number.",
                         "type": "integer"
+                    },
+                    "key_prefix": {
+                        "description": "KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -1252,6 +1530,31 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_skills.LocalBuild": {
+                "properties": {
+                    "description": {
+                        "description": "Description is the skill description extracted from the artifact metadata, if available.",
+                        "type": "string"
+                    },
+                    "digest": {
+                        "description": "Digest is the OCI digest of the artifact (sha256:...).",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the skill name extracted from the artifact metadata, if available.",
+                        "type": "string"
+                    },
+                    "tag": {
+                        "description": "Tag is the OCI tag or name used to reference the artifact.",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the skill version extracted from the artifact metadata, if available.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_skills.Scope": {
                 "description": "Scope for the installation",
                 "enum": [
@@ -1263,6 +1566,52 @@ const docTemplate = `{
                     "ScopeUser",
                     "ScopeProject"
                 ]
+            },
+            "github_com_stacklok_toolhive_pkg_skills.SkillContent": {
+                "properties": {
+                    "body": {
+                        "description": "Body is the raw SKILL.md markdown content.",
+                        "type": "string"
+                    },
+                    "description": {
+                        "description": "Description is the skill description from the OCI config labels.",
+                        "type": "string"
+                    },
+                    "files": {
+                        "description": "Files is the list of all files in the artifact with their sizes.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillFileEntry"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "license": {
+                        "description": "License is the SPDX license identifier from the OCI config labels.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the skill name from the OCI config labels.",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the skill version from the OCI config labels.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.SkillFileEntry": {
+                "properties": {
+                    "path": {
+                        "description": "Path is the file path within the artifact.",
+                        "type": "string"
+                    },
+                    "size": {
+                        "description": "Size is the uncompressed file size in bytes.",
+                        "type": "integer"
+                    }
+                },
+                "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_skills.SkillInfo": {
                 "properties": {
@@ -1333,6 +1682,10 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_pkg_telemetry.Config": {
                 "description": "DEPRECATED: Middleware configuration.\nTelemetryConfig contains the OpenTelemetry configuration",
                 "properties": {
+                    "caCertPath": {
+                        "description": "CACertPath is the file path to a CA certificate bundle for the OTLP endpoint.\nWhen set, the OTLP exporters use this CA to verify the collector's TLS certificate\ninstead of relying solely on the system CA pool.\n+optional",
+                        "type": "string"
+                    },
                     "customAttributes": {
                         "additionalProperties": {
                             "type": "string"
@@ -1394,16 +1747,411 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "ignore.Config": {
-                "description": "IgnoreConfig contains configuration for ignore processing",
+            "github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig": {
                 "properties": {
-                    "loadGlobal": {
-                        "description": "Whether to load global ignore patterns",
+                    "parameters": {
+                        "description": "Parameters is a JSON object containing the middleware parameters.\nIt is stored as a raw message to allow flexible parameter types.",
+                        "type": "object"
+                    },
+                    "type": {
+                        "description": "Type is a string representing the middleware type.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_transport_types.ProxyMode": {
+                "description": "ProxyMode is the effective HTTP protocol the proxy uses.\nFor stdio transports, this is the configured mode (sse or streamable-http).\nFor direct transports (sse/streamable-http), this matches the transport type.\nNote: \"sse\" is deprecated; use \"streamable-http\" instead.",
+                "enum": [
+                    "sse",
+                    "streamable-http",
+                    "sse",
+                    "streamable-http"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "ProxyModeSSE",
+                    "ProxyModeStreamableHTTP"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_transport_types.TransportType": {
+                "description": "Transport is the transport mode (stdio, sse, or streamable-http)",
+                "enum": [
+                    "stdio",
+                    "sse",
+                    "streamable-http",
+                    "inspector",
+                    "stdio",
+                    "sse",
+                    "streamable-http",
+                    "inspector",
+                    "stdio",
+                    "sse",
+                    "streamable-http",
+                    "inspector"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "TransportTypeStdio",
+                    "TransportTypeSSE",
+                    "TransportTypeStreamableHTTP",
+                    "TransportTypeInspector"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_webhook.Config": {
+                "properties": {
+                    "failure_policy": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.FailurePolicy"
+                    },
+                    "hmac_secret_ref": {
+                        "description": "HMACSecretRef is an optional reference to an HMAC secret for payload signing.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is a unique identifier for this webhook.",
+                        "type": "string"
+                    },
+                    "timeout": {
+                        "description": "Timeout is the maximum time to wait for a webhook response.",
+                        "type": "integer"
+                    },
+                    "tls_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_webhook.TLSConfig"
+                    },
+                    "url": {
+                        "description": "URL is the HTTPS endpoint to call.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_webhook.FailurePolicy": {
+                "description": "FailurePolicy determines behavior when the webhook call fails.",
+                "enum": [
+                    "fail",
+                    "ignore"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "FailurePolicyFail",
+                    "FailurePolicyIgnore"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_webhook.TLSConfig": {
+                "description": "TLSConfig holds optional TLS configuration (CA bundles, client certs).",
+                "properties": {
+                    "ca_bundle_path": {
+                        "description": "CABundlePath is the path to a CA certificate bundle for server verification.",
+                        "type": "string"
+                    },
+                    "client_cert_path": {
+                        "description": "ClientCertPath is the path to a client certificate for mTLS.",
+                        "type": "string"
+                    },
+                    "client_key_path": {
+                        "description": "ClientKeyPath is the path to a client key for mTLS.",
+                        "type": "string"
+                    },
+                    "insecure_skip_verify": {
+                        "description": "InsecureSkipVerify disables server certificate verification.\nWARNING: This should only be used for development/testing.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "model.Argument": {
+                "properties": {
+                    "choices": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "default": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "format": {
+                        "$ref": "#/components/schemas/model.Format"
+                    },
+                    "isRepeated": {
                         "type": "boolean"
                     },
-                    "printOverlays": {
-                        "description": "Whether to print resolved overlay paths for debugging",
+                    "isRequired": {
                         "type": "boolean"
+                    },
+                    "isSecret": {
+                        "type": "boolean"
+                    },
+                    "name": {
+                        "example": "--port",
+                        "type": "string"
+                    },
+                    "placeholder": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "$ref": "#/components/schemas/model.ArgumentType"
+                    },
+                    "value": {
+                        "type": "string"
+                    },
+                    "valueHint": {
+                        "example": "file_path",
+                        "type": "string"
+                    },
+                    "variables": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/model.Input"
+                        },
+                        "type": "object"
+                    }
+                },
+                "type": "object"
+            },
+            "model.ArgumentType": {
+                "enum": [
+                    "positional",
+                    "named"
+                ],
+                "example": "positional",
+                "type": "string",
+                "x-enum-varnames": [
+                    "ArgumentTypePositional",
+                    "ArgumentTypeNamed"
+                ]
+            },
+            "model.Format": {
+                "enum": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "filepath"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "FormatString",
+                    "FormatNumber",
+                    "FormatBoolean",
+                    "FormatFilePath"
+                ]
+            },
+            "model.Icon": {
+                "properties": {
+                    "mimeType": {
+                        "example": "image/png",
+                        "type": "string"
+                    },
+                    "sizes": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "src": {
+                        "example": "https://example.com/icon.png",
+                        "format": "uri",
+                        "maxLength": 255,
+                        "type": "string"
+                    },
+                    "theme": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "model.Input": {
+                "properties": {
+                    "choices": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "default": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "format": {
+                        "$ref": "#/components/schemas/model.Format"
+                    },
+                    "isRequired": {
+                        "type": "boolean"
+                    },
+                    "isSecret": {
+                        "type": "boolean"
+                    },
+                    "placeholder": {
+                        "type": "string"
+                    },
+                    "value": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "model.KeyValueInput": {
+                "properties": {
+                    "choices": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "default": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "format": {
+                        "$ref": "#/components/schemas/model.Format"
+                    },
+                    "isRequired": {
+                        "type": "boolean"
+                    },
+                    "isSecret": {
+                        "type": "boolean"
+                    },
+                    "name": {
+                        "example": "SOME_VARIABLE",
+                        "type": "string"
+                    },
+                    "placeholder": {
+                        "type": "string"
+                    },
+                    "value": {
+                        "type": "string"
+                    },
+                    "variables": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/model.Input"
+                        },
+                        "type": "object"
+                    }
+                },
+                "type": "object"
+            },
+            "model.Package": {
+                "properties": {
+                    "environmentVariables": {
+                        "description": "EnvironmentVariables are set when running the package",
+                        "items": {
+                            "$ref": "#/components/schemas/model.KeyValueInput"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "fileSha256": {
+                        "description": "FileSHA256 is the SHA-256 hash for integrity verification (required for mcpb, optional for others)",
+                        "example": "fe333e598595000ae021bd27117db32ec69af6987f507ba7a63c90638ff633ce",
+                        "pattern": "^[a-f0-9]{64}$",
+                        "type": "string"
+                    },
+                    "identifier": {
+                        "description": "Identifier is the package identifier:\n  - For NPM/PyPI/NuGet: package name or ID\n  - For OCI: full image reference (e.g., \"ghcr.io/owner/repo:v1.0.0\")\n  - For MCPB: direct download URL",
+                        "example": "@modelcontextprotocol/server-brave-search",
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "packageArguments": {
+                        "description": "PackageArguments are passed to the package's binary",
+                        "items": {
+                            "$ref": "#/components/schemas/model.Argument"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "registryBaseUrl": {
+                        "description": "RegistryBaseURL is the base URL of the package registry (used by npm, pypi, nuget; not used by oci, mcpb)",
+                        "example": "https://registry.npmjs.org",
+                        "format": "uri",
+                        "type": "string"
+                    },
+                    "registryType": {
+                        "description": "RegistryType indicates how to download packages (e.g., \"npm\", \"pypi\", \"oci\", \"nuget\", \"mcpb\")",
+                        "example": "npm",
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "runtimeArguments": {
+                        "description": "RuntimeArguments are passed to the package's runtime command (e.g., docker, npx)",
+                        "items": {
+                            "$ref": "#/components/schemas/model.Argument"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "runtimeHint": {
+                        "description": "RunTimeHint suggests the appropriate runtime for the package",
+                        "example": "npx",
+                        "type": "string"
+                    },
+                    "transport": {
+                        "$ref": "#/components/schemas/model.Transport"
+                    },
+                    "version": {
+                        "description": "Version is the package version (required for npm, pypi, nuget; optional for mcpb; not used by oci where version is in the identifier)",
+                        "example": "1.0.2",
+                        "minLength": 1,
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "model.Repository": {
+                "properties": {
+                    "id": {
+                        "example": "b94b5f7e-c7c6-d760-2c78-a5e9b8a5b8c9",
+                        "type": "string"
+                    },
+                    "source": {
+                        "example": "github",
+                        "type": "string"
+                    },
+                    "subfolder": {
+                        "example": "src/everything",
+                        "type": "string"
+                    },
+                    "url": {
+                        "example": "https://github.com/modelcontextprotocol/servers",
+                        "format": "uri",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "model.Transport": {
+                "description": "Transport is required and specifies the transport protocol configuration",
+                "properties": {
+                    "headers": {
+                        "items": {
+                            "$ref": "#/components/schemas/model.KeyValueInput"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "type": {
+                        "example": "stdio",
+                        "type": "string"
+                    },
+                    "url": {
+                        "example": "https://api.example.com/mcp",
+                        "type": "string"
+                    },
+                    "variables": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/model.Input"
+                        },
+                        "type": "object"
                     }
                 },
                 "type": "object"
@@ -1570,6 +2318,20 @@ const docTemplate = `{
                     "type": {
                         "description": "Registry type after update",
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.buildListResponse": {
+                "description": "Response containing a list of locally-built OCI skill artifacts",
+                "properties": {
+                    "builds": {
+                        "description": "List of locally-built OCI skill artifacts",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.LocalBuild"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     }
                 },
                 "type": "object"
@@ -1756,6 +2518,9 @@ const docTemplate = `{
                     "proxy_port": {
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
+                    },
+                    "runtime_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
                     },
                     "secrets": {
                         "description": "Secret parameters to inject",
@@ -1961,9 +2726,13 @@ const docTemplate = `{
             "pkg_api_v1.installSkillRequest": {
                 "description": "Request to install a skill",
                 "properties": {
-                    "client": {
-                        "description": "Client is the target client (e.g., \"claude-code\")",
-                        "type": "string"
+                    "clients": {
+                        "description": "Clients lists target client identifiers (e.g., \"claude-code\"),\nor [\"all\"] to target every skill-supporting client.\nOmitting this field installs to all available clients.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     },
                     "force": {
                         "description": "Force allows overwriting unmanaged skill directories",
@@ -2074,6 +2843,24 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "pkg_api_v1.paginationV01Metadata": {
+                "description": "Metadata contains pagination information",
+                "properties": {
+                    "limit": {
+                        "description": "Limit is the maximum number of items per page",
+                        "type": "integer"
+                    },
+                    "page": {
+                        "description": "Page is the current page number (1-based)",
+                        "type": "integer"
+                    },
+                    "total": {
+                        "description": "Total is the total number of items matching the query",
+                        "type": "integer"
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.providerCapabilitiesResponse": {
                 "description": "Capabilities of the secrets provider",
                 "properties": {
@@ -2105,6 +2892,20 @@ const docTemplate = `{
                 "properties": {
                     "reference": {
                         "description": "OCI reference to push",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.registryErrorResponse": {
+                "description": "Structured error response returned by registry endpoints",
+                "properties": {
+                    "code": {
+                        "description": "Code is a machine-readable error code (e.g. \"not_found\", \"registry_auth_required\")",
+                        "type": "string"
+                    },
+                    "message": {
+                        "description": "Message is a human-readable description of the error",
                         "type": "string"
                     }
                 },
@@ -2237,6 +3038,23 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "pkg_api_v1.serversV01Response": {
+                "description": "Paginated list of servers from the registry",
+                "properties": {
+                    "metadata": {
+                        "$ref": "#/components/schemas/pkg_api_v1.paginationV01Metadata"
+                    },
+                    "servers": {
+                        "description": "Servers is the list of servers on the current page",
+                        "items": {
+                            "$ref": "#/components/schemas/v0.ServerJSON"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.setupSecretsRequest": {
                 "description": "Request to setup a secrets provider",
                 "properties": {
@@ -2272,6 +3090,23 @@ const docTemplate = `{
                         "description": "List of installed skills",
                         "items": {
                             "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.InstalledSkill"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.skillsV01Response": {
+                "description": "Paginated list of skills from the registry",
+                "properties": {
+                    "metadata": {
+                        "$ref": "#/components/schemas/pkg_api_v1.paginationV01Metadata"
+                    },
+                    "skills": {
+                        "description": "Skills is the list of skills on the current page",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.Skill"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -2357,6 +3192,9 @@ const docTemplate = `{
                     "proxy_port": {
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
+                    },
+                    "runtime_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
                     },
                     "secrets": {
                         "description": "Secret parameters to inject",
@@ -2468,19 +3306,7 @@ const docTemplate = `{
                 "description": "Response containing workload status information",
                 "properties": {
                     "status": {
-                        "description": "Current status of the workload",
-                        "enum": [
-                            "running",
-                            "stopped",
-                            "error",
-                            "starting",
-                            "stopping",
-                            "unhealthy",
-                            "removing",
-                            "unknown",
-                            "unauthenticated"
-                        ],
-                        "type": "string"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus"
                     }
                 },
                 "type": "object"
@@ -2886,6 +3712,152 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "registry.Skill": {
+                "properties": {
+                    "_meta": {
+                        "additionalProperties": {},
+                        "description": "Meta is an opaque payload with extended meta data details of the skill.",
+                        "type": "object"
+                    },
+                    "allowedTools": {
+                        "description": "AllowedTools is the list of tools that the skill is compatible with.\nThis is experimental.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "compatibility": {
+                        "description": "Compatibility is the environment requirements of the skill.",
+                        "type": "string"
+                    },
+                    "description": {
+                        "description": "Description is the description of the skill.",
+                        "type": "string"
+                    },
+                    "icons": {
+                        "description": "Icons is the list of icons for the skill.",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.SkillIcon"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "license": {
+                        "description": "License is the SPDX license identifier of the skill.",
+                        "type": "string"
+                    },
+                    "metadata": {
+                        "additionalProperties": {},
+                        "description": "Metadata is the official metadata of the skill as reported in the\nSKILL.md file.",
+                        "type": "object"
+                    },
+                    "name": {
+                        "description": "Name is the name of the skill.\nThe format is that of identifiers, e.g. \"my-skill\".",
+                        "type": "string"
+                    },
+                    "namespace": {
+                        "description": "Namespace is the namespace of the skill.\nThe format is reverse-DNS, e.g. \"io.github.user\".",
+                        "type": "string"
+                    },
+                    "packages": {
+                        "description": "Packages is the list of packages for the skill.",
+                        "items": {
+                            "$ref": "#/components/schemas/registry.SkillPackage"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "repository": {
+                        "$ref": "#/components/schemas/registry.SkillRepository"
+                    },
+                    "status": {
+                        "description": "Status is the status of the skill.\nCan be one of \"active\", \"deprecated\", or \"archived\".",
+                        "type": "string"
+                    },
+                    "title": {
+                        "description": "Title is the title of the skill.\nThis is for human consumption, not an identifier.",
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "Version is the version of the skill.\nAny non-empty string is valid, but ideally it should be either a\nsemantic version or a commit hash.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "registry.SkillIcon": {
+                "properties": {
+                    "label": {
+                        "description": "Label is the label of the icon.",
+                        "type": "string"
+                    },
+                    "size": {
+                        "description": "Size is the size of the icon.",
+                        "type": "string"
+                    },
+                    "src": {
+                        "description": "Src is the source of the icon.",
+                        "type": "string"
+                    },
+                    "type": {
+                        "description": "Type is the type of the icon.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "registry.SkillPackage": {
+                "properties": {
+                    "commit": {
+                        "description": "Commit is the commit of the package.",
+                        "type": "string"
+                    },
+                    "digest": {
+                        "description": "Digest is the digest of the package.",
+                        "type": "string"
+                    },
+                    "identifier": {
+                        "description": "Identifier is the OCI identifier of the package.",
+                        "type": "string"
+                    },
+                    "mediaType": {
+                        "description": "MediaType is the media type of the package.",
+                        "type": "string"
+                    },
+                    "ref": {
+                        "description": "Ref is the reference of the package.",
+                        "type": "string"
+                    },
+                    "registryType": {
+                        "description": "RegistryType is the type of registry the package is from.\nCan be \"oci\" or \"git\".",
+                        "type": "string"
+                    },
+                    "subfolder": {
+                        "description": "Subfolder is the subfolder of the package.",
+                        "type": "string"
+                    },
+                    "url": {
+                        "description": "URL is the URL of the package.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "registry.SkillRepository": {
+                "description": "Repository is the source repository of the skill.",
+                "properties": {
+                    "type": {
+                        "description": "Type is the type of the repository.",
+                        "type": "string"
+                    },
+                    "url": {
+                        "description": "URL is the URL of the repository.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "registry.VerifiedAttestation": {
                 "properties": {
                     "predicate": {},
@@ -2895,118 +3867,83 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "storage.ACLUserRunConfig": {
-                "description": "ACLUserConfig contains ACL user authentication configuration.",
+            "v0.ServerJSON": {
                 "properties": {
-                    "password_env_var": {
-                        "description": "PasswordEnvVar is the environment variable containing the Redis password.",
+                    "$schema": {
+                        "example": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+                        "format": "uri",
+                        "minLength": 1,
                         "type": "string"
                     },
-                    "username_env_var": {
-                        "description": "UsernameEnvVar is the environment variable containing the Redis username.",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "storage.RedisRunConfig": {
-                "description": "RedisConfig is the Redis-specific configuration when Type is \"redis\".",
-                "properties": {
-                    "acl_user_config": {
-                        "$ref": "#/components/schemas/storage.ACLUserRunConfig"
+                    "_meta": {
+                        "$ref": "#/components/schemas/v0.ServerMeta"
                     },
-                    "auth_type": {
-                        "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
+                    "description": {
+                        "example": "MCP server providing weather data and forecasts via OpenWeatherMap API",
+                        "maxLength": 100,
+                        "minLength": 1,
                         "type": "string"
                     },
-                    "dial_timeout": {
-                        "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
-                        "type": "string"
-                    },
-                    "key_prefix": {
-                        "description": "KeyPrefix for multi-tenancy, typically \"thv:auth:{ns}:{name}:\".",
-                        "type": "string"
-                    },
-                    "read_timeout": {
-                        "description": "ReadTimeout is the timeout for read operations (e.g., \"3s\").",
-                        "type": "string"
-                    },
-                    "sentinel_config": {
-                        "$ref": "#/components/schemas/storage.SentinelRunConfig"
-                    },
-                    "sentinel_tls": {
-                        "$ref": "#/components/schemas/storage.RedisTLSRunConfig"
-                    },
-                    "tls": {
-                        "$ref": "#/components/schemas/storage.RedisTLSRunConfig"
-                    },
-                    "write_timeout": {
-                        "description": "WriteTimeout is the timeout for write operations (e.g., \"3s\").",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "storage.RedisTLSRunConfig": {
-                "description": "SentinelTLS configures TLS for Sentinel connections.\nFalls back to TLS config when nil.",
-                "properties": {
-                    "ca_cert_file": {
-                        "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
-                        "type": "string"
-                    },
-                    "insecure_skip_verify": {
-                        "description": "InsecureSkipVerify skips certificate verification.",
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
-            "storage.RunConfig": {
-                "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
-                "properties": {
-                    "redis_config": {
-                        "$ref": "#/components/schemas/storage.RedisRunConfig"
-                    },
-                    "type": {
-                        "description": "Type specifies the storage backend type. Defaults to \"memory\".",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "storage.SentinelRunConfig": {
-                "description": "SentinelConfig contains Sentinel-specific configuration.",
-                "properties": {
-                    "db": {
-                        "description": "DB is the Redis database number (default: 0).",
-                        "type": "integer"
-                    },
-                    "master_name": {
-                        "description": "MasterName is the name of the Redis Sentinel master.",
-                        "type": "string"
-                    },
-                    "sentinel_addrs": {
-                        "description": "SentinelAddrs is the list of Sentinel addresses (host:port).",
+                    "icons": {
                         "items": {
-                            "type": "string"
+                            "$ref": "#/components/schemas/model.Icon"
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "name": {
+                        "example": "io.github.user/weather",
+                        "maxLength": 200,
+                        "minLength": 3,
+                        "pattern": "^[a-zA-Z0-9.-]+/[a-zA-Z0-9._-]+$",
+                        "type": "string"
+                    },
+                    "packages": {
+                        "items": {
+                            "$ref": "#/components/schemas/model.Package"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "remotes": {
+                        "items": {
+                            "$ref": "#/components/schemas/model.Transport"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "repository": {
+                        "$ref": "#/components/schemas/model.Repository"
+                    },
+                    "title": {
+                        "example": "Weather API",
+                        "maxLength": 100,
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "version": {
+                        "example": "1.0.2",
+                        "type": "string"
+                    },
+                    "websiteUrl": {
+                        "example": "https://modelcontextprotocol.io/examples",
+                        "format": "uri",
+                        "type": "string"
                     }
                 },
                 "type": "object"
             },
-            "types.MiddlewareConfig": {
+            "v0.ServerMeta": {
                 "properties": {
-                    "parameters": {
-                        "description": "Parameters is a JSON object containing the middleware parameters.\nIt is stored as a raw message to allow flexible parameter types.",
+                    "io.modelcontextprotocol.registry/publisher-provided": {
+                        "additionalProperties": {},
                         "type": "object"
-                    },
-                    "type": {
-                        "description": "Type is a string representing the middleware type.",
-                        "type": "string"
                     }
                 },
+                "type": "object"
+            },
+            "v1.Duration": {
+                "description": "RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.\nThe effective refill rate is maxTokens / refillPeriod tokens per second.\nFormat: Go duration string (e.g., \"1m0s\", \"30s\", \"1h0m0s\").\n+kubebuilder:validation:Required",
                 "type": "object"
             }
         }
@@ -3304,7 +4241,7 @@ const docTemplate = `{
         },
         "/api/v1beta/discovery/clients": {
             "get": {
-                "description": "List all clients compatible with ToolHive and their status",
+                "description": "List all clients compatible with ToolHive and their status.\nEach object includes supports_skills when ToolHive can install skills for that client.",
                 "responses": {
                     "200": {
                         "content": {
@@ -3695,6 +4632,16 @@ const docTemplate = `{
                         },
                         "description": "No Content"
                     },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden - blocked by policy"
+                    },
                     "404": {
                         "content": {
                             "application/json": {
@@ -3804,6 +4751,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden - blocked by policy"
                     },
                     "404": {
                         "content": {
@@ -4531,6 +5488,151 @@ const docTemplate = `{
                     }
                 },
                 "summary": "Build a skill",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/builds": {
+            "get": {
+                "description": "Get a list of all locally-built OCI skill artifacts in the local store",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.buildListResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "List locally-built skill artifacts",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/builds/{tag}": {
+            "delete": {
+                "description": "Remove a locally-built OCI skill artifact and its blobs from the local store",
+                "parameters": [
+                    {
+                        "description": "Artifact tag",
+                        "in": "path",
+                        "name": "tag",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Delete a locally-built skill artifact",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/content": {
+            "get": {
+                "description": "Retrieve the SKILL.md body and file listing from an artifact\nwithout installing it. Accepts OCI refs, git refs, or local tags.",
+                "parameters": [
+                    {
+                        "description": "OCI reference or local build tag",
+                        "in": "query",
+                        "name": "ref",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillContent"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "502": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Gateway"
+                    }
+                },
+                "summary": "Get skill content",
                 "tags": [
                     "skills"
                 ]
@@ -5586,6 +6688,319 @@ const docTemplate = `{
                 "summary": "Health check",
                 "tags": [
                     "system"
+                ]
+            }
+        },
+        "/registry/{registryName}/v0.1/servers": {
+            "get": {
+                "description": "Get a paginated list of servers from the registry. Supports optional full-text search and pagination.",
+                "parameters": [
+                    {
+                        "description": "Registry name (currently ignored, uses the default provider)",
+                        "in": "path",
+                        "name": "registryName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Search filter — matches against server name and description",
+                        "in": "query",
+                        "name": "q",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Page number, 1-based (default: 1)",
+                        "in": "query",
+                        "name": "page",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Items per page, max 200 (default: 50)",
+                        "in": "query",
+                        "name": "limit",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.serversV01Response"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "List available registry servers",
+                "tags": [
+                    "registry-servers"
+                ]
+            }
+        },
+        "/registry/{registryName}/v0.1/servers/{serverName}/versions/latest": {
+            "get": {
+                "description": "Retrieve a single server by name. Names use reverse-DNS format; URL-encode slashes.",
+                "parameters": [
+                    {
+                        "description": "Registry name (currently ignored, uses the default provider)",
+                        "in": "path",
+                        "name": "registryName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Server name (URL-encoded reverse-DNS format)",
+                        "in": "path",
+                        "name": "serverName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/v0.ServerJSON"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Invalid server name encoding"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Server not found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "Get a registry server",
+                "tags": [
+                    "registry-servers"
+                ]
+            }
+        },
+        "/registry/{registryName}/v0.1/x/dev.toolhive/skills": {
+            "get": {
+                "description": "Get a paginated list of skills from the registry. Supports optional full-text search and pagination.",
+                "parameters": [
+                    {
+                        "description": "Registry name (currently ignored, uses the default provider)",
+                        "in": "path",
+                        "name": "registryName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Search filter — matches against skill name, namespace, and description",
+                        "in": "query",
+                        "name": "q",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Page number, 1-based (default: 1)",
+                        "in": "query",
+                        "name": "page",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Items per page, max 200 (default: 50)",
+                        "in": "query",
+                        "name": "limit",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.skillsV01Response"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "List available registry skills",
+                "tags": [
+                    "registry-skills"
+                ]
+            }
+        },
+        "/registry/{registryName}/v0.1/x/dev.toolhive/skills/{namespace}/{skillName}": {
+            "get": {
+                "description": "Retrieve a single skill by its namespace and name from the registry.",
+                "parameters": [
+                    {
+                        "description": "Registry name (currently ignored, uses the default provider)",
+                        "in": "path",
+                        "name": "registryName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Skill namespace in reverse-DNS format (e.g. io.github.stacklok)",
+                        "in": "path",
+                        "name": "namespace",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Skill name",
+                        "in": "path",
+                        "name": "skillName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/registry.Skill"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Skill not found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "Get a registry skill",
+                "tags": [
+                    "registry-skills"
                 ]
             }
         }

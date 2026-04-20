@@ -14,8 +14,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
-	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	routermocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
@@ -339,31 +337,18 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 					WorkloadName: "Backend 1",
 				}
 
-				resourceData := []byte(`{"key": "value"}`)
-
 				mockRouter.EXPECT().
 					RouteResource(gomock.Any(), "file:///path/to/resource.json").
 					Return(target, nil)
 
 				mockClient.EXPECT().
 					ReadResource(gomock.Any(), target, "file:///path/to/resource.json").
-					Return(&vmcp.ResourceReadResult{Contents: resourceData, MimeType: "application/json"}, nil)
+					Return(&vmcp.ResourceReadResult{Contents: []vmcp.ResourceContent{
+						{URI: "file:///path/to/resource.json", MimeType: "application/json", Text: `{"key": "value"}`},
+					}}, nil)
 			},
 			setupCtx: func() context.Context {
-				caps := &aggregator.AggregatedCapabilities{
-					Resources: []vmcp.Resource{
-						{
-							URI:      "file:///path/to/resource.json",
-							MimeType: "application/json",
-						},
-					},
-					RoutingTable: &vmcp.RoutingTable{
-						Tools:     make(map[string]*vmcp.BackendTarget),
-						Resources: make(map[string]*vmcp.BackendTarget),
-						Prompts:   make(map[string]*vmcp.BackendTarget),
-					},
-				}
-				return discovery.WithDiscoveredCapabilities(context.Background(), caps)
+				return context.Background()
 			},
 			request: mcp.ReadResourceRequest{
 				Params: mcp.ReadResourceParams{
@@ -382,26 +367,6 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 			},
 		},
 		{
-			name:       "no capabilities in context returns error",
-			uri:        "file:///test",
-			setupMocks: func(_ *routermocks.MockRouter, _ *vmcpmocks.MockBackendClient) {},
-			setupCtx: func() context.Context {
-				return context.Background()
-			},
-			request: mcp.ReadResourceRequest{
-				Params: mcp.ReadResourceParams{
-					URI: "file:///test",
-				},
-			},
-			wantErr: true,
-			checkResult: func(t *testing.T, contents []mcp.ResourceContents, err error) {
-				t.Helper()
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), "capabilities not discovered")
-				assert.Nil(t, contents)
-			},
-		},
-		{
 			name: "routing error for resource not found",
 			uri:  "file:///nonexistent",
 			setupMocks: func(mockRouter *routermocks.MockRouter, _ *vmcpmocks.MockBackendClient) {
@@ -410,15 +375,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 					Return(nil, router.ErrResourceNotFound)
 			},
 			setupCtx: func() context.Context {
-				caps := &aggregator.AggregatedCapabilities{
-					Resources: []vmcp.Resource{},
-					RoutingTable: &vmcp.RoutingTable{
-						Tools:     make(map[string]*vmcp.BackendTarget),
-						Resources: make(map[string]*vmcp.BackendTarget),
-						Prompts:   make(map[string]*vmcp.BackendTarget),
-					},
-				}
-				return discovery.WithDiscoveredCapabilities(context.Background(), caps)
+				return context.Background()
 			},
 			request: mcp.ReadResourceRequest{
 				Params: mcp.ReadResourceParams{
@@ -443,15 +400,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 					Return(nil, errors.New("routing service unavailable"))
 			},
 			setupCtx: func() context.Context {
-				caps := &aggregator.AggregatedCapabilities{
-					Resources: []vmcp.Resource{},
-					RoutingTable: &vmcp.RoutingTable{
-						Tools:     make(map[string]*vmcp.BackendTarget),
-						Resources: make(map[string]*vmcp.BackendTarget),
-						Prompts:   make(map[string]*vmcp.BackendTarget),
-					},
-				}
-				return discovery.WithDiscoveredCapabilities(context.Background(), caps)
+				return context.Background()
 			},
 			request: mcp.ReadResourceRequest{
 				Params: mcp.ReadResourceParams{
@@ -483,17 +432,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 					Return(nil, vmcp.ErrBackendUnavailable)
 			},
 			setupCtx: func() context.Context {
-				caps := &aggregator.AggregatedCapabilities{
-					Resources: []vmcp.Resource{
-						{URI: "file:///test", MimeType: "text/plain"},
-					},
-					RoutingTable: &vmcp.RoutingTable{
-						Tools:     make(map[string]*vmcp.BackendTarget),
-						Resources: make(map[string]*vmcp.BackendTarget),
-						Prompts:   make(map[string]*vmcp.BackendTarget),
-					},
-				}
-				return discovery.WithDiscoveredCapabilities(context.Background(), caps)
+				return context.Background()
 			},
 			request: mcp.ReadResourceRequest{
 				Params: mcp.ReadResourceParams{
@@ -525,17 +464,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 					Return(nil, errors.New("read failed"))
 			},
 			setupCtx: func() context.Context {
-				caps := &aggregator.AggregatedCapabilities{
-					Resources: []vmcp.Resource{
-						{URI: "file:///test", MimeType: "text/plain"},
-					},
-					RoutingTable: &vmcp.RoutingTable{
-						Tools:     make(map[string]*vmcp.BackendTarget),
-						Resources: make(map[string]*vmcp.BackendTarget),
-						Prompts:   make(map[string]*vmcp.BackendTarget),
-					},
-				}
-				return discovery.WithDiscoveredCapabilities(context.Background(), caps)
+				return context.Background()
 			},
 			request: mcp.ReadResourceRequest{
 				Params: mcp.ReadResourceParams{
@@ -551,14 +480,12 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 			},
 		},
 		{
-			name: "mime type found in capabilities",
+			name: "mime type preserved from backend",
 			uri:  "file:///test.json",
 			setupMocks: func(mockRouter *routermocks.MockRouter, mockClient *vmcpmocks.MockBackendClient) {
 				target := &vmcp.BackendTarget{
 					WorkloadID: "backend1",
 				}
-
-				resourceData := []byte(`{"test": "data"}`)
 
 				mockRouter.EXPECT().
 					RouteResource(gomock.Any(), "file:///test.json").
@@ -566,23 +493,12 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					ReadResource(gomock.Any(), target, "file:///test.json").
-					Return(&vmcp.ResourceReadResult{Contents: resourceData, MimeType: "application/json"}, nil)
+					Return(&vmcp.ResourceReadResult{Contents: []vmcp.ResourceContent{
+						{URI: "file:///test.json", MimeType: "application/json", Text: `{"test": "data"}`},
+					}}, nil)
 			},
 			setupCtx: func() context.Context {
-				caps := &aggregator.AggregatedCapabilities{
-					Resources: []vmcp.Resource{
-						{
-							URI:      "file:///test.json",
-							MimeType: "application/json",
-						},
-					},
-					RoutingTable: &vmcp.RoutingTable{
-						Tools:     make(map[string]*vmcp.BackendTarget),
-						Resources: make(map[string]*vmcp.BackendTarget),
-						Prompts:   make(map[string]*vmcp.BackendTarget),
-					},
-				}
-				return discovery.WithDiscoveredCapabilities(context.Background(), caps)
+				return context.Background()
 			},
 			request: mcp.ReadResourceRequest{
 				Params: mcp.ReadResourceParams{
@@ -599,14 +515,12 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 			},
 		},
 		{
-			name: "mime type not found defaults to octet-stream",
+			name: "empty mime type preserved from backend",
 			uri:  "file:///test.bin",
 			setupMocks: func(mockRouter *routermocks.MockRouter, mockClient *vmcpmocks.MockBackendClient) {
 				target := &vmcp.BackendTarget{
 					WorkloadID: "backend1",
 				}
-
-				resourceData := []byte{0x01, 0x02, 0x03}
 
 				mockRouter.EXPECT().
 					RouteResource(gomock.Any(), "file:///test.bin").
@@ -614,23 +528,12 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					ReadResource(gomock.Any(), target, "file:///test.bin").
-					Return(&vmcp.ResourceReadResult{Contents: resourceData, MimeType: ""}, nil)
+					Return(&vmcp.ResourceReadResult{Contents: []vmcp.ResourceContent{
+						{URI: "file:///test.bin", MimeType: "", Text: "binary-like"},
+					}}, nil)
 			},
 			setupCtx: func() context.Context {
-				caps := &aggregator.AggregatedCapabilities{
-					Resources: []vmcp.Resource{
-						{
-							URI:      "file:///test.bin",
-							MimeType: "",
-						},
-					},
-					RoutingTable: &vmcp.RoutingTable{
-						Tools:     make(map[string]*vmcp.BackendTarget),
-						Resources: make(map[string]*vmcp.BackendTarget),
-						Prompts:   make(map[string]*vmcp.BackendTarget),
-					},
-				}
-				return discovery.WithDiscoveredCapabilities(context.Background(), caps)
+				return context.Background()
 			},
 			request: mcp.ReadResourceRequest{
 				Params: mcp.ReadResourceParams{
@@ -643,7 +546,45 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, contents, 1)
 				textContent := contents[0].(mcp.TextResourceContents)
-				assert.Equal(t, "application/octet-stream", textContent.MIMEType)
+				assert.Equal(t, "", textContent.MIMEType)
+			},
+		},
+		{
+			name: "blob resource contents preserved",
+			uri:  "file:///image.png",
+			setupMocks: func(mockRouter *routermocks.MockRouter, mockClient *vmcpmocks.MockBackendClient) {
+				target := &vmcp.BackendTarget{
+					WorkloadID: "backend1",
+				}
+
+				mockRouter.EXPECT().
+					RouteResource(gomock.Any(), "file:///image.png").
+					Return(target, nil)
+
+				mockClient.EXPECT().
+					ReadResource(gomock.Any(), target, "file:///image.png").
+					Return(&vmcp.ResourceReadResult{Contents: []vmcp.ResourceContent{
+						{URI: "file:///image.png", MimeType: "image/png", Blob: "cG5nZGF0YQ=="},
+					}}, nil)
+			},
+			setupCtx: func() context.Context {
+				return context.Background()
+			},
+			request: mcp.ReadResourceRequest{
+				Params: mcp.ReadResourceParams{
+					URI: "file:///image.png",
+				},
+			},
+			wantErr: false,
+			checkResult: func(t *testing.T, contents []mcp.ResourceContents, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.Len(t, contents, 1)
+				blobContent, ok := mcp.AsBlobResourceContents(contents[0])
+				require.True(t, ok, "expected BlobResourceContents")
+				assert.Equal(t, "file:///image.png", blobContent.URI)
+				assert.Equal(t, "image/png", blobContent.MIMEType)
+				assert.Equal(t, "cG5nZGF0YQ==", blobContent.Blob)
 			},
 		},
 		{
@@ -655,31 +596,18 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 					OriginalCapabilityName: "file:///resource",
 				}
 
-				resourceData := []byte("test data")
-
 				mockRouter.EXPECT().
 					RouteResource(gomock.Any(), "file:///backend1/resource").
 					Return(target, nil)
 
 				mockClient.EXPECT().
 					ReadResource(gomock.Any(), target, "file:///resource").
-					Return(&vmcp.ResourceReadResult{Contents: resourceData, MimeType: "application/json"}, nil)
+					Return(&vmcp.ResourceReadResult{Contents: []vmcp.ResourceContent{
+						{URI: "file:///resource", MimeType: "application/json", Text: "test data"},
+					}}, nil)
 			},
 			setupCtx: func() context.Context {
-				caps := &aggregator.AggregatedCapabilities{
-					Resources: []vmcp.Resource{
-						{
-							URI:      "file:///backend1/resource",
-							MimeType: "text/plain",
-						},
-					},
-					RoutingTable: &vmcp.RoutingTable{
-						Tools:     make(map[string]*vmcp.BackendTarget),
-						Resources: make(map[string]*vmcp.BackendTarget),
-						Prompts:   make(map[string]*vmcp.BackendTarget),
-					},
-				}
-				return discovery.WithDiscoveredCapabilities(context.Background(), caps)
+				return context.Background()
 			},
 			request: mcp.ReadResourceRequest{
 				Params: mcp.ReadResourceParams{
@@ -692,7 +620,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, contents, 1)
 				textContent := contents[0].(mcp.TextResourceContents)
-				assert.Equal(t, "file:///backend1/resource", textContent.URI)
+				assert.Equal(t, "file:///resource", textContent.URI)
 				assert.Equal(t, "test data", textContent.Text)
 			},
 		},
@@ -743,7 +671,9 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 					WorkloadName: "Backend 1",
 				}
 
-				promptText := "Write tests for Go code about testing"
+				promptMessages := []vmcp.PromptMessage{
+					{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Write tests for Go code about testing"}},
+				}
 
 				expectedArgs := map[string]any{
 					"topic":    "testing",
@@ -756,7 +686,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					GetPrompt(gomock.Any(), target, "test_prompt", expectedArgs).
-					Return(&vmcp.PromptGetResult{Messages: promptText, Description: ""}, nil)
+					Return(&vmcp.PromptGetResult{Messages: promptMessages, Description: ""}, nil)
 			},
 			request: mcp.GetPromptRequest{
 				Params: mcp.GetPromptParams{
@@ -774,7 +704,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 				require.NotNil(t, result)
 				assert.Contains(t, result.Description, "test_prompt")
 				require.Len(t, result.Messages, 1)
-				assert.Equal(t, "assistant", string(result.Messages[0].Role))
+				assert.Equal(t, "user", string(result.Messages[0].Role))
 				assert.Equal(t, "Write tests for Go code about testing", result.Messages[0].Content.(mcp.TextContent).Text)
 			},
 		},
@@ -896,7 +826,9 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 					OriginalCapabilityName: "summarize",
 				}
 
-				promptText := "Summary of test content"
+				promptMessages := []vmcp.PromptMessage{
+					{Role: "assistant", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Summary of test content"}},
+				}
 				expectedArgs := map[string]any{"text": "test content"}
 
 				mockRouter.EXPECT().
@@ -905,7 +837,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					GetPrompt(gomock.Any(), target, "summarize", expectedArgs).
-					Return(&vmcp.PromptGetResult{Messages: promptText, Description: ""}, nil)
+					Return(&vmcp.PromptGetResult{Messages: promptMessages, Description: ""}, nil)
 			},
 			request: mcp.GetPromptRequest{
 				Params: mcp.GetPromptParams{
@@ -918,6 +850,8 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 				t.Helper()
 				require.NoError(t, err)
 				require.NotNil(t, result)
+				require.Len(t, result.Messages, 1)
+				assert.Equal(t, "assistant", string(result.Messages[0].Role))
 				assert.Equal(t, "Summary of test content", result.Messages[0].Content.(mcp.TextContent).Text)
 			},
 		},
@@ -929,7 +863,9 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 					WorkloadID: "backend1",
 				}
 
-				promptText := "Simple prompt response"
+				promptMessages := []vmcp.PromptMessage{
+					{Role: "assistant", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Simple prompt response"}},
+				}
 				emptyArgs := map[string]any{}
 
 				mockRouter.EXPECT().
@@ -938,7 +874,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 
 				mockClient.EXPECT().
 					GetPrompt(gomock.Any(), target, "simple_prompt", emptyArgs).
-					Return(&vmcp.PromptGetResult{Messages: promptText, Description: ""}, nil)
+					Return(&vmcp.PromptGetResult{Messages: promptMessages, Description: ""}, nil)
 			},
 			request: mcp.GetPromptRequest{
 				Params: mcp.GetPromptParams{

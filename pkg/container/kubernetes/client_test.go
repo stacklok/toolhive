@@ -1276,3 +1276,94 @@ func Test_isStatefulSetReady(t *testing.T) {
 		})
 	}
 }
+
+func TestDeployWorkloadBackendReplicas(t *testing.T) {
+	t.Parallel()
+
+	deployAndGetStatefulSet := func(t *testing.T, options *runtime.DeployWorkloadOptions) *appsv1.StatefulSet {
+		t.Helper()
+		mockStatefulSet := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-container",
+				Namespace: defaultNamespace,
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: ptr.To(int32(2)),
+			},
+			Status: appsv1.StatefulSetStatus{ReadyReplicas: 2},
+		}
+		clientset := fake.NewClientset(mockStatefulSet)
+		client := NewClientWithConfigAndPlatformDetector(
+			clientset,
+			&rest.Config{Host: "https://fake-k8s-api.example.com"},
+			&mockPlatformDetector{platform: PlatformKubernetes},
+		)
+		client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
+		client.namespaceFunc = func() string { return defaultNamespace }
+
+		_, err := client.DeployWorkload(
+			context.Background(),
+			"test-image", "test-container", nil,
+			map[string]string{}, map[string]string{},
+			nil, "streamable-http", options, false,
+		)
+		require.NoError(t, err)
+
+		sts, err := clientset.AppsV1().StatefulSets(defaultNamespace).Get(
+			context.Background(), "test-container", metav1.GetOptions{},
+		)
+		require.NoError(t, err)
+		return sts
+	}
+
+	t.Run("nil BackendReplicas omits replicas field from applied spec", func(t *testing.T) {
+		t.Parallel()
+		options := runtime.NewDeployWorkloadOptions()
+		// BackendReplicas is nil by default
+
+		sts := deployAndGetStatefulSet(t, options)
+
+		// The fake client retains whatever was pre-seeded; the key assertion is that
+		// we did not call WithReplicas, so the applied patch must not contain a
+		// replicas field. We verify by checking the managed-fields patch: a nil
+		// BackendReplicas must not override the existing replica count.
+		assert.Nil(t, options.ScalingConfig, "ScalingConfig should remain nil")
+		// Replica value is unchanged from the pre-seeded StatefulSet (2).
+		// Seeding with 2 ensures an accidental WithReplicas(1) default would be caught.
+		require.NotNil(t, sts.Spec.Replicas)
+		assert.Equal(t, int32(2), *sts.Spec.Replicas)
+	})
+
+	t.Run("BackendReplicas=3 sets replicas:3 in applied spec", func(t *testing.T) {
+		t.Parallel()
+		options := runtime.NewDeployWorkloadOptions()
+		options.ScalingConfig = &runtime.ScalingConfig{BackendReplicas: ptr.To(int32(3))}
+
+		sts := deployAndGetStatefulSet(t, options)
+
+		require.NotNil(t, sts.Spec.Replicas)
+		assert.Equal(t, int32(3), *sts.Spec.Replicas)
+	})
+
+	t.Run("BackendReplicas=1 sets replicas:1 explicitly (distinct from nil)", func(t *testing.T) {
+		t.Parallel()
+		options := runtime.NewDeployWorkloadOptions()
+		options.ScalingConfig = &runtime.ScalingConfig{BackendReplicas: ptr.To(int32(1))}
+
+		sts := deployAndGetStatefulSet(t, options)
+
+		require.NotNil(t, sts.Spec.Replicas)
+		assert.Equal(t, int32(1), *sts.Spec.Replicas)
+	})
+
+	t.Run("BackendReplicas=0 sets replicas:0 (scale to zero)", func(t *testing.T) {
+		t.Parallel()
+		options := runtime.NewDeployWorkloadOptions()
+		options.ScalingConfig = &runtime.ScalingConfig{BackendReplicas: ptr.To(int32(0))}
+
+		sts := deployAndGetStatefulSet(t, options)
+
+		require.NotNil(t, sts.Spec.Replicas)
+		assert.Equal(t, int32(0), *sts.Spec.Replicas)
+	})
+}

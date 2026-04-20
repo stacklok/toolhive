@@ -210,7 +210,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: authConfigName,
 					},
@@ -242,8 +242,8 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 		})
 
-		It("Should update MCPExternalAuthConfig status with referencing server", func() {
-			// Wait for the auth config status to be updated with the referencing server
+		It("Should update MCPExternalAuthConfig status with referencing workload", func() {
+			// Wait for the auth config status to be updated with the referencing workload
 			Eventually(func() bool {
 				updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -253,9 +253,9 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 				if err != nil {
 					return false
 				}
-				// Check if the server is in the referencing servers list
-				for _, server := range updatedAuthConfig.Status.ReferencingServers {
-					if server == mcpServerName {
+				// Check if the server is in the referencing workloads list
+				for _, ref := range updatedAuthConfig.Status.ReferencingWorkloads {
+					if ref.Kind == "MCPServer" && ref.Name == mcpServerName {
 						return true
 					}
 				}
@@ -406,7 +406,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: authConfigName,
 					},

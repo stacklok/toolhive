@@ -37,8 +37,9 @@ func CheckAndPerformTelemetryConfigMigration() {
 		}
 
 		// Mark migration as completed
-		if err := config.UpdateConfig(func(c *config.Config) {
+		if err := config.UpdateConfig(func(c *config.Config) error {
 			c.TelemetryConfigMigration = true
+			return nil
 		}); err != nil {
 			slog.Error("failed to update config after telemetry config migration", "error", err)
 		}

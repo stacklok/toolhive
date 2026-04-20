@@ -14,9 +14,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: 'go.mod'
+          go-version: 'stable'
           cache: true  # Caches go modules
           cache-dependency-path: go.sum
 
@@ -35,6 +35,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-build-lint-
             ${{ runner.os }}-go-build-
+
+      - name: Check go.mod version format
+        run: "! grep -qE '^go [0-9]+\\.[0-9]+\\.[0-9]+' go.mod || { echo 'ERROR: go.mod must pin Go to minor version (e.g. go 1.26), not patch (e.g. go 1.26.1)'; exit 1; }"
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0

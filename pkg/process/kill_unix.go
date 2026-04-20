@@ -13,6 +13,10 @@ import (
 
 // KillProcess kills a process by its ID
 func KillProcess(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid PID: %d", pid)
+	}
+
 	// Check if the process exists
 	process, err := os.FindProcess(pid)
 	if err != nil {

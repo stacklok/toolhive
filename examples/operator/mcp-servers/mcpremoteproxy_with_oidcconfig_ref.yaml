@@ -1,0 +1,36 @@
+# MCPRemoteProxy referencing a shared MCPOIDCConfig via oidcConfigRef.
+#
+# This is the preferred pattern — the inline oidcConfig field is deprecated
+# and will be removed in v1beta1.
+
+---
+# Shared MCPOIDCConfig for the proxy's incoming authentication
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPOIDCConfig
+metadata:
+  name: proxy-idp
+  namespace: toolhive-system
+spec:
+  type: kubernetesServiceAccount
+  kubernetesServiceAccount: {}
+
+---
+# MCPRemoteProxy using oidcConfigRef instead of inline oidcConfig
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRemoteProxy
+metadata:
+  name: github-proxy
+  namespace: toolhive-system
+spec:
+  remoteUrl: "https://api.github.com/mcp"
+  transport: streamable-http
+  oidcConfigRef:
+    name: proxy-idp
+    audience: github-proxy
+  resources:
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"

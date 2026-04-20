@@ -9,12 +9,15 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -29,6 +32,7 @@ import (
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
+	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
 const (
@@ -82,6 +86,81 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendC
 	return c, nil
 }
 
+// newBackendTransport creates a *http.Transport with the same defaults as http.DefaultTransport.
+// If http.DefaultTransport is a *http.Transport, it is cloned directly (preserving any
+// environment-specific settings like TLS config or proxy overrides). Otherwise a transport
+// with the standard Go defaults is constructed, preserving proxy, dial timeout, HTTP/2, and
+// idle-connection settings that a zero-value &http.Transport{} would drop.
+//
+// If caBundlePath is non-empty, a custom TLS configuration is applied that trusts both
+// the system root CAs and the certificate(s) in the specified file. This is used for
+// entry-type backends with self-signed or internal CA certificates (static mode).
+//
+// If caBundleData is non-empty, the raw PEM bytes are used directly instead of reading
+// from a file. This is used in dynamic mode where CA bundles are fetched from K8s
+// ConfigMaps at discovery time. caBundleData takes precedence over caBundlePath.
+func newBackendTransport(caBundlePath string, caBundleData []byte) (*http.Transport, error) {
+	var t *http.Transport
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		t = dt.Clone()
+	} else {
+		// http.DefaultTransport has been replaced (e.g. in tests or by a third-party library).
+		// Construct a transport with the same defaults as the Go standard library uses for
+		// http.DefaultTransport so we don't silently drop proxy, timeout, or HTTP/2 settings.
+		t = &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	}
+
+	// Resolve CA certificate PEM data: caBundleData takes precedence over caBundlePath
+	var caPEM []byte
+	switch {
+	case len(caBundleData) > 0:
+		caPEM = caBundleData
+	case caBundlePath != "":
+		var err error
+		caPEM, err = os.ReadFile(caBundlePath) //nolint:gosec // CA bundle path is validated by config validator (no path traversal)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA bundle from %s: %w", caBundlePath, err)
+		}
+	}
+
+	if len(caPEM) > 0 {
+		caCertPool, err := x509.SystemCertPool()
+		if err != nil {
+			// Fall back to empty pool if system certs can't be loaded
+			caCertPool = x509.NewCertPool()
+		}
+
+		if !caCertPool.AppendCertsFromPEM(caPEM) {
+			source := "inline data"
+			if len(caBundleData) == 0 && caBundlePath != "" {
+				source = caBundlePath
+			}
+			return nil, fmt.Errorf("failed to parse CA certificate from %s", source)
+		}
+
+		if t.TLSClientConfig == nil {
+			t.TLSClientConfig = &tls.Config{}
+		} else {
+			t.TLSClientConfig = t.TLSClientConfig.Clone()
+		}
+		t.TLSClientConfig.RootCAs = caCertPool
+		t.TLSClientConfig.MinVersion = tls.VersionTLS12
+	}
+
+	return t, nil
+}
+
 // roundTripperFunc is a function adapter for http.RoundTripper.
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
@@ -90,19 +169,31 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-// identityPropagatingRoundTripper propagates identity to backend HTTP requests.
+// identityPropagatingRoundTripper propagates identity and health-check markers to backend HTTP requests.
 // This ensures that identity information from the vMCP handler is available for authentication
 // strategies that need it (e.g., token exchange).
+//
+// The health-check marker is stored at transport creation time and re-injected into every
+// outgoing request, including the DELETE that mcp-go sends when closing a streamable-HTTP
+// session. Without this, mcp-go's Close() creates a fresh context.Background()-based request
+// that loses the health-check marker, causing auth strategies (UpstreamInjectStrategy,
+// TokenExchangeStrategy) to fail with "no identity found in context".
 type identityPropagatingRoundTripper struct {
-	base     http.RoundTripper
-	identity *auth.Identity
+	base          http.RoundTripper
+	identity      *auth.Identity
+	isHealthCheck bool
 }
 
-// RoundTrip implements http.RoundTripper by adding identity to the request context.
+// RoundTrip implements http.RoundTripper by adding identity and health-check marker to the request context.
 func (i *identityPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx := req.Context()
 	if i.identity != nil {
-		// Add identity to the request's context
-		ctx := auth.WithIdentity(req.Context(), i.identity)
+		ctx = auth.WithIdentity(ctx, i.identity)
+	}
+	if i.isHealthCheck {
+		ctx = healthcontext.WithHealthCheckMarker(ctx)
+	}
+	if i.identity != nil || i.isHealthCheck {
 		req = req.Clone(ctx)
 	}
 	return i.base.RoundTrip(req)
@@ -173,7 +264,14 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (vmc
 func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
 	// Build transport chain (outermost to innermost, request execution order):
 	// size limit (response body) → trace propagation → identity propagation → authentication → HTTP
-	var baseTransport = http.DefaultTransport
+	//
+	// Clone DefaultTransport per call so each client gets an isolated connection pool,
+	// preventing stale keep-alive connections from one backend affecting others.
+	httpTransport, err := newBackendTransport(target.CABundlePath, target.CABundleData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transport for backend %s: %w", target.WorkloadID, err)
+	}
+	var baseTransport http.RoundTripper = httpTransport
 
 	// Resolve authentication strategy ONCE at client creation time
 	authStrategy, err := h.resolveAuthStrategy(target)
@@ -198,12 +296,16 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		target:       target,
 	}
 
-	// Extract identity from context and propagate it to backend requests
-	// This ensures authentication strategies (e.g., token exchange) can access identity
+	// Extract identity and health-check marker from context and propagate them to backend
+	// requests. The health-check marker must be carried through to the DELETE request that
+	// mcp-go emits when closing a streamable-HTTP session: mcp-go creates that request with
+	// context.Background(), which loses both the identity and the health-check marker that
+	// were present on the original ListCapabilities call context.
 	identity, _ := auth.IdentityFromContext(ctx)
 	baseTransport = &identityPropagatingRoundTripper{
-		base:     baseTransport,
-		identity: identity,
+		base:          baseTransport,
+		identity:      identity,
+		isHealthCheck: healthcontext.IsHealthCheck(ctx),
 	}
 
 	// Inject W3C Trace Context headers (traceparent/tracestate) into outgoing requests.
@@ -321,7 +423,23 @@ func wrapBackendError(err error, backendID string, operation string) error {
 			vmcp.ErrTimeout, operation, backendID, err)
 	}
 
-	// 4. String-based detection: Fall back to pattern matching for cases where
+	// 4. mcp-go transport sentinel errors: check before string-based fallbacks
+	// to ensure accurate classification of protocol-level errors.
+	if errors.Is(err, transport.ErrUnauthorized) {
+		return fmt.Errorf("%w: failed to %s for backend %s: %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+	// ErrLegacySSEServer is returned for any 4xx (except 401) on initialize POST.
+	// This includes 403 (auth rejection) and 404/405 (endpoint not found/method not allowed).
+	// We cannot distinguish auth failures from routing errors without the raw status code,
+	// so we surface a clear message and classify as backend unavailable to allow recovery.
+	if errors.Is(err, transport.ErrLegacySSEServer) {
+		const legacyMsg = "server rejected MCP initialize — possible auth rejection or legacy SSE-only server"
+		return fmt.Errorf("%w: failed to %s for backend %s (%s): %v",
+			vmcp.ErrBackendUnavailable, operation, backendID, legacyMsg, err)
+	}
+
+	// 5. String-based detection: Fall back to pattern matching for cases where
 	// we don't have structured error types (MCP SDK, HTTP libraries with embedded status codes)
 	// Authentication errors (401, 403, auth failures)
 	if vmcp.IsAuthenticationError(err) {
@@ -666,17 +784,13 @@ func (h *httpBackendClient) ReadResource(
 		return nil, fmt.Errorf("resource read failed on backend %s: %w", target.WorkloadID, err)
 	}
 
-	// Concatenate all resource content items into a single byte slice.
-	data, mimeType := conversion.ConcatenateResourceContents(result.Contents)
-
 	// Extract _meta field from backend response
 	meta := conversion.FromMCPMeta(result.Meta)
 
 	// Note: Due to MCP SDK limitations, the SDK's ReadResourceResult may not include Meta.
 	// This preserves it for future SDK improvements.
 	return &vmcp.ResourceReadResult{
-		Contents: data,
-		MimeType: mimeType,
+		Contents: conversion.ConvertMCPResourceContents(result.Contents),
 		Meta:     meta,
 	}, nil
 }
@@ -727,7 +841,7 @@ func (h *httpBackendClient) GetPrompt(
 	}
 
 	return &vmcp.PromptGetResult{
-		Messages:    conversion.ConvertPromptMessages(result.Messages),
+		Messages:    conversion.ConvertMCPPromptMessages(result.Messages),
 		Description: result.Description,
 		Meta:        conversion.FromMCPMeta(result.Meta),
 	}, nil

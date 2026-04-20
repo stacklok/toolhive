@@ -6,16 +6,18 @@ package types
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
+	"log/slog"
+	"net/http"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
-	werr "github.com/stacklok/toolhive/pkg/workloads/types/errors"
 )
 
 // minimalRunConfig represents just the fields we need from a run configuration
@@ -25,33 +27,39 @@ type minimalRunConfig struct {
 }
 
 // loadRunConfigFields attempts to load specific fields from the runconfig
-// Returns empty struct if runconfig doesn't exist
-func loadRunConfigFields(ctx context.Context, name string) (*minimalRunConfig, error) {
-	// Try to load the runconfig
-	runConfig, err := state.LoadRunConfig(ctx, name, func(r io.Reader) (*minimalRunConfig, error) {
-		var config minimalRunConfig
-		decoder := json.NewDecoder(r)
-		if err := decoder.Decode(&config); err != nil {
-			if errors.Is(err, io.EOF) {
-				return &config, nil
-			}
-			return nil, err
-		}
-		return &config, nil
-	})
+// using the provided store. Returns empty struct if runconfig doesn't exist.
+func loadRunConfigFields(ctx context.Context, store state.Store, name string) (*minimalRunConfig, error) {
+	reader, err := store.GetReader(ctx, name)
 	if err != nil {
-		if errors.Is(err, werr.ErrRunConfigNotFound) {
+		// If the run config doesn't exist, return empty config (not an error).
+		// This also handles the race where a workload is deleted between listing
+		// and reading its config.
+		if httperr.Code(err) == http.StatusNotFound {
 			return &minimalRunConfig{}, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to read run config for workload %q: %w", name, err)
 	}
+	defer func() {
+		if err := reader.Close(); err != nil {
+			slog.Warn("failed to close run config reader", "workload", name, "error", err)
+		}
+	}()
 
-	// Return the runconfig
-	return runConfig, nil
+	var config minimalRunConfig
+	if err := json.NewDecoder(reader).Decode(&config); err != nil {
+		// EOF from an empty reader (e.g. KubernetesStore) means no config exists
+		if err == io.EOF {
+			return &minimalRunConfig{}, nil
+		}
+		return nil, fmt.Errorf("failed to decode run config for workload %q: %w", name, err)
+	}
+	return &config, nil
 }
 
 // WorkloadFromContainerInfo creates a Workload struct from the runtime container info.
-func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload, error) {
+// The runConfigStore is used to load run configuration fields (proxy mode, group)
+// without hitting the real filesystem, enabling proper dependency injection for tests.
+func WorkloadFromContainerInfo(container *runtime.ContainerInfo, runConfigStore state.Store) (core.Workload, error) {
 	// Get workload name (base name) from labels for user-facing display
 	name := labels.GetContainerBaseName(container.Labels)
 	if name == "" {
@@ -79,7 +87,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 	}
 
 	ctx := context.Background()
-	runConfig, err := loadRunConfigFields(ctx, name)
+	runConfig, err := loadRunConfigFields(ctx, runConfigStore, name)
 	if err != nil {
 		return core.Workload{}, err
 	}
@@ -118,18 +126,11 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 	}, nil
 }
 
-// GetEffectiveProxyMode determines the effective proxy mode that clients should use
-// For stdio transports, this returns the proxy mode (sse or streamable-http)
-// For direct transports (sse/streamable-http), this returns the transport type as the proxy mode
+// GetEffectiveProxyMode determines the effective proxy mode that clients should use.
+// For stdio transports, this returns the proxy mode (sse or streamable-http).
+// For direct transports (sse/streamable-http), this returns the transport type as the proxy mode.
+//
+// Prefer types.EffectiveProxyMode for new code operating on typed values.
 func GetEffectiveProxyMode(transportType types.TransportType, proxyMode string) string {
-	// If the underlying transport is stdio, return the proxy mode (could be empty)
-	if transportType == types.TransportTypeStdio {
-		if proxyMode == "" {
-			return types.ProxyModeStreamableHTTP.String()
-		}
-		return proxyMode
-	}
-
-	// For direct transports (sse, streamable-http), return the transport type as the proxy mode
-	return transportType.String()
+	return types.EffectiveProxyMode(transportType, types.ProxyMode(proxyMode)).String()
 }

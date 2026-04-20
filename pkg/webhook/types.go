@@ -1,0 +1,246 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+// Package webhook implements the core types, HTTP client, HMAC signing,
+// and error handling for ToolHive's dynamic webhook middleware system.
+package webhook
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"os"
+	"time"
+
+	"github.com/stacklok/toolhive/pkg/auth"
+)
+
+// APIVersion is the version of the webhook API protocol.
+const APIVersion = "v0.1.0"
+
+// DefaultTimeout is the default timeout for webhook HTTP calls.
+const DefaultTimeout = 10 * time.Second
+
+// MaxTimeout is the maximum allowed timeout for webhook HTTP calls.
+const MaxTimeout = 30 * time.Second
+
+// MinTimeout is the minimum allowed timeout for webhook HTTP calls.
+const MinTimeout = 1 * time.Second
+
+// MaxResponseSize is the maximum allowed size in bytes for webhook responses (1 MB).
+const MaxResponseSize = 1 << 20
+
+// Type indicates whether a webhook is validating or mutating.
+type Type string
+
+const (
+	// TypeValidating indicates a validating webhook that accepts or denies requests.
+	TypeValidating Type = "validating"
+	// TypeMutating indicates a mutating webhook that transforms requests.
+	TypeMutating Type = "mutating"
+)
+
+// FailurePolicy defines how webhook errors are handled.
+type FailurePolicy string
+
+const (
+	// FailurePolicyFail denies the request on webhook error (fail-closed).
+	FailurePolicyFail FailurePolicy = "fail"
+	// FailurePolicyIgnore allows the request on webhook error (fail-open).
+	FailurePolicyIgnore FailurePolicy = "ignore"
+)
+
+// TLSConfig holds TLS-related configuration for webhook HTTP communication.
+type TLSConfig struct {
+	// CABundlePath is the path to a CA certificate bundle for server verification.
+	CABundlePath string `json:"ca_bundle_path,omitempty" yaml:"ca_bundle_path,omitempty"`
+	// ClientCertPath is the path to a client certificate for mTLS.
+	ClientCertPath string `json:"client_cert_path,omitempty" yaml:"client_cert_path,omitempty"`
+	// ClientKeyPath is the path to a client key for mTLS.
+	ClientKeyPath string `json:"client_key_path,omitempty" yaml:"client_key_path,omitempty"`
+	// InsecureSkipVerify disables server certificate verification.
+	// WARNING: This should only be used for development/testing.
+	InsecureSkipVerify bool `json:"insecure_skip_verify,omitempty" yaml:"insecure_skip_verify,omitempty"`
+}
+
+// Config holds the configuration for a single webhook.
+type Config struct {
+	// Name is a unique identifier for this webhook.
+	Name string `json:"name" yaml:"name"`
+	// URL is the HTTPS endpoint to call.
+	URL string `json:"url" yaml:"url"`
+	// Timeout is the maximum time to wait for a webhook response.
+	Timeout time.Duration `json:"timeout" yaml:"timeout" swaggertype:"primitive,integer"`
+	// FailurePolicy determines behavior when the webhook call fails.
+	FailurePolicy FailurePolicy `json:"failure_policy" yaml:"failure_policy"`
+	// TLSConfig holds optional TLS configuration (CA bundles, client certs).
+	TLSConfig *TLSConfig `json:"tls_config,omitempty" yaml:"tls_config,omitempty"`
+	// HMACSecretRef is an optional reference to an HMAC secret for payload signing.
+	HMACSecretRef string `json:"hmac_secret_ref,omitempty" yaml:"hmac_secret_ref,omitempty"`
+}
+
+// Validate checks that the WebhookConfig has valid required fields.
+func (c *Config) Validate() error {
+	if c.Name == "" {
+		return fmt.Errorf("webhook name is required")
+	}
+	if c.URL == "" {
+		return fmt.Errorf("webhook URL is required")
+	}
+	parsed, err := url.ParseRequestURI(c.URL)
+	if err != nil {
+		return fmt.Errorf("webhook URL is invalid: %w", err)
+	}
+	// Enforce HTTPS unless InsecureSkipVerify is explicitly set (for in-cluster HTTP endpoints).
+	insecureHTTPAllowed := c.TLSConfig != nil && c.TLSConfig.InsecureSkipVerify
+	if parsed.Scheme != "https" && !insecureHTTPAllowed {
+		return fmt.Errorf("webhook URL must use HTTPS (set insecure_skip_verify to allow HTTP for development/in-cluster use)")
+	}
+	if c.FailurePolicy != FailurePolicyFail && c.FailurePolicy != FailurePolicyIgnore {
+		return fmt.Errorf("webhook failure_policy must be %q or %q, got %q",
+			FailurePolicyFail, FailurePolicyIgnore, c.FailurePolicy)
+	}
+	if c.Timeout != 0 && c.Timeout < MinTimeout {
+		return fmt.Errorf("webhook timeout must be between %v and %v", MinTimeout, MaxTimeout)
+	}
+	if c.Timeout > MaxTimeout {
+		return fmt.Errorf("webhook timeout %v exceeds maximum %v", c.Timeout, MaxTimeout)
+	}
+	if c.TLSConfig != nil {
+		if err := validateTLSConfig(c.TLSConfig); err != nil {
+			return fmt.Errorf("webhook TLS config: %w", err)
+		}
+	}
+	return nil
+}
+
+// UnmarshalJSON accepts webhook timeout values as either strings (for example "5s")
+// or numeric nanoseconds, while keeping the rest of the struct on the standard JSON path.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Name          string          `json:"name"`
+		URL           string          `json:"url"`
+		Timeout       json.RawMessage `json:"timeout"`
+		FailurePolicy FailurePolicy   `json:"failure_policy"`
+		TLSConfig     *TLSConfig      `json:"tls_config,omitempty"`
+		HMACSecretRef string          `json:"hmac_secret_ref,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	*c = Config{
+		Name:          raw.Name,
+		URL:           raw.URL,
+		FailurePolicy: raw.FailurePolicy,
+		TLSConfig:     raw.TLSConfig,
+		HMACSecretRef: raw.HMACSecretRef,
+	}
+
+	if len(raw.Timeout) == 0 || string(raw.Timeout) == "null" {
+		c.Timeout = DefaultTimeout
+		return nil
+	}
+
+	if raw.Timeout[0] == '"' {
+		var timeoutStr string
+		if err := json.Unmarshal(raw.Timeout, &timeoutStr); err != nil {
+			return fmt.Errorf("invalid timeout value: %w", err)
+		}
+		d, err := time.ParseDuration(timeoutStr)
+		if err != nil {
+			return fmt.Errorf("invalid timeout value %q: %w", timeoutStr, err)
+		}
+		c.Timeout = d
+		return nil
+	}
+
+	var timeoutNanos int64
+	if err := json.Unmarshal(raw.Timeout, &timeoutNanos); err != nil {
+		return fmt.Errorf("invalid timeout value: %w", err)
+	}
+	c.Timeout = time.Duration(timeoutNanos)
+	return nil
+}
+
+// Request is the payload sent to webhook endpoints.
+type Request struct {
+	// Version is the webhook API protocol version.
+	Version string `json:"version"`
+	// UID is a unique identifier for this request, used for idempotency.
+	UID string `json:"uid"`
+	// Timestamp is when the request was created.
+	Timestamp time.Time `json:"timestamp"`
+	// Principal contains the authenticated user's identity information.
+	// Uses PrincipalInfo (not Identity) so credentials never enter the webhook payload.
+	Principal *auth.PrincipalInfo `json:"principal"`
+	// MCPRequest is the raw MCP JSON-RPC request.
+	MCPRequest json.RawMessage `json:"mcp_request"`
+	// Context provides additional metadata about the request origin.
+	Context *RequestContext `json:"context"`
+}
+
+// RequestContext provides metadata about the request origin and environment.
+type RequestContext struct {
+	// ServerName is the ToolHive/vMCP instance name handling the request.
+	ServerName string `json:"server_name"`
+	// BackendServer is the actual MCP server being proxied (when using vMCP).
+	BackendServer string `json:"backend_server,omitempty"`
+	// Namespace is the Kubernetes namespace, if applicable.
+	Namespace string `json:"namespace,omitempty"`
+	// SourceIP is the client's IP address.
+	SourceIP string `json:"source_ip"`
+	// Transport is the connection transport type (e.g., "sse", "stdio").
+	Transport string `json:"transport"`
+}
+
+// Response is the response from a validating webhook.
+type Response struct {
+	// Version is the webhook API protocol version.
+	Version string `json:"version"`
+	// UID is the unique request identifier, echoed back for correlation.
+	UID string `json:"uid"`
+	// Allowed indicates whether the request is permitted.
+	Allowed bool `json:"allowed"`
+	// Code is an optional HTTP status code for denied requests.
+	Code int `json:"code,omitempty"`
+	// Message is an optional human-readable explanation.
+	Message string `json:"message,omitempty"`
+	// Reason is an optional machine-readable denial reason.
+	Reason string `json:"reason,omitempty"`
+	// Details contains optional structured information about the denial.
+	Details map[string]string `json:"details,omitempty"`
+}
+
+// MutatingResponse is the response from a mutating webhook.
+type MutatingResponse struct {
+	Response
+	// PatchType indicates the type of patch (e.g., "json_patch").
+	PatchType string `json:"patch_type,omitempty"`
+	// Patch contains the JSON Patch operations to apply.
+	Patch json.RawMessage `json:"patch,omitempty"`
+}
+
+// validateTLSConfig validates the TLS configuration for consistency.
+func validateTLSConfig(cfg *TLSConfig) error {
+	// If one of client cert/key is provided, both must be present.
+	if (cfg.ClientCertPath == "") != (cfg.ClientKeyPath == "") {
+		return fmt.Errorf("both client_cert_path and client_key_path must be provided for mTLS")
+	}
+	if cfg.CABundlePath != "" {
+		if _, err := os.Stat(cfg.CABundlePath); err != nil {
+			return fmt.Errorf("ca_bundle_path %q not found: %w", cfg.CABundlePath, err)
+		}
+	}
+	if cfg.ClientCertPath != "" {
+		if _, err := os.Stat(cfg.ClientCertPath); err != nil {
+			return fmt.Errorf("client_cert_path %q not found: %w", cfg.ClientCertPath, err)
+		}
+	}
+	if cfg.ClientKeyPath != "" {
+		if _, err := os.Stat(cfg.ClientKeyPath); err != nil {
+			return fmt.Errorf("client_key_path %q not found: %w", cfg.ClientKeyPath, err)
+		}
+	}
+	return nil
+}

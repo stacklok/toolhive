@@ -29,14 +29,18 @@ func NewHandler(ctx context.Context) (*Handler, error) {
 		return nil, fmt.Errorf("failed to create workload manager: %w", err)
 	}
 
-	// Create registry provider
-	registryProvider, err := registry.GetDefaultProvider()
+	// Create config provider
+	configProvider := config.NewProvider()
+
+	// This handler runs inside `thv serve` — disable browser-based OAuth to
+	// prevent the singleton registry provider from using interactive mode.
+	registryProvider, err := registry.GetDefaultProviderWithConfig(
+		configProvider,
+		registry.WithInteractive(false),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get registry provider: %w", err)
 	}
-
-	// Create config provider
-	configProvider := config.NewDefaultProvider()
 
 	return &Handler{
 		ctx:              ctx,

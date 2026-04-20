@@ -37,7 +37,7 @@ func skillValidateCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to resolve path: %w", err)
 	}
 
-	c := newSkillClient()
+	c := newSkillClient(cmd.Context())
 
 	result, err := c.Validate(cmd.Context(), absPath)
 	if err != nil {

@@ -117,7 +117,7 @@ func TestEncryptedManager_DeleteSecret(t *testing.T) {
 	// Test deleting a non-existent secret
 	err := manager.DeleteSecret(ctx, "non-existent")
 	assert.Error(t, err, "Deleting a non-existent secret should return an error")
-	assert.Contains(t, err.Error(), "cannot delete non-existent", "Error message should indicate the secret does not exist")
+	assert.ErrorIs(t, err, ErrSecretNotFound, "Error should be ErrSecretNotFound for a non-existent secret")
 
 	// Test deleting a secret with an empty name
 	err = manager.DeleteSecret(ctx, "")
@@ -370,7 +370,97 @@ func TestEncryptedManager_Concurrency(t *testing.T) {
 	}
 }
 
-// End of tests
+func TestEncryptedManager_DeleteSecrets_deletesSpecifiedKeys(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	tempFile := createTempFile(t)
+	defer os.Remove(tempFile)
+
+	key := generateRandomKey(t)
+	manager := createEncryptedManager(t, tempFile, key)
+
+	require.NoError(t, manager.SetSecret(ctx, "key1", "value1"))
+	require.NoError(t, manager.SetSecret(ctx, "key2", "value2"))
+	require.NoError(t, manager.SetSecret(ctx, "key3", "value3"))
+
+	err := manager.DeleteSecrets(ctx, []string{"key1", "key2"})
+	require.NoError(t, err)
+
+	_, err = manager.GetSecret(ctx, "key1")
+	assert.Error(t, err, "key1 should have been deleted")
+	assert.Contains(t, err.Error(), "not found")
+
+	_, err = manager.GetSecret(ctx, "key2")
+	assert.Error(t, err, "key2 should have been deleted")
+	assert.Contains(t, err.Error(), "not found")
+
+	value3, err := manager.GetSecret(ctx, "key3")
+	require.NoError(t, err, "key3 should still exist")
+	assert.Equal(t, "value3", value3)
+}
+
+func TestEncryptedManager_DeleteSecrets_persistsToDisk(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	tempFile := createTempFile(t)
+	defer os.Remove(tempFile)
+
+	key := generateRandomKey(t)
+	manager := createEncryptedManager(t, tempFile, key)
+
+	require.NoError(t, manager.SetSecret(ctx, "key1", "value1"))
+	require.NoError(t, manager.SetSecret(ctx, "key2", "value2"))
+	require.NoError(t, manager.SetSecret(ctx, "key3", "value3"))
+
+	require.NoError(t, manager.DeleteSecrets(ctx, []string{"key1", "key2"}))
+
+	reloaded := createEncryptedManager(t, tempFile, key)
+
+	_, err := reloaded.GetSecret(ctx, "key1")
+	assert.Error(t, err, "key1 should be gone after reload")
+
+	_, err = reloaded.GetSecret(ctx, "key2")
+	assert.Error(t, err, "key2 should be gone after reload")
+
+	reloadedValue3, err := reloaded.GetSecret(ctx, "key3")
+	require.NoError(t, err, "key3 should persist across reload")
+	assert.Equal(t, "value3", reloadedValue3)
+}
+
+func TestEncryptedManager_DeleteSecrets_emptyListIsNoop(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	tempFile := createTempFile(t)
+	defer os.Remove(tempFile)
+
+	key := generateRandomKey(t)
+	manager := createEncryptedManager(t, tempFile, key)
+
+	require.NoError(t, manager.SetSecret(ctx, "key1", "value1"))
+
+	require.NoError(t, manager.DeleteSecrets(ctx, []string{}))
+
+	remaining, err := manager.ListSecrets(ctx)
+	require.NoError(t, err)
+	assert.Len(t, remaining, 1, "key1 should remain after no-op delete")
+}
+
+func TestEncryptedManager_DeleteSecrets_nonExistentKeysNoError(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	tempFile := createTempFile(t)
+	defer os.Remove(tempFile)
+
+	key := generateRandomKey(t)
+	manager := createEncryptedManager(t, tempFile, key)
+
+	err := manager.DeleteSecrets(ctx, []string{"does-not-exist"})
+	assert.NoError(t, err)
+}
 
 // Helper functions
 func createTempFile(t *testing.T) string {

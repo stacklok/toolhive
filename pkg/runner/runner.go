@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package runner provides functionality for running MCP servers
@@ -22,6 +22,7 @@ import (
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
@@ -32,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 )
@@ -76,10 +78,16 @@ type Runner struct {
 	// Only initialized when Config.EmbeddedAuthServerConfig is set.
 	embeddedAuthServer *authserverrunner.EmbeddedAuthServer
 
-	// upstreamTokenService is the upstream token service, created eagerly
-	// after the embedded auth server is initialized in Run().
+	// upstreamTokenReader provides read-only access to upstream tokens for
+	// identity enrichment in auth middleware. Set when the embedded auth
+	// server is initialized in Run().
 	// Nil when no embedded auth server is configured.
-	upstreamTokenService upstreamtoken.Service
+	upstreamTokenReader upstreamtoken.TokenReader
+
+	// keyProvider provides in-process JWKS key lookups from the embedded
+	// auth server, eliminating self-referential HTTP calls.
+	// Nil when no embedded auth server is configured.
+	keyProvider keys.PublicKeyProvider
 }
 
 // statusManagerAdapter adapts statuses.StatusManager to auth.StatusUpdater interface
@@ -130,16 +138,18 @@ func (r *Runner) GetConfig() types.RunnerConfig {
 	return r.Config
 }
 
-// GetUpstreamTokenService returns an accessor for the upstream token service.
-// The returned function should be called at request time; it returns nil if
-// the embedded auth server is not configured.
-//
-// This method always returns a non-nil function. Service availability is
-// determined at request time when the returned function is called.
-func (r *Runner) GetUpstreamTokenService() func() upstreamtoken.Service {
-	return func() upstreamtoken.Service {
-		return r.upstreamTokenService
-	}
+// GetUpstreamTokenReader returns the UpstreamTokenReader for identity
+// enrichment in the auth middleware. Returns nil if no embedded auth
+// server is configured.
+func (r *Runner) GetUpstreamTokenReader() upstreamtoken.TokenReader {
+	return r.upstreamTokenReader
+}
+
+// GetKeyProvider returns the embedded auth server's public key provider
+// for in-process JWKS key lookups. Returns nil if no embedded auth server
+// is configured.
+func (r *Runner) GetKeyProvider() keys.PublicKeyProvider {
+	return r.keyProvider
 }
 
 // GetName returns the name of the mcp-service from the runner config (implements types.RunnerConfig)
@@ -202,13 +212,17 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("error determining secrets provider type: %w", err)
 		}
 
-		secretManager, err := secrets.CreateSecretProvider(providerType)
+		systemProvider, err := secrets.CreateProvider(providerType, secrets.WithScope(secrets.ScopeWorkloads))
 		if err != nil {
-			return fmt.Errorf("error instantiating secret manager %w", err)
+			return fmt.Errorf("error instantiating system secret manager: %w", err)
+		}
+		userProvider, err := secrets.CreateProvider(providerType, secrets.WithUserFacing())
+		if err != nil {
+			return fmt.Errorf("error instantiating user secret manager: %w", err)
 		}
 
 		// Process secrets (including RemoteAuthConfig and header forward secret resolution)
-		if _, err = r.Config.WithSecrets(ctx, secretManager); err != nil {
+		if _, err = r.Config.WithSecrets(ctx, systemProvider, userProvider); err != nil {
 			return err
 		}
 	}
@@ -235,6 +249,16 @@ func (r *Runner) Run(ctx context.Context) error {
 	// This must happen before middleware creation so that the upstream token
 	// service is available to middleware factories (e.g., upstreamswap).
 	if r.Config.EmbeddedAuthServerConfig != nil {
+		// Proxy runner supports only single-upstream configs; multi-upstream
+		// requires VirtualMCPServer.
+		if len(r.Config.EmbeddedAuthServerConfig.Upstreams) > 1 {
+			return fmt.Errorf(
+				"proxy runner does not support multiple upstream providers (found %d); "+
+					"use VirtualMCPServer for multi-upstream deployments",
+				len(r.Config.EmbeddedAuthServerConfig.Upstreams),
+			)
+		}
+
 		var err error
 		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, r.Config.EmbeddedAuthServerConfig)
 		if err != nil {
@@ -248,17 +272,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		// InProcessService handles this gracefully (returns ErrNoRefreshToken).
 		stor := r.embeddedAuthServer.IDPTokenStorage()
 		refresher := r.embeddedAuthServer.UpstreamTokenRefresher()
-		r.upstreamTokenService = upstreamtoken.NewInProcessService(stor, refresher)
+		r.upstreamTokenReader = upstreamtoken.NewInProcessService(stor, refresher)
+
+		// Expose key provider for in-process JWKS lookups (avoids self-referential HTTP)
+		r.keyProvider = r.embeddedAuthServer.KeyProvider()
 
 		// Mount auth server routes at specific prefixes to avoid conflicts with MCP endpoints
 		// (e.g., /.well-known/oauth-protected-resource is an MCP endpoint, not auth server)
-		handler := r.embeddedAuthServer.Handler()
-		transportConfig.PrefixHandlers = map[string]http.Handler{
-			"/oauth/": handler, // OAuth endpoints (authorize, callback, token, register)
-			"/.well-known/oauth-authorization-server": handler, // RFC 8414 OAuth AS Metadata
-			"/.well-known/openid-configuration":       handler, // OIDC Discovery
-			"/.well-known/jwks.json":                  handler, // JSON Web Key Set
-		}
+		transportConfig.PrefixHandlers = r.embeddedAuthServer.Routes()
 	}
 
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
@@ -288,8 +309,19 @@ func (r *Runner) Run(ctx context.Context) error {
 	var transportOpts []transport.Option
 	var setupResult *runtime.SetupResult
 
+	// Check policy gate before creating the server (applies to both local and remote)
+	if err := ActivePolicyGate().CheckCreateServer(ctx, r.Config); err != nil {
+		return fmt.Errorf("server creation blocked by policy: %w", err)
+	}
+
 	if r.Config.RemoteURL == "" {
 		// For local workloads, deploy the container using runtime.Setup first
+		var scalingConfig *rt.ScalingConfig
+		if r.Config.ScalingConfig != nil {
+			scalingConfig = &rt.ScalingConfig{
+				BackendReplicas: r.Config.ScalingConfig.BackendReplicas,
+			}
+		}
 		result, err := runtime.Setup(
 			ctx,
 			r.Config.Transport,
@@ -302,10 +334,13 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.PermissionProfile,
 			r.Config.K8sPodTemplatePatch,
 			r.Config.IsolateNetwork,
+			r.Config.AllowDockerGateway,
 			r.Config.IgnoreConfig,
 			r.Config.Host,
 			r.Config.TargetPort,
 			r.Config.TargetHost,
+			r.Config.Publish,
+			scalingConfig,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to set up workload: %w", err)
@@ -317,6 +352,31 @@ func (r *Runner) Run(ctx context.Context) error {
 		if setupResult.TargetURI != "" {
 			transportOpts = append(transportOpts, transport.WithTargetURI(setupResult.TargetURI))
 		}
+	}
+
+	// When Redis session storage is configured, create a Redis-backed session store
+	// so sessions are shared across proxy replicas instead of being pod-local.
+	if r.Config.ScalingConfig != nil && r.Config.ScalingConfig.SessionRedis != nil {
+		redisCfg := r.Config.ScalingConfig.SessionRedis
+		keyPrefix := redisCfg.KeyPrefix
+		if keyPrefix == "" {
+			keyPrefix = "thv:proxy:session:"
+		}
+		storage, err := session.NewRedisStorage(ctx, session.RedisConfig{
+			Addr:      redisCfg.Address,
+			Password:  os.Getenv(session.RedisPasswordEnvVar),
+			DB:        int(redisCfg.DB),
+			KeyPrefix: keyPrefix,
+		}, session.DefaultSessionTTL)
+		if err != nil {
+			return fmt.Errorf("failed to create Redis session storage: %w", err)
+		}
+		slog.Info("using Redis session storage",
+			"address", redisCfg.Address,
+			"db", redisCfg.DB,
+			"key_prefix", keyPrefix,
+		)
+		transportConfig.SessionStorage = storage
 	}
 
 	// Create transport with options
@@ -381,6 +441,17 @@ func (r *Runner) Run(ctx context.Context) error {
 				slog.Error("failed to update workload status", "error", err)
 			}
 		})
+	}
+
+	// Configure stateless mode if requested. Stateless mode applies to any
+	// streamable-HTTP server (remote or local container) where the upstream
+	// only accepts POST and does not support SSE-based sessions.
+	if r.Config.Stateless {
+		httpT, ok := transportHandler.(*transport.HTTPTransport)
+		if !ok {
+			return fmt.Errorf("--stateless requires streamable-HTTP or SSE transport, got %T", transportHandler)
+		}
+		httpT.SetStateless(true)
 	}
 
 	// Start the transport (which also starts the container and monitoring)
@@ -452,8 +523,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			slog.Warn("failed to cleanup telemetry", "error", err)
 		}
 
-		// Remove the PID file if it exists
-		if err := r.statusManager.ResetWorkloadPID(cleanupCtx, r.Config.BaseName); err != nil {
+		// Remove the PID file if it exists. Use PID-guarded reset so that a
+		// dying process does not clobber the PID of a replacement process that
+		// started in the meantime (e.g. during thv rm + thv run).
+		if err := r.statusManager.ResetWorkloadPIDIfMatch(cleanupCtx, r.Config.BaseName, os.Getpid()); err != nil {
 			slog.Warn("failed to reset workload PID", "container", r.Config.ContainerName, "error", err)
 		}
 
@@ -470,7 +543,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		slog.Info("running as detached process", "pid", os.Getpid())
 	} else {
 		// Notify that user that the workload has started successfully when using --foreground
-		fmt.Println("Workload started successfully. Press Ctrl+C to stop.")
+		slog.Info("workload started successfully, press Ctrl+C to stop")
 	}
 
 	// Create a done channel to signal when the server has been stopped
@@ -531,8 +604,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		stopMCPServer("Context cancelled")
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container exit)
-		// Remove the old PID from the state file
-		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
+		// Remove the old PID from the state file. Use PID-guarded reset to
+		// avoid clobbering a replacement process's PID.
+		if err := r.statusManager.ResetWorkloadPIDIfMatch(ctx, r.Config.BaseName, os.Getpid()); err != nil {
 			slog.Warn("failed to reset workload PID", "workload", r.Config.BaseName, "error", err)
 		}
 

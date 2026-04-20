@@ -15,7 +15,6 @@ import (
 	"sigs.k8s.io/yaml"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -42,11 +41,11 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  mcpGroupName,
+				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
-				McpPort:   8080,
+				MCPPort:   8080,
 				Env: []mcpv1alpha1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
@@ -63,39 +62,63 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 			}, server); err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
 				return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
 			}
 			return nil
 		}, timeout, pollingInterval).Should(Succeed())
 
-		By("Creating VirtualMCPServer with telemetry config")
+		By("Creating MCPTelemetryConfig for shared telemetry")
+		telCfg := &mcpv1alpha1.MCPTelemetryConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "e2e-telemetry-config",
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+					Enabled:  true,
+					Endpoint: "localhost:4317",
+					Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+					Metrics:  &mcpv1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+					ResourceAttributes: map[string]string{
+						"environment":  "e2e-test",
+						"test_id":      "telemetry_config_test",
+						"cluster_name": "kind-test-cluster",
+					},
+				},
+				Prometheus: &mcpv1alpha1.PrometheusConfig{Enabled: true},
+			},
+		}
+		Expect(k8sClient.Create(ctx, telCfg)).To(Succeed())
+
+		// Wait for MCPTelemetryConfig to be reconciled (hash set)
+		Eventually(func() bool {
+			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telCfg.Name,
+				Namespace: telCfg.Namespace,
+			}, fetched)
+			return err == nil && fetched.Status.ConfigHash != ""
+		}, timeout, pollingInterval).Should(BeTrue())
+
+		By("Creating VirtualMCPServer with telemetryConfigRef")
 		vmcp := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef:    &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
 				ServiceType: "NodePort",
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
+				TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+					Name:        "e2e-telemetry-config",
+					ServiceName: "custom-service-name",
+				},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
-					Telemetry: &telemetry.Config{
-						Endpoint:                    "localhost:4317",
-						EnablePrometheusMetricsPath: true,
-						TracingEnabled:              true, // Enable tracing to satisfy OTLP endpoint requirement
-						MetricsEnabled:              true, // Enable metrics to satisfy OTLP endpoint requirement
-						ServiceName:                 "custom-service-name",
-						ServiceVersion:              "v1.2.3",
-						CustomAttributes: map[string]string{
-							"environment":  "e2e-test",
-							"test_id":      "telemetry_config_test",
-							"cluster_name": "kind-test-cluster",
-						},
-						EnvironmentVariables: []string{"PATH", "HOME"},
-					},
 				},
 			},
 		}
@@ -136,6 +159,14 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 		}
 		Expect(k8sClient.Delete(ctx, backend)).To(Succeed())
 
+		By("Cleaning up MCPTelemetryConfig")
+		_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPTelemetryConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "e2e-telemetry-config",
+				Namespace: testNamespace,
+			},
+		})
+
 		By("Cleaning up MCPGroup")
 		group := &mcpv1alpha1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
@@ -167,18 +198,20 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 		var config vmcpconfig.Config
 		Expect(yaml.Unmarshal([]byte(configYAML), &config)).To(Succeed())
 
-		By("Validating telemetry configuration")
+		By("Validating telemetry configuration from MCPTelemetryConfig")
 		Expect(config.Telemetry).NotTo(BeNil(), "Telemetry config should not be nil")
 
-		// Verify all telemetry fields are preserved
 		Expect(config.Telemetry.EnablePrometheusMetricsPath).To(BeTrue(),
-			"EnablePrometheusMetricsPath should be preserved")
+			"EnablePrometheusMetricsPath should be set from MCPTelemetryConfig")
 
 		Expect(config.Telemetry.ServiceName).To(Equal("custom-service-name"),
-			"ServiceName should be preserved")
+			"ServiceName should come from TelemetryConfigRef override")
 
-		Expect(config.Telemetry.ServiceVersion).To(Equal("v1.2.3"),
-			"ServiceVersion should be preserved")
+		Expect(config.Telemetry.TracingEnabled).To(BeTrue(),
+			"TracingEnabled should be set from MCPTelemetryConfig")
+
+		Expect(config.Telemetry.MetricsEnabled).To(BeTrue(),
+			"MetricsEnabled should be set from MCPTelemetryConfig")
 
 		Expect(config.Telemetry.CustomAttributes).NotTo(BeNil(),
 			"CustomAttributes should not be nil")
@@ -189,11 +222,6 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 		Expect(config.Telemetry.CustomAttributes).To(HaveKeyWithValue("cluster_name", "kind-test-cluster"),
 			"CustomAttributes should contain 'cluster_name'")
 
-		Expect(config.Telemetry.EnvironmentVariables).NotTo(BeEmpty(),
-			"EnvironmentVariables should not be empty")
-		Expect(config.Telemetry.EnvironmentVariables).To(ContainElements("PATH", "HOME"),
-			"EnvironmentVariables should be preserved")
-
-		GinkgoWriter.Println("✓ All telemetry configuration fields preserved in ConfigMap")
+		GinkgoWriter.Println("✓ All telemetry configuration fields resolved from MCPTelemetryConfig")
 	})
 })

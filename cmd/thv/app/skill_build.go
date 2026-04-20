@@ -39,7 +39,7 @@ func skillBuildCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to resolve path: %w", err)
 	}
 
-	c := newSkillClient()
+	c := newSkillClient(cmd.Context())
 
 	result, err := c.Build(cmd.Context(), skills.BuildOptions{
 		Path: absPath,

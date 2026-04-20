@@ -22,7 +22,6 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
 const testNamespaceDefault = "default"
@@ -364,10 +363,9 @@ func TestReconcile_NotFound(t *testing.T) {
 		Build()
 
 	reconciler := &EmbeddingServerReconciler{
-		Client:          fakeClient,
-		Scheme:          scheme,
-		Recorder:        events.NewFakeRecorder(10),
-		ImageValidation: validation.ImageValidationAlwaysAllow,
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Recorder: events.NewFakeRecorder(10),
 	}
 
 	req := ctrl.Request{
@@ -400,7 +398,6 @@ func TestReconcile_CreateResources(t *testing.T) {
 		Scheme:           scheme,
 		Recorder:         events.NewFakeRecorder(10),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-		ImageValidation:  validation.ImageValidationAlwaysAllow,
 	}
 
 	ctx := context.TODO()
@@ -443,85 +440,6 @@ func TestReconcile_CreateResources(t *testing.T) {
 	}, svc)
 	assert.NoError(t, err, "Service should be created")
 	assert.Equal(t, embedding.Name, svc.Name)
-}
-
-// TestValidateImage tests image validation with different scenarios
-func TestValidateImage(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name              string
-		embedding         *mcpv1alpha1.EmbeddingServer
-		imageValidation   validation.ImageValidation
-		registries        []runtime.Object
-		expectError       bool
-		expectedCondition metav1.ConditionStatus
-		expectedReason    string
-	}{
-		{
-			name:              "always allow - no validation",
-			embedding:         createTestEmbeddingServer("test", testNamespaceDefault, "any-image:latest", "model"),
-			imageValidation:   validation.ImageValidationAlwaysAllow,
-			expectError:       false,
-			expectedCondition: metav1.ConditionTrue,
-			expectedReason:    mcpv1alpha1.ConditionReasonImageValidationSkipped,
-		},
-		{
-			name:              "registry enforcing - no registries",
-			embedding:         createTestEmbeddingServer("test", testNamespaceDefault, "test-image:latest", "model"),
-			imageValidation:   validation.ImageValidationRegistryEnforcing,
-			registries:        []runtime.Object{},
-			expectError:       false,
-			expectedCondition: metav1.ConditionTrue,
-			expectedReason:    mcpv1alpha1.ConditionReasonImageValidationSkipped,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			scheme := createEmbeddingServerTestScheme()
-			objects := append([]runtime.Object{tt.embedding}, tt.registries...)
-
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithRuntimeObjects(objects...).
-				WithStatusSubresource(tt.embedding).
-				Build()
-
-			reconciler := &EmbeddingServerReconciler{
-				Client:          fakeClient,
-				Scheme:          scheme,
-				ImageValidation: tt.imageValidation,
-			}
-
-			err := reconciler.validateImage(context.TODO(), tt.embedding)
-
-			if tt.expectError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-
-			// Verify condition was set
-			updatedEmbedding := &mcpv1alpha1.EmbeddingServer{}
-			err = fakeClient.Get(context.TODO(), types.NamespacedName{
-				Name:      tt.embedding.Name,
-				Namespace: tt.embedding.Namespace,
-			}, updatedEmbedding)
-			require.NoError(t, err)
-
-			// Find the ImageValidated condition
-			for _, cond := range updatedEmbedding.Status.Conditions {
-				if cond.Type == mcpv1alpha1.ConditionImageValidated {
-					assert.Equal(t, tt.expectedCondition, cond.Status)
-					assert.Equal(t, tt.expectedReason, cond.Reason)
-					return
-				}
-			}
-		})
-	}
 }
 
 // TestStatefulSetNeedsUpdate tests drift detection logic
@@ -825,7 +743,7 @@ func TestUpdateEmbeddingServerStatus(t *testing.T) {
 					ReadyReplicas: 1,
 				},
 			},
-			expectedPhase: mcpv1alpha1.EmbeddingServerPhaseRunning,
+			expectedPhase: mcpv1alpha1.EmbeddingServerPhaseReady,
 			expectedURL:   "http://test.default.svc.cluster.local:8080",
 		},
 		{

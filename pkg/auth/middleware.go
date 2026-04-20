@@ -52,7 +52,15 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		return fmt.Errorf("failed to unmarshal auth middleware parameters: %w", err)
 	}
 
-	middleware, authInfoHandler, err := GetAuthenticationMiddleware(context.Background(), params.OIDCConfig)
+	var opts []TokenValidatorOption
+	if reader := runner.GetUpstreamTokenReader(); reader != nil {
+		opts = append(opts, WithUpstreamTokenReader(reader))
+	}
+	if provider := runner.GetKeyProvider(); provider != nil {
+		opts = append(opts, WithKeyProvider(provider))
+	}
+
+	middleware, authInfoHandler, err := GetAuthenticationMiddleware(context.Background(), params.OIDCConfig, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}

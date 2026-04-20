@@ -11,6 +11,8 @@ metadata:
 spec:
   group: toolhive.stacklok.dev
   names:
+    categories:
+    - toolhive
     kind: MCPExternalAuthConfig
     listKind: MCPExternalAuthConfigList
     plural: mcpexternalauthconfigs
@@ -23,6 +25,12 @@ spec:
   - additionalPrinterColumns:
     - jsonPath: .spec.type
       name: Type
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Valid')].status
+      name: Valid
+      type: string
+    - jsonPath: .status.referencingWorkloads
+      name: References
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -132,6 +140,7 @@ spec:
                       - roleArn
                       type: object
                     type: array
+                    x-kubernetes-list-type: atomic
                   service:
                     default: aws-mcp
                     description: |-
@@ -184,6 +193,17 @@ spec:
                   EmbeddedAuthServer configures an embedded OAuth2/OIDC authorization server
                   Only used when Type is "embeddedAuthServer"
                 properties:
+                  authorizationEndpointBaseUrl:
+                    description: |-
+                      AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
+                      in the OAuth discovery document. When set, the discovery document will advertise
+                      `{authorizationEndpointBaseUrl}/oauth/authorize` instead of `{issuer}/oauth/authorize`.
+                      All other endpoints (token, registration, JWKS) remain derived from the issuer.
+                      This is useful when the browser-facing authorization endpoint needs to be on a
+                      different host than the issuer used for backend-to-backend calls.
+                      Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
+                    pattern: ^https?://[^\s?#]+[^/\s?#]$
+                    type: string
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -206,6 +226,7 @@ spec:
                       - name
                       type: object
                     type: array
+                    x-kubernetes-list-type: atomic
                   issuer:
                     description: |-
                       Issuer is the issuer identifier for this authorization server.
@@ -234,6 +255,7 @@ spec:
                       type: object
                     maxItems: 5
                     type: array
+                    x-kubernetes-list-type: atomic
                   storage:
                     description: |-
                       Storage configures the storage backend for the embedded auth server.
@@ -312,6 +334,7 @@ spec:
                                 items:
                                   type: string
                                 type: array
+                                x-kubernetes-list-type: atomic
                               sentinelService:
                                 description: |-
                                   SentinelService enables automatic discovery from a Kubernetes Service.
@@ -440,7 +463,7 @@ spec:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
                       The embedded auth server delegates authentication to these providers.
-                      Currently only a single upstream provider is supported (validated at runtime).
+                      MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
                       description: UpstreamProviderConfig defines configuration for
                         an upstream Identity Provider.
@@ -449,13 +472,28 @@ spec:
                           description: |-
                             Name uniquely identifies this upstream provider.
                             Used for routing decisions and session binding in multi-upstream scenarios.
+                            Must be lowercase alphanumeric with hyphens (DNS-label-like).
+                          maxLength: 63
                           minLength: 1
+                          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                           type: string
                         oauth2Config:
                           description: |-
                             OAuth2Config contains OAuth 2.0-specific configuration.
                             Required when Type is "oauth2", must be nil when Type is "oidc".
                           properties:
+                            additionalAuthorizationParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalAuthorizationParams are extra query parameters to include in
+                                authorization requests sent to the upstream provider.
+                                This is useful for providers that require custom parameters, such as
+                                Google's access_type=offline for obtaining refresh tokens.
+                                Framework-managed parameters (response_type, client_id, redirect_uri,
+                                scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+                              maxProperties: 16
+                              type: object
                             authorizationEndpoint:
                               description: AuthorizationEndpoint is the URL for the
                                 OAuth authorization endpoint.
@@ -492,6 +530,7 @@ spec:
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                             tokenEndpoint:
                               description: TokenEndpoint is the URL for the OAuth
                                 token endpoint.
@@ -559,6 +598,7 @@ spec:
                                       items:
                                         type: string
                                       type: array
+                                      x-kubernetes-list-type: atomic
                                     nameFields:
                                       description: |-
                                         NameFields is an ordered list of field names to try for the display name.
@@ -567,6 +607,7 @@ spec:
                                       items:
                                         type: string
                                       type: array
+                                      x-kubernetes-list-type: atomic
                                     subjectFields:
                                       description: |-
                                         SubjectFields is an ordered list of field names to try for the user ID.
@@ -575,6 +616,7 @@ spec:
                                       items:
                                         type: string
                                       type: array
+                                      x-kubernetes-list-type: atomic
                                   type: object
                                 httpMethod:
                                   description: |-
@@ -598,6 +640,20 @@ spec:
                             OIDCConfig contains OIDC-specific configuration.
                             Required when Type is "oidc", must be nil when Type is "oauth2".
                           properties:
+                            additionalAuthorizationParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalAuthorizationParams are extra query parameters to include in
+                                authorization requests sent to the upstream provider.
+                                This is useful for providers that require custom parameters, such as
+                                Google's access_type=offline for obtaining refresh tokens.
+                                Note: when using access_type=offline, also set explicit scopes to avoid
+                                the default offline_access scope being sent alongside it.
+                                Framework-managed parameters (response_type, client_id, redirect_uri,
+                                scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+                              maxProperties: 16
+                              type: object
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
                                 registered with the upstream IDP.
@@ -633,9 +689,13 @@ spec:
                               description: |-
                                 Scopes are the OAuth scopes to request from the upstream IDP.
                                 If not specified, defaults to ["openid", "offline_access"].
+                                When using additionalAuthorizationParams with provider-specific refresh token
+                                mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
+                                sending both offline_access and the provider-specific parameter.
                               items:
                                 type: string
                               type: array
+                              x-kubernetes-list-type: atomic
                             userInfoOverride:
                               description: |-
                                 UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.
@@ -668,6 +728,7 @@ spec:
                                       items:
                                         type: string
                                       type: array
+                                      x-kubernetes-list-type: atomic
                                     nameFields:
                                       description: |-
                                         NameFields is an ordered list of field names to try for the display name.
@@ -676,6 +737,7 @@ spec:
                                       items:
                                         type: string
                                       type: array
+                                      x-kubernetes-list-type: atomic
                                     subjectFields:
                                       description: |-
                                         SubjectFields is an ordered list of field names to try for the user ID.
@@ -684,6 +746,7 @@ spec:
                                       items:
                                         type: string
                                       type: array
+                                      x-kubernetes-list-type: atomic
                                   type: object
                                 httpMethod:
                                   description: |-
@@ -713,6 +776,9 @@ spec:
                       type: object
                     minItems: 1
                     type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                 required:
                 - issuer
                 - upstreamProviders
@@ -785,6 +851,16 @@ spec:
                     items:
                       type: string
                     type: array
+                    x-kubernetes-list-type: atomic
+                  subjectProviderName:
+                    description: |-
+                      SubjectProviderName is the name of the upstream provider whose token is used as the
+                      RFC 8693 subject token instead of identity.Token when performing token exchange.
+                      When left empty and an embedded authorization server is configured on the VirtualMCPServer,
+                      the controller automatically populates this field with the first configured upstream
+                      provider name. Set it explicitly to override that default or to select a specific
+                      provider when multiple upstreams are configured.
+                    type: string
                   subjectTokenType:
                     description: |-
                       SubjectTokenType is the type of the incoming subject token.
@@ -812,7 +888,22 @@ spec:
                 - unauthenticated
                 - embeddedAuthServer
                 - awsSts
+                - upstreamInject
                 type: string
+              upstreamInject:
+                description: |-
+                  UpstreamInject configures upstream token injection for backend requests.
+                  Only used when Type is "upstreamInject".
+                properties:
+                  providerName:
+                    description: |-
+                      ProviderName is the name of the upstream IDP provider whose access token
+                      should be injected as the Authorization: Bearer header.
+                    minLength: 1
+                    type: string
+                required:
+                - providerName
+                type: object
             required:
             - type
             type: object
@@ -833,10 +924,14 @@ spec:
                 : !has(self.embeddedAuthServer)'
             - message: awsSts configuration must be set if and only if type is 'awsSts'
               rule: 'self.type == ''awsSts'' ? has(self.awsSts) : !has(self.awsSts)'
+            - message: upstreamInject configuration must be set if and only if type
+                is 'upstreamInject'
+              rule: 'self.type == ''upstreamInject'' ? has(self.upstreamInject) :
+                !has(self.upstreamInject)'
             - message: no configuration must be set when type is 'unauthenticated'
               rule: 'self.type == ''unauthenticated'' ? (!has(self.tokenExchange)
                 && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer)
-                && !has(self.awsSts)) : true'
+                && !has(self.awsSts) && !has(self.upstreamInject)) : true'
           status:
             description: MCPExternalAuthConfigStatus defines the observed state of
               MCPExternalAuthConfig
@@ -899,6 +994,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               configHash:
                 description: ConfigHash is a hash of the current configuration for
                   change detection
@@ -909,13 +1007,34 @@ spec:
                   It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server.
                 format: int64
                 type: integer
-              referencingServers:
+              referencingWorkloads:
                 description: |-
-                  ReferencingServers is a list of MCPServer resources that reference this MCPExternalAuthConfig
-                  This helps track which servers need to be reconciled when this config changes
+                  ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.
+                  Each entry identifies the workload by kind and name.
                 items:
-                  type: string
+                  description: |-
+                    WorkloadReference identifies a workload that references a shared configuration resource.
+                    Namespace is implicit — cross-namespace references are not supported.
+                  properties:
+                    kind:
+                      description: Kind is the type of workload resource
+                      enum:
+                      - MCPServer
+                      - VirtualMCPServer
+                      - MCPRemoteProxy
+                      type: string
+                    name:
+                      description: Name is the name of the workload resource
+                      minLength: 1
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             type: object
         type: object
     served: true

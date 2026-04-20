@@ -59,13 +59,12 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:       "example/mcp-server:v1.0.0",
-					Transport:   "stdio",
-					ProxyMode:   "sse",
-					ProxyPort:   8080,
-					McpPort:     8081,
-					Args:        []string{"--verbose", "--debug"},
-					ToolsFilter: []string{"tool1", "tool2"},
+					Image:     "example/mcp-server:v1.0.0",
+					Transport: "stdio",
+					ProxyMode: "sse",
+					ProxyPort: 8080,
+					MCPPort:   8081,
+					Args:      []string{"--verbose", "--debug"},
 					Env: []mcpv1alpha1.EnvVar{
 						{
 							Name:  "DEBUG",
@@ -172,7 +171,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			Expect(runConfig.Port).To(Equal(8080))
 			Expect(runConfig.TargetPort).To(Equal(8081))
 			Expect(runConfig.CmdArgs).To(Equal([]string{"--verbose", "--debug"}))
-			Expect(runConfig.ToolsFilter).To(Equal([]string{"tool1", "tool2"}))
 
 			// Verify environment variables
 			Expect(runConfig.EnvVars).To(HaveKeyWithValue("DEBUG", "true"))
@@ -356,10 +354,108 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 		})
 	})
 
+	Context("When creating an MCPServer with scaling configuration", func() {
+		It("Should populate ScalingConfig in RunConfig when backendReplicas and Redis session storage are set", func() {
+			namespace := "scaling-runconfig-ns"
+			mcpServerName := "scaling-runconfig-server"
+			configMapName := mcpServerName + "-runconfig"
+
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: namespace},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			backendReplicas := int32(3)
+			mcpServer := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:           "example/mcp-server:latest",
+					Transport:       "stdio",
+					ProxyPort:       8080,
+					BackendReplicas: &backendReplicas,
+					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
+						Provider:  mcpv1alpha1.SessionStorageProviderRedis,
+						Address:   "redis:6379",
+						DB:        1,
+						KeyPrefix: "thv:",
+					},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+			defer k8sClient.Delete(ctx, mcpServer) //nolint:errcheck
+
+			configMap := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			Expect(configMap.Data).To(HaveKey("runconfig.json"))
+
+			var runConfig runner.RunConfig
+			Expect(json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)).To(Succeed())
+
+			Expect(runConfig.ScalingConfig).NotTo(BeNil())
+			Expect(runConfig.ScalingConfig.BackendReplicas).NotTo(BeNil())
+			Expect(*runConfig.ScalingConfig.BackendReplicas).To(Equal(int32(3)))
+			Expect(runConfig.ScalingConfig.SessionRedis).NotTo(BeNil())
+			Expect(runConfig.ScalingConfig.SessionRedis.Address).To(Equal("redis:6379"))
+			Expect(runConfig.ScalingConfig.SessionRedis.DB).To(Equal(int32(1)))
+			Expect(runConfig.ScalingConfig.SessionRedis.KeyPrefix).To(Equal("thv:"))
+		})
+
+		It("Should omit ScalingConfig from RunConfig when no scaling fields are set", func() {
+			namespace := "scaling-absent-ns"
+			mcpServerName := "scaling-absent-server"
+			configMapName := mcpServerName + "-runconfig"
+
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: namespace},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			mcpServer := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "example/mcp-server:latest",
+					Transport: "stdio",
+					ProxyPort: 8080,
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+			defer k8sClient.Delete(ctx, mcpServer) //nolint:errcheck
+
+			configMap := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			Expect(configMap.Data).To(HaveKey("runconfig.json"))
+
+			var runConfig runner.RunConfig
+			Expect(json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)).To(Succeed())
+
+			Expect(runConfig.ScalingConfig).To(BeNil())
+		})
+	})
+
 	Context("When creating MCPServer with complex configurations", func() {
-		It("Should handle MCPServer with telemetry configuration", func() {
-			namespace := "telemetry-test-ns"
-			mcpServerName := "telemetry-server"
+		It("Should handle MCPServer with telemetryConfigRef", func() {
+			namespace := "telemetry-ref-test-ns"
+			mcpServerName := "telemetry-ref-server"
 			configMapName := mcpServerName + "-runconfig"
 
 			// Create namespace
@@ -370,7 +466,36 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			}
 			_ = k8sClient.Create(ctx, ns)
 
-			// Create MCPServer with telemetry configuration
+			// Create the MCPTelemetryConfig resource
+			telCfg := &mcpv1alpha1.MCPTelemetryConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "shared-otel-config",
+					Namespace: namespace,
+				},
+			}
+			telCfg.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+				Enabled:  true,
+				Endpoint: "otel-collector:4317",
+				Insecure: true,
+				Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true, SamplingRate: "0.1"},
+				Metrics:  &mcpv1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+			}
+			telCfg.Spec.Prometheus = &mcpv1alpha1.PrometheusConfig{Enabled: true}
+
+			Expect(k8sClient.Create(ctx, telCfg)).To(Succeed())
+			defer k8sClient.Delete(ctx, telCfg) //nolint:errcheck
+
+			// Wait for the MCPTelemetryConfig to be reconciled (hash set)
+			Eventually(func() bool {
+				fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      telCfg.Name,
+					Namespace: telCfg.Namespace,
+				}, fetched)
+				return err == nil && fetched.Status.ConfigHash != ""
+			}, timeout, interval).Should(BeTrue())
+
+			// Create MCPServer with telemetryConfigRef
 			mcpServer := &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
@@ -380,31 +505,17 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Image:     "telemetry/mcp-server:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					Telemetry: &mcpv1alpha1.TelemetryConfig{
-						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
-							Enabled:     true,
-							Endpoint:    "http://otel-collector:4317",
-							ServiceName: "test-service",
-							Insecure:    true,
-							Tracing: &mcpv1alpha1.OpenTelemetryTracingConfig{
-								Enabled:      true,
-								SamplingRate: "0.1",
-							},
-							Metrics: &mcpv1alpha1.OpenTelemetryMetricsConfig{
-								Enabled: true,
-							},
-						},
-						Prometheus: &mcpv1alpha1.PrometheusConfig{
-							Enabled: true,
-						},
+					TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+						Name:        "shared-otel-config",
+						ServiceName: "test-service",
 					},
 				},
 			}
 
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
-			defer k8sClient.Delete(ctx, mcpServer)
+			defer k8sClient.Delete(ctx, mcpServer) //nolint:errcheck
 
-			// Wait for ConfigMap to be created
+			// Wait for RunConfig ConfigMap to be created
 			configMap := &corev1.ConfigMap{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
@@ -418,15 +529,86 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			err := json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify telemetry configuration
 			Expect(runConfig.TelemetryConfig).NotTo(BeNil())
+			// Endpoint should have http:// stripped (same normalization as inline path)
 			Expect(runConfig.TelemetryConfig.Endpoint).To(Equal("otel-collector:4317"))
+			// ServiceName comes from the ref override
 			Expect(runConfig.TelemetryConfig.ServiceName).To(Equal("test-service"))
 			Expect(runConfig.TelemetryConfig.Insecure).To(BeTrue())
 			Expect(runConfig.TelemetryConfig.TracingEnabled).To(BeTrue())
 			Expect(runConfig.TelemetryConfig.MetricsEnabled).To(BeTrue())
 			Expect(runConfig.TelemetryConfig.SamplingRate).To(Equal("0.1"))
 			Expect(runConfig.TelemetryConfig.EnablePrometheusMetricsPath).To(BeTrue())
+		})
+
+		It("Should use server name as default service name when telemetryConfigRef has no override", func() {
+			namespace := "telemetry-default-svc-ns"
+			mcpServerName := "telemetry-default-svc-server"
+			configMapName := mcpServerName + "-runconfig"
+
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: namespace},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			telCfg := &mcpv1alpha1.MCPTelemetryConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-svcname-config",
+					Namespace: namespace,
+				},
+			}
+			telCfg.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+				Enabled:  true,
+				Endpoint: "otel-collector:4317",
+				Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+			}
+
+			Expect(k8sClient.Create(ctx, telCfg)).To(Succeed())
+			defer k8sClient.Delete(ctx, telCfg) //nolint:errcheck
+
+			Eventually(func() bool {
+				fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      telCfg.Name,
+					Namespace: telCfg.Namespace,
+				}, fetched)
+				return err == nil && fetched.Status.ConfigHash != ""
+			}, timeout, interval).Should(BeTrue())
+
+			mcpServer := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "telemetry/mcp-server:latest",
+					Transport: "stdio",
+					ProxyPort: 8080,
+					TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+						Name: "no-svcname-config",
+						// ServiceName intentionally omitted — should default to server name
+					},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+			defer k8sClient.Delete(ctx, mcpServer) //nolint:errcheck
+
+			configMap := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			var runConfig runner.RunConfig
+			err := json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(runConfig.TelemetryConfig).NotTo(BeNil())
+			// ServiceName should fall back to the MCPServer name
+			Expect(runConfig.TelemetryConfig.ServiceName).To(Equal(mcpServerName))
 		})
 
 		It("Should handle MCPServer with inline authorization configuration", func() {
@@ -515,12 +697,11 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:       "deterministic/mcp-server:v1.0.0",
-					Transport:   "sse",
-					ProxyPort:   9090,
-					McpPort:     8080,
-					Args:        []string{"--arg1", "--arg2", "--arg3"},
-					ToolsFilter: []string{"tool3", "tool1", "tool2"},
+					Image:     "deterministic/mcp-server:v1.0.0",
+					Transport: "sse",
+					ProxyPort: 9090,
+					MCPPort:   8080,
+					Args:      []string{"--arg1", "--arg2", "--arg3"},
 					Env: []mcpv1alpha1.EnvVar{
 						{Name: "VAR_C", Value: "value_c"},
 						{Name: "VAR_A", Value: "value_a"},
@@ -602,117 +783,6 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			Expect(runConfig.Port).To(Equal(9090))
 			Expect(runConfig.TargetPort).To(Equal(8080))
 			Expect(runConfig.CmdArgs).To(Equal([]string{"--arg1", "--arg2", "--arg3"}))
-			Expect(runConfig.ToolsFilter).To(Equal([]string{"tool3", "tool1", "tool2"}))
-		})
-
-		It("Should handle MCPServer with OIDC authentication configuration", func() {
-			namespace := "oidc-test-ns"
-			mcpServerName := "oidc-server"
-			configMapName := mcpServerName + "-runconfig"
-
-			// Create namespace
-			ns := &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: namespace,
-				},
-			}
-			_ = k8sClient.Create(ctx, ns)
-
-			// Create MCPServer with OIDC configuration
-			mcpServer := &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      mcpServerName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "auth/mcp-server:latest",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: "inline",
-						Inline: &mcpv1alpha1.InlineOIDCConfig{
-							Issuer:             "https://auth.example.com",
-							Audience:           "toolhive-api",
-							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
-							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
-							ClientID:           "toolhive-client",
-							ClientSecret:       "secret123",
-							JWKSAllowPrivateIP: true,
-						},
-					},
-				},
-			}
-
-			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
-			defer k8sClient.Delete(ctx, mcpServer)
-
-			// Wait for ConfigMap to be created
-			configMap := &corev1.ConfigMap{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      configMapName,
-					Namespace: namespace,
-				}, configMap)
-			}, timeout, interval).Should(Succeed())
-
-			// Verify ConfigMap has the expected label
-			Expect(configMap.Labels).To(HaveKeyWithValue("toolhive.stacklok.io/mcp-server", mcpServerName))
-
-			// Verify ConfigMap data contains runconfig.json
-			Expect(configMap.Data).To(HaveKey("runconfig.json"))
-			runConfigJSON := configMap.Data["runconfig.json"]
-			Expect(runConfigJSON).NotTo(BeEmpty())
-
-			// Parse and verify RunConfig content
-			var runConfig runner.RunConfig
-			err := json.Unmarshal([]byte(runConfigJSON), &runConfig)
-			Expect(err).NotTo(HaveOccurred())
-
-			// Verify OIDC configuration
-			Expect(runConfig.OIDCConfig).NotTo(BeNil())
-			Expect(runConfig.OIDCConfig.Issuer).To(Equal("https://auth.example.com"))
-			Expect(runConfig.OIDCConfig.Audience).To(Equal("toolhive-api"))
-			Expect(runConfig.OIDCConfig.JWKSURL).To(Equal("https://auth.example.com/.well-known/jwks.json"))
-			Expect(runConfig.OIDCConfig.IntrospectionURL).To(Equal("https://auth.example.com/oauth/introspect"))
-			Expect(runConfig.OIDCConfig.ClientID).To(Equal("toolhive-client"))
-			Expect(runConfig.OIDCConfig.ClientSecret).To(Equal("secret123"))
-			Expect(runConfig.OIDCConfig.AllowPrivateIP).To(BeTrue())
-
-			// Verify fields that should be empty/nil
-			Expect(runConfig.OIDCConfig.CACertPath).To(BeEmpty())
-			Expect(runConfig.OIDCConfig.AuthTokenFile).To(BeEmpty())
-
-			// Verify middleware_configs includes auth middleware
-			Expect(runConfig.MiddlewareConfigs).NotTo(BeEmpty())
-
-			// Find the auth middleware
-			authMiddlewareFound := false
-			for _, middleware := range runConfig.MiddlewareConfigs {
-				if middleware.Type == "auth" {
-					authMiddlewareFound = true
-
-					// Verify auth middleware has the OIDC config
-					var params map[string]interface{}
-					err := json.Unmarshal(middleware.Parameters, &params)
-					Expect(err).NotTo(HaveOccurred(), "Failed to unmarshal auth middleware parameters")
-
-					if oidcConfigMap, exists := params["oidc_config"]; exists && oidcConfigMap != nil {
-						oidcConfig, ok := oidcConfigMap.(map[string]interface{})
-						Expect(ok).To(BeTrue(), "oidc_config should be a map")
-						Expect(oidcConfig["Issuer"]).To(Equal("https://auth.example.com"))
-						Expect(oidcConfig["Audience"]).To(Equal("toolhive-api"))
-						Expect(oidcConfig["JWKSURL"]).To(Equal("https://auth.example.com/.well-known/jwks.json"))
-						Expect(oidcConfig["IntrospectionURL"]).To(Equal("https://auth.example.com/oauth/introspect"))
-						Expect(oidcConfig["ClientID"]).To(Equal("toolhive-client"))
-						Expect(oidcConfig["ClientSecret"]).To(Equal("secret123"))
-						Expect(oidcConfig["AllowPrivateIP"]).To(BeTrue())
-					} else {
-						Fail("OIDC config not found in auth middleware parameters")
-					}
-					break
-				}
-			}
-			Expect(authMiddlewareFound).To(BeTrue(), "Auth middleware should be present in middleware_configs")
 		})
 
 		It("Should handle MCPServer with authorization ConfigMap reference", func() {

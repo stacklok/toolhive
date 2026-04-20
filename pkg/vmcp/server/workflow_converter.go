@@ -136,7 +136,7 @@ func convertSingleStep(index int, cs *config.WorkflowStepConfig) (composer.Workf
 	}
 
 	// Create workflow step
-	return composer.WorkflowStep{
+	ws := composer.WorkflowStep{
 		ID:             cs.ID,
 		Type:           stepType,
 		Tool:           cs.Tool,
@@ -148,7 +148,25 @@ func convertSingleStep(index int, cs *config.WorkflowStepConfig) (composer.Workf
 		Timeout:        stepTimeout,
 		Metadata:       make(map[string]string),
 		DefaultResults: defaultResults,
-	}, nil
+	}
+
+	// Convert forEach-specific fields
+	if stepType == composer.StepTypeForEach {
+		ws.Collection = cs.Collection
+		ws.ItemVar = cs.ItemVar
+		ws.MaxParallel = cs.MaxParallel
+		ws.MaxIterations = cs.MaxIterations
+
+		if cs.InnerStep != nil {
+			innerStep, err := convertSingleStep(0, cs.InnerStep)
+			if err != nil {
+				return composer.WorkflowStep{}, fmt.Errorf("step %s: failed to convert inner step: %w", cs.ID, err)
+			}
+			ws.InnerStep = &innerStep
+		}
+	}
+
+	return ws, nil
 }
 
 // validateStepBasics validates basic step requirements.
@@ -156,8 +174,9 @@ func validateStepBasics(index int, cs *config.WorkflowStepConfig) error {
 	if cs.ID == "" {
 		return fmt.Errorf("step %d: step ID is required", index)
 	}
+	// Type defaults to "tool" in config validation; apply the same default here
 	if cs.Type == "" {
-		return fmt.Errorf("step %s: step type is required", cs.ID)
+		cs.Type = config.WorkflowStepTypeToolCall
 	}
 	return nil
 }
@@ -173,6 +192,8 @@ func parseStepType(cs *config.WorkflowStepConfig) (composer.StepType, error) {
 		}
 	case "elicitation":
 		stepType = composer.StepTypeElicitation
+	case "forEach":
+		stepType = composer.StepTypeForEach
 	default:
 		return "", fmt.Errorf("step %s: invalid step type %s", cs.ID, cs.Type)
 	}

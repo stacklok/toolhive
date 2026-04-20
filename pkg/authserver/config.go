@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -39,6 +40,13 @@ type RunConfig struct {
 	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
 	Issuer string `json:"issuer" yaml:"issuer"`
 
+	// AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
+	// in the OAuth discovery document. When set, the discovery document will advertise
+	// `{authorization_endpoint_base_url}/oauth/authorize` instead of `{issuer}/oauth/authorize`.
+	// All other endpoints remain derived from the issuer.
+	//nolint:lll // field tags require full JSON+YAML names
+	AuthorizationEndpointBaseURL string `json:"authorization_endpoint_base_url,omitempty" yaml:"authorization_endpoint_base_url,omitempty"`
+
 	// SigningKeyConfig configures the signing key provider for JWT operations.
 	// If nil or empty, an ephemeral signing key will be auto-generated (development only).
 	SigningKeyConfig *SigningKeyRunConfig `json:"signing_key_config,omitempty" yaml:"signing_key_config,omitempty"`
@@ -56,7 +64,7 @@ type RunConfig struct {
 
 	// Upstreams configures connections to upstream Identity Providers.
 	// At least one upstream is required - the server delegates authentication to these providers.
-	// Currently only a single upstream is supported.
+	// Multiple upstreams are supported for sequential authorization chains.
 	Upstreams []UpstreamRunConfig `json:"upstreams" yaml:"upstreams"`
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
@@ -118,6 +126,22 @@ const (
 	UpstreamProviderTypeOAuth2 UpstreamProviderType = "oauth2"
 )
 
+// DefaultUpstreamName is the name assigned to a single unnamed upstream.
+const DefaultUpstreamName = "default"
+
+// ResolveUpstreamName returns the canonical name for an upstream.
+// An empty name is resolved to DefaultUpstreamName ("default").
+func ResolveUpstreamName(name string) string {
+	if name == "" {
+		return DefaultUpstreamName
+	}
+	return name
+}
+
+// upstreamNameRegex validates upstream provider names.
+// Names must be DNS-label-like to prevent delimiter injection in storage keys.
+var upstreamNameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+
 // UpstreamRunConfig configures an upstream identity provider.
 type UpstreamRunConfig struct {
 	// Name uniquely identifies this upstream.
@@ -161,11 +185,20 @@ type OIDCUpstreamRunConfig struct {
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	// If not specified, defaults to ["openid", "offline_access"].
+	// When using AdditionalAuthorizationParams with provider-specific refresh
+	// token mechanisms (e.g., Google's access_type=offline), set explicit scopes
+	// to avoid sending both offline_access and the provider-specific parameter.
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 
 	// UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.
 	// By default, the UserInfo endpoint is discovered automatically via OIDC discovery.
 	UserInfoOverride *UserInfoRunConfig `json:"userinfo_override,omitempty" yaml:"userinfo_override,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests. Useful for provider-specific parameters like
+	// Google's access_type=offline.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
 }
 
 // OAuth2UpstreamRunConfig contains configuration for pure OAuth 2.0 providers.
@@ -203,6 +236,12 @@ type OAuth2UpstreamRunConfig struct {
 	// the configured dot-notation paths.
 	//nolint:lll // field tags require full JSON+YAML names
 	TokenResponseMapping *TokenResponseMappingRunConfig `json:"token_response_mapping,omitempty" yaml:"token_response_mapping,omitempty"`
+
+	// AdditionalAuthorizationParams are extra query parameters to include in
+	// authorization requests. Useful for provider-specific parameters like
+	// Google's access_type=offline.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
 }
 
 // TokenResponseMappingRunConfig maps non-standard token response fields to standard fields.
@@ -287,6 +326,10 @@ type Config struct {
 	// This will be included in the "iss" claim of issued tokens.
 	Issuer string
 
+	// AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
+	// in the OAuth discovery document. When empty, defaults to Issuer.
+	AuthorizationEndpointBaseURL string
+
 	// KeyProvider provides signing keys for JWT operations.
 	// Supports key rotation by returning multiple public keys for JWKS.
 	// If nil, an ephemeral key will be auto-generated (development only).
@@ -318,7 +361,7 @@ type Config struct {
 
 	// Upstreams contains configurations for connecting to upstream IDPs.
 	// At least one upstream is required - the server delegates authentication to the upstream IDP.
-	// Currently only a single upstream is supported.
+	// Multiple upstreams form a sequential authorization chain.
 	Upstreams []UpstreamConfig
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
@@ -339,22 +382,18 @@ type Config struct {
 	AllowedAudiences []string
 }
 
-// GetUpstream returns the primary upstream configuration.
-// For current single-upstream deployments, this returns the only configured upstream.
-// Returns nil if no upstreams are configured (call Validate first).
-func (c *Config) GetUpstream() *UpstreamConfig {
-	if len(c.Upstreams) == 0 {
-		return nil
-	}
-	return &c.Upstreams[0]
-}
-
 // Validate checks that the Config is valid.
 func (c *Config) Validate() error {
 	slog.Debug("validating authserver config", "issuer", c.Issuer)
 
 	if err := validateIssuerURL(c.Issuer); err != nil {
 		return fmt.Errorf("issuer: %w", err)
+	}
+
+	if c.AuthorizationEndpointBaseURL != "" {
+		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL); err != nil {
+			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
+		}
 	}
 
 	// KeyProvider is optional - if nil, applyDefaults() will create a GeneratingProvider
@@ -389,19 +428,14 @@ func (c *Config) validateUpstreams() error {
 	if len(c.Upstreams) == 0 {
 		return fmt.Errorf("at least one upstream is required")
 	}
-	if len(c.Upstreams) > 1 {
-		return fmt.Errorf("multiple upstreams not yet supported (found %d)", len(c.Upstreams))
-	}
-
 	// Track names for uniqueness checking
 	seenNames := make(map[string]bool)
 
 	for i := range c.Upstreams {
 		up := &c.Upstreams[i]
 
-		// Default empty name to "default"
-		if up.Name == "" {
-			up.Name = "default"
+		if err := c.validateUpstreamName(i, up); err != nil {
+			return err
 		}
 
 		// Check for duplicate names
@@ -410,33 +444,70 @@ func (c *Config) validateUpstreams() error {
 		}
 		seenNames[up.Name] = true
 
-		// Validate based on provider type
-		switch up.Type {
-		case UpstreamProviderTypeOIDC:
-			if up.OIDCConfig == nil {
-				return fmt.Errorf("upstream %q: oidc_config is required for OIDC provider", up.Name)
-			}
-			if up.OAuth2Config != nil {
-				return fmt.Errorf("upstream %q: oauth2_config must not be set when type is %q", up.Name, up.Type)
-			}
-			if err := up.OIDCConfig.Validate(); err != nil {
-				return fmt.Errorf("upstream %q: %w", up.Name, err)
-			}
-		case UpstreamProviderTypeOAuth2:
-			if up.OAuth2Config == nil {
-				return fmt.Errorf("upstream %q: oauth2_config is required for OAuth2 provider", up.Name)
-			}
-			if up.OIDCConfig != nil {
-				return fmt.Errorf("upstream %q: oidc_config must not be set when type is %q", up.Name, up.Type)
-			}
-			if err := up.OAuth2Config.Validate(); err != nil {
-				return fmt.Errorf("upstream %q: %w", up.Name, err)
-			}
-		default:
-			return fmt.Errorf("upstream %q: unsupported provider type: %q", up.Name, up.Type)
+		if err := validateUpstreamType(up); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+// validateUpstreamName validates and defaults the upstream name.
+// For single upstream, empty names default to "default".
+// For multi-upstream, explicit non-"default" names are required.
+func (c *Config) validateUpstreamName(i int, up *UpstreamConfig) error {
+	if len(c.Upstreams) == 1 {
+		if up.Name == "" {
+			up.Name = DefaultUpstreamName
+		}
+	} else {
+		if up.Name == "" {
+			return fmt.Errorf(
+				"upstream[%d]: name must be explicitly set when multiple upstreams are configured", i)
+		}
+		if up.Name == DefaultUpstreamName {
+			return fmt.Errorf(
+				"upstream[%d]: name %q is reserved for single-upstream configs; use a descriptive name",
+				i, up.Name)
+		}
+	}
+
+	// Validate name format (DNS-label-like) to prevent storage key injection
+	if !upstreamNameRegex.MatchString(up.Name) {
+		return fmt.Errorf(
+			"upstream[%d]: name %q must match %s (lowercase alphanumeric and hyphens)",
+			i, up.Name, upstreamNameRegex.String())
+	}
+
+	return nil
+}
+
+// validateUpstreamType validates the provider type and its type-specific config.
+func validateUpstreamType(up *UpstreamConfig) error {
+	switch up.Type {
+	case UpstreamProviderTypeOIDC:
+		if up.OIDCConfig == nil {
+			return fmt.Errorf("upstream %q: oidc_config is required for OIDC provider", up.Name)
+		}
+		if up.OAuth2Config != nil {
+			return fmt.Errorf("upstream %q: oauth2_config must not be set when type is %q", up.Name, up.Type)
+		}
+		if err := up.OIDCConfig.Validate(); err != nil {
+			return fmt.Errorf("upstream %q: %w", up.Name, err)
+		}
+	case UpstreamProviderTypeOAuth2:
+		if up.OAuth2Config == nil {
+			return fmt.Errorf("upstream %q: oauth2_config is required for OAuth2 provider", up.Name)
+		}
+		if up.OIDCConfig != nil {
+			return fmt.Errorf("upstream %q: oidc_config must not be set when type is %q", up.Name, up.Type)
+		}
+		if err := up.OAuth2Config.Validate(); err != nil {
+			return fmt.Errorf("upstream %q: %w", up.Name, err)
+		}
+	default:
+		return fmt.Errorf("upstream %q: unsupported provider type: %q", up.Name, up.Type)
+	}
 	return nil
 }
 

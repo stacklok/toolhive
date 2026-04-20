@@ -580,6 +580,87 @@ func TestHandler_CanBeCalledMultipleTimes(t *testing.T) {
 	}
 }
 
+func TestHandler_RegistersWellKnownRoutes(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+
+	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+
+	// Stub AuthInfoHandler that responds with a fixed JSON body.
+	authInfoHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"resource":"https://mcp.example.com"}`))
+	})
+
+	srv, err := server.New(
+		t.Context(),
+		&server.Config{
+			Host:            "127.0.0.1",
+			Port:            0,
+			AuthInfoHandler: authInfoHandler,
+			SessionFactory:  newNoopMockFactory(t),
+			// AuthServer is not set here because the concrete type
+			// *asrunner.EmbeddedAuthServer cannot be easily constructed in an
+			// external test without a real auth server backing it.
+			// The RegisterHandlers code path on EmbeddedAuthServer is covered
+			// by TestRegisterHandlers in pkg/authserver/runner.
+		},
+		mockRouter,
+		mockBackendClient,
+		mockDiscoveryMgr,
+		mockBackendRegistry,
+		nil,
+	)
+	require.NoError(t, err)
+
+	handler, err := srv.Handler(t.Context())
+	require.NoError(t, err)
+	require.NotNil(t, handler)
+
+	t.Run("oauth-protected-resource returns 200", func(t *testing.T) {
+		t.Parallel()
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+		handler.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+		assert.Contains(t, rec.Body.String(), `"resource"`)
+	})
+
+	t.Run("oauth-protected-resource subpath returns 200", func(t *testing.T) {
+		t.Parallel()
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource/mcp", nil)
+		handler.ServeHTTP(rec, req)
+
+		// The NewWellKnownHandler matches the prefix, so subpaths should also be handled.
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("unrelated well-known path is not handled by AuthInfoHandler", func(t *testing.T) {
+		t.Parallel()
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/other", nil)
+		handler.ServeHTTP(rec, req)
+
+		// Should not be 200 from our stub handler.
+		assert.NotEqual(t, http.StatusOK, rec.Code)
+	})
+}
+
 func TestAcceptHeaderValidation(t *testing.T) {
 	t.Parallel()
 

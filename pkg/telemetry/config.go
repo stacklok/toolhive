@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/stacklok/toolhive/pkg/telemetry/providers"
@@ -95,6 +96,12 @@ type Config struct {
 	// +kubebuilder:default=true
 	// +optional
 	UseLegacyAttributes bool `json:"useLegacyAttributes" yaml:"useLegacyAttributes"`
+
+	// CACertPath is the file path to a CA certificate bundle for the OTLP endpoint.
+	// When set, the OTLP exporters use this CA to verify the collector's TLS certificate
+	// instead of relying solely on the system CA pool.
+	// +optional
+	CACertPath string `json:"caCertPath,omitempty" yaml:"caCertPath,omitempty"`
 }
 
 // Ensure Config implements fmt.Stringer and fmt.GoStringer
@@ -117,10 +124,12 @@ func (c Config) String() string {
 
 	return fmt.Sprintf("Config{Endpoint: %q, ServiceName: %q, ServiceVersion: %q, TracingEnabled: %t, "+
 		"MetricsEnabled: %t, SamplingRate: %q, Headers: %v, Insecure: %t, "+
-		"EnablePrometheusMetricsPath: %t, EnvironmentVariables: %v, CustomAttributes: %v, UseLegacyAttributes: %t}",
+		"EnablePrometheusMetricsPath: %t, EnvironmentVariables: %v, CustomAttributes: %v, "+
+		"UseLegacyAttributes: %t, CACertPath: %q}",
 		c.Endpoint, c.ServiceName, c.ServiceVersion, c.TracingEnabled,
 		c.MetricsEnabled, c.SamplingRate, redactedHeaders, c.Insecure,
-		c.EnablePrometheusMetricsPath, c.EnvironmentVariables, c.CustomAttributes, c.UseLegacyAttributes)
+		c.EnablePrometheusMetricsPath, c.EnvironmentVariables, c.CustomAttributes,
+		c.UseLegacyAttributes, c.CACertPath)
 }
 
 // GetSamplingRateFloat parses the SamplingRate string and returns it as float64.
@@ -236,7 +245,8 @@ type Provider struct {
 }
 
 // NewProvider creates a new OpenTelemetry provider with the given configuration.
-func NewProvider(ctx context.Context, config Config) (*Provider, error) {
+// Optional extra span processors (e.g. a Sentry bridge) can be registered via extraProcessors.
+func NewProvider(ctx context.Context, config Config, extraProcessors ...sdktrace.SpanProcessor) (*Provider, error) {
 	// Validate configuration
 	if err := validateOtelConfig(config); err != nil {
 		return nil, err
@@ -256,11 +266,19 @@ func NewProvider(ctx context.Context, config Config) (*Provider, error) {
 		providers.WithOTLPEndpoint(config.Endpoint),
 		providers.WithHeaders(config.Headers),
 		providers.WithInsecure(config.Insecure),
+		providers.WithCACertPath(config.CACertPath),
 		providers.WithTracingEnabled(config.TracingEnabled),
 		providers.WithMetricsEnabled(config.MetricsEnabled),
 		providers.WithSamplingRate(config.GetSamplingRateFloat()),
 		providers.WithEnablePrometheusMetricsPath(config.EnablePrometheusMetricsPath),
 		providers.WithCustomAttributes(config.CustomAttributes),
+	}
+
+	// Merge globally registered processors (self-registered by integrations such
+	// as a Sentry bridge) with any explicitly passed ones.
+	allProcessors := append(registeredSpanProcessors(), extraProcessors...)
+	if len(allProcessors) > 0 {
+		telemetryOptions = append(telemetryOptions, providers.WithExtraSpanProcessors(allProcessors...))
 	}
 
 	telemetryProviders, err := providers.NewCompositeProvider(ctx, telemetryOptions...)

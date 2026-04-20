@@ -438,8 +438,9 @@ func TestIntegration_AuditLogging(t *testing.T) {
 	mockBackendClient.EXPECT().
 		ReadResource(gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(&vmcp.ResourceReadResult{
-			Contents: []byte(`{"temp": 72, "condition": "sunny"}`),
-			MimeType: "application/json",
+			Contents: []vmcp.ResourceContent{
+				{URI: "weather://data", MimeType: "application/json", Text: `{"temp": 72, "condition": "sunny"}`},
+			},
 		}, nil).
 		AnyTimes()
 
@@ -509,7 +510,6 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
-			mock.EXPECT().Touch().AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
 			mock.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
 			mock.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
@@ -776,12 +776,14 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 	identityMiddleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			identity := &auth.Identity{
-				Subject: "user-123",
-				Name:    "John Doe",
-				Email:   "john.doe@example.com",
-				Claims: map[string]any{
-					"client_name":    "mcp-client",
-					"client_version": "2.0.0",
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "user-123",
+					Name:    "John Doe",
+					Email:   "john.doe@example.com",
+					Claims: map[string]any{
+						"client_name":    "mcp-client",
+						"client_version": "2.0.0",
+					},
 				},
 			}
 			ctx := auth.WithIdentity(r.Context(), identity)

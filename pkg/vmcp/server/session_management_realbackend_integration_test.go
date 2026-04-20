@@ -251,10 +251,11 @@ func TestIntegration_RealBackend_Termination(t *testing.T) {
 	require.Equal(t, http.StatusOK, delResp.StatusCode, "DELETE should return 200 OK")
 
 	// Subsequent requests with the terminated session ID are rejected.
-	// After Terminate() deletes the session from storage, the discovery middleware
-	// returns HTTP 401 ("session not found") before the SDK's Validate() is invoked.
+	// After Terminate() deletes the session from storage, the discovery middleware passes
+	// through (no session found → skip capability injection), and the SDK's Validate()
+	// returns HTTP 404 for the unknown session ID.
 	postResp := client.CallTool("echo", map[string]any{"input": "should fail"})
 	defer postResp.Body.Close()
-	assert.Equal(t, http.StatusUnauthorized, postResp.StatusCode,
+	assert.Equal(t, http.StatusNotFound, postResp.StatusCode,
 		"request with terminated session ID should be rejected")
 }

@@ -66,85 +66,36 @@ func TestLabelsForRegistryAPI(t *testing.T) {
 	}
 }
 
-// TestGetConfigMapName tests ConfigMap name generation
-func TestGetConfigMapName(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name        string
-		mcpRegistry *mcpv1alpha1.MCPRegistry
-		expected    string
-		description string
-	}{
-		{
-			name: "BasicConfigMapName",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-registry",
-				},
-			},
-			expected:    "test-registry-registry-storage",
-			description: "Should generate correct ConfigMap name for basic registry",
-		},
-		{
-			name: "ConfigMapNameWithSpecialChars",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-special-registry-123",
-				},
-			},
-			expected:    "my-special-registry-123-registry-storage",
-			description: "Should handle special characters in registry name",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			result := getConfigMapName(tt.mcpRegistry)
-			assert.Equal(t, tt.expected, result, tt.description)
-
-			// Also verify it matches the MCPRegistry helper method
-			assert.Equal(t, tt.mcpRegistry.GetStorageName(), result,
-				"getConfigMapName should match MCPRegistry.GetStorageName()")
-		})
-	}
-}
-
 // TestMCPRegistryHelperMethods tests the helper methods on MCPRegistry type
 func TestMCPRegistryHelperMethods(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name                    string
 		registryName            string
-		expectedStorageName     string
 		expectedAPIResourceName string
 		description             string
 	}{
 		{
 			name:                    "BasicNames",
 			registryName:            "test-registry",
-			expectedStorageName:     "test-registry-registry-storage",
 			expectedAPIResourceName: "test-registry-api",
 			description:             "Should generate correct resource names for basic registry",
 		},
 		{
 			name:                    "NamesWithSpecialChars",
 			registryName:            "my-special-registry-123",
-			expectedStorageName:     "my-special-registry-123-registry-storage",
 			expectedAPIResourceName: "my-special-registry-123-api",
 			description:             "Should handle special characters in registry name",
 		},
 		{
 			name:                    "MinimalNames",
 			registryName:            "a",
-			expectedStorageName:     "a-registry-storage",
 			expectedAPIResourceName: "a-api",
 			description:             "Should handle minimal registry name",
 		},
 		{
 			name:                    "LongNames",
 			registryName:            "this-is-a-very-long-registry-name-that-should-work-fine",
-			expectedStorageName:     "this-is-a-very-long-registry-name-that-should-work-fine-registry-storage",
 			expectedAPIResourceName: "this-is-a-very-long-registry-name-that-should-work-fine-api",
 			description:             "Should handle long registry names",
 		},
@@ -158,10 +109,6 @@ func TestMCPRegistryHelperMethods(t *testing.T) {
 					Name: tt.registryName,
 				},
 			}
-
-			storageName := mcpRegistry.GetStorageName()
-			assert.Equal(t, tt.expectedStorageName, storageName,
-				"GetStorageName should return expected storage name")
 
 			apiResourceName := mcpRegistry.GetAPIResourceName()
 			assert.Equal(t, tt.expectedAPIResourceName, apiResourceName,

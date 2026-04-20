@@ -52,7 +52,6 @@ func newNoopMockFactory(t *testing.T) *sessionfactorymocks.MockMultiSessionFacto
 		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
-			mock.EXPECT().Touch().AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
 			mock.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
 			mock.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
@@ -61,6 +60,7 @@ func newNoopMockFactory(t *testing.T) *sessionfactorymocks.MockMultiSessionFacto
 			mock.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
 			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
 			mock.EXPECT().Tools().Return(nil).AnyTimes()
+			mock.EXPECT().AllTools().Return(nil).AnyTimes()
 			mock.EXPECT().Resources().Return(nil).AnyTimes()
 			mock.EXPECT().Prompts().Return(nil).AnyTimes()
 			mock.EXPECT().BackendSessions().Return(nil).AnyTimes()
@@ -99,7 +99,6 @@ func newMockFactory(t *testing.T, ctrl *gomock.Controller, tools []vmcp.Tool) (*
 			}
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
-			mock.EXPECT().Touch().AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
 			mock.EXPECT().CreatedAt().Return(time.Time{}).AnyTimes()
 			mock.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
@@ -112,6 +111,7 @@ func newMockFactory(t *testing.T, ctrl *gomock.Controller, tools []vmcp.Tool) (*
 			toolsCopy := make([]vmcp.Tool, len(tools))
 			copy(toolsCopy, tools)
 			mock.EXPECT().Tools().Return(toolsCopy).AnyTimes()
+			mock.EXPECT().AllTools().Return(toolsCopy).AnyTimes()
 			mock.EXPECT().Resources().Return(nil).AnyTimes()
 			mock.EXPECT().Prompts().Return(nil).AnyTimes()
 			mock.EXPECT().BackendSessions().Return(nil).AnyTimes()
@@ -378,20 +378,17 @@ func TestIntegration_SessionManagement_Termination(t *testing.T) {
 	defer delResp.Body.Close()
 	require.Equal(t, http.StatusOK, delResp.StatusCode, "DELETE should return 200 OK")
 
-	// Close() must have been called on the mock MultiSession,
-	// confirming backend connections are released.
 	state.mu.Lock()
 	lastSession := state.lastSession
 	state.mu.Unlock()
 	require.NotNil(t, lastSession, "factory should have created a session")
-	assert.True(t, state.closed.Load(),
-		"Close() should have been called on the MultiSession after termination")
 
 	// Subsequent requests with the terminated session ID are rejected.
-	// After Terminate() deletes the session from storage, the discovery middleware's
-	// handleSubsequentRequest finds no session and returns HTTP 401 before the SDK
-	// even calls Validate(). The 401 is consistent with the existing behaviour for
-	// all expired/unknown sessions in the discovery middleware.
+	// After Terminate() deletes the session from storage, the discovery middleware passes
+	// through (no session found → skip capability injection), and the SDK's Validate()
+	// returns HTTP 404 for the unknown session ID.
+	// This request also triggers the lazy eviction: GetMultiSession → checkSession →
+	// ErrExpired → onEvict → Close().
 	toolCallReq := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      2,
@@ -403,8 +400,16 @@ func TestIntegration_SessionManagement_Termination(t *testing.T) {
 	}
 	postResp := postMCP(t, ts.URL, toolCallReq, sessionID)
 	defer postResp.Body.Close()
-	assert.Equal(t, http.StatusUnauthorized, postResp.StatusCode,
+	assert.Equal(t, http.StatusNotFound, postResp.StatusCode,
 		"request with terminated session ID should be rejected")
+
+	// Close() is called lazily by onEvict when the stale cache entry is
+	// evicted on the first GetMultiSession call after Terminate deleted the
+	// session from storage (triggered by the POST above).
+	assert.Eventually(t, func() bool {
+		return state.closed.Load()
+	}, 2*time.Second, 10*time.Millisecond,
+		"Close() should have been called on the MultiSession after termination")
 }
 
 // TestIntegration_SessionManagement_TokenBinding verifies end-to-end token binding security:

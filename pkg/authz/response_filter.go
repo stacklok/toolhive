@@ -17,6 +17,8 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
 
 var errBug = errors.New("there's a bug")
@@ -24,28 +26,33 @@ var errBug = errors.New("there's a bug")
 // ResponseFilteringWriter wraps an http.ResponseWriter to intercept and filter responses
 type ResponseFilteringWriter struct {
 	http.ResponseWriter
-	authorizer      authorizers.Authorizer
-	request         *http.Request
-	method          string
-	buffer          *bytes.Buffer
-	statusCode      int
-	annotationCache *AnnotationCache
+	authorizer       authorizers.Authorizer
+	request          *http.Request
+	method           string
+	buffer           *bytes.Buffer
+	statusCode       int
+	annotationCache  *AnnotationCache
+	passThroughTools map[string]struct{}
 }
 
 // NewResponseFilteringWriter creates a new response filtering writer.
 // The annotationCache parameter is optional; pass nil to disable annotation caching.
+// The passThroughTools parameter is optional; tools whose names appear in this set
+// bypass policy filtering because authorization is enforced elsewhere (e.g., inside
+// the optimizer decorator for find_tool/call_tool).
 func NewResponseFilteringWriter(
 	w http.ResponseWriter, authorizer authorizers.Authorizer, r *http.Request, method string,
-	annotationCache *AnnotationCache,
+	annotationCache *AnnotationCache, passThroughTools map[string]struct{},
 ) *ResponseFilteringWriter {
 	return &ResponseFilteringWriter{
-		ResponseWriter:  w,
-		authorizer:      authorizer,
-		request:         r,
-		method:          method,
-		buffer:          &bytes.Buffer{},
-		statusCode:      http.StatusOK,
-		annotationCache: annotationCache,
+		ResponseWriter:   w,
+		authorizer:       authorizer,
+		request:          r,
+		method:           method,
+		buffer:           &bytes.Buffer{},
+		statusCode:       http.StatusOK,
+		annotationCache:  annotationCache,
+		passThroughTools: passThroughTools,
 	}
 }
 
@@ -69,8 +76,8 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 		return err
 	}
 
-	// Check if this is a list operation that needs filtering
-	if !isListOperation(rfw.method) {
+	// Check if this response needs filtering
+	if !requiresResponseFiltering(rfw.method) {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes()) //nolint:gosec // G705 - JSON-RPC response, not rendered as HTML
 		return err
@@ -237,11 +244,14 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	return nil
 }
 
-// isListOperation checks if the method is a list operation
-func isListOperation(method string) bool {
+// requiresResponseFiltering reports whether the method needs response filtering.
+// This covers the three MCP list operations and the optimizer's find_tool call,
+// whose response embeds a filtered tool list inside a CallToolResult.
+func requiresResponseFiltering(method string) bool {
 	return method == string(mcp.MethodToolsList) ||
 		method == string(mcp.MethodPromptsList) ||
-		method == string(mcp.MethodResourcesList)
+		method == string(mcp.MethodResourcesList) ||
+		method == optimizerdec.FindToolName
 }
 
 // filterListResponse filters the list response based on authorization policies
@@ -264,8 +274,10 @@ func (rfw *ResponseFilteringWriter) filterListResponse(response *jsonrpc2.Respon
 		return rfw.filterPromptsResponse(response)
 	case string(mcp.MethodResourcesList):
 		return rfw.filterResourcesResponse(response)
+	case optimizerdec.FindToolName:
+		return rfw.filterFindToolResponse(response)
 	default:
-		// Unknown list method, just return as-is
+		// Unknown method, just return as-is
 		return response, nil
 	}
 }
@@ -283,38 +295,31 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 	// subsequent tools/call requests can look up annotations.
 	rfw.annotationCache.SetFromToolsList(listResult.Tools)
 
-	// Note: instantiating the list ensures that no null value is sent over the wire.
-	// This is basically defensive programming, but for clients.
-	filteredTools := []mcp.Tool{}
-	for i, tool := range listResult.Tools {
-		// Inject this tool's annotations into the context so Cedar policies
-		// that use when clauses on resource attributes (e.g. resource.readOnlyHint)
-		// can evaluate correctly. Without this, the authorization check runs
-		// against a context with no annotations and all when clauses fail.
-		ctx := rfw.request.Context()
-		ann := &listResult.Tools[i].Annotations
-		if hasAnyHint(ann) {
-			ctx = authorizers.WithToolAnnotations(ctx, convertMCPAnnotation(ann))
-		}
-
-		// Check if the user is authorized to call this tool
-		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
-			ctx,
-			authorizers.MCPFeatureTool,
-			authorizers.MCPOperationCall,
-			tool.Name,
-			nil, // No arguments for the authorization check
-		)
-		if err != nil {
-			slog.Warn("Authorization check failed for tool, skipping",
-				"tool", tool.Name, "error", err)
-			continue
-		}
-
-		if authorized {
-			filteredTools = append(filteredTools, tool)
+	// When the optimizer is enabled, its meta-tools (find_tool, call_tool) appear
+	// in tools/list instead of real backend tools. These meta-tools won't match
+	// any operator-written Cedar policy (which references real tool names), so
+	// default-deny would filter them out — leaving the client with zero tools.
+	// Authorization for the underlying backend tools is enforced by the authz
+	// middleware: call_tool requests are intercepted and the inner tool_name
+	// argument is authorized against Cedar policy before the request is served.
+	// See: https://github.com/stacklok/toolhive/issues/4373
+	passThrough := []mcp.Tool{}
+	regular := []mcp.Tool{}
+	for _, t := range listResult.Tools {
+		if _, ok := rfw.passThroughTools[t.Name]; ok {
+			passThrough = append(passThrough, t)
+		} else {
+			regular = append(regular, t)
 		}
 	}
+
+	// filterToolsByPolicy checks each tool against the caller's Cedar policies
+	// (injecting annotations into context for when-clause evaluation) and returns
+	// only tools the caller is authorized to call.
+	policyFiltered := filterToolsByPolicy(rfw.request.Context(), rfw.authorizer, regular)
+	filteredTools := make([]mcp.Tool, 0, len(passThrough)+len(policyFiltered))
+	filteredTools = append(filteredTools, passThrough...)
+	filteredTools = append(filteredTools, policyFiltered...)
 
 	// Create a new result with filtered tools
 	filteredResult := mcp.ListToolsResult{
@@ -366,7 +371,15 @@ func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Res
 
 		if authorized {
 			filteredPrompts = append(filteredPrompts, prompt)
+		} else {
+			slog.Debug("Prompt denied by authorization policy",
+				"prompt", prompt.Name)
 		}
+	}
+
+	if denied := len(listResult.Prompts) - len(filteredPrompts); denied > 0 {
+		slog.Debug("Authorization policy filtered prompts",
+			"total", len(listResult.Prompts), "allowed", len(filteredPrompts), "denied", denied)
 	}
 
 	// Create a new result with filtered prompts
@@ -419,7 +432,15 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 
 		if authorized {
 			filteredResources = append(filteredResources, resource)
+		} else {
+			slog.Debug("Resource denied by authorization policy",
+				"resource", resource.URI)
 		}
+	}
+
+	if denied := len(listResult.Resources) - len(filteredResources); denied > 0 {
+		slog.Debug("Authorization policy filtered resources",
+			"total", len(listResult.Resources), "allowed", len(filteredResources), "denied", denied)
 	}
 
 	// Create a new result with filtered resources
@@ -461,4 +482,67 @@ func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error
 	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
 	_, writeErr := rfw.ResponseWriter.Write(errorData)
 	return writeErr
+}
+
+// filterFindToolResponse filters the tools list embedded in a find_tool tools/call
+// response. The response is a CallToolResult whose first text content item contains
+// a JSON-encoded optimizer.FindToolOutput. Only tools the caller is authorized to
+// call are retained.
+//
+// mcp.CallToolResult is used directly with its built-in UnmarshalJSON so that the
+// Content interface slice is deserialized correctly into concrete types
+// (TextContent, ImageContent, etc.) without a bespoke minimal struct.
+//
+// To identify which content item carries the find_tool output, each TextContent item
+// is tentatively unmarshaled as optimizer.FindToolOutput. A successful unmarshal is a
+// stronger signal than checking tc.Type == "text" alone — it confirms the item actually
+// carries a find_tool result rather than an arbitrary text payload (e.g. an error string).
+func (rfw *ResponseFilteringWriter) filterFindToolResponse(response *jsonrpc2.Response) (*jsonrpc2.Response, error) {
+	// Use mcp.CallToolResult's built-in UnmarshalJSON for correct Content interface dispatch.
+	var callResult mcp.CallToolResult
+	if err := json.Unmarshal(response.Result, &callResult); err != nil || callResult.IsError {
+		return response, nil
+	}
+
+	// Find the first TextContent item that successfully unmarshals as optimizer.FindToolOutput.
+	textIdx := -1
+	var output optimizer.FindToolOutput
+	for i, c := range callResult.Content {
+		tc, ok := c.(mcp.TextContent)
+		if !ok {
+			continue
+		}
+		if err := json.Unmarshal([]byte(tc.Text), &output); err == nil {
+			textIdx = i
+			break
+		}
+	}
+	if textIdx == -1 {
+		return response, nil
+	}
+
+	// Populate annotation cache before filtering, mirroring filterToolsResponse.
+	// Subsequent call_tool requests use these annotations for Cedar when-clause evaluation
+	// (e.g. resource.readOnlyHint). The cache is populated from the unfiltered list so
+	// that annotations are available even for tools that Cedar will deny.
+	rfw.annotationCache.SetFromToolsList(output.Tools)
+
+	output.Tools = filterToolsByPolicy(rfw.request.Context(), rfw.authorizer, output.Tools)
+
+	filteredText, err := json.Marshal(output)
+	if err != nil {
+		return nil, fmt.Errorf("re-encoding find_tool output: %w", err)
+	}
+	original := callResult.Content[textIdx].(mcp.TextContent)
+	callResult.Content[textIdx] = mcp.TextContent{Type: original.Type, Text: string(filteredText)}
+
+	filteredResult, err := json.Marshal(callResult)
+	if err != nil {
+		return nil, fmt.Errorf("re-encoding call result: %w", err)
+	}
+
+	return &jsonrpc2.Response{
+		ID:     response.ID,
+		Result: json.RawMessage(filteredResult),
+	}, nil
 }

@@ -262,7 +262,7 @@ func (s *sseLineProcessor) extractSessionID(line string) {
 			sid = m[2]
 		}
 		s.proxy.setServerInitialized()
-		if err := s.proxy.sessionManager.AddWithID(sid); err != nil {
+		if err := s.proxy.sessionManager.AddWithID(normalizeSessionID(sid)); err != nil {
 			slog.Error("failed to create session from SSE line", "error", err)
 		}
 		s.sessionFound = true

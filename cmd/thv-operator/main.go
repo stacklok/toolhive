@@ -32,7 +32,6 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
 )
 
@@ -75,13 +74,16 @@ func main() {
 	// Bridge to slog for consistency with the rest of the ToolHive codebase.
 	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
+	podNamespace, _ := os.LookupEnv("POD_NAMESPACE")
+
 	options := ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
-		WebhookServer:          webhook.NewServer(webhook.Options{Port: 9443}),
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "toolhive-operator-leader-election",
+		Scheme:                  scheme,
+		Metrics:                 metricsserver.Options{BindAddress: metricsAddr},
+		WebhookServer:           webhook.NewServer(webhook.Options{Port: 9443}),
+		HealthProbeBindAddress:  probeAddr,
+		LeaderElection:          enableLeaderElection,
+		LeaderElectionID:        "toolhive-operator-leader-election",
+		LeaderElectionNamespace: podNamespace,
 		Cache: cache.Options{
 			// if nil, defaults to all namespaces
 			DefaultNamespaces: getDefaultNamespaces(),
@@ -107,8 +109,6 @@ func main() {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
-
-	podNamespace, _ := os.LookupEnv("POD_NAMESPACE")
 	// Set up telemetry service - only runs when elected as leader
 	telemetryService := telemetry.NewService(mgr.GetClient(), podNamespace)
 	if err := mgr.Add(&telemetry.LeaderTelemetryRunnable{
@@ -159,7 +159,7 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 
 	// Set up server-related controllers
 	if enabledFeatures[featureServer] {
-		if err := setupServerControllers(mgr, enableRegistry); err != nil {
+		if err := setupServerControllers(mgr); err != nil {
 			return err
 		}
 	} else {
@@ -188,46 +188,68 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 	return nil
 }
 
-// setupServerControllers sets up server-related controllers (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, ToolConfig)
-func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
-	// Set up field indexing for MCPServer.Spec.GroupRef
+// setupGroupRefFieldIndexes sets up field indexing for spec.groupRef on all resource types
+// that can reference an MCPGroup. This enables efficient lookups by groupRef in controllers.
+func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
+	// MCPServer.Spec.GroupRef
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
 		&mcpv1alpha1.MCPServer{},
 		"spec.groupRef",
 		func(obj client.Object) []string {
 			mcpServer := obj.(*mcpv1alpha1.MCPServer)
-			if mcpServer.Spec.GroupRef == "" {
+			name := mcpServer.Spec.GroupRef.GetName()
+			if name == "" {
 				return nil
 			}
-			return []string{mcpServer.Spec.GroupRef}
+			return []string{name}
 		},
 	); err != nil {
 		return fmt.Errorf("unable to create field index for MCPServer spec.groupRef: %w", err)
 	}
 
-	// Set up field indexing for MCPRemoteProxy.Spec.GroupRef
+	// MCPRemoteProxy.Spec.GroupRef
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
 		&mcpv1alpha1.MCPRemoteProxy{},
 		"spec.groupRef",
 		func(obj client.Object) []string {
 			mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-			if mcpRemoteProxy.Spec.GroupRef == "" {
+			name := mcpRemoteProxy.Spec.GroupRef.GetName()
+			if name == "" {
 				return nil
 			}
-			return []string{mcpRemoteProxy.Spec.GroupRef}
+			return []string{name}
 		},
 	); err != nil {
 		return fmt.Errorf("unable to create field index for MCPRemoteProxy spec.groupRef: %w", err)
 	}
 
-	// Set image validation mode based on whether registry is enabled
-	// If ENABLE_REGISTRY is enabled, enforce registry-based image validation
-	// Otherwise, allow all images
-	imageValidation := validation.ImageValidationAlwaysAllow
-	if enableRegistry {
-		imageValidation = validation.ImageValidationRegistryEnforcing
+	// MCPServerEntry.Spec.GroupRef
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1alpha1.MCPServerEntry{},
+		"spec.groupRef",
+		func(obj client.Object) []string {
+			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+			name := mcpServerEntry.Spec.GroupRef.GetName()
+			if name == "" {
+				return nil
+			}
+			return []string{name}
+		},
+	); err != nil {
+		return fmt.Errorf("unable to create field index for MCPServerEntry spec.groupRef: %w", err)
+	}
+
+	return nil
+}
+
+// setupServerControllers sets up server-related controllers
+// (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, MCPServerEntry, ToolConfig).
+func setupServerControllers(mgr ctrl.Manager) error {
+	if err := setupGroupRefFieldIndexes(mgr); err != nil {
+		return err
 	}
 
 	// Set up MCPServer controller
@@ -236,7 +258,6 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		Scheme:           mgr.GetScheme(),
 		Recorder:         mgr.GetEventRecorder("mcpserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-		ImageValidation:  imageValidation,
 	}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPServer: %w", err)
@@ -258,6 +279,22 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		return fmt.Errorf("unable to create controller MCPExternalAuthConfig: %w", err)
 	}
 
+	// Set up MCPOIDCConfig controller
+	if err := (&controllers.MCPOIDCConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller MCPOIDCConfig: %w", err)
+	}
+
+	// Set up MCPTelemetryConfig controller
+	if err := (&controllers.MCPTelemetryConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller MCPTelemetryConfig: %w", err)
+	}
+
 	// Set up MCPRemoteProxy controller
 	if err := (&controllers.MCPRemoteProxyReconciler{
 		Client:           mgr.GetClient(),
@@ -274,9 +311,15 @@ func setupServerControllers(mgr ctrl.Manager, enableRegistry bool) error {
 		Scheme:           mgr.GetScheme(),
 		Recorder:         mgr.GetEventRecorder("embeddingserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-		ImageValidation:  imageValidation,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller EmbeddingServer: %w", err)
+	}
+
+	// Set up MCPServerEntry controller (validation-only, no infrastructure)
+	if err := (&controllers.MCPServerEntryReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller MCPServerEntry: %w", err)
 	}
 
 	return nil

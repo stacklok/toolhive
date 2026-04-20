@@ -108,18 +108,18 @@
       "description": "Group Kubernetes and controller-runtime dependencies",
       "groupName": "kubernetes dependencies",
       "matchDatasources": ["go"],
-      "matchPackagePatterns": [
-        "^k8s\\.io/",
-        "^sigs\\.k8s\\.io/"
+      "matchPackageNames": [
+        "/^k8s\\.io//",
+        "/^sigs\\.k8s\\.io//"
       ]
     },
     {
       "description": "Group OpenTelemetry and observability dependencies",
       "groupName": "opentelemetry and observability",
       "matchDatasources": ["go"],
-      "matchPackagePatterns": [
-        "^go\\.opentelemetry\\.io/",
-        "^github\\.com/prometheus/"
+      "matchPackageNames": [
+        "/^go\\.opentelemetry\\.io//",
+        "/^github\\.com/prometheus//"
       ]
     },
     {
@@ -138,38 +138,38 @@
       "description": "Group signing and attestation libraries",
       "groupName": "signing and attestation libraries",
       "matchDatasources": ["go"],
-      "matchPackagePatterns": [
-        "^github\\.com/sigstore/",
-        "^github\\.com/in-toto/"
+      "matchPackageNames": [
+        "/^github\\.com/sigstore//",
+        "/^github\\.com/in-toto//"
       ]
     },
     {
       "description": "Group Docker and container libraries",
       "groupName": "container and docker libraries",
       "matchDatasources": ["go"],
-      "matchPackagePatterns": [
-        "^github\\.com/docker/",
-        "^github\\.com/google/go-containerregistry",
-        "^github\\.com/containerd/",
-        "^github\\.com/opencontainers/"
+      "matchPackageNames": [
+        "/^github\\.com/docker//",
+        "/^github\\.com/google/go-containerregistry/",
+        "/^github\\.com/containerd//",
+        "/^github\\.com/opencontainers//"
       ]
     },
     {
       "description": "Group CLI and UI libraries",
       "groupName": "cli and ui libraries",
       "matchDatasources": ["go"],
-      "matchPackagePatterns": [
-        "^github\\.com/charmbracelet/",
-        "^github\\.com/spf13/"
+      "matchPackageNames": [
+        "/^github\\.com/charmbracelet//",
+        "/^github\\.com/spf13//"
       ]
     },
     {
       "description": "Group testing libraries",
       "groupName": "testing libraries",
       "matchDatasources": ["go"],
-      "matchPackagePatterns": [
-        "^github\\.com/onsi/",
-        "^github\\.com/stretchr/testify"
+      "matchPackageNames": [
+        "/^github\\.com/onsi//",
+        "/^github\\.com/stretchr/testify/"
       ]
     },
     {
@@ -226,15 +226,6 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "semver"
-    },
-    {
-      "customType": "regex",
-      "description": "Update Go version in go.mod",
-      "fileMatch": ["(^|/)go\\.mod$"],
-      "matchStrings": ["go (?<currentValue>\\d+\\.\\d+(\\.\\d+)?)"],
-      "depNameTemplate": "golang",
-      "datasourceTemplate": "golang-version",
-      "versioningTemplate": "loose"
     },
     {
       "customType": "regex",

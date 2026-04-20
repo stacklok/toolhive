@@ -106,10 +106,11 @@ var _ = BeforeSuite(func() {
 	// Set up field indexing for MCPServer.Spec.GroupRef
 	if err := k8sManager.GetFieldIndexer().IndexField(ctx, &mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
 		mcpServer := obj.(*mcpv1alpha1.MCPServer)
-		if mcpServer.Spec.GroupRef == "" {
+		name := mcpServer.Spec.GroupRef.GetName()
+		if name == "" {
 			return nil
 		}
-		return []string{mcpServer.Spec.GroupRef}
+		return []string{name}
 	}); err != nil {
 		Expect(err).ToNot(HaveOccurred())
 	}
@@ -117,13 +118,30 @@ var _ = BeforeSuite(func() {
 	// Set up field indexing for MCPRemoteProxy.Spec.GroupRef
 	if err := k8sManager.GetFieldIndexer().IndexField(ctx, &mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
 		mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
-		if mcpRemoteProxy.Spec.GroupRef == "" {
+		name := mcpRemoteProxy.Spec.GroupRef.GetName()
+		if name == "" {
 			return nil
 		}
-		return []string{mcpRemoteProxy.Spec.GroupRef}
+		return []string{name}
 	}); err != nil {
 		Expect(err).ToNot(HaveOccurred())
 	}
+
+	// Set up field indexing for MCPServerEntry.Spec.GroupRef
+	err = k8sManager.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1alpha1.MCPServerEntry{},
+		"spec.groupRef",
+		func(obj client.Object) []string {
+			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+			name := mcpServerEntry.Spec.GroupRef.GetName()
+			if name == "" {
+				return nil
+			}
+			return []string{name}
+		},
+	)
+	Expect(err).ToNot(HaveOccurred())
 
 	// Register the MCPGroup controller
 	err = (&controllers.MCPGroupReconciler{
@@ -141,6 +159,20 @@ var _ = BeforeSuite(func() {
 
 	// Register the ToolConfig controller
 	err = (&controllers.ToolConfigReconciler{
+		Client: k8sManager.GetClient(),
+		Scheme: k8sManager.GetScheme(),
+	}).SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
+	// Register the MCPTelemetryConfig controller (needed for telemetryConfigRef tests)
+	err = (&controllers.MCPTelemetryConfigReconciler{
+		Client: k8sManager.GetClient(),
+		Scheme: k8sManager.GetScheme(),
+	}).SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
+	// Register the MCPOIDCConfig controller (needed for authServerRef tests that use OIDCConfigRef)
+	err = (&controllers.MCPOIDCConfigReconciler{
 		Client: k8sManager.GetClient(),
 		Scheme: k8sManager.GetScheme(),
 	}).SetupWithManager(k8sManager)

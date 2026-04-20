@@ -115,6 +115,20 @@ func (mr *MockStatusManagerMockRecorder) ResetWorkloadPID(ctx, workloadName any)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResetWorkloadPID", reflect.TypeOf((*MockStatusManager)(nil).ResetWorkloadPID), ctx, workloadName)
 }
 
+// ResetWorkloadPIDIfMatch mocks base method.
+func (m *MockStatusManager) ResetWorkloadPIDIfMatch(ctx context.Context, workloadName string, expectedPID int) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ResetWorkloadPIDIfMatch", ctx, workloadName, expectedPID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ResetWorkloadPIDIfMatch indicates an expected call of ResetWorkloadPIDIfMatch.
+func (mr *MockStatusManagerMockRecorder) ResetWorkloadPIDIfMatch(ctx, workloadName, expectedPID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResetWorkloadPIDIfMatch", reflect.TypeOf((*MockStatusManager)(nil).ResetWorkloadPIDIfMatch), ctx, workloadName, expectedPID)
+}
+
 // SetWorkloadPID mocks base method.
 func (m *MockStatusManager) SetWorkloadPID(ctx context.Context, workloadName string, pid int) error {
 	m.ctrl.T.Helper()

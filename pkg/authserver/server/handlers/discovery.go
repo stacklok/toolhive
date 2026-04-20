@@ -100,7 +100,7 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 		Issuer: issuer,
 
 		// RECOMMENDED
-		AuthorizationEndpoint:  issuer + "/oauth/authorize",
+		AuthorizationEndpoint:  h.config.GetAuthorizationEndpointBaseURL() + "/oauth/authorize",
 		TokenEndpoint:          issuer + "/oauth/token",
 		JWKSURI:                issuer + "/.well-known/jwks.json",
 		RegistrationEndpoint:   issuer + "/oauth/register",

@@ -19,15 +19,19 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
+
+// featureOperation pairs an MCP feature with an operation for authorization checks.
+type featureOperation struct {
+	Feature   authorizers.MCPFeature
+	Operation authorizers.MCPOperation
+}
 
 // MCPMethodToFeatureOperation maps MCP method names to feature and operation pairs.
 // Methods with empty Feature and Operation are always allowed (protocol-level).
 // Methods not in this map are denied by default for security.
-var MCPMethodToFeatureOperation = map[string]struct {
-	Feature   authorizers.MCPFeature
-	Operation authorizers.MCPOperation
-}{
+var MCPMethodToFeatureOperation = map[string]featureOperation{
 	// Core protocol methods - always allowed
 	"initialize": {Feature: "", Operation: ""}, // Protocol initialization
 	"ping":       {Feature: "", Operation: ""}, // Health check
@@ -104,27 +108,6 @@ func shouldSkipSubsequentAuthorization(method string) bool {
 	return false
 }
 
-// convertToJSONRPC2ID converts an interface{} ID to jsonrpc2.ID
-func convertToJSONRPC2ID(id interface{}) (jsonrpc2.ID, error) {
-	if id == nil {
-		return jsonrpc2.ID{}, nil
-	}
-
-	switch v := id.(type) {
-	case string:
-		return jsonrpc2.StringID(v), nil
-	case int:
-		return jsonrpc2.Int64ID(int64(v)), nil
-	case int64:
-		return jsonrpc2.Int64ID(v), nil
-	case float64:
-		// JSON numbers are often unmarshaled as float64
-		return jsonrpc2.Int64ID(int64(v)), nil
-	default:
-		return jsonrpc2.ID{}, fmt.Errorf("unsupported ID type: %T", id)
-	}
-}
-
 // handleUnauthorized handles unauthorized requests.
 func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 	// Create an error response
@@ -134,7 +117,7 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 	}
 
 	// Create a JSON-RPC error response
-	id, err := convertToJSONRPC2ID(msgID)
+	id, err := mcp.ConvertToJSONRPC2ID(msgID)
 	if err != nil {
 		id = jsonrpc2.ID{} // Use empty ID if conversion fails
 	}
@@ -171,7 +154,7 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 // The authorizer parameter should implement the authorizers.Authorizer interface,
 // which can be created using authz.CreateMiddlewareFromConfig() or directly
 // from an authorizer package (e.g., cedar.NewCedarAuthorizer()).
-func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
+func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools map[string]struct{}) http.Handler {
 	// Cache is shared across requests for the same proxy.
 	// Populated from tools/list responses, read during tools/call.
 	annotationCache := NewAnnotationCache()
@@ -218,7 +201,7 @@ func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
 		if featureOp.Operation == authorizers.MCPOperationList {
 
 			// Create a response filtering writer to intercept and filter the response
-			filteringWriter := NewResponseFilteringWriter(w, a, r, parsedRequest.Method, annotationCache)
+			filteringWriter := NewResponseFilteringWriter(w, a, r, parsedRequest.Method, annotationCache, passThroughTools)
 
 			// Call the next handler with the filtering writer
 			next.ServeHTTP(filteringWriter, r)
@@ -232,34 +215,92 @@ func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
 			return
 		}
 
-		// For tools/call, look up annotations from cache and inject into context
-		// so that authorizers can use them for policy decisions.
+		// For tools/call, look up annotations and handle pass-through meta-tools.
 		if featureOp.Feature == authorizers.MCPFeatureTool && featureOp.Operation == authorizers.MCPOperationCall {
-			if ann := annotationCache.Get(parsedRequest.ResourceID); ann != nil {
-				ctx := authorizers.WithToolAnnotations(r.Context(), ann)
-				r = r.WithContext(ctx)
-			}
-		}
-
-		// For non-list operations, perform authorization using parsed data
-		// Authorize the request
-		authorized, err := a.AuthorizeWithJWTClaims(
-			r.Context(),
-			featureOp.Feature,
-			featureOp.Operation,
-			parsedRequest.ResourceID,
-			parsedRequest.Arguments,
-		)
-
-		// Handle unauthorized requests
-		if err != nil || !authorized {
-			handleUnauthorized(w, parsedRequest.ID, err)
+			handleToolsCall(w, r, a, parsedRequest, featureOp, annotationCache, passThroughTools, next)
 			return
 		}
 
-		// Call the next handler
-		next.ServeHTTP(w, r)
+		// For non-list, non-tool operations, perform authorization using parsed data.
+		authorizeAndServe(w, r, a, annotationCache,
+			featureOp.Feature, featureOp.Operation,
+			parsedRequest.ID, parsedRequest.ResourceID, parsedRequest.Arguments, next)
 	})
+}
+
+// authorizeAndServe injects tool annotations from the cache, authorizes the request,
+// and calls next if authorized. It handles both the unauthorized response and the
+// successful serve path, so callers do not need to do either after calling this.
+func authorizeAndServe(
+	w http.ResponseWriter,
+	r *http.Request,
+	a authorizers.Authorizer,
+	annotationCache *AnnotationCache,
+	feature authorizers.MCPFeature,
+	operation authorizers.MCPOperation,
+	msgID interface{},
+	toolName string,
+	args map[string]interface{},
+	next http.Handler,
+) {
+	if ann := annotationCache.Get(toolName); ann != nil {
+		r = r.WithContext(authorizers.WithToolAnnotations(r.Context(), ann))
+	}
+	authorized, err := a.AuthorizeWithJWTClaims(r.Context(), feature, operation, toolName, args)
+	if err != nil || !authorized {
+		handleUnauthorized(w, msgID, err)
+		return
+	}
+	next.ServeHTTP(w, r)
+}
+
+// handleToolsCall handles tools/call authorization, including pass-through meta-tools.
+// It always fully handles the request (authorization, unauthorized response, or serving).
+//
+// For pass-through meta-tools (find_tool, call_tool):
+//   - call_tool: authorizes the real inner tool name from arguments["tool_name"].
+//   - find_tool (and other pass-through tools without a tool_name): allowed through
+//     as a discovery operation with no policy check.
+//
+// For normal tools: injects annotations from the cache and authorizes before serving.
+func handleToolsCall(
+	w http.ResponseWriter,
+	r *http.Request,
+	a authorizers.Authorizer,
+	parsedRequest *mcp.ParsedMCPRequest,
+	featureOp featureOperation,
+	annotationCache *AnnotationCache,
+	passThroughTools map[string]struct{},
+	next http.Handler,
+) {
+	if _, isPassThrough := passThroughTools[parsedRequest.ResourceID]; isPassThrough {
+		if toolName, ok := parsedRequest.Arguments[optimizerdec.CallToolArgToolName].(string); ok && toolName != "" {
+			// call_tool: authorize the real backend tool name.
+			innerArgs, _ := parsedRequest.Arguments[optimizerdec.CallToolArgParameters].(map[string]interface{})
+			authorizeAndServe(w, r, a, annotationCache,
+				featureOp.Feature, featureOp.Operation,
+				parsedRequest.ID, toolName, innerArgs, next)
+			return
+		}
+		// find_tool: allow through but filter the tools list in the response so
+		// callers cannot discover tools they are not authorized to call.
+		if parsedRequest.ResourceID == optimizerdec.FindToolName {
+			filteringWriter := NewResponseFilteringWriter(w, a, r, optimizerdec.FindToolName, annotationCache, passThroughTools)
+			next.ServeHTTP(filteringWriter, r)
+			if err := filteringWriter.FlushAndFilter(); err != nil {
+				slog.Warn("error filtering find_tool response", "error", err)
+			}
+			return
+		}
+		// Other pass-through tools without a wrapped toolName: allow through.
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	// Normal tool: inject annotations and authorize.
+	authorizeAndServe(w, r, a, annotationCache,
+		featureOp.Feature, featureOp.Operation,
+		parsedRequest.ID, parsedRequest.ResourceID, parsedRequest.Arguments, next)
 }
 
 // Factory middleware type constant
@@ -313,7 +354,7 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		return fmt.Errorf("either config_data or config_path is required for authorization middleware")
 	}
 
-	middleware, err := CreateMiddlewareFromConfig(authzConfig, runner.GetConfig().GetName())
+	middleware, err := CreateMiddlewareFromConfig(authzConfig, runner.GetConfig().GetName(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create authorization middleware: %w", err)
 	}

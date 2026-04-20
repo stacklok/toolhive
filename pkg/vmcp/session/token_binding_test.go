@@ -26,7 +26,7 @@ import (
 // backend to be skipped during init. This lets us exercise session-metadata
 // logic without real backend connections.
 func nilBackendConnector() backendConnector {
-	return func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity) (internalbk.Session, *vmcp.CapabilityList, error) {
+	return func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
 		return nil, nil, nil
 	}
 }
@@ -38,7 +38,7 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		t.Parallel()
 
 		const rawToken = "test-bearer-token"
-		identity := &auth.Identity{Subject: "alice", Token: rawToken}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}, Token: rawToken}
 
 		factory := newSessionFactoryWithConnector(nilBackendConnector())
 		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), identity, false, nil)
@@ -79,7 +79,7 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 	t.Run("identity with empty token stores empty sentinel", func(t *testing.T) {
 		t.Parallel()
 
-		identity := &auth.Identity{Subject: "user", Token: ""}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: ""}
 		factory := newSessionFactoryWithConnector(nilBackendConnector())
 		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), identity, true, nil)
 		require.NoError(t, err)
@@ -97,7 +97,7 @@ func TestMakeSession_StoresTokenHash(t *testing.T) {
 		t.Parallel()
 
 		const rawToken = "id-specific-token"
-		identity := &auth.Identity{Subject: "bob", Token: rawToken}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "bob"}, Token: rawToken}
 
 		factory := newSessionFactoryWithConnector(nilBackendConnector())
 		sess, err := factory.MakeSessionWithID(t.Context(), "explicit-session-id", identity, false, nil)
@@ -130,7 +130,7 @@ func TestMakeSessionWithID_ValidationOfAllowAnonymous(t *testing.T) {
 
 	t.Run("rejects anonymous session with bearer token", func(t *testing.T) {
 		t.Parallel()
-		identity := &auth.Identity{Subject: "user", Token: "bearer-token"}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "bearer-token"}
 		_, err := factory.MakeSessionWithID(
 			context.Background(),
 			"test-session",
@@ -159,7 +159,7 @@ func TestMakeSessionWithID_ValidationOfAllowAnonymous(t *testing.T) {
 
 	t.Run("rejects bound session without bearer token (empty token)", func(t *testing.T) {
 		t.Parallel()
-		identity := &auth.Identity{Subject: "user", Token: ""} // empty token
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: ""} // empty token
 		_, err := factory.MakeSessionWithID(
 			context.Background(),
 			"test-session",
@@ -186,7 +186,7 @@ func TestMakeSessionWithID_ValidationOfAllowAnonymous(t *testing.T) {
 
 	t.Run("allows anonymous session with empty token", func(t *testing.T) {
 		t.Parallel()
-		identity := &auth.Identity{Subject: "user", Token: ""}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: ""}
 		_, err := factory.MakeSessionWithID(
 			context.Background(),
 			"test-session",
@@ -213,7 +213,7 @@ func TestWithHMACSecret_DefensiveCopy(t *testing.T) {
 	// Create factory with the secret
 	factory := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret(secretSlice))
 
-	identity := &auth.Identity{Subject: "user", Token: "test-token"}
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "test-token"}
 
 	// Create first session before modification
 	sess1, err := factory.MakeSessionWithID(context.Background(), "session-1", identity, false, nil)
@@ -256,6 +256,56 @@ func TestWithHMACSecret_DefensiveCopy(t *testing.T) {
 		"should not be an auth error (would indicate corrupted secret)")
 }
 
+// ---------------------------------------------------------------------------
+// RestoreSession fail-closed behaviour for absent token-hash key
+// ---------------------------------------------------------------------------
+
+// TestRestoreSession_AbsentTokenHashKey verifies that RestoreSession fails closed
+// when the stored metadata is missing MetadataKeyTokenHash entirely.
+//
+// Background: storedMetadata[key] returns "" for both an absent key and a
+// legitimately anonymous session (which stores "" as a sentinel). The factory
+// uses the two-value map lookup form to distinguish between the two cases and
+// rejects absent keys rather than silently downgrading to anonymous.
+func TestRestoreSession_AbsentTokenHashKey(t *testing.T) {
+	t.Parallel()
+
+	factory := newSessionFactoryWithConnector(nilBackendConnector())
+
+	t.Run("absent token-hash key is rejected (fail closed)", func(t *testing.T) {
+		t.Parallel()
+
+		// Metadata that deliberately omits MetadataKeyTokenHash (simulates
+		// corrupted or truncated session metadata). MetadataKeyBackendIDs is
+		// present (empty = zero backends) so the earlier backend-IDs guard
+		// passes and we reach the token-hash guard.
+		storedMetadata := map[string]string{
+			MetadataKeyIdentitySubject: "alice",
+			MetadataKeyBackendIDs:      "", // present, empty = zero backends
+			// MetadataKeyTokenHash intentionally absent
+		}
+
+		_, err := factory.RestoreSession(t.Context(), uuid.New().String(), storedMetadata, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "token hash metadata key absent")
+	})
+
+	t.Run("empty token-hash key (anonymous sentinel) is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		// Metadata with MetadataKeyTokenHash present but empty — this is what
+		// PreventSessionHijacking writes for anonymous sessions.
+		storedMetadata := map[string]string{
+			MetadataKeyBackendIDs:             "", // present, empty = zero backends
+			sessiontypes.MetadataKeyTokenHash: "", // present, empty = anonymous
+		}
+
+		sess, err := factory.RestoreSession(t.Context(), uuid.New().String(), storedMetadata, nil)
+		require.NoError(t, err)
+		require.NotNil(t, sess)
+	})
+}
+
 // TestWithHMACSecret_RejectsEmptySecret verifies that WithHMACSecret rejects
 // nil or empty secrets to prevent silent security downgrades.
 func TestWithHMACSecret_RejectsEmptySecret(t *testing.T) {
@@ -267,7 +317,7 @@ func TestWithHMACSecret_RejectsEmptySecret(t *testing.T) {
 		// Create factory with nil secret (should fall back to default)
 		factory := NewSessionFactory(nil, WithHMACSecret(nil))
 
-		identity := &auth.Identity{Subject: "user", Token: "test-token"}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "test-token"}
 		sess, err := factory.MakeSessionWithID(context.Background(), "test-session", identity, false, nil)
 		require.NoError(t, err)
 
@@ -282,7 +332,7 @@ func TestWithHMACSecret_RejectsEmptySecret(t *testing.T) {
 		// Create factory with empty secret (should fall back to default)
 		factory := NewSessionFactory(nil, WithHMACSecret([]byte{}))
 
-		identity := &auth.Identity{Subject: "user", Token: "test-token"}
+		identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "test-token"}
 		sess, err := factory.MakeSessionWithID(context.Background(), "test-session", identity, false, nil)
 		require.NoError(t, err)
 

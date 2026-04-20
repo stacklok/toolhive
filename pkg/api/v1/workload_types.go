@@ -11,6 +11,7 @@ import (
 	"github.com/stacklok/toolhive-core/registry/types"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -40,6 +41,11 @@ type workloadStatusResponse struct {
 type updateRequest struct {
 	// Docker image to use
 	Image string `json:"image"`
+	// RuntimeConfig is only accepted on create/update when image is a protocol
+	// URI such as go://, npx://, or uvx://.
+	// GET responses may include runtime_config for existing workloads, but
+	// clients should not send it back with a built/non-protocol image.
+	RuntimeConfig *templates.RuntimeConfig `json:"runtime_config,omitempty"`
 	// Host to bind to
 	Host string `json:"host"`
 	// Command arguments to pass to the container
@@ -296,6 +302,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 	return &createRequest{
 		updateRequest: updateRequest{
 			Image:             runConfig.Image,
+			RuntimeConfig:     runtimeConfigForResponse(runConfig),
 			Host:              runConfig.Host,
 			CmdArguments:      runConfig.CmdArgs,
 			TargetPort:        runConfig.TargetPort,
@@ -319,6 +326,17 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			HeaderForward:     headerForward,
 		},
 		Name: runConfig.Name,
+	}
+}
+
+func runtimeConfigForResponse(runConfig *runner.RunConfig) *templates.RuntimeConfig {
+	if runConfig == nil || runConfig.RuntimeConfig == nil {
+		return nil
+	}
+
+	return &templates.RuntimeConfig{
+		BuilderImage:       runConfig.RuntimeConfig.BuilderImage,
+		AdditionalPackages: append([]string{}, runConfig.RuntimeConfig.AdditionalPackages...),
 	}
 }
 

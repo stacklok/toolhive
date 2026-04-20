@@ -504,7 +504,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 			HealthStatus:  vmcp.BackendHealthy,
 			Metadata: map[string]string{
 				"tool_type":       "github",
-				"workload_status": "Running",
+				"workload_status": "Ready",
 			},
 		}
 		proxy := &vmcp.Backend{
@@ -1304,6 +1304,116 @@ func TestStaticBackendDiscoverer_MetadataGroupOverride(t *testing.T) {
 						}
 					}
 				}
+			}
+		})
+	}
+}
+
+// TestStaticBackendDiscoverer_EntryBackendFields verifies that the Type and CABundlePath
+// fields from StaticBackendConfig are correctly propagated to the vmcp.Backend.
+func TestStaticBackendDiscoverer_EntryBackendFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		staticBackends    []config.StaticBackendConfig
+		groupRef          string
+		expectedType      vmcp.BackendType
+		expectedCABundle  string
+		expectedName      string
+		expectedURL       string
+		expectedTransport string
+		expectedMetaEnv   string
+		checkOtherFields  bool
+	}{
+		{
+			name: "entry backend with CA bundle",
+			staticBackends: []config.StaticBackendConfig{
+				{
+					Name:         "entry-mcp",
+					URL:          "https://mcp.internal:8443/mcp",
+					Transport:    "streamable-http",
+					Type:         "entry",
+					CABundlePath: "/some/path/ca.crt",
+				},
+			},
+			groupRef:         "test-group",
+			expectedType:     vmcp.BackendTypeEntry,
+			expectedCABundle: "/some/path/ca.crt",
+		},
+		{
+			name: "entry backend without CA bundle",
+			staticBackends: []config.StaticBackendConfig{
+				{
+					Name:      "entry-no-ca",
+					URL:       "https://mcp.external:443/mcp",
+					Transport: "streamable-http",
+					Type:      "entry",
+				},
+			},
+			groupRef:         "test-group",
+			expectedType:     vmcp.BackendTypeEntry,
+			expectedCABundle: "",
+		},
+		{
+			name: "container backend has empty type",
+			staticBackends: []config.StaticBackendConfig{
+				{
+					Name:      "container-backend",
+					URL:       "http://localhost:8080/mcp",
+					Transport: "sse",
+				},
+			},
+			groupRef:         "test-group",
+			expectedType:     "",
+			expectedCABundle: "",
+		},
+		{
+			name: "entry backend preserves other fields",
+			staticBackends: []config.StaticBackendConfig{
+				{
+					Name:         "full-entry",
+					URL:          "https://mcp.internal:8443/mcp",
+					Transport:    "streamable-http",
+					Type:         "entry",
+					CABundlePath: "/etc/toolhive/ca-bundles/internal/ca.crt",
+					Metadata:     map[string]string{"env": "prod"},
+				},
+			},
+			groupRef:          "test-group",
+			expectedType:      vmcp.BackendTypeEntry,
+			expectedCABundle:  "/etc/toolhive/ca-bundles/internal/ca.crt",
+			expectedName:      "full-entry",
+			expectedURL:       "https://mcp.internal:8443/mcp",
+			expectedTransport: "streamable-http",
+			expectedMetaEnv:   "prod",
+			checkOtherFields:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
+			discoverer := NewUnifiedBackendDiscovererWithStaticBackends(
+				tt.staticBackends,
+				nil, // No auth config needed for this test
+				tt.groupRef,
+			)
+
+			backends, err := discoverer.Discover(ctx, tt.groupRef)
+			require.NoError(t, err)
+			require.Len(t, backends, 1)
+
+			assert.Equal(t, tt.expectedType, backends[0].Type)
+			assert.Equal(t, tt.expectedCABundle, backends[0].CABundlePath)
+
+			if tt.checkOtherFields {
+				assert.Equal(t, tt.expectedName, backends[0].Name)
+				assert.Equal(t, tt.expectedURL, backends[0].BaseURL)
+				assert.Equal(t, tt.expectedTransport, backends[0].TransportType)
+				assert.Equal(t, tt.expectedMetaEnv, backends[0].Metadata["env"])
 			}
 		})
 	}

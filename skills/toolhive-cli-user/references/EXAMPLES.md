@@ -462,6 +462,100 @@ thv run filesystem -v /home/user/projects:/workspace:ro
 
 Global patterns at `~/.config/toolhive/thvignore` apply to all mounts. Disable with `--ignore-globally=false`.
 
+## Skills Management Examples
+
+### Install and Use Skills
+
+```bash
+# Install a skill for the current user
+thv skill install code-review
+
+# Install targeting a specific client
+thv skill install code-review --clients claude-code
+
+# Install into a project (requires --project-root)
+thv skill install code-review --scope project --project-root /home/user/myproject
+
+# Force reinstall (overwrites existing)
+thv skill install code-review --force
+
+# Install and assign to a group
+thv skill install code-review --group development
+
+# Install by OCI reference
+thv skill install ghcr.io/stacklok/skills/code-review:v1.0
+```
+
+### List and Inspect Skills
+
+```bash
+# List all installed skills
+thv skill list
+
+# Short alias
+thv skill ls
+
+# JSON output for scripting
+thv skill list --format json
+
+# Filter by scope, client, or group
+thv skill ls --scope user
+thv skill ls --client claude-code
+thv skill ls --group development
+
+# Detailed info about a skill
+thv skill info code-review
+thv skill info code-review --format json
+```
+
+### Remove Skills
+
+```bash
+# Uninstall user-scoped skill
+thv skill uninstall code-review
+
+# Uninstall project-scoped skill
+thv skill uninstall code-review --scope project --project-root /home/user/myproject
+```
+
+### Author and Publish Skills
+
+```bash
+# Validate a skill directory before building
+thv skill validate ./my-skill
+
+# JSON validation output
+thv skill validate ./my-skill --format json
+
+# Build into an OCI artifact
+thv skill build ./my-skill
+
+# Build with a specific tag
+thv skill build ./my-skill --tag ghcr.io/myorg/my-skill:v1.0
+
+# Push to a remote registry
+thv skill push ghcr.io/myorg/my-skill:v1.0
+```
+
+### Typical Authoring Workflow
+
+```bash
+# 1. Create and validate
+thv skill validate ./my-skill
+
+# 2. Build the artifact
+thv skill build ./my-skill --tag ghcr.io/myorg/my-skill:v1.0
+
+# 3. Push to registry
+thv skill push ghcr.io/myorg/my-skill:v1.0
+
+# 4. Install from registry to verify
+thv skill install ghcr.io/myorg/my-skill:v1.0 --clients claude-code
+
+# 5. Confirm installation
+thv skill info my-skill
+```
+
 ## Network Configuration Examples
 
 ### Host Networking

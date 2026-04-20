@@ -22,6 +22,39 @@ The middleware chain consists of the following components:
 10. **Header Forward Middleware**: Injects custom headers into requests to remote MCP servers (optional)
 11. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
 
+## Dynamic webhook middleware
+
+ToolHive supports dynamic webhook middleware for request mutation and validation. Webhooks are configured externally and loaded at runtime with `thv run --webhook-config <file>`.
+
+Two webhook types are supported:
+
+1. **Mutating webhooks**: Transform the parsed MCP request before later policy evaluation.
+2. **Validating webhooks**: Approve or deny the request after mutation has completed.
+
+When configured together, the effective order is:
+
+1. Authentication
+2. Token exchange and related auth middleware, when configured
+3. MCP parsing
+4. Mutating webhooks
+5. Validating webhooks
+6. Telemetry, authorization, and audit middleware
+
+Multiple webhook definitions of the same type run in configuration order. When multiple `--webhook-config` files are provided, later files override earlier webhook definitions with the same `name`.
+
+Configuration files may be written in YAML or JSON. Duration values such as `timeout` accept strings like `5s`, and omitted timeouts default to `10s`.
+
+Example:
+
+```bash
+thv run postgres-mcp --webhook-config docs/examples/webhooks.yaml
+```
+
+Example config files:
+
+- [`docs/examples/webhooks.yaml`](examples/webhooks.yaml)
+- [`docs/examples/webhooks.json`](examples/webhooks.json)
+
 ## Architecture Diagram
 
 ```mermaid
@@ -133,11 +166,9 @@ sequenceDiagram
 **Availability**: Automatically enabled when using the embedded auth server (`EmbeddedAuthServerConfig`)
 
 **Responsibilities**:
-- Extract the token session ID (`tsid`) claim from the ToolHive JWT
-- Look up the stored upstream IdP tokens associated with that session
+- Read the upstream access token for the configured provider from `Identity.UpstreamTokens`
 - Inject the upstream access token into the request (replacing Authorization header or using a custom header)
-- Return 401 Unauthorized with WWW-Authenticate header when tokens are expired or not found
-- Gracefully proceed without modification if identity, session ID, or storage is unavailable
+- Return 401 Unauthorized with WWW-Authenticate header when the provider token is missing or empty
 
 **Configuration**:
 
@@ -148,16 +179,16 @@ sequenceDiagram
 
 **Behavior**:
 - **Automatic activation**: Enabled whenever the embedded auth server is configured, even without explicit `UpstreamSwapConfig`
-- **Expired tokens**: Returns 401 Unauthorized with `WWW-Authenticate` header indicating re-authentication is required
-- **Tokens not found**: Returns 401 Unauthorized with `WWW-Authenticate` header indicating re-authentication is required
-- **Missing identity/tsid**: Proceeds without modification (logs debug message)
-- **Storage unavailable**: Proceeds without modification (logs warning)
-- **Other storage errors**: Returns 503 Service Unavailable to fail closed (logs warning)
+- **Provider token found**: Injects the token into the request using the configured header strategy
+- **Provider not in UpstreamTokens**: Returns 401 Unauthorized with `WWW-Authenticate` header indicating re-authentication is required
+- **Empty token value**: Returns 401 Unauthorized (same as missing provider)
+- **No identity in context**: Passes through without modification (auth middleware not in chain)
+- **Storage unavailable**: The auth middleware returns 503 before the request reaches this middleware
 
 **Context Data Used**:
-- Identity from Authentication middleware (specifically the `tsid` claim)
+- `Identity.UpstreamTokens` map populated by the Authentication middleware during JWT validation
 
-**Note**: This middleware is designed for use with ToolHive's embedded auth server. It reads from the auth server's token storage to retrieve upstream IdP tokens that were captured during the OAuth authorization flow.
+**Note**: This middleware is a simple map reader. All upstream token loading, refresh, and error handling occurs in the Authentication middleware (Step 3), which populates `Identity.UpstreamTokens` from the token session ID (`tsid`) claim during JWT validation.
 
 ---
 
@@ -785,10 +816,9 @@ type MiddlewareRunner interface {
     // GetConfig returns a config interface for middleware to access runner configuration
     GetConfig() RunnerConfig
 
-    // GetUpstreamTokenService returns a lazy accessor for the upstream token service.
-    // Returns a function that provides the service at request time.
-    // Used by upstream swap middleware to get valid upstream tokens (with transparent refresh).
-    GetUpstreamTokenService() func() upstreamtoken.Service
+    // GetUpstreamTokenReader returns an UpstreamTokenReader for identity enrichment.
+    // Returns nil if the embedded auth server is not configured.
+    GetUpstreamTokenReader() upstreamtoken.UpstreamTokenReader
 }
 ```
 

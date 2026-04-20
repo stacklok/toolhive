@@ -16,8 +16,10 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
 // MiddlewareFunction is a function that wraps an http.Handler with additional functionality.
@@ -77,13 +79,14 @@ type MiddlewareRunner interface {
 	// GetConfig returns a config interface for middleware to access runner configuration
 	GetConfig() RunnerConfig
 
-	// GetUpstreamTokenService returns an accessor for the upstream token service.
-	// The returned function should be called at request time; it returns nil if
-	// the embedded auth server is not configured.
-	//
-	// This method always returns a non-nil function. Service availability is
-	// determined at request time when the returned function is called.
-	GetUpstreamTokenService() func() upstreamtoken.Service
+	// GetUpstreamTokenReader returns a TokenReader for identity enrichment.
+	// Returns nil if the embedded auth server is not configured.
+	GetUpstreamTokenReader() upstreamtoken.TokenReader
+
+	// GetKeyProvider returns the embedded auth server's public key provider
+	// for in-process JWKS key lookups. Returns nil if no embedded auth server
+	// is configured.
+	GetKeyProvider() keys.PublicKeyProvider
 }
 
 // RunnerConfig defines the config interface needed by middleware to access runner configuration
@@ -268,6 +271,11 @@ type Config struct {
 	//	  "/.well-known/oauth-authorization-server": authServerHandler,
 	//	}
 	PrefixHandlers map[string]http.Handler
+
+	// SessionStorage overrides the default in-memory session store when set.
+	// Used for Redis-backed session sharing across replicas.
+	// When nil, transports use their default in-memory LocalStorage.
+	SessionStorage session.Storage
 }
 
 // ProxyMode represents the proxy mode for stdio transport.
@@ -289,4 +297,18 @@ func IsValidProxyMode(mode string) bool {
 
 func (p ProxyMode) String() string {
 	return string(p)
+}
+
+// EffectiveProxyMode determines the actual HTTP protocol the proxy is using.
+// For stdio transports, this returns the proxy mode (sse or streamable-http).
+// For direct transports (sse/streamable-http), this returns the transport type
+// since the transport itself is the protocol.
+func EffectiveProxyMode(transportType TransportType, proxyMode ProxyMode) ProxyMode {
+	if transportType == TransportTypeStdio {
+		if proxyMode == "" {
+			return ProxyModeStreamableHTTP
+		}
+		return proxyMode
+	}
+	return ProxyMode(transportType.String())
 }

@@ -111,6 +111,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
 ### Options
 
 ```
+      --allow-docker-gateway                        Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled.
       --audit-config string                         Path to the audit configuration file
       --authz-config string                         Path to the authorization configuration file
       --ca-cert string                              Path to a custom CA certificate file to use for container builds
@@ -155,6 +156,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --print-resolved-overlays                     Debug: show resolved container paths for tmpfs overlays (default false)
       --proxy-mode string                           Proxy mode for stdio (streamable-http or sse (deprecated, will be removed)) (default "streamable-http")
       --proxy-port int                              Port for the HTTP proxy to listen on (host port)
+  -p, --publish stringArray                         Publish a container's port(s) to the host (format: hostPort:containerPort)
       --remote-auth                                 Enable OAuth/OIDC authentication to remote MCP server (default false)
       --remote-auth-authorize-url string            OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
       --remote-auth-bearer-token string             Bearer token for remote server authentication (alternative to OAuth)
@@ -165,6 +167,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --remote-auth-client-secret-file string       Path to file containing OAuth client secret (alternative to --remote-auth-client-secret) (optional if the authorization server supports dynamic client registration (RFC 7591) or if using PKCE)
       --remote-auth-issuer string                   OAuth/OIDC issuer URL for remote server authentication (e.g., https://accounts.google.com)
       --remote-auth-resource string                 OAuth 2.0 resource indicator (RFC 8707)
+      --remote-auth-scope-param-name string         Override the query parameter name for scopes in the authorization URL (e.g., 'user_scope' for Slack OAuth)
       --remote-auth-scopes strings                  OAuth scopes to request for remote server authentication (defaults: OIDC uses 'openid,profile,email')
       --remote-auth-skip-browser                    Skip opening browser for remote server OAuth flow (default false)
       --remote-auth-timeout duration                Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s) (default 30s)
@@ -172,9 +175,10 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --remote-forward-headers stringArray          Headers to inject into requests to remote MCP server (format: Name=Value, can be repeated)
       --remote-forward-headers-secret stringArray   Headers with secret values from ToolHive secrets manager (format: Name=secret-name, can be repeated)
       --resource-url string                         Explicit resource URL for OAuth discovery endpoint (RFC 9728)
-      --runtime-add-package stringArray             Add additional packages to install in the builder stage (can be repeated)
+      --runtime-add-package stringArray             Add additional packages to install in the builder and runtime stages (can be repeated)
       --runtime-image string                        Override the default base image for protocol schemes (e.g., golang:1.24-alpine, node:20-alpine, python:3.11-slim)
       --secret stringArray                          Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
+      --stateless                                   Declare the server as stateless (POST-only, no SSE). Use for MCP servers implementing streamable-HTTP stateless mode.
       --target-host string                          Host to forward traffic to (only applicable to SSE or Streamable HTTP transport) (default "127.0.0.1")
       --target-port int                             Port for the container to expose (only applicable to SSE or Streamable HTTP transport)
       --thv-ca-bundle string                        Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.)
@@ -191,6 +195,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --transport string                            Transport mode (sse, streamable-http or stdio)
       --trust-proxy-headers                         Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) (default false)
   -v, --volume stringArray                          Mount a volume into the container (format: host-path:container-path[:ro])
+      --webhook-config stringArray                  Path to webhook configuration file (can be specified multiple times to merge configs)
 ```
 
 ### Options inherited from parent commands

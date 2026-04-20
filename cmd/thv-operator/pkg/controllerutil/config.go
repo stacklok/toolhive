@@ -7,7 +7,10 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"slices"
+	"strings"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/dump"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -72,6 +75,77 @@ func FindReferencingMCPServers(
 	return referencingServers, nil
 }
 
+// FindReferencingMCPRemoteProxies finds MCPRemoteProxies in the given namespace that reference a config resource.
+// The refExtractor function should return the config name from an MCPRemoteProxy if it references the config,
+// or nil if it doesn't reference any config of this type.
+func FindReferencingMCPRemoteProxies(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	configName string,
+	refExtractor func(*mcpv1alpha1.MCPRemoteProxy) *string,
+) ([]mcpv1alpha1.MCPRemoteProxy, error) {
+	proxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	if err := c.List(ctx, proxyList, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
+	}
+
+	var referencingProxies []mcpv1alpha1.MCPRemoteProxy
+	for _, proxy := range proxyList.Items {
+		if refName := refExtractor(&proxy); refName != nil && *refName == configName {
+			referencingProxies = append(referencingProxies, proxy)
+		}
+	}
+
+	return referencingProxies, nil
+}
+
+// CompareWorkloadRefs compares two WorkloadReference values by Kind then Name.
+// Suitable for use with slices.SortFunc.
+func CompareWorkloadRefs(a, b mcpv1alpha1.WorkloadReference) int {
+	if a.Kind != b.Kind {
+		return strings.Compare(a.Kind, b.Kind)
+	}
+	return strings.Compare(a.Name, b.Name)
+}
+
+// SortWorkloadRefs sorts a WorkloadReference slice by Kind then Name for deterministic ordering.
+// This prevents unnecessary API server writes when the same set of workloads is discovered
+// in a different list order across reconcile runs.
+func SortWorkloadRefs(refs []mcpv1alpha1.WorkloadReference) {
+	slices.SortFunc(refs, CompareWorkloadRefs)
+}
+
+// WorkloadRefsEqual reports whether two WorkloadReference slices contain the same entries.
+// Both slices must already be sorted (use SortWorkloadRefs) for correct results.
+func WorkloadRefsEqual(a, b []mcpv1alpha1.WorkloadReference) bool {
+	return slices.EqualFunc(a, b, func(x, y mcpv1alpha1.WorkloadReference) bool {
+		return x.Kind == y.Kind && x.Name == y.Name
+	})
+}
+
+// FindWorkloadRefsFromMCPServers returns a sorted list of WorkloadReference for MCPServers
+// in the given namespace that reference a config identified by configName.
+// The refExtractor determines which spec field contains the config reference name.
+func FindWorkloadRefsFromMCPServers(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	configName string,
+	refExtractor func(*mcpv1alpha1.MCPServer) *string,
+) ([]mcpv1alpha1.WorkloadReference, error) {
+	servers, err := FindReferencingMCPServers(ctx, c, namespace, configName, refExtractor)
+	if err != nil {
+		return nil, err
+	}
+	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(servers))
+	for _, server := range servers {
+		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPServer, Name: server.Name})
+	}
+	SortWorkloadRefs(refs)
+	return refs, nil
+}
+
 // GetToolConfigForMCPRemoteProxy fetches MCPToolConfig referenced by MCPRemoteProxy
 func GetToolConfigForMCPRemoteProxy(
 	ctx context.Context,
@@ -116,6 +190,62 @@ func GetExternalAuthConfigForMCPRemoteProxy(
 	}
 
 	return externalAuthConfig, nil
+}
+
+// GetTelemetryConfigForMCPRemoteProxy fetches the MCPTelemetryConfig referenced by the proxy.
+// Returns (nil, nil) when TelemetryConfigRef is nil or the resource is not found.
+// Returns (nil, err) only for transient API errors so callers can distinguish
+// "config missing" from "API unavailable".
+func GetTelemetryConfigForMCPRemoteProxy(
+	ctx context.Context,
+	c client.Client,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) (*mcpv1alpha1.MCPTelemetryConfig, error) {
+	if proxy.Spec.TelemetryConfigRef == nil {
+		return nil, nil
+	}
+
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{}
+	err := c.Get(ctx, types.NamespacedName{
+		Name:      proxy.Spec.TelemetryConfigRef.Name,
+		Namespace: proxy.Namespace,
+	}, telemetryConfig)
+	if errors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPTelemetryConfig %s: %w", proxy.Spec.TelemetryConfigRef.Name, err)
+	}
+
+	return telemetryConfig, nil
+}
+
+// GetTelemetryConfigForVirtualMCPServer fetches the MCPTelemetryConfig referenced by the VirtualMCPServer.
+// Returns (nil, nil) when TelemetryConfigRef is nil or the resource is not found.
+// Returns (nil, err) only for transient API errors so callers can distinguish
+// "config missing" from "API unavailable".
+func GetTelemetryConfigForVirtualMCPServer(
+	ctx context.Context,
+	c client.Client,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) (*mcpv1alpha1.MCPTelemetryConfig, error) {
+	if vmcp.Spec.TelemetryConfigRef == nil {
+		return nil, nil
+	}
+
+	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{}
+	err := c.Get(ctx, types.NamespacedName{
+		Name:      vmcp.Spec.TelemetryConfigRef.Name,
+		Namespace: vmcp.Namespace,
+	}, telemetryConfig)
+	if errors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPTelemetryConfig %s: %w", vmcp.Spec.TelemetryConfigRef.Name, err)
+	}
+
+	return telemetryConfig, nil
 }
 
 // GetExternalAuthConfigByName is a generic helper for fetching MCPExternalAuthConfig by name

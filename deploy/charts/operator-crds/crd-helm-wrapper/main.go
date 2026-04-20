@@ -43,7 +43,10 @@ var crdFeatureFlags = map[string][]string{
 	"mcpregistries":                      {"registry"},
 	"virtualmcpservers":                  {"virtualMcp"},
 	"virtualmcpcompositetooldefinitions": {"virtualMcp"},
+	"mcpoidcconfigs":                     {"server"},
+	"mcptelemetryconfigs":                {"server"},
 	"mcpexternalauthconfigs":             {"server", "virtualMcp"},
+	"mcpserverentries":                   {"server", "virtualMcp"},
 }
 
 func main() {

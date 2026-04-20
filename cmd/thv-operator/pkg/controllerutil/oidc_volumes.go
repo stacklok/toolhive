@@ -12,28 +12,21 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
-// AddOIDCCABundleVolumes returns volumes and volume mounts for OIDC CA bundle.
-// Returns nil slices if no CA bundle is configured.
-func AddOIDCCABundleVolumes(
-	oidcConfig *mcpv1alpha1.OIDCConfigRef,
+// AddOIDCConfigRefCABundleVolumes returns volumes and volume mounts for OIDC CA bundle
+// from an MCPOIDCConfig's inline configuration. Returns nil slices if no CA bundle is configured.
+func AddOIDCConfigRefCABundleVolumes(
+	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
 ) ([]corev1.Volume, []corev1.VolumeMount) {
 	if oidcConfig == nil {
 		return nil, nil
 	}
 
-	// Get CABundleRef based on config type
-	var caBundleRef *mcpv1alpha1.CABundleSource
-	switch oidcConfig.Type {
-	case mcpv1alpha1.OIDCConfigTypeInline:
-		if oidcConfig.Inline != nil {
-			caBundleRef = oidcConfig.Inline.CABundleRef
-		}
-	case mcpv1alpha1.OIDCConfigTypeConfigMap:
-		if oidcConfig.ConfigMap != nil {
-			caBundleRef = oidcConfig.ConfigMap.CABundleRef
-		}
+	// Only inline type has CA bundle support
+	if oidcConfig.Spec.Type != mcpv1alpha1.MCPOIDCConfigTypeInline || oidcConfig.Spec.Inline == nil {
+		return nil, nil
 	}
 
+	caBundleRef := oidcConfig.Spec.Inline.CABundleRef
 	if caBundleRef == nil || caBundleRef.ConfigMapRef == nil {
 		return nil, nil
 	}

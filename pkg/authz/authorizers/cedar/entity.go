@@ -8,6 +8,11 @@ import (
 	cedar "github.com/cedar-policy/cedar-go"
 )
 
+// EntityTypeTHVGroup is the Cedar entity type representing group membership.
+// Principals are added as children of THVGroup entities so that Cedar's `in`
+// operator can evaluate group-based policies (e.g. `principal in THVGroup::"engineering"`).
+const EntityTypeTHVGroup cedar.EntityType = "THVGroup"
+
 // EntityFactory creates Cedar entities for authorization.
 type EntityFactory struct{}
 
@@ -16,17 +21,22 @@ func NewEntityFactory() *EntityFactory {
 	return &EntityFactory{}
 }
 
-// CreatePrincipalEntity creates a principal entity with the given ID and attributes.
+// CreatePrincipalEntity creates a principal entity with the given ID, attributes,
+// and optional parent entity UIDs.
+// When no parents are provided, the entity has an empty parent set (backward compatible).
+// NOTE: This replaces the previous groups []string parameter from 5c258a11.
+// Callers are now responsible for building parent UIDs (see #4768).
 func (*EntityFactory) CreatePrincipalEntity(
 	principalType, principalID string,
 	attributes map[string]interface{},
+	parents ...cedar.EntityUID,
 ) (cedar.EntityUID, cedar.Entity) {
 	uid := cedar.NewEntityUID(cedar.EntityType(principalType), cedar.String(principalID))
 	attrs := convertMapToCedarRecord(attributes)
 
 	entity := cedar.Entity{
 		UID:        uid,
-		Parents:    cedar.NewEntityUIDSet(),
+		Parents:    cedar.NewEntityUIDSet(parents...),
 		Attributes: attrs,
 		Tags:       cedar.NewRecord(cedar.RecordMap{}),
 	}
@@ -59,24 +69,31 @@ func (*EntityFactory) CreateActionEntity(
 	return uid, entity
 }
 
-// CreateResourceEntity creates a resource entity with the given ID and attributes.
+// CreateResourceEntity creates a resource entity with the given ID, attributes,
+// and optional parent entity UIDs.
+// When no parents are provided, the entity has an empty parent set (backward compatible).
 func (*EntityFactory) CreateResourceEntity(
 	resourceType, resourceID string,
 	attributes map[string]interface{},
+	parents ...cedar.EntityUID,
 ) (cedar.EntityUID, cedar.Entity) {
 	uid := cedar.NewEntityUID(cedar.EntityType(resourceType), cedar.String(resourceID))
 
-	// Ensure name attribute is set
+	// Ensure name attribute is set — but don't overwrite if the caller
+	// already provided one (e.g. authorizeResourceRead sets name to the
+	// original URI before sanitization).
 	if attributes == nil {
 		attributes = make(map[string]interface{})
 	}
-	attributes["name"] = resourceID
+	if _, exists := attributes["name"]; !exists {
+		attributes["name"] = resourceID
+	}
 
 	attrs := convertMapToCedarRecord(attributes)
 
 	entity := cedar.Entity{
 		UID:        uid,
-		Parents:    cedar.NewEntityUIDSet(),
+		Parents:    cedar.NewEntityUIDSet(parents...),
 		Attributes: attrs,
 		Tags:       cedar.NewRecord(cedar.RecordMap{}),
 	}
@@ -85,10 +102,15 @@ func (*EntityFactory) CreateResourceEntity(
 }
 
 // CreateEntitiesForRequest creates entities for a specific authorization request.
+// Groups are converted to THVGroup parent UIDs on the principal entity so that
+// Cedar's `in` operator works for group-based policies. Unlike the pre-refactor
+// code, no separate THVGroup entities are inserted into the entity map — those
+// must come from entities_json to preserve the role hierarchy.
 func (f *EntityFactory) CreateEntitiesForRequest(
 	principal, action, resource string,
 	claimsMap map[string]interface{},
 	attributes map[string]interface{},
+	groups []string,
 ) (cedar.EntityMap, error) {
 	// Parse principal, action, and resource
 	principalType, principalID, err := parseCedarEntityID(principal)
@@ -109,8 +131,18 @@ func (f *EntityFactory) CreateEntitiesForRequest(
 	// Create Cedar entities
 	entities := make(cedar.EntityMap)
 
-	// Create principal entity
-	principalUID, principalEntity := f.CreatePrincipalEntity(principalType, principalID, claimsMap)
+	// Build parent UIDs from groups so the principal's Parents set contains
+	// THVGroup references (needed for Cedar's `in` operator). Unlike the
+	// pre-refactor code, we do NOT insert separate THVGroup entities into the
+	// entity map — those come from entities_json and must not be overwritten
+	// (see merge-order hazard described in the RFC). #4768 will restructure
+	// this further for full role hierarchy support.
+	parentUIDs := make([]cedar.EntityUID, 0, len(groups))
+	for _, g := range groups {
+		parentUIDs = append(parentUIDs, cedar.NewEntityUID(EntityTypeTHVGroup, cedar.String(g)))
+	}
+
+	principalUID, principalEntity := f.CreatePrincipalEntity(principalType, principalID, claimsMap, parentUIDs...)
 	entities[principalUID] = principalEntity
 
 	// Create action entity

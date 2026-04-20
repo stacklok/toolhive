@@ -14,16 +14,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
-
-// healthCheckContextKey is a marker for health check requests.
-type healthCheckContextKey struct{}
 
 // WithHealthCheckMarker marks a context as a health check request.
 // Authentication layers can use IsHealthCheck to identify and skip authentication
 // for health check requests.
 func WithHealthCheckMarker(ctx context.Context) context.Context {
-	return context.WithValue(ctx, healthCheckContextKey{}, true)
+	return healthcontext.WithHealthCheckMarker(ctx)
 }
 
 // IsHealthCheck returns true if the context is marked as a health check.
@@ -31,11 +29,7 @@ func WithHealthCheckMarker(ctx context.Context) context.Context {
 // since health checks verify backend availability and should not require user credentials.
 // Returns false for nil contexts.
 func IsHealthCheck(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	val, ok := ctx.Value(healthCheckContextKey{}).(bool)
-	return ok && val
+	return healthcontext.IsHealthCheck(ctx)
 }
 
 // StatusProvider provides read-only access to backend health status.
@@ -52,6 +46,43 @@ type StatusProvider interface {
 	//
 	// This method is safe for concurrent access and does not block on health checks.
 	QueryBackendStatus(backendID string) (vmcp.BackendHealthStatus, bool)
+}
+
+// backendCheck manages the health check goroutine lifecycle for a single backend.
+// It owns the backend snapshot and the cancel function for its goroutine, keeping
+// per-backend lifecycle mechanics out of the Monitor's coordination logic.
+//
+// Thread-safety: backendCheck is NOT independently thread-safe. All calls must be
+// made while holding the Monitor's locks — see start() and stop() for details.
+type backendCheck struct {
+	backend vmcp.Backend
+	cancel  context.CancelFunc
+}
+
+// start begins the health check goroutine for this backend.
+// The monitor's wg is incremented before the goroutine launches.
+// If isInitial is true, the monitor's initialCheckWg is also incremented.
+//
+// Locking: the caller must hold both m.mu and m.backendsMu. m.mu prevents
+// wg.Add() from racing with wg.Wait() in Stop().
+func (bc *backendCheck) start(parentCtx context.Context, m *Monitor, isInitial bool) {
+	ctx, cancel := context.WithCancel(parentCtx)
+	bc.cancel = cancel
+	m.wg.Add(1)
+	if isInitial {
+		m.initialCheckWg.Add(1)
+	}
+	go m.monitorBackend(ctx, &bc.backend, isInitial)
+}
+
+// stop cancels the health check goroutine for this backend.
+// The goroutine will exit on its next context check and call wg.Done().
+//
+// Locking: the caller must hold m.backendsMu.
+func (bc *backendCheck) stop() {
+	if bc.cancel != nil {
+		bc.cancel()
+	}
 }
 
 // Monitor performs periodic health checks on backend MCP servers.
@@ -73,9 +104,10 @@ type Monitor struct {
 	backends   []vmcp.Backend
 	backendsMu sync.RWMutex
 
-	// activeChecks maps backend IDs to their cancel functions for dynamic backend management.
+	// activeChecks maps backend IDs to their per-backend check lifecycle.
+	// Each backendCheck owns the backend snapshot and cancel function for its goroutine.
 	// Protected by backendsMu.
-	activeChecks map[string]context.CancelFunc
+	activeChecks map[string]*backendCheck
 
 	// ctx is the context for the monitor's lifecycle.
 	ctx context.Context
@@ -199,7 +231,7 @@ func NewMonitor(
 		statusTracker: statusTracker,
 		checkInterval: config.CheckInterval,
 		backends:      backends,
-		activeChecks:  make(map[string]context.CancelFunc),
+		activeChecks:  make(map[string]*backendCheck),
 	}, nil
 }
 
@@ -238,14 +270,10 @@ func (m *Monitor) Start(ctx context.Context) error {
 
 	// Start health check goroutine for each backend
 	m.backendsMu.Lock()
-	for i := range m.backends {
-		backend := &m.backends[i] // Capture backend pointer for this iteration
-
-		backendCtx, cancel := context.WithCancel(m.ctx) //nolint:gosec // G118 - cancel stored in m.activeChecks, called during Stop
-		m.activeChecks[backend.ID] = cancel
-		m.wg.Add(1)
-		m.initialCheckWg.Add(1)                        // Track initial health check
-		go m.monitorBackend(backendCtx, backend, true) // true = initial backend
+	for _, b := range m.backends {
+		bc := &backendCheck{backend: b}
+		bc.start(m.ctx, m, true) // true = initial backend
+		m.activeChecks[b.ID] = bc
 	}
 	m.backendsMu.Unlock()
 
@@ -308,13 +336,7 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 	m.backendsMu.Lock()
 	defer m.backendsMu.Unlock()
 
-	// Build maps of old and new backend IDs for comparison
-	oldBackends := make(map[string]vmcp.Backend)
-	for _, b := range m.backends {
-		oldBackends[b.ID] = b
-	}
-
-	newBackendsMap := make(map[string]vmcp.Backend)
+	newBackendsMap := make(map[string]vmcp.Backend, len(newBackends))
 	for _, b := range newBackends {
 		newBackendsMap[b.ID] = b
 	}
@@ -323,32 +345,35 @@ func (m *Monitor) UpdateBackends(newBackends []vmcp.Backend) {
 	// This ensures GetHealthSummary sees new backends before their health checks complete
 	m.backends = newBackends
 
-	// Start monitoring for new backends
+	// Start monitoring for new or changed backends
 	for id, backend := range newBackendsMap {
-		if _, exists := oldBackends[id]; !exists {
+		if existing, ok := m.activeChecks[id]; ok {
+			if !backendChanged(existing.backend, backend) {
+				continue // Existing backend with no relevant changes
+			}
+			// Backend properties changed (e.g., URL updated after operator reconcile).
+			// Stop the old goroutine so a new one starts with the updated properties.
+			slog.Info("restarting health monitoring for changed backend",
+				"backend", backend.Name, "old_url", existing.backend.BaseURL, "new_url", backend.BaseURL)
+			existing.stop()
+		} else {
 			slog.Info("starting health monitoring for new backend", "backend", backend.Name)
-			backendCopy := backend
-
-			// Circuit breaker will be lazily initialized on first health check
-
-			backendCtx, cancel := context.WithCancel(m.ctx) //nolint:gosec // G118 - cancel stored in m.activeChecks, called during Stop
-			m.activeChecks[id] = cancel
-			m.wg.Add(1)
-			// Clear the "removed" flag if this backend was previously removed
-			// This allows health check results to be recorded again
-			m.statusTracker.ClearRemovedFlag(id)
-			go m.monitorBackend(backendCtx, &backendCopy, false) // false = dynamically added backend
 		}
+
+		bc := &backendCheck{backend: backend}
+		// Clear the "removed" flag if this backend was previously removed
+		// This allows health check results to be recorded again
+		m.statusTracker.ClearRemovedFlag(id)
+		bc.start(m.ctx, m, false) // false = dynamically added backend
+		m.activeChecks[id] = bc
 	}
 
 	// Stop monitoring for removed backends and clean up their state
-	for id, backend := range oldBackends {
+	for id, bc := range m.activeChecks {
 		if _, exists := newBackendsMap[id]; !exists {
-			slog.Info("stopping health monitoring for removed backend", "backend", backend.Name)
-			if cancel, ok := m.activeChecks[id]; ok {
-				cancel()
-				delete(m.activeChecks, id)
-			}
+			slog.Info("stopping health monitoring for removed backend", "backend", bc.backend.Name)
+			bc.stop()
+			delete(m.activeChecks, id)
 			// Remove backend from status tracker so it no longer appears in status reports
 			m.statusTracker.RemoveBackend(id)
 		}
@@ -522,6 +547,13 @@ type Summary struct {
 	Unauthenticated int
 }
 
+// Routable returns the number of backends that can serve traffic.
+// This includes healthy backends and unauthenticated backends (which are
+// reachable but require per-request user auth, e.g., upstream OAuth).
+func (s Summary) Routable() int {
+	return s.Healthy + s.Unauthenticated
+}
+
 // String returns a human-readable summary.
 func (s Summary) String() string {
 	return fmt.Sprintf("total=%d healthy=%d degraded=%d unhealthy=%d unknown=%d unauthenticated=%d",
@@ -532,11 +564,12 @@ func (s Summary) String() string {
 // This converts backend health information into the format needed for status reporting
 // to the Kubernetes API or CLI output.
 //
-// Phase determination:
-// - Ready: All backends healthy, or no backends configured (cold start)
+// Phase determination (unauthenticated backends are routable — they need per-request user auth
+// but are reachable and running):
+// - Ready: All backends healthy or unauthenticated, or no backends configured (cold start)
 // - Pending: Backends configured but no health check data yet (waiting for first check)
-// - Degraded: Some backends healthy, some degraded/unhealthy
-// - Failed: No healthy backends (and at least one backend exists)
+// - Degraded: Some backends routable (healthy/unauthenticated), some degraded/unhealthy
+// - Failed: No routable backends (and at least one backend exists)
 //
 // Returns a Status instance with current health information and discovered backends.
 //
@@ -567,16 +600,18 @@ func (m *Monitor) BuildStatus() *vmcp.Status {
 		Message:            message,
 		Conditions:         conditions,
 		DiscoveredBackends: discoveredBackends,
-		BackendCount:       summary.Healthy, // Only count healthy backends
+		BackendCount:       int32(summary.Routable()), //nolint:gosec // routable count is bounded by backend list size
 		Timestamp:          time.Now(),
 	}
 }
 
 // determinePhase determines the overall phase based on backend health.
+// Unauthenticated backends are treated as routable — they are reachable and running,
+// they just require per-request user auth (e.g., upstream OAuth).
 // Takes both the health summary and the count of configured backends to distinguish:
 // - No backends configured (configuredCount==0): Ready (cold start)
 // - Backends configured but no health data (configuredCount>0 && summary.Total==0): Pending
-// - Has health data: Ready/Degraded/Failed based on health status
+// - Has health data: Ready/Degraded/Failed based on routable (healthy + unauthenticated) count
 func determinePhase(summary Summary, configuredBackendCount int) vmcp.Phase {
 	if summary.Total == 0 {
 		// No health data yet - distinguish cold start from waiting for first check
@@ -585,10 +620,11 @@ func determinePhase(summary Summary, configuredBackendCount int) vmcp.Phase {
 		}
 		return vmcp.PhasePending // Backends configured but health checks not complete
 	}
-	if summary.Healthy == summary.Total {
+
+	if summary.Routable() == summary.Total {
 		return vmcp.PhaseReady
 	}
-	if summary.Healthy == 0 {
+	if summary.Routable() == 0 {
 		return vmcp.PhaseFailed
 	}
 	return vmcp.PhaseDegraded
@@ -604,18 +640,27 @@ func formatStatusMessage(summary Summary, phase vmcp.Phase, configuredBackendCou
 		return fmt.Sprintf("Waiting for initial health checks (%d backends configured)", configuredBackendCount)
 	}
 	if phase == vmcp.PhaseReady {
-		return fmt.Sprintf("All %d backends healthy", summary.Healthy)
+		if summary.Unauthenticated == 0 {
+			return fmt.Sprintf("All %d %s healthy", summary.Healthy, pluralBackend(summary.Healthy))
+		}
+		if summary.Healthy == 0 {
+			return fmt.Sprintf("%s %s authentication",
+				quantifyBackends(summary.Unauthenticated), pluralRequire(summary.Unauthenticated))
+		}
+		return fmt.Sprintf("%d %s healthy, %d %s authentication",
+			summary.Healthy, pluralBackend(summary.Healthy),
+			summary.Unauthenticated, pluralRequire(summary.Unauthenticated))
 	}
 
-	// Format unhealthy backend counts (shared by Failed and Degraded)
-	unhealthyDetails := fmt.Sprintf("%d degraded, %d unhealthy, %d unknown, %d unauthenticated",
-		summary.Degraded, summary.Unhealthy, summary.Unknown, summary.Unauthenticated)
+	// Format non-routable backend counts (shared by Failed and Degraded)
+	nonRoutableDetails := fmt.Sprintf("%d degraded, %d unhealthy, %d unknown",
+		summary.Degraded, summary.Unhealthy, summary.Unknown)
 
 	if phase == vmcp.PhaseFailed {
-		return fmt.Sprintf("No healthy backends (%s)", unhealthyDetails)
+		return fmt.Sprintf("No routable backends (%s)", nonRoutableDetails)
 	}
 	// Degraded
-	return fmt.Sprintf("%d/%d backends healthy (%s)", summary.Healthy, summary.Total, unhealthyDetails)
+	return fmt.Sprintf("%d/%d backends routable (%s)", summary.Routable(), summary.Total, nonRoutableDetails)
 }
 
 // convertToDiscoveredBackends converts backend health states to DiscoveredBackend format.
@@ -685,6 +730,30 @@ func extractAuthInfo(backend vmcp.Backend) (authConfigRef, authType string) {
 	// In K8s mode, this is the name of the MCPExternalAuthConfig resource.
 	// In CLI mode or when not discovered via K8s, this may be empty.
 	return backend.AuthConfigRef, backend.AuthConfig.Type
+}
+
+// pluralBackend returns "backend" or "backends" based on count.
+func pluralBackend(n int) string {
+	if n == 1 {
+		return "backend"
+	}
+	return "backends"
+}
+
+// pluralRequire returns "requires" or "require" based on count for subject-verb agreement.
+func pluralRequire(n int) string {
+	if n == 1 {
+		return "requires"
+	}
+	return "require"
+}
+
+// quantifyBackends returns "All N backends" for plural, "1 backend" for singular.
+func quantifyBackends(n int) string {
+	if n == 1 {
+		return fmt.Sprintf("%d backend", n)
+	}
+	return fmt.Sprintf("All %d backends", n)
 }
 
 // formatBackendMessage creates a human-readable message for a backend's health state.
@@ -796,19 +865,27 @@ func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount i
 	switch phase {
 	case vmcp.PhaseReady:
 		readyCondition.Status = metav1.ConditionTrue
-		readyCondition.Reason = "AllBackendsHealthy"
-		// Distinguish cold start (no backends configured) from having healthy backends
+		readyCondition.Reason = "AllBackendsRoutable"
+		// Distinguish cold start (no backends configured) from having routable backends
 		if summary.Total == 0 && configuredBackendCount == 0 {
 			readyCondition.Message = "Ready, no backends configured"
+		} else if summary.Unauthenticated == 0 {
+			readyCondition.Message = fmt.Sprintf("All %d %s are healthy",
+				summary.Healthy, pluralBackend(summary.Healthy))
+		} else if summary.Healthy == 0 {
+			readyCondition.Message = fmt.Sprintf("%s %s authentication",
+				quantifyBackends(summary.Unauthenticated), pluralRequire(summary.Unauthenticated))
 		} else {
-			readyCondition.Message = fmt.Sprintf("All %d backends are healthy", summary.Healthy)
+			readyCondition.Message = fmt.Sprintf("%d %s healthy, %d %s authentication",
+				summary.Healthy, pluralBackend(summary.Healthy),
+				summary.Unauthenticated, pluralRequire(summary.Unauthenticated))
 		}
 	case vmcp.PhaseDegraded:
 		readyCondition.Reason = "SomeBackendsUnhealthy"
-		readyCondition.Message = fmt.Sprintf("%d/%d backends healthy", summary.Healthy, summary.Total)
+		readyCondition.Message = fmt.Sprintf("%d/%d backends routable", summary.Routable(), summary.Total)
 	case vmcp.PhaseFailed:
-		readyCondition.Reason = "NoHealthyBackends"
-		readyCondition.Message = "No healthy backends available"
+		readyCondition.Reason = "NoRoutableBackends"
+		readyCondition.Message = "No routable backends available"
 	case vmcp.PhasePending:
 		readyCondition.Reason = "BackendsPending"
 		readyCondition.Message = fmt.Sprintf("Waiting for initial health checks (%d backends configured)", configuredBackendCount)
@@ -848,4 +925,11 @@ func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount i
 	}
 
 	return conditions
+}
+
+// backendChanged returns true if the backend's health-check-relevant properties have changed.
+// This is used by UpdateBackends to detect when an existing backend needs its monitoring
+// goroutine restarted (e.g., URL updated after operator reconcile).
+func backendChanged(old, updated vmcp.Backend) bool {
+	return old.BaseURL != updated.BaseURL || old.TransportType != updated.TransportType
 }

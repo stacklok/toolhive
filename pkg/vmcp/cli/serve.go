@@ -27,6 +27,7 @@ import (
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/migration"
@@ -67,6 +68,18 @@ type ServeConfig struct {
 	// EnableAudit enables audit logging with default configuration when
 	// the loaded config does not already define an audit section.
 	EnableAudit bool
+
+	// Optimizer tier selection (Phase 4 — flag-driven).
+	// EnableOptimizer enables Tier 1 FTS5 keyword search (find_tool / call_tool).
+	EnableOptimizer bool
+	// EnableEmbedding enables Tier 2 TEI semantic search; implies EnableOptimizer.
+	EnableEmbedding bool
+	// EmbeddingModel is the HuggingFace model name for the managed TEI container.
+	// Defaults to "BAAI/bge-small-en-v1.5" when empty.
+	EmbeddingModel string
+	// EmbeddingImage is the TEI container image.
+	// Defaults to the CPU TEI image when empty.
+	EmbeddingImage string
 }
 
 // validateQuickModeHost returns an error when the config represents quick mode
@@ -280,6 +293,32 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return fmt.Errorf("failed to create status reporter: %w", err)
 	}
 
+	// Optimizer wiring — Phase 4: flag-driven Tier 1 (FTS5) and Tier 2 (TEI).
+	// Build the embedding manager only when Tier 2 is requested, to avoid
+	// unnecessary Docker / Kubernetes API calls for Tier 0 and Tier 1.
+	var embMgr embeddingManager
+	if cfg.EnableEmbedding {
+		model := cfg.EmbeddingModel
+		if model == "" {
+			model = DefaultEmbeddingModel
+		}
+		m, err := NewEmbeddingServiceManager(container.NewFactory(), EmbeddingServiceManagerConfig{
+			Model: model,
+			Image: cfg.EmbeddingImage,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create embedding service manager: %w", err)
+		}
+		embMgr = m
+	}
+	teiCleanup, err := injectOptimizerConfig(ctx, cfg, vmcpCfg, embMgr)
+	if err != nil {
+		return err
+	}
+	if teiCleanup != nil {
+		defer teiCleanup()
+	}
+
 	optCfg, err := optimizer.GetAndValidateConfig(vmcpCfg.Optimizer)
 	if err != nil {
 		return fmt.Errorf("failed to validate optimizer config: %w", err)
@@ -369,6 +408,39 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 
 	slog.Info(fmt.Sprintf("Starting Virtual MCP Server at %s", srv.Address()))
 	return srv.Start(ctx)
+}
+
+// embeddingManager is the minimal interface over *EmbeddingServiceManager needed
+// by the Serve lifecycle. Defined here to allow stub injection in unit tests;
+// production code passes a *EmbeddingServiceManager.
+type embeddingManager interface {
+	Start(ctx context.Context) (string, error)
+	Stop(ctx context.Context) error
+}
+
+// injectOptimizerConfig ensures vmcpCfg.Optimizer is non-nil when flag-driven
+// optimizer tiers are active, and starts the TEI container when EnableEmbedding
+// is true. Returns a non-nil cleanup func only when a TEI container was started;
+// the caller must defer it. mgr must be non-nil when cfg.EnableEmbedding is true.
+func injectOptimizerConfig(ctx context.Context, cfg ServeConfig, vmcpCfg *config.Config, mgr embeddingManager) (func(), error) {
+	if !cfg.EnableOptimizer && !cfg.EnableEmbedding {
+		return nil, nil
+	}
+	if vmcpCfg.Optimizer == nil {
+		vmcpCfg.Optimizer = &config.OptimizerConfig{}
+	}
+	if !cfg.EnableEmbedding {
+		return nil, nil
+	}
+	if mgr == nil {
+		return nil, fmt.Errorf("embedding manager must not be nil when EnableEmbedding is true")
+	}
+	teiURL, err := mgr.Start(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start TEI embedding service: %w", err)
+	}
+	vmcpCfg.Optimizer.EmbeddingService = teiURL
+	return func() { _ = mgr.Stop(context.Background()) }, nil
 }
 
 // getStatusReportingInterval extracts the status reporting interval from config.

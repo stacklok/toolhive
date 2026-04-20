@@ -30,11 +30,15 @@ servers from a ToolHive group into a single unified endpoint.`,
 // newVMCPServeCommand returns the "vmcp serve" subcommand.
 func newVMCPServeCommand() *cobra.Command {
 	var (
-		configPath  string
-		group       string
-		host        string
-		port        int
-		enableAudit bool
+		configPath      string
+		group           string
+		host            string
+		port            int
+		enableAudit     bool
+		enableOptimizer bool
+		enableEmbedding bool
+		embeddingModel  string
+		embeddingImage  string
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -51,16 +55,28 @@ configuration file is needed for the common case of aggregating a local group.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return vmcpcli.Serve(cmd.Context(), vmcpcli.ServeConfig{
-				ConfigPath:  configPath,
-				GroupRef:    group,
-				Host:        host,
-				Port:        port,
-				EnableAudit: enableAudit,
+				ConfigPath:      configPath,
+				GroupRef:        group,
+				Host:            host,
+				Port:            port,
+				EnableAudit:     enableAudit,
+				EnableOptimizer: enableOptimizer,
+				EnableEmbedding: enableEmbedding,
+				EmbeddingModel:  embeddingModel,
+				EmbeddingImage:  embeddingImage,
 			})
 		},
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to vMCP configuration file")
 	cmd.Flags().StringVar(&group, "group", "", "ToolHive group name (zero-config quick mode when --config is omitted)")
+	cmd.Flags().BoolVar(&enableOptimizer, "optimizer", false,
+		"Enable FTS5 keyword optimizer (Tier 1): exposes find_tool and call_tool instead of all backend tools")
+	cmd.Flags().BoolVar(&enableEmbedding, "optimizer-embedding", false,
+		"Enable managed TEI semantic optimizer (Tier 2); implies --optimizer")
+	cmd.Flags().StringVar(&embeddingModel, "embedding-model", "BAAI/bge-small-en-v1.5",
+		"HuggingFace model name for semantic search (Tier 2)")
+	cmd.Flags().StringVar(&embeddingImage, "embedding-image",
+		"ghcr.io/huggingface/text-embeddings-inference:cpu-latest", "TEI container image (Tier 2)")
 	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "Host address to bind to")
 	cmd.Flags().IntVar(&port, "port", 4483, "Port to listen on")
 	cmd.Flags().BoolVar(&enableAudit, "enable-audit", false, "Enable audit logging with default configuration")

@@ -905,6 +905,7 @@ components:
       - removing
       - unknown
       - unauthenticated
+      - policy_stopped
       - running
       - stopped
       - error
@@ -914,6 +915,7 @@ components:
       - removing
       - unknown
       - unauthenticated
+      - policy_stopped
       - running
       - stopped
       - error
@@ -923,6 +925,7 @@ components:
       - removing
       - unknown
       - unauthenticated
+      - policy_stopped
       type: string
       x-enum-varnames:
       - WorkloadStatusRunning
@@ -934,6 +937,7 @@ components:
       - WorkloadStatusRemoving
       - WorkloadStatusUnknown
       - WorkloadStatusUnauthenticated
+      - WorkloadStatusPolicyStopped
     github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig:
       description: |-
         RuntimeConfig allows overriding the default runtime configuration

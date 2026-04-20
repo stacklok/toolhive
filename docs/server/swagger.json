@@ -924,6 +924,7 @@
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "policy_stopped",
                     "running",
                     "stopped",
                     "error",
@@ -933,6 +934,7 @@
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "policy_stopped",
                     "running",
                     "stopped",
                     "error",
@@ -941,7 +943,8 @@
                     "unhealthy",
                     "removing",
                     "unknown",
-                    "unauthenticated"
+                    "unauthenticated",
+                    "policy_stopped"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -953,7 +956,8 @@
                     "WorkloadStatusUnhealthy",
                     "WorkloadStatusRemoving",
                     "WorkloadStatusUnknown",
-                    "WorkloadStatusUnauthenticated"
+                    "WorkloadStatusUnauthenticated",
+                    "WorkloadStatusPolicyStopped"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig": {

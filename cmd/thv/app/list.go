@@ -12,7 +12,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -165,11 +164,8 @@ func printTextOutput(workloadList []core.Workload) {
 
 	// Print workload information
 	for _, c := range workloadList {
-		// Highlight unauthenticated workloads with a warning indicator
-		status := string(c.Status)
-		if c.Status == rt.WorkloadStatusUnauthenticated {
-			status = "⚠️  " + status
-		}
+		// Highlight unauthenticated and policy-stopped workloads with indicators
+		status := workloadStatusIndicator(c.Status)
 
 		// Print workload information
 		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",

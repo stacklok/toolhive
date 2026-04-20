@@ -93,7 +93,7 @@ func (s *Server) buildStatusResponse(ctx context.Context) StatusResponse {
 		}
 		backendStatuses = append(backendStatuses, status)
 
-		if healthStatus == vmcp.BackendHealthy || healthStatus == vmcp.BackendUnauthenticated {
+		if healthStatus == vmcp.BackendHealthy {
 			hasHealthyBackend = true
 		}
 	}

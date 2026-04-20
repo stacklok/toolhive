@@ -21,6 +21,10 @@ The server reads the configuration file specified by --config and starts
 listening for MCP client connections, aggregating tools, resources, and
 prompts from all configured backend MCP servers.
 
+When --config is omitted, --group enables zero-config quick mode: a minimal
+in-memory configuration is generated from the named ToolHive group, so no
+configuration file is needed for the common case of aggregating a local group.
+
 ```
 thv vmcp serve [flags]
 ```
@@ -28,8 +32,9 @@ thv vmcp serve [flags]
 ### Options
 
 ```
-  -c, --config string   Path to vMCP configuration file (required)
+  -c, --config string   Path to vMCP configuration file
       --enable-audit    Enable audit logging with default configuration
+      --group string    ToolHive group name (zero-config quick mode when --config is omitted)
   -h, --help            help for serve
       --host string     Host address to bind to (default "127.0.0.1")
       --port int        Port to listen on (default 4483)

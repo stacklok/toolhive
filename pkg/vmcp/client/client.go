@@ -265,7 +265,7 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 // overridden. The per-request identity placed on the request context by
 // auth.TokenValidator.Middleware carries the freshest upstream tokens (the
 // middleware refreshes them transparently on every incoming request via
-// upstreamtoken.InProcessService.GetAllValidTokens). Overriding it with a
+// upstreamtoken.InProcessService.GetAllUpstreamCredentials). Overriding it with a
 // snapshot captured at session-init time would silently re-inject stale
 // upstream access tokens on every backend call, forcing users to re-auth
 // once the captured access token expired (see issue #5323).

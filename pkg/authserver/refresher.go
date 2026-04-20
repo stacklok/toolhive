@@ -148,6 +148,16 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 		updated.RefreshToken = expired.RefreshToken
 	}
 
+	// OIDC Core 1.0 §12.2 permits but does not require a new id_token on refresh.
+	// When the provider omits one, keep the ID token captured at the initial login
+	// so it is not erased from storage. StoreUpstreamTokens replaces the whole row,
+	// so without this the persisted IDToken would be overwritten with "" and the
+	// original login ID token would be lost for the remainder of the session.
+	// Mirrors the RefreshToken carry-forward above.
+	if updated.IDToken == "" {
+		updated.IDToken = expired.IDToken
+	}
+
 	if err := r.storeWithRetry(ctx, sessionID, expired.ProviderID, updated); err != nil {
 		if !rotated {
 			// The old refresh token is still valid in storage; the caller can

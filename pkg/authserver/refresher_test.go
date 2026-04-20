@@ -336,6 +336,41 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 				assert.Equal(t, "new-refresh", result.RefreshToken)
 			},
 		},
+		{
+			// Regression: when the provider omits id_token on a refresh (common — e.g. Google),
+			// the refresher must carry the original login ID token forward into storage rather
+			// than overwriting the persisted row with an empty string. StoreUpstreamTokens
+			// replaces the whole row, so without the carry-forward the login ID token is
+			// permanently lost after the first refresh cycle.
+			name:      "provider omits id_token on refresh - keeps login ID token",
+			sessionID: "session-9",
+			expired:   baseExpired,
+			setupProvider: func(_ *testing.T, p *upstreammocks.MockOAuth2Provider) {
+				p.EXPECT().RefreshTokens(gomock.Any(), "old-refresh", "upstream-sub-456").
+					Return(&upstream.Tokens{
+						AccessToken:  "new-access",
+						RefreshToken: "new-refresh",
+						IDToken:      "", // provider omitted id_token
+						ExpiresAt:    newExpiry,
+					}, nil)
+			},
+			setupStorage: func(_ *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-9", "github", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _, _ string, tokens *storage.UpstreamTokens) error {
+						assert.Equal(t, "old-id-token", tokens.IDToken,
+							"refresher must carry forward the login ID token when provider omits one")
+						return nil
+					})
+			},
+			wantErr: false,
+			checkResult: func(t *testing.T, result *storage.UpstreamTokens) {
+				t.Helper()
+				assert.Equal(t, "new-access", result.AccessToken)
+				assert.Equal(t, "new-refresh", result.RefreshToken)
+				assert.Equal(t, "old-id-token", result.IDToken,
+					"returned tokens must carry the login ID token when provider omits one")
+			},
+		},
 	}
 
 	for _, tt := range tests {

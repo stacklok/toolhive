@@ -553,9 +553,9 @@ func WithEnvReader(reader env.Reader) TokenValidatorOption {
 
 // WithUpstreamTokenReader configures the token validator to enrich Identity
 // with upstream provider tokens. When set, the Middleware extracts the token
-// session ID (tsid) from JWT claims, loads all upstream tokens into
-// Identity.UpstreamTokens, and then places the enriched Identity in the
-// request context.
+// session ID (tsid) from JWT claims and loads all upstream tokens into
+// Identity.UpstreamTokens (access tokens) and Identity.UpstreamIDTokens
+// (ID tokens) before placing the Identity in the request context.
 func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.upstreamTokenReader = reader
@@ -1167,23 +1167,28 @@ func writeOAuthError(w http.ResponseWriter, errorCode, description string) {
 }
 
 // loadUpstreamTokens extracts the token session ID from claims and loads
-// all upstream provider tokens for that session. Returns (nil, nil, nil) if no
-// tsid claim exists. Returns a non-nil error when a tsid claim is present
-// but token loading fails due to an infrastructure error (storage unavailable).
-// A non-nil failed slice means one or more providers' tokens could not be
-// refreshed; the caller should return HTTP 401 to trigger re-authentication.
-func (v *TokenValidator) loadUpstreamTokens(ctx context.Context, claims jwt.MapClaims) (map[string]string, []string, error) {
+// all upstream provider credentials (access + ID tokens) for that session.
+// Returns (nil, nil, nil) if no tsid claim exists. Returns a non-nil error
+// when a tsid claim is present but token loading fails due to an infrastructure
+// error (storage unavailable). A non-empty failed slice means one or more
+// providers' tokens could not be refreshed; the caller should return HTTP 401
+// to trigger re-authentication.
+func (v *TokenValidator) loadUpstreamTokens(
+	ctx context.Context, claims jwt.MapClaims,
+) (map[string]upstreamtoken.UpstreamCredential, []string, error) {
 	tsid, ok := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
 	if !ok || tsid == "" {
 		return nil, nil, nil
 	}
 
-	tokens, failed, err := v.upstreamTokenReader.GetAllValidTokens(ctx, tsid)
+	creds, failed, err := v.upstreamTokenReader.GetAllUpstreamCredentials(ctx, tsid)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load upstream tokens for session %s: %w", tsid, err)
+		// Log tsid at DEBUG only — it is credential-adjacent and must not
+		// leak into WARN-level logs or returned error strings.
+		slog.DebugContext(ctx, "load upstream credentials failed", "tsid", tsid, "error", err)
+		return nil, nil, fmt.Errorf("load upstream credentials: %w", err)
 	}
-
-	return tokens, failed, nil
+	return creds, failed, nil
 }
 
 // Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.
@@ -1225,7 +1230,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		// never mutated afterwards (see the UpstreamTokens doc comment in identity.go).
 		if v.upstreamTokenReader != nil {
 			loadCtx := WithIdentity(r.Context(), identity)
-			tokens, failed, loadErr := v.loadUpstreamTokens(loadCtx, claims)
+			creds, failed, loadErr := v.loadUpstreamTokens(loadCtx, claims)
 			if loadErr != nil {
 				slog.WarnContext(loadCtx, "upstream token storage unavailable",
 					"error", loadErr,
@@ -1233,7 +1238,6 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
 				return
 			}
-			identity.UpstreamTokens = tokens
 			// Conservative policy: any provider refresh failure rejects the entire
 			// request. In vMCP multi-provider sessions this may block requests that
 			// could partially succeed if only some backends need the failing provider.
@@ -1247,6 +1251,31 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 				writeOAuthError(w, OAuthErrInvalidToken,
 					"upstream token is no longer valid; re-authentication required")
 				return
+			}
+			// Project the per-provider credential bundle onto the two
+			// consumer-facing Identity fields.
+			//
+			// Non-nil empty maps are preserved when a tsid claim was present
+			// so consumers can distinguish "enrichment attempted, nothing
+			// stored" from "enrichment never ran" (nil).
+			if creds != nil {
+				accessTokens := make(map[string]string, len(creds))
+				idTokens := make(map[string]string, len(creds))
+				for provider, cred := range creds {
+					// Omit providers with no usable access token (mirrors the ID-token
+					// filter below); a provider may carry an ID token but no access token.
+					if cred.AccessToken != "" {
+						accessTokens[provider] = cred.AccessToken
+					}
+					// Omit providers whose upstream login did not yield an
+					// ID token so consumers see the same map shape as before
+					// (keyed only on providers with a usable ID token).
+					if cred.IDToken != "" {
+						idTokens[provider] = cred.IDToken
+					}
+				}
+				identity.UpstreamTokens = accessTokens
+				identity.UpstreamIDTokens = idTokens
 			}
 		}
 

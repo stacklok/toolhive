@@ -4,9 +4,12 @@
 package app
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 
 	vmcpcli "github.com/stacklok/toolhive/pkg/vmcp/cli"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // newVMCPCommand returns the top-level "vmcp" Cobra command with subcommands attached.
@@ -20,6 +23,7 @@ servers from a ToolHive group into a single unified endpoint.`,
 	}
 	cmd.AddCommand(newVMCPServeCommand())
 	cmd.AddCommand(newVMCPValidateCommand())
+	cmd.AddCommand(newVMCPInitCommand())
 	return cmd
 }
 
@@ -60,6 +64,44 @@ configuration file is needed for the common case of aggregating a local group.`,
 	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "Host address to bind to")
 	cmd.Flags().IntVar(&port, "port", 4483, "Port to listen on")
 	cmd.Flags().BoolVar(&enableAudit, "enable-audit", false, "Enable audit logging with default configuration")
+	return cmd
+}
+
+// newVMCPInitCommand returns the "vmcp init" subcommand.
+func newVMCPInitCommand() *cobra.Command {
+	var (
+		groupName  string
+		outputPath string
+	)
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Generate a starter vMCP configuration file",
+		Long: `Discover running workloads in a ToolHive group and generate a starter
+vMCP YAML configuration file pre-populated with one backend entry per
+accessible workload.
+
+The generated file can be reviewed and customized, then passed to
+'thv vmcp validate --config' to check it and 'thv vmcp serve --config'
+to start the aggregated server.
+
+If neither --output nor --config is provided, the generated YAML is written to stdout.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			manager, err := workloads.NewManager(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("failed to create workload manager: %w", err)
+			}
+			return vmcpcli.Init(cmd.Context(), vmcpcli.InitConfig{
+				GroupName:  groupName,
+				OutputPath: outputPath,
+				Discoverer: workloads.NewDiscovererAdapter(manager),
+			})
+		},
+	}
+	cmd.Flags().StringVarP(&groupName, "group", "g", "", "ToolHive group name to discover workloads from (required)")
+	cmd.Flags().StringVarP(&outputPath, "output", "o", "", "Output file path for the generated config (default: stdout)")
+	cmd.Flags().StringVarP(&outputPath, "config", "c", "", "Output file path for the generated config; alias for --output")
+	_ = cmd.MarkFlagRequired("group")
 	return cmd
 }
 

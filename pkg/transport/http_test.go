@@ -352,11 +352,3 @@ func TestHTTPTransport_IsRunning(t *testing.T) {
 	})
 }
 
-func TestHealthCheckAlwaysEnabled(t *testing.T) {
-	t.Parallel()
-
-	// Health checks are always enabled for all workload types.
-	// The shouldEnableHealthCheck function was removed; health checks are unconditionally
-	// enabled by setting enableHealthCheck=true in all constructors.
-	assert.True(t, true, "health checks are always enabled")
-}

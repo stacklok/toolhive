@@ -2534,6 +2534,72 @@ func TestTransparentProxy_HealthCheckFailureWithNilCallback(t *testing.T) {
 
 }
 
+// TestTransparentProxy_RemoteServerAutoRecovery verifies the full down→unhealthy→up→running
+// cycle for a remote workload: the proxy stays alive after health check failures and fires
+// onHealthCheckRecovered when the upstream comes back.
+func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	serverHealthy := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		healthy := serverHealthy
+		mu.Unlock()
+		if healthy {
+			w.WriteHeader(http.StatusOK)
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	failTracker, failCallback := newCallbackTracker()
+	recoveryTracker, recoveryCallback := newCallbackTracker()
+
+	proxy := NewTransparentProxyWithOptions(
+		"127.0.0.1", 0, server.URL,
+		nil, nil, nil,
+		true,  // enableHealthCheck
+		true,  // isRemote
+		"sse",
+		failCallback,
+		recoveryCallback,
+		nil, "", false, nil,
+		withHealthCheckInterval(100*time.Millisecond),
+		withHealthCheckRetryDelay(50*time.Millisecond),
+		withHealthCheckPingTimeout(100*time.Millisecond),
+		withHealthCheckFailureThreshold(3),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	t.Cleanup(func() { _ = proxy.Stop(ctx) })
+
+	require.NoError(t, proxy.Start(ctx))
+
+	// Phase 1: server is returning 500 — wait for the failure callback.
+	failInvoked := waitForShutdown(t, failTracker, proxy, 2*time.Second)
+	assert.True(t, failInvoked, "failure callback should fire after consecutive 500s")
+
+	running, err := proxy.IsRunning()
+	require.NoError(t, err)
+	assert.True(t, running, "remote proxy must stay alive after health check failures")
+
+	// Phase 2: server recovers — wait for the recovery callback.
+	mu.Lock()
+	serverHealthy = true
+	mu.Unlock()
+
+	recoveryInvoked := waitForShutdown(t, recoveryTracker, proxy, 2*time.Second)
+	assert.True(t, recoveryInvoked, "recovery callback should fire when server becomes healthy again")
+
+	running, err = proxy.IsRunning()
+	require.NoError(t, err)
+	assert.True(t, running, "proxy must still be running after recovery")
+}
+
 // TestPrefixHandlers_MountingAndRouting tests that prefix handlers are correctly mounted
 
 // and that Go's ServeMux longest-match routing correctly routes requests

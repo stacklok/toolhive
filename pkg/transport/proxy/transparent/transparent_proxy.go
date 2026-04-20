@@ -1245,8 +1245,10 @@ func (p *TransparentProxy) handleHealthCheckFailure(
 		// For remote workloads ToolHive does not own the server lifecycle.
 		// Stay in degraded mode and keep monitoring so auto-recovery is possible
 		// (e.g. scale-to-zero backends that come back after a cold start).
-		// Reset the counter so the threshold applies fresh on the next outage window.
-		return 0, true
+		// Keep the counter at threshold so that monitorHealth can detect recovery
+		// (it fires onHealthCheckRecovered when consecutiveFailures >= threshold on
+		// the next successful check), then resets to 0 for the next outage window.
+		return p.healthCheckFailureThreshold, true
 	}
 
 	// Local container: ToolHive controls the lifecycle — stop the proxy.

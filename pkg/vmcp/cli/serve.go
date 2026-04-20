@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -50,7 +51,8 @@ import (
 
 // ServeConfig holds all parameters needed to start the vMCP server.
 // Populated by the caller from Cobra flag values or equivalent.
-// Exactly one of ConfigPath or GroupRef must be non-empty.
+// At least one of ConfigPath or GroupRef must be non-empty; ConfigPath takes
+// precedence when both are provided.
 type ServeConfig struct {
 	// ConfigPath is the path to the vMCP YAML configuration file.
 	// When set, takes precedence over GroupRef.
@@ -67,11 +69,38 @@ type ServeConfig struct {
 	EnableAudit bool
 }
 
+// validateQuickModeHost returns an error when the config represents quick mode
+// (GroupRef set, ConfigPath empty) and Host is not a loopback address. Quick
+// mode always uses anonymous auth, so binding to a non-loopback interface would
+// expose an unauthenticated server on the network. Empty host is treated as the
+// default loopback address; "localhost" is accepted as a known loopback name.
+func (c ServeConfig) validateQuickModeHost() error {
+	if c.ConfigPath != "" || c.GroupRef == "" {
+		return nil
+	}
+	h := c.Host
+	if h == "" {
+		h = "127.0.0.1"
+	}
+	if h == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(h)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("quick mode (--group) only supports loopback bind addresses (e.g. 127.0.0.1); got %q", c.Host)
+	}
+	return nil
+}
+
 // Serve loads configuration, initializes all subsystems, and starts the vMCP
 // server. It blocks until the context is cancelled or the server stops.
 //
 //nolint:gocyclo // Complexity from server initialization sequence is acceptable here.
 func Serve(ctx context.Context, cfg ServeConfig) error {
+	if err := cfg.validateQuickModeHost(); err != nil {
+		return err
+	}
+
 	// Load and validate configuration — file path takes precedence over group quick mode.
 	vmcpCfg, err := func() (*config.Config, error) {
 		switch {
@@ -95,9 +124,13 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 
 	// Load auth server config from sibling file if present.
-	authServerRC, err := loadAuthServerConfig(cfg.ConfigPath)
-	if err != nil {
-		return err
+	// Skip in quick mode (no config file) — there is no sibling directory to search.
+	var authServerRC *authserverconfig.RunConfig
+	if cfg.ConfigPath != "" {
+		authServerRC, err = loadAuthServerConfig(cfg.ConfigPath)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Auto-populate SubjectProviderName on any token_exchange strategy that

@@ -294,6 +294,49 @@ func TestServe_NeitherConfigNorGroup(t *testing.T) {
 	require.ErrorContains(t, err, "--config or --group")
 }
 
+// TestValidateQuickModeHost exercises ServeConfig.validateQuickModeHost directly
+// so the test never starts the HTTP server and cannot hang.
+func TestValidateQuickModeHost(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		configPath  string
+		groupRef    string
+		host        string
+		wantErr     bool
+		errContains string
+	}{
+		// Quick mode (no --config): loopback-only
+		{name: "quick mode: loopback IPv4 allowed", groupRef: "my-group", host: "127.0.0.1"},
+		{name: "quick mode: loopback IPv6 allowed", groupRef: "my-group", host: "::1"},
+		{name: "quick mode: localhost allowed", groupRef: "my-group", host: "localhost"},
+		{name: "quick mode: empty host treated as loopback", groupRef: "my-group", host: ""},
+		{name: "quick mode: all-interfaces rejected", groupRef: "my-group", host: "0.0.0.0", wantErr: true, errContains: "quick mode"},
+		{name: "quick mode: LAN IP rejected", groupRef: "my-group", host: "192.168.1.10", wantErr: true, errContains: "quick mode"},
+		{name: "quick mode: non-IP hostname rejected", groupRef: "my-group", host: "not-an-ip", wantErr: true, errContains: "quick mode"},
+		// Config-file mode: host check does not apply
+		{name: "config mode: non-loopback allowed", configPath: "/some/config.yaml", host: "0.0.0.0"},
+		// Both flags set: ConfigPath takes precedence, host check skipped
+		{name: "both flags: non-loopback allowed", configPath: "/some/config.yaml", groupRef: "my-group", host: "0.0.0.0"},
+		// Neither flag: check is a no-op
+		{name: "neither flag: no-op", host: "0.0.0.0"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := ServeConfig{ConfigPath: tc.configPath, GroupRef: tc.groupRef, Host: tc.host}.validateQuickModeHost()
+			if tc.wantErr {
+				require.Error(t, err)
+				require.ErrorContains(t, err, tc.errContains)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 // TestRunDiscovery_ZeroBackends exercises the branch in runDiscovery where the
 // discoverer succeeds but returns no backends. The function must return a
 // non-error, an empty (non-nil) backend slice, and pass through the client and

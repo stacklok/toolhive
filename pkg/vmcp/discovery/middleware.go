@@ -135,6 +135,10 @@ func Middleware(
 // or degraded. Backends that are unhealthy, unknown, or unauthenticated are excluded
 // from capability aggregation to prevent exposing tools from unavailable backends.
 //
+// TODO(#4920): Unauthenticated backends are treated as routable for phase determination
+// but are excluded here because discovery probes cannot carry user tokens. If health
+// probes could authenticate, these backends would be fully healthy and included here.
+//
 // Health status filtering:
 //   - healthy: included (fully operational)
 //   - degraded: included (slow but working)

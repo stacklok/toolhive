@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/migration"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -49,9 +51,15 @@ import (
 
 // ServeConfig holds all parameters needed to start the vMCP server.
 // Populated by the caller from Cobra flag values or equivalent.
+// At least one of ConfigPath or GroupRef must be non-empty; ConfigPath takes
+// precedence when both are provided.
 type ServeConfig struct {
 	// ConfigPath is the path to the vMCP YAML configuration file.
+	// When set, takes precedence over GroupRef.
 	ConfigPath string
+	// GroupRef is a ToolHive group name used for zero-config quick mode when
+	// ConfigPath is empty. A minimal in-memory config is generated from this value.
+	GroupRef string
 	// Host is the address the server binds to (e.g. "127.0.0.1").
 	Host string
 	// Port is the TCP port the server listens on.
@@ -61,17 +69,49 @@ type ServeConfig struct {
 	EnableAudit bool
 }
 
+// validateQuickModeHost returns an error when the config represents quick mode
+// (GroupRef set, ConfigPath empty) and Host is not a loopback address. Quick
+// mode always uses anonymous auth, so binding to a non-loopback interface would
+// expose an unauthenticated server on the network. Empty host is treated as the
+// default loopback address; "localhost" is accepted as a known loopback name.
+func (c ServeConfig) validateQuickModeHost() error {
+	if c.ConfigPath != "" || c.GroupRef == "" {
+		return nil
+	}
+	h := c.Host
+	if h == "" {
+		h = "127.0.0.1"
+	}
+	if h == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(h)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("quick mode (--group) only supports loopback bind addresses (e.g. 127.0.0.1); got %q", c.Host)
+	}
+	return nil
+}
+
 // Serve loads configuration, initializes all subsystems, and starts the vMCP
 // server. It blocks until the context is cancelled or the server stops.
 //
 //nolint:gocyclo // Complexity from server initialization sequence is acceptable here.
 func Serve(ctx context.Context, cfg ServeConfig) error {
-	if cfg.ConfigPath == "" {
-		return fmt.Errorf("no configuration file specified, use --config flag")
+	if err := cfg.validateQuickModeHost(); err != nil {
+		return err
 	}
 
-	// Load and validate configuration
-	vmcpCfg, err := loadAndValidateConfig(cfg.ConfigPath)
+	// Load and validate configuration — file path takes precedence over group quick mode.
+	vmcpCfg, err := func() (*config.Config, error) {
+		switch {
+		case cfg.ConfigPath != "":
+			return loadAndValidateConfig(cfg.ConfigPath)
+		case cfg.GroupRef != "":
+			return generateQuickModeConfig(cfg.GroupRef)
+		default:
+			return nil, fmt.Errorf("either --config or --group must be specified")
+		}
+	}()
 	if err != nil {
 		return err
 	}
@@ -84,9 +124,13 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 
 	// Load auth server config from sibling file if present.
-	authServerRC, err := loadAuthServerConfig(cfg.ConfigPath)
-	if err != nil {
-		return err
+	// Skip in quick mode (no config file) — there is no sibling directory to search.
+	var authServerRC *authserverconfig.RunConfig
+	if cfg.ConfigPath != "" {
+		authServerRC, err = loadAuthServerConfig(cfg.ConfigPath)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Auto-populate SubjectProviderName on any token_exchange strategy that
@@ -367,6 +411,37 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	return cfg, nil
 }
 
+// generateQuickModeConfig constructs a minimal in-memory config for zero-config
+// quick mode (thv vmcp serve --group <name>). It sets groupRef from groupRef,
+// incomingAuth to anonymous, and outgoingAuth.source to "inline" so no
+// Kubernetes API access is required. The generated config is validated before
+// being returned; returns an error if groupRef is empty or validation fails.
+func generateQuickModeConfig(groupRef string) (*config.Config, error) {
+	if groupRef == "" {
+		return nil, fmt.Errorf("--group must not be empty")
+	}
+	cfg := &config.Config{
+		Name:  groupRef,
+		Group: groupRef,
+		IncomingAuth: &config.IncomingAuthConfig{
+			Type: config.IncomingAuthTypeAnonymous,
+		},
+		OutgoingAuth: &config.OutgoingAuthConfig{
+			Source: "inline",
+		},
+		Aggregation: &config.AggregationConfig{
+			ConflictResolution: vmcp.ConflictStrategyPrefix,
+			ConflictResolutionConfig: &config.ConflictResolutionConfig{
+				PrefixFormat: "{workload}_",
+			},
+		},
+	}
+	if err := config.NewValidator().Validate(cfg); err != nil {
+		return nil, fmt.Errorf("quick-mode config validation failed: %w", err)
+	}
+	return cfg, nil
+}
+
 // loadAuthServerConfig loads the auth server RunConfig from a sibling file
 // alongside the main config. The operator serializes authserver.RunConfig as a
 // separate ConfigMap key (authserver-config.yaml).
@@ -418,8 +493,14 @@ func discoverBackends(
 			cfg.Group,
 		)
 	} else {
-		// Dynamic mode: discover backends at runtime from K8s API.
+		// Dynamic mode: discover backends at runtime from the active workload manager (K8s or local).
 		slog.Info("dynamic mode: initializing group manager for backend discovery")
+		// EnsureDefaultGroupExists is a no-op in Kubernetes (service account has no
+		// create permission on MCPGroup CRDs). If the group does not exist,
+		// Discover returns ErrGroupNotFound which is handled below.
+		if err := migration.EnsureDefaultGroupExists(); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to ensure default group exists: %w", err)
+		}
 		groupsManager, err := groups.NewManager()
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
@@ -447,6 +528,13 @@ func runDiscovery(
 	slog.Info(fmt.Sprintf("Discovering backends in group: %s", groupRef))
 	backends, err := discoverer.Discover(ctx, groupRef)
 	if err != nil {
+		// In Kubernetes mode the MCPGroup CRD is operator/user-managed and may
+		// not exist yet. Treat a missing group as zero backends so vMCP can
+		// start and serve once backends are registered later.
+		if runtime.IsKubernetesRuntime() && errors.Is(err, groups.ErrGroupNotFound) {
+			slog.Warn(fmt.Sprintf("Group %s not found - vmcp will start but have no backends to proxy", groupRef))
+			return []vmcp.Backend{}, backendClient, outgoingRegistry, nil
+		}
 		return nil, nil, nil, fmt.Errorf("failed to discover backends: %w", err)
 	}
 

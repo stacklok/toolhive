@@ -26,7 +26,7 @@ type StatusResponse struct {
 // BackendStatus represents the status of a single backend MCP server.
 type BackendStatus struct {
 	Name      string `json:"name"`
-	Health    string `json:"health"`              // "healthy", "degraded", "unhealthy", "unknown"
+	Health    string `json:"health"`              // "healthy", "degraded", "unhealthy", "unauthenticated", "unknown"
 	Transport string `json:"transport"`           // MCP transport protocol
 	AuthType  string `json:"auth_type,omitempty"` // "unauthenticated", "header_injection", "token_exchange"
 }
@@ -93,7 +93,7 @@ func (s *Server) buildStatusResponse(ctx context.Context) StatusResponse {
 		}
 		backendStatuses = append(backendStatuses, status)
 
-		if healthStatus == vmcp.BackendHealthy {
+		if healthStatus == vmcp.BackendHealthy || healthStatus == vmcp.BackendUnauthenticated {
 			hasHealthyBackend = true
 		}
 	}

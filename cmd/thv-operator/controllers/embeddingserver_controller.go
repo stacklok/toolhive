@@ -156,7 +156,12 @@ func (r *EmbeddingServerReconciler) handleDeletion(
 	}
 
 	if controllerutil.ContainsFinalizer(embedding, embeddingFinalizerName) {
-		r.finalizeEmbeddingServer(ctx, embedding)
+		if err := r.finalizeEmbeddingServer(ctx, embedding); err != nil {
+			// Requeue instead of removing the finalizer so the terminal
+			// status eventually gets persisted. Losing it here leaves the
+			// object deleted with a stale Phase in the last cached state.
+			return ctrl.Result{}, true, err
+		}
 
 		controllerutil.RemoveFinalizer(embedding, embeddingFinalizerName)
 		err := r.Update(ctx, embedding)
@@ -984,8 +989,11 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 	return nil
 }
 
-// finalizeEmbeddingServer performs cleanup before the EmbeddingServer is deleted
-func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context, embedding *mcpv1alpha1.EmbeddingServer) {
+// finalizeEmbeddingServer performs cleanup before the EmbeddingServer is deleted.
+// Returning the status update error lets the caller requeue instead of
+// removing the finalizer on a failed cleanup: otherwise the object is
+// deleted with the last persisted Phase rather than Terminating (#4624).
+func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context, embedding *mcpv1alpha1.EmbeddingServer) error {
 	ctxLogger := log.FromContext(ctx)
 	ctxLogger.Info("Finalizing EmbeddingServer", "name", embedding.Name)
 
@@ -993,12 +1001,14 @@ func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context,
 	embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhaseTerminating
 	if err := r.Status().Update(ctx, embedding); err != nil {
 		ctxLogger.Error(err, "Failed to update EmbeddingServer status to Terminating")
+		return fmt.Errorf("updating embedding server terminating status: %w", err)
 	}
 
 	// Cleanup logic here if needed
 	// For now, Kubernetes will handle cascade deletion of owned resources
 
 	r.Recorder.Eventf(embedding, nil, corev1.EventTypeNormal, "Deleted", "Finalize", "EmbeddingServer has been finalized")
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -341,7 +341,7 @@ func New(
 
 	// Create SDK elicitation adapter for workflow engine
 	// This wraps the mark3labs SDK to provide elicitation functionality to the composer
-	sdkElicitationRequester := newSDKElicitationAdapter(mcpServer)
+	sdkElicitationRequester := NewSDKElicitationAdapter(mcpServer)
 
 	// Create elicitation handler for workflow engine
 	// This provides SDK-agnostic elicitation with security validation
@@ -975,6 +975,43 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 // This is useful for testing and monitoring.
 func (s *Server) SessionManager() *transportsession.Manager {
 	return s.sessionManager
+}
+
+// MCPServer returns the underlying mark3labs *server.MCPServer instance
+// servicing this vMCP server's /mcp endpoint.
+//
+// Intended for embedders that wrap the vMCP composer in their own pipeline and
+// need to drive SDK-level operations (such as RequestElicitation) against the
+// same server that handles incoming client traffic. A parallel MCPServer
+// constructed by the embedder will not work: ClientSession correlation is
+// keyed to the server that received the initialize request.
+//
+// Trust boundary: this accessor is in-process only; the returned pointer is
+// the same instance for the lifetime of the Server and is safe for concurrent
+// use per mark3labs guarantees.
+//
+// Safe operations include RequestElicitation against an active session,
+// registering observability hooks, and reading registered
+// tools/resources/prompts. Callers MUST NOT call shutdown/close or alter the
+// serving lifecycle; that is owned by (*Server).Start and (*Server).Stop.
+// Callers SHOULD prefer per-session tool registration over global
+// AddTool/SetTools: globally registered tools are served to every session and
+// bypass vMCP's per-session capability scoping (they still pass through the
+// HTTP auth/authz chain).
+//
+// Elicitation callers must:
+//   - Propagate the inbound request ctx so ClientSession resolves, and pass a
+//     bounded deadline; RequestElicitation blocks on the remote client.
+//   - Ensure the connected client advertised the "elicitation" capability
+//     during initialize.
+//   - Handle accept / decline / cancel responses distinctly per MCP 2025-06-18;
+//     keep requestedSchema as a flat object of primitives (string / number /
+//     integer / boolean / enum), which is what conforming clients accept.
+//   - Never include secrets, credentials, tokens, or internal addressing
+//     (backend IDs, pod names, routing-table entries) in the prompt message
+//     or schema: elicitation payloads are surfaced to end-user clients.
+func (s *Server) MCPServer() *server.MCPServer {
+	return s.mcpServer
 }
 
 // Ready returns a channel that is closed when the server is ready to accept connections.

@@ -103,9 +103,23 @@ func TestSDKElicitationAdapter_Integration(t *testing.T) {
 	t.Parallel()
 
 	mcpServer := server.NewMCPServer("test", "1.0.0")
-	adapter := newSDKElicitationAdapter(mcpServer)
+	adapter := NewSDKElicitationAdapter(mcpServer)
 
 	assert.NotNil(t, adapter)
+}
+
+// TestServer_MCPServer_ReturnsSameInstance verifies that (*Server).MCPServer
+// returns the exact mark3labs server pointer stored at construction time.
+// Identity matters because ClientSession correlation is keyed to the server
+// that received the initialize request; embedders building their own
+// elicitation requester must receive the authoritative instance.
+func TestServer_MCPServer_ReturnsSameInstance(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := server.NewMCPServer("test", "1.0.0")
+	srv := &Server{mcpServer: mcpServer}
+
+	assert.Same(t, mcpServer, srv.MCPServer())
 }
 
 type testSDKElicitationRequester struct {

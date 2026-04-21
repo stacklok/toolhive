@@ -8,7 +8,7 @@ When you use protocol schemes like `thv run go://github.com/example/server`, Too
 
 - **Go**: `golang:1.26-alpine` (builder), `alpine:3.23` (runtime)
 - **Node**: `node:22-alpine` (builder and runtime)
-- **Python**: `python:3.13-slim` (builder and runtime)
+- **Python**: `python:3.14-slim` (builder and runtime)
 
 You can customize these base images to use different versions or add additional build and runtime packages.
 

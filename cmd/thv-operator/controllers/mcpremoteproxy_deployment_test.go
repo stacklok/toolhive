@@ -705,22 +705,22 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *test
 
 	scheme := createRunConfigTestScheme()
 
-	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "embedded-auth",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
-				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 					{
 						Name: "google",
-						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
-						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
 							IssuerURL: "https://accounts.google.com",
 							ClientID:  "client-id",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 								Name: "upstream-secret",
 								Key:  "client-secret",
 							},
@@ -731,15 +731,15 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *test
 		},
 	}
 
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
+	proxy := &mcpv1beta1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-proxy",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
 			ProxyPort: 8080,
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: authConfig.Name,
 			},
 		},
@@ -767,22 +767,22 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(
 
 	scheme := createRunConfigTestScheme()
 
-	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "embedded-auth",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
-				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 					{
 						Name: "google",
-						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
-						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
 							IssuerURL: "https://accounts.google.com",
 							ClientID:  "client-id",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 								Name: "upstream-secret",
 								Key:  "client-secret",
 							},
@@ -793,15 +793,15 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(
 		},
 	}
 
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
+	proxy := &mcpv1beta1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-proxy",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
 			ProxyPort: 8080,
-			AuthServerRef: &mcpv1alpha1.AuthServerRef{
+			AuthServerRef: &mcpv1beta1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: authConfig.Name,
 			},
@@ -830,17 +830,17 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testin
 
 	scheme := createRunConfigTestScheme()
 
-	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "exchange-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "client-id",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "token-secret",
 					Key:  "client-secret",
 				},
@@ -849,15 +849,15 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testin
 		},
 	}
 
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
+	proxy := &mcpv1beta1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-proxy",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
 			RemoteURL: "https://mcp.example.com",
 			ProxyPort: 8080,
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: authConfig.Name,
 			},
 		},

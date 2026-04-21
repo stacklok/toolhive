@@ -34,24 +34,24 @@ func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *testing.T
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "embedded-auth",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
-				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 					{
 						Name: "google",
-						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
-						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
 							IssuerURL: "https://accounts.google.com",
 							ClientID:  "client-id",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 								Name: "upstream-secret",
 								Key:  "client-secret",
 							},
@@ -62,15 +62,15 @@ func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *testing.T
 		},
 	}
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image",
 			ProxyPort: 8080,
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: externalAuthConfig.Name,
 			},
 		},
@@ -103,24 +103,24 @@ func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(t *te
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "embedded-auth",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
-				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 					{
 						Name: "google",
-						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
-						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
 							IssuerURL: "https://accounts.google.com",
 							ClientID:  "client-id",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 								Name: "upstream-secret",
 								Key:  "client-secret",
 							},
@@ -131,15 +131,15 @@ func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(t *te
 		},
 	}
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image",
 			ProxyPort: 8080,
-			AuthServerRef: &mcpv1alpha1.AuthServerRef{
+			AuthServerRef: &mcpv1beta1.AuthServerRef{
 				Kind: "MCPExternalAuthConfig",
 				Name: authConfig.Name,
 			},
@@ -164,19 +164,19 @@ func TestMCPServerDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testing.T) 
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "exchange-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "client-id",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "token-secret",
 					Key:  "client-secret",
 				},
@@ -185,15 +185,15 @@ func TestMCPServerDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testing.T) 
 		},
 	}
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image",
 			ProxyPort: 8080,
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: authConfig.Name,
 			},
 		},

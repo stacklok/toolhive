@@ -12,6 +12,12 @@ type MCPGroupSpec struct {
 	// Description provides human-readable context
 	// +optional
 	Description string `json:"description,omitempty"`
+
+	// Owner identifies the team or person responsible for this group.
+	// TEST: deliberately added as a new optional field to validate that
+	// api-compat.yml reports Compatible on additive changes. Do NOT merge.
+	// +optional
+	Owner string `json:"owner,omitempty"`
 }
 
 // MCPGroupStatus defines observed state

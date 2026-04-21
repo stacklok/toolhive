@@ -65,6 +65,12 @@ spec:
               description:
                 description: Description provides human-readable context
                 type: string
+              owner:
+                description: |-
+                  Owner identifies the team or person responsible for this group.
+                  TEST: deliberately added as a new optional field to validate that
+                  api-compat.yml reports Compatible on additive changes. Do NOT merge.
+                type: string
             type: object
           status:
             description: MCPGroupStatus defines observed state
@@ -218,6 +224,12 @@ spec:
             properties:
               description:
                 description: Description provides human-readable context
+                type: string
+              owner:
+                description: |-
+                  Owner identifies the team or person responsible for this group.
+                  TEST: deliberately added as a new optional field to validate that
+                  api-compat.yml reports Compatible on additive changes. Do NOT merge.
                 type: string
             type: object
           status:

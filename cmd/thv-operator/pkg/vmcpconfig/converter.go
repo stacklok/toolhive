@@ -318,6 +318,7 @@ func (*Converter) convertAuthServerConfig(
 		vmcp.Spec.AuthServerConfig,
 		deriveAllowedAudiences(config),
 		deriveScopesSupported(config),
+		deriveResourceURL(config),
 	)
 }
 
@@ -342,6 +343,16 @@ func deriveAllowedAudiences(config *vmcpconfig.Config) []string {
 		return nil
 	}
 	return []string{resource}
+}
+
+// deriveResourceURL returns the resource URL from the resolved incoming OIDC config.
+// Returns empty string when OIDC is not configured or Resource is empty.
+// Used to default upstream provider RedirectURIs to {resourceURL}/oauth/callback.
+func deriveResourceURL(config *vmcpconfig.Config) string {
+	if config.IncomingAuth == nil || config.IncomingAuth.OIDC == nil {
+		return ""
+	}
+	return config.IncomingAuth.OIDC.Resource
 }
 
 // deriveScopesSupported returns the scopes from the resolved incoming OIDC config.

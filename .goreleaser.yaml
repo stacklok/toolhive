@@ -101,6 +101,10 @@ release:
     name: toolhive
   extra_files:
     - glob: build/thv-cli-docs.tar.gz
+    - glob: build/toolhive-legacy-registry.schema.json
+    - glob: build/upstream-registry.schema.json
+    - glob: build/publisher-provided.schema.json
+    - glob: build/skill.schema.json
     - glob: docs/server/swagger.yaml
     - glob: docs/server/swagger.json
     - glob: docs/operator/crd-api.md

@@ -14,8 +14,16 @@ on:
   pull_request:
     paths:
       - 'cmd/thv-operator/api/**'
+      # files/crds is the source of truth — controller-gen emits here, and
+      # crd-helm-wrapper copies from here into templates/. Any drift in
+      # templates/ is caught by operator-ci.yml's generate-crds job, so
+      # watching templates/ would be redundant. values.yaml and the
+      # crd-helm-wrapper only affect Helm conditionals and annotations the
+      # checker ignores; the workflow's explicit --set flags force every
+      # CRD to render regardless of those files.
       - 'deploy/charts/operator-crds/files/crds/**'
-      - 'deploy/charts/operator-crds/templates/**'
+      # Self-exercise the workflow when the workflow itself changes.
+      - '.github/workflows/api-compat.yml'
 
 permissions:
   contents: read
@@ -26,6 +34,11 @@ jobs:
     runs-on: ubuntu-latest
     # Phase 1: advisory only. Remove in Phase 2 to enforce.
     continue-on-error: true
+    # Expected runtime is ~3 minutes (checkout + go/helm setup + helm pull +
+    # go install + two renders + checker). 10 minutes is a cheap upper bound
+    # that protects against a hung helm pull or go install without being
+    # disruptive to legitimate slow runs.
+    timeout-minutes: 10
     steps:
       - name: Checkout PR HEAD
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -55,9 +68,13 @@ jobs:
           if [ -n "$LATEST_VERSION" ]; then
             echo "Attempting to pull published chart for $LATEST_TAG..."
             mkdir -p /tmp/baseline-release
+            # Don't redirect stderr — helm pull's own error line (one line,
+            # e.g. "Error: ... not found") is useful evidence in the log
+            # when we fall back. Redirecting hides transient ghcr.io outages
+            # behind the expected "tag not yet published" path.
             if helm pull "oci://ghcr.io/stacklok/toolhive/toolhive-operator-crds" \
                  --version "$LATEST_VERSION" \
-                 --untar --untardir /tmp/baseline-release 2>/dev/null; then
+                 --untar --untardir /tmp/baseline-release; then
               BASELINE_SOURCE="release $LATEST_TAG"
               BASELINE_CHART_DIR="/tmp/baseline-release/toolhive-operator-crds"
               echo "Using published chart at $LATEST_TAG"
@@ -79,6 +96,13 @@ jobs:
           echo "chart-dir=$BASELINE_CHART_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Render baseline CRDs
+        env:
+          # Route step outputs through env vars so bash quotes them instead
+          # of the runner substituting them directly into the script body.
+          # Current values are hardcoded literals, so not injectable today —
+          # this is defense-in-depth against a future edit that routes a
+          # PR-controlled string through these outputs.
+          CHART_DIR: ${{ steps.baseline.outputs.chart-dir }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/baseline-crds
@@ -88,7 +112,7 @@ jobs:
           # The yq filter is defensive — the chart currently only templates
           # CRDs, but this keeps the invariant explicit if non-CRD resources
           # are ever added.
-          helm template toolhive-operator-crds "${{ steps.baseline.outputs.chart-dir }}" \
+          helm template toolhive-operator-crds "$CHART_DIR" \
             --set crds.install.server=true \
             --set crds.install.registry=true \
             --set crds.install.virtualMcp=true \
@@ -109,10 +133,19 @@ jobs:
           echo "Rendered $(grep -c '^kind: CustomResourceDefinition' /tmp/head-crds/all.yaml || echo 0) HEAD CRDs"
 
       - name: Install crd-schema-checker
-        run: go install github.com/openshift/crd-schema-checker/cmd/crd-schema-checker@latest
+        # SHA-pinned: openshift/crd-schema-checker has no release tags at the
+        # time of writing, so @latest is the only other option. Pinning makes
+        # CI deterministic and mitigates supply-chain risk (upstream compromise
+        # would otherwise execute attacker code on the runner with GITHUB_TOKEN
+        # in env). Bump via a deliberate PR after verifying the new output
+        # locally. SHA pinned on 2026-04-21.
+        run: go install github.com/openshift/crd-schema-checker/cmd/crd-schema-checker@3fee146022bfe6f4adf84998de35d7267b864bef
 
       - name: Check CRD schema compatibility
         id: checker
+        env:
+          # See Render baseline CRDs step for rationale on env-based interpolation.
+          BASELINE_SOURCE: ${{ steps.baseline.outputs.source }}
         run: |
           # NoBools and NoMaps are OpenShift API-style conventions, not
           # compat-breaking rules. They fire on fields we legitimately use
@@ -137,7 +170,7 @@ jobs:
           {
             echo "## API Compatibility — CRD Schema Check (Phase 1: advisory)"
             echo ""
-            echo "**Baseline source**: ${{ steps.baseline.outputs.source }}"
+            echo "**Baseline source**: $BASELINE_SOURCE"
             echo "**Status**: $STATUS"
             echo ""
             echo "<details><summary>crd-schema-checker output</summary>"

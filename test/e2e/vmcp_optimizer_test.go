@@ -96,7 +96,7 @@ var _ = Describe("vMCP optimizer", Label("vmcp", "e2e", "optimizer"), func() {
 	Context("Tier-1 optimizer find→call round-trip (single backend, quick mode)", func() {
 		var fx singleBackendFixture
 
-		BeforeEach(func() { fx.setup("vmcp-opt-roundtrip", "yardstick", "") })
+		BeforeEach(func() { fx.setup("vmcp-opt-roundtrip", "") })
 		AfterEach(func() { fx.teardown() })
 
 		It("find_tool locates the echo tool and call_tool invokes it end-to-end", func() {
@@ -236,7 +236,7 @@ var _ = Describe("vMCP optimizer", Label("vmcp", "e2e", "optimizer"), func() {
 	Context("Tier-1 optimizer with composite tool (config-file mode)", func() {
 		var fx singleBackendFixture
 
-		BeforeEach(func() { fx.setup("vmcp-opt-composite", "yardstick", "vmcp-opt-composite-*") })
+		BeforeEach(func() { fx.setup("vmcp-opt-composite", "vmcp-opt-composite-*") })
 		AfterEach(func() { fx.teardown() })
 
 		It("find_tool discovers the composite tool and call_tool executes it", func() {

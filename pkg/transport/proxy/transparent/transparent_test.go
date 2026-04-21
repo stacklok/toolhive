@@ -1891,11 +1891,11 @@ func (ct *callbackTracker) isInvoked() bool {
 
 // or returns false if the timeout expires.
 
-func waitForShutdown(t *testing.T, tracker *callbackTracker, _ *TransparentProxy, timeout time.Duration) bool {
+func waitForShutdown(t *testing.T, tracker *callbackTracker) bool {
 
 	t.Helper()
 
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(2 * time.Second)
 
 	defer timer.Stop()
 
@@ -2035,7 +2035,7 @@ func TestTransparentProxy_RemoteServerFailure_ConnectionRefused(t *testing.T) {
 
 	// Total time: ~200ms for 3 consecutive ticker failures with instant failures
 
-	callbackInvoked := waitForShutdown(t, tracker, proxy, 2*time.Second)
+	callbackInvoked := waitForShutdown(t, tracker)
 
 	assert.True(t, callbackInvoked, "Callback should be invoked when connection is refused after 3 consecutive failures")
 
@@ -2181,7 +2181,7 @@ func TestTransparentProxy_RemoteServerFailure_Timeout(t *testing.T) {
 
 	proxy.setServerInitialized()
 
-	callbackInvoked := waitForShutdown(t, tracker, proxy, 2*time.Second)
+	callbackInvoked := waitForShutdown(t, tracker)
 
 	assert.True(t, callbackInvoked, "Callback should be invoked on timeout after 3 consecutive failures")
 
@@ -2561,8 +2561,8 @@ func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 	proxy := NewTransparentProxyWithOptions(
 		"127.0.0.1", 0, server.URL,
 		nil, nil, nil,
-		true,  // enableHealthCheck
-		true,  // isRemote
+		true, // enableHealthCheck
+		true, // isRemote
 		"sse",
 		failCallback,
 		recoveryCallback,
@@ -2580,7 +2580,7 @@ func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 	require.NoError(t, proxy.Start(ctx))
 
 	// Phase 1: server is returning 500 — wait for the failure callback.
-	failInvoked := waitForShutdown(t, failTracker, proxy, 2*time.Second)
+	failInvoked := waitForShutdown(t, failTracker)
 	assert.True(t, failInvoked, "failure callback should fire after consecutive 500s")
 
 	running, err := proxy.IsRunning()
@@ -2592,7 +2592,7 @@ func TestTransparentProxy_RemoteServerAutoRecovery(t *testing.T) {
 	serverHealthy = true
 	mu.Unlock()
 
-	recoveryInvoked := waitForShutdown(t, recoveryTracker, proxy, 2*time.Second)
+	recoveryInvoked := waitForShutdown(t, recoveryTracker)
 	assert.True(t, recoveryInvoked, "recovery callback should fire when server becomes healthy again")
 
 	running, err = proxy.IsRunning()

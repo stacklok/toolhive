@@ -351,4 +351,3 @@ func TestHTTPTransport_IsRunning(t *testing.T) {
 		assert.Contains(t, err.Error(), "proxy error")
 	})
 }
-

@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )

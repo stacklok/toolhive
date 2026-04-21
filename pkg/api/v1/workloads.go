@@ -287,10 +287,17 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		)
 	}
 
-	// Validate that image or URL is provided
-	if req.Image == "" && req.URL == "" {
+	// Validate that image, URL, or registry+server is provided.
+	// Check partial registry+server first for a more specific error message.
+	if (req.Registry != "" && req.Server == "") || (req.Registry == "" && req.Server != "") {
 		return httperr.WithCode(
-			fmt.Errorf("either 'image' or 'url' field is required"),
+			fmt.Errorf("both 'registry' and 'server' must be specified together"),
+			http.StatusBadRequest,
+		)
+	}
+	if req.Image == "" && req.URL == "" && req.Registry == "" {
+		return httperr.WithCode(
+			fmt.Errorf("either 'image', 'url', or 'registry'+'server' fields are required"),
 			http.StatusBadRequest,
 		)
 	}

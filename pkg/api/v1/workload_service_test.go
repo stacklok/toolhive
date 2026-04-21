@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
@@ -159,6 +160,54 @@ func TestNewWorkloadService(t *testing.T) {
 	require.NotNil(t, service)
 	assert.NotNil(t, service.configProvider,
 		"configProvider must be initialized so config is read fresh on each call, not snapshotted at construction")
+	assert.Equal(t, retriever.VerifyImageWarn, service.imageVerification,
+		"imageVerification must default to warn so registry-resolved and imageRetriever paths stay consistent")
+}
+
+// TestBuildFullRunConfig_ThreadsImageVerification verifies the imageRetriever path
+// uses s.imageVerification rather than a hardcoded value. Paired with the registry-
+// resolved path's direct call to retriever.VerifyImage(imageURL, imageMetadata,
+// s.imageVerification), this ensures both paths read the mode from the same field.
+func TestBuildFullRunConfig_ThreadsImageVerification(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockGroupManager := groupsmocks.NewMockManager(ctrl)
+	mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+
+	const testImage = "test-image"
+
+	var observed string
+	mockRetriever := func(
+		_ context.Context,
+		_ string, _ string,
+		verificationType string,
+		_ string,
+		_ *templates.RuntimeConfig,
+	) (string, regtypes.ServerMetadata, error) {
+		observed = verificationType
+		return testImage, &regtypes.ImageMetadata{Image: testImage}, nil
+	}
+
+	service := &WorkloadService{
+		groupManager:      mockGroupManager,
+		imageRetriever:    mockRetriever,
+		imagePuller:       func(_ context.Context, _ string) error { return nil },
+		configProvider:    config.NewDefaultProvider(),
+		imageVerification: retriever.VerifyImageDisabled,
+	}
+
+	req := &createRequest{
+		Name:          "testserver",
+		updateRequest: updateRequest{Image: testImage},
+	}
+
+	_, err := service.BuildFullRunConfig(context.Background(), req, 0)
+	require.NoError(t, err)
+	assert.Equal(t, retriever.VerifyImageDisabled, observed,
+		"imageRetriever must receive s.imageVerification verbatim")
 }
 
 // writeFactorySentinelConfig writes a YAML config file with DisableUsageMetrics: true

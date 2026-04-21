@@ -27,8 +27,10 @@ on:
       # crd-helm-wrapper only affect Helm conditionals and annotations the
       # checker ignores, so they can't change what we compare.
       - 'deploy/charts/operator-crds/files/crds/**'
-      # Self-exercise the workflow when the workflow itself changes.
-      - '.github/workflows/api-compat.yml'
+      # Self-exercise when either workflow file (real or no-op companion)
+      # changes. The companion file reports the same required check on
+      # PRs that don't touch the api surface; see api-compat-noop.yml.
+      - '.github/workflows/api-compat*.yml'
 
 permissions:
   contents: read

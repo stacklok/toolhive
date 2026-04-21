@@ -59,41 +59,28 @@ jobs:
         run: |
           set -euo pipefail
 
-          BASELINE_SOURCE=""
-          BASELINE_CHART_DIR=""
-
-          LATEST_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
+          # Baseline is always the most recent published release chart from
+          # OCI. If the pull fails (no releases, OCI outage, or the chart
+          # for the most recent tag is not yet published), the job fails —
+          # an API-touching PR must be checked against a real released
+          # baseline or not at all. Falling back to origin/main was
+          # rejected in review: it can silently compare against an
+          # already-broken baseline once a break lands on main.
+          LATEST_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')"
+          if [ -z "$LATEST_TAG" ]; then
+            echo "::error::No releases found for $GITHUB_REPOSITORY; cannot establish an API compatibility baseline."
+            exit 1
+          fi
           LATEST_VERSION="${LATEST_TAG#v}"
 
-          if [ -n "$LATEST_VERSION" ]; then
-            echo "Attempting to pull published chart for $LATEST_TAG..."
-            mkdir -p /tmp/baseline-release
-            # Don't redirect stderr — helm pull's own error line (one line,
-            # e.g. "Error: ... not found") is useful evidence in the log
-            # when we fall back. Redirecting hides transient ghcr.io outages
-            # behind the expected "tag not yet published" path.
-            if helm pull "oci://ghcr.io/stacklok/toolhive/toolhive-operator-crds" \
-                 --version "$LATEST_VERSION" \
-                 --untar --untardir /tmp/baseline-release; then
-              BASELINE_SOURCE="release $LATEST_TAG"
-              BASELINE_CHART_DIR="/tmp/baseline-release/toolhive-operator-crds"
-              echo "Using published chart at $LATEST_TAG"
-            else
-              echo "Chart pull failed (not yet published?); falling back to origin/main"
-            fi
-          else
-            echo "No releases found; falling back to origin/main"
-          fi
+          echo "Pulling published chart for $LATEST_TAG..."
+          mkdir -p /tmp/baseline-release
+          helm pull "oci://ghcr.io/stacklok/toolhive/toolhive-operator-crds" \
+            --version "$LATEST_VERSION" \
+            --untar --untardir /tmp/baseline-release
 
-          if [ -z "$BASELINE_SOURCE" ]; then
-            git fetch origin main --depth=1
-            git worktree add --detach /tmp/baseline-main FETCH_HEAD
-            BASELINE_SOURCE="main"
-            BASELINE_CHART_DIR="/tmp/baseline-main/deploy/charts/operator-crds"
-          fi
-
-          echo "source=$BASELINE_SOURCE" >> "$GITHUB_OUTPUT"
-          echo "chart-dir=$BASELINE_CHART_DIR" >> "$GITHUB_OUTPUT"
+          echo "source=release $LATEST_TAG" >> "$GITHUB_OUTPUT"
+          echo "chart-dir=/tmp/baseline-release/toolhive-operator-crds" >> "$GITHUB_OUTPUT"
 
       - name: Render baseline CRDs
         env:

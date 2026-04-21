@@ -29,7 +29,7 @@ func TestGetDefaultRuntimeConfig(t *testing.T) {
 		{
 			name:          "NPX default config",
 			transportType: TransportTypeNPX,
-			wantImage:     "node:22-alpine",
+			wantImage:     "node:24-alpine",
 			wantPackages:  []string{"git", "ca-certificates"},
 		},
 		{
@@ -215,8 +215,8 @@ func TestRuntimeConfigValidate_ValidBuilderImages(t *testing.T) {
 		"golang:1.24-alpine",
 		"docker.io/library/node:20-alpine",
 		"ghcr.io/stacklok/builder:latest",
-		"python:3.14-slim",
-		"node:22-alpine",
+		"python:3.13-slim",
+		"node:24-alpine",
 		"mcr.microsoft.com/dotnet/sdk:8.0",
 		"registry.example.com/myimage:v1.2.3",
 	}

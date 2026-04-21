@@ -405,7 +405,7 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			name:          "NPX runtime stage installs extra packages",
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "node:22-alpine",
+				BuilderImage:       "node:24-alpine",
 				AdditionalPackages: []string{"git", "ca-certificates", "curl"},
 			},
 			wantInRuntime: "curl",
@@ -471,7 +471,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "NPX with empty packages",
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "node:22-alpine",
+				BuilderImage:       "node:24-alpine",
 				AdditionalPackages: []string{},
 			},
 		},
@@ -495,7 +495,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "NPX with nil packages",
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "node:22-alpine",
+				BuilderImage:       "node:24-alpine",
 				AdditionalPackages: nil,
 			},
 		},

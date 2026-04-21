@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
@@ -620,6 +621,132 @@ func TestApplyRemoteDefaults(t *testing.T) {
 			assert.Len(t, tt.req.Headers, tt.wantHeaders)
 		})
 	}
+}
+
+func TestBuildRemoteAuthConfigFromMetadata(t *testing.T) {
+	t.Parallel()
+
+	baseMetadata := func() *regtypes.RemoteServerMetadata {
+		return &regtypes.RemoteServerMetadata{
+			URL:       "https://mcp.example.com/mcp",
+			ProxyPort: 4444,
+			Headers:   []*regtypes.Header{{Name: "X-API-Key"}},
+			EnvVars:   []*regtypes.EnvVar{{Name: "REGION", Default: "us-east-1"}},
+			OAuthConfig: &regtypes.OAuthConfig{
+				Issuer:       "https://issuer.example.com",
+				AuthorizeURL: "https://issuer.example.com/authorize",
+				TokenURL:     "https://issuer.example.com/token",
+				Scopes:       []string{"openid", "profile"},
+				UsePKCE:      true,
+				CallbackPort: 1234,
+				OAuthParams:  map[string]string{"prompt": "consent"},
+				Resource:     "https://resource.example.com",
+			},
+		}
+	}
+
+	t.Run("returns nil when metadata has no OAuthConfig", func(t *testing.T) {
+		t.Parallel()
+
+		md := baseMetadata()
+		md.OAuthConfig = nil
+
+		cfg := buildRemoteAuthConfigFromMetadata(&createRequest{}, md)
+
+		assert.Nil(t, cfg)
+	})
+
+	t.Run("populates all OAuth fields from metadata", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				OAuthConfig: remoteOAuthConfig{ClientID: "user-client-id"},
+			},
+		}
+
+		cfg := buildRemoteAuthConfigFromMetadata(req, baseMetadata())
+
+		require.NotNil(t, cfg)
+		assert.Equal(t, "user-client-id", cfg.ClientID)
+		assert.Equal(t, []string{"openid", "profile"}, cfg.Scopes)
+		assert.Equal(t, 1234, cfg.CallbackPort)
+		assert.Equal(t, "https://issuer.example.com", cfg.Issuer)
+		assert.Equal(t, "https://issuer.example.com/authorize", cfg.AuthorizeURL)
+		assert.Equal(t, "https://issuer.example.com/token", cfg.TokenURL)
+		assert.True(t, cfg.UsePKCE)
+		assert.Equal(t, map[string]string{"prompt": "consent"}, cfg.OAuthParams)
+		assert.Len(t, cfg.Headers, 1)
+		assert.Len(t, cfg.EnvVars, 1)
+	})
+
+	t.Run("resource precedence: user value wins over metadata and URL", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				OAuthConfig: remoteOAuthConfig{Resource: "https://user.example.com"},
+			},
+		}
+
+		cfg := buildRemoteAuthConfigFromMetadata(req, baseMetadata())
+
+		require.NotNil(t, cfg)
+		assert.Equal(t, "https://user.example.com", cfg.Resource)
+	})
+
+	t.Run("resource precedence: metadata wins over URL when user unset", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := buildRemoteAuthConfigFromMetadata(&createRequest{}, baseMetadata())
+
+		require.NotNil(t, cfg)
+		assert.Equal(t, "https://resource.example.com", cfg.Resource)
+	})
+
+	t.Run("resource derived from URL when both user and metadata unset", func(t *testing.T) {
+		t.Parallel()
+
+		md := baseMetadata()
+		md.OAuthConfig.Resource = ""
+
+		cfg := buildRemoteAuthConfigFromMetadata(&createRequest{}, md)
+
+		require.NotNil(t, cfg)
+		assert.NotEmpty(t, cfg.Resource, "resource should be derived from md.URL")
+	})
+
+	t.Run("user ClientSecret is applied in CLI string format", func(t *testing.T) {
+		t.Parallel()
+
+		secret := &secrets.SecretParameter{Name: "oauth-secret", Target: "CLIENT_SECRET"}
+		req := &createRequest{
+			updateRequest: updateRequest{
+				OAuthConfig: remoteOAuthConfig{ClientSecret: secret},
+			},
+		}
+
+		cfg := buildRemoteAuthConfigFromMetadata(req, baseMetadata())
+
+		require.NotNil(t, cfg)
+		assert.Equal(t, "oauth-secret,target=CLIENT_SECRET", cfg.ClientSecret)
+	})
+
+	t.Run("user BearerToken is applied in CLI string format", func(t *testing.T) {
+		t.Parallel()
+
+		token := &secrets.SecretParameter{Name: "bearer", Target: "TOKEN"}
+		req := &createRequest{
+			updateRequest: updateRequest{
+				OAuthConfig: remoteOAuthConfig{BearerToken: token},
+			},
+		}
+
+		cfg := buildRemoteAuthConfigFromMetadata(req, baseMetadata())
+
+		require.NotNil(t, cfg)
+		assert.Equal(t, "bearer,target=TOKEN", cfg.BearerToken)
+	})
 }
 
 func TestApplyRegistryDefaults(t *testing.T) {

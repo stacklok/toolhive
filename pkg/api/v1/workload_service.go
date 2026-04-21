@@ -145,17 +145,11 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 func (s *WorkloadService) BuildFullRunConfig(
 	ctx context.Context, req *createRequest, existingPort int,
 ) (*runner.RunConfig, error) {
-	// Validate registry+server pairing first (guard clause)
-	if (req.Registry != "" && req.Server == "") || (req.Registry == "" && req.Server != "") {
-		return nil, httperr.WithCode(
-			fmt.Errorf("both registry and server must be specified together"),
-			http.StatusBadRequest,
-		)
-	}
 	// If registry+server specified, resolve from registry and fill defaults.
 	// The returned metadata is assigned to the local variables so the rest of
 	// BuildFullRunConfig (registry info, tool validation, remote auth, etc.)
-	// has access to it without re-looking up the server.
+	// has access to it without re-looking up the server. The route handler
+	// already rejects partial registry+server pairs with a 400.
 	var registryResolvedMetadata regtypes.ServerMetadata
 	if req.Registry != "" && req.Server != "" {
 		var err error
@@ -227,35 +221,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			if req.ProxyPort == 0 && md.ProxyPort > 0 {
 				registryProxyPort = md.ProxyPort
 			}
-			if md.OAuthConfig != nil {
-				resource := req.OAuthConfig.Resource
-				if resource == "" {
-					resource = md.OAuthConfig.Resource
-				}
-				if resource == "" && md.URL != "" {
-					resource = remote.DefaultResourceIndicator(md.URL)
-				}
-				remoteAuthConfig = &remote.Config{
-					ClientID:     req.OAuthConfig.ClientID,
-					Scopes:       md.OAuthConfig.Scopes,
-					CallbackPort: md.OAuthConfig.CallbackPort,
-					Issuer:       md.OAuthConfig.Issuer,
-					AuthorizeURL: md.OAuthConfig.AuthorizeURL,
-					TokenURL:     md.OAuthConfig.TokenURL,
-					UsePKCE:      md.OAuthConfig.UsePKCE,
-					Resource:     resource,
-					OAuthParams:  md.OAuthConfig.OAuthParams,
-					Headers:      md.Headers,
-					EnvVars:      md.EnvVars,
-				}
-				// Apply user-provided secrets on top of registry config
-				if req.OAuthConfig.ClientSecret != nil {
-					remoteAuthConfig.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
-				}
-				if req.OAuthConfig.BearerToken != nil {
-					remoteAuthConfig.BearerToken = req.OAuthConfig.BearerToken.ToCLIString()
-				}
-			}
+			remoteAuthConfig = buildRemoteAuthConfigFromMetadata(req, md)
 		}
 	}
 
@@ -316,41 +282,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			if req.ProxyPort == 0 && remoteServerMetadata.ProxyPort > 0 {
 				registryProxyPort = remoteServerMetadata.ProxyPort
 			}
-
-			if remoteServerMetadata.OAuthConfig != nil {
-				// Default resource: user-provided > registry metadata > derived from remote URL
-				resource := req.OAuthConfig.Resource
-				if resource == "" {
-					resource = remoteServerMetadata.OAuthConfig.Resource
-				}
-				if resource == "" && remoteServerMetadata.URL != "" {
-					resource = remote.DefaultResourceIndicator(remoteServerMetadata.URL)
-				}
-
-				remoteAuthConfig = &remote.Config{
-					ClientID:     req.OAuthConfig.ClientID,
-					Scopes:       remoteServerMetadata.OAuthConfig.Scopes,
-					CallbackPort: remoteServerMetadata.OAuthConfig.CallbackPort,
-					Issuer:       remoteServerMetadata.OAuthConfig.Issuer,
-					AuthorizeURL: remoteServerMetadata.OAuthConfig.AuthorizeURL,
-					TokenURL:     remoteServerMetadata.OAuthConfig.TokenURL,
-					UsePKCE:      remoteServerMetadata.OAuthConfig.UsePKCE,
-					Resource:     resource,
-					OAuthParams:  remoteServerMetadata.OAuthConfig.OAuthParams,
-					Headers:      remoteServerMetadata.Headers,
-					EnvVars:      remoteServerMetadata.EnvVars,
-				}
-
-				// Store the client secret in CLI format if provided
-				if req.OAuthConfig.ClientSecret != nil {
-					remoteAuthConfig.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
-				}
-
-				// Store the bearer token in CLI format if provided
-				if req.OAuthConfig.BearerToken != nil {
-					remoteAuthConfig.BearerToken = req.OAuthConfig.BearerToken.ToCLIString()
-				}
-			}
+			remoteAuthConfig = buildRemoteAuthConfigFromMetadata(req, remoteServerMetadata)
 		}
 		// Handle server metadata - API only supports container servers.
 		// Use type assertion with nil check to guard against typed nil pointers.
@@ -480,6 +412,46 @@ func (s *WorkloadService) BuildFullRunConfig(
 	}
 
 	return runConfig, nil
+}
+
+// buildRemoteAuthConfigFromMetadata builds a remote.Config from registry
+// RemoteServerMetadata, layering user-provided secrets (ClientSecret,
+// BearerToken) and an optional user-provided Resource on top. Returns nil
+// if the metadata has no OAuthConfig.
+func buildRemoteAuthConfigFromMetadata(req *createRequest, md *regtypes.RemoteServerMetadata) *remote.Config {
+	if md.OAuthConfig == nil {
+		return nil
+	}
+
+	// Default resource: user-provided > registry metadata > derived from remote URL
+	resource := req.OAuthConfig.Resource
+	if resource == "" {
+		resource = md.OAuthConfig.Resource
+	}
+	if resource == "" && md.URL != "" {
+		resource = remote.DefaultResourceIndicator(md.URL)
+	}
+
+	cfg := &remote.Config{
+		ClientID:     req.OAuthConfig.ClientID,
+		Scopes:       md.OAuthConfig.Scopes,
+		CallbackPort: md.OAuthConfig.CallbackPort,
+		Issuer:       md.OAuthConfig.Issuer,
+		AuthorizeURL: md.OAuthConfig.AuthorizeURL,
+		TokenURL:     md.OAuthConfig.TokenURL,
+		UsePKCE:      md.OAuthConfig.UsePKCE,
+		Resource:     resource,
+		OAuthParams:  md.OAuthConfig.OAuthParams,
+		Headers:      md.Headers,
+		EnvVars:      md.EnvVars,
+	}
+	if req.OAuthConfig.ClientSecret != nil {
+		cfg.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
+	}
+	if req.OAuthConfig.BearerToken != nil {
+		cfg.BearerToken = req.OAuthConfig.BearerToken.ToCLIString()
+	}
+	return cfg
 }
 
 // createRequestToRemoteAuthConfig converts API request to runner RemoteAuthConfig

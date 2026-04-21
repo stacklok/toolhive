@@ -23,7 +23,10 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Get token from source
 	token, err := t.Source.Token(req.Context())
 	if err != nil {
-		return nil, fmt.Errorf("failed to get auth token: %w", err)
+		// Any token acquisition failure is an auth error regardless of cause.
+		// Wrapping with ErrRegistryAuthRequired ensures refreshCache() and other
+		// callers can distinguish auth failures from transient network errors.
+		return nil, fmt.Errorf("%w: failed to get auth token: %w", ErrRegistryAuthRequired, err)
 	}
 
 	// If token is empty, pass through without auth

@@ -61,10 +61,10 @@ type singleBackendFixture struct {
 	tmpDir      string // empty when withTmpDir is false
 }
 
-func (f *singleBackendFixture) setup(groupPrefix, backendPrefix, tmpDirPattern string) {
+func (f *singleBackendFixture) setup(groupPrefix, tmpDirPattern string) {
 	f.cfg = e2e.NewTestConfig()
 	f.groupName = e2e.GenerateUniqueServerName(groupPrefix)
-	f.backendName = e2e.GenerateUniqueServerName(backendPrefix)
+	f.backendName = e2e.GenerateUniqueServerName("yardstick")
 	f.vMCPPort = allocateVMCPPort()
 
 	if tmpDirPattern != "" {
@@ -201,7 +201,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 					"--config", configPath,
 					"--port", fmt.Sprintf("%d", fx.vMCPPort),
 				)
-				vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", fx.vMCPPort)
+				vMCPURL := vmcpEndpointURL(fx.vMCPPort)
 				Expect(e2e.WaitForMCPServerReady(fx.cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
 
 				By("listing tools and verifying prefix strategy")
@@ -271,7 +271,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 					"--config", configPath,
 					"--port", fmt.Sprintf("%d", fx.vMCPPort),
 				)
-				vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", fx.vMCPPort)
+				vMCPURL := vmcpEndpointURL(fx.vMCPPort)
 				Expect(e2e.WaitForMCPServerReady(fx.cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
 
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -305,7 +305,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 	Context("global ExcludeAll (all tools hidden)", func() {
 		var fx singleBackendFixture
 
-		BeforeEach(func() { fx.setup("vmcp-feat-excludeall", "yardstick", "vmcp-feat-excludeall-*") })
+		BeforeEach(func() { fx.setup("vmcp-feat-excludeall", "vmcp-feat-excludeall-*") })
 		AfterEach(func() { fx.teardown() })
 
 		It("returns an empty tools list when ExcludeAllTools is true", func() {
@@ -326,7 +326,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 				"--config", configPath,
 				"--port", fmt.Sprintf("%d", fx.vMCPPort),
 			)
-			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", fx.vMCPPort)
+			vMCPURL := vmcpEndpointURL(fx.vMCPPort)
 			Expect(e2e.WaitForMCPServerReady(fx.cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -351,7 +351,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 	Context("composite sequential tool", func() {
 		var fx singleBackendFixture
 
-		BeforeEach(func() { fx.setup("vmcp-feat-composite", "yardstick", "vmcp-feat-composite-*") })
+		BeforeEach(func() { fx.setup("vmcp-feat-composite", "vmcp-feat-composite-*") })
 		AfterEach(func() { fx.teardown() })
 
 		It("exposes the composite tool in tools/list and executes it successfully", func() {
@@ -408,7 +408,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 				"--config", configPath,
 				"--port", fmt.Sprintf("%d", fx.vMCPPort),
 			)
-			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", fx.vMCPPort)
+			vMCPURL := vmcpEndpointURL(fx.vMCPPort)
 			Expect(e2e.WaitForMCPServerReady(fx.cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -452,7 +452,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 	Context("Tier-1 optimizer (--optimizer flag, quick mode)", func() {
 		var fx singleBackendFixture
 
-		BeforeEach(func() { fx.setup("vmcp-feat-optimizer", "yardstick", "") })
+		BeforeEach(func() { fx.setup("vmcp-feat-optimizer", "") })
 		AfterEach(func() { fx.teardown() })
 
 		It("exposes only find_tool and call_tool when --optimizer is set", func() {
@@ -463,7 +463,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 				"--optimizer",
 				"--port", fmt.Sprintf("%d", fx.vMCPPort),
 			)
-			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", fx.vMCPPort)
+			vMCPURL := vmcpEndpointURL(fx.vMCPPort)
 			Expect(e2e.WaitForMCPServerReady(fx.cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -478,11 +478,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).To(HaveLen(2), "optimizer mode must expose exactly 2 tools")
 
-			names := make([]string, len(tools.Tools))
-			for i, t := range tools.Tools {
-				names[i] = t.Name
-			}
-			Expect(names).To(ConsistOf("find_tool", "call_tool"))
+			Expect(toolNames(tools.Tools)).To(ConsistOf("find_tool", "call_tool"))
 
 			By("calling find_tool to verify it returns results")
 			result, err := mcpClient.CallTool(ctx, "find_tool", map[string]any{

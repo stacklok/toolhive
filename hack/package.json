@@ -1,0 +1,13 @@
+{
+  "name": "toolhive-hack",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Release-time scripts for generating release assets from toolhive source",
+  "type": "module",
+  "scripts": {
+    "extract-crd-schemas": "node extract-crd-schemas.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.6.1"
+  }
+}

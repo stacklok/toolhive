@@ -145,6 +145,26 @@ jobs:
           mkdir -p build
           tar -czf build/thv-cli-docs.tar.gz -C docs/cli .
 
+      - name: Setup Node for CRD schema extraction
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: '22'
+
+      - name: Extract per-CRD JSON schemas + examples
+        # Produces JSON Schemas + minimal YAML examples + an index with an
+        # inter-CRD reference graph for every CRD in the operator Helm
+        # chart. Output is bundled into thv-crd-schemas.tar.gz so
+        # downstream consumers (notably stacklok/docs-website) can skip
+        # running the extractor themselves.
+        run: |
+          cd hack
+          npm ci --omit=optional --silent
+          node extract-crd-schemas.mjs \
+            --src ../deploy/charts/operator-crds/files/crds \
+            --out ../build/crd-schemas
+          cd ..
+          tar -czf build/thv-crd-schemas.tar.gz -C build/crd-schemas .
+
       - name: Remove existing release assets (allows re-runs)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

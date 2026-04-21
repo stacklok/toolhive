@@ -2,10 +2,11 @@ name: API Compatibility
 
 # This workflow guards the stability of the v1beta1 operator API surface.
 #
-# Phase 1 (current): advisory only. `crd-schema-check` runs with
-# continue-on-error: true so breaking-change findings are surfaced via the
-# job's step summary but do not block merges. Remove continue-on-error in
-# Phase 2 to start enforcing.
+# A breaking CRD schema change (field removal, type change, required-field
+# addition, etc.) fails this check and blocks the PR. If the break is
+# intentional — almost exclusively for graduation to v1beta2 — apply the
+# `api-break-allowed` label to skip the check. See CONTRIBUTING.md → "API
+# Stability" for the full rubric.
 
 on:
   pull_request:
@@ -28,8 +29,11 @@ jobs:
   crd-schema-check:
     name: CRD Schema Compatibility
     runs-on: ubuntu-latest
-    # Phase 1: advisory only. Remove in Phase 2 to enforce.
-    continue-on-error: true
+    # Skip the check entirely when `api-break-allowed` is applied — a
+    # required check that is skipped (rather than failed) counts as passing
+    # for branch protection, so this is the escape hatch for intentional
+    # breaks. Do not remove the label guard without a replacement path.
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'api-break-allowed') }}
     # Expected runtime is ~1 minute (checkout + go setup + git fetch tag +
     # go install + per-CRD checker loop). 10 minutes is a cheap upper
     # bound that protects against a hung go install or git fetch.
@@ -146,7 +150,7 @@ jobs:
           fi
 
           {
-            echo "## API Compatibility — CRD Schema Check (Phase 1: advisory)"
+            echo "## API Compatibility — CRD Schema Check"
             echo ""
             echo "**Baseline**: $BASELINE_TAG"
             echo "**Status**: $STATUS"

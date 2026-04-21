@@ -9,9 +9,13 @@ import (
 
 // MCPGroupSpec defines the desired state of MCPGroup
 type MCPGroupSpec struct {
-	// Description provides human-readable context
+	// Description provides human-readable context.
+	// TEST: JSON tag deliberately renamed from "description" to "summary" to
+	// validate that the api-compat.yml workflow flags the field rename as a
+	// breaking change. Go field name is kept so existing callers still
+	// compile. Do NOT merge this PR.
 	// +optional
-	Description string `json:"description,omitempty"`
+	Description string `json:"summary,omitempty"`
 }
 
 // MCPGroupStatus defines observed state

@@ -62,8 +62,13 @@ spec:
           spec:
             description: MCPGroupSpec defines the desired state of MCPGroup
             properties:
-              description:
-                description: Description provides human-readable context
+              summary:
+                description: |-
+                  Description provides human-readable context.
+                  TEST: JSON tag deliberately renamed from "description" to "summary" to
+                  validate that the api-compat.yml workflow flags the field rename as a
+                  breaking change. Go field name is kept so existing callers still
+                  compile. Do NOT merge this PR.
                 type: string
             type: object
           status:
@@ -216,8 +221,13 @@ spec:
           spec:
             description: MCPGroupSpec defines the desired state of MCPGroup
             properties:
-              description:
-                description: Description provides human-readable context
+              summary:
+                description: |-
+                  Description provides human-readable context.
+                  TEST: JSON tag deliberately renamed from "description" to "summary" to
+                  validate that the api-compat.yml workflow flags the field rename as a
+                  breaking change. Go field name is kept so existing callers still
+                  compile. Do NOT merge this PR.
                 type: string
             type: object
           status:

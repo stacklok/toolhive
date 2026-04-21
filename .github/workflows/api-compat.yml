@@ -10,6 +10,14 @@ name: API Compatibility
 
 on:
   pull_request:
+    # Include `labeled` and `unlabeled` so applying or removing
+    # `api-break-allowed` triggers a fresh workflow run. Without these,
+    # re-running the job from the UI uses the original event payload
+    # (which still has the old label set) and the skip condition misfires.
+    # Re-evaluating on `unlabeled` closes the gap where a user could
+    # apply the label, watch the check skip, then remove the label and
+    # merge without the check ever running against the current state.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - 'cmd/thv-operator/api/**'
       # files/crds is the source of truth — controller-gen emits here, and

@@ -579,7 +579,7 @@ func TestInstallQualifiedNameOCIFallback(t *testing.T) {
 				// No lookup mock — gomock will fail the test if SearchSkills is called.
 				return nil, reg, ociStore, nil, store, pr
 			},
-			wantCode: http.StatusBadRequest,
+			wantCode: http.StatusBadGateway,
 			wantErr:  "auth required",
 		},
 		{
@@ -604,7 +604,7 @@ func TestInstallQualifiedNameOCIFallback(t *testing.T) {
 				store := storemocks.NewMockSkillStore(ctrl)
 				return lookup, reg, ociStore, nil, store, pr
 			},
-			wantCode: http.StatusBadRequest,
+			wantCode: http.StatusBadGateway,
 			wantErr:  "no such host",
 		},
 		{
@@ -625,7 +625,7 @@ func TestInstallQualifiedNameOCIFallback(t *testing.T) {
 				// No lookup mock — gomock will fail the test if SearchSkills is called.
 				return nil, reg, ociStore, nil, store, pr
 			},
-			wantCode: http.StatusBadRequest,
+			wantCode: http.StatusBadGateway,
 			wantErr:  "manifest unknown",
 		},
 		{
@@ -645,7 +645,7 @@ func TestInstallQualifiedNameOCIFallback(t *testing.T) {
 				// No lookup mock — gomock will fail if SearchSkills is called.
 				return nil, reg, ociStore, nil, store, pr
 			},
-			wantCode: http.StatusBadRequest,
+			wantCode: http.StatusBadGateway,
 			wantErr:  "auth required",
 		},
 		{

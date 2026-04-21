@@ -414,7 +414,7 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			name:          "UVX runtime stage installs extra packages",
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "python:3.13-slim",
+				BuilderImage:       "python:3.14-slim",
 				AdditionalPackages: []string{"ca-certificates", "git", "curl"},
 			},
 			wantInRuntime: "curl",
@@ -487,7 +487,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "UVX with empty packages",
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "python:3.13-slim",
+				BuilderImage:       "python:3.14-slim",
 				AdditionalPackages: []string{},
 			},
 		},
@@ -511,7 +511,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "UVX with nil packages",
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "python:3.13-slim",
+				BuilderImage:       "python:3.14-slim",
 				AdditionalPackages: nil,
 			},
 		},

@@ -35,7 +35,7 @@ func TestGetDefaultRuntimeConfig(t *testing.T) {
 		{
 			name:          "UVX default config",
 			transportType: TransportTypeUVX,
-			wantImage:     "python:3.13-slim",
+			wantImage:     "python:3.14-slim",
 			wantPackages:  []string{"ca-certificates", "git"},
 		},
 	}
@@ -215,7 +215,7 @@ func TestRuntimeConfigValidate_ValidBuilderImages(t *testing.T) {
 		"golang:1.24-alpine",
 		"docker.io/library/node:20-alpine",
 		"ghcr.io/stacklok/builder:latest",
-		"python:3.13-slim",
+		"python:3.14-slim",
 		"node:22-alpine",
 		"mcr.microsoft.com/dotnet/sdk:8.0",
 		"registry.example.com/myimage:v1.2.3",

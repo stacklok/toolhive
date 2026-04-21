@@ -502,7 +502,7 @@ var _ = Describe("EmbeddingServer Controller Integration Tests", func() {
 						Model: "sentence-transformers/all-MiniLM-L6-v2",
 						Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
 						Port:  8080,
-						Env: []mcpv1alpha1.EnvVar{
+						Env: []corev1.EnvVar{
 							{Name: "CUSTOM_VAR_1", Value: "value1"},
 							{Name: "CUSTOM_VAR_2", Value: "value2"},
 						},

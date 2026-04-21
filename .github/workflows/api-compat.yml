@@ -6,9 +6,6 @@ name: API Compatibility
 # continue-on-error: true so breaking-change findings are surfaced via the
 # job's step summary but do not block merges. Remove continue-on-error in
 # Phase 2 to start enforcing.
-#
-# See design-api-compat-ci.md and CONTRIBUTING.md ("API Stability") for the
-# full rollout plan and escape-hatch process.
 
 on:
   pull_request:

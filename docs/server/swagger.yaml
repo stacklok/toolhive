@@ -957,7 +957,7 @@ components:
           description: |-
             BuilderImage is the full image reference for the builder stage.
             An empty string signals "use the default for this transport type" during config merging.
-            Examples: "golang:1.25-alpine", "node:22-alpine", "python:3.13-slim"
+            Examples: "golang:1.26-alpine", "node:22-alpine", "python:3.14-slim"
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_core.Workload:

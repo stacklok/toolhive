@@ -270,7 +270,7 @@ func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 				"example-package",
 				"--transport",
 				"stdio",
-				"FROM python:3.13-slim",
+				"FROM python:3.14-slim",
 			},
 			wantErr: false,
 		},
@@ -373,7 +373,7 @@ func TestMergeRuntimeConfig(t *testing.T) {
 				BuilderImage:       "",
 				AdditionalPackages: []string{"make"},
 			},
-			wantImage:    "golang:1.25-alpine",
+			wantImage:    "golang:1.26-alpine",
 			wantPackages: []string{"ca-certificates", "git", "make"},
 		},
 		{
@@ -383,7 +383,7 @@ func TestMergeRuntimeConfig(t *testing.T) {
 				BuilderImage:       "",
 				AdditionalPackages: []string{"curl"},
 			},
-			wantImage:    "python:3.13-slim",
+			wantImage:    "python:3.14-slim",
 			wantPackages: []string{"ca-certificates", "git", "curl"},
 		},
 	}

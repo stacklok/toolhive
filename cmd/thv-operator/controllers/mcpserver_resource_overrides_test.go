@@ -15,7 +15,6 @@
 package controllers
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,6 +28,189 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
+
+func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "embedded-auth",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "google",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL: "https://accounts.google.com",
+							ClientID:  "client-id",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "upstream-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-server",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image",
+			ProxyPort: 8080,
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: externalAuthConfig.Name,
+			},
+		},
+	}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(externalAuthConfig).
+		Build()
+	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
+
+	deployment := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NotNil(t, deployment)
+	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+	require.Contains(t, deployment.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{
+		Name: "TOOLHIVE_UPSTREAM_CLIENT_SECRET_GOOGLE",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "upstream-secret"},
+				Key:                  "client-secret",
+			},
+		},
+	})
+
+	assert.False(t, r.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"))
+}
+
+func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "embedded-auth",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name: "google",
+						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
+							IssuerURL: "https://accounts.google.com",
+							ClientID:  "client-id",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "upstream-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-server",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image",
+			ProxyPort: 8080,
+			AuthServerRef: &mcpv1alpha1.AuthServerRef{
+				Kind: "MCPExternalAuthConfig",
+				Name: authConfig.Name,
+			},
+		},
+	}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(authConfig).
+		Build()
+	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
+
+	deployment := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NotNil(t, deployment)
+	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+
+	assert.False(t, r.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"))
+}
+
+func TestMCPServerDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "exchange-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+				ClientID: "client-id",
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					Name: "token-secret",
+					Key:  "client-secret",
+				},
+				Audience: "api",
+			},
+		},
+	}
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-server",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image",
+			ProxyPort: 8080,
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: authConfig.Name,
+			},
+		},
+	}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(authConfig).
+		Build()
+	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
+
+	deployment := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NotNil(t, deployment)
+	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+
+	assert.False(t, r.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"))
+}
 
 func TestResourceOverrides(t *testing.T) {
 	t.Parallel()
@@ -341,7 +523,7 @@ func TestResourceOverrides(t *testing.T) {
 			r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
 
 			// Test deployment creation
-			ctx := context.Background()
+			ctx := t.Context()
 			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer, "test-checksum")
 			require.NotNil(t, deployment)
 
@@ -349,7 +531,7 @@ func TestResourceOverrides(t *testing.T) {
 			assert.Equal(t, tt.expectedDeploymentAnns, deployment.Annotations)
 
 			// Test service creation
-			service := r.serviceForMCPServer(context.Background(), tt.mcpServer)
+			service := r.serviceForMCPServer(t.Context(), tt.mcpServer)
 			require.NotNil(t, service)
 
 			assert.Equal(t, tt.expectedServiceLabels, service.Labels)
@@ -615,7 +797,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 			t.Parallel()
 
 			// Create a deployment and manually set up its state to isolate proxy env testing
-			ctx := context.Background()
+			ctx := t.Context()
 			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer, "test-checksum")
 			require.NotNil(t, deployment)
 			require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
@@ -627,7 +809,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 			deployment.Spec.Template.Spec.Containers[0].Image = getToolhiveRunnerImage()
 
 			// Test if deployment needs update - should correlate with env change expectation
-			needsUpdate := r.deploymentNeedsUpdate(context.Background(), deployment, tt.mcpServer, "test-checksum")
+			needsUpdate := r.deploymentNeedsUpdate(t.Context(), deployment, tt.mcpServer, "test-checksum")
 
 			if tt.expectEnvChange {
 				assert.True(t, needsUpdate, "Expected deployment update due to proxy env change")
@@ -663,7 +845,7 @@ func TestMCPServerSessionAffinityNone(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
 
-	service := r.serviceForMCPServer(context.Background(), mcpServer)
+	service := r.serviceForMCPServer(t.Context(), mcpServer)
 	require.NotNil(t, service)
 	assert.Equal(t, corev1.ServiceAffinityNone, service.Spec.SessionAffinity)
 }

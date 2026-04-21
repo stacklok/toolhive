@@ -108,7 +108,7 @@ func TestNewEmbeddingServiceManager_DefaultImage(t *testing.T) {
 		Model: "BAAI/bge-small-en-v1.5",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, defaultTEIImage, mgr.cfg.Image)
+	assert.Equal(t, DefaultEmbeddingImage, mgr.cfg.Image)
 	assert.Equal(t, containerNameForModel("BAAI/bge-small-en-v1.5"), mgr.containerName)
 }
 
@@ -198,7 +198,7 @@ func TestStart_DeployNewContainer(t *testing.T) {
 	mockRT.EXPECT().IsWorkloadRunning(gomock.Any(), mgr.containerName).Return(false, nil)
 	mockRT.EXPECT().DeployWorkload(
 		gomock.Any(),
-		defaultTEIImage,
+		DefaultEmbeddingImage,
 		mgr.containerName,
 		[]string{"--model-id", "BAAI/bge-small-en-v1.5"},
 		gomock.Nil(),
@@ -247,7 +247,7 @@ func TestStart_DeployNewContainer_Kubernetes(t *testing.T) {
 	mockRT.EXPECT().IsWorkloadRunning(gomock.Any(), mgr.containerName).Return(false, nil)
 	mockRT.EXPECT().DeployWorkload(
 		gomock.Any(),
-		defaultTEIImage,
+		DefaultEmbeddingImage,
 		mgr.containerName,
 		[]string{"--model-id", "BAAI/bge-small-en-v1.5"},
 		gomock.Nil(), // no env vars

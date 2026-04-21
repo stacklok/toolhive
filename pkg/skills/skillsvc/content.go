@@ -165,6 +165,10 @@ func (s *service) getContentFromOCI(ctx context.Context, ref string) (*skills.Sk
 		pullCtx, cancel := context.WithTimeout(ctx, ociPullTimeout)
 		defer cancel()
 
+		// Content-preview pulls intentionally do NOT record build provenance:
+		// the pulled blobs stay in the OCI store as a cache, but the tag is
+		// invisible to ListBuilds so remote skills browsed via the content
+		// API don't pollute the local builds listing.
 		var pullErr error
 		d, pullErr = s.registry.Pull(pullCtx, s.ociStore, qualifiedRef)
 		if pullErr != nil {

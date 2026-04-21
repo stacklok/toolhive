@@ -52,6 +52,9 @@ func (s *service) installFromOCI(
 	pullCtx, cancel := context.WithTimeout(ctx, ociPullTimeout)
 	defer cancel()
 
+	// Install pulls intentionally do NOT record build provenance: the pulled
+	// blobs stay in the OCI store as a cache, but the tag is invisible to
+	// ListBuilds so installed remote skills don't appear as local builds.
 	pulledDigest, err := s.registry.Pull(pullCtx, s.ociStore, ociRef)
 	if err != nil {
 		return nil, httperr.WithCode(

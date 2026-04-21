@@ -301,6 +301,59 @@ func TestInstallFromOCI(t *testing.T) {
 	}
 }
 
+func TestInstallFromOCI_DoesNotLeakIntoListBuilds(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+
+	ociStore, err := ociskills.NewStore(tempDir(t))
+	require.NoError(t, err)
+
+	indexDigest := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+
+	// Simulate the real Pull side effect: tag the artifact in the local
+	// store. installFromOCI should still not touch build provenance.
+	reg := ocimocks.NewMockRegistryClient(ctrl)
+	reg.EXPECT().
+		Pull(gomock.Any(), ociStore, "ghcr.io/org/my-skill:v1").
+		DoAndReturn(func(ctx context.Context, store *ociskills.Store, _ string) (godigest.Digest, error) {
+			require.NoError(t, store.Tag(ctx, indexDigest, "ghcr.io/org/my-skill:v1"))
+			return indexDigest, nil
+		})
+
+	skillStore := storemocks.NewMockSkillStore(ctrl)
+	skillStore.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").
+		Return(skills.InstalledSkill{}, storage.ErrNotFound)
+	skillStore.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
+
+	pr := skillsmocks.NewMockPathResolver(ctrl)
+	targetDir := filepath.Join(tempDir(t), "installed", "my-skill")
+	pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
+
+	svc := New(skillStore,
+		WithRegistryClient(reg),
+		WithOCIStore(ociStore),
+		WithPathResolver(pr),
+	)
+
+	// Baseline: no builds before the install.
+	builds, err := svc.ListBuilds(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, builds)
+
+	_, err = svc.Install(t.Context(), skills.InstallOptions{
+		Name:    "ghcr.io/org/my-skill:v1",
+		Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	// After the install, the OCI store contains the pulled artifact but
+	// ListBuilds must still be empty — only `thv skill build` output shows up.
+	builds, err = svc.ListBuilds(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, builds, "install pulls must not leak into ListBuilds")
+}
+
 func TestInstallFromLocalStore(t *testing.T) {
 	t.Parallel()
 

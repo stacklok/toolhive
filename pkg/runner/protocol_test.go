@@ -373,7 +373,7 @@ func TestMergeRuntimeConfig(t *testing.T) {
 				BuilderImage:       "",
 				AdditionalPackages: []string{"make"},
 			},
-			wantImage:    "golang:1.25-alpine",
+			wantImage:    "golang:1.26-alpine",
 			wantPackages: []string{"ca-certificates", "git", "make"},
 		},
 		{

@@ -90,7 +90,7 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 
 **Fields:**
 - `builder_image`: Override the default base image for the builder stage
-  - Go: Default `golang:1.25-alpine`
+  - Go: Default `golang:1.26-alpine`
   - Node: Default `node:22-alpine`
   - Python: Default `python:3.13-slim`
 - `additional_packages`: Extra packages to install during the build and runtime stages (e.g., build tools, libraries)
@@ -112,7 +112,7 @@ thv run uvx://mcp-server \
 2. User config file (`~/.toolhive/config.yaml` `runtimeConfigs` map)
 3. Built-in defaults
 
-**Note**: For Go workloads, only the builder image is configurable. The runtime stage always uses `alpine:3.22` for simplicity and security.
+**Note**: For Go workloads, only the builder image is configurable. The runtime stage always uses `alpine:3.23` for simplicity and security.
 
 **Implementation**: `pkg/runner/config.go-198`, `pkg/container/templates/runtime_config.go`
 

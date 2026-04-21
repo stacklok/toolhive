@@ -1,0 +1,152 @@
+name: API Compatibility
+
+# This workflow guards the stability of the v1beta1 operator API surface.
+#
+# Phase 1 (current): advisory only. `crd-schema-check` runs with
+# continue-on-error: true so breaking-change findings are surfaced via the
+# job's step summary but do not block merges. Remove continue-on-error in
+# Phase 2 to start enforcing.
+#
+# See design-api-compat-ci.md and CONTRIBUTING.md ("API Stability") for the
+# full rollout plan and escape-hatch process.
+
+on:
+  pull_request:
+    paths:
+      - 'cmd/thv-operator/api/**'
+      - 'deploy/charts/operator-crds/files/crds/**'
+      - 'deploy/charts/operator-crds/templates/**'
+
+permissions:
+  contents: read
+
+jobs:
+  crd-schema-check:
+    name: CRD Schema Compatibility
+    runs-on: ubuntu-latest
+    # Phase 1: advisory only. Remove in Phase 2 to enforce.
+    continue-on-error: true
+    steps:
+      - name: Checkout PR HEAD
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Resolve baseline source
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          BASELINE_SOURCE=""
+          BASELINE_CHART_DIR=""
+
+          LATEST_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
+          LATEST_VERSION="${LATEST_TAG#v}"
+
+          if [ -n "$LATEST_VERSION" ]; then
+            echo "Attempting to pull published chart for $LATEST_TAG..."
+            mkdir -p /tmp/baseline-release
+            if helm pull "oci://ghcr.io/stacklok/toolhive/toolhive-operator-crds" \
+                 --version "$LATEST_VERSION" \
+                 --untar --untardir /tmp/baseline-release 2>/dev/null; then
+              BASELINE_SOURCE="release $LATEST_TAG"
+              BASELINE_CHART_DIR="/tmp/baseline-release/toolhive-operator-crds"
+              echo "Using published chart at $LATEST_TAG"
+            else
+              echo "Chart pull failed (not yet published?); falling back to origin/main"
+            fi
+          else
+            echo "No releases found; falling back to origin/main"
+          fi
+
+          if [ -z "$BASELINE_SOURCE" ]; then
+            git fetch origin main --depth=1
+            git worktree add --detach /tmp/baseline-main FETCH_HEAD
+            BASELINE_SOURCE="main"
+            BASELINE_CHART_DIR="/tmp/baseline-main/deploy/charts/operator-crds"
+          fi
+
+          echo "source=$BASELINE_SOURCE" >> "$GITHUB_OUTPUT"
+          echo "chart-dir=$BASELINE_CHART_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Render baseline CRDs
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/baseline-crds
+          # All three feature flags must be set so the Helm wrapper emits every
+          # CRD (see deploy/charts/operator-crds/crd-helm-wrapper). Missing a
+          # flag silently drops CRDs from the comparison.
+          # The yq filter is defensive — the chart currently only templates
+          # CRDs, but this keeps the invariant explicit if non-CRD resources
+          # are ever added.
+          helm template toolhive-operator-crds "${{ steps.baseline.outputs.chart-dir }}" \
+            --set crds.install.server=true \
+            --set crds.install.registry=true \
+            --set crds.install.virtualMcp=true \
+            | yq 'select(.kind == "CustomResourceDefinition")' \
+            > /tmp/baseline-crds/all.yaml
+          echo "Rendered $(grep -c '^kind: CustomResourceDefinition' /tmp/baseline-crds/all.yaml || echo 0) baseline CRDs"
+
+      - name: Render HEAD CRDs
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/head-crds
+          helm template toolhive-operator-crds deploy/charts/operator-crds \
+            --set crds.install.server=true \
+            --set crds.install.registry=true \
+            --set crds.install.virtualMcp=true \
+            | yq 'select(.kind == "CustomResourceDefinition")' \
+            > /tmp/head-crds/all.yaml
+          echo "Rendered $(grep -c '^kind: CustomResourceDefinition' /tmp/head-crds/all.yaml || echo 0) HEAD CRDs"
+
+      - name: Install crd-schema-checker
+        run: go install github.com/openshift/crd-schema-checker/cmd/crd-schema-checker@latest
+
+      - name: Check CRD schema compatibility
+        id: checker
+        run: |
+          # NoBools and NoMaps are OpenShift API-style conventions, not
+          # compat-breaking rules. They fire on fields we legitimately use
+          # (e.g. embeddingservers.spec.modelCache.enabled) and drown out
+          # real findings. Re-enable only if upstream clarifies breaking-
+          # change semantics for them.
+          set +e
+          crd-schema-checker check-manifests \
+            --existing-crd-filename /tmp/baseline-crds/all.yaml \
+            --new-crd-filename /tmp/head-crds/all.yaml \
+            --disabled-validators=NoBools,NoMaps \
+            2>&1 | tee /tmp/checker-output.txt
+          CHECK_EXIT=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$CHECK_EXIT" -eq 0 ]; then
+            STATUS="Compatible"
+          else
+            STATUS="Incompatible or Unknown"
+          fi
+
+          {
+            echo "## API Compatibility — CRD Schema Check (Phase 1: advisory)"
+            echo ""
+            echo "**Baseline source**: ${{ steps.baseline.outputs.source }}"
+            echo "**Status**: $STATUS"
+            echo ""
+            echo "<details><summary>crd-schema-checker output</summary>"
+            echo ""
+            echo '```'
+            cat /tmp/checker-output.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$CHECK_EXIT"

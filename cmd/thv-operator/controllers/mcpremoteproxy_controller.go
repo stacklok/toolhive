@@ -1274,6 +1274,18 @@ func (r *MCPRemoteProxyReconciler) containerNeedsUpdate(
 
 	// Check if environment variables have changed
 	expectedEnv := r.buildEnvVarsForProxy(ctx, proxy)
+	configName := ctrlutil.EmbeddedAuthServerConfigName(
+		proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef,
+	)
+	if configName != "" {
+		_, _, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigByName(
+			ctx, r.Client, proxy.Namespace, configName,
+		)
+		if err != nil {
+			return true
+		}
+		expectedEnv = append(expectedEnv, authServerEnvVars...)
+	}
 	if !reflect.DeepEqual(container.Env, expectedEnv) {
 		return true
 	}

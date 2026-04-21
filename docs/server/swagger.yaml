@@ -905,6 +905,7 @@ components:
       - removing
       - unknown
       - unauthenticated
+      - policy_stopped
       - running
       - stopped
       - error
@@ -914,6 +915,7 @@ components:
       - removing
       - unknown
       - unauthenticated
+      - policy_stopped
       - running
       - stopped
       - error
@@ -923,6 +925,7 @@ components:
       - removing
       - unknown
       - unauthenticated
+      - policy_stopped
       type: string
       x-enum-varnames:
       - WorkloadStatusRunning
@@ -934,6 +937,7 @@ components:
       - WorkloadStatusRemoving
       - WorkloadStatusUnknown
       - WorkloadStatusUnauthenticated
+      - WorkloadStatusPolicyStopped
     github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig:
       description: |-
         RuntimeConfig allows overriding the default runtime configuration
@@ -953,7 +957,7 @@ components:
           description: |-
             BuilderImage is the full image reference for the builder stage.
             An empty string signals "use the default for this transport type" during config merging.
-            Examples: "golang:1.25-alpine", "node:22-alpine", "python:3.13-slim"
+            Examples: "golang:1.26-alpine", "node:24-alpine", "python:3.14-slim"
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_core.Workload:
@@ -2238,6 +2242,10 @@ components:
         proxy_port:
           description: Port for the HTTP proxy to listen on
           type: integer
+        registry:
+          description: Registry is the optional registry name to resolve the server
+            from (e.g. "default").
+          type: string
         runtime_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig'
         secrets:
@@ -2246,6 +2254,13 @@ components:
             $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter'
           type: array
           uniqueItems: false
+        server:
+          description: |-
+            Server is the optional server name in the registry (e.g. "io.github.stacklok/fetch").
+            When both Registry and Server are set, thv resolves the server metadata
+            server-side, filling in image, transport, env vars, permissions, etc.
+            User-provided fields always override registry defaults.
+          type: string
         target_port:
           description: Port to expose from the container
           type: integer
@@ -4321,6 +4336,12 @@ paths:
               schema:
                 type: string
           description: Internal Server Error
+        "502":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Gateway
       summary: Install a skill
       tags:
       - skills

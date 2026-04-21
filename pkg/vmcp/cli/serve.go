@@ -302,9 +302,13 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		if model == "" {
 			model = DefaultEmbeddingModel
 		}
+		image := cfg.EmbeddingImage
+		if image == "" {
+			image = DefaultEmbeddingImage
+		}
 		m, err := NewEmbeddingServiceManager(container.NewFactory(), EmbeddingServiceManagerConfig{
 			Model: model,
-			Image: cfg.EmbeddingImage,
+			Image: image,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create embedding service manager: %w", err)
@@ -437,6 +441,9 @@ func injectOptimizerConfig(ctx context.Context, cfg ServeConfig, vmcpCfg *config
 	}
 	teiURL, err := mgr.Start(ctx)
 	if err != nil {
+		// Best-effort cleanup: a Start failure can still leave a partial
+		// container behind (created but health poll timed out, etc.).
+		_ = mgr.Stop(context.Background())
 		return nil, fmt.Errorf("failed to start TEI embedding service: %w", err)
 	}
 	vmcpCfg.Optimizer.EmbeddingService = teiURL

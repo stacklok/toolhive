@@ -87,6 +87,7 @@ func (s *SkillsRoutes) listSkills(w http.ResponseWriter, r *http.Request) error 
 //	@Failure		400		{string}	string		"Bad Request"
 //	@Failure		409		{string}	string		"Conflict"
 //	@Failure		500		{string}	string		"Internal Server Error"
+//	@Failure		502		{string}	string		"Bad Gateway"
 //	@Router			/api/v1beta/skills [post]
 func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) error {
 	var req installSkillRequest

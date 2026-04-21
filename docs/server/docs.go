@@ -931,6 +931,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "policy_stopped",
                     "running",
                     "stopped",
                     "error",
@@ -940,6 +941,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "policy_stopped",
                     "running",
                     "stopped",
                     "error",
@@ -948,7 +950,8 @@ const docTemplate = `{
                     "unhealthy",
                     "removing",
                     "unknown",
-                    "unauthenticated"
+                    "unauthenticated",
+                    "policy_stopped"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -960,7 +963,8 @@ const docTemplate = `{
                     "WorkloadStatusUnhealthy",
                     "WorkloadStatusRemoving",
                     "WorkloadStatusUnknown",
-                    "WorkloadStatusUnauthenticated"
+                    "WorkloadStatusUnauthenticated",
+                    "WorkloadStatusPolicyStopped"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig": {
@@ -975,7 +979,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "builder_image": {
-                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.25-alpine\", \"node:22-alpine\", \"python:3.13-slim\"",
+                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.26-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
                         "type": "string"
                     }
                 },
@@ -2511,6 +2515,10 @@ const docTemplate = `{
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
                     },
+                    "registry": {
+                        "description": "Registry is the optional registry name to resolve the server from (e.g. \"default\").",
+                        "type": "string"
+                    },
                     "runtime_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
                     },
@@ -2521,6 +2529,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "server": {
+                        "description": "Server is the optional server name in the registry (e.g. \"io.github.stacklok/fetch\").\nWhen both Registry and Server are set, thv resolves the server metadata\nserver-side, filling in image, transport, env vars, permissions, etc.\nUser-provided fields always override registry defaults.",
+                        "type": "string"
                     },
                     "target_port": {
                         "description": "Port to expose from the container",
@@ -5416,6 +5428,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "Internal Server Error"
+                    },
+                    "502": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Gateway"
                     }
                 },
                 "summary": "Install a skill",

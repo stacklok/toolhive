@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 func TestMCPOIDCConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -25,22 +25,22 @@ func TestMCPOIDCConfigReconciler_calculateConfigHash(t *testing.T) {
 
 	tests := []struct {
 		name string
-		spec mcpv1alpha1.MCPOIDCConfigSpec
+		spec mcpv1beta1.MCPOIDCConfigSpec
 	}{
 		{
 			name: "kubernetesServiceAccount spec",
-			spec: mcpv1alpha1.MCPOIDCConfigSpec{
-				Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-				KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			spec: mcpv1beta1.MCPOIDCConfigSpec{
+				Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+				KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 					Issuer: "https://kubernetes.default.svc",
 				},
 			},
 		},
 		{
 			name: "inline spec",
-			spec: mcpv1alpha1.MCPOIDCConfigSpec{
-				Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+			spec: mcpv1beta1.MCPOIDCConfigSpec{
+				Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+				Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 					Issuer:   "https://accounts.google.com",
 					ClientID: "test-client",
 				},
@@ -65,16 +65,16 @@ func TestMCPOIDCConfigReconciler_calculateConfigHash(t *testing.T) {
 	t.Run("different specs produce different hashes", func(t *testing.T) {
 		t.Parallel()
 		r := &MCPOIDCConfigReconciler{}
-		spec1 := mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+		spec1 := mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 				Issuer:   "https://accounts.google.com",
 				ClientID: "client1",
 			},
 		}
-		spec2 := mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+		spec2 := mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 				Issuer:   "https://accounts.google.com",
 				ClientID: "client2",
 			},
@@ -93,7 +93,7 @@ func TestMCPOIDCConfigReconciler_ReconcileNotFound(t *testing.T) {
 	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	// Empty client — no objects exist
 	fakeClient := fake.NewClientBuilder().
@@ -123,18 +123,18 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 				Issuer:   "https://accounts.google.com",
 				ClientID: "test-client",
 			},
@@ -144,7 +144,7 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
 		Build()
 
 	r := &MCPOIDCConfigReconciler{
@@ -168,7 +168,7 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var afterInitial mcpv1alpha1.MCPOIDCConfig
+	var afterInitial mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &afterInitial)
 	require.NoError(t, err)
 	initialHash := afterInitial.Status.ConfigHash
@@ -179,7 +179,7 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
-	var afterSteady mcpv1alpha1.MCPOIDCConfig
+	var afterSteady mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &afterSteady)
 	require.NoError(t, err)
 	assert.Equal(t, initialHash, afterSteady.Status.ConfigHash, "Hash should not change")
@@ -192,19 +192,19 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	// Start with invalid config: type=inline but no inline config
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "recovery-config",
 			Namespace:  "default",
 			Finalizers: []string{OIDCConfigFinalizerName},
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
 			// Missing Inline config — invalid
 		},
 	}
@@ -212,7 +212,7 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
 		Build()
 
 	r := &MCPOIDCConfigReconciler{
@@ -231,13 +231,13 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	_, err := r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var invalidConfig mcpv1alpha1.MCPOIDCConfig
+	var invalidConfig mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &invalidConfig)
 	require.NoError(t, err)
 
 	var foundFalse bool
 	for _, cond := range invalidConfig.Status.Conditions {
-		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid {
+		if cond.Type == mcpv1beta1.ConditionTypeOIDCConfigValid {
 			assert.Equal(t, metav1.ConditionFalse, cond.Status)
 			foundFalse = true
 		}
@@ -246,7 +246,7 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	assert.Empty(t, invalidConfig.Status.ConfigHash, "Hash should not be set for invalid config")
 
 	// Fix the config by adding the inline spec
-	invalidConfig.Spec.Inline = &mcpv1alpha1.InlineOIDCSharedConfig{
+	invalidConfig.Spec.Inline = &mcpv1beta1.InlineOIDCSharedConfig{
 		Issuer:   "https://accounts.google.com",
 		ClientID: "test-client",
 	}
@@ -258,15 +258,15 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var recoveredConfig mcpv1alpha1.MCPOIDCConfig
+	var recoveredConfig mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &recoveredConfig)
 	require.NoError(t, err)
 
 	var foundTrue bool
 	for _, cond := range recoveredConfig.Status.Conditions {
-		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid {
+		if cond.Type == mcpv1beta1.ConditionTypeOIDCConfigValid {
 			assert.Equal(t, metav1.ConditionTrue, cond.Status, "Valid condition should recover to True")
-			assert.Equal(t, mcpv1alpha1.ConditionReasonOIDCConfigValid, cond.Reason)
+			assert.Equal(t, mcpv1beta1.ConditionReasonOIDCConfigValid, cond.Reason)
 			foundTrue = true
 		}
 	}
@@ -279,12 +279,12 @@ func TestMCPOIDCConfigReconciler_handleDeletion(t *testing.T) {
 
 	tests := []struct {
 		name                   string
-		oidcConfig             *mcpv1alpha1.MCPOIDCConfig
+		oidcConfig             *mcpv1beta1.MCPOIDCConfig
 		expectFinalizerRemoved bool
 	}{
 		{
 			name: "delete config removes finalizer",
-			oidcConfig: &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig: &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-config",
 					Namespace:  "default",
@@ -293,9 +293,9 @@ func TestMCPOIDCConfigReconciler_handleDeletion(t *testing.T) {
 						Time: time.Now(),
 					},
 				},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer: "https://accounts.google.com",
 					},
 				},
@@ -311,7 +311,7 @@ func TestMCPOIDCConfigReconciler_handleDeletion(t *testing.T) {
 			ctx := t.Context()
 
 			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 			objs := []client.Object{tt.oidcConfig}
 
@@ -344,18 +344,18 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 				Issuer:   "https://accounts.google.com",
 				ClientID: "test-client",
 			},
@@ -365,7 +365,7 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
 		Build()
 
 	r := &MCPOIDCConfigReconciler{
@@ -391,7 +391,7 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 	assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 	// Get updated config and check hash was set
-	var updatedConfig mcpv1alpha1.MCPOIDCConfig
+	var updatedConfig mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, updatedConfig.Status.ConfigHash, "Config hash should be set")
@@ -408,7 +408,7 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 	require.NoError(t, err)
 
 	// Get final config and verify hash changed
-	var finalConfig mcpv1alpha1.MCPOIDCConfig
+	var finalConfig mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &finalConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, finalConfig.Status.ConfigHash, "Config hash should still be set")
@@ -422,19 +422,19 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	// Invalid config: type is inline but no inline config set
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "invalid-config",
 			Namespace:  "default",
 			Finalizers: []string{OIDCConfigFinalizerName},
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
 			// Missing Inline config
 		},
 	}
@@ -442,7 +442,7 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPOIDCConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
 		Build()
 
 	r := &MCPOIDCConfigReconciler{
@@ -462,16 +462,16 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 	require.NoError(t, err)
 
 	// Check that the Ready condition is set to False
-	var updatedConfig mcpv1alpha1.MCPOIDCConfig
+	var updatedConfig mcpv1beta1.MCPOIDCConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 
 	var foundCondition bool
 	for _, cond := range updatedConfig.Status.Conditions {
-		if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid {
+		if cond.Type == mcpv1beta1.ConditionTypeOIDCConfigValid {
 			foundCondition = true
 			assert.Equal(t, metav1.ConditionFalse, cond.Status, "Valid condition should be False")
-			assert.Equal(t, mcpv1alpha1.ConditionReasonOIDCConfigInvalid, cond.Reason)
+			assert.Equal(t, mcpv1beta1.ConditionReasonOIDCConfigInvalid, cond.Reason)
 			break
 		}
 	}
@@ -483,15 +483,15 @@ func TestMCPOIDCConfig_Validate(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		config      *mcpv1alpha1.MCPOIDCConfig
+		config      *mcpv1beta1.MCPOIDCConfig
 		expectError bool
 	}{
 		{
 			name: "valid kubernetesServiceAccount config",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 						ServiceAccount: "test-sa",
 						Issuer:         "https://kubernetes.default.svc",
 					},
@@ -501,10 +501,10 @@ func TestMCPOIDCConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "valid inline config",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:   "https://accounts.google.com",
 						ClientID: "test-client",
 					},
@@ -514,13 +514,13 @@ func TestMCPOIDCConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "invalid kubernetesServiceAccount set but type is inline",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 						ServiceAccount: "test-sa",
 					},
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer: "https://accounts.google.com",
 					},
 				},
@@ -529,22 +529,22 @@ func TestMCPOIDCConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "invalid no config variant set",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
 				},
 			},
 			expectError: true,
 		},
 		{
 			name: "invalid multiple config variants set",
-			config: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 						ServiceAccount: "test-sa",
 					},
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer: "https://accounts.google.com",
 					},
 				},

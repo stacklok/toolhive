@@ -13,7 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -92,12 +92,12 @@ func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 	t.Parallel()
 
 	// Create a test MCPServer
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-mcp-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
 			ProxyPort: 8080,
@@ -106,7 +106,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 
 	// Create reconciler with mock platform detector for Kubernetes
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	mockDetector := &mockPlatformDetector{
 		platform: kubernetes.PlatformKubernetes,
 		err:      nil,
@@ -164,12 +164,12 @@ func TestMCPServerReconciler_DeploymentForMCPServer_OpenShift(t *testing.T) {
 	t.Parallel()
 
 	// Create a test MCPServer
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-mcp-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
 			ProxyPort: 8080,
@@ -178,7 +178,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_OpenShift(t *testing.T) {
 
 	// Create reconciler with mock platform detector for OpenShift
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	mockDetector := &mockPlatformDetector{
 		platform: kubernetes.PlatformOpenShift,
 		err:      nil,
@@ -242,12 +242,12 @@ func TestMCPServerReconciler_DeploymentForMCPServer_PlatformDetectionError(t *te
 	t.Parallel()
 
 	// Create a test MCPServer
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-mcp-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
 			ProxyPort: 8080,
@@ -256,7 +256,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_PlatformDetectionError(t *te
 
 	// Create reconciler with mock platform detector that returns error
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	mockDetector := &mockPlatformDetector{
 		platform: kubernetes.PlatformKubernetes,
 		err:      assert.AnError,

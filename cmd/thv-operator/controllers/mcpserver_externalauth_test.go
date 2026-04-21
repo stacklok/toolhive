@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -36,24 +36,24 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 
 	tests := []struct {
 		name               string
-		mcpServer          *mcpv1alpha1.MCPServer
-		externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig
+		mcpServer          *mcpv1beta1.MCPServer
+		externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig
 		expectError        bool
 		expectHash         string
 		expectHashCleared  bool
 	}{
 		{
 			name: "no external auth config reference",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
 					// No ExternalAuthConfigRef
 				},
-				Status: mcpv1alpha1.MCPServerStatus{},
+				Status: mcpv1beta1.MCPServerStatus{},
 			},
 			expectError:       false,
 			expectHash:        "",
@@ -61,37 +61,37 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 		},
 		{
 			name: "external auth config reference exists",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "test-config",
 					},
 				},
-				Status: mcpv1alpha1.MCPServerStatus{},
+				Status: mcpv1beta1.MCPServerStatus{},
 			},
-			externalAuthConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "test-secret",
 							Key:  "client-secret",
 						},
 						Audience: "backend-service",
 					},
 				},
-				Status: mcpv1alpha1.MCPExternalAuthConfigStatus{
+				Status: mcpv1beta1.MCPExternalAuthConfigStatus{
 					ConfigHash: "test-hash-123",
 				},
 			},
@@ -100,56 +100,56 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 		},
 		{
 			name: "external auth config not found",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "non-existent-config",
 					},
 				},
-				Status: mcpv1alpha1.MCPServerStatus{},
+				Status: mcpv1beta1.MCPServerStatus{},
 			},
 			expectError: true,
 		},
 		{
 			name: "external auth config hash changed",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "test-config",
 					},
 				},
-				Status: mcpv1alpha1.MCPServerStatus{
+				Status: mcpv1beta1.MCPServerStatus{
 					ExternalAuthConfigHash: "old-hash",
 				},
 			},
-			externalAuthConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "test-secret",
 							Key:  "client-secret",
 						},
 						Audience: "new-audience", // Changed config
 					},
 				},
-				Status: mcpv1alpha1.MCPExternalAuthConfigStatus{
+				Status: mcpv1beta1.MCPExternalAuthConfigStatus{
 					ConfigHash: "new-hash-456",
 				},
 			},
@@ -158,16 +158,16 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 		},
 		{
 			name: "clear hash when reference is removed",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
 					// No ExternalAuthConfigRef (was removed)
 				},
-				Status: mcpv1alpha1.MCPServerStatus{
+				Status: mcpv1beta1.MCPServerStatus{
 					ExternalAuthConfigHash: "old-hash-to-clear",
 				},
 			},
@@ -177,35 +177,35 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 		},
 		{
 			name: "embedded auth server with multiple upstreams rejected",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: "multi-upstream-config",
 					},
 				},
-				Status: mcpv1alpha1.MCPServerStatus{},
+				Status: mcpv1beta1.MCPServerStatus{},
 			},
-			externalAuthConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "multi-upstream-config",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-					EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
 						Issuer: "https://auth.example.com",
-						UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
-							{Name: "github", Type: mcpv1alpha1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "id1"}},
-							{Name: "google", Type: mcpv1alpha1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{IssuerURL: "https://accounts.google.com", ClientID: "id2"}},
+						UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+							{Name: "github", Type: mcpv1beta1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "id1"}},
+							{Name: "google", Type: mcpv1beta1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{IssuerURL: "https://accounts.google.com", ClientID: "id2"}},
 						},
 					},
 				},
-				Status: mcpv1alpha1.MCPExternalAuthConfigStatus{ConfigHash: "multi-hash"},
+				Status: mcpv1beta1.MCPExternalAuthConfigStatus{ConfigHash: "multi-hash"},
 			},
 			expectError: true,
 		},
@@ -219,7 +219,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 			defer cancel()
 
 			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 			require.NoError(t, corev1.AddToScheme(scheme))
 
 			// Build objects for fake client
@@ -231,7 +231,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithRuntimeObjects(objs...).
-				WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 				Build()
 
 			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
@@ -266,51 +266,51 @@ func TestMCPServerReconciler_handleExternalAuthConfig_SameNamespace(t *testing.T
 	defer cancel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	// External auth config in a different namespace
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-config",
 			Namespace: "other-namespace",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "test-secret",
 					Key:  "client-secret",
 				},
 				Audience: "backend-service",
 			},
 		},
-		Status: mcpv1alpha1.MCPExternalAuthConfigStatus{
+		Status: mcpv1beta1.MCPExternalAuthConfigStatus{
 			ConfigHash: "test-hash-123",
 		},
 	}
 
 	// MCPServer in different namespace
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "test-config", // References config in same namespace (default)
 			},
 		},
-		Status: mcpv1alpha1.MCPServerStatus{},
+		Status: mcpv1beta1.MCPServerStatus{},
 	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(externalAuthConfig, mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
@@ -330,43 +330,43 @@ func TestMCPServerReconciler_handleExternalAuthConfig_HashUpdateTrigger(t *testi
 	defer cancel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "test-secret",
 					Key:  "client-secret",
 				},
 				Audience: "backend-service",
 			},
 		},
-		Status: mcpv1alpha1.MCPExternalAuthConfigStatus{
+		Status: mcpv1beta1.MCPExternalAuthConfigStatus{
 			ConfigHash: "initial-hash",
 		},
 	}
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "test-config",
 			},
 		},
-		Status: mcpv1alpha1.MCPServerStatus{
+		Status: mcpv1beta1.MCPServerStatus{
 			ExternalAuthConfigHash: "initial-hash",
 		},
 	}
@@ -374,7 +374,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_HashUpdateTrigger(t *testi
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(externalAuthConfig, mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}, &mcpv1alpha1.MCPExternalAuthConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}, &mcpv1beta1.MCPExternalAuthConfig{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
@@ -385,7 +385,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_HashUpdateTrigger(t *testi
 	assert.Equal(t, "initial-hash", mcpServer.Status.ExternalAuthConfigHash)
 
 	// Simulate external auth config change - need to get the object first
-	var updatedConfig mcpv1alpha1.MCPExternalAuthConfig
+	var updatedConfig mcpv1beta1.MCPExternalAuthConfig
 	err = fakeClient.Get(ctx, client.ObjectKey{Name: "test-config", Namespace: "default"}, &updatedConfig)
 	require.NoError(t, err)
 
@@ -407,50 +407,50 @@ func TestMCPServerReconciler_handleExternalAuthConfig_NoHashInConfig(t *testing.
 	defer cancel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	// External auth config without hash in status
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 					Name: "test-secret",
 					Key:  "client-secret",
 				},
 				Audience: "backend-service",
 			},
 		},
-		Status: mcpv1alpha1.MCPExternalAuthConfigStatus{
+		Status: mcpv1beta1.MCPExternalAuthConfigStatus{
 			// ConfigHash is empty
 		},
 	}
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 				Name: "test-config",
 			},
 		},
-		Status: mcpv1alpha1.MCPServerStatus{},
+		Status: mcpv1beta1.MCPServerStatus{},
 	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(externalAuthConfig, mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)

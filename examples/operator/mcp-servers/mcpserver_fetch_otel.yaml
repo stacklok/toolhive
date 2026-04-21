@@ -2,7 +2,7 @@
 #
 # Define telemetry configuration once and reference it from multiple MCPServers.
 # Each MCPServer provides a unique serviceName for its traces and metrics.
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPTelemetryConfig
 metadata:
   name: basic-telemetry
@@ -24,7 +24,7 @@ spec:
 #
 # The telemetryConfigRef replaces the deprecated inline spec.telemetry field.
 # serviceName provides a unique OTel service name for this server's telemetry.
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: fetch

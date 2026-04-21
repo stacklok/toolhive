@@ -1,6 +1,6 @@
 # Basic EmbeddingServer example with minimal configuration
 # This creates an embedding server using the default text-embeddings-inference image
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: EmbeddingServer
 metadata:
   name: basic-embedding

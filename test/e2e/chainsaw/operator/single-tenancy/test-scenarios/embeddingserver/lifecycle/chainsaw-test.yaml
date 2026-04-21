@@ -70,7 +70,7 @@ spec:
     try:
     - delete:
         ref:
-          apiVersion: toolhive.stacklok.dev/v1alpha1
+          apiVersion: toolhive.stacklok.dev/v1beta1
           kind: EmbeddingServer
           name: ($testPrefix)
           namespace: toolhive-system

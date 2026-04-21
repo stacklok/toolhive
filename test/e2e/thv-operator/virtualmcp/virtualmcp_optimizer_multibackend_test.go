@@ -15,7 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
@@ -83,7 +83,7 @@ var _ = Describe("VirtualMCPServer Optimizer Multi-Backend", Ordered, func() {
 			Name: backend4Name, Namespace: testNamespace, GroupRef: mcpGroupName,
 			Image:     images.GitHubMCPServerImage, // 41 tools
 			Transport: "stdio",
-			Secrets: []mcpv1alpha1.SecretRef{
+			Secrets: []mcpv1beta1.SecretRef{
 				{Name: githubSecretName, Key: "token", TargetEnvName: "GITHUB_PERSONAL_ACCESS_TOKEN"},
 			},
 		},
@@ -91,7 +91,7 @@ var _ = Describe("VirtualMCPServer Optimizer Multi-Backend", Ordered, func() {
 			Name: backend5Name, Namespace: testNamespace, GroupRef: mcpGroupName,
 			Image:     images.TerraformMCPServerImage, // 9 tools
 			Transport: "streamable-http",
-			Env: []mcpv1alpha1.EnvVar{
+			Env: []mcpv1beta1.EnvVar{
 				{Name: "TRANSPORT_MODE", Value: "streamable-http"},
 				{Name: "TRANSPORT_HOST", Value: "0.0.0.0"},
 			},
@@ -125,7 +125,7 @@ var _ = Describe("VirtualMCPServer Optimizer Multi-Backend", Ordered, func() {
 			Name: backend11Name, Namespace: testNamespace, GroupRef: mcpGroupName,
 			Image:     images.PagerDutyMCPServerImage, // 64 tools
 			Transport: "stdio",
-			Secrets: []mcpv1alpha1.SecretRef{
+			Secrets: []mcpv1beta1.SecretRef{
 				{Name: pagerdutySecretName, Key: "token", TargetEnvName: "PAGERDUTY_USER_API_KEY"},
 			},
 		},
@@ -164,12 +164,12 @@ var _ = Describe("VirtualMCPServer Optimizer Multi-Backend", Ordered, func() {
 		CreateMultipleMCPServersInParallel(ctx, k8sClient, allBackends, timeout, pollingInterval)
 
 		By("Creating EmbeddingServer for optimizer multi-backend")
-		embeddingServer := &mcpv1alpha1.EmbeddingServer{
+		embeddingServer := &mcpv1beta1.EmbeddingServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      embeddingName,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.EmbeddingServerSpec{
+			Spec: mcpv1beta1.EmbeddingServerSpec{
 				Model: "BAAI/bge-small-en-v1.5",
 				Image: images.TextEmbeddingsInferenceImage,
 			},
@@ -177,21 +177,21 @@ var _ = Describe("VirtualMCPServer Optimizer Multi-Backend", Ordered, func() {
 		Expect(k8sClient.Create(ctx, embeddingServer)).To(Succeed())
 
 		By("Creating VirtualMCPServer with optimizer enabled and prefix aggregation")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef:    &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+			Spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef:    &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				ServiceType: "NodePort",
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
-				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
 					Source: "discovered",
 				},
-				EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
+				EmbeddingServerRef: &mcpv1beta1.EmbeddingServerRef{
 					Name: embeddingName,
 				},
 				Config: vmcpconfig.Config{
@@ -218,7 +218,7 @@ var _ = Describe("VirtualMCPServer Optimizer Multi-Backend", Ordered, func() {
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      vmcpServerName,
 			Namespace: testNamespace,
@@ -227,7 +227,7 @@ var _ = Describe("VirtualMCPServer Optimizer Multi-Backend", Ordered, func() {
 		}
 
 		By("Cleaning up EmbeddingServer")
-		es := &mcpv1alpha1.EmbeddingServer{}
+		es := &mcpv1beta1.EmbeddingServer{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      embeddingName,
 			Namespace: testNamespace,
@@ -237,7 +237,7 @@ var _ = Describe("VirtualMCPServer Optimizer Multi-Backend", Ordered, func() {
 
 		By("Cleaning up backend MCPServers")
 		for _, backend := range allBackends {
-			server := &mcpv1alpha1.MCPServer{}
+			server := &mcpv1beta1.MCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      backend.Name,
 				Namespace: testNamespace,
@@ -247,7 +247,7 @@ var _ = Describe("VirtualMCPServer Optimizer Multi-Backend", Ordered, func() {
 		}
 
 		By("Cleaning up MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{}
+		mcpGroup := &mcpv1beta1.MCPGroup{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      mcpGroupName,
 			Namespace: testNamespace,

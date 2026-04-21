@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package v1alpha1
+package v1beta1
 
 import (
 	corev1 "k8s.io/api/core/v1"
@@ -867,6 +867,7 @@ const (
 )
 
 //+kubebuilder:object:root=true
+//+kubebuilder:storageversion
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=mcpserver;mcpservers,categories=toolhive
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"

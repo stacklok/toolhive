@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/dump"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // CalculateConfigHash calculates a hash of any configuration spec using Kubernetes utilities.
@@ -45,7 +45,7 @@ func CalculateConfigHash[T any](spec T) string {
 // Example usage for ToolConfig:
 //
 //	servers, err := FindReferencingMCPServers(ctx, client, namespace, configName,
-//	    func(server *mcpv1alpha1.MCPServer) *string {
+//	    func(server *mcpv1beta1.MCPServer) *string {
 //	        if server.Spec.ToolConfigRef != nil {
 //	            return &server.Spec.ToolConfigRef.Name
 //	        }
@@ -56,16 +56,16 @@ func FindReferencingMCPServers(
 	c client.Client,
 	namespace string,
 	configName string,
-	refExtractor func(*mcpv1alpha1.MCPServer) *string,
-) ([]mcpv1alpha1.MCPServer, error) {
+	refExtractor func(*mcpv1beta1.MCPServer) *string,
+) ([]mcpv1beta1.MCPServer, error) {
 	// List all MCPServers in the same namespace
-	mcpServerList := &mcpv1alpha1.MCPServerList{}
+	mcpServerList := &mcpv1beta1.MCPServerList{}
 	if err := c.List(ctx, mcpServerList, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
 	}
 
 	// Filter MCPServers that reference this config
-	var referencingServers []mcpv1alpha1.MCPServer
+	var referencingServers []mcpv1beta1.MCPServer
 	for _, server := range mcpServerList.Items {
 		if refName := refExtractor(&server); refName != nil && *refName == configName {
 			referencingServers = append(referencingServers, server)
@@ -83,14 +83,14 @@ func FindReferencingMCPRemoteProxies(
 	c client.Client,
 	namespace string,
 	configName string,
-	refExtractor func(*mcpv1alpha1.MCPRemoteProxy) *string,
-) ([]mcpv1alpha1.MCPRemoteProxy, error) {
-	proxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	refExtractor func(*mcpv1beta1.MCPRemoteProxy) *string,
+) ([]mcpv1beta1.MCPRemoteProxy, error) {
+	proxyList := &mcpv1beta1.MCPRemoteProxyList{}
 	if err := c.List(ctx, proxyList, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
 	}
 
-	var referencingProxies []mcpv1alpha1.MCPRemoteProxy
+	var referencingProxies []mcpv1beta1.MCPRemoteProxy
 	for _, proxy := range proxyList.Items {
 		if refName := refExtractor(&proxy); refName != nil && *refName == configName {
 			referencingProxies = append(referencingProxies, proxy)
@@ -102,7 +102,7 @@ func FindReferencingMCPRemoteProxies(
 
 // CompareWorkloadRefs compares two WorkloadReference values by Kind then Name.
 // Suitable for use with slices.SortFunc.
-func CompareWorkloadRefs(a, b mcpv1alpha1.WorkloadReference) int {
+func CompareWorkloadRefs(a, b mcpv1beta1.WorkloadReference) int {
 	if a.Kind != b.Kind {
 		return strings.Compare(a.Kind, b.Kind)
 	}
@@ -112,14 +112,14 @@ func CompareWorkloadRefs(a, b mcpv1alpha1.WorkloadReference) int {
 // SortWorkloadRefs sorts a WorkloadReference slice by Kind then Name for deterministic ordering.
 // This prevents unnecessary API server writes when the same set of workloads is discovered
 // in a different list order across reconcile runs.
-func SortWorkloadRefs(refs []mcpv1alpha1.WorkloadReference) {
+func SortWorkloadRefs(refs []mcpv1beta1.WorkloadReference) {
 	slices.SortFunc(refs, CompareWorkloadRefs)
 }
 
 // WorkloadRefsEqual reports whether two WorkloadReference slices contain the same entries.
 // Both slices must already be sorted (use SortWorkloadRefs) for correct results.
-func WorkloadRefsEqual(a, b []mcpv1alpha1.WorkloadReference) bool {
-	return slices.EqualFunc(a, b, func(x, y mcpv1alpha1.WorkloadReference) bool {
+func WorkloadRefsEqual(a, b []mcpv1beta1.WorkloadReference) bool {
+	return slices.EqualFunc(a, b, func(x, y mcpv1beta1.WorkloadReference) bool {
 		return x.Kind == y.Kind && x.Name == y.Name
 	})
 }
@@ -132,15 +132,15 @@ func FindWorkloadRefsFromMCPServers(
 	c client.Client,
 	namespace string,
 	configName string,
-	refExtractor func(*mcpv1alpha1.MCPServer) *string,
-) ([]mcpv1alpha1.WorkloadReference, error) {
+	refExtractor func(*mcpv1beta1.MCPServer) *string,
+) ([]mcpv1beta1.WorkloadReference, error) {
 	servers, err := FindReferencingMCPServers(ctx, c, namespace, configName, refExtractor)
 	if err != nil {
 		return nil, err
 	}
-	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(servers))
+	refs := make([]mcpv1beta1.WorkloadReference, 0, len(servers))
 	for _, server := range servers {
-		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPServer, Name: server.Name})
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: server.Name})
 	}
 	SortWorkloadRefs(refs)
 	return refs, nil
@@ -150,13 +150,13 @@ func FindWorkloadRefsFromMCPServers(
 func GetToolConfigForMCPRemoteProxy(
 	ctx context.Context,
 	c client.Client,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
-) (*mcpv1alpha1.MCPToolConfig, error) {
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) (*mcpv1beta1.MCPToolConfig, error) {
 	if proxy.Spec.ToolConfigRef == nil {
 		return nil, fmt.Errorf("MCPRemoteProxy %s does not reference a MCPToolConfig", proxy.Name)
 	}
 
-	toolConfig := &mcpv1alpha1.MCPToolConfig{}
+	toolConfig := &mcpv1beta1.MCPToolConfig{}
 	err := c.Get(ctx, types.NamespacedName{
 		Name:      proxy.Spec.ToolConfigRef.Name,
 		Namespace: proxy.Namespace,
@@ -173,13 +173,13 @@ func GetToolConfigForMCPRemoteProxy(
 func GetExternalAuthConfigForMCPRemoteProxy(
 	ctx context.Context,
 	c client.Client,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
-) (*mcpv1alpha1.MCPExternalAuthConfig, error) {
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) (*mcpv1beta1.MCPExternalAuthConfig, error) {
 	if proxy.Spec.ExternalAuthConfigRef == nil {
 		return nil, fmt.Errorf("MCPRemoteProxy %s does not reference a MCPExternalAuthConfig", proxy.Name)
 	}
 
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 	err := c.Get(ctx, types.NamespacedName{
 		Name:      proxy.Spec.ExternalAuthConfigRef.Name,
 		Namespace: proxy.Namespace,
@@ -199,13 +199,13 @@ func GetExternalAuthConfigForMCPRemoteProxy(
 func GetTelemetryConfigForMCPRemoteProxy(
 	ctx context.Context,
 	c client.Client,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
-) (*mcpv1alpha1.MCPTelemetryConfig, error) {
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) (*mcpv1beta1.MCPTelemetryConfig, error) {
 	if proxy.Spec.TelemetryConfigRef == nil {
 		return nil, nil
 	}
 
-	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{}
+	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{}
 	err := c.Get(ctx, types.NamespacedName{
 		Name:      proxy.Spec.TelemetryConfigRef.Name,
 		Namespace: proxy.Namespace,
@@ -227,13 +227,13 @@ func GetTelemetryConfigForMCPRemoteProxy(
 func GetTelemetryConfigForVirtualMCPServer(
 	ctx context.Context,
 	c client.Client,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-) (*mcpv1alpha1.MCPTelemetryConfig, error) {
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) (*mcpv1beta1.MCPTelemetryConfig, error) {
 	if vmcp.Spec.TelemetryConfigRef == nil {
 		return nil, nil
 	}
 
-	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{}
+	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{}
 	err := c.Get(ctx, types.NamespacedName{
 		Name:      vmcp.Spec.TelemetryConfigRef.Name,
 		Namespace: vmcp.Namespace,
@@ -254,8 +254,8 @@ func GetExternalAuthConfigByName(
 	c client.Client,
 	namespace string,
 	name string,
-) (*mcpv1alpha1.MCPExternalAuthConfig, error) {
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+) (*mcpv1beta1.MCPExternalAuthConfig, error) {
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 	err := c.Get(ctx, types.NamespacedName{
 		Name:      name,
 		Namespace: namespace,

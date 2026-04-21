@@ -21,7 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -58,10 +58,10 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 				"E2E Redis session group", timeout, pollInterval)
 
 			ginkgo.By("Creating backend MCPServer")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+				Spec: mcpv1beta1.MCPServerSpec{
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
@@ -71,14 +71,14 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 
 			ginkgo.By("Waiting for backend MCPServer to be ready")
 			gomega.Eventually(func() error {
-				server := &mcpv1alpha1.MCPServer{}
+				server := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      backendName,
 					Namespace: defaultNamespace,
 				}, server); err != nil {
 					return fmt.Errorf("failed to get MCPServer: %w", err)
 				}
-				if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
+				if server.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
 					return fmt.Errorf("MCPServer not ready yet, phase: %s", server.Status.Phase)
 				}
 				return nil
@@ -88,15 +88,15 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			redisAddr := fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace)
 
 			ginkgo.By("Creating VirtualMCPServer with replicas=2 and Redis")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef:        &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-					IncomingAuth:    &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:        &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
+					IncomingAuth:    &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
 					Replicas:        &replicas,
 					SessionAffinity: "None",
-					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-						Provider:  mcpv1alpha1.SessionStorageProviderRedis,
+					SessionStorage: &mcpv1beta1.SessionStorageConfig{
+						Provider:  mcpv1beta1.SessionStorageProviderRedis,
 						Address:   redisAddr,
 						KeyPrefix: "thv:vmcp:e2e:",
 					},
@@ -113,31 +113,31 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 		})
 
 		ginkgo.AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 			})
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 			})
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
 			})
 			cleanupRedis(redisName)
 			gomega.Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, &mcpv1alpha1.VirtualMCPServer{})
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, &mcpv1beta1.VirtualMCPServer{})
 				return apierrors.IsNotFound(err)
 			}, timeout, pollInterval).Should(gomega.BeTrue())
 		})
 
 		ginkgo.It("Should set SessionStorageWarning=False when Redis is configured", func() {
 			WaitForCondition(ctx, k8sClient, vmcpName, defaultNamespace,
-				mcpv1alpha1.ConditionSessionStorageWarning, "False",
+				mcpv1beta1.ConditionSessionStorageWarning, "False",
 				timeout, pollInterval)
 		})
 
 		ginkgo.It("Should report Ready=True when Redis is configured", func() {
 			WaitForCondition(ctx, k8sClient, vmcpName, defaultNamespace,
-				mcpv1alpha1.ConditionTypeVirtualMCPServerReady, "True",
+				mcpv1beta1.ConditionTypeVirtualMCPServerReady, "True",
 				timeout, pollInterval)
 		})
 	})
@@ -169,10 +169,10 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 				"E2E Redis cross-pod session group", timeout, pollInterval)
 
 			ginkgo.By("Creating backend MCPServer")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+				Spec: mcpv1beta1.MCPServerSpec{
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
@@ -182,14 +182,14 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 
 			ginkgo.By("Waiting for backend MCPServer to be ready")
 			gomega.Eventually(func() error {
-				server := &mcpv1alpha1.MCPServer{}
+				server := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      backendName,
 					Namespace: defaultNamespace,
 				}, server); err != nil {
 					return fmt.Errorf("failed to get MCPServer: %w", err)
 				}
-				if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
+				if server.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
 					return fmt.Errorf("MCPServer not ready yet, phase: %s", server.Status.Phase)
 				}
 				return nil
@@ -199,15 +199,15 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			redisAddr := fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace)
 
 			ginkgo.By("Creating VirtualMCPServer with replicas=2 and Redis")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef:        &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-					IncomingAuth:    &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:        &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
+					IncomingAuth:    &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
 					Replicas:        &replicas,
 					SessionAffinity: "None",
-					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-						Provider:  mcpv1alpha1.SessionStorageProviderRedis,
+					SessionStorage: &mcpv1beta1.SessionStorageConfig{
+						Provider:  mcpv1beta1.SessionStorageProviderRedis,
 						Address:   redisAddr,
 						KeyPrefix: "thv:vmcp:e2e:",
 					},
@@ -224,18 +224,18 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 		})
 
 		ginkgo.AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 			})
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 			})
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
 			})
 			cleanupRedis(redisName)
 			gomega.Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, &mcpv1alpha1.VirtualMCPServer{})
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, &mcpv1beta1.VirtualMCPServer{})
 				return apierrors.IsNotFound(err)
 			}, timeout, pollInterval).Should(gomega.BeTrue())
 		})
@@ -353,10 +353,10 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 				"E2E Redis pod restart group", timeout, pollInterval)
 
 			ginkgo.By("Creating backend MCPServer")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+				Spec: mcpv1beta1.MCPServerSpec{
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
@@ -366,11 +366,11 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 
 			ginkgo.By("Waiting for backend MCPServer to be ready")
 			gomega.Eventually(func() error {
-				server := &mcpv1alpha1.MCPServer{}
+				server := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: backendName, Namespace: defaultNamespace}, server); err != nil {
 					return err
 				}
-				if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
+				if server.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
 					return fmt.Errorf("MCPServer not ready, phase: %s", server.Status.Phase)
 				}
 				return nil
@@ -380,16 +380,16 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			redisAddr := fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace)
 
 			ginkgo.By("Creating VirtualMCPServer with replicas=1, Redis, and NodePort")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef:        &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-					IncomingAuth:    &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:        &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
+					IncomingAuth:    &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
 					Replicas:        &replicas,
 					ServiceType:     "NodePort",
 					SessionAffinity: "None",
-					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-						Provider:  mcpv1alpha1.SessionStorageProviderRedis,
+					SessionStorage: &mcpv1beta1.SessionStorageConfig{
+						Provider:  mcpv1beta1.SessionStorageProviderRedis,
 						Address:   redisAddr,
 						KeyPrefix: "thv:vmcp:e2e:",
 					},
@@ -401,18 +401,18 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 		})
 
 		ginkgo.AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 			})
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 			})
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
 			})
 			cleanupRedis(redisName)
 			gomega.Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, &mcpv1alpha1.VirtualMCPServer{})
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, &mcpv1beta1.VirtualMCPServer{})
 				return apierrors.IsNotFound(err)
 			}, timeout, pollInterval).Should(gomega.BeTrue())
 		})
@@ -544,10 +544,10 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 				"E2E Redis terminated session group", timeout, pollInterval)
 
 			ginkgo.By("Creating backend MCPServer")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+				Spec: mcpv1beta1.MCPServerSpec{
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.YardstickServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
@@ -557,11 +557,11 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 
 			ginkgo.By("Waiting for backend MCPServer to be ready")
 			gomega.Eventually(func() error {
-				server := &mcpv1alpha1.MCPServer{}
+				server := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: backendName, Namespace: defaultNamespace}, server); err != nil {
 					return err
 				}
-				if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
+				if server.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
 					return fmt.Errorf("MCPServer not ready, phase: %s", server.Status.Phase)
 				}
 				return nil
@@ -571,15 +571,15 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			redisAddr := fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace)
 
 			ginkgo.By("Creating VirtualMCPServer with replicas=2, Redis, and SessionAffinity=None")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.VirtualMCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef:        &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-					IncomingAuth:    &mcpv1alpha1.IncomingAuthConfig{Type: "anonymous"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:        &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
+					IncomingAuth:    &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
 					Replicas:        &replicas,
 					SessionAffinity: "None",
-					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-						Provider:  mcpv1alpha1.SessionStorageProviderRedis,
+					SessionStorage: &mcpv1beta1.SessionStorageConfig{
+						Provider:  mcpv1beta1.SessionStorageProviderRedis,
 						Address:   redisAddr,
 						KeyPrefix: "thv:vmcp:e2e:",
 					},
@@ -596,18 +596,18 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 		})
 
 		ginkgo.AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 			})
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 			})
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
 			})
 			cleanupRedis(redisName)
 			gomega.Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, &mcpv1alpha1.VirtualMCPServer{})
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: vmcpName, Namespace: defaultNamespace}, &mcpv1beta1.VirtualMCPServer{})
 				return apierrors.IsNotFound(err)
 			}, timeout, pollInterval).Should(gomega.BeTrue())
 		})

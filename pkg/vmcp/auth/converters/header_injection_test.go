@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -30,23 +30,23 @@ func TestHeaderInjectionConverter_ConvertToStrategy(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
+		externalAuth *mcpv1beta1.MCPExternalAuthConfig
 		wantStrategy *authtypes.BackendAuthStrategy
 		wantErr      bool
 		errContains  string
 	}{
 		{
 			name: "converts header injection config to strategy",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-					HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+					HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 						HeaderName: "X-API-Key",
-						ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "api-secret",
 							Key:  "key",
 						},
@@ -63,13 +63,13 @@ func TestHeaderInjectionConverter_ConvertToStrategy(t *testing.T) {
 		},
 		{
 			name: "nil header injection config",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type:            mcpv1alpha1.ExternalAuthTypeHeaderInjection,
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type:            mcpv1beta1.ExternalAuthTypeHeaderInjection,
 					HeaderInjection: nil,
 				},
 			},
@@ -104,7 +104,7 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		externalAuth  *mcpv1alpha1.MCPExternalAuthConfig
+		externalAuth  *mcpv1beta1.MCPExternalAuthConfig
 		secret        *corev1.Secret
 		inputStrategy *authtypes.BackendAuthStrategy
 		wantStrategy  *authtypes.BackendAuthStrategy
@@ -113,16 +113,16 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 	}{
 		{
 			name: "successful secret resolution",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-					HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+					HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 						HeaderName: "X-API-Key",
-						ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "api-secret",
 							Key:  "key",
 						},
@@ -155,16 +155,16 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 		},
 		{
 			name: "missing secret",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-					HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+					HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 						HeaderName: "X-API-Key",
-						ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "missing-secret",
 							Key:  "key",
 						},
@@ -182,16 +182,16 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 		},
 		{
 			name: "missing key in secret",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-					HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+					HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 						HeaderName: "X-API-Key",
-						ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "api-secret",
 							Key:  "missing-key",
 						},
@@ -218,13 +218,13 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 		},
 		{
 			name: "nil strategy",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type:            mcpv1alpha1.ExternalAuthTypeHeaderInjection,
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type:            mcpv1beta1.ExternalAuthTypeHeaderInjection,
 					HeaderInjection: nil,
 				},
 			},
@@ -234,13 +234,13 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 		},
 		{
 			name: "nil header injection config",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type:            mcpv1alpha1.ExternalAuthTypeHeaderInjection,
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type:            mcpv1beta1.ExternalAuthTypeHeaderInjection,
 					HeaderInjection: nil,
 				},
 			},
@@ -253,14 +253,14 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 		},
 		{
 			name: "nil valueSecretRef",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-					HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+					HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 						HeaderName:     "X-API-Key",
 						ValueSecretRef: nil,
 					},
@@ -284,7 +284,7 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 			// Create fake client with scheme
 			scheme := runtime.NewScheme()
 			_ = corev1.AddToScheme(scheme)
-			_ = mcpv1alpha1.AddToScheme(scheme)
+			_ = mcpv1beta1.AddToScheme(scheme)
 
 			// Add secret if provided
 			var objects []runtime.Object

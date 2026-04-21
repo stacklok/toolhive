@@ -14,7 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
@@ -60,13 +60,13 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 			images.YardstickServerImage, timeout, pollingInterval)
 
 		By("Creating VirtualMCPServer with mixed ExcludeAll and Filter configuration")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+			Spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Aggregation: &vmcpconfig.AggregationConfig{
@@ -125,7 +125,7 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 						},
 					},
 				},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
 				ServiceType: "NodePort",
@@ -144,7 +144,7 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -153,7 +153,7 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 		_ = k8sClient.Delete(ctx, vmcpServer)
 
 		By("Cleaning up backend A MCPServer")
-		backendA := &mcpv1alpha1.MCPServer{
+		backendA := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backendAName,
 				Namespace: testNamespace,
@@ -162,7 +162,7 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 		_ = k8sClient.Delete(ctx, backendA)
 
 		By("Cleaning up backend B MCPServer")
-		backendB := &mcpv1alpha1.MCPServer{
+		backendB := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backendBName,
 				Namespace: testNamespace,
@@ -171,7 +171,7 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 		_ = k8sClient.Delete(ctx, backendB)
 
 		By("Cleaning up MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{
+		mcpGroup := &mcpv1beta1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      mcpGroupName,
 				Namespace: testNamespace,
@@ -258,7 +258,7 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 
 	Context("when verifying configuration", func() {
 		It("should have correct ExcludeAll and Filter configuration", func() {
-			var vmcpServer mcpv1alpha1.VirtualMCPServer
+			var vmcpServer mcpv1beta1.VirtualMCPServer
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,

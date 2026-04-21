@@ -5,7 +5,7 @@ Quick reference for Virtual MCP Composite Tool workflows.
 ## Basic Workflow Structure
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPCompositeToolDefinition
 metadata:
   name: my-workflow

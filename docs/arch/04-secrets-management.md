@@ -67,7 +67,7 @@ In Kubernetes/operator mode, ToolHive uses **native Kubernetes Secrets** instead
 MCPServer resources reference Kubernetes Secrets via `SecretRef`. Secrets are injected as environment variables using Kubernetes `SecretKeyRef`.
 
 **Implementation**:
-- CRD types: `cmd/thv-operator/api/v1alpha1/mcpserver_types.go`
+- CRD types: `cmd/thv-operator/api/v1beta1/mcpserver_types.go`
 - Pod builder: `cmd/thv-operator/controllers/mcpserver_podtemplatespec_builder.go`
 
 ### External Authentication Secrets
@@ -75,11 +75,11 @@ MCPServer resources reference Kubernetes Secrets via `SecretRef`. Secrets are in
 OAuth/OIDC client secrets are stored in Kubernetes Secrets and referenced using `SecretKeyRef`:
 
 1. **Token Exchange (MCPExternalAuthConfig)**: OAuth 2.0 client secrets for RFC-8693 token exchange flows
-   - **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
+   - **Implementation**: `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`
    - **Secret injection**: `cmd/thv-operator/pkg/controllerutil/tokenexchange.go`
 
 2. **OIDC Authentication (MCPOIDCConfig)**: OIDC client secrets for token introspection
-   - **CRD field**: `InlineOIDCSharedConfig.ClientSecretRef` in `cmd/thv-operator/api/v1alpha1/mcpoidcconfig_types.go`
+   - **CRD field**: `InlineOIDCSharedConfig.ClientSecretRef` in `cmd/thv-operator/api/v1beta1/mcpoidcconfig_types.go`
    - **Secret injection**: `cmd/thv-operator/pkg/controllerutil/oidc.go`
    - **Runtime loading**: `pkg/auth/token.go` (via `TOOLHIVE_OIDC_CLIENT_SECRET` environment variable)
 

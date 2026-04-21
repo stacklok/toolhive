@@ -24,7 +24,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
@@ -80,7 +80,7 @@ var _ = ginkgo.BeforeSuite(func() {
 	gomega.Expect(cfg).NotTo(gomega.BeNil())
 
 	// Register schemes
-	err = mcpv1alpha1.AddToScheme(scheme.Scheme)
+	err = mcpv1beta1.AddToScheme(scheme.Scheme)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 	err = appsv1.AddToScheme(scheme.Scheme)
@@ -132,7 +132,7 @@ func dumpK8sState(header string) {
 
 func dumpVirtualMCPServers(namespace string) {
 	ginkgo.GinkgoWriter.Println("\n--- VirtualMCPServers ---")
-	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
 	if err := k8sClient.List(ctx, vmcpList, client.InNamespace(namespace)); err != nil {
 		ginkgo.GinkgoWriter.Printf("Failed to list VirtualMCPServers: %v\n", err)
 		return
@@ -147,7 +147,7 @@ func dumpVirtualMCPServers(namespace string) {
 
 func dumpMCPServers(namespace string) {
 	ginkgo.GinkgoWriter.Println("\n--- MCPServers ---")
-	mcpList := &mcpv1alpha1.MCPServerList{}
+	mcpList := &mcpv1beta1.MCPServerList{}
 	if err := k8sClient.List(ctx, mcpList, client.InNamespace(namespace)); err != nil {
 		ginkgo.GinkgoWriter.Printf("Failed to list MCPServers: %v\n", err)
 		return

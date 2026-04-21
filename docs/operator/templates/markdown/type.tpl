@@ -42,9 +42,9 @@
 {{- define "type" -}}
 {{- $type := . -}}
 {{- if markdownShouldRenderType $type -}}
-  {{- /* Filter: only render types with +gendoc marker OR in api/v1alpha1 package */ -}}
+  {{- /* Filter: only render types with +gendoc marker OR in api/v1beta1 package */ -}}
   {{- $hasGendoc := index $type.Markers "gendoc" -}}
-  {{- $isAPIType := hasSuffix "/api/v1alpha1" $type.Package -}}
+  {{- $isAPIType := hasSuffix "/api/v1beta1" $type.Package -}}
   {{- if or $hasGendoc $isAPIType -}}
   {{- /* Extract last two path segments from package for disambiguation */ -}}
   {{- $pkgParts := splitList "/" $type.Package -}}
@@ -73,7 +73,7 @@ _Validation:_
 {{- $filteredRefs := list -}}
 {{- range $type.SortedReferences -}}
   {{- $refHasGendoc := index .Markers "gendoc" -}}
-  {{- $refIsAPIType := hasSuffix "/api/v1alpha1" .Package -}}
+  {{- $refIsAPIType := hasSuffix "/api/v1beta1" .Package -}}
   {{- if or $refHasGendoc $refIsAPIType -}}
     {{- $filteredRefs = append $filteredRefs . -}}
   {{- end -}}

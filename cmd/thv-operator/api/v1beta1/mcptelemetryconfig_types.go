@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package v1alpha1
+package v1beta1
 
 import (
 	"fmt"
@@ -137,6 +137,7 @@ type MCPTelemetryConfigStatus struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:storageversion
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=mcpotel,categories=toolhive
 // +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.spec.openTelemetry.endpoint`

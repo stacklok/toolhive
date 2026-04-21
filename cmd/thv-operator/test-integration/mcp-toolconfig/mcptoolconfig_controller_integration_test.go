@@ -15,7 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 const (
@@ -32,7 +32,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 		var (
 			namespace  string
 			configName string
-			toolConfig *mcpv1alpha1.MCPToolConfig
+			toolConfig *mcpv1beta1.MCPToolConfig
 			ns         *corev1.Namespace
 		)
 
@@ -49,12 +49,12 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			configName = testConfigName
 
 			// Create MCPToolConfig
-			toolConfig = &mcpv1alpha1.MCPToolConfig{
+			toolConfig = &mcpv1beta1.MCPToolConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      configName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPToolConfigSpec{
+				Spec: mcpv1beta1.MCPToolConfigSpec{
 					ToolsFilter: []string{"tool1", "tool2"},
 				},
 			}
@@ -68,7 +68,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 		It("should add finalizer", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -87,7 +87,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 		It("should set config hash in status", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -101,7 +101,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 		It("should set ObservedGeneration", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -115,7 +115,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 		It("should set Valid=True condition", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -137,7 +137,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 		var (
 			namespace   string
 			configName  string
-			toolConfig  *mcpv1alpha1.MCPToolConfig
+			toolConfig  *mcpv1beta1.MCPToolConfig
 			ns          *corev1.Namespace
 			initialHash string
 		)
@@ -155,12 +155,12 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			configName = testConfigName
 
 			// Create MCPToolConfig
-			toolConfig = &mcpv1alpha1.MCPToolConfig{
+			toolConfig = &mcpv1beta1.MCPToolConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      configName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPToolConfigSpec{
+				Spec: mcpv1beta1.MCPToolConfigSpec{
 					ToolsFilter: []string{"tool1", "tool2"},
 				},
 			}
@@ -168,7 +168,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 			// Wait for initial hash to be set
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -182,7 +182,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 			// Update the spec to add a third tool
 			Eventually(func() error {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -201,7 +201,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 		It("should update config hash after spec change", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -215,7 +215,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 		It("should maintain Valid=True condition after update", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -236,9 +236,9 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 		var (
 			namespace     string
 			configName    string
-			toolConfig    *mcpv1alpha1.MCPToolConfig
+			toolConfig    *mcpv1beta1.MCPToolConfig
 			mcpServerName string
-			mcpServer     *mcpv1alpha1.MCPServer
+			mcpServer     *mcpv1beta1.MCPServer
 			ns            *corev1.Namespace
 		)
 
@@ -256,12 +256,12 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			mcpServerName = testServerName
 
 			// Create MCPToolConfig
-			toolConfig = &mcpv1alpha1.MCPToolConfig{
+			toolConfig = &mcpv1beta1.MCPToolConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      configName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPToolConfigSpec{
+				Spec: mcpv1beta1.MCPToolConfigSpec{
 					ToolsFilter: []string{"tool1", "tool2"},
 				},
 			}
@@ -269,7 +269,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 			// Wait for hash to be set before creating the MCPServer
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -281,14 +281,14 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Create MCPServer with ToolConfigRef
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: testImage,
-					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 						Name: configName,
 					},
 				},
@@ -305,7 +305,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 		It("should track referencing workloads in status", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -328,7 +328,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 			// Eventually the referencing workloads list should be empty
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -345,9 +345,9 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 		var (
 			namespace     string
 			configName    string
-			toolConfig    *mcpv1alpha1.MCPToolConfig
+			toolConfig    *mcpv1beta1.MCPToolConfig
 			mcpServerName string
-			mcpServer     *mcpv1alpha1.MCPServer
+			mcpServer     *mcpv1beta1.MCPServer
 			ns            *corev1.Namespace
 		)
 
@@ -365,12 +365,12 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			mcpServerName = testServerName
 
 			// Create MCPToolConfig
-			toolConfig = &mcpv1alpha1.MCPToolConfig{
+			toolConfig = &mcpv1beta1.MCPToolConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      configName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPToolConfigSpec{
+				Spec: mcpv1beta1.MCPToolConfigSpec{
 					ToolsFilter: []string{"tool1", "tool2"},
 				},
 			}
@@ -378,7 +378,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 			// Wait for hash to be set
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -390,14 +390,14 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Create MCPServer with ToolConfigRef
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: testImage,
-					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 						Name: configName,
 					},
 				},
@@ -406,7 +406,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 			// Wait for ReferencingWorkloads to be populated
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -433,7 +433,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 			// Wait for MCPToolConfig to be fully removed
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -447,7 +447,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 		It("should not be deleted while referenced", func() {
 			// The object should still exist because the finalizer blocks deletion
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -465,7 +465,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 
 			// The MCPToolConfig should eventually be fully deleted
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPToolConfig{}
+				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,

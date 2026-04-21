@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -24,7 +24,7 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 
 	testCases := []struct {
 		name               string
-		authzConfig        *mcpv1alpha1.AuthzConfigRef
+		authzConfig        *mcpv1beta1.AuthzConfigRef
 		resourceName       string
 		expectVolumeMount  bool
 		expectVolume       bool
@@ -40,8 +40,8 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 		},
 		{
 			name: "ConfigMap type with nil ConfigMap ref",
-			authzConfig: &mcpv1alpha1.AuthzConfigRef{
-				Type:      mcpv1alpha1.AuthzConfigTypeConfigMap,
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type:      mcpv1beta1.AuthzConfigTypeConfigMap,
 				ConfigMap: nil,
 			},
 			resourceName:      "test-resource",
@@ -50,9 +50,9 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 		},
 		{
 			name: "ConfigMap type with default key",
-			authzConfig: &mcpv1alpha1.AuthzConfigRef{
-				Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-				ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+				ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 					Name: "my-authz-config",
 				},
 			},
@@ -64,9 +64,9 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 		},
 		{
 			name: "ConfigMap type with custom key",
-			authzConfig: &mcpv1alpha1.AuthzConfigRef{
-				Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-				ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+				ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 					Name: "my-authz-config",
 					Key:  "custom-authz.json",
 				},
@@ -79,8 +79,8 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 		},
 		{
 			name: "Inline type with nil inline config",
-			authzConfig: &mcpv1alpha1.AuthzConfigRef{
-				Type:   mcpv1alpha1.AuthzConfigTypeInline,
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type:   mcpv1beta1.AuthzConfigTypeInline,
 				Inline: nil,
 			},
 			resourceName:      "test-resource",
@@ -89,9 +89,9 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 		},
 		{
 			name: "Inline type with valid config",
-			authzConfig: &mcpv1alpha1.AuthzConfigRef{
-				Type: mcpv1alpha1.AuthzConfigTypeInline,
-				Inline: &mcpv1alpha1.InlineAuthzConfig{
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeInline,
+				Inline: &mcpv1beta1.InlineAuthzConfig{
 					Policies: []string{`permit(principal, action, resource);`},
 				},
 			},
@@ -103,7 +103,7 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 		},
 		{
 			name: "Unknown type returns nil",
-			authzConfig: &mcpv1alpha1.AuthzConfigRef{
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: "unknown",
 			},
 			resourceName:      "test-resource",
@@ -141,9 +141,9 @@ func TestGenerateAuthzVolumeConfigInlineConfigMapName(t *testing.T) {
 	t.Parallel()
 
 	// Test that inline config generates the correct ConfigMap name
-	authzConfig := &mcpv1alpha1.AuthzConfigRef{
-		Type: mcpv1alpha1.AuthzConfigTypeInline,
-		Inline: &mcpv1alpha1.InlineAuthzConfig{
+	authzConfig := &mcpv1beta1.AuthzConfigRef{
+		Type: mcpv1beta1.AuthzConfigTypeInline,
+		Inline: &mcpv1beta1.InlineAuthzConfig{
 			Policies: []string{`permit(principal, action, resource);`},
 		},
 	}
@@ -159,7 +159,7 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	t.Run("Nil authz config returns nil", func(t *testing.T) {
 		t.Parallel()
@@ -169,7 +169,7 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 			context.Background(),
 			client,
 			scheme,
-			&mcpv1alpha1.MCPServer{},
+			&mcpv1beta1.MCPServer{},
 			"default",
 			"test-resource",
 			nil,
@@ -182,9 +182,9 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 		t.Parallel()
 
 		client := fake.NewClientBuilder().WithScheme(scheme).Build()
-		authzConfig := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-			ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+		authzConfig := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+			ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 				Name: "my-config",
 			},
 		}
@@ -193,7 +193,7 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 			context.Background(),
 			client,
 			scheme,
-			&mcpv1alpha1.MCPServer{},
+			&mcpv1beta1.MCPServer{},
 			"default",
 			"test-resource",
 			authzConfig,
@@ -206,8 +206,8 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 		t.Parallel()
 
 		client := fake.NewClientBuilder().WithScheme(scheme).Build()
-		authzConfig := &mcpv1alpha1.AuthzConfigRef{
-			Type:   mcpv1alpha1.AuthzConfigTypeInline,
+		authzConfig := &mcpv1beta1.AuthzConfigRef{
+			Type:   mcpv1beta1.AuthzConfigTypeInline,
 			Inline: nil,
 		}
 
@@ -215,7 +215,7 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 			context.Background(),
 			client,
 			scheme,
-			&mcpv1alpha1.MCPServer{},
+			&mcpv1beta1.MCPServer{},
 			"default",
 			"test-resource",
 			authzConfig,
@@ -228,16 +228,16 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 		t.Parallel()
 
 		client := fake.NewClientBuilder().WithScheme(scheme).Build()
-		owner := &mcpv1alpha1.MCPServer{
+		owner := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-server",
 				Namespace: "default",
 				UID:       "test-uid",
 			},
 		}
-		authzConfig := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineAuthzConfig{
+		authzConfig := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeInline,
+			Inline: &mcpv1beta1.InlineAuthzConfig{
 				Policies:     []string{`permit(principal, action, resource);`},
 				EntitiesJSON: `[]`,
 			},
@@ -277,16 +277,16 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 		t.Parallel()
 
 		client := fake.NewClientBuilder().WithScheme(scheme).Build()
-		owner := &mcpv1alpha1.MCPServer{
+		owner := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-server",
 				Namespace: "default",
 				UID:       "test-uid-2",
 			},
 		}
-		authzConfig := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineAuthzConfig{
+		authzConfig := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeInline,
+			Inline: &mcpv1beta1.InlineAuthzConfig{
 				Policies: []string{`permit(principal, action, resource);`},
 				// EntitiesJSON is empty
 			},
@@ -324,7 +324,7 @@ func TestAddAuthzConfigOptions(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	t.Run("Nil authz ref returns nil", func(t *testing.T) {
 		t.Parallel()
@@ -344,9 +344,9 @@ func TestAddAuthzConfigOptions(t *testing.T) {
 	t.Run("Inline type adds config", func(t *testing.T) {
 		t.Parallel()
 
-		authzRef := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineAuthzConfig{
+		authzRef := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeInline,
+			Inline: &mcpv1beta1.InlineAuthzConfig{
 				Policies:     []string{`permit(principal, action, resource);`},
 				EntitiesJSON: `[]`,
 			},
@@ -367,8 +367,8 @@ func TestAddAuthzConfigOptions(t *testing.T) {
 	t.Run("Inline type with nil inline config returns error", func(t *testing.T) {
 		t.Parallel()
 
-		authzRef := &mcpv1alpha1.AuthzConfigRef{
-			Type:   mcpv1alpha1.AuthzConfigTypeInline,
+		authzRef := &mcpv1beta1.AuthzConfigRef{
+			Type:   mcpv1beta1.AuthzConfigTypeInline,
 			Inline: nil,
 		}
 
@@ -388,8 +388,8 @@ func TestAddAuthzConfigOptions(t *testing.T) {
 		t.Parallel()
 
 		client := fake.NewClientBuilder().WithScheme(scheme).Build()
-		authzRef := &mcpv1alpha1.AuthzConfigRef{
-			Type:      mcpv1alpha1.AuthzConfigTypeConfigMap,
+		authzRef := &mcpv1beta1.AuthzConfigRef{
+			Type:      mcpv1beta1.AuthzConfigTypeConfigMap,
 			ConfigMap: nil,
 		}
 
@@ -409,9 +409,9 @@ func TestAddAuthzConfigOptions(t *testing.T) {
 		t.Parallel()
 
 		client := fake.NewClientBuilder().WithScheme(scheme).Build()
-		authzRef := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-			ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+		authzRef := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+			ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 				Name: "",
 			},
 		}
@@ -431,9 +431,9 @@ func TestAddAuthzConfigOptions(t *testing.T) {
 	t.Run("ConfigMap type with nil client returns error", func(t *testing.T) {
 		t.Parallel()
 
-		authzRef := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-			ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+		authzRef := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+			ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 				Name: "my-config",
 			},
 		}
@@ -454,9 +454,9 @@ func TestAddAuthzConfigOptions(t *testing.T) {
 		t.Parallel()
 
 		client := fake.NewClientBuilder().WithScheme(scheme).Build()
-		authzRef := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-			ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+		authzRef := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+			ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 				Name: "non-existent",
 			},
 		}
@@ -487,9 +487,9 @@ func TestAddAuthzConfigOptions(t *testing.T) {
 		}
 		client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm).Build()
 
-		authzRef := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-			ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+		authzRef := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+			ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 				Name: "authz-config",
 			},
 		}
@@ -520,9 +520,9 @@ func TestAddAuthzConfigOptions(t *testing.T) {
 		}
 		client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm).Build()
 
-		authzRef := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-			ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+		authzRef := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+			ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 				Name: "authz-config-empty",
 			},
 		}
@@ -553,9 +553,9 @@ func TestAddAuthzConfigOptions(t *testing.T) {
 		}
 		client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm).Build()
 
-		authzRef := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-			ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+		authzRef := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+			ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 				Name: "authz-config-invalid",
 			},
 		}
@@ -594,9 +594,9 @@ func TestAddAuthzConfigOptions(t *testing.T) {
 		}
 		client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm).Build()
 
-		authzRef := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-			ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+		authzRef := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+			ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 				Name: "authz-config-valid",
 			},
 		}
@@ -635,9 +635,9 @@ func TestAddAuthzConfigOptions(t *testing.T) {
 		}
 		client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm).Build()
 
-		authzRef := &mcpv1alpha1.AuthzConfigRef{
-			Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
-			ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+		authzRef := &mcpv1beta1.AuthzConfigRef{
+			Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+			ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
 				Name: "authz-config-custom-key",
 				Key:  "custom.json",
 			},
@@ -658,7 +658,7 @@ func TestAddAuthzConfigOptions(t *testing.T) {
 	t.Run("Unknown type returns error", func(t *testing.T) {
 		t.Parallel()
 
-		authzRef := &mcpv1alpha1.AuthzConfigRef{
+		authzRef := &mcpv1beta1.AuthzConfigRef{
 			Type: "unknown",
 		}
 

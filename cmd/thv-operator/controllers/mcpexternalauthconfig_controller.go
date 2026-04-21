@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
@@ -53,7 +53,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 	logger := log.FromContext(ctx)
 
 	// Fetch the MCPExternalAuthConfig instance
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 	err := r.Get(ctx, req.NamespacedName, externalAuthConfig)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -88,7 +88,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		logger.Error(err, "MCPExternalAuthConfig spec validation failed")
 		// Update status with validation error
 		meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeValid,
+			Type:               mcpv1beta1.ConditionTypeValid,
 			Status:             metav1.ConditionFalse,
 			Reason:             "ValidationFailed",
 			Message:            err.Error(),
@@ -102,7 +102,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 
 	// Validation succeeded - set Valid=True condition
 	conditionChanged := meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeValid,
+		Type:               mcpv1beta1.ConditionTypeValid,
 		Status:             metav1.ConditionTrue,
 		Reason:             "ValidationSucceeded",
 		Message:            "Spec validation passed",
@@ -132,14 +132,14 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 }
 
 // calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities
-func (*MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPExternalAuthConfigSpec) string {
+func (*MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1beta1.MCPExternalAuthConfigSpec) string {
 	return ctrlutil.CalculateConfigHash(spec)
 }
 
 // handleConfigHashChange handles the logic when the config hash changes
 func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 	ctx context.Context,
-	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 	configHash string,
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -159,9 +159,9 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 	}
 
 	// Update the status with the list of referencing workloads
-	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(referencingServers))
+	refs := make([]mcpv1beta1.WorkloadReference, 0, len(referencingServers))
 	for _, server := range referencingServers {
-		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPServer, Name: server.Name})
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: server.Name})
 	}
 	ctrlutil.SortWorkloadRefs(refs)
 	externalAuthConfig.Status.ReferencingWorkloads = refs
@@ -195,7 +195,7 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 // handleDeletion handles the deletion of a MCPExternalAuthConfig
 func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 	ctx context.Context,
-	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -213,7 +213,7 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 				"referencingWorkloads", referencingWorkloads)
 
 			meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
-				Type:               mcpv1alpha1.ConditionTypeDeletionBlocked,
+				Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
 				Status:             metav1.ConditionTrue,
 				Reason:             "ReferencedByWorkloads",
 				Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
@@ -247,10 +247,10 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 // config "B" will be found when reconciling either config.
 func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
-	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
-) ([]mcpv1alpha1.MCPServer, error) {
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) ([]mcpv1beta1.MCPServer, error) {
 	byExtAuth, err := ctrlutil.FindReferencingMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
-		func(server *mcpv1alpha1.MCPServer) *string {
+		func(server *mcpv1beta1.MCPServer) *string {
 			if server.Spec.ExternalAuthConfigRef != nil {
 				return &server.Spec.ExternalAuthConfigRef.Name
 			}
@@ -261,7 +261,7 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 	}
 
 	byAuthServer, err := ctrlutil.FindReferencingMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
-		func(server *mcpv1alpha1.MCPServer) *string {
+		func(server *mcpv1beta1.MCPServer) *string {
 			if server.Spec.AuthServerRef != nil && server.Spec.AuthServerRef.Kind == authServerRefKindMCPExternalAuthConfig {
 				return &server.Spec.AuthServerRef.Name
 			}
@@ -273,7 +273,7 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 
 	// Merge and deduplicate
 	seen := make(map[string]struct{}, len(byExtAuth))
-	result := make([]mcpv1alpha1.MCPServer, 0, len(byExtAuth)+len(byAuthServer))
+	result := make([]mcpv1beta1.MCPServer, 0, len(byExtAuth)+len(byAuthServer))
 	for _, s := range byExtAuth {
 		seen[s.Name] = struct{}{}
 		result = append(result, s)
@@ -293,11 +293,11 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 // config "B" will be found when reconciling either config.
 func (r *MCPExternalAuthConfigReconciler) findReferencingMCPRemoteProxies(
 	ctx context.Context,
-	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
-) ([]mcpv1alpha1.MCPRemoteProxy, error) {
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) ([]mcpv1beta1.MCPRemoteProxy, error) {
 	byExtAuth, err := ctrlutil.FindReferencingMCPRemoteProxies(
 		ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
-		func(proxy *mcpv1alpha1.MCPRemoteProxy) *string {
+		func(proxy *mcpv1beta1.MCPRemoteProxy) *string {
 			if proxy.Spec.ExternalAuthConfigRef != nil {
 				return &proxy.Spec.ExternalAuthConfigRef.Name
 			}
@@ -309,7 +309,7 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPRemoteProxies(
 
 	byAuthServer, err := ctrlutil.FindReferencingMCPRemoteProxies(
 		ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
-		func(proxy *mcpv1alpha1.MCPRemoteProxy) *string {
+		func(proxy *mcpv1beta1.MCPRemoteProxy) *string {
 			if proxy.Spec.AuthServerRef != nil && proxy.Spec.AuthServerRef.Kind == authServerRefKindMCPExternalAuthConfig {
 				return &proxy.Spec.AuthServerRef.Name
 			}
@@ -321,7 +321,7 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPRemoteProxies(
 
 	// Merge and deduplicate
 	seen := make(map[string]struct{}, len(byExtAuth))
-	result := make([]mcpv1alpha1.MCPRemoteProxy, 0, len(byExtAuth)+len(byAuthServer))
+	result := make([]mcpv1beta1.MCPRemoteProxy, 0, len(byExtAuth)+len(byAuthServer))
 	for _, p := range byExtAuth {
 		seen[p.Name] = struct{}{}
 		result = append(result, p)
@@ -339,15 +339,15 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPRemoteProxies(
 // It queries separately for each ref field and merges the results, so both fields are always checked.
 func (r *MCPExternalAuthConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
-	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
-) ([]mcpv1alpha1.WorkloadReference, error) {
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) ([]mcpv1beta1.WorkloadReference, error) {
 	servers, err := r.findReferencingMCPServers(ctx, externalAuthConfig)
 	if err != nil {
 		return nil, err
 	}
-	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(servers))
+	refs := make([]mcpv1beta1.WorkloadReference, 0, len(servers))
 	for _, server := range servers {
-		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPServer, Name: server.Name})
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: server.Name})
 	}
 
 	proxies, err := r.findReferencingMCPRemoteProxies(ctx, externalAuthConfig)
@@ -355,7 +355,7 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingWorkloads(
 		return nil, err
 	}
 	for _, proxy := range proxies {
-		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxy.Name})
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxy.Name})
 	}
 
 	ctrlutil.SortWorkloadRefs(refs)
@@ -366,13 +366,13 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingWorkloads(
 // Watches MCPServer and MCPRemoteProxy changes to maintain accurate ReferencingWorkloads status.
 func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&mcpv1alpha1.MCPExternalAuthConfig{}).
+		For(&mcpv1beta1.MCPExternalAuthConfig{}).
 		Watches(
-			&mcpv1alpha1.MCPServer{},
+			&mcpv1beta1.MCPServer{},
 			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToExternalAuthConfig),
 		).
 		Watches(
-			&mcpv1alpha1.MCPRemoteProxy{},
+			&mcpv1beta1.MCPRemoteProxy{},
 			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToExternalAuthConfig),
 		).
 		Complete(r)
@@ -384,7 +384,7 @@ func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) err
 func (r *MCPExternalAuthConfigReconciler) mapMCPServerToExternalAuthConfig(
 	ctx context.Context, obj client.Object,
 ) []reconcile.Request {
-	server, ok := obj.(*mcpv1alpha1.MCPServer)
+	server, ok := obj.(*mcpv1beta1.MCPServer)
 	if !ok {
 		return nil
 	}
@@ -416,7 +416,7 @@ func (r *MCPExternalAuthConfigReconciler) mapMCPServerToExternalAuthConfig(
 
 	// Also enqueue any MCPExternalAuthConfig that still lists this server in
 	// ReferencingWorkloads — handles ref-removal and server-deletion cases.
-	extAuthConfigList := &mcpv1alpha1.MCPExternalAuthConfigList{}
+	extAuthConfigList := &mcpv1beta1.MCPExternalAuthConfigList{}
 	if err := r.List(ctx, extAuthConfigList, client.InNamespace(server.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list MCPExternalAuthConfigs for MCPServer watch")
 		return requests
@@ -427,7 +427,7 @@ func (r *MCPExternalAuthConfigReconciler) mapMCPServerToExternalAuthConfig(
 			continue
 		}
 		for _, ref := range cfg.Status.ReferencingWorkloads {
-			if ref.Kind == mcpv1alpha1.WorkloadKindMCPServer && ref.Name == server.Name {
+			if ref.Kind == mcpv1beta1.WorkloadKindMCPServer && ref.Name == server.Name {
 				requests = append(requests, reconcile.Request{NamespacedName: nn})
 				break
 			}
@@ -443,7 +443,7 @@ func (r *MCPExternalAuthConfigReconciler) mapMCPServerToExternalAuthConfig(
 func (r *MCPExternalAuthConfigReconciler) mapMCPRemoteProxyToExternalAuthConfig(
 	ctx context.Context, obj client.Object,
 ) []reconcile.Request {
-	proxy, ok := obj.(*mcpv1alpha1.MCPRemoteProxy)
+	proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
 	if !ok {
 		return nil
 	}
@@ -475,7 +475,7 @@ func (r *MCPExternalAuthConfigReconciler) mapMCPRemoteProxyToExternalAuthConfig(
 
 	// Also enqueue any MCPExternalAuthConfig that still lists this proxy in
 	// ReferencingWorkloads — handles ref-removal and proxy-deletion cases.
-	extAuthConfigList := &mcpv1alpha1.MCPExternalAuthConfigList{}
+	extAuthConfigList := &mcpv1beta1.MCPExternalAuthConfigList{}
 	if err := r.List(ctx, extAuthConfigList, client.InNamespace(proxy.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list MCPExternalAuthConfigs for MCPRemoteProxy watch")
 		return requests
@@ -486,7 +486,7 @@ func (r *MCPExternalAuthConfigReconciler) mapMCPRemoteProxyToExternalAuthConfig(
 			continue
 		}
 		for _, ref := range cfg.Status.ReferencingWorkloads {
-			if ref.Kind == mcpv1alpha1.WorkloadKindMCPRemoteProxy && ref.Name == proxy.Name {
+			if ref.Kind == mcpv1beta1.WorkloadKindMCPRemoteProxy && ref.Name == proxy.Name {
 				requests = append(requests, reconcile.Request{NamespacedName: nn})
 				break
 			}
@@ -499,7 +499,7 @@ func (r *MCPExternalAuthConfigReconciler) mapMCPRemoteProxyToExternalAuthConfig(
 // updateReferencingWorkloads finds referencing workloads and updates the status if the list changed
 func (r *MCPExternalAuthConfigReconciler) updateReferencingWorkloads(
 	ctx context.Context,
-	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (ctrl.Result, error) {
 	refs, err := r.findReferencingWorkloads(ctx, externalAuthConfig)
 	if err != nil {
@@ -525,15 +525,15 @@ func (r *MCPExternalAuthConfigReconciler) updateReferencingWorkloads(
 func GetExternalAuthConfigForMCPServer(
 	ctx context.Context,
 	c client.Client,
-	mcpServer *mcpv1alpha1.MCPServer,
-) (*mcpv1alpha1.MCPExternalAuthConfig, error) {
+	mcpServer *mcpv1beta1.MCPServer,
+) (*mcpv1beta1.MCPExternalAuthConfig, error) {
 	if mcpServer.Spec.ExternalAuthConfigRef == nil {
 		// We throw an error because in this case you assume there is a ExternalAuthConfig
 		// but there isn't one referenced.
 		return nil, fmt.Errorf("MCPServer %s does not reference a MCPExternalAuthConfig", mcpServer.Name)
 	}
 
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 	err := c.Get(ctx, types.NamespacedName{
 		Name:      mcpServer.Spec.ExternalAuthConfigRef.Name,
 		Namespace: mcpServer.Namespace, // Same namespace as MCPServer

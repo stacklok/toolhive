@@ -13,7 +13,7 @@
 # This example uses auth mode "anonymous" for development/testing.
 # For production, use "oauth" mode (see mcpregistry-configyaml-oauth.yaml).
 
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: minimal-configyaml

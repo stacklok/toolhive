@@ -13,13 +13,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // BuildResourceRequirements builds Kubernetes resource requirements from CRD spec
 // Shared between MCPServer and MCPRemoteProxy
-func BuildResourceRequirements(resourceSpec mcpv1alpha1.ResourceRequirements) corev1.ResourceRequirements {
+func BuildResourceRequirements(resourceSpec mcpv1beta1.ResourceRequirements) corev1.ResourceRequirements {
 	resources := corev1.ResourceRequirements{}
 
 	if resourceSpec.Limits.CPU != "" || resourceSpec.Limits.Memory != "" {

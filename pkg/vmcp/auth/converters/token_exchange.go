@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -27,7 +27,7 @@ func (*TokenExchangeConverter) StrategyType() string {
 // ConvertToStrategy converts TokenExchangeConfig to a BackendAuthStrategy with typed fields.
 // Secret references are represented as environment variable names that will be resolved by ResolveSecrets.
 func (*TokenExchangeConverter) ConvertToStrategy(
-	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuth *mcpv1beta1.MCPExternalAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
 	tokenExchange := externalAuth.Spec.TokenExchange
 	if tokenExchange == nil {
@@ -80,7 +80,7 @@ func (*TokenExchangeConverter) ConvertToStrategy(
 // If ClientSecretEnv is not set, the strategy is returned unchanged.
 func (*TokenExchangeConverter) ResolveSecrets(
 	ctx context.Context,
-	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuth *mcpv1beta1.MCPExternalAuthConfig,
 	k8sClient client.Client,
 	namespace string,
 	strategy *authtypes.BackendAuthStrategy,

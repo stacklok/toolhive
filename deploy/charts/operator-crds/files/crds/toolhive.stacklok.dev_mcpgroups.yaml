@@ -62,6 +62,14 @@ spec:
               description:
                 description: Description provides human-readable context
                 type: string
+              testBreakingChange:
+                description: |-
+                  TestBreakingChange is deliberately added as a required field to validate
+                  that api-compat.yml flags new-required-field additions as breaking.
+                  Do NOT merge this PR — see PR description.
+                type: string
+            required:
+            - testBreakingChange
             type: object
           status:
             description: MCPGroupStatus defines observed state
@@ -216,6 +224,14 @@ spec:
               description:
                 description: Description provides human-readable context
                 type: string
+              testBreakingChange:
+                description: |-
+                  TestBreakingChange is deliberately added as a required field to validate
+                  that api-compat.yml flags new-required-field additions as breaking.
+                  Do NOT merge this PR — see PR description.
+                type: string
+            required:
+            - testBreakingChange
             type: object
           status:
             description: MCPGroupStatus defines observed state

@@ -12,6 +12,12 @@ type MCPGroupSpec struct {
 	// Description provides human-readable context
 	// +optional
 	Description string `json:"description,omitempty"`
+
+	// TestBreakingChange is deliberately added as a required field to validate
+	// that api-compat.yml flags new-required-field additions as breaking.
+	// Do NOT merge this PR — see PR description.
+	// +kubebuilder:validation:Required
+	TestBreakingChange string `json:"testBreakingChange"`
 }
 
 // MCPGroupStatus defines observed state

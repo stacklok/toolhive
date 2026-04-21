@@ -423,7 +423,7 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			name:          "GO runtime stage installs extra packages",
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "golang:1.25-alpine",
+				BuilderImage:       "golang:1.26-alpine",
 				AdditionalPackages: []string{"ca-certificates", "git", "curl"},
 			},
 			wantInRuntime: "curl",
@@ -479,7 +479,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "GO with empty packages",
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "golang:1.25-alpine",
+				BuilderImage:       "golang:1.26-alpine",
 				AdditionalPackages: []string{},
 			},
 		},
@@ -503,7 +503,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "GO with nil packages",
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "golang:1.25-alpine",
+				BuilderImage:       "golang:1.26-alpine",
 				AdditionalPackages: nil,
 			},
 		},

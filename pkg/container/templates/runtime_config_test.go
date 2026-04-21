@@ -23,7 +23,7 @@ func TestGetDefaultRuntimeConfig(t *testing.T) {
 		{
 			name:          "Go default config",
 			transportType: TransportTypeGO,
-			wantImage:     "golang:1.25-alpine",
+			wantImage:     "golang:1.26-alpine",
 			wantPackages:  []string{"ca-certificates", "git"},
 		},
 		{
@@ -136,7 +136,7 @@ func TestGetDockerfileTemplateUsesDefaultWhenNil(t *testing.T) {
 	}
 
 	// Should use default Go version
-	if !strings.Contains(result, "FROM golang:1.25-alpine AS builder") {
+	if !strings.Contains(result, "FROM golang:1.26-alpine AS builder") {
 		t.Error("Dockerfile does not contain default Go version")
 	}
 }
@@ -162,7 +162,7 @@ func TestRuntimeConfigValidate_ValidPackageNames(t *testing.T) {
 			t.Parallel()
 
 			rc := &RuntimeConfig{
-				BuilderImage:       "golang:1.25-alpine",
+				BuilderImage:       "golang:1.26-alpine",
 				AdditionalPackages: []string{pkg},
 			}
 			assert.NoError(t, rc.Validate())
@@ -198,7 +198,7 @@ func TestRuntimeConfigValidate_InvalidPackageNames(t *testing.T) {
 			t.Parallel()
 
 			rc := &RuntimeConfig{
-				BuilderImage:       "golang:1.25-alpine",
+				BuilderImage:       "golang:1.26-alpine",
 				AdditionalPackages: []string{tt.pkg},
 			}
 			err := rc.Validate()

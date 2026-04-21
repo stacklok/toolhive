@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"gopkg.in/yaml.v3"
@@ -24,7 +25,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e"
-	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
 // modifyVMCPConfig reads a vMCP YAML config file, calls fn to mutate it, then
@@ -50,241 +50,251 @@ func modifyVMCPConfig(path string, fn func(*vmcpconfig.Config)) error {
 	return nil
 }
 
-// startYardstick runs a yardstick backend in the given group and waits for it
-// to be ready. Yardstick exposes an "echo" tool over streamable-http on port 8080.
-func startYardstick(config *e2e.TestConfig, groupName, backendName string) {
-	e2e.NewTHVCommand(config,
-		"run", images.YardstickServerImage,
-		"--name", backendName,
-		"--group", groupName,
-		"--transport", "streamable-http",
-		"--target-port", "8080",
-		"--env", "TRANSPORT=streamable-http",
-	).ExpectSuccess()
-	err := e2e.WaitForMCPServer(config, backendName, 120*time.Second)
-	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("yardstick backend %q should become running", backendName))
+// singleBackendFixture holds shared state for feature contexts that use one
+// yardstick backend. Call setup in BeforeEach and teardown in AfterEach.
+type singleBackendFixture struct {
+	cfg         *e2e.TestConfig
+	groupName   string
+	backendName string
+	vMCPCmd     *exec.Cmd
+	vMCPPort    int
+	tmpDir      string // empty when withTmpDir is false
 }
 
-// initVMCPConfig generates a starter YAML config for the given group into path
-// using `thv vmcp init`.
-func initVMCPConfig(config *e2e.TestConfig, groupName, path string) {
-	e2e.NewTHVCommand(config,
-		"vmcp", "init",
-		"--group", groupName,
-		"--config", path,
-	).ExpectSuccess()
+func (f *singleBackendFixture) setup(groupPrefix, backendPrefix, tmpDirPattern string) {
+	f.cfg = e2e.NewTestConfig()
+	f.groupName = e2e.GenerateUniqueServerName(groupPrefix)
+	f.backendName = e2e.GenerateUniqueServerName(backendPrefix)
+	f.vMCPPort = allocateVMCPPort()
+
+	if tmpDirPattern != "" {
+		var err error
+		f.tmpDir, err = os.MkdirTemp("", tmpDirPattern)
+		Expect(err).ToNot(HaveOccurred())
+		DeferCleanup(func() { _ = os.RemoveAll(f.tmpDir) })
+	}
+
+	Expect(e2e.CheckTHVBinaryAvailable(f.cfg)).To(Succeed())
+
+	e2e.NewTHVCommand(f.cfg, "group", "create", f.groupName).ExpectSuccess()
+	startYardstick(f.cfg, f.groupName, f.backendName)
+}
+
+func (f *singleBackendFixture) teardown() {
+	stopVMCPProcess(f.vMCPCmd)
+	if f.cfg.CleanupAfter {
+		if err := e2e.StopAndRemoveMCPServer(f.cfg, f.backendName); err != nil {
+			GinkgoWriter.Printf("cleanup: StopAndRemoveMCPServer(%s) failed: %v\n", f.backendName, err)
+		}
+		if err := e2e.RemoveGroup(f.cfg, f.groupName); err != nil {
+			GinkgoWriter.Printf("cleanup: RemoveGroup(%s) failed: %v\n", f.groupName, err)
+		}
+	}
+}
+
+// twoBackendFixture holds shared state for feature contexts that use two
+// yardstick backends.
+//
+// Backend lifecycle (group + containers) is separated from per-test state
+// (vMCP port, process, tmpDir) so that multiple test contexts can share the
+// same running backends via BeforeAll/AfterAll while each test still gets its
+// own vMCP serve process.
+type twoBackendFixture struct {
+	cfg          *e2e.TestConfig
+	groupName    string
+	backendAName string
+	backendBName string
+	vMCPCmd      *exec.Cmd
+	vMCPPort     int
+	tmpDir       string
+}
+
+// setupBackends starts the group and both yardstick containers. Call once in
+// BeforeAll when sharing backends across multiple tests.
+func (f *twoBackendFixture) setupBackends(groupPrefix string) {
+	f.cfg = e2e.NewTestConfig()
+	f.groupName = e2e.GenerateUniqueServerName(groupPrefix)
+	f.backendAName = e2e.GenerateUniqueServerName("yardstick-a")
+	f.backendBName = e2e.GenerateUniqueServerName("yardstick-b")
+
+	Expect(e2e.CheckTHVBinaryAvailable(f.cfg)).To(Succeed())
+
+	By("creating group and two yardstick backends")
+	e2e.NewTHVCommand(f.cfg, "group", "create", f.groupName).ExpectSuccess()
+	// Use different ports so both containers can bind successfully.
+	// yardstick does not honour MCP_PORT; its listening port must be set
+	// explicitly via the -port flag and matched by --target-port.
+	startYardstickOnPort(f.cfg, f.groupName, f.backendAName, 8080)
+	startYardstickOnPort(f.cfg, f.groupName, f.backendBName, 8081)
+}
+
+// teardownBackends stops and removes the group and both backends. Call in
+// AfterAll to match setupBackends.
+func (f *twoBackendFixture) teardownBackends() {
+	if f.cfg.CleanupAfter {
+		if err := e2e.StopAndRemoveMCPServer(f.cfg, f.backendAName); err != nil {
+			GinkgoWriter.Printf("cleanup: StopAndRemoveMCPServer(%s) failed: %v\n", f.backendAName, err)
+		}
+		if err := e2e.StopAndRemoveMCPServer(f.cfg, f.backendBName); err != nil {
+			GinkgoWriter.Printf("cleanup: StopAndRemoveMCPServer(%s) failed: %v\n", f.backendBName, err)
+		}
+		if err := e2e.RemoveGroup(f.cfg, f.groupName); err != nil {
+			GinkgoWriter.Printf("cleanup: RemoveGroup(%s) failed: %v\n", f.groupName, err)
+		}
+	}
+}
+
+// setupPerTest allocates a fresh port and tmpDir for one test. Call in
+// BeforeEach when backends are already running.
+func (f *twoBackendFixture) setupPerTest(tmpDirPattern string) {
+	f.vMCPPort = allocateVMCPPort()
+	var err error
+	f.tmpDir, err = os.MkdirTemp("", tmpDirPattern)
+	Expect(err).ToNot(HaveOccurred())
+	DeferCleanup(func() { _ = os.RemoveAll(f.tmpDir) })
+}
+
+// teardownPerTest stops the vMCP serve process. Call in AfterEach.
+func (f *twoBackendFixture) teardownPerTest() {
+	stopVMCPProcess(f.vMCPCmd)
+	f.vMCPCmd = nil
 }
 
 var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 
 	// -------------------------------------------------------------------------
-	// Context 1: Conflict resolution — prefix strategy
-	// Two identical yardstick backends expose the same tool names. With prefix
-	// strategy enabled, both sets of tools appear with backend-name prefixes.
+	// Contexts 1 & 2: Two-backend scenarios.
+	// Both tests share the same group and yardstick containers (started once
+	// in BeforeAll) to avoid paying the container-startup cost twice.
+	// Each test still gets its own vMCP port, process, and tmpDir.
 	// -------------------------------------------------------------------------
-	Context("conflict resolution (prefix strategy)", func() {
-		var (
-			cfg          *e2e.TestConfig
-			groupName    string
-			backendAName string
-			backendBName string
-			vMCPCmd      *exec.Cmd
-			vMCPPort     int
-			tmpDir       string
-		)
+	Describe("two-backend scenarios", Ordered, func() {
+		var fx twoBackendFixture
 
-		BeforeEach(func() {
-			cfg = e2e.NewTestConfig()
-			groupName = e2e.GenerateUniqueServerName("vmcp-feat-conflict")
-			backendAName = e2e.GenerateUniqueServerName("yardstick-a")
-			backendBName = e2e.GenerateUniqueServerName("yardstick-b")
-			vMCPPort = allocateVMCPPort()
-			var err error
-			tmpDir, err = os.MkdirTemp("", "vmcp-feat-conflict-*")
-			Expect(err).ToNot(HaveOccurred())
-			DeferCleanup(func() { _ = os.RemoveAll(tmpDir) })
+		BeforeAll(func() { fx.setupBackends("vmcp-feat-shared") })
+		AfterAll(func() { fx.teardownBackends() })
 
-			Expect(e2e.CheckTHVBinaryAvailable(cfg)).To(Succeed())
+		// Context 1: Conflict resolution — prefix strategy
+		// Two identical yardstick backends expose the same tool names. With prefix
+		// strategy enabled, both sets of tools appear with backend-name prefixes.
+		Context("conflict resolution (prefix strategy)", func() {
+			BeforeEach(func() { fx.setupPerTest("vmcp-feat-conflict-*") })
+			AfterEach(func() { fx.teardownPerTest() })
 
-			By("creating group and two yardstick backends")
-			e2e.NewTHVCommand(cfg, "group", "create", groupName).ExpectSuccess()
-			startYardstick(cfg, groupName, backendAName)
-			startYardstick(cfg, groupName, backendBName)
+			It("prefixes tool names with backend names so both echo tools are visible", func() {
+				configPath := filepath.Join(fx.tmpDir, "vmcp.yaml")
+				initVMCPConfig(fx.cfg, fx.groupName, configPath)
+
+				Expect(modifyVMCPConfig(configPath, func(c *vmcpconfig.Config) {
+					if c.Aggregation == nil {
+						c.Aggregation = &vmcpconfig.AggregationConfig{}
+					}
+					c.Aggregation.ConflictResolution = vmcp.ConflictStrategyPrefix
+					c.Aggregation.ConflictResolutionConfig = &vmcpconfig.ConflictResolutionConfig{
+						PrefixFormat: "{workload}_",
+					}
+				})).To(Succeed())
+
+				By("starting vMCP serve with prefix config")
+				fx.vMCPCmd = e2e.StartLongRunningTHVCommand(fx.cfg,
+					"vmcp", "serve",
+					"--config", configPath,
+					"--port", fmt.Sprintf("%d", fx.vMCPPort),
+				)
+				vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", fx.vMCPPort)
+				Expect(e2e.WaitForMCPServerReady(fx.cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
+
+				By("listing tools and verifying prefix strategy")
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				mcpClient, err := e2e.NewMCPClientForStreamableHTTP(fx.cfg, vMCPURL)
+				Expect(err).ToNot(HaveOccurred())
+				defer func() { _ = mcpClient.Close() }()
+				Expect(mcpClient.Initialize(ctx)).To(Succeed())
+
+				tools, err := mcpClient.ListTools(ctx)
+				Expect(err).ToNot(HaveOccurred())
+
+				var echoTools []string
+				for _, t := range tools.Tools {
+					if strings.Contains(t.Name, "echo") {
+						echoTools = append(echoTools, t.Name)
+					}
+				}
+				By(fmt.Sprintf("found echo tools: %v", echoTools))
+				Expect(echoTools).To(HaveLen(2), "prefix strategy should expose one echo tool per backend")
+
+				hasA := false
+				hasB := false
+				for _, name := range echoTools {
+					if strings.HasPrefix(name, fx.backendAName+"_") {
+						hasA = true
+					}
+					if strings.HasPrefix(name, fx.backendBName+"_") {
+						hasB = true
+					}
+				}
+				Expect(hasA).To(BeTrue(), fmt.Sprintf("expected echo tool prefixed with %s_", fx.backendAName))
+				Expect(hasB).To(BeTrue(), fmt.Sprintf("expected echo tool prefixed with %s_", fx.backendBName))
+			})
 		})
 
-		AfterEach(func() {
-			stopVMCPProcess(vMCPCmd)
-			if cfg.CleanupAfter {
-				if err := e2e.StopAndRemoveMCPServer(cfg, backendAName); err != nil {
-					GinkgoWriter.Printf("cleanup: StopAndRemoveMCPServer(%s) failed: %v\n", backendAName, err)
+		// Context 2: Tool filtering — per-workload allow-list + ExcludeAll
+		// backendA exposes only "echo"; backendB is completely hidden.
+		Context("tool filtering (per-workload filter + ExcludeAll)", func() {
+			BeforeEach(func() { fx.setupPerTest("vmcp-feat-filter-*") })
+			AfterEach(func() { fx.teardownPerTest() })
+
+			It("only exposes the filtered tool from backendA; backendB tools are hidden", func() {
+				configPath := filepath.Join(fx.tmpDir, "vmcp.yaml")
+				initVMCPConfig(fx.cfg, fx.groupName, configPath)
+
+				Expect(modifyVMCPConfig(configPath, func(c *vmcpconfig.Config) {
+					if c.Aggregation == nil {
+						c.Aggregation = &vmcpconfig.AggregationConfig{}
+					}
+					// ConflictResolution is required by the aggregation validator even when
+					// per-workload filters are the focus of the test.
+					c.Aggregation.ConflictResolution = vmcp.ConflictStrategyPrefix
+					c.Aggregation.ConflictResolutionConfig = &vmcpconfig.ConflictResolutionConfig{
+						PrefixFormat: "{workload}_",
+					}
+					c.Aggregation.Tools = []*vmcpconfig.WorkloadToolConfig{
+						{Workload: fx.backendAName, Filter: []string{"echo"}},
+						{Workload: fx.backendBName, ExcludeAll: true},
+					}
+				})).To(Succeed())
+
+				By("starting vMCP serve with filter config")
+				fx.vMCPCmd = e2e.StartLongRunningTHVCommand(fx.cfg,
+					"vmcp", "serve",
+					"--config", configPath,
+					"--port", fmt.Sprintf("%d", fx.vMCPPort),
+				)
+				vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", fx.vMCPPort)
+				Expect(e2e.WaitForMCPServerReady(fx.cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
+
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				mcpClient, err := e2e.NewMCPClientForStreamableHTTP(fx.cfg, vMCPURL)
+				Expect(err).ToNot(HaveOccurred())
+				defer func() { _ = mcpClient.Close() }()
+				Expect(mcpClient.Initialize(ctx)).To(Succeed())
+
+				tools, err := mcpClient.ListTools(ctx)
+				Expect(err).ToNot(HaveOccurred())
+
+				By(fmt.Sprintf("verifying tool visibility; got %d tools", len(tools.Tools)))
+				var echoCount int
+				for _, t := range tools.Tools {
+					Expect(t.Name).ToNot(ContainSubstring(fx.backendBName),
+						"backendB tools must be hidden via ExcludeAll")
+					if strings.Contains(t.Name, "echo") {
+						echoCount++
+					}
 				}
-				if err := e2e.StopAndRemoveMCPServer(cfg, backendBName); err != nil {
-					GinkgoWriter.Printf("cleanup: StopAndRemoveMCPServer(%s) failed: %v\n", backendBName, err)
-				}
-				if err := e2e.RemoveGroup(cfg, groupName); err != nil {
-					GinkgoWriter.Printf("cleanup: RemoveGroup(%s) failed: %v\n", groupName, err)
-				}
-			}
-		})
-
-		It("prefixes tool names with backend names so both echo tools are visible", func() {
-			configPath := filepath.Join(tmpDir, "vmcp.yaml")
-			initVMCPConfig(cfg, groupName, configPath)
-
-			Expect(modifyVMCPConfig(configPath, func(c *vmcpconfig.Config) {
-				if c.Aggregation == nil {
-					c.Aggregation = &vmcpconfig.AggregationConfig{}
-				}
-				c.Aggregation.ConflictResolution = vmcp.ConflictStrategyPrefix
-				c.Aggregation.ConflictResolutionConfig = &vmcpconfig.ConflictResolutionConfig{
-					PrefixFormat: "{workload}_",
-				}
-			})).To(Succeed())
-
-			By("starting vMCP serve with prefix config")
-			vMCPCmd = e2e.StartLongRunningTHVCommand(cfg,
-				"vmcp", "serve",
-				"--config", configPath,
-				"--port", fmt.Sprintf("%d", vMCPPort),
-			)
-			DeferCleanup(func() { stopVMCPProcess(vMCPCmd) })
-
-			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", vMCPPort)
-			Expect(e2e.WaitForMCPServerReady(cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
-
-			By("listing tools and verifying prefix strategy")
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			mcpClient, err := e2e.NewMCPClientForStreamableHTTP(cfg, vMCPURL)
-			Expect(err).ToNot(HaveOccurred())
-			defer func() { _ = mcpClient.Close() }()
-			Expect(mcpClient.Initialize(ctx)).To(Succeed())
-
-			tools, err := mcpClient.ListTools(ctx)
-			Expect(err).ToNot(HaveOccurred())
-
-			var echoTools []string
-			for _, t := range tools.Tools {
-				if strings.Contains(t.Name, "echo") {
-					echoTools = append(echoTools, t.Name)
-				}
-			}
-			By(fmt.Sprintf("found echo tools: %v", echoTools))
-			Expect(echoTools).To(HaveLen(2), "prefix strategy should expose one echo tool per backend")
-
-			hasA := false
-			hasB := false
-			for _, name := range echoTools {
-				if strings.HasPrefix(name, backendAName+"_") {
-					hasA = true
-				}
-				if strings.HasPrefix(name, backendBName+"_") {
-					hasB = true
-				}
-			}
-			Expect(hasA).To(BeTrue(), fmt.Sprintf("expected echo tool prefixed with %s_", backendAName))
-			Expect(hasB).To(BeTrue(), fmt.Sprintf("expected echo tool prefixed with %s_", backendBName))
-		})
-	})
-
-	// -------------------------------------------------------------------------
-	// Context 2: Tool filtering — per-workload allow-list + ExcludeAll
-	// backendA exposes only "echo"; backendB is completely hidden.
-	// -------------------------------------------------------------------------
-	Context("tool filtering (per-workload filter + ExcludeAll)", func() {
-		var (
-			cfg          *e2e.TestConfig
-			groupName    string
-			backendAName string
-			backendBName string
-			vMCPCmd      *exec.Cmd
-			vMCPPort     int
-			tmpDir       string
-		)
-
-		BeforeEach(func() {
-			cfg = e2e.NewTestConfig()
-			groupName = e2e.GenerateUniqueServerName("vmcp-feat-filter")
-			backendAName = e2e.GenerateUniqueServerName("yardstick-a")
-			backendBName = e2e.GenerateUniqueServerName("yardstick-b")
-			vMCPPort = allocateVMCPPort()
-			var err error
-			tmpDir, err = os.MkdirTemp("", "vmcp-feat-filter-*")
-			Expect(err).ToNot(HaveOccurred())
-			DeferCleanup(func() { _ = os.RemoveAll(tmpDir) })
-
-			Expect(e2e.CheckTHVBinaryAvailable(cfg)).To(Succeed())
-
-			By("creating group and two yardstick backends")
-			e2e.NewTHVCommand(cfg, "group", "create", groupName).ExpectSuccess()
-			startYardstick(cfg, groupName, backendAName)
-			startYardstick(cfg, groupName, backendBName)
-		})
-
-		AfterEach(func() {
-			stopVMCPProcess(vMCPCmd)
-			if cfg.CleanupAfter {
-				if err := e2e.StopAndRemoveMCPServer(cfg, backendAName); err != nil {
-					GinkgoWriter.Printf("cleanup: StopAndRemoveMCPServer(%s) failed: %v\n", backendAName, err)
-				}
-				if err := e2e.StopAndRemoveMCPServer(cfg, backendBName); err != nil {
-					GinkgoWriter.Printf("cleanup: StopAndRemoveMCPServer(%s) failed: %v\n", backendBName, err)
-				}
-				if err := e2e.RemoveGroup(cfg, groupName); err != nil {
-					GinkgoWriter.Printf("cleanup: RemoveGroup(%s) failed: %v\n", groupName, err)
-				}
-			}
-		})
-
-		It("only exposes the filtered tool from backendA; backendB tools are hidden", func() {
-			configPath := filepath.Join(tmpDir, "vmcp.yaml")
-			initVMCPConfig(cfg, groupName, configPath)
-
-			Expect(modifyVMCPConfig(configPath, func(c *vmcpconfig.Config) {
-				if c.Aggregation == nil {
-					c.Aggregation = &vmcpconfig.AggregationConfig{}
-				}
-				c.Aggregation.ConflictResolution = vmcp.ConflictStrategyPrefix
-				c.Aggregation.ConflictResolutionConfig = &vmcpconfig.ConflictResolutionConfig{
-					PrefixFormat: "{workload}_",
-				}
-				c.Aggregation.Tools = []*vmcpconfig.WorkloadToolConfig{
-					{Workload: backendAName, Filter: []string{"echo"}},
-					{Workload: backendBName, ExcludeAll: true},
-				}
-			})).To(Succeed())
-
-			By("starting vMCP serve with filter config")
-			vMCPCmd = e2e.StartLongRunningTHVCommand(cfg,
-				"vmcp", "serve",
-				"--config", configPath,
-				"--port", fmt.Sprintf("%d", vMCPPort),
-			)
-			DeferCleanup(func() { stopVMCPProcess(vMCPCmd) })
-
-			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", vMCPPort)
-			Expect(e2e.WaitForMCPServerReady(cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
-
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			mcpClient, err := e2e.NewMCPClientForStreamableHTTP(cfg, vMCPURL)
-			Expect(err).ToNot(HaveOccurred())
-			defer func() { _ = mcpClient.Close() }()
-			Expect(mcpClient.Initialize(ctx)).To(Succeed())
-
-			tools, err := mcpClient.ListTools(ctx)
-			Expect(err).ToNot(HaveOccurred())
-
-			By(fmt.Sprintf("verifying tool visibility; got %d tools", len(tools.Tools)))
-			var echoCount int
-			for _, t := range tools.Tools {
-				Expect(t.Name).ToNot(ContainSubstring(backendBName),
-					"backendB tools must be hidden via ExcludeAll")
-				if strings.Contains(t.Name, "echo") {
-					echoCount++
-				}
-			}
-			Expect(echoCount).To(Equal(1), "only backendA echo should be visible")
+				Expect(echoCount).To(Equal(1), "only backendA echo should be visible")
+			})
 		})
 	})
 
@@ -293,47 +303,14 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 	// tools/list must succeed but return an empty slice.
 	// -------------------------------------------------------------------------
 	Context("global ExcludeAll (all tools hidden)", func() {
-		var (
-			cfg         *e2e.TestConfig
-			groupName   string
-			backendName string
-			vMCPCmd     *exec.Cmd
-			vMCPPort    int
-			tmpDir      string
-		)
+		var fx singleBackendFixture
 
-		BeforeEach(func() {
-			cfg = e2e.NewTestConfig()
-			groupName = e2e.GenerateUniqueServerName("vmcp-feat-excludeall")
-			backendName = e2e.GenerateUniqueServerName("yardstick")
-			vMCPPort = allocateVMCPPort()
-			var err error
-			tmpDir, err = os.MkdirTemp("", "vmcp-feat-excludeall-*")
-			Expect(err).ToNot(HaveOccurred())
-			DeferCleanup(func() { _ = os.RemoveAll(tmpDir) })
-
-			Expect(e2e.CheckTHVBinaryAvailable(cfg)).To(Succeed())
-
-			By("creating group and one yardstick backend")
-			e2e.NewTHVCommand(cfg, "group", "create", groupName).ExpectSuccess()
-			startYardstick(cfg, groupName, backendName)
-		})
-
-		AfterEach(func() {
-			stopVMCPProcess(vMCPCmd)
-			if cfg.CleanupAfter {
-				if err := e2e.StopAndRemoveMCPServer(cfg, backendName); err != nil {
-					GinkgoWriter.Printf("cleanup: StopAndRemoveMCPServer(%s) failed: %v\n", backendName, err)
-				}
-				if err := e2e.RemoveGroup(cfg, groupName); err != nil {
-					GinkgoWriter.Printf("cleanup: RemoveGroup(%s) failed: %v\n", groupName, err)
-				}
-			}
-		})
+		BeforeEach(func() { fx.setup("vmcp-feat-excludeall", "yardstick", "vmcp-feat-excludeall-*") })
+		AfterEach(func() { fx.teardown() })
 
 		It("returns an empty tools list when ExcludeAllTools is true", func() {
-			configPath := filepath.Join(tmpDir, "vmcp.yaml")
-			initVMCPConfig(cfg, groupName, configPath)
+			configPath := filepath.Join(fx.tmpDir, "vmcp.yaml")
+			initVMCPConfig(fx.cfg, fx.groupName, configPath)
 
 			Expect(modifyVMCPConfig(configPath, func(c *vmcpconfig.Config) {
 				if c.Aggregation == nil {
@@ -344,19 +321,17 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 			})).To(Succeed())
 
 			By("starting vMCP serve with ExcludeAllTools")
-			vMCPCmd = e2e.StartLongRunningTHVCommand(cfg,
+			fx.vMCPCmd = e2e.StartLongRunningTHVCommand(fx.cfg,
 				"vmcp", "serve",
 				"--config", configPath,
-				"--port", fmt.Sprintf("%d", vMCPPort),
+				"--port", fmt.Sprintf("%d", fx.vMCPPort),
 			)
-			DeferCleanup(func() { stopVMCPProcess(vMCPCmd) })
-
-			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", vMCPPort)
-			Expect(e2e.WaitForMCPServerReady(cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
+			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", fx.vMCPPort)
+			Expect(e2e.WaitForMCPServerReady(fx.cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			mcpClient, err := e2e.NewMCPClientForStreamableHTTP(cfg, vMCPURL)
+			mcpClient, err := e2e.NewMCPClientForStreamableHTTP(fx.cfg, vMCPURL)
 			Expect(err).ToNot(HaveOccurred())
 			defer func() { _ = mcpClient.Close() }()
 			Expect(mcpClient.Initialize(ctx)).To(Succeed())
@@ -374,47 +349,14 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 	// with a message argument succeeds and returns non-empty content.
 	// -------------------------------------------------------------------------
 	Context("composite sequential tool", func() {
-		var (
-			cfg         *e2e.TestConfig
-			groupName   string
-			backendName string
-			vMCPCmd     *exec.Cmd
-			vMCPPort    int
-			tmpDir      string
-		)
+		var fx singleBackendFixture
 
-		BeforeEach(func() {
-			cfg = e2e.NewTestConfig()
-			groupName = e2e.GenerateUniqueServerName("vmcp-feat-composite")
-			backendName = e2e.GenerateUniqueServerName("yardstick")
-			vMCPPort = allocateVMCPPort()
-			var err error
-			tmpDir, err = os.MkdirTemp("", "vmcp-feat-composite-*")
-			Expect(err).ToNot(HaveOccurred())
-			DeferCleanup(func() { _ = os.RemoveAll(tmpDir) })
-
-			Expect(e2e.CheckTHVBinaryAvailable(cfg)).To(Succeed())
-
-			By("creating group and one yardstick backend")
-			e2e.NewTHVCommand(cfg, "group", "create", groupName).ExpectSuccess()
-			startYardstick(cfg, groupName, backendName)
-		})
-
-		AfterEach(func() {
-			stopVMCPProcess(vMCPCmd)
-			if cfg.CleanupAfter {
-				if err := e2e.StopAndRemoveMCPServer(cfg, backendName); err != nil {
-					GinkgoWriter.Printf("cleanup: StopAndRemoveMCPServer(%s) failed: %v\n", backendName, err)
-				}
-				if err := e2e.RemoveGroup(cfg, groupName); err != nil {
-					GinkgoWriter.Printf("cleanup: RemoveGroup(%s) failed: %v\n", groupName, err)
-				}
-			}
-		})
+		BeforeEach(func() { fx.setup("vmcp-feat-composite", "yardstick", "vmcp-feat-composite-*") })
+		AfterEach(func() { fx.teardown() })
 
 		It("exposes the composite tool in tools/list and executes it successfully", func() {
-			configPath := filepath.Join(tmpDir, "vmcp.yaml")
-			initVMCPConfig(cfg, groupName, configPath)
+			configPath := filepath.Join(fx.tmpDir, "vmcp.yaml")
+			initVMCPConfig(fx.cfg, fx.groupName, configPath)
 
 			Expect(modifyVMCPConfig(configPath, func(c *vmcpconfig.Config) {
 				if c.Aggregation == nil {
@@ -441,7 +383,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 							{
 								ID:   "first_echo",
 								Type: "tool",
-								Tool: fmt.Sprintf("%s.echo", backendName),
+								Tool: fmt.Sprintf("%s.echo", fx.backendName),
 								Arguments: thvjson.NewMap(map[string]any{
 									"input": "{{ .params.message }}",
 								}),
@@ -449,10 +391,10 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 							{
 								ID:        "second_echo",
 								Type:      "tool",
-								Tool:      fmt.Sprintf("%s.echo", backendName),
+								Tool:      fmt.Sprintf("%s.echo", fx.backendName),
 								DependsOn: []string{"first_echo"},
 								Arguments: thvjson.NewMap(map[string]any{
-									"input": "{{ .steps.first_echo.content.text }}",
+									"input": "{{ .params.message }}",
 								}),
 							},
 						},
@@ -461,19 +403,17 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 			})).To(Succeed())
 
 			By("starting vMCP serve with composite tool config")
-			vMCPCmd = e2e.StartLongRunningTHVCommand(cfg,
+			fx.vMCPCmd = e2e.StartLongRunningTHVCommand(fx.cfg,
 				"vmcp", "serve",
 				"--config", configPath,
-				"--port", fmt.Sprintf("%d", vMCPPort),
+				"--port", fmt.Sprintf("%d", fx.vMCPPort),
 			)
-			DeferCleanup(func() { stopVMCPProcess(vMCPCmd) })
-
-			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", vMCPPort)
-			Expect(e2e.WaitForMCPServerReady(cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
+			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", fx.vMCPPort)
+			Expect(e2e.WaitForMCPServerReady(fx.cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			mcpClient, err := e2e.NewMCPClientForStreamableHTTP(cfg, vMCPURL)
+			mcpClient, err := e2e.NewMCPClientForStreamableHTTP(fx.cfg, vMCPURL)
 			Expect(err).ToNot(HaveOccurred())
 			defer func() { _ = mcpClient.Close() }()
 			Expect(mcpClient.Initialize(ctx)).To(Succeed())
@@ -494,10 +434,13 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 
 			By("calling echo_twice and verifying non-empty result")
 			result, err := mcpClient.CallTool(ctx, "echo_twice", map[string]any{
-				"message": "hello composite",
+				"message": "hellocomposite",
 			})
 			Expect(err).ToNot(HaveOccurred(), "composite tool call must succeed")
+			Expect(result.IsError).To(BeFalse(), "composite tool must not return an error result")
 			Expect(result.Content).ToNot(BeEmpty(), "composite tool must return content")
+			Expect(mcp.GetTextFromContent(result.Content[0])).To(ContainSubstring("hellocomposite"),
+				"composite tool result must contain the echoed message")
 		})
 	})
 
@@ -507,55 +450,25 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 	// find_tool and call_tool. Calling find_tool with a query must return results.
 	// -------------------------------------------------------------------------
 	Context("Tier-1 optimizer (--optimizer flag, quick mode)", func() {
-		var (
-			cfg         *e2e.TestConfig
-			groupName   string
-			backendName string
-			vMCPCmd     *exec.Cmd
-			vMCPPort    int
-		)
+		var fx singleBackendFixture
 
-		BeforeEach(func() {
-			cfg = e2e.NewTestConfig()
-			groupName = e2e.GenerateUniqueServerName("vmcp-feat-optimizer")
-			backendName = e2e.GenerateUniqueServerName("yardstick")
-			vMCPPort = allocateVMCPPort()
-
-			Expect(e2e.CheckTHVBinaryAvailable(cfg)).To(Succeed())
-
-			By("creating group and one yardstick backend")
-			e2e.NewTHVCommand(cfg, "group", "create", groupName).ExpectSuccess()
-			startYardstick(cfg, groupName, backendName)
-		})
-
-		AfterEach(func() {
-			stopVMCPProcess(vMCPCmd)
-			if cfg.CleanupAfter {
-				if err := e2e.StopAndRemoveMCPServer(cfg, backendName); err != nil {
-					GinkgoWriter.Printf("cleanup: StopAndRemoveMCPServer(%s) failed: %v\n", backendName, err)
-				}
-				if err := e2e.RemoveGroup(cfg, groupName); err != nil {
-					GinkgoWriter.Printf("cleanup: RemoveGroup(%s) failed: %v\n", groupName, err)
-				}
-			}
-		})
+		BeforeEach(func() { fx.setup("vmcp-feat-optimizer", "yardstick", "") })
+		AfterEach(func() { fx.teardown() })
 
 		It("exposes only find_tool and call_tool when --optimizer is set", func() {
 			By("starting vMCP serve in quick mode with --optimizer")
-			vMCPCmd = e2e.StartLongRunningTHVCommand(cfg,
+			fx.vMCPCmd = e2e.StartLongRunningTHVCommand(fx.cfg,
 				"vmcp", "serve",
-				"--group", groupName,
+				"--group", fx.groupName,
 				"--optimizer",
-				"--port", fmt.Sprintf("%d", vMCPPort),
+				"--port", fmt.Sprintf("%d", fx.vMCPPort),
 			)
-			DeferCleanup(func() { stopVMCPProcess(vMCPCmd) })
-
-			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", vMCPPort)
-			Expect(e2e.WaitForMCPServerReady(cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
+			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", fx.vMCPPort)
+			Expect(e2e.WaitForMCPServerReady(fx.cfg, vMCPURL, "streamable-http", 60*time.Second)).To(Succeed())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			mcpClient, err := e2e.NewMCPClientForStreamableHTTP(cfg, vMCPURL)
+			mcpClient, err := e2e.NewMCPClientForStreamableHTTP(fx.cfg, vMCPURL)
 			Expect(err).ToNot(HaveOccurred())
 			defer func() { _ = mcpClient.Close() }()
 			Expect(mcpClient.Initialize(ctx)).To(Succeed())
@@ -576,6 +489,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 				"tool_description": "echo a message",
 			})
 			Expect(err).ToNot(HaveOccurred(), "find_tool must succeed")
+			Expect(result.IsError).To(BeFalse(), "find_tool must not return an error result")
 			Expect(result.Content).ToNot(BeEmpty(), "find_tool must return tool suggestions")
 		})
 	})

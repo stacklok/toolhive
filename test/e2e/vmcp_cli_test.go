@@ -6,12 +6,10 @@ package e2e_test
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -19,37 +17,6 @@ import (
 
 	"github.com/stacklok/toolhive/test/e2e"
 )
-
-// allocateVMCPPort returns a free TCP port on 127.0.0.1 for use by thv vmcp serve.
-func allocateVMCPPort() int {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	Expect(err).ToNot(HaveOccurred(), "should be able to allocate a free port")
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
-}
-
-// stopVMCPProcess sends SIGINT to a running vmcp serve process and waits for it
-// to exit. If the process does not exit within 5 seconds, SIGKILL is sent to
-// prevent the test suite from hanging. Safe to call on a nil cmd or on a cmd
-// whose process has already exited.
-func stopVMCPProcess(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	_ = cmd.Process.Signal(syscall.SIGINT)
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	select {
-	case <-done:
-		// process exited cleanly
-	case <-time.After(5 * time.Second):
-		GinkgoWriter.Printf("vmcp process did not exit after SIGINT; sending SIGKILL\n")
-		_ = cmd.Process.Kill()
-		<-done // wait for the goroutine to finish after Kill
-	}
-}
 
 var _ = Describe("vMCP CLI", Label("vmcp", "e2e"), func() {
 	var (
@@ -102,8 +69,6 @@ var _ = Describe("vMCP CLI", Label("vmcp", "e2e"), func() {
 				"--group", groupName,
 				"--port", fmt.Sprintf("%d", vMCPPort),
 			)
-			DeferCleanup(func() { stopVMCPProcess(vMCPCmd) })
-
 			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", vMCPPort)
 			By("waiting for vMCP endpoint to be ready")
 			err := e2e.WaitForMCPServerReady(config, vMCPURL, "streamable-http", 60*time.Second)
@@ -129,8 +94,6 @@ var _ = Describe("vMCP CLI", Label("vmcp", "e2e"), func() {
 				"--group", groupName,
 				"--port", fmt.Sprintf("%d", vMCPPort),
 			)
-			DeferCleanup(func() { stopVMCPProcess(vMCPCmd) })
-
 			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", vMCPPort)
 			By("waiting for vMCP endpoint to be ready on loopback")
 			err := e2e.WaitForMCPServerReady(config, vMCPURL, "streamable-http", 60*time.Second)
@@ -239,8 +202,6 @@ var _ = Describe("vMCP CLI", Label("vmcp", "e2e"), func() {
 				"--config", configFilePath,
 				"--port", fmt.Sprintf("%d", vMCPPort),
 			)
-			DeferCleanup(func() { stopVMCPProcess(vMCPCmd) })
-
 			vMCPURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", vMCPPort)
 			By("waiting for vMCP endpoint to be ready")
 			err := e2e.WaitForMCPServerReady(config, vMCPURL, "streamable-http", 60*time.Second)
@@ -270,11 +231,8 @@ var _ = Describe("vMCP CLI", Label("vmcp", "e2e"), func() {
 				RunWithTimeout(10 * time.Second)
 			Expect(err).To(HaveOccurred(), "serve should fail without --config or --group")
 			combined := stdout + stderr
-			Expect(combined).To(Or(
-				ContainSubstring("--config"),
-				ContainSubstring("--group"),
-				ContainSubstring("must be specified"),
-			), "error message should guide the user toward --config or --group")
+			Expect(combined).To(ContainSubstring("either --config or --group must be specified"),
+				"error message should guide the user toward --config or --group")
 		})
 
 		It("validate exits non-zero for a non-existent config file", func() {

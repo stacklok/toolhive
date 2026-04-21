@@ -1691,6 +1691,28 @@ func TestBuildStorageRunConfig(t *testing.T) {
 			errContains: "either addr (standalone) or sentinel config is required",
 		},
 		{
+			name: "Redis storage with both addr and sentinelConfig returns error",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				Storage: &mcpv1beta1.AuthServerStorageConfig{
+					Type: mcpv1beta1.AuthServerStorageTypeRedis,
+					Redis: &mcpv1beta1.RedisStorageConfig{
+						Addr: "redis.example.com:6379",
+						SentinelConfig: &mcpv1beta1.RedisSentinelConfig{
+							MasterName:    "mymaster",
+							SentinelAddrs: []string{"10.0.0.1:26379"},
+						},
+						ACLUserConfig: &mcpv1beta1.RedisACLUserConfig{
+							UsernameSecretRef: &mcpv1beta1.SecretKeyRef{Name: "s", Key: "u"},
+							PasswordSecretRef: &mcpv1beta1.SecretKeyRef{Name: "s", Key: "p"},
+						},
+					},
+				},
+			},
+			wantErr:     true,
+			errContains: "addr and sentinel config are mutually exclusive",
+		},
+		{
 			name: "Redis storage with standalone addr builds correctly",
 			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",

@@ -42,10 +42,10 @@ func withRedisStorage(t *testing.T, fn func(context.Context, *RedisStorage, *min
 	t.Helper()
 	t.Parallel()
 	storage, mr := newTestRedisStorage(t)
-	defer func() {
+	t.Cleanup(func() {
 		_ = storage.Close()
 		mr.Close()
-	}()
+	})
 	fn(context.Background(), storage, mr)
 }
 
@@ -206,12 +206,15 @@ func TestNewRedisStorage_Standalone_WithMiniredis(t *testing.T) {
 	t.Parallel()
 
 	mr := miniredis.RunT(t)
+	// Register a non-default ACL user. miniredis enforces ACL when credentials are
+	// supplied, so we use RequireUserAuth to match the configured username/password.
+	mr.RequireUserAuth("testuser", "testpass")
 
 	cfg := RedisConfig{
 		Addr: mr.Addr(),
 		ACLUserConfig: &ACLUserConfig{
-			Username: "default",
-			Password: "ignored", // miniredis does not enforce ACL authentication
+			Username: "testuser",
+			Password: "testpass",
 		},
 		KeyPrefix: "test:",
 	}

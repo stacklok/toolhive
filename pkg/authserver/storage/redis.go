@@ -104,7 +104,8 @@ type ACLUserConfig struct {
 	Password string //nolint:gosec // G117: field legitimately holds sensitive data
 }
 
-// RedisStorage implements the Storage interface with Redis Sentinel backend.
+// RedisStorage implements the Storage interface backed by Redis.
+// Supports standalone mode (single endpoint) and Sentinel failover mode.
 // It provides distributed storage for OAuth2 tokens, authorization codes,
 // user data, and pending authorizations, enabling horizontal scaling.
 type RedisStorage struct {

@@ -548,6 +548,10 @@ func buildStorageRunConfig(
 		return nil, fmt.Errorf("either addr (standalone) or sentinel config is required for Redis storage")
 	}
 
+	if redisConfig.Addr != "" && redisConfig.SentinelConfig != nil {
+		return nil, fmt.Errorf("addr and sentinel config are mutually exclusive for Redis storage")
+	}
+
 	if redisConfig.ACLUserConfig == nil ||
 		redisConfig.ACLUserConfig.UsernameSecretRef == nil ||
 		redisConfig.ACLUserConfig.PasswordSecretRef == nil {

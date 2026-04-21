@@ -28,6 +28,8 @@ import (
 //   - "obo": On-behalf-of (OBO) Entra token exchange; default stub returns
 //     obo.ErrEnterpriseRequired — an out-of-tree build registers a real
 //     strategy via auth.RegisterOBOStrategy before this function is called.
+//   - "xaa": Cross-Application Access (two-step ID-JAG exchange per
+//     draft-ietf-oauth-identity-assertion-authz-grant)
 //
 // Parameters:
 //   - ctx: Context for any initialization that requires it
@@ -76,6 +78,12 @@ func NewOutgoingAuthRegistry(
 	if err := registry.RegisterStrategy(
 		authtypes.StrategyTypeOBO,
 		auth.NewOBOStrategy(envReader),
+	); err != nil {
+		return nil, err
+	}
+	if err := registry.RegisterStrategy(
+		authtypes.StrategyTypeXAA,
+		strategies.NewXAAStrategy(envReader),
 	); err != nil {
 		return nil, err
 	}

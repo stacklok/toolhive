@@ -25,8 +25,10 @@ type Config struct {
 	// ClientID is the OAuth client identifier at the target AS. When both ClientID
 	// and ClientSecret are set, the request is authenticated with HTTP Basic per
 	// RFC 6749 Section 2.3.1. Public-client identification via a body client_id
-	// parameter (RFC 6749 Section 3.2.1) is not supported — XAA / ID-JAG §8.1
-	// requires confidential clients, and that is the only intended consumer.
+	// parameter (RFC 6749 Section 3.2.1) is not supported — the ID-JAG draft
+	// (§9.1, Security Considerations) RECOMMENDS (SHOULD) confidential clients,
+	// which is the only intended consumer here, and this engine only supports
+	// client_secret/HTTP Basic client authentication.
 	ClientID string
 
 	// ClientSecret is the OAuth client secret at the target AS.
@@ -37,15 +39,20 @@ type Config struct {
 
 	// AssertionProvider returns the JWT assertion (e.g., the ID-JAG from Step A).
 	// Called on each Token() invocation; must not be nil. The returned JWT must
-	// satisfy RFC 7523 Section 3 (iss/sub/aud/exp); aud should typically be the
-	// target AS's token endpoint (TokenURL). The provider must be safe for
-	// concurrent use — Token() may be called from multiple goroutines (e.g.,
-	// when wrapped in oauth2.ReuseTokenSource).
+	// satisfy RFC 7523 Section 3 (iss/sub/aud/exp). For an ID-JAG the aud is the
+	// Resource AS issuer identifier (per draft-ietf-oauth-identity-assertion-authz-grant),
+	// not the token endpoint URL. The provider must be safe for concurrent use —
+	// Token() may be called from multiple goroutines (e.g., when wrapped in
+	// oauth2.ReuseTokenSource).
 	AssertionProvider func() (string, error)
 
 	// HTTPClient is the HTTP client to use. If nil, oauthproto.DefaultHTTPClient()
 	// is used.
 	HTTPClient *http.Client
+
+	// InsecureAllowHTTP allows plain HTTP for the TokenURL. Only set this for
+	// in-cluster HTTP endpoints (e.g., development or testing environments).
+	InsecureAllowHTTP bool
 }
 
 // Validate checks that the Config contains all required fields.
@@ -61,7 +68,7 @@ func (c *Config) Validate() error {
 	// Validate TokenURL: must be https (or http on localhost) per RFC 6749 Section 3.2
 	// and RFC 7523 Section 7. Reuses the repo-wide endpoint validator for scheme,
 	// and adds host and fragment checks that it does not perform.
-	if err := networking.ValidateEndpointURL(c.TokenURL); err != nil {
+	if err := networking.ValidateEndpointURLWithInsecure(c.TokenURL, c.InsecureAllowHTTP); err != nil {
 		return fmt.Errorf("TokenURL: %w", err)
 	}
 	u, err := url.Parse(c.TokenURL)

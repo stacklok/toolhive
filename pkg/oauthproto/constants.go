@@ -61,6 +61,12 @@ const (
 
 	// TokenTypeJWT indicates a JSON Web Token (RFC 8693 Section 3).
 	TokenTypeJWT = "urn:ietf:params:oauth:token-type:jwt"
+
+	// TokenTypeIDJAG indicates an Identity Assertion JWT Authorization Grant (ID-JAG)
+	// as defined by draft-ietf-oauth-identity-assertion-authz-grant. This URN is used
+	// as the `requested_token_type` in an RFC 8693 token exchange when the IdP is
+	// asked to mint an ID-JAG for a target application.
+	TokenTypeIDJAG = "urn:ietf:params:oauth:token-type:id-jag"
 )
 
 // Grant type URNs for token exchange protocols.

@@ -150,6 +150,30 @@ jobs:
           mkdir -p build
           tar -czf build/thv-crds.tar.gz -C deploy/charts/operator-crds/files/crds .
 
+      - name: Download toolhive-core schemas at pinned version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Resolve the toolhive-core version this release was built against
+          # (from go.mod, since we ship binaries compiled against that version).
+          # Re-exporting the schemas here lets downstream consumers (notably
+          # docs-website) skip the two-repo dance of deriving the version and
+          # fetching from a separate release.
+          mkdir -p build
+          CORE_VERSION=$(grep 'github.com/stacklok/toolhive-core' go.mod | awk '{print $2}' | head -1)
+          if [ -z "$CORE_VERSION" ]; then
+            echo "::error::Could not determine toolhive-core version from go.mod"
+            exit 1
+          fi
+          echo "Using toolhive-core version: $CORE_VERSION"
+          gh release download "$CORE_VERSION" \
+            --repo stacklok/toolhive-core \
+            --pattern "toolhive-legacy-registry.schema.json" \
+            --pattern "upstream-registry.schema.json" \
+            --pattern "publisher-provided.schema.json" \
+            --pattern "skill.schema.json" \
+            --dir build/
+
       - name: Remove existing release assets (allows re-runs)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
@@ -44,7 +44,7 @@ func NewManager(
 // It creates a ConfigMap from the raw ConfigYAML string and mounts user-provided volumes directly,
 // without parsing or transforming config.
 func (m *manager) ReconcileAPIService(
-	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
+	ctx context.Context, mcpRegistry *mcpv1beta1.MCPRegistry,
 ) *Error {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 	ctxLogger.Info("Reconciling API service")
@@ -117,7 +117,7 @@ func (m *manager) ReconcileAPIService(
 }
 
 // IsAPIReady checks if the registry API deployment is ready and serving requests
-func (m *manager) IsAPIReady(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) bool {
+func (m *manager) IsAPIReady(ctx context.Context, mcpRegistry *mcpv1beta1.MCPRegistry) bool {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
 	deploymentName := mcpRegistry.GetAPIResourceName()
@@ -139,7 +139,7 @@ func (m *manager) IsAPIReady(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRe
 
 // GetReadyReplicas returns the number of ready replicas for the registry API deployment.
 // Returns 0 if the deployment is not found or an error occurs.
-func (m *manager) GetReadyReplicas(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) int32 {
+func (m *manager) GetReadyReplicas(ctx context.Context, mcpRegistry *mcpv1beta1.MCPRegistry) int32 {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
 	deploymentName := mcpRegistry.GetAPIResourceName()
@@ -159,7 +159,7 @@ func (m *manager) GetReadyReplicas(ctx context.Context, mcpRegistry *mcpv1alpha1
 }
 
 // GetAPIStatus returns the readiness state and ready replica count from a single Deployment fetch.
-func (m *manager) GetAPIStatus(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, int32) {
+func (m *manager) GetAPIStatus(ctx context.Context, mcpRegistry *mcpv1beta1.MCPRegistry) (bool, int32) {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
 	deploymentName := mcpRegistry.GetAPIResourceName()
@@ -178,7 +178,7 @@ func (m *manager) GetAPIStatus(ctx context.Context, mcpRegistry *mcpv1alpha1.MCP
 }
 
 // labelsForRegistryAPI generates standard labels for registry API resources
-func labelsForRegistryAPI(mcpRegistry *mcpv1alpha1.MCPRegistry, resourceName string) map[string]string {
+func labelsForRegistryAPI(mcpRegistry *mcpv1beta1.MCPRegistry, resourceName string) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":             resourceName,
 		"app.kubernetes.io/component":        "registry-api",

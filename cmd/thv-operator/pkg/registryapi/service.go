@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // ensureService creates or updates the registry-api Service for the MCPRegistry.
@@ -24,7 +24,7 @@ import (
 // service configuration to buildRegistryAPIService.
 func (m *manager) ensureService(
 	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	mcpRegistry *mcpv1beta1.MCPRegistry,
 ) error {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
@@ -99,7 +99,7 @@ func (m *manager) ensureService(
 // buildRegistryAPIService creates and configures a Service object for the registry API.
 // This function handles all service configuration including labels, ports, and selector.
 // It returns a fully configured ClusterIP service ready for Kubernetes API operations.
-func buildRegistryAPIService(mcpRegistry *mcpv1alpha1.MCPRegistry) *corev1.Service {
+func buildRegistryAPIService(mcpRegistry *mcpv1beta1.MCPRegistry) *corev1.Service {
 	// Generate service name using the established pattern
 	serviceName := mcpRegistry.GetAPIResourceName()
 

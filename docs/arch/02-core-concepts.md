@@ -264,7 +264,7 @@ A **Virtual MCP Server** aggregates multiple MCP servers from a group into a sin
 **Example use case:**
 ```yaml
 # Combine GitHub, Slack, and Jira into one "team-tools" virtual server
-apiVersion: mcp.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: team-tools
@@ -288,7 +288,7 @@ spec:
 - CLI: Standalone via the `vmcp` binary for development or non-Kubernetes environments
 
 **Implementation:**
-- CRD: `cmd/thv-operator/api/v1alpha1/virtualmcpserver_types.go`
+- CRD: `cmd/thv-operator/api/v1beta1/virtualmcpserver_types.go`
 - Controller: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
 - Binary: `cmd/vmcp/` (virtual MCP server runtime)
 

@@ -31,7 +31,7 @@ components:
           description: Version is the schema version of the registry
           type: string
       type: object
-    github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket:
+    github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket:
       description: |-
         PerUser token bucket configuration for this tool.
         +optional
@@ -47,15 +47,15 @@ components:
         refillPeriod:
           $ref: '#/components/schemas/v1.Duration'
       type: object
-    github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig:
+    github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitConfig:
       description: |-
         RateLimitConfig contains the CRD rate limiting configuration.
         When set, rate limiting middleware is added to the proxy middleware chain.
       properties:
         perUser:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket'
         shared:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket'
         tools:
           description: |-
             Tools defines per-tool rate limit overrides.
@@ -65,11 +65,11 @@ components:
             +listMapKey=name
             +optional
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.ToolRateLimitConfig'
           type: array
           uniqueItems: false
       type: object
-    github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig:
+    github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.ToolRateLimitConfig:
       properties:
         name:
           description: |-
@@ -78,9 +78,9 @@ components:
             +kubebuilder:validation:MinLength=1
           type: string
         perUser:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket'
         shared:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket'
       type: object
     github_com_stacklok_toolhive_pkg_audit.Config:
       description: |-
@@ -1213,7 +1213,7 @@ components:
           type: array
           uniqueItems: false
         rate_limit_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitConfig'
         rate_limit_namespace:
           description: RateLimitNamespace is the Kubernetes namespace for Redis key
             derivation.

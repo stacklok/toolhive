@@ -14,7 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // StatusTestHelper provides utilities for MCPRegistry status testing and validation
@@ -30,20 +30,20 @@ func NewStatusTestHelper(ctx context.Context, k8sClient client.Client, namespace
 }
 
 // WaitForPhase waits for an MCPRegistry to reach the specified phase
-func (h *StatusTestHelper) WaitForPhase(registryName string, expectedPhase mcpv1alpha1.MCPRegistryPhase, timeout time.Duration) {
-	h.WaitForPhaseAny(registryName, []mcpv1alpha1.MCPRegistryPhase{expectedPhase}, timeout)
+func (h *StatusTestHelper) WaitForPhase(registryName string, expectedPhase mcpv1beta1.MCPRegistryPhase, timeout time.Duration) {
+	h.WaitForPhaseAny(registryName, []mcpv1beta1.MCPRegistryPhase{expectedPhase}, timeout)
 }
 
 // WaitForPhaseAny waits for an MCPRegistry to reach any of the specified phases
 func (h *StatusTestHelper) WaitForPhaseAny(registryName string,
-	expectedPhases []mcpv1alpha1.MCPRegistryPhase, timeout time.Duration) {
-	gomega.Eventually(func() mcpv1alpha1.MCPRegistryPhase {
+	expectedPhases []mcpv1beta1.MCPRegistryPhase, timeout time.Duration) {
+	gomega.Eventually(func() mcpv1beta1.MCPRegistryPhase {
 		ginkgo.By(fmt.Sprintf("waiting for registry %s to reach one of phases %v", registryName, expectedPhases))
 		registry, err := h.registryHelper.GetRegistry(registryName)
 		if err != nil {
 			if errors.IsNotFound(err) {
 				ginkgo.By(fmt.Sprintf("registry %s not found", registryName))
-				return mcpv1alpha1.MCPRegistryPhaseTerminating
+				return mcpv1beta1.MCPRegistryPhaseTerminating
 			}
 			return ""
 		}
@@ -87,8 +87,8 @@ func (h *StatusTestHelper) WaitForSyncCompletion(registryName string, timeout ti
 
 		// Check if sync is no longer in progress
 		phase := registry.Status.Phase
-		return phase == mcpv1alpha1.MCPRegistryPhaseReady ||
-			phase == mcpv1alpha1.MCPRegistryPhaseFailed
+		return phase == mcpv1beta1.MCPRegistryPhaseReady ||
+			phase == mcpv1beta1.MCPRegistryPhaseFailed
 	}, timeout, time.Second).Should(gomega.BeTrue(),
 		"MCPRegistry %s sync operation should complete", registryName)
 }

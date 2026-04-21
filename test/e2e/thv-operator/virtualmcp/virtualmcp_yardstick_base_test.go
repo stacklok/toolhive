@@ -16,7 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -40,36 +40,36 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 
 		By("Creating yardstick backend MCPServers in parallel")
 		// Create both MCPServer resources without waiting
-		backend1 := &mcpv1alpha1.MCPServer{
+		backend1 := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend1Name,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+			Spec: mcpv1beta1.MCPServerSpec{
+				GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				MCPPort:   8080,
-				Env: []mcpv1alpha1.EnvVar{
+				Env: []mcpv1beta1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, backend1)).To(Succeed())
 
-		backend2 := &mcpv1alpha1.MCPServer{
+		backend2 := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend2Name,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+			Spec: mcpv1beta1.MCPServerSpec{
+				GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				MCPPort:   8080,
-				Env: []mcpv1alpha1.EnvVar{
+				Env: []mcpv1beta1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
 			},
@@ -79,25 +79,25 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		// Wait for both backends to be running in parallel
 		By("Waiting for both backend MCPServers to be running")
 		Eventually(func() error {
-			server1 := &mcpv1alpha1.MCPServer{}
+			server1 := &mcpv1beta1.MCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      backend1Name,
 				Namespace: testNamespace,
 			}, server1); err != nil {
 				return fmt.Errorf("backend1: failed to get server: %w", err)
 			}
-			if server1.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
+			if server1.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
 				return fmt.Errorf("backend1 not ready yet, phase: %s", server1.Status.Phase)
 			}
 
-			server2 := &mcpv1alpha1.MCPServer{}
+			server2 := &mcpv1beta1.MCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      backend2Name,
 				Namespace: testNamespace,
 			}, server2); err != nil {
 				return fmt.Errorf("backend2: failed to get server: %w", err)
 			}
-			if server2.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
+			if server2.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
 				return fmt.Errorf("backend2 not ready yet, phase: %s", server2.Status.Phase)
 			}
 
@@ -105,20 +105,20 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		}, timeout, pollingInterval).Should(Succeed(), "Both MCPServers should be running")
 
 		By("Creating VirtualMCPServer with prefix conflict resolution")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+			Spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				Config: vmcpconfig.Config{
 					Group: mcpGroupName,
 					Aggregation: &vmcpconfig.AggregationConfig{
 						ConflictResolution: "prefix",
 					},
 				},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
 				ServiceType: "NodePort",
@@ -137,7 +137,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -147,7 +147,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 
 		By("Cleaning up backend MCPServers")
 		for _, backendName := range []string{backend1Name, backend2Name} {
-			backend := &mcpv1alpha1.MCPServer{
+			backend := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      backendName,
 					Namespace: testNamespace,
@@ -157,7 +157,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		}
 
 		By("Cleaning up MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{
+		mcpGroup := &mcpv1beta1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      mcpGroupName,
 				Namespace: testNamespace,
@@ -326,7 +326,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 
 	Context("when verifying VirtualMCPServer status", func() {
 		It("should have correct aggregation configuration", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -350,13 +350,13 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		})
 
 		It("should have VirtualMCPServer in Ready phase", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(vmcpServer.Status.Phase).To(Equal(mcpv1alpha1.VirtualMCPServerPhaseReady))
+			Expect(vmcpServer.Status.Phase).To(Equal(mcpv1beta1.VirtualMCPServerPhaseReady))
 		})
 
 	})
@@ -423,7 +423,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 
 		AfterAll(func() {
 			By("Cleaning up additional backends from membership test")
-			backend3 := &mcpv1alpha1.MCPServer{
+			backend3 := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      backend3Name,
 					Namespace: testNamespace,

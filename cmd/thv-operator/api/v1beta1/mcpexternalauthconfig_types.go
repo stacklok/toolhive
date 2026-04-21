@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package v1alpha1
+package v1beta1
 
 import (
 	"fmt"
@@ -766,6 +766,7 @@ type MCPExternalAuthConfigStatus struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:storageversion
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=extauth;mcpextauth,categories=toolhive
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`

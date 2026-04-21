@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
@@ -49,7 +49,7 @@ func (r *ToolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	logger := log.FromContext(ctx)
 
 	// Fetch the MCPToolConfig instance
-	toolConfig := &mcpv1alpha1.MCPToolConfig{}
+	toolConfig := &mcpv1beta1.MCPToolConfig{}
 	err := r.Get(ctx, req.NamespacedName, toolConfig)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -81,9 +81,9 @@ func (r *ToolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Validation succeeded - set Valid=True condition
 	conditionChanged := meta.SetStatusCondition(&toolConfig.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionToolConfigValid,
+		Type:               mcpv1beta1.ConditionToolConfigValid,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonToolConfigValidationSucceeded,
+		Reason:             mcpv1beta1.ConditionReasonToolConfigValidationSucceeded,
 		Message:            "Spec validation passed",
 		ObservedGeneration: toolConfig.Generation,
 	})
@@ -120,7 +120,7 @@ func (r *ToolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // handleConfigHashChange handles the logic when the config hash changes
 func (r *ToolConfigReconciler) handleConfigHashChange(
 	ctx context.Context,
-	toolConfig *mcpv1alpha1.MCPToolConfig,
+	toolConfig *mcpv1beta1.MCPToolConfig,
 	configHash string,
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -141,9 +141,9 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	toolConfig.Status.ObservedGeneration = toolConfig.Generation
 
 	// Update the status with the list of referencing workloads
-	refs := make([]mcpv1alpha1.WorkloadReference, 0, len(referencingServers))
+	refs := make([]mcpv1beta1.WorkloadReference, 0, len(referencingServers))
 	for _, server := range referencingServers {
-		refs = append(refs, mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPServer, Name: server.Name})
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: server.Name})
 	}
 	ctrlutil.SortWorkloadRefs(refs)
 	toolConfig.Status.ReferencingWorkloads = refs
@@ -173,12 +173,12 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 }
 
 // calculateConfigHash calculates a hash of the MCPToolConfig spec using Kubernetes utilities
-func (*ToolConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPToolConfigSpec) string {
+func (*ToolConfigReconciler) calculateConfigHash(spec mcpv1beta1.MCPToolConfigSpec) string {
 	return ctrlutil.CalculateConfigHash(spec)
 }
 
 // handleDeletion handles the deletion of a MCPToolConfig
-func (r *ToolConfigReconciler) handleDeletion(ctx context.Context, toolConfig *mcpv1alpha1.MCPToolConfig) (ctrl.Result, error) {
+func (r *ToolConfigReconciler) handleDeletion(ctx context.Context, toolConfig *mcpv1beta1.MCPToolConfig) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	if controllerutil.ContainsFinalizer(toolConfig, ToolConfigFinalizerName) {
@@ -195,7 +195,7 @@ func (r *ToolConfigReconciler) handleDeletion(ctx context.Context, toolConfig *m
 				"referencingWorkloads", referencingWorkloads)
 
 			meta.SetStatusCondition(&toolConfig.Status.Conditions, metav1.Condition{
-				Type:               mcpv1alpha1.ConditionTypeDeletionBlocked,
+				Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
 				Status:             metav1.ConditionTrue,
 				Reason:             "ReferencedByWorkloads",
 				Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
@@ -226,10 +226,10 @@ func (r *ToolConfigReconciler) handleDeletion(ctx context.Context, toolConfig *m
 // that reference this MCPToolConfig via their ToolConfigRef field.
 func (r *ToolConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
-	toolConfig *mcpv1alpha1.MCPToolConfig,
-) ([]mcpv1alpha1.WorkloadReference, error) {
+	toolConfig *mcpv1beta1.MCPToolConfig,
+) ([]mcpv1beta1.WorkloadReference, error) {
 	return ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, toolConfig.Namespace, toolConfig.Name,
-		func(server *mcpv1alpha1.MCPServer) *string {
+		func(server *mcpv1beta1.MCPServer) *string {
 			if server.Spec.ToolConfigRef != nil {
 				return &server.Spec.ToolConfigRef.Name
 			}
@@ -241,10 +241,10 @@ func (r *ToolConfigReconciler) findReferencingWorkloads(
 // Returns the full MCPServer objects, used by handleConfigHashChange to update server annotations.
 func (r *ToolConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
-	toolConfig *mcpv1alpha1.MCPToolConfig,
-) ([]mcpv1alpha1.MCPServer, error) {
+	toolConfig *mcpv1beta1.MCPToolConfig,
+) ([]mcpv1beta1.MCPServer, error) {
 	return ctrlutil.FindReferencingMCPServers(ctx, r.Client, toolConfig.Namespace, toolConfig.Name,
-		func(server *mcpv1alpha1.MCPServer) *string {
+		func(server *mcpv1beta1.MCPServer) *string {
 			if server.Spec.ToolConfigRef != nil {
 				return &server.Spec.ToolConfigRef.Name
 			}
@@ -262,7 +262,7 @@ func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// config needs to reconcile and clean up the stale entry).
 	toolConfigHandler := handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			server, ok := obj.(*mcpv1alpha1.MCPServer)
+			server, ok := obj.(*mcpv1beta1.MCPServer)
 			if !ok {
 				return nil
 			}
@@ -282,7 +282,7 @@ func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 			// Also enqueue any MCPToolConfig that still lists this server in
 			// ReferencingWorkloads — handles ref-removal and server-deletion cases.
-			toolConfigList := &mcpv1alpha1.MCPToolConfigList{}
+			toolConfigList := &mcpv1beta1.MCPToolConfigList{}
 			if err := r.List(ctx, toolConfigList, client.InNamespace(server.Namespace)); err != nil {
 				log.FromContext(ctx).Error(err, "Failed to list MCPToolConfigs for MCPServer watch")
 				return requests
@@ -293,7 +293,7 @@ func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					continue
 				}
 				for _, ref := range cfg.Status.ReferencingWorkloads {
-					if ref.Kind == mcpv1alpha1.WorkloadKindMCPServer && ref.Name == server.Name {
+					if ref.Kind == mcpv1beta1.WorkloadKindMCPServer && ref.Name == server.Name {
 						requests = append(requests, reconcile.Request{NamespacedName: nn})
 						break
 					}
@@ -305,7 +305,7 @@ func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	)
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&mcpv1alpha1.MCPToolConfig{}).
-		Watches(&mcpv1alpha1.MCPServer{}, toolConfigHandler).
+		For(&mcpv1beta1.MCPToolConfig{}).
+		Watches(&mcpv1beta1.MCPServer{}, toolConfigHandler).
 		Complete(r)
 }

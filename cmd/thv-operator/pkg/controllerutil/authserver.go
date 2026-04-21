@@ -13,7 +13,7 @@ import (
 	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
@@ -68,7 +68,7 @@ const (
 // buildUpstreamRunConfig (runtime config) MUST use these bindings so the
 // env var names stay consistent.
 type upstreamSecretBinding struct {
-	Provider   *mcpv1alpha1.UpstreamProviderConfig
+	Provider   *mcpv1beta1.UpstreamProviderConfig
 	EnvVarName string
 }
 
@@ -77,7 +77,7 @@ type upstreamSecretBinding struct {
 // provider's Name field (uppercased, hyphens replaced with underscores) to
 // keep bindings stable across provider reordering in the CRD.
 func buildUpstreamSecretBindings(
-	providers []mcpv1alpha1.UpstreamProviderConfig,
+	providers []mcpv1beta1.UpstreamProviderConfig,
 ) []upstreamSecretBinding {
 	bindings := make([]upstreamSecretBinding, len(providers))
 	for i := range providers {
@@ -94,8 +94,8 @@ func buildUpstreamSecretBindings(
 // embedded auth server volume/env generation, or empty string if neither ref applies.
 // AuthServerRef takes precedence; externalAuthConfigRef is used as a fallback.
 func EmbeddedAuthServerConfigName(
-	extAuthRef *mcpv1alpha1.ExternalAuthConfigRef,
-	authServerRef *mcpv1alpha1.AuthServerRef,
+	extAuthRef *mcpv1beta1.ExternalAuthConfigRef,
+	authServerRef *mcpv1beta1.AuthServerRef,
 ) string {
 	if authServerRef != nil {
 		return authServerRef.Name
@@ -124,7 +124,7 @@ func GenerateAuthServerConfigByName(
 		return nil, nil, nil, fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
 	}
 
-	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+	if externalAuthConfig.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer {
 		return nil, nil, nil, nil
 	}
 
@@ -148,7 +148,7 @@ func GenerateAuthServerConfigByName(
 //
 // Returns nil slices if authConfig is nil.
 func GenerateAuthServerVolumes(
-	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
+	authConfig *mcpv1beta1.EmbeddedAuthServerConfig,
 ) ([]corev1.Volume, []corev1.VolumeMount) {
 	if authConfig == nil {
 		return nil, nil
@@ -272,7 +272,7 @@ func GenerateAuthServerVolumes(
 //
 // Returns nil slice if authConfig is nil or if no client secrets are configured.
 func GenerateAuthServerEnvVars(
-	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
+	authConfig *mcpv1beta1.EmbeddedAuthServerConfig,
 ) []corev1.EnvVar {
 	if authConfig == nil {
 		return nil
@@ -283,14 +283,14 @@ func GenerateAuthServerEnvVars(
 	// Generate env vars for upstream client secrets using shared bindings
 	for _, b := range buildUpstreamSecretBindings(authConfig.UpstreamProviders) {
 		// Extract client secret reference based on provider type
-		var clientSecretRef *mcpv1alpha1.SecretKeyRef
+		var clientSecretRef *mcpv1beta1.SecretKeyRef
 
 		switch b.Provider.Type {
-		case mcpv1alpha1.UpstreamProviderTypeOIDC:
+		case mcpv1beta1.UpstreamProviderTypeOIDC:
 			if b.Provider.OIDCConfig != nil {
 				clientSecretRef = b.Provider.OIDCConfig.ClientSecretRef
 			}
-		case mcpv1alpha1.UpstreamProviderTypeOAuth2:
+		case mcpv1beta1.UpstreamProviderTypeOAuth2:
 			if b.Provider.OAuth2Config != nil {
 				clientSecretRef = b.Provider.OAuth2Config.ClientSecretRef
 			}
@@ -313,7 +313,7 @@ func GenerateAuthServerEnvVars(
 
 	// Generate env vars for Redis ACL credentials if configured
 	if authConfig.Storage != nil &&
-		authConfig.Storage.Type == mcpv1alpha1.AuthServerStorageTypeRedis &&
+		authConfig.Storage.Type == mcpv1beta1.AuthServerStorageTypeRedis &&
 		authConfig.Storage.Redis != nil &&
 		authConfig.Storage.Redis.ACLUserConfig != nil {
 		aclConfig := authConfig.Storage.Redis.ACLUserConfig
@@ -371,7 +371,7 @@ func AddEmbeddedAuthServerConfigOptions(
 	c client.Client,
 	namespace string,
 	mcpServerName string,
-	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	externalAuthConfigRef *mcpv1beta1.ExternalAuthConfigRef,
 	oidcConfig *oidc.OIDCConfig,
 	options *[]runner.RunConfigBuilderOption,
 ) error {
@@ -386,7 +386,7 @@ func AddEmbeddedAuthServerConfigOptions(
 	}
 
 	// Only process embeddedAuthServer type
-	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+	if externalAuthConfig.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer {
 		return nil
 	}
 
@@ -463,7 +463,7 @@ func validateOIDCConfigForEmbeddedAuthServer(oidcConfig *oidc.OIDCConfig) error 
 func BuildAuthServerRunConfig(
 	namespace string,
 	name string,
-	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
+	authConfig *mcpv1beta1.EmbeddedAuthServerConfig,
 	allowedAudiences []string,
 	scopesSupported []string,
 	resourceURL string,
@@ -529,13 +529,13 @@ func BuildAuthServerRunConfig(
 func buildStorageRunConfig(
 	namespace string,
 	mcpServerName string,
-	authConfig *mcpv1alpha1.EmbeddedAuthServerConfig,
+	authConfig *mcpv1beta1.EmbeddedAuthServerConfig,
 ) (*storage.RunConfig, error) {
-	if authConfig.Storage == nil || authConfig.Storage.Type == mcpv1alpha1.AuthServerStorageTypeMemory {
+	if authConfig.Storage == nil || authConfig.Storage.Type == mcpv1beta1.AuthServerStorageTypeMemory {
 		return nil, nil
 	}
 
-	if authConfig.Storage.Type != mcpv1alpha1.AuthServerStorageTypeRedis {
+	if authConfig.Storage.Type != mcpv1beta1.AuthServerStorageTypeRedis {
 		return nil, fmt.Errorf("unsupported storage type: %s", authConfig.Storage.Type)
 	}
 
@@ -588,7 +588,7 @@ func buildStorageRunConfig(
 
 // convertRedisTLSConfig converts CRD RedisTLSConfig to RunConfig.
 // isSentinel determines which mount path to use for the CA cert file.
-func convertRedisTLSConfig(cfg *mcpv1alpha1.RedisTLSConfig, isSentinel bool) *storage.RedisTLSRunConfig {
+func convertRedisTLSConfig(cfg *mcpv1beta1.RedisTLSConfig, isSentinel bool) *storage.RedisTLSRunConfig {
 	if cfg == nil {
 		return nil
 	}
@@ -607,7 +607,7 @@ func convertRedisTLSConfig(cfg *mcpv1alpha1.RedisTLSConfig, isSentinel bool) *st
 
 // resolveSentinelAddrs resolves Sentinel addresses from static config or Kubernetes Service DNS.
 func resolveSentinelAddrs(
-	sentinelConfig *mcpv1alpha1.RedisSentinelConfig,
+	sentinelConfig *mcpv1beta1.RedisSentinelConfig,
 	defaultNamespace string,
 ) ([]string, error) {
 	// If static addresses are provided, use them directly
@@ -649,7 +649,7 @@ func defaultRedirectURI(resourceURL string) string {
 // and runtime config in sync. When a provider's RedirectURI is empty, it is
 // defaulted to {resourceURL}/oauth/callback.
 func buildUpstreamRunConfig(
-	provider *mcpv1alpha1.UpstreamProviderConfig,
+	provider *mcpv1beta1.UpstreamProviderConfig,
 	envVarName string,
 	resourceURL string,
 ) *authserver.UpstreamRunConfig {
@@ -659,7 +659,7 @@ func buildUpstreamRunConfig(
 	}
 
 	switch provider.Type {
-	case mcpv1alpha1.UpstreamProviderTypeOIDC:
+	case mcpv1beta1.UpstreamProviderTypeOIDC:
 		if provider.OIDCConfig != nil {
 			redirectURI := provider.OIDCConfig.RedirectURI
 			if redirectURI == "" && resourceURL != "" {
@@ -680,7 +680,7 @@ func buildUpstreamRunConfig(
 				config.OIDCConfig.UserInfoOverride = buildUserInfoRunConfig(provider.OIDCConfig.UserInfoOverride)
 			}
 		}
-	case mcpv1alpha1.UpstreamProviderTypeOAuth2:
+	case mcpv1beta1.UpstreamProviderTypeOAuth2:
 		if provider.OAuth2Config != nil {
 			redirectURI := provider.OAuth2Config.RedirectURI
 			if redirectURI == "" && resourceURL != "" {
@@ -718,7 +718,7 @@ func buildUpstreamRunConfig(
 
 // buildUserInfoRunConfig converts CRD UserInfoConfig to authserver.UserInfoRunConfig.
 func buildUserInfoRunConfig(
-	userInfo *mcpv1alpha1.UserInfoConfig,
+	userInfo *mcpv1beta1.UserInfoConfig,
 ) *authserver.UserInfoRunConfig {
 	config := &authserver.UserInfoRunConfig{
 		EndpointURL:       userInfo.EndpointURL,
@@ -745,8 +745,8 @@ func ValidateAndAddAuthServerRefOptions(
 	c client.Client,
 	namespace string,
 	mcpServerName string,
-	authServerRef *mcpv1alpha1.AuthServerRef,
-	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	authServerRef *mcpv1beta1.AuthServerRef,
+	externalAuthConfigRef *mcpv1beta1.ExternalAuthConfigRef,
 	oidcConfig *oidc.OIDCConfig,
 	options *[]runner.RunConfigBuilderOption,
 ) error {
@@ -759,7 +759,7 @@ func ValidateAndAddAuthServerRefOptions(
 				return fmt.Errorf("failed to fetch externalAuthConfigRef for conflict validation: %w", err)
 			}
 			// Not found - skip conflict check, will be caught by AddExternalAuthConfigOptions
-		} else if extConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+		} else if extConfig.Spec.Type == mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer {
 			return fmt.Errorf(
 				"conflict: both authServerRef and externalAuthConfigRef reference an embedded auth server; " +
 					"use authServerRef for the embedded auth server and externalAuthConfigRef for outgoing auth only",
@@ -781,7 +781,7 @@ func AddAuthServerRefOptions(
 	c client.Client,
 	namespace string,
 	mcpServerName string,
-	authServerRef *mcpv1alpha1.AuthServerRef,
+	authServerRef *mcpv1beta1.AuthServerRef,
 	oidcConfig *oidc.OIDCConfig,
 	options *[]runner.RunConfigBuilderOption,
 ) error {
@@ -801,10 +801,10 @@ func AddAuthServerRefOptions(
 	}
 
 	// Validate the type is embeddedAuthServer
-	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+	if externalAuthConfig.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer {
 		return fmt.Errorf(
 			"authServerRef must reference a MCPExternalAuthConfig with type %q, got %q",
-			mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer, externalAuthConfig.Spec.Type,
+			mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer, externalAuthConfig.Spec.Type,
 		)
 	}
 

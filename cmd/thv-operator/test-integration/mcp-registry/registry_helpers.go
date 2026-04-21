@@ -19,7 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // MCPRegistryTestHelper provides specialized utilities for MCPRegistry testing
@@ -179,10 +179,10 @@ func (rb *RegistryBuilder) WithTagExcludeFilter(tags []string) *RegistryBuilder 
 }
 
 // Build returns the constructed MCPRegistry with configYAML generated from the builder config.
-func (rb *RegistryBuilder) Build() *mcpv1alpha1.MCPRegistry {
+func (rb *RegistryBuilder) Build() *mcpv1beta1.MCPRegistry {
 	configYAML := rb.buildConfigYAML()
 
-	spec := mcpv1alpha1.MCPRegistrySpec{
+	spec := mcpv1beta1.MCPRegistrySpec{
 		ConfigYAML: configYAML,
 	}
 
@@ -218,7 +218,7 @@ func (rb *RegistryBuilder) Build() *mcpv1alpha1.MCPRegistry {
 		spec.VolumeMounts = []apiextensionsv1.JSON{{Raw: mountJSON}}
 	}
 
-	return &mcpv1alpha1.MCPRegistry{
+	return &mcpv1beta1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        rb.name,
 			Namespace:   rb.namespace,
@@ -230,7 +230,7 @@ func (rb *RegistryBuilder) Build() *mcpv1alpha1.MCPRegistry {
 }
 
 // Create builds and creates the MCPRegistry in the cluster
-func (rb *RegistryBuilder) Create(h *MCPRegistryTestHelper) *mcpv1alpha1.MCPRegistry {
+func (rb *RegistryBuilder) Create(h *MCPRegistryTestHelper) *mcpv1beta1.MCPRegistry {
 	registry := rb.Build()
 	err := h.Client.Create(h.Context, registry)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to create MCPRegistry")
@@ -325,7 +325,7 @@ func writeStringList(b *strings.Builder, label string, items []string) {
 }
 
 // CreateBasicConfigMapRegistry creates a simple MCPRegistry with ConfigMap source
-func (h *MCPRegistryTestHelper) CreateBasicConfigMapRegistry(name, configMapName string) *mcpv1alpha1.MCPRegistry {
+func (h *MCPRegistryTestHelper) CreateBasicConfigMapRegistry(name, configMapName string) *mcpv1beta1.MCPRegistry {
 	return h.NewRegistryBuilder(name).
 		WithConfigMapSource(configMapName, "registry.json").
 		WithSyncPolicy("1h").
@@ -333,14 +333,14 @@ func (h *MCPRegistryTestHelper) CreateBasicConfigMapRegistry(name, configMapName
 }
 
 // CreateManualSyncRegistry creates an MCPRegistry with manual sync only
-func (h *MCPRegistryTestHelper) CreateManualSyncRegistry(name, configMapName string) *mcpv1alpha1.MCPRegistry {
+func (h *MCPRegistryTestHelper) CreateManualSyncRegistry(name, configMapName string) *mcpv1beta1.MCPRegistry {
 	return h.NewRegistryBuilder(name).
 		WithConfigMapSource(configMapName, "registry.json").
 		Create(h)
 }
 
 // CreateUpstreamFormatRegistry creates an MCPRegistry with upstream format
-func (h *MCPRegistryTestHelper) CreateUpstreamFormatRegistry(name, configMapName string) *mcpv1alpha1.MCPRegistry {
+func (h *MCPRegistryTestHelper) CreateUpstreamFormatRegistry(name, configMapName string) *mcpv1beta1.MCPRegistry {
 	return h.NewRegistryBuilder(name).
 		WithConfigMapSource(configMapName, "registry.json").
 		WithUpstreamFormat().
@@ -349,8 +349,8 @@ func (h *MCPRegistryTestHelper) CreateUpstreamFormatRegistry(name, configMapName
 }
 
 // GetRegistry retrieves an MCPRegistry by name
-func (h *MCPRegistryTestHelper) GetRegistry(name string) (*mcpv1alpha1.MCPRegistry, error) {
-	registry := &mcpv1alpha1.MCPRegistry{}
+func (h *MCPRegistryTestHelper) GetRegistry(name string) (*mcpv1beta1.MCPRegistry, error) {
+	registry := &mcpv1beta1.MCPRegistry{}
 	err := h.Client.Get(h.Context, types.NamespacedName{
 		Namespace: h.Namespace,
 		Name:      name,
@@ -359,13 +359,13 @@ func (h *MCPRegistryTestHelper) GetRegistry(name string) (*mcpv1alpha1.MCPRegist
 }
 
 // UpdateRegistry updates an existing MCPRegistry
-func (h *MCPRegistryTestHelper) UpdateRegistry(registry *mcpv1alpha1.MCPRegistry) error {
+func (h *MCPRegistryTestHelper) UpdateRegistry(registry *mcpv1beta1.MCPRegistry) error {
 	return h.Client.Update(h.Context, registry)
 }
 
 // PatchRegistry patches an MCPRegistry with the given patch
 func (h *MCPRegistryTestHelper) PatchRegistry(name string, patch client.Patch) error {
-	registry := &mcpv1alpha1.MCPRegistry{}
+	registry := &mcpv1beta1.MCPRegistry{}
 	registry.Name = name
 	registry.Namespace = h.Namespace
 	return h.Client.Patch(h.Context, registry, patch)
@@ -373,7 +373,7 @@ func (h *MCPRegistryTestHelper) PatchRegistry(name string, patch client.Patch) e
 
 // DeleteRegistry deletes an MCPRegistry by name
 func (h *MCPRegistryTestHelper) DeleteRegistry(name string) error {
-	registry := &mcpv1alpha1.MCPRegistry{
+	registry := &mcpv1beta1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: h.Namespace,
@@ -398,7 +398,7 @@ func (h *MCPRegistryTestHelper) TriggerManualSync(name string) error {
 }
 
 // GetRegistryStatus returns the current status of an MCPRegistry
-func (h *MCPRegistryTestHelper) GetRegistryStatus(name string) (*mcpv1alpha1.MCPRegistryStatus, error) {
+func (h *MCPRegistryTestHelper) GetRegistryStatus(name string) (*mcpv1beta1.MCPRegistryStatus, error) {
 	registry, err := h.GetRegistry(name)
 	if err != nil {
 		return nil, err
@@ -407,7 +407,7 @@ func (h *MCPRegistryTestHelper) GetRegistryStatus(name string) (*mcpv1alpha1.MCP
 }
 
 // GetRegistryPhase returns the current phase of an MCPRegistry
-func (h *MCPRegistryTestHelper) GetRegistryPhase(name string) (mcpv1alpha1.MCPRegistryPhase, error) {
+func (h *MCPRegistryTestHelper) GetRegistryPhase(name string) (mcpv1beta1.MCPRegistryPhase, error) {
 	status, err := h.GetRegistryStatus(name)
 	if err != nil {
 		return "", err
@@ -431,8 +431,8 @@ func (h *MCPRegistryTestHelper) GetRegistryCondition(name, conditionType string)
 }
 
 // ListRegistries returns all MCPRegistries in the namespace
-func (h *MCPRegistryTestHelper) ListRegistries() (*mcpv1alpha1.MCPRegistryList, error) {
-	registryList := &mcpv1alpha1.MCPRegistryList{}
+func (h *MCPRegistryTestHelper) ListRegistries() (*mcpv1beta1.MCPRegistryList, error) {
+	registryList := &mcpv1beta1.MCPRegistryList{}
 	err := h.Client.List(h.Context, registryList, client.InNamespace(h.Namespace))
 	return registryList, err
 }
@@ -476,9 +476,9 @@ func (h *MCPRegistryTestHelper) WaitForRegistryInitialization(registryName strin
 
 	// Wait for controller to process and verify initial status
 	ginkgo.By("waiting for controller to process and verify initial status")
-	statusHelper.WaitForPhaseAny(registryName, []mcpv1alpha1.MCPRegistryPhase{
-		mcpv1alpha1.MCPRegistryPhasePending,
-		mcpv1alpha1.MCPRegistryPhaseReady,
+	statusHelper.WaitForPhaseAny(registryName, []mcpv1beta1.MCPRegistryPhase{
+		mcpv1beta1.MCPRegistryPhasePending,
+		mcpv1beta1.MCPRegistryPhaseReady,
 	}, MediumTimeout)
 }
 

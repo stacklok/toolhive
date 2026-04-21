@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/test/e2e/images"
 	"github.com/stacklok/toolhive/test/e2e/thv-operator/testutil"
 )
@@ -262,9 +262,9 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 			redisAddr := fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace)
 
 			ginkgo.By("Creating MCPServer with replicas=2, backendReplicas=2, Redis session storage")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpServerName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:           images.YardstickServerImage,
 					Transport:       "streamable-http",
 					ProxyPort:       proxyPort,
@@ -272,8 +272,8 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 					Replicas:        &replicas,
 					BackendReplicas: &backendReplicas,
 					SessionAffinity: "None",
-					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-						Provider: mcpv1alpha1.SessionStorageProviderRedis,
+					SessionStorage: &mcpv1beta1.SessionStorageConfig{
+						Provider: mcpv1beta1.SessionStorageProviderRedis,
 						Address:  redisAddr,
 					},
 				},
@@ -293,13 +293,13 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 		})
 
 		ginkgo.AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpServerName, Namespace: defaultNamespace},
 			})
 			cleanupRedis(redisName)
 
 			gomega.Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: mcpServerName, Namespace: defaultNamespace}, &mcpv1alpha1.MCPServer{})
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: mcpServerName, Namespace: defaultNamespace}, &mcpv1beta1.MCPServer{})
 				return apierrors.IsNotFound(err)
 			}, e2eTimeout, e2ePollInterval).Should(gomega.BeTrue())
 		})
@@ -391,17 +391,17 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 			redisAddr := fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace)
 
 			ginkgo.By("Creating MCPServer with replicas=2, Redis session storage, and sessionAffinity=None")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpServerName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:           images.YardstickServerImage,
 					Transport:       "streamable-http",
 					ProxyPort:       proxyPort,
 					MCPPort:         8080,
 					Replicas:        &replicas,
 					SessionAffinity: "None",
-					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-						Provider: mcpv1alpha1.SessionStorageProviderRedis,
+					SessionStorage: &mcpv1beta1.SessionStorageConfig{
+						Provider: mcpv1beta1.SessionStorageProviderRedis,
 						Address:  redisAddr,
 					},
 				},
@@ -421,25 +421,25 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 		})
 
 		ginkgo.AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpServerName, Namespace: defaultNamespace},
 			})
 			cleanupRedis(redisName)
 
 			gomega.Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: mcpServerName, Namespace: defaultNamespace}, &mcpv1alpha1.MCPServer{})
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: mcpServerName, Namespace: defaultNamespace}, &mcpv1beta1.MCPServer{})
 				return apierrors.IsNotFound(err)
 			}, e2eTimeout, e2ePollInterval).Should(gomega.BeTrue())
 		})
 
 		ginkgo.It("Should have SessionStorageWarning=False since Redis is configured", func() {
 			gomega.Eventually(func() error {
-				server := &mcpv1alpha1.MCPServer{}
+				server := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: mcpServerName, Namespace: defaultNamespace}, server); err != nil {
 					return err
 				}
 				for _, cond := range server.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionSessionStorageWarning {
+					if cond.Type == mcpv1beta1.ConditionSessionStorageWarning {
 						if string(cond.Status) == "False" {
 							return nil
 						}

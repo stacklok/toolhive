@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
@@ -29,19 +29,19 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 
 	tests := []struct {
 		name                  string
-		mcpServer             *mcpv1alpha1.MCPServer
+		mcpServer             *mcpv1beta1.MCPServer
 		expectConditionStatus metav1.ConditionStatus
 		expectConditionReason string
 		expectEventReason     string
 	}{
 		{
 			name: "invalid_json_in_podtemplatespec",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-invalid-json",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
@@ -53,17 +53,17 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 				},
 			},
 			expectConditionStatus: metav1.ConditionFalse,
-			expectConditionReason: mcpv1alpha1.ConditionReasonPodTemplateInvalid,
+			expectConditionReason: mcpv1beta1.ConditionReasonPodTemplateInvalid,
 			expectEventReason:     "InvalidPodTemplateSpec",
 		},
 		{
 			name: "valid_podtemplatespec",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-valid",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "test-image:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
@@ -73,17 +73,17 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 				},
 			},
 			expectConditionStatus: metav1.ConditionTrue,
-			expectConditionReason: mcpv1alpha1.ConditionReasonPodTemplateValid,
+			expectConditionReason: mcpv1beta1.ConditionReasonPodTemplateValid,
 			expectEventReason:     "", // No warning event for valid spec
 		},
 		{
 			name: "nil_podtemplatespec",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-nil",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:           "test-image:latest",
 					Transport:       "stdio",
 					ProxyPort:       8080,
@@ -104,7 +104,7 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 			// Setup the test environment for each test to avoid race conditions
 			s := runtime.NewScheme()
 			require.NoError(t, scheme.AddToScheme(s))
-			require.NoError(t, mcpv1alpha1.AddToScheme(s))
+			require.NoError(t, mcpv1beta1.AddToScheme(s))
 
 			// Create a fake event recorder for each test
 			eventRecorder := events.NewFakeRecorder(10)
@@ -142,12 +142,12 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 			require.NoError(t, err)
 
 			// Check the MCPServer status conditions
-			var updatedMCPServer mcpv1alpha1.MCPServer
+			var updatedMCPServer mcpv1beta1.MCPServer
 			err = fakeClient.Get(ctx, client.ObjectKeyFromObject(tt.mcpServer), &updatedMCPServer)
 			require.NoError(t, err)
 
 			// Find the PodTemplateValid condition
-			condition := meta.FindStatusCondition(updatedMCPServer.Status.Conditions, mcpv1alpha1.ConditionPodTemplateValid)
+			condition := meta.FindStatusCondition(updatedMCPServer.Status.Conditions, mcpv1beta1.ConditionPodTemplateValid)
 			if tt.expectConditionStatus != "" {
 				require.NotNil(t, condition, "PodTemplateValid condition should be set")
 				assert.Equal(t, tt.expectConditionStatus, condition.Status)
@@ -185,15 +185,15 @@ func TestDeploymentArgsWithInvalidPodTemplateSpec(t *testing.T) {
 	ctx := t.Context()
 	s := runtime.NewScheme()
 	require.NoError(t, scheme.AddToScheme(s))
-	require.NoError(t, mcpv1alpha1.AddToScheme(s))
+	require.NoError(t, mcpv1beta1.AddToScheme(s))
 
 	// MCPServer with invalid PodTemplateSpec
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-mcp",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
 			ProxyPort: 8080,

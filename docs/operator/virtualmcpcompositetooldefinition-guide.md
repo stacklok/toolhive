@@ -27,7 +27,7 @@ A `VirtualMCPCompositeToolDefinition` consists of:
 ### Name and Description
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPCompositeToolDefinition
 metadata:
   name: deploy-app
@@ -430,7 +430,7 @@ This applies to all numeric comparisons (`eq`, `ne`, `lt`, `le`, `gt`, `ge`) whe
 ### Example 1: Simple Deployment
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPCompositeToolDefinition
 metadata:
   name: simple-deploy
@@ -463,7 +463,7 @@ spec:
 ### Example 2: Deploy with Verification
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPCompositeToolDefinition
 metadata:
   name: deploy-and-verify
@@ -537,7 +537,7 @@ spec:
 ### Example 3: Incident Investigation
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPCompositeToolDefinition
 metadata:
   name: investigate-incident
@@ -621,7 +621,7 @@ spec:
 ### Example 4: Multi-Stage Deployment
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPCompositeToolDefinition
 metadata:
   name: canary-deployment
@@ -727,7 +727,7 @@ spec:
 To use a composite workflow in a Virtual MCP Server:
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: production-vmcp

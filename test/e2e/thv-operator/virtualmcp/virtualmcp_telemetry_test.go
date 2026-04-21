@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/yaml"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -35,18 +35,18 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 			"Test MCP Group for telemetry config", timeout, pollingInterval)
 
 		By("Creating yardstick backend MCPServer")
-		backend := &mcpv1alpha1.MCPServer{
+		backend := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backendName,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+			Spec: mcpv1beta1.MCPServerSpec{
+				GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				MCPPort:   8080,
-				Env: []mcpv1alpha1.EnvVar{
+				Env: []mcpv1beta1.EnvVar{
 					{Name: "TRANSPORT", Value: "streamable-http"},
 				},
 			},
@@ -55,45 +55,45 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 
 		By("Waiting for backend MCPServer to be running")
 		Eventually(func() error {
-			server := &mcpv1alpha1.MCPServer{}
+			server := &mcpv1beta1.MCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      backendName,
 				Namespace: testNamespace,
 			}, server); err != nil {
 				return fmt.Errorf("failed to get server: %w", err)
 			}
-			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
+			if server.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
 				return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
 			}
 			return nil
 		}, timeout, pollingInterval).Should(Succeed())
 
 		By("Creating MCPTelemetryConfig for shared telemetry")
-		telCfg := &mcpv1alpha1.MCPTelemetryConfig{
+		telCfg := &mcpv1beta1.MCPTelemetryConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "e2e-telemetry-config",
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-				OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+			Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+				OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
 					Enabled:  true,
 					Endpoint: "localhost:4317",
-					Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
-					Metrics:  &mcpv1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+					Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
+					Metrics:  &mcpv1beta1.OpenTelemetryMetricsConfig{Enabled: true},
 					ResourceAttributes: map[string]string{
 						"environment":  "e2e-test",
 						"test_id":      "telemetry_config_test",
 						"cluster_name": "kind-test-cluster",
 					},
 				},
-				Prometheus: &mcpv1alpha1.PrometheusConfig{Enabled: true},
+				Prometheus: &mcpv1beta1.PrometheusConfig{Enabled: true},
 			},
 		}
 		Expect(k8sClient.Create(ctx, telCfg)).To(Succeed())
 
 		// Wait for MCPTelemetryConfig to be reconciled (hash set)
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telCfg.Name,
 				Namespace: telCfg.Namespace,
@@ -102,18 +102,18 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 		}, timeout, pollingInterval).Should(BeTrue())
 
 		By("Creating VirtualMCPServer with telemetryConfigRef")
-		vmcp := &mcpv1alpha1.VirtualMCPServer{
+		vmcp := &mcpv1beta1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef:    &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+			Spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef:    &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				ServiceType: "NodePort",
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
-				TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+				TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
 					Name:        "e2e-telemetry-config",
 					ServiceName: "custom-service-name",
 				},
@@ -126,14 +126,14 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 
 		By("Waiting for VirtualMCPServer to be ready")
 		Eventually(func() error {
-			server := &mcpv1alpha1.VirtualMCPServer{}
+			server := &mcpv1beta1.VirtualMCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
 			}, server); err != nil {
 				return fmt.Errorf("failed to get VirtualMCPServer: %w", err)
 			}
-			if server.Status.Phase != mcpv1alpha1.VirtualMCPServerPhaseReady {
+			if server.Status.Phase != mcpv1beta1.VirtualMCPServerPhaseReady {
 				return fmt.Errorf("VirtualMCPServer not ready yet, phase: %s", server.Status.Phase)
 			}
 			return nil
@@ -142,7 +142,7 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcp := &mcpv1alpha1.VirtualMCPServer{
+		vmcp := &mcpv1beta1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -151,7 +151,7 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 		Expect(k8sClient.Delete(ctx, vmcp)).To(Succeed())
 
 		By("Cleaning up backend MCPServer")
-		backend := &mcpv1alpha1.MCPServer{
+		backend := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backendName,
 				Namespace: testNamespace,
@@ -160,7 +160,7 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 		Expect(k8sClient.Delete(ctx, backend)).To(Succeed())
 
 		By("Cleaning up MCPTelemetryConfig")
-		_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPTelemetryConfig{
+		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPTelemetryConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "e2e-telemetry-config",
 				Namespace: testNamespace,
@@ -168,7 +168,7 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 		})
 
 		By("Cleaning up MCPGroup")
-		group := &mcpv1alpha1.MCPGroup{
+		group := &mcpv1beta1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      mcpGroupName,
 				Namespace: testNamespace,

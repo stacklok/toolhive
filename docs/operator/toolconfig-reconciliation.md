@@ -80,7 +80,7 @@ graph TD
 MCPServers reference a MCPToolConfig through the `toolConfigRef` field:
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: my-server

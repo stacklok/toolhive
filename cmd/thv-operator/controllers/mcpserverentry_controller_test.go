@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 const (
@@ -32,7 +32,7 @@ const (
 func newEntryScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 	return scheme
 }
@@ -43,18 +43,18 @@ func newEntryFakeClient(t *testing.T, scheme *runtime.Scheme, objs ...client.Obj
 	return fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objs...).
-		WithStatusSubresource(&mcpv1alpha1.MCPServerEntry{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServerEntry{}).
 		Build()
 }
 
 // newMCPGroup creates a minimal MCPGroup with the given phase.
-func newMCPGroup(phase mcpv1alpha1.MCPGroupPhase) *mcpv1alpha1.MCPGroup {
-	return &mcpv1alpha1.MCPGroup{
+func newMCPGroup(phase mcpv1beta1.MCPGroupPhase) *mcpv1beta1.MCPGroup {
+	return &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testEntryGroupRef,
 			Namespace: testEntryNS,
 		},
-		Status: mcpv1alpha1.MCPGroupStatus{
+		Status: mcpv1beta1.MCPGroupStatus{
 			Phase: phase,
 		},
 	}
@@ -63,18 +63,18 @@ func newMCPGroup(phase mcpv1alpha1.MCPGroupPhase) *mcpv1alpha1.MCPGroup {
 // newMCPServerEntry creates an MCPServerEntry with optional auth config and CA bundle refs.
 func newMCPServerEntry(
 	groupRef string,
-	authConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
-	caBundleRef *mcpv1alpha1.CABundleSource,
-) *mcpv1alpha1.MCPServerEntry {
-	return &mcpv1alpha1.MCPServerEntry{
+	authConfigRef *mcpv1beta1.ExternalAuthConfigRef,
+	caBundleRef *mcpv1beta1.CABundleSource,
+) *mcpv1beta1.MCPServerEntry {
+	return &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testEntryName,
 			Namespace: testEntryNS,
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL:             "https://example.com/mcp",
 			Transport:             "sse",
-			GroupRef:              &mcpv1alpha1.MCPGroupRef{Name: groupRef},
+			GroupRef:              &mcpv1beta1.MCPGroupRef{Name: groupRef},
 			ExternalAuthConfigRef: authConfigRef,
 			CABundleRef:           caBundleRef,
 		},
@@ -82,14 +82,14 @@ func newMCPServerEntry(
 }
 
 // newMCPExternalAuthConfig creates a minimal MCPExternalAuthConfig object.
-func newMCPExternalAuthConfig(name, namespace string) *mcpv1alpha1.MCPExternalAuthConfig {
-	return &mcpv1alpha1.MCPExternalAuthConfig{
+func newMCPExternalAuthConfig(name, namespace string) *mcpv1beta1.MCPExternalAuthConfig {
+	return &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
 		},
 	}
 }
@@ -128,10 +128,10 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 	tests := []struct {
 		name string
 		// objects to seed the fake client (entry is always first)
-		entry      *mcpv1alpha1.MCPServerEntry
+		entry      *mcpv1beta1.MCPServerEntry
 		objects    []client.Object
 		wantErr    bool
-		wantPhase  mcpv1alpha1.MCPServerEntryPhase
+		wantPhase  mcpv1beta1.MCPServerEntryPhase
 		conditions []struct {
 			condType string
 			status   metav1.ConditionStatus
@@ -141,8 +141,8 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 		{
 			name: "happy path - all refs valid",
 			entry: newMCPServerEntry(testEntryGroupRef,
-				&mcpv1alpha1.ExternalAuthConfigRef{Name: testAuthConfig},
-				&mcpv1alpha1.CABundleSource{
+				&mcpv1beta1.ExternalAuthConfigRef{Name: testAuthConfig},
+				&mcpv1beta1.CABundleSource{
 					ConfigMapRef: &corev1.ConfigMapKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: testCAConfigMap},
 						Key:                  "ca.crt",
@@ -150,50 +150,50 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 				},
 			),
 			objects: []client.Object{
-				newMCPGroup(mcpv1alpha1.MCPGroupPhaseReady),
+				newMCPGroup(mcpv1beta1.MCPGroupPhaseReady),
 				newMCPExternalAuthConfig(testAuthConfig, testEntryNS),
 				newConfigMap(testCAConfigMap, testEntryNS),
 			},
-			wantPhase: mcpv1alpha1.MCPServerEntryPhaseValid,
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseValid,
 			conditions: []struct {
 				condType string
 				status   metav1.ConditionStatus
 				reason   string
 			}{
-				{mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefValidated},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryAuthConfigValid},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryCABundleRefValidated, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryCABundleRefValid},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryValid, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryValid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryGroupRefValidated},
+				{mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryAuthConfigValid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryCABundleRefValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryCABundleRefValid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryValid},
 			},
 		},
 		{
 			name:      "happy path - optional refs nil",
 			entry:     newMCPServerEntry(testEntryGroupRef, nil, nil),
-			objects:   []client.Object{newMCPGroup(mcpv1alpha1.MCPGroupPhaseReady)},
-			wantPhase: mcpv1alpha1.MCPServerEntryPhaseValid,
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseValid,
 			conditions: []struct {
 				condType string
 				status   metav1.ConditionStatus
 				reason   string
 			}{
-				{mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefValidated},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryAuthConfigNotConfigured},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryCABundleRefValidated, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryCABundleRefNotConfigured},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryValid, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryValid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryGroupRefValidated},
+				{mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryAuthConfigNotConfigured},
+				{mcpv1beta1.ConditionTypeMCPServerEntryCABundleRefValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryCABundleRefNotConfigured},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryValid},
 			},
 		},
 		{
 			name:      "group ref not found",
 			entry:     newMCPServerEntry("nonexistent-group", nil, nil),
 			objects:   []client.Object{},
-			wantPhase: mcpv1alpha1.MCPServerEntryPhaseFailed,
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
 			conditions: []struct {
 				condType string
 				status   metav1.ConditionStatus
 				reason   string
 			}{
-				{mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefNotFound},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryInvalid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryGroupRefNotFound},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
 			},
 		},
 		{
@@ -201,109 +201,109 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 			entry: newMCPServerEntry(testEntryGroupRef, nil, nil),
 			// MCPGroup exists but has empty phase (not Ready)
 			objects:   []client.Object{newMCPGroup("")},
-			wantPhase: mcpv1alpha1.MCPServerEntryPhaseFailed,
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
 			conditions: []struct {
 				condType string
 				status   metav1.ConditionStatus
 				reason   string
 			}{
-				{mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefNotReady},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryInvalid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryGroupRefNotReady},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
 			},
 		},
 		{
 			name: "auth config ref not found",
 			entry: newMCPServerEntry(testEntryGroupRef,
-				&mcpv1alpha1.ExternalAuthConfigRef{Name: "nonexistent-auth"},
+				&mcpv1beta1.ExternalAuthConfigRef{Name: "nonexistent-auth"},
 				nil,
 			),
-			objects:   []client.Object{newMCPGroup(mcpv1alpha1.MCPGroupPhaseReady)},
-			wantPhase: mcpv1alpha1.MCPServerEntryPhaseFailed,
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
 			conditions: []struct {
 				condType string
 				status   metav1.ConditionStatus
 				reason   string
 			}{
-				{mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefValidated},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryAuthConfigNotFound},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryInvalid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryGroupRefValidated},
+				{mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryAuthConfigNotFound},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
 			},
 		},
 		{
 			name: "CA bundle ref not found",
 			entry: newMCPServerEntry(testEntryGroupRef,
 				nil,
-				&mcpv1alpha1.CABundleSource{
+				&mcpv1beta1.CABundleSource{
 					ConfigMapRef: &corev1.ConfigMapKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: "nonexistent-cm"},
 						Key:                  "ca.crt",
 					},
 				},
 			),
-			objects:   []client.Object{newMCPGroup(mcpv1alpha1.MCPGroupPhaseReady)},
-			wantPhase: mcpv1alpha1.MCPServerEntryPhaseFailed,
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
 			conditions: []struct {
 				condType string
 				status   metav1.ConditionStatus
 				reason   string
 			}{
-				{mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefValidated},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryCABundleRefValidated, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryCABundleRefNotFound},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryInvalid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryGroupRefValidated},
+				{mcpv1beta1.ConditionTypeMCPServerEntryCABundleRefValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryCABundleRefNotFound},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
 			},
 		},
 		{
 			name: "SSRF - loopback IP rejected",
-			entry: func() *mcpv1alpha1.MCPServerEntry {
+			entry: func() *mcpv1beta1.MCPServerEntry {
 				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
 				e.Spec.RemoteURL = "http://127.0.0.1:8080/"
 				return e
 			}(),
-			objects:   []client.Object{newMCPGroup(mcpv1alpha1.MCPGroupPhaseReady)},
-			wantPhase: mcpv1alpha1.MCPServerEntryPhaseFailed,
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
 			conditions: []struct {
 				condType string
 				status   metav1.ConditionStatus
 				reason   string
 			}{
-				{mcpv1alpha1.ConditionTypeMCPServerEntryRemoteURLValidated, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryRemoteURLInvalid},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryInvalid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryRemoteURLValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryRemoteURLInvalid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
 			},
 		},
 		{
 			name: "SSRF - metadata endpoint rejected",
-			entry: func() *mcpv1alpha1.MCPServerEntry {
+			entry: func() *mcpv1beta1.MCPServerEntry {
 				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
 				e.Spec.RemoteURL = "http://169.254.169.254/latest/meta-data/"
 				return e
 			}(),
-			objects:   []client.Object{newMCPGroup(mcpv1alpha1.MCPGroupPhaseReady)},
-			wantPhase: mcpv1alpha1.MCPServerEntryPhaseFailed,
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
 			conditions: []struct {
 				condType string
 				status   metav1.ConditionStatus
 				reason   string
 			}{
-				{mcpv1alpha1.ConditionTypeMCPServerEntryRemoteURLValidated, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryRemoteURLInvalid},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryInvalid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryRemoteURLValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryRemoteURLInvalid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
 			},
 		},
 		{
 			name: "SSRF - kubernetes.default.svc rejected",
-			entry: func() *mcpv1alpha1.MCPServerEntry {
+			entry: func() *mcpv1beta1.MCPServerEntry {
 				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
 				e.Spec.RemoteURL = "http://kubernetes.default.svc/"
 				return e
 			}(),
-			objects:   []client.Object{newMCPGroup(mcpv1alpha1.MCPGroupPhaseReady)},
-			wantPhase: mcpv1alpha1.MCPServerEntryPhaseFailed,
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
 			conditions: []struct {
 				condType string
 				status   metav1.ConditionStatus
 				reason   string
 			}{
-				{mcpv1alpha1.ConditionTypeMCPServerEntryRemoteURLValidated, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryRemoteURLInvalid},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1alpha1.ConditionReasonMCPServerEntryInvalid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryRemoteURLValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryRemoteURLInvalid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
 			},
 		},
 		{
@@ -315,19 +315,19 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 			name: "CA bundle ref with nil configMapRef treated as not configured",
 			entry: newMCPServerEntry(testEntryGroupRef,
 				nil,
-				&mcpv1alpha1.CABundleSource{ConfigMapRef: nil},
+				&mcpv1beta1.CABundleSource{ConfigMapRef: nil},
 			),
-			objects:   []client.Object{newMCPGroup(mcpv1alpha1.MCPGroupPhaseReady)},
-			wantPhase: mcpv1alpha1.MCPServerEntryPhaseValid,
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseValid,
 			conditions: []struct {
 				condType string
 				status   metav1.ConditionStatus
 				reason   string
 			}{
-				{mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefValidated},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryAuthConfigNotConfigured},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryCABundleRefValidated, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryCABundleRefNotConfigured},
-				{mcpv1alpha1.ConditionTypeMCPServerEntryValid, metav1.ConditionTrue, mcpv1alpha1.ConditionReasonMCPServerEntryValid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryGroupRefValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryGroupRefValidated},
+				{mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryAuthConfigNotConfigured},
+				{mcpv1beta1.ConditionTypeMCPServerEntryCABundleRefValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryCABundleRefNotConfigured},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryValid},
 			},
 		},
 	}
@@ -379,7 +379,7 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 			assert.Zero(t, result.RequeueAfter, "Should not requeue on success")
 
 			// Fetch the updated entry from the fake client
-			var updatedEntry mcpv1alpha1.MCPServerEntry
+			var updatedEntry mcpv1beta1.MCPServerEntry
 			err = fakeClient.Get(ctx, req.NamespacedName, &updatedEntry)
 			require.NoError(t, err)
 
@@ -400,41 +400,41 @@ func TestMCPGroupReconciler_MCPServerEntryIntegration(t *testing.T) {
 	ctx := t.Context()
 	scheme := newEntryScheme(t)
 
-	group := &mcpv1alpha1.MCPGroup{
+	group := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testEntryGroupRef,
 			Namespace: testEntryNS,
 		},
 	}
-	entry1 := &mcpv1alpha1.MCPServerEntry{
+	entry1 := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "entry1", Namespace: testEntryNS},
-		Spec:       mcpv1alpha1.MCPServerEntrySpec{RemoteURL: "https://a.example.com", Transport: "sse", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testEntryGroupRef}},
+		Spec:       mcpv1beta1.MCPServerEntrySpec{RemoteURL: "https://a.example.com", Transport: "sse", GroupRef: &mcpv1beta1.MCPGroupRef{Name: testEntryGroupRef}},
 	}
-	entry2 := &mcpv1alpha1.MCPServerEntry{
+	entry2 := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "entry2", Namespace: testEntryNS},
-		Spec:       mcpv1alpha1.MCPServerEntrySpec{RemoteURL: "https://b.example.com", Transport: "sse", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testEntryGroupRef}},
+		Spec:       mcpv1beta1.MCPServerEntrySpec{RemoteURL: "https://b.example.com", Transport: "sse", GroupRef: &mcpv1beta1.MCPGroupRef{Name: testEntryGroupRef}},
 	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(group, entry1, entry2).
-		WithStatusSubresource(&mcpv1alpha1.MCPGroup{}, &mcpv1alpha1.MCPServerEntry{}).
-		WithIndex(&mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
-			s := obj.(*mcpv1alpha1.MCPServer)
+		WithStatusSubresource(&mcpv1beta1.MCPGroup{}, &mcpv1beta1.MCPServerEntry{}).
+		WithIndex(&mcpv1beta1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
+			s := obj.(*mcpv1beta1.MCPServer)
 			if s.Spec.GroupRef.GetName() == "" {
 				return nil
 			}
 			return []string{s.Spec.GroupRef.GetName()}
 		}).
-		WithIndex(&mcpv1alpha1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
-			p := obj.(*mcpv1alpha1.MCPRemoteProxy)
+		WithIndex(&mcpv1beta1.MCPRemoteProxy{}, "spec.groupRef", func(obj client.Object) []string {
+			p := obj.(*mcpv1beta1.MCPRemoteProxy)
 			if p.Spec.GroupRef.GetName() == "" {
 				return nil
 			}
 			return []string{p.Spec.GroupRef.GetName()}
 		}).
-		WithIndex(&mcpv1alpha1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
-			e := obj.(*mcpv1alpha1.MCPServerEntry)
+		WithIndex(&mcpv1beta1.MCPServerEntry{}, "spec.groupRef", func(obj client.Object) []string {
+			e := obj.(*mcpv1beta1.MCPServerEntry)
 			if e.Spec.GroupRef.GetName() == "" {
 				return nil
 			}
@@ -461,11 +461,11 @@ func TestMCPGroupReconciler_MCPServerEntryIntegration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, result.RequeueAfter, "Should not requeue")
 
-	var updatedGroup mcpv1alpha1.MCPGroup
+	var updatedGroup mcpv1beta1.MCPGroup
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedGroup)
 	require.NoError(t, err)
 
-	assert.Equal(t, mcpv1alpha1.MCPGroupPhaseReady, updatedGroup.Status.Phase)
+	assert.Equal(t, mcpv1beta1.MCPGroupPhaseReady, updatedGroup.Status.Phase)
 	assert.Equal(t, int32(2), updatedGroup.Status.EntryCount)
 	assert.ElementsMatch(t, []string{"entry1", "entry2"}, updatedGroup.Status.Entries)
 }
@@ -478,38 +478,38 @@ func TestMCPGroupReconciler_EntryDeletionHandler(t *testing.T) {
 	ctx := t.Context()
 	scheme := newEntryScheme(t)
 
-	entry1 := &mcpv1alpha1.MCPServerEntry{
+	entry1 := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "entry1", Namespace: testEntryNS},
-		Spec:       mcpv1alpha1.MCPServerEntrySpec{RemoteURL: "https://a.example.com", Transport: "sse", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testEntryGroupRef}},
+		Spec:       mcpv1beta1.MCPServerEntrySpec{RemoteURL: "https://a.example.com", Transport: "sse", GroupRef: &mcpv1beta1.MCPGroupRef{Name: testEntryGroupRef}},
 	}
-	entry2 := &mcpv1alpha1.MCPServerEntry{
+	entry2 := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "entry2", Namespace: testEntryNS},
-		Spec:       mcpv1alpha1.MCPServerEntrySpec{RemoteURL: "https://b.example.com", Transport: "sse", GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testEntryGroupRef}},
+		Spec:       mcpv1beta1.MCPServerEntrySpec{RemoteURL: "https://b.example.com", Transport: "sse", GroupRef: &mcpv1beta1.MCPGroupRef{Name: testEntryGroupRef}},
 	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(entry1, entry2).
-		WithStatusSubresource(&mcpv1alpha1.MCPServerEntry{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServerEntry{}).
 		Build()
 
 	r := &MCPGroupReconciler{Client: fakeClient}
 
 	// Build the slice of entries as the controller would receive them
-	entries := []mcpv1alpha1.MCPServerEntry{*entry1, *entry2}
+	entries := []mcpv1beta1.MCPServerEntry{*entry1, *entry2}
 
 	r.updateReferencingEntriesOnDeletion(ctx, entries, testEntryGroupRef)
 
 	// Verify both entries have the GroupRefValidated condition set to False
 	for _, entryName := range []string{"entry1", "entry2"} {
-		var updated mcpv1alpha1.MCPServerEntry
+		var updated mcpv1beta1.MCPServerEntry
 		err := fakeClient.Get(ctx, types.NamespacedName{Name: entryName, Namespace: testEntryNS}, &updated)
 		require.NoError(t, err, "should be able to fetch entry %s", entryName)
 
 		assertCondition(t, updated.Status.Conditions,
-			mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated,
+			mcpv1beta1.ConditionTypeMCPServerEntryGroupRefValidated,
 			metav1.ConditionFalse,
-			mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefNotFound,
+			mcpv1beta1.ConditionReasonMCPServerEntryGroupRefNotFound,
 		)
 	}
 }

@@ -133,7 +133,7 @@ override. Sensitive headers (API keys, bearer tokens) are stored in Kubernetes
 Secrets via `sensitiveHeaders[].secretKeyRef`.
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPTelemetryConfig
 metadata:
   name: shared-otel
@@ -148,7 +148,7 @@ spec:
     metrics:
       enabled: true
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: my-server
@@ -164,7 +164,7 @@ for a complete example.
 
 **Inline (deprecated)**: The inline `spec.telemetry` (MCPServer, MCPRemoteProxy)
 and `spec.config.telemetry` (VirtualMCPServer) fields still work but are
-deprecated and will be removed in v1beta1. They are mutually exclusive with
+deprecated and will be removed in a future API version. They are mutually exclusive with
 `telemetryConfigRef` (CEL enforced). All three resource types now support
 `spec.telemetryConfigRef`.
 

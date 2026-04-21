@@ -12,7 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -30,10 +30,10 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 			mcpGroupName   string
 			mcpServerName  string
 			authConfigName string
-			vmcp           *mcpv1alpha1.VirtualMCPServer
-			mcpGroup       *mcpv1alpha1.MCPGroup
-			mcpServer      *mcpv1alpha1.MCPServer
-			authConfig     *mcpv1alpha1.MCPExternalAuthConfig
+			vmcp           *mcpv1beta1.VirtualMCPServer
+			mcpGroup       *mcpv1beta1.MCPGroup
+			mcpServer      *mcpv1beta1.MCPServer
+			authConfig     *mcpv1beta1.MCPExternalAuthConfig
 		)
 
 		BeforeAll(func() {
@@ -44,16 +44,16 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 			authConfigName = "test-auth-watch"
 
 			// Create MCPExternalAuthConfig
-			authConfig = &mcpv1alpha1.MCPExternalAuthConfig{
+			authConfig = &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      authConfigName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-					HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+					HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 						HeaderName: "X-Test-Auth",
-						ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "test-secret",
 							Key:  "token",
 						},
@@ -63,12 +63,12 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 			Expect(k8sClient.Create(ctx, authConfig)).Should(Succeed())
 
 			// Create MCPGroup
-			mcpGroup = &mcpv1alpha1.MCPGroup{
+			mcpGroup = &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpGroupName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
+				Spec: mcpv1beta1.MCPGroupSpec{
 					Description: "Test group for auth watch",
 				},
 			}
@@ -76,25 +76,25 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 
 			// Wait for MCPGroup to be ready
 			Eventually(func() bool {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
+				updatedGroup := &mcpv1beta1.MCPGroup{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpGroupName,
 					Namespace: namespace,
 				}, updatedGroup)
-				return err == nil && updatedGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
+				return err == nil && updatedGroup.Status.Phase == mcpv1beta1.MCPGroupPhaseReady
 			}, timeout, interval).Should(BeTrue())
 
 			// Create MCPServer that references the MCPExternalAuthConfig
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+				Spec: mcpv1beta1.MCPServerSpec{
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 					Image:     "test-image:latest",
 					Transport: "streamable-http",
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: authConfigName,
 					},
 				},
@@ -102,18 +102,18 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
 
 			// Create VirtualMCPServer with discovered mode
-			vmcp = &mcpv1alpha1.VirtualMCPServer{
+			vmcp = &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      vmcpName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 					Config:   vmcpconfig.Config{Group: mcpGroupName},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
-					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+					OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
 						Source: "discovered", // Use discovered mode
 					},
 				},
@@ -122,7 +122,7 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 
 			// Wait for initial VirtualMCPServer reconciliation
 			Eventually(func() bool {
-				updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
+				updatedVMCP := &mcpv1beta1.VirtualMCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      vmcpName,
 					Namespace: namespace,
@@ -141,7 +141,7 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 
 		It("Should trigger VirtualMCPServer reconciliation when ExternalAuthConfig is updated", func() {
 			// Update the MCPExternalAuthConfig
-			updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+			updatedAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      authConfigName,
 				Namespace: namespace,
@@ -155,7 +155,7 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 			// We verify this by checking that ObservedGeneration stays current with Generation
 			// This indicates the controller is continuously reconciling and processing the auth config update
 			Consistently(func() bool {
-				reconciledVMCP := &mcpv1alpha1.VirtualMCPServer{}
+				reconciledVMCP := &mcpv1beta1.VirtualMCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      vmcpName,
 					Namespace: namespace,
@@ -169,7 +169,7 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 			}, time.Second*5, interval).Should(BeTrue())
 
 			// Verify the VirtualMCPServer is still in a valid state
-			updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
+			updatedVMCP := &mcpv1beta1.VirtualMCPServer{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpName,
 				Namespace: namespace,
@@ -177,8 +177,8 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 
 			Expect(updatedVMCP.Status.ObservedGeneration).To(Equal(updatedVMCP.Generation))
 			Expect(updatedVMCP.Status.Phase).To(Or(
-				Equal(mcpv1alpha1.VirtualMCPServerPhaseReady),
-				Equal(mcpv1alpha1.VirtualMCPServerPhasePending),
+				Equal(mcpv1beta1.VirtualMCPServerPhaseReady),
+				Equal(mcpv1beta1.VirtualMCPServerPhasePending),
 			))
 		})
 	})

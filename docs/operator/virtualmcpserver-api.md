@@ -13,7 +13,7 @@ The `VirtualMCPServer` CRD enables aggregation of multiple backend MCPServers in
 ## API Group and Version
 
 - **Group**: `toolhive.stacklok.dev`
-- **Version**: `v1alpha1`
+- **Version**: \`v1beta1\`
 - **Kind**: `VirtualMCPServer`
 
 ## Resource Names
@@ -56,7 +56,7 @@ A `VirtualMCPServer` aggregates three types of backends from the referenced `MCP
 **Example: MCPServerEntry backend**
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServerEntry
 metadata:
   name: context7
@@ -448,7 +448,7 @@ The most recent generation observed for this VirtualMCPServer.
 ## Complete Example
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: engineering-vmcp

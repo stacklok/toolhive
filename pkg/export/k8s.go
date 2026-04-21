@@ -13,7 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -37,7 +37,7 @@ func WriteK8sManifest(config *runner.RunConfig, w io.Writer) error {
 
 // runConfigToMCPServer converts a RunConfig to a Kubernetes MCPServer resource
 // nolint:gocyclo // Complexity due to mapping multiple config fields to K8s resource
-func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error) {
+func runConfigToMCPServer(config *runner.RunConfig) (*v1beta1.MCPServer, error) {
 	// Check if this is a remote server - not supported in Kubernetes
 	if config.RemoteURL != "" {
 		return nil, fmt.Errorf("remote MCP servers are not supported in Kubernetes deployments")
@@ -60,15 +60,15 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 	// Sanitize the name to be a valid Kubernetes resource name
 	name = sanitizeK8sName(name)
 
-	mcpServer := &v1alpha1.MCPServer{
+	mcpServer := &v1beta1.MCPServer{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "toolhive.stacklok.dev/v1alpha1",
+			APIVersion: "toolhive.stacklok.dev/v1beta1",
 			Kind:       "MCPServer",
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
-		Spec: v1alpha1.MCPServerSpec{
+		Spec: v1beta1.MCPServerSpec{
 			Image:     config.Image,
 			Transport: string(config.Transport),
 			Args:      config.CmdArgs,
@@ -94,9 +94,9 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 
 	// Convert environment variables
 	if len(config.EnvVars) > 0 {
-		mcpServer.Spec.Env = make([]v1alpha1.EnvVar, 0, len(config.EnvVars))
+		mcpServer.Spec.Env = make([]v1beta1.EnvVar, 0, len(config.EnvVars))
 		for key, value := range config.EnvVars {
-			mcpServer.Spec.Env = append(mcpServer.Spec.Env, v1alpha1.EnvVar{
+			mcpServer.Spec.Env = append(mcpServer.Spec.Env, v1beta1.EnvVar{
 				Name:  key,
 				Value: value,
 			})
@@ -105,7 +105,7 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 
 	// Convert volumes
 	if len(config.Volumes) > 0 {
-		mcpServer.Spec.Volumes = make([]v1alpha1.Volume, 0, len(config.Volumes))
+		mcpServer.Spec.Volumes = make([]v1beta1.Volume, 0, len(config.Volumes))
 		for i, vol := range config.Volumes {
 			volume, err := parseVolumeString(vol, i)
 			if err != nil {
@@ -119,8 +119,8 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 	if config.PermissionProfile != nil {
 		// For now, we export permission profiles as inline ConfigMaps would need to be created separately
 		// This is a simplified export - users may need to adjust this
-		mcpServer.Spec.PermissionProfile = &v1alpha1.PermissionProfileRef{
-			Type: v1alpha1.PermissionProfileTypeBuiltin,
+		mcpServer.Spec.PermissionProfile = &v1beta1.PermissionProfileRef{
+			Type: v1beta1.PermissionProfileTypeBuiltin,
 			Name: "none", // Default to none, user should adjust based on their needs
 		}
 	}
@@ -135,9 +135,9 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 		var cedarConfig cedar.Config
 		if err := json.Unmarshal(config.AuthzConfig.RawConfig(), &cedarConfig); err == nil &&
 			cedarConfig.Options != nil && len(cedarConfig.Options.Policies) > 0 {
-			mcpServer.Spec.AuthzConfig = &v1alpha1.AuthzConfigRef{
-				Type: v1alpha1.AuthzConfigTypeInline,
-				Inline: &v1alpha1.InlineAuthzConfig{
+			mcpServer.Spec.AuthzConfig = &v1beta1.AuthzConfigRef{
+				Type: v1beta1.AuthzConfigTypeInline,
+				Inline: &v1beta1.InlineAuthzConfig{
 					Policies: cedarConfig.Options.Policies,
 				},
 			}
@@ -150,7 +150,7 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 
 	// Convert audit config - audit is always enabled if config exists
 	if config.AuditConfig != nil {
-		mcpServer.Spec.Audit = &v1alpha1.AuditConfig{
+		mcpServer.Spec.Audit = &v1beta1.AuditConfig{
 			Enabled: true,
 		}
 	}
@@ -165,13 +165,13 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 }
 
 // parseVolumeString parses a volume string in the format "host-path:container-path[:ro]"
-func parseVolumeString(volStr string, index int) (v1alpha1.Volume, error) {
+func parseVolumeString(volStr string, index int) (v1beta1.Volume, error) {
 	parts := strings.Split(volStr, ":")
 	if len(parts) < 2 {
-		return v1alpha1.Volume{}, fmt.Errorf("invalid volume format, expected 'host-path:container-path[:ro]'")
+		return v1beta1.Volume{}, fmt.Errorf("invalid volume format, expected 'host-path:container-path[:ro]'")
 	}
 
-	volume := v1alpha1.Volume{
+	volume := v1beta1.Volume{
 		Name:      fmt.Sprintf("volume-%d", index),
 		HostPath:  parts[0],
 		MountPath: parts[1],

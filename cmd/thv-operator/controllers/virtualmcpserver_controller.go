@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
@@ -134,7 +134,7 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	ctxLogger := log.FromContext(ctx)
 
 	// Fetch the VirtualMCPServer instance
-	vmcp := &mcpv1alpha1.VirtualMCPServer{}
+	vmcp := &mcpv1beta1.VirtualMCPServer{}
 	err := r.Get(ctx, req.NamespacedName, vmcp)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -205,7 +205,7 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// - BackendsDiscovered condition
 
 	// Fetch the latest version before updating status to ensure we use the current Generation
-	latestVMCP := &mcpv1alpha1.VirtualMCPServer{}
+	latestVMCP := &mcpv1beta1.VirtualMCPServer{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      vmcp.Name,
 		Namespace: vmcp.Namespace,
@@ -239,7 +239,7 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // Returns an error if validation fails, which signals the caller to stop reconciliation.
 func (r *VirtualMCPServerReconciler) validateSpec(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	ctxLogger := log.FromContext(ctx)
@@ -247,7 +247,7 @@ func (r *VirtualMCPServerReconciler) validateSpec(
 	if err := vmcp.Validate(); err != nil {
 		ctxLogger.Error(err, "VirtualMCPServer spec validation failed")
 		statusManager.SetObservedGeneration(vmcp.Generation)
-		statusManager.SetCondition(mcpv1alpha1.ConditionTypeValid, "ValidationFailed", err.Error(), metav1.ConditionFalse)
+		statusManager.SetCondition(mcpv1beta1.ConditionTypeValid, "ValidationFailed", err.Error(), metav1.ConditionFalse)
 		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 			ctxLogger.Error(applyErr, "Failed to apply status updates after validation error")
 		}
@@ -256,7 +256,7 @@ func (r *VirtualMCPServerReconciler) validateSpec(
 
 	// Validation succeeded - set Valid=True condition
 	statusManager.SetObservedGeneration(vmcp.Generation)
-	statusManager.SetCondition(mcpv1alpha1.ConditionTypeValid, "ValidationSucceeded", "Spec validation passed", metav1.ConditionTrue)
+	statusManager.SetCondition(mcpv1beta1.ConditionTypeValid, "ValidationSucceeded", "Spec validation passed", metav1.ConditionTrue)
 
 	return nil
 }
@@ -265,13 +265,13 @@ func (r *VirtualMCPServerReconciler) validateSpec(
 // This implements the StatusCollector pattern to reduce API calls and prevent update conflicts.
 func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
 	// Fetch the latest version to avoid conflicts
-	latest := &mcpv1alpha1.VirtualMCPServer{}
+	latest := &mcpv1beta1.VirtualMCPServer{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      vmcp.Name,
 		Namespace: vmcp.Namespace,
@@ -306,7 +306,7 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 // Returns (false, error) for transient errors that should trigger requeue.
 func (r *VirtualMCPServerReconciler) runValidations(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) (bool, error) {
 	ctxLogger := log.FromContext(ctx)
@@ -362,7 +362,7 @@ func (r *VirtualMCPServerReconciler) runValidations(
 		}
 	} else {
 		// Remove stale condition if AuthServerConfig was previously set then removed.
-		statusManager.RemoveConditionsWithPrefix(mcpv1alpha1.ConditionTypeAuthServerConfigValidated, []string{})
+		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthServerConfigValidated, []string{})
 	}
 
 	// Advisory: warn when replicas > 1 but session storage is not Redis-backed.
@@ -375,29 +375,29 @@ func (r *VirtualMCPServerReconciler) runValidations(
 // replicas > 1 but session storage is not configured with a Redis backend.
 // Reconciliation continues regardless; this is advisory only.
 func (*VirtualMCPServerReconciler) validateSessionStorageForReplicas(
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) {
 	if vmcp.Spec.Replicas != nil && *vmcp.Spec.Replicas > 1 {
-		if vmcp.Spec.SessionStorage == nil || vmcp.Spec.SessionStorage.Provider != mcpv1alpha1.SessionStorageProviderRedis {
+		if vmcp.Spec.SessionStorage == nil || vmcp.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis {
 			statusManager.SetCondition(
-				mcpv1alpha1.ConditionSessionStorageWarning,
-				mcpv1alpha1.ConditionReasonSessionStorageMissing,
+				mcpv1beta1.ConditionSessionStorageWarning,
+				mcpv1beta1.ConditionReasonSessionStorageMissing,
 				"replicas > 1 but sessionStorage.provider is not redis; sessions are not shared across replicas",
 				metav1.ConditionTrue,
 			)
 		} else {
 			statusManager.SetCondition(
-				mcpv1alpha1.ConditionSessionStorageWarning,
-				mcpv1alpha1.ConditionReasonSessionStorageConfigured,
+				mcpv1beta1.ConditionSessionStorageWarning,
+				mcpv1beta1.ConditionReasonSessionStorageConfigured,
 				"Redis session storage is configured",
 				metav1.ConditionFalse,
 			)
 		}
 	} else {
 		statusManager.SetCondition(
-			mcpv1alpha1.ConditionSessionStorageWarning,
-			mcpv1alpha1.ConditionReasonSessionStorageNotApplicable,
+			mcpv1beta1.ConditionSessionStorageWarning,
+			mcpv1beta1.ConditionReasonSessionStorageNotApplicable,
 			"session storage warning is not active",
 			metav1.ConditionFalse,
 		)
@@ -408,17 +408,17 @@ func (*VirtualMCPServerReconciler) validateSessionStorageForReplicas(
 // AuthServerConfigValidated condition. Returns an error when validation fails
 // (caller should NOT requeue — user must fix the spec).
 func (*VirtualMCPServerReconciler) validateAuthServerConfig(
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	cfg := vmcp.Spec.AuthServerConfig
 
 	if cfg.Issuer == "" {
 		message := "spec.authServerConfig.issuer is required"
-		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
 		statusManager.SetAuthServerConfigValidatedCondition(
-			mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
 			message,
 			metav1.ConditionFalse,
 		)
@@ -428,10 +428,10 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 
 	if len(cfg.UpstreamProviders) == 0 {
 		message := "spec.authServerConfig.upstreamProviders is required"
-		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
 		statusManager.SetAuthServerConfigValidatedCondition(
-			mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
 			message,
 			metav1.ConditionFalse,
 		)
@@ -443,12 +443,12 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 	for i := range cfg.UpstreamProviders {
 		prefix := fmt.Sprintf("spec.authServerConfig.upstreamProviders[%d]", i)
 		params := cfg.UpstreamProviders[i].AdditionalAuthorizationParams()
-		if err := mcpv1alpha1.ValidateAdditionalAuthorizationParams(prefix, params); err != nil {
+		if err := mcpv1beta1.ValidateAdditionalAuthorizationParams(prefix, params); err != nil {
 			message := err.Error()
-			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 			statusManager.SetMessage(message)
 			statusManager.SetAuthServerConfigValidatedCondition(
-				mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+				mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
 				message,
 				metav1.ConditionFalse,
 			)
@@ -459,7 +459,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 
 	// AuthServerConfig is valid
 	statusManager.SetAuthServerConfigValidatedCondition(
-		mcpv1alpha1.ConditionReasonAuthServerConfigValid,
+		mcpv1beta1.ConditionReasonAuthServerConfigValid,
 		"AuthServerConfig is valid",
 		metav1.ConditionTrue,
 	)
@@ -473,7 +473,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 // Otherwise it returns the original error unchanged for normal requeue handling.
 func (r *VirtualMCPServerReconciler) handleSpecValidationError(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 	err error,
 ) error {
@@ -492,13 +492,13 @@ func (r *VirtualMCPServerReconciler) handleSpecValidationError(
 // validateGroupRef validates that the referenced MCPGroup exists and is ready
 func (r *VirtualMCPServerReconciler) validateGroupRef(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
 	// Validate GroupRef exists
-	mcpGroup := &mcpv1alpha1.MCPGroup{}
+	mcpGroup := &mcpv1beta1.MCPGroup{}
 	err := r.Get(ctx, types.NamespacedName{
 		Name:      vmcp.ResolveGroupName(),
 		Namespace: vmcp.Namespace,
@@ -506,10 +506,10 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 
 	if errors.IsNotFound(err) {
 		message := fmt.Sprintf("Referenced MCPGroup %s not found", vmcp.ResolveGroupName())
-		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
 		statusManager.SetGroupRefValidatedCondition(
-			mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefNotFound,
+			mcpv1beta1.ConditionReasonVirtualMCPServerGroupRefNotFound,
 			message,
 			metav1.ConditionFalse,
 		)
@@ -521,13 +521,13 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 	}
 
 	// Check if MCPGroup is ready
-	if mcpGroup.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
+	if mcpGroup.Status.Phase != mcpv1beta1.MCPGroupPhaseReady {
 		message := fmt.Sprintf("Referenced MCPGroup %s is not ready (phase: %s)",
 			vmcp.ResolveGroupName(), mcpGroup.Status.Phase)
-		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhasePending)
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhasePending)
 		statusManager.SetMessage(message)
 		statusManager.SetGroupRefValidatedCondition(
-			mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefNotReady,
+			mcpv1beta1.ConditionReasonVirtualMCPServerGroupRefNotReady,
 			message,
 			metav1.ConditionFalse,
 		)
@@ -538,7 +538,7 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 
 	// GroupRef is valid and ready
 	statusManager.SetGroupRefValidatedCondition(
-		mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefValid,
+		mcpv1beta1.ConditionReasonVirtualMCPServerGroupRefValid,
 		fmt.Sprintf("MCPGroup %s is valid and ready", vmcp.ResolveGroupName()),
 		metav1.ConditionTrue,
 	)
@@ -550,7 +550,7 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 // validateCompositeToolRefs validates that all referenced VirtualMCPCompositeToolDefinition resources exist
 func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	ctxLogger := log.FromContext(ctx)
@@ -560,7 +560,7 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 		// Set condition to indicate validation passed (no refs to validate)
 		statusManager.SetObservedGeneration(vmcp.Generation)
 		statusManager.SetCompositeToolRefsValidatedCondition(
-			mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
+			mcpv1beta1.ConditionReasonCompositeToolRefsValid,
 			"No composite tool references to validate",
 			metav1.ConditionTrue,
 		)
@@ -570,7 +570,7 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 	// Validate each referenced composite tool definition exists
 	for i := range vmcp.Spec.Config.CompositeToolRefs {
 		ref := &vmcp.Spec.Config.CompositeToolRefs[i]
-		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
+		compositeToolDef := &mcpv1beta1.VirtualMCPCompositeToolDefinition{}
 		err := r.Get(ctx, types.NamespacedName{
 			Name:      ref.Name,
 			Namespace: vmcp.Namespace,
@@ -579,10 +579,10 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 		if errors.IsNotFound(err) {
 			message := fmt.Sprintf("Referenced VirtualMCPCompositeToolDefinition %s not found", ref.Name)
 			statusManager.SetObservedGeneration(vmcp.Generation)
-			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 			statusManager.SetMessage(message)
 			statusManager.SetCompositeToolRefsValidatedCondition(
-				mcpv1alpha1.ConditionReasonCompositeToolRefNotFound,
+				mcpv1beta1.ConditionReasonCompositeToolRefNotFound,
 				message,
 				metav1.ConditionFalse,
 			)
@@ -593,16 +593,16 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 		}
 
 		// Check that the composite tool definition is validated and valid
-		if compositeToolDef.Status.ValidationStatus == mcpv1alpha1.ValidationStatusInvalid {
+		if compositeToolDef.Status.ValidationStatus == mcpv1beta1.ValidationStatusInvalid {
 			message := fmt.Sprintf("Referenced VirtualMCPCompositeToolDefinition %s is invalid", ref.Name)
 			if len(compositeToolDef.Status.ValidationErrors) > 0 {
 				message = fmt.Sprintf("%s: %s", message, strings.Join(compositeToolDef.Status.ValidationErrors, "; "))
 			}
 			statusManager.SetObservedGeneration(vmcp.Generation)
-			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 			statusManager.SetMessage(message)
 			statusManager.SetCompositeToolRefsValidatedCondition(
-				mcpv1alpha1.ConditionReasonCompositeToolRefInvalid,
+				mcpv1beta1.ConditionReasonCompositeToolRefInvalid,
 				message,
 				metav1.ConditionFalse,
 			)
@@ -611,7 +611,7 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 
 		// If ValidationStatus is Unknown, we still allow it (validation might be in progress)
 		// but log a warning
-		if compositeToolDef.Status.ValidationStatus == mcpv1alpha1.ValidationStatusUnknown {
+		if compositeToolDef.Status.ValidationStatus == mcpv1beta1.ValidationStatusUnknown {
 			ctxLogger.V(1).Info("Referenced composite tool definition validation status is Unknown, proceeding",
 				"name", ref.Name, "namespace", vmcp.Namespace)
 		}
@@ -620,7 +620,7 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 	// All composite tool refs are valid
 	statusManager.SetObservedGeneration(vmcp.Generation)
 	statusManager.SetCompositeToolRefsValidatedCondition(
-		mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
+		mcpv1beta1.ConditionReasonCompositeToolRefsValid,
 		fmt.Sprintf("All %d composite tool references are valid", len(vmcp.Spec.Config.CompositeToolRefs)),
 		metav1.ConditionTrue,
 	)
@@ -633,7 +633,7 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 // The caller is responsible for applying status updates via applyStatusUpdates().
 func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) bool {
 	ctxLogger := log.FromContext(ctx)
@@ -653,11 +653,11 @@ func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 		}
 
 		// Use StatusManager to collect status changes
-		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(fmt.Sprintf("Invalid PodTemplateSpec: %v", err))
 		statusManager.SetCondition(
-			mcpv1alpha1.ConditionTypeVirtualMCPServerPodTemplateSpecValid,
-			mcpv1alpha1.ConditionReasonVirtualMCPServerPodTemplateSpecInvalid,
+			mcpv1beta1.ConditionTypeVirtualMCPServerPodTemplateSpecValid,
+			mcpv1beta1.ConditionReasonVirtualMCPServerPodTemplateSpecInvalid,
 			fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
 			metav1.ConditionFalse,
 		)
@@ -669,8 +669,8 @@ func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 
 	// Use StatusManager to collect status changes for valid PodTemplateSpec
 	statusManager.SetCondition(
-		mcpv1alpha1.ConditionTypeVirtualMCPServerPodTemplateSpecValid,
-		mcpv1alpha1.ConditionReasonVirtualMCPServerPodTemplateSpecValid,
+		mcpv1beta1.ConditionTypeVirtualMCPServerPodTemplateSpecValid,
+		mcpv1beta1.ConditionReasonVirtualMCPServerPodTemplateSpecValid,
 		"PodTemplateSpec is valid",
 		metav1.ConditionTrue,
 	)
@@ -686,8 +686,8 @@ func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 // (e.g., waiting for EmbeddingServer readiness), and an error for failures.
 func (r *VirtualMCPServerReconciler) ensureAllResources(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
@@ -707,10 +707,10 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	}
 	// EmbeddingServer is configured but not yet ready — requeue
 	if esURL == nil && vmcp.Spec.EmbeddingServerRef != nil {
-		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhasePending)
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhasePending)
 		statusManager.SetMessage("Waiting for EmbeddingServer to become ready")
 		statusManager.SetEmbeddingServerReadyCondition(
-			mcpv1alpha1.ConditionReasonEmbeddingServerNotReady,
+			mcpv1beta1.ConditionReasonEmbeddingServerNotReady,
 			"EmbeddingServer is not yet ready",
 			metav1.ConditionFalse,
 		)
@@ -720,7 +720,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	// If an embedding server is configured and ready, set the condition
 	if esURL != nil {
 		statusManager.SetEmbeddingServerReadyCondition(
-			mcpv1alpha1.ConditionReasonEmbeddingServerReady,
+			mcpv1beta1.ConditionReasonEmbeddingServerReady,
 			"EmbeddingServer is ready",
 			metav1.ConditionTrue,
 		)
@@ -784,14 +784,14 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 // ensureAuthSecretsValid validates secret references and sets the AuthConfigured condition.
 func (r *VirtualMCPServerReconciler) ensureAuthSecretsValid(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	if err := r.validateSecretReferences(ctx, vmcp); err != nil {
 		ctxLogger := log.FromContext(ctx)
 		ctxLogger.Error(err, "Secret validation failed")
 		statusManager.SetAuthConfiguredCondition(
-			mcpv1alpha1.ConditionReasonAuthInvalid,
+			mcpv1beta1.ConditionReasonAuthInvalid,
 			fmt.Sprintf("Authentication configuration is invalid: %v", err),
 			metav1.ConditionFalse,
 		)
@@ -804,7 +804,7 @@ func (r *VirtualMCPServerReconciler) ensureAuthSecretsValid(
 	}
 
 	statusManager.SetAuthConfiguredCondition(
-		mcpv1alpha1.ConditionReasonAuthValid,
+		mcpv1beta1.ConditionReasonAuthValid,
 		"Authentication configuration is valid",
 		metav1.ConditionTrue,
 	)
@@ -823,7 +823,7 @@ func (r *VirtualMCPServerReconciler) ensureAuthSecretsValid(
 // automatically during operator upgrades.
 func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) error {
 	// If a service account is specified, we don't need to create one
 	if vmcp.Spec.ServiceAccount != nil {
@@ -863,7 +863,7 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 // and contains a single key: hmac-secret with a 32-byte base64-encoded random value.
 func (r *VirtualMCPServerReconciler) ensureHMACSecret(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
@@ -948,7 +948,7 @@ func (r *VirtualMCPServerReconciler) ensureHMACSecret(
 // secrets that could weaken session token signing or cause pod startup failures.
 func (*VirtualMCPServerReconciler) validateHMACSecret(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	secret *corev1.Secret,
 ) error {
 	ctxLogger := log.FromContext(ctx)
@@ -1014,7 +1014,7 @@ func (*VirtualMCPServerReconciler) validateHMACSecret(
 // and uses the same annotation constant for consistency.
 func (r *VirtualMCPServerReconciler) getVmcpConfigChecksum(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (string, error) {
 	if vmcp == nil {
 		return "", fmt.Errorf("vmcp cannot be nil")
@@ -1053,8 +1053,8 @@ func (r *VirtualMCPServerReconciler) getVmcpConfigChecksum(
 //nolint:unparam // ctrl.Result needed for ConfigMap not found case (RequeueAfter)
 func (r *VirtualMCPServerReconciler) ensureDeployment(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
@@ -1156,7 +1156,7 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 //nolint:unparam // ctrl.Result kept for consistency with ensureDeployment signature
 func (r *VirtualMCPServerReconciler) ensureService(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -1227,7 +1227,7 @@ func (r *VirtualMCPServerReconciler) ensureService(
 
 // ensureServiceURL ensures the service URL is set in the status
 func (*VirtualMCPServerReconciler) ensureServiceURL(
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) {
 	if vmcp.Status.URL == "" {
@@ -1240,9 +1240,9 @@ func (*VirtualMCPServerReconciler) ensureServiceURL(
 func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
-	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) bool {
 	if deployment == nil || vmcp == nil {
@@ -1284,8 +1284,8 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) bool {
 	if deployment == nil || vmcp == nil || len(deployment.Spec.Template.Spec.Containers) == 0 {
@@ -1329,7 +1329,7 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 // deploymentMetadataNeedsUpdate checks if deployment-level metadata has changed
 func (*VirtualMCPServerReconciler) deploymentMetadataNeedsUpdate(
 	deployment *appsv1.Deployment,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) bool {
 	if deployment == nil || vmcp == nil {
 		return true
@@ -1362,7 +1362,7 @@ func (*VirtualMCPServerReconciler) deploymentMetadataNeedsUpdate(
 // podTemplateMetadataNeedsUpdate checks if pod template metadata has changed
 func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	deployment *appsv1.Deployment,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
 ) bool {
 	if deployment == nil || vmcp == nil {
@@ -1391,7 +1391,7 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	_ []workloads.TypedWorkload,
 ) bool {
 	if deployment == nil || vmcp == nil {
@@ -1420,7 +1420,7 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 // serviceNeedsUpdate checks if the service needs to be updated
 func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 	service *corev1.Service,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) bool {
 	if service == nil || vmcp == nil {
 		return true
@@ -1507,7 +1507,7 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 
 // statusDecision encapsulates the status update decision to reduce branching and repetition
 type statusDecision struct {
-	phase          mcpv1alpha1.VirtualMCPServerPhase
+	phase          mcpv1beta1.VirtualMCPServerPhase
 	message        string
 	reason         string
 	conditionMsg   string
@@ -1518,16 +1518,16 @@ type statusDecision struct {
 // Unauthenticated backends are routable — they are reachable but require per-request
 // user auth (e.g., upstream OAuth). Health probes lack user tokens, but real requests
 // with valid OAuth tokens will be served.
-func countBackendHealth(ctx context.Context, backends []mcpv1alpha1.DiscoveredBackend) (routable, unhealthy int) {
+func countBackendHealth(ctx context.Context, backends []mcpv1beta1.DiscoveredBackend) (routable, unhealthy int) {
 	ctxLogger := log.FromContext(ctx)
 
 	for _, backend := range backends {
 		switch backend.Status {
-		case mcpv1alpha1.BackendStatusReady, mcpv1alpha1.BackendStatusUnauthenticated:
+		case mcpv1beta1.BackendStatusReady, mcpv1beta1.BackendStatusUnauthenticated:
 			routable++
-		case mcpv1alpha1.BackendStatusUnavailable,
-			mcpv1alpha1.BackendStatusDegraded,
-			mcpv1alpha1.BackendStatusUnknown:
+		case mcpv1beta1.BackendStatusUnavailable,
+			mcpv1beta1.BackendStatusDegraded,
+			mcpv1beta1.BackendStatusUnknown:
 			unhealthy++
 		default:
 			ctxLogger.V(1).Info("Unexpected backend status, treating as unhealthy",
@@ -1541,7 +1541,7 @@ func countBackendHealth(ctx context.Context, backends []mcpv1alpha1.DiscoveredBa
 // determineStatusFromBackends evaluates backend health to determine status
 func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) statusDecision {
 	ctxLogger := log.FromContext(ctx)
 
@@ -1551,7 +1551,7 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 	// All backends unhealthy
 	if routable == 0 && unhealthy > 0 {
 		return statusDecision{
-			phase:          mcpv1alpha1.VirtualMCPServerPhaseDegraded,
+			phase:          mcpv1beta1.VirtualMCPServerPhaseDegraded,
 			message:        fmt.Sprintf("Virtual MCP server is running but all %d backends are unhealthy", unhealthy),
 			reason:         "BackendsUnavailable",
 			conditionMsg:   "All backends are unhealthy",
@@ -1562,7 +1562,7 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 	// Some backends unhealthy
 	if unhealthy > 0 {
 		return statusDecision{
-			phase:          mcpv1alpha1.VirtualMCPServerPhaseDegraded,
+			phase:          mcpv1beta1.VirtualMCPServerPhaseDegraded,
 			message:        fmt.Sprintf("Virtual MCP server is running with %d/%d backends available", routable, total),
 			reason:         "BackendsDegraded",
 			conditionMsg:   "Some backends are unhealthy",
@@ -1573,7 +1573,7 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 	// All backends routable
 	if routable > 0 {
 		return statusDecision{
-			phase:          mcpv1alpha1.VirtualMCPServerPhaseReady,
+			phase:          mcpv1beta1.VirtualMCPServerPhaseReady,
 			message:        "Virtual MCP server is running",
 			reason:         "DeploymentReady",
 			conditionMsg:   "Deployment is ready",
@@ -1585,7 +1585,7 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 	ctxLogger.V(1).Info("No backends were counted, treating as degraded",
 		"discoveredBackendsCount", len(vmcp.Status.DiscoveredBackends))
 	return statusDecision{
-		phase:          mcpv1alpha1.VirtualMCPServerPhaseDegraded,
+		phase:          mcpv1beta1.VirtualMCPServerPhaseDegraded,
 		message:        "Virtual MCP server is running but backend status cannot be determined",
 		reason:         "BackendsUnknown",
 		conditionMsg:   "Backend status unknown",
@@ -1599,14 +1599,14 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 // the underlying pods are actually ready to serve traffic.
 func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	ready, pending, failed int,
 ) statusDecision {
 	// Handle non-ready states first (early returns reduce nesting)
 	if ready == 0 {
 		if failed > 0 {
 			return statusDecision{
-				phase:          mcpv1alpha1.VirtualMCPServerPhaseFailed,
+				phase:          mcpv1beta1.VirtualMCPServerPhaseFailed,
 				message:        "Virtual MCP server failed to start",
 				reason:         "DeploymentFailed",
 				conditionMsg:   "Deployment failed",
@@ -1619,7 +1619,7 @@ func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 			msg = "No pods found for Virtual MCP server"
 		}
 		return statusDecision{
-			phase:          mcpv1alpha1.VirtualMCPServerPhasePending,
+			phase:          mcpv1beta1.VirtualMCPServerPhasePending,
 			message:        msg,
 			reason:         "DeploymentNotReady",
 			conditionMsg:   "Deployment is not yet ready",
@@ -1631,7 +1631,7 @@ func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 	if len(vmcp.Status.DiscoveredBackends) == 0 {
 		// No backends discovered yet - pods ready is sufficient for Ready
 		return statusDecision{
-			phase:          mcpv1alpha1.VirtualMCPServerPhaseReady,
+			phase:          mcpv1beta1.VirtualMCPServerPhaseReady,
 			message:        "Virtual MCP server is running",
 			reason:         "DeploymentReady",
 			conditionMsg:   "Deployment is ready",
@@ -1645,7 +1645,7 @@ func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 
 func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	// List the pods for this VirtualMCPServer's deployment
@@ -1720,7 +1720,7 @@ func vmcpServiceAccountName(vmcpName string) string {
 
 // outgoingAuthSource returns the outgoing auth source mode with default fallback.
 // Returns OutgoingAuthSourceDiscovered if not specified.
-func outgoingAuthSource(vmcp *mcpv1alpha1.VirtualMCPServer) string {
+func outgoingAuthSource(vmcp *mcpv1beta1.VirtualMCPServer) string {
 	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Source != "" {
 		return vmcp.Spec.OutgoingAuth.Source
 	}
@@ -1730,7 +1730,7 @@ func outgoingAuthSource(vmcp *mcpv1alpha1.VirtualMCPServer) string {
 // serviceAccountNameForVmcp returns the service account name for a VirtualMCPServer.
 // - User-provided service account: Returns the user-specified service account name
 // - All other modes: Returns the dedicated service account name (for status reporting)
-func (*VirtualMCPServerReconciler) serviceAccountNameForVmcp(vmcp *mcpv1alpha1.VirtualMCPServer) string {
+func (*VirtualMCPServerReconciler) serviceAccountNameForVmcp(vmcp *mcpv1beta1.VirtualMCPServer) string {
 	// If a service account is specified, use it
 	if vmcp.Spec.ServiceAccount != nil {
 		return *vmcp.Spec.ServiceAccount
@@ -1776,7 +1776,7 @@ func createVmcpServiceURL(vmcpName, namespace string, port int32) string {
 // For ConfigMap mode (inline), secrets are referenced as environment variables that will be
 // mounted in the deployment. Each ExternalAuthConfig gets a unique env var name to avoid conflicts.
 func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
-	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
 	// Use the converter registry to convert to typed strategy
 	registry := converters.DefaultRegistry()
@@ -1811,10 +1811,10 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
 	ctx context.Context,
 	namespace string,
-	crdConfig *mcpv1alpha1.BackendAuthConfig,
+	crdConfig *mcpv1beta1.BackendAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
 	// For type="discovered", return a minimal strategy (will be populated by discovery)
-	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeDiscovered {
+	if crdConfig.Type == mcpv1beta1.BackendAuthTypeDiscovered {
 		return &authtypes.BackendAuthStrategy{
 			Type: crdConfig.Type,
 		}, nil
@@ -1843,12 +1843,12 @@ func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
 func (r *VirtualMCPServerReconciler) listMCPServersAsMap(
 	ctx context.Context,
 	namespace string,
-) (map[string]*mcpv1alpha1.MCPServer, error) {
-	mcpServerList := &mcpv1alpha1.MCPServerList{}
+) (map[string]*mcpv1beta1.MCPServer, error) {
+	mcpServerList := &mcpv1beta1.MCPServerList{}
 	if err := r.List(ctx, mcpServerList, client.InNamespace(namespace)); err != nil {
 		return nil, err
 	}
-	mcpServerMap := make(map[string]*mcpv1alpha1.MCPServer, len(mcpServerList.Items))
+	mcpServerMap := make(map[string]*mcpv1beta1.MCPServer, len(mcpServerList.Items))
 	for i := range mcpServerList.Items {
 		mcpServerMap[mcpServerList.Items[i].Name] = &mcpServerList.Items[i]
 	}
@@ -1859,12 +1859,12 @@ func (r *VirtualMCPServerReconciler) listMCPServersAsMap(
 func (r *VirtualMCPServerReconciler) listMCPRemoteProxiesAsMap(
 	ctx context.Context,
 	namespace string,
-) (map[string]*mcpv1alpha1.MCPRemoteProxy, error) {
-	mcpRemoteProxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+) (map[string]*mcpv1beta1.MCPRemoteProxy, error) {
+	mcpRemoteProxyList := &mcpv1beta1.MCPRemoteProxyList{}
 	if err := r.List(ctx, mcpRemoteProxyList, client.InNamespace(namespace)); err != nil {
 		return nil, err
 	}
-	mcpRemoteProxyMap := make(map[string]*mcpv1alpha1.MCPRemoteProxy, len(mcpRemoteProxyList.Items))
+	mcpRemoteProxyMap := make(map[string]*mcpv1beta1.MCPRemoteProxy, len(mcpRemoteProxyList.Items))
 	for i := range mcpRemoteProxyList.Items {
 		mcpRemoteProxyMap[mcpRemoteProxyList.Items[i].Name] = &mcpRemoteProxyList.Items[i]
 	}
@@ -1875,12 +1875,12 @@ func (r *VirtualMCPServerReconciler) listMCPRemoteProxiesAsMap(
 func (r *VirtualMCPServerReconciler) listMCPServerEntriesAsMap(
 	ctx context.Context,
 	namespace string,
-) (map[string]*mcpv1alpha1.MCPServerEntry, error) {
-	mcpServerEntryList := &mcpv1alpha1.MCPServerEntryList{}
+) (map[string]*mcpv1beta1.MCPServerEntry, error) {
+	mcpServerEntryList := &mcpv1beta1.MCPServerEntryList{}
 	if err := r.List(ctx, mcpServerEntryList, client.InNamespace(namespace)); err != nil {
 		return nil, err
 	}
-	mcpServerEntryMap := make(map[string]*mcpv1alpha1.MCPServerEntry, len(mcpServerEntryList.Items))
+	mcpServerEntryMap := make(map[string]*mcpv1beta1.MCPServerEntry, len(mcpServerEntryList.Items))
 	for i := range mcpServerEntryList.Items {
 		mcpServerEntryMap[mcpServerEntryList.Items[i].Name] = &mcpServerEntryList.Items[i]
 	}
@@ -1892,7 +1892,7 @@ func (r *VirtualMCPServerReconciler) listMCPServerEntriesAsMap(
 // The controller should continue in degraded mode even if some auth configs fail.
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
 	outgoing *vmcpconfig.OutgoingAuthConfig,
 ) ([]string, []AuthConfigError) {
@@ -1974,9 +1974,9 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 // getExternalAuthConfigNameFromWorkload extracts the ExternalAuthConfigRef name from a workload.
 func (*VirtualMCPServerReconciler) getExternalAuthConfigNameFromWorkload(
 	workloadInfo workloads.TypedWorkload,
-	mcpServerMap map[string]*mcpv1alpha1.MCPServer,
-	mcpRemoteProxyMap map[string]*mcpv1alpha1.MCPRemoteProxy,
-	mcpServerEntryMap map[string]*mcpv1alpha1.MCPServerEntry,
+	mcpServerMap map[string]*mcpv1beta1.MCPServer,
+	mcpRemoteProxyMap map[string]*mcpv1beta1.MCPRemoteProxy,
+	mcpServerEntryMap map[string]*mcpv1beta1.MCPServerEntry,
 ) string {
 	switch workloadInfo.Type {
 	case workloads.WorkloadTypeMCPServer:
@@ -2018,7 +2018,7 @@ func (*VirtualMCPServerReconciler) getExternalAuthConfigNameFromWorkload(
 // This allows the system to continue operating in degraded mode with partial auth configuration.
 func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
 ) (*vmcpconfig.OutgoingAuthConfig, []string, []AuthConfigError) {
 	// Determine source - default to "discovered" if not specified
@@ -2084,7 +2084,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 // SubjectProviderName set, or no embedded auth server is configured.
 func injectSubjectProviderIfNeeded(
 	strategy *authtypes.BackendAuthStrategy,
-	embeddedCfg *mcpv1alpha1.EmbeddedAuthServerConfig,
+	embeddedCfg *mcpv1beta1.EmbeddedAuthServerConfig,
 ) *authtypes.BackendAuthStrategy {
 	if strategy == nil ||
 		strategy.Type != authtypes.StrategyTypeTokenExchange ||
@@ -2156,7 +2156,7 @@ func convertBackendsToStaticBackends(
 // ensuring consistent retry behavior (fixed-interval requeue instead of exponential backoff).
 func (r *VirtualMCPServerReconciler) validateEmbeddingServerRef(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	ctxLogger := log.FromContext(ctx)
@@ -2166,7 +2166,7 @@ func (r *VirtualMCPServerReconciler) validateEmbeddingServerRef(
 	}
 
 	refName := vmcp.Spec.EmbeddingServerRef.Name
-	es := &mcpv1alpha1.EmbeddingServer{}
+	es := &mcpv1beta1.EmbeddingServer{}
 	err := r.Get(ctx, types.NamespacedName{
 		Name:      refName,
 		Namespace: vmcp.Namespace,
@@ -2174,10 +2174,10 @@ func (r *VirtualMCPServerReconciler) validateEmbeddingServerRef(
 
 	if errors.IsNotFound(err) {
 		message := fmt.Sprintf("Referenced EmbeddingServer %s not found", refName)
-		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
 		statusManager.SetEmbeddingServerReadyCondition(
-			mcpv1alpha1.ConditionReasonEmbeddingServerNotFound,
+			mcpv1beta1.ConditionReasonEmbeddingServerNotFound,
 			message,
 			metav1.ConditionFalse,
 		)
@@ -2203,12 +2203,12 @@ func (r *VirtualMCPServerReconciler) mapEmbeddingServerToVirtualMCPServer(
 	ctx context.Context,
 	obj client.Object,
 ) []reconcile.Request {
-	es, ok := obj.(*mcpv1alpha1.EmbeddingServer)
+	es, ok := obj.(*mcpv1beta1.EmbeddingServer)
 	if !ok {
 		return nil
 	}
 
-	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
 	if err := r.List(ctx, vmcpList, client.InNamespace(es.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for EmbeddingServer watch")
 		return nil
@@ -2233,36 +2233,36 @@ func (r *VirtualMCPServerReconciler) mapEmbeddingServerToVirtualMCPServer(
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&mcpv1alpha1.VirtualMCPServer{}).
+		For(&mcpv1beta1.VirtualMCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
-		Watches(&mcpv1alpha1.MCPGroup{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPGroupToVirtualMCPServer)).
-		Watches(&mcpv1alpha1.MCPServer{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToVirtualMCPServer)).
-		Watches(&mcpv1alpha1.MCPRemoteProxy{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToVirtualMCPServer)).
-		Watches(&mcpv1alpha1.MCPServerEntry{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPServerEntryToVirtualMCPServer)).
-		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapExternalAuthConfigToVirtualMCPServer)).
-		Watches(&mcpv1alpha1.MCPToolConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapToolConfigToVirtualMCPServer)).
+		Watches(&mcpv1beta1.MCPGroup{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPGroupToVirtualMCPServer)).
+		Watches(&mcpv1beta1.MCPServer{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToVirtualMCPServer)).
+		Watches(&mcpv1beta1.MCPRemoteProxy{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToVirtualMCPServer)).
+		Watches(&mcpv1beta1.MCPServerEntry{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPServerEntryToVirtualMCPServer)).
+		Watches(&mcpv1beta1.MCPExternalAuthConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapExternalAuthConfigToVirtualMCPServer)).
+		Watches(&mcpv1beta1.MCPToolConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapToolConfigToVirtualMCPServer)).
 		Watches(
-			&mcpv1alpha1.VirtualMCPCompositeToolDefinition{},
+			&mcpv1beta1.VirtualMCPCompositeToolDefinition{},
 			handler.EnqueueRequestsFromMapFunc(r.mapCompositeToolDefinitionToVirtualMCPServer),
 		).
 		// Watch referenced EmbeddingServers so that readiness/status changes
 		// trigger VirtualMCPServer reconciliation.
 		Watches(
-			&mcpv1alpha1.EmbeddingServer{},
+			&mcpv1beta1.EmbeddingServer{},
 			handler.EnqueueRequestsFromMapFunc(r.mapEmbeddingServerToVirtualMCPServer),
 		).
 		// Watch referenced MCPOIDCConfigs so that validity/hash changes
 		// trigger VirtualMCPServer reconciliation.
 		Watches(
-			&mcpv1alpha1.MCPOIDCConfig{},
+			&mcpv1beta1.MCPOIDCConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.mapOIDCConfigToVirtualMCPServer),
 		).
 		// Watch referenced MCPTelemetryConfigs so that validity/hash changes
 		// trigger VirtualMCPServer reconciliation.
 		Watches(
-			&mcpv1alpha1.MCPTelemetryConfig{},
+			&mcpv1beta1.MCPTelemetryConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.mapTelemetryConfigToVirtualMCPServer),
 		).
 		Complete(r)
@@ -2270,12 +2270,12 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // mapMCPGroupToVirtualMCPServer maps MCPGroup changes to VirtualMCPServer reconciliation requests
 func (r *VirtualMCPServerReconciler) mapMCPGroupToVirtualMCPServer(ctx context.Context, obj client.Object) []reconcile.Request {
-	mcpGroup, ok := obj.(*mcpv1alpha1.MCPGroup)
+	mcpGroup, ok := obj.(*mcpv1beta1.MCPGroup)
 	if !ok {
 		return nil
 	}
 
-	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
 	if err := r.List(ctx, vmcpList, client.InNamespace(mcpGroup.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPGroup watch")
 		return nil
@@ -2307,7 +2307,7 @@ func (r *VirtualMCPServerReconciler) mapMCPGroupToVirtualMCPServer(ctx context.C
 //
 // This significantly reduces unnecessary reconciliations in large clusters with many VirtualMCPServers.
 func (r *VirtualMCPServerReconciler) mapMCPServerToVirtualMCPServer(ctx context.Context, obj client.Object) []reconcile.Request {
-	mcpServer, ok := obj.(*mcpv1alpha1.MCPServer)
+	mcpServer, ok := obj.(*mcpv1beta1.MCPServer)
 	if !ok {
 		return nil
 	}
@@ -2316,7 +2316,7 @@ func (r *VirtualMCPServerReconciler) mapMCPServerToVirtualMCPServer(ctx context.
 
 	// Step 1: Find all MCPGroups that include this MCPServer
 	// MCPGroups track their member servers in Status.Servers (populated by MCPGroup controller)
-	mcpGroupList := &mcpv1alpha1.MCPGroupList{}
+	mcpGroupList := &mcpv1beta1.MCPGroupList{}
 	if err := r.List(ctx, mcpGroupList, client.InNamespace(mcpServer.Namespace)); err != nil {
 		ctxLogger.Error(err, "Failed to list MCPGroups for MCPServer watch")
 		return nil
@@ -2345,7 +2345,7 @@ func (r *VirtualMCPServerReconciler) mapMCPServerToVirtualMCPServer(ctx context.
 	}
 
 	// Step 2: Find VirtualMCPServers that reference the affected MCPGroups
-	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
 	if err := r.List(ctx, vmcpList, client.InNamespace(mcpServer.Namespace)); err != nil {
 		ctxLogger.Error(err, "Failed to list VirtualMCPServers for MCPServer watch")
 		return nil
@@ -2388,7 +2388,7 @@ func (r *VirtualMCPServerReconciler) mapMCPRemoteProxyToVirtualMCPServer(
 	ctx context.Context,
 	obj client.Object,
 ) []reconcile.Request {
-	mcpRemoteProxy, ok := obj.(*mcpv1alpha1.MCPRemoteProxy)
+	mcpRemoteProxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
 	if !ok {
 		return nil
 	}
@@ -2397,7 +2397,7 @@ func (r *VirtualMCPServerReconciler) mapMCPRemoteProxyToVirtualMCPServer(
 
 	// Step 1: Find all MCPGroups that include this MCPRemoteProxy
 	// MCPGroups track their member remote proxies in Status.RemoteProxies (populated by MCPGroup controller)
-	mcpGroupList := &mcpv1alpha1.MCPGroupList{}
+	mcpGroupList := &mcpv1beta1.MCPGroupList{}
 	if err := r.List(ctx, mcpGroupList, client.InNamespace(mcpRemoteProxy.Namespace)); err != nil {
 		ctxLogger.Error(err, "Failed to list MCPGroups for MCPRemoteProxy watch")
 		return nil
@@ -2426,7 +2426,7 @@ func (r *VirtualMCPServerReconciler) mapMCPRemoteProxyToVirtualMCPServer(
 	}
 
 	// Step 2: Find VirtualMCPServers that reference the affected MCPGroups
-	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
 	if err := r.List(ctx, vmcpList, client.InNamespace(mcpRemoteProxy.Namespace)); err != nil {
 		ctxLogger.Error(err, "Failed to list VirtualMCPServers for MCPRemoteProxy watch")
 		return nil
@@ -2469,7 +2469,7 @@ func (r *VirtualMCPServerReconciler) mapMCPServerEntryToVirtualMCPServer(
 	ctx context.Context,
 	obj client.Object,
 ) []reconcile.Request {
-	mcpServerEntry, ok := obj.(*mcpv1alpha1.MCPServerEntry)
+	mcpServerEntry, ok := obj.(*mcpv1beta1.MCPServerEntry)
 	if !ok {
 		return nil
 	}
@@ -2477,7 +2477,7 @@ func (r *VirtualMCPServerReconciler) mapMCPServerEntryToVirtualMCPServer(
 	ctxLogger := log.FromContext(ctx)
 
 	// Step 1: Find all MCPGroups that include this MCPServerEntry
-	mcpGroupList := &mcpv1alpha1.MCPGroupList{}
+	mcpGroupList := &mcpv1beta1.MCPGroupList{}
 	if err := r.List(ctx, mcpGroupList, client.InNamespace(mcpServerEntry.Namespace)); err != nil {
 		ctxLogger.Error(err, "Failed to list MCPGroups for MCPServerEntry watch")
 		return nil
@@ -2503,7 +2503,7 @@ func (r *VirtualMCPServerReconciler) mapMCPServerEntryToVirtualMCPServer(
 	}
 
 	// Step 2: Find VirtualMCPServers that reference the affected MCPGroups
-	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
 	if err := r.List(ctx, vmcpList, client.InNamespace(mcpServerEntry.Namespace)); err != nil {
 		ctxLogger.Error(err, "Failed to list VirtualMCPServers for MCPServerEntry watch")
 		return nil
@@ -2538,12 +2538,12 @@ func (r *VirtualMCPServerReconciler) mapExternalAuthConfigToVirtualMCPServer(
 	ctx context.Context,
 	obj client.Object,
 ) []reconcile.Request {
-	externalAuthConfig, ok := obj.(*mcpv1alpha1.MCPExternalAuthConfig)
+	externalAuthConfig, ok := obj.(*mcpv1beta1.MCPExternalAuthConfig)
 	if !ok {
 		return nil
 	}
 
-	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
 	if err := r.List(ctx, vmcpList, client.InNamespace(externalAuthConfig.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPExternalAuthConfig watch")
 		return nil
@@ -2568,12 +2568,12 @@ func (r *VirtualMCPServerReconciler) mapExternalAuthConfigToVirtualMCPServer(
 
 // mapToolConfigToVirtualMCPServer maps MCPToolConfig changes to VirtualMCPServer reconciliation requests
 func (r *VirtualMCPServerReconciler) mapToolConfigToVirtualMCPServer(ctx context.Context, obj client.Object) []reconcile.Request {
-	toolConfig, ok := obj.(*mcpv1alpha1.MCPToolConfig)
+	toolConfig, ok := obj.(*mcpv1beta1.MCPToolConfig)
 	if !ok {
 		return nil
 	}
 
-	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
 	if err := r.List(ctx, vmcpList, client.InNamespace(toolConfig.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPToolConfig watch")
 		return nil
@@ -2595,7 +2595,7 @@ func (r *VirtualMCPServerReconciler) mapToolConfigToVirtualMCPServer(ctx context
 }
 
 // vmcpReferencesToolConfig checks if a VirtualMCPServer references the given MCPToolConfig
-func (*VirtualMCPServerReconciler) vmcpReferencesToolConfig(vmcp *mcpv1alpha1.VirtualMCPServer, toolConfigName string) bool {
+func (*VirtualMCPServerReconciler) vmcpReferencesToolConfig(vmcp *mcpv1beta1.VirtualMCPServer, toolConfigName string) bool {
 	if vmcp.Spec.Config.Aggregation == nil || len(vmcp.Spec.Config.Aggregation.Tools) == 0 {
 		return false
 	}
@@ -2614,7 +2614,7 @@ func (*VirtualMCPServerReconciler) vmcpReferencesToolConfig(vmcp *mcpv1alpha1.Vi
 // (via MCPServers in the group).
 func (r *VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	authConfigName string,
 ) bool {
 	// Note: AuthServerConfig is inline (not a ref), so it doesn't reference
@@ -2655,13 +2655,13 @@ func (r *VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
 // in the VirtualMCPServer's group reference the given MCPExternalAuthConfig
 func (r *VirtualMCPServerReconciler) mcpGroupBackendsReferenceExternalAuthConfig(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	authConfigName string,
 ) bool {
 	ctxLogger := log.FromContext(ctx)
 
 	// Get the MCPGroup to verify it exists
-	mcpGroup := &mcpv1alpha1.MCPGroup{}
+	mcpGroup := &mcpv1beta1.MCPGroup{}
 	err := r.Get(ctx, types.NamespacedName{
 		Name:      vmcp.ResolveGroupName(),
 		Namespace: vmcp.Namespace,
@@ -2681,7 +2681,7 @@ func (r *VirtualMCPServerReconciler) mcpGroupBackendsReferenceExternalAuthConfig
 	}
 
 	// List all MCPServers in the group using field selector (same as MCPGroup controller)
-	mcpServerList := &mcpv1alpha1.MCPServerList{}
+	mcpServerList := &mcpv1beta1.MCPServerList{}
 	err = r.List(ctx, mcpServerList, listOpts...)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to list MCPServers for ExternalAuthConfig reference check",
@@ -2698,7 +2698,7 @@ func (r *VirtualMCPServerReconciler) mcpGroupBackendsReferenceExternalAuthConfig
 	}
 
 	// List all MCPRemoteProxies in the group
-	mcpRemoteProxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	mcpRemoteProxyList := &mcpv1beta1.MCPRemoteProxyList{}
 	err = r.List(ctx, mcpRemoteProxyList, listOpts...)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to list MCPRemoteProxies for ExternalAuthConfig reference check",
@@ -2723,12 +2723,12 @@ func (r *VirtualMCPServerReconciler) mapCompositeToolDefinitionToVirtualMCPServe
 	ctx context.Context,
 	obj client.Object,
 ) []reconcile.Request {
-	compositeToolDef, ok := obj.(*mcpv1alpha1.VirtualMCPCompositeToolDefinition)
+	compositeToolDef, ok := obj.(*mcpv1beta1.VirtualMCPCompositeToolDefinition)
 	if !ok {
 		return nil
 	}
 
-	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
 	if err := r.List(ctx, vmcpList, client.InNamespace(compositeToolDef.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for VirtualMCPCompositeToolDefinition watch")
 		return nil
@@ -2751,7 +2751,7 @@ func (r *VirtualMCPServerReconciler) mapCompositeToolDefinitionToVirtualMCPServe
 
 // vmcpReferencesCompositeToolDefinition checks if a VirtualMCPServer references the given VirtualMCPCompositeToolDefinition
 func (*VirtualMCPServerReconciler) vmcpReferencesCompositeToolDefinition(
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	compositeToolDefName string,
 ) bool {
 	if len(vmcp.Spec.Config.CompositeToolRefs) == 0 {
@@ -2920,9 +2920,9 @@ func generateHMACSecret() (string, error) {
 // to downstream functions without redundant API calls.
 func (r *VirtualMCPServerReconciler) handleConfigRefs(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
-) (*mcpv1alpha1.MCPTelemetryConfig, error) {
+) (*mcpv1beta1.MCPTelemetryConfig, error) {
 	if err := r.handleOIDCConfig(ctx, vmcp, statusManager); err != nil {
 		return nil, err
 	}
@@ -2934,7 +2934,7 @@ func (r *VirtualMCPServerReconciler) handleConfigRefs(
 // the OIDC configuration changes.
 func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	ctxLogger := log.FromContext(ctx)
@@ -2953,8 +2953,8 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 	oidcConfig, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, vmcp.Namespace, ref)
 	if err != nil {
 		statusManager.SetCondition(
-			mcpv1alpha1.ConditionOIDCConfigRefValidated,
-			mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+			mcpv1beta1.ConditionOIDCConfigRefValidated,
+			mcpv1beta1.ConditionReasonOIDCConfigRefNotFound,
 			fmt.Sprintf("MCPOIDCConfig %s not found: %v", ref.Name, err),
 			metav1.ConditionFalse,
 		)
@@ -2963,8 +2963,8 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 
 	if oidcConfig == nil {
 		statusManager.SetCondition(
-			mcpv1alpha1.ConditionOIDCConfigRefValidated,
-			mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+			mcpv1beta1.ConditionOIDCConfigRefValidated,
+			mcpv1beta1.ConditionReasonOIDCConfigRefNotFound,
 			fmt.Sprintf("MCPOIDCConfig %s not found", ref.Name),
 			metav1.ConditionFalse,
 		)
@@ -2972,15 +2972,15 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 	}
 
 	// Check that the MCPOIDCConfig is valid
-	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigValid)
+	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1beta1.ConditionTypeOIDCConfigValid)
 	if validCondition == nil || validCondition.Status != metav1.ConditionTrue {
 		msg := fmt.Sprintf("MCPOIDCConfig %s is not valid", ref.Name)
 		if validCondition != nil {
 			msg = fmt.Sprintf("MCPOIDCConfig %s is not valid: %s", ref.Name, validCondition.Message)
 		}
 		statusManager.SetCondition(
-			mcpv1alpha1.ConditionOIDCConfigRefValidated,
-			mcpv1alpha1.ConditionReasonOIDCConfigRefNotValid,
+			mcpv1beta1.ConditionOIDCConfigRefValidated,
+			mcpv1beta1.ConditionReasonOIDCConfigRefNotValid,
 			msg,
 			metav1.ConditionFalse,
 		)
@@ -2995,8 +2995,8 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 
 	// Set valid condition
 	statusManager.SetCondition(
-		mcpv1alpha1.ConditionOIDCConfigRefValidated,
-		mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
+		mcpv1beta1.ConditionOIDCConfigRefValidated,
+		mcpv1beta1.ConditionReasonOIDCConfigRefValid,
 		fmt.Sprintf("MCPOIDCConfig %s is valid and ready", ref.Name),
 		metav1.ConditionTrue,
 	)
@@ -3019,10 +3019,10 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 // the MCPOIDCConfig's ReferencingWorkloads status field.
 func (r *VirtualMCPServerReconciler) updateOIDCConfigReferencingWorkloads(
 	ctx context.Context,
-	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
+	oidcConfig *mcpv1beta1.MCPOIDCConfig,
 	vmcpName string,
 ) error {
-	ref := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindVirtualMCPServer, Name: vmcpName}
+	ref := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindVirtualMCPServer, Name: vmcpName}
 	// Check if already listed
 	for _, entry := range oidcConfig.Status.ReferencingWorkloads {
 		if entry.Kind == ref.Kind && entry.Name == ref.Name {
@@ -3043,12 +3043,12 @@ func (r *VirtualMCPServerReconciler) updateOIDCConfigReferencingWorkloads(
 func (r *VirtualMCPServerReconciler) mapOIDCConfigToVirtualMCPServer(
 	ctx context.Context, obj client.Object,
 ) []reconcile.Request {
-	oidcConfig, ok := obj.(*mcpv1alpha1.MCPOIDCConfig)
+	oidcConfig, ok := obj.(*mcpv1beta1.MCPOIDCConfig)
 	if !ok {
 		return nil
 	}
 
-	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
 	if err := r.List(ctx, vmcpList, client.InNamespace(oidcConfig.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPOIDCConfig watch")
 		return nil

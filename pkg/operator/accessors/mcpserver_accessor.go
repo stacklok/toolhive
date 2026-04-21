@@ -7,16 +7,16 @@ package accessors
 import (
 	"maps"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // MCPServerFieldAccessor provides accessor methods for handling labels and annotations
 type MCPServerFieldAccessor interface {
 	// GetProxyDeploymentLabelsAndAnnotations returns labels and annotations for the deployment
-	GetProxyDeploymentLabelsAndAnnotations(mcpServer *mcpv1alpha1.MCPServer) (labels, annotations map[string]string)
+	GetProxyDeploymentLabelsAndAnnotations(mcpServer *mcpv1beta1.MCPServer) (labels, annotations map[string]string)
 
 	// GetProxyDeploymentTemplateLabelsAndAnnotations returns labels and annotations for the deployment pod template
-	GetProxyDeploymentTemplateLabelsAndAnnotations(mcpServer *mcpv1alpha1.MCPServer) (labels, annotations map[string]string)
+	GetProxyDeploymentTemplateLabelsAndAnnotations(mcpServer *mcpv1beta1.MCPServer) (labels, annotations map[string]string)
 }
 
 // mcpServerFieldAccessor implements MCPServerFieldAccessor
@@ -29,7 +29,7 @@ func NewMCPServerFieldAccessor() MCPServerFieldAccessor {
 
 // GetProxyDeploymentLabelsAndAnnotations returns labels and annotations for the deployment
 func (*mcpServerFieldAccessor) GetProxyDeploymentLabelsAndAnnotations(
-	mcpServer *mcpv1alpha1.MCPServer,
+	mcpServer *mcpv1beta1.MCPServer,
 ) (map[string]string, map[string]string) {
 	baseAnnotations := make(map[string]string)
 	baseLabels := make(map[string]string)
@@ -54,7 +54,7 @@ func (*mcpServerFieldAccessor) GetProxyDeploymentLabelsAndAnnotations(
 
 // GetProxyDeploymentTemplateLabelsAndAnnotations returns labels and annotations for the deployment pod template
 func (*mcpServerFieldAccessor) GetProxyDeploymentTemplateLabelsAndAnnotations(
-	mcpServer *mcpv1alpha1.MCPServer,
+	mcpServer *mcpv1beta1.MCPServer,
 ) (map[string]string, map[string]string) {
 	baseAnnotations := make(map[string]string)
 	baseLabels := make(map[string]string)

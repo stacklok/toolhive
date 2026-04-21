@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // RemoteProxyStatusTestHelper provides utilities for MCPRemoteProxy status testing and validation
@@ -31,14 +31,14 @@ func NewRemoteProxyStatusTestHelper(
 
 // WaitForPhaseAny waits for an MCPRemoteProxy to reach any of the specified phases
 func (h *RemoteProxyStatusTestHelper) WaitForPhaseAny(
-	proxyName string, expectedPhases []mcpv1alpha1.MCPRemoteProxyPhase, timeout time.Duration,
+	proxyName string, expectedPhases []mcpv1beta1.MCPRemoteProxyPhase, timeout time.Duration,
 ) {
 	ginkgo.By(fmt.Sprintf("waiting for remote proxy %s to reach one of phases %v", proxyName, expectedPhases))
-	gomega.Eventually(func() mcpv1alpha1.MCPRemoteProxyPhase {
+	gomega.Eventually(func() mcpv1beta1.MCPRemoteProxyPhase {
 		proxy, err := h.proxyHelper.GetRemoteProxy(proxyName)
 		if err != nil {
 			if errors.IsNotFound(err) {
-				return mcpv1alpha1.MCPRemoteProxyPhaseTerminating
+				return mcpv1beta1.MCPRemoteProxyPhaseTerminating
 			}
 			return ""
 		}
@@ -61,9 +61,9 @@ func (h *RemoteProxyStatusTestHelper) WaitForURL(proxyName string, timeout time.
 
 // WaitForPhase waits for an MCPRemoteProxy to reach the specified phase
 func (h *RemoteProxyStatusTestHelper) WaitForPhase(
-	proxyName string, expectedPhase mcpv1alpha1.MCPRemoteProxyPhase, timeout time.Duration,
+	proxyName string, expectedPhase mcpv1beta1.MCPRemoteProxyPhase, timeout time.Duration,
 ) {
-	gomega.Eventually(func() mcpv1alpha1.MCPRemoteProxyPhase {
+	gomega.Eventually(func() mcpv1beta1.MCPRemoteProxyPhase {
 		proxy, err := h.proxyHelper.GetRemoteProxy(proxyName)
 		if err != nil {
 			return ""

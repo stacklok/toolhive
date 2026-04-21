@@ -19,7 +19,7 @@ stringData:
 
 ---
 # External authentication configuration
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPExternalAuthConfig
 metadata:
   name: keycloak-token-exchange
@@ -47,7 +47,7 @@ spec:
 
 ---
 # MCP Server with external authentication
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: authenticated-fetch

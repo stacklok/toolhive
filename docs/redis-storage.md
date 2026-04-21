@@ -28,7 +28,7 @@ By default, ToolHive's embedded auth server uses in-memory storage. This works w
 When using the ToolHive operator, Redis storage is configured through the `storage` field in the embedded auth server section of `MCPExternalAuthConfig`.
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPExternalAuthConfig
 metadata:
   name: my-auth-config
@@ -236,7 +236,7 @@ stringData:
   password: "<your-secure-password>"
 ---
 # MCPExternalAuthConfig with Redis storage
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPExternalAuthConfig
 metadata:
   name: my-auth-config

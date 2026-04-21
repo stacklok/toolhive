@@ -13,7 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	gomock "go.uber.org/mock/gomock"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -115,7 +115,7 @@ func (mr *MockStatusManagerMockRecorder) SetCondition(conditionType, reason, mes
 }
 
 // SetDiscoveredBackends mocks base method.
-func (m *MockStatusManager) SetDiscoveredBackends(backends []v1alpha1.DiscoveredBackend) {
+func (m *MockStatusManager) SetDiscoveredBackends(backends []v1beta1.DiscoveredBackend) {
 	m.ctrl.T.Helper()
 	m.ctrl.Call(m, "SetDiscoveredBackends", backends)
 }
@@ -187,7 +187,7 @@ func (mr *MockStatusManagerMockRecorder) SetObservedGeneration(generation any) *
 }
 
 // SetPhase mocks base method.
-func (m *MockStatusManager) SetPhase(phase v1alpha1.VirtualMCPServerPhase) {
+func (m *MockStatusManager) SetPhase(phase v1beta1.VirtualMCPServerPhase) {
 	m.ctrl.T.Helper()
 	m.ctrl.Call(m, "SetPhase", phase)
 }
@@ -247,7 +247,7 @@ func (mr *MockStatusManagerMockRecorder) SetURL(url any) *gomock.Call {
 }
 
 // UpdateStatus mocks base method.
-func (m *MockStatusManager) UpdateStatus(ctx context.Context, vmcpStatus *v1alpha1.VirtualMCPServerStatus) bool {
+func (m *MockStatusManager) UpdateStatus(ctx context.Context, vmcpStatus *v1beta1.VirtualMCPServerStatus) bool {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "UpdateStatus", ctx, vmcpStatus)
 	ret0, _ := ret[0].(bool)

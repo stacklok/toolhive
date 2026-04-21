@@ -14,7 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
@@ -28,7 +28,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 		var (
 			namespace       string
 			authConfigName  string
-			authConfig      *mcpv1alpha1.MCPExternalAuthConfig
+			authConfig      *mcpv1beta1.MCPExternalAuthConfig
 			oauthSecret     *corev1.Secret
 			oauthSecretName string
 		)
@@ -59,17 +59,17 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 			Expect(k8sClient.Create(ctx, oauthSecret)).Should(Succeed())
 
 			// Define the MCPExternalAuthConfig resource
-			authConfig = &mcpv1alpha1.MCPExternalAuthConfig{
+			authConfig = &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      authConfigName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 					Type: "tokenExchange",
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client-id",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: oauthSecretName,
 							Key:  "client-secret",
 						},
@@ -93,7 +93,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 		It("Should calculate and set config hash in status", func() {
 			// Wait for the status to be updated with the config hash
 			Eventually(func() bool {
-				updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+				updatedAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      authConfigName,
 					Namespace: namespace,
@@ -106,7 +106,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Verify the config hash is not empty
-			updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+			updatedAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      authConfigName,
 				Namespace: namespace,
@@ -117,7 +117,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 		})
 
 		It("Should have a finalizer added", func() {
-			updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+			updatedAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      authConfigName,
 				Namespace: namespace,
@@ -131,9 +131,9 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 		var (
 			namespace       string
 			authConfigName  string
-			authConfig      *mcpv1alpha1.MCPExternalAuthConfig
+			authConfig      *mcpv1beta1.MCPExternalAuthConfig
 			mcpServerName   string
-			mcpServer       *mcpv1alpha1.MCPServer
+			mcpServer       *mcpv1beta1.MCPServer
 			oauthSecret     *corev1.Secret
 			oauthSecretName string
 			configHash      string
@@ -166,17 +166,17 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 			Expect(k8sClient.Create(ctx, oauthSecret)).Should(Succeed())
 
 			// Create MCPExternalAuthConfig
-			authConfig = &mcpv1alpha1.MCPExternalAuthConfig{
+			authConfig = &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      authConfigName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 					Type: "tokenExchange",
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client-id-2",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: oauthSecretName,
 							Key:  "client-secret",
 						},
@@ -189,7 +189,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 
 			// Wait for the auth config to have a hash
 			Eventually(func() bool {
-				updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+				updatedAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      authConfigName,
 					Namespace: namespace,
@@ -202,16 +202,16 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Create MCPServer with external auth reference
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: authConfigName,
 					},
 				},
@@ -229,7 +229,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 		It("Should propagate external auth config hash to MCPServer status", func() {
 			// Wait for the MCPServer status to be updated with the external auth config hash
 			Eventually(func() bool {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
 					Namespace: namespace,
@@ -245,7 +245,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 		It("Should update MCPExternalAuthConfig status with referencing workload", func() {
 			// Wait for the auth config status to be updated with the referencing workload
 			Eventually(func() bool {
-				updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+				updatedAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      authConfigName,
 					Namespace: namespace,
@@ -327,9 +327,9 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 		var (
 			namespace       string
 			authConfigName  string
-			authConfig      *mcpv1alpha1.MCPExternalAuthConfig
+			authConfig      *mcpv1beta1.MCPExternalAuthConfig
 			mcpServerName   string
-			mcpServer       *mcpv1alpha1.MCPServer
+			mcpServer       *mcpv1beta1.MCPServer
 			oauthSecret     *corev1.Secret
 			oauthSecretName string
 			originalHash    string
@@ -362,17 +362,17 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 			Expect(k8sClient.Create(ctx, oauthSecret)).Should(Succeed())
 
 			// Create MCPExternalAuthConfig
-			authConfig = &mcpv1alpha1.MCPExternalAuthConfig{
+			authConfig = &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      authConfigName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 					Type: "tokenExchange",
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "original-client-id",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: oauthSecretName,
 							Key:  "client-secret",
 						},
@@ -385,7 +385,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 
 			// Wait for the auth config to have a hash
 			Eventually(func() bool {
-				updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+				updatedAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      authConfigName,
 					Namespace: namespace,
@@ -398,16 +398,16 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Create MCPServer with external auth reference
-			mcpServer = &mcpv1alpha1.MCPServer{
+			mcpServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpServerName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
 					Transport: "stdio",
 					ProxyPort: 8080,
-					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 						Name: authConfigName,
 					},
 				},
@@ -416,7 +416,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 
 			// Wait for the MCPServer to have the original hash
 			Eventually(func() bool {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
 					Namespace: namespace,
@@ -438,7 +438,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 		It("Should update config hash when auth config is modified", func() {
 			// Update the auth config
 			Eventually(func() error {
-				updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+				updatedAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      authConfigName,
 					Namespace: namespace,
@@ -454,7 +454,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 			// Wait for the config hash to change
 			var newHash string
 			Eventually(func() bool {
-				updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+				updatedAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      authConfigName,
 					Namespace: namespace,
@@ -473,7 +473,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 		It("Should trigger MCPServer reconciliation with updated hash", func() {
 			// Wait for the MCPServer to get the updated hash
 			Eventually(func() bool {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpServerName,
 					Namespace: namespace,

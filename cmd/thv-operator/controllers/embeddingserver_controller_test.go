@@ -20,7 +20,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
@@ -50,8 +50,8 @@ func TestEmbeddingServer_GetPort(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			embedding := &mcpv1alpha1.EmbeddingServer{
-				Spec: mcpv1alpha1.EmbeddingServerSpec{
+			embedding := &mcpv1beta1.EmbeddingServer{
+				Spec: mcpv1beta1.EmbeddingServerSpec{
 					Port: tt.port,
 				},
 			}
@@ -86,8 +86,8 @@ func TestEmbeddingServer_GetReplicas(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			embedding := &mcpv1alpha1.EmbeddingServer{
-				Spec: mcpv1alpha1.EmbeddingServerSpec{
+			embedding := &mcpv1beta1.EmbeddingServer{
+				Spec: mcpv1beta1.EmbeddingServerSpec{
 					Replicas: tt.replicas,
 				},
 			}
@@ -102,7 +102,7 @@ func TestEmbeddingServer_IsModelCacheEnabled(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		modelCache *mcpv1alpha1.ModelCacheConfig
+		modelCache *mcpv1beta1.ModelCacheConfig
 		expected   bool
 	}{
 		{
@@ -112,14 +112,14 @@ func TestEmbeddingServer_IsModelCacheEnabled(t *testing.T) {
 		},
 		{
 			name: "model cache disabled",
-			modelCache: &mcpv1alpha1.ModelCacheConfig{
+			modelCache: &mcpv1beta1.ModelCacheConfig{
 				Enabled: false,
 			},
 			expected: false,
 		},
 		{
 			name: "model cache enabled",
-			modelCache: &mcpv1alpha1.ModelCacheConfig{
+			modelCache: &mcpv1beta1.ModelCacheConfig{
 				Enabled: true,
 			},
 			expected: true,
@@ -130,8 +130,8 @@ func TestEmbeddingServer_IsModelCacheEnabled(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			embedding := &mcpv1alpha1.EmbeddingServer{
-				Spec: mcpv1alpha1.EmbeddingServerSpec{
+			embedding := &mcpv1beta1.EmbeddingServer{
+				Spec: mcpv1beta1.EmbeddingServerSpec{
 					ModelCache: tt.modelCache,
 				},
 			}
@@ -175,8 +175,8 @@ func TestEmbeddingServer_GetImagePullPolicy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			embedding := &mcpv1alpha1.EmbeddingServer{
-				Spec: mcpv1alpha1.EmbeddingServerSpec{
+			embedding := &mcpv1beta1.EmbeddingServer{
+				Spec: mcpv1beta1.EmbeddingServerSpec{
 					ImagePullPolicy: tt.imagePullPolicy,
 				},
 			}
@@ -239,8 +239,8 @@ func TestEmbeddingServerPodTemplateSpecValidation(t *testing.T) {
 func TestEmbeddingServer_Labels(t *testing.T) {
 	t.Parallel()
 
-	embedding := &mcpv1alpha1.EmbeddingServer{
-		Spec: mcpv1alpha1.EmbeddingServerSpec{
+	embedding := &mcpv1beta1.EmbeddingServer{
+		Spec: mcpv1beta1.EmbeddingServerSpec{
 			Model: "test-model",
 		},
 	}
@@ -263,13 +263,13 @@ func TestEmbeddingServer_ModelCacheConfig(t *testing.T) {
 	storageClassName := "fast-ssd"
 	tests := []struct {
 		name           string
-		modelCache     *mcpv1alpha1.ModelCacheConfig
+		modelCache     *mcpv1beta1.ModelCacheConfig
 		expectedSize   string
 		expectedAccess string
 	}{
 		{
 			name: "default values",
-			modelCache: &mcpv1alpha1.ModelCacheConfig{
+			modelCache: &mcpv1beta1.ModelCacheConfig{
 				Enabled: true,
 			},
 			expectedSize:   "10Gi",
@@ -277,7 +277,7 @@ func TestEmbeddingServer_ModelCacheConfig(t *testing.T) {
 		},
 		{
 			name: "custom values",
-			modelCache: &mcpv1alpha1.ModelCacheConfig{
+			modelCache: &mcpv1beta1.ModelCacheConfig{
 				Enabled:          true,
 				Size:             "20Gi",
 				AccessMode:       "ReadWriteMany",
@@ -292,8 +292,8 @@ func TestEmbeddingServer_ModelCacheConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			embedding := &mcpv1alpha1.EmbeddingServer{
-				Spec: mcpv1alpha1.EmbeddingServerSpec{
+			embedding := &mcpv1beta1.EmbeddingServer{
+				Spec: mcpv1beta1.EmbeddingServerSpec{
 					Model:      "test-model",
 					ModelCache: tt.modelCache,
 				},
@@ -335,18 +335,18 @@ func createEmbeddingServerTestScheme() *runtime.Scheme {
 	testScheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(testScheme)
 	_ = appsv1.AddToScheme(testScheme)
-	_ = mcpv1alpha1.AddToScheme(testScheme)
+	_ = mcpv1beta1.AddToScheme(testScheme)
 	return testScheme
 }
 
-func createTestEmbeddingServer(name, namespace, image, model string) *mcpv1alpha1.EmbeddingServer {
-	return &mcpv1alpha1.EmbeddingServer{
+func createTestEmbeddingServer(name, namespace, image, model string) *mcpv1beta1.EmbeddingServer {
+	return &mcpv1beta1.EmbeddingServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       name,
 			Namespace:  namespace,
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.EmbeddingServerSpec{
+		Spec: mcpv1beta1.EmbeddingServerSpec{
 			Image: image,
 			Model: model,
 		},
@@ -414,7 +414,7 @@ func TestReconcile_CreateResources(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 
 	// Verify finalizer was added
-	updatedEmbedding := &mcpv1alpha1.EmbeddingServer{}
+	updatedEmbedding := &mcpv1beta1.EmbeddingServer{}
 	err = fakeClient.Get(ctx, types.NamespacedName{
 		Name:      embedding.Name,
 		Namespace: embedding.Namespace,
@@ -453,13 +453,13 @@ func TestStatefulSetNeedsUpdate(t *testing.T) {
 	}
 
 	// Helper to generate a StatefulSet from an embedding using the reconciler
-	generateSts := func(e *mcpv1alpha1.EmbeddingServer) *appsv1.StatefulSet {
+	generateSts := func(e *mcpv1beta1.EmbeddingServer) *appsv1.StatefulSet {
 		return reconciler.statefulSetForEmbedding(context.TODO(), e)
 	}
 
 	tests := []struct {
 		name           string
-		embedding      *mcpv1alpha1.EmbeddingServer
+		embedding      *mcpv1beta1.EmbeddingServer
 		existingSts    *appsv1.StatefulSet
 		expectedUpdate bool
 		updateReason   string
@@ -486,9 +486,9 @@ func TestStatefulSetNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "update needed - port changed",
-			embedding: &mcpv1alpha1.EmbeddingServer{
+			embedding: &mcpv1beta1.EmbeddingServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespaceDefault, Generation: 1},
-				Spec: mcpv1alpha1.EmbeddingServerSpec{
+				Spec: mcpv1beta1.EmbeddingServerSpec{
 					Image: "image:v1",
 					Model: "model1",
 					Port:  9090,
@@ -517,20 +517,20 @@ func TestHandleDeletion(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		embedding       *mcpv1alpha1.EmbeddingServer
+		embedding       *mcpv1beta1.EmbeddingServer
 		expectDone      bool
 		expectError     bool
 		expectFinalizer bool
 	}{
 		{
 			name: "not being deleted",
-			embedding: &mcpv1alpha1.EmbeddingServer{
+			embedding: &mcpv1beta1.EmbeddingServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test",
 					Namespace:  testNamespaceDefault,
 					Finalizers: []string{embeddingFinalizerName},
 				},
-				Spec: mcpv1alpha1.EmbeddingServerSpec{
+				Spec: mcpv1beta1.EmbeddingServerSpec{
 					Image: "test:latest",
 					Model: "test-model",
 				},
@@ -541,14 +541,14 @@ func TestHandleDeletion(t *testing.T) {
 		},
 		{
 			name: "being deleted with finalizer",
-			embedding: &mcpv1alpha1.EmbeddingServer{
+			embedding: &mcpv1beta1.EmbeddingServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:              "test",
 					Namespace:         testNamespaceDefault,
 					Finalizers:        []string{embeddingFinalizerName},
 					DeletionTimestamp: &metav1.Time{Time: time.Now()},
 				},
-				Spec: mcpv1alpha1.EmbeddingServerSpec{
+				Spec: mcpv1beta1.EmbeddingServerSpec{
 					Image: "test:latest",
 					Model: "test-model",
 				},
@@ -591,7 +591,7 @@ func TestHandleDeletion(t *testing.T) {
 
 			// Verify finalizer state if not being deleted
 			if tt.embedding.DeletionTimestamp == nil {
-				updatedEmbedding := &mcpv1alpha1.EmbeddingServer{}
+				updatedEmbedding := &mcpv1beta1.EmbeddingServer{}
 				err := fakeClient.Get(context.TODO(), types.NamespacedName{
 					Name:      tt.embedding.Name,
 					Namespace: tt.embedding.Namespace,
@@ -617,7 +617,7 @@ func TestEnsureStatefulSet(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		embedding    *mcpv1alpha1.EmbeddingServer
+		embedding    *mcpv1beta1.EmbeddingServer
 		existingSts  *appsv1.StatefulSet
 		expectCreate bool
 		expectUpdate bool
@@ -632,7 +632,7 @@ func TestEnsureStatefulSet(t *testing.T) {
 		},
 		{
 			name: "update replicas",
-			embedding: func() *mcpv1alpha1.EmbeddingServer {
+			embedding: func() *mcpv1beta1.EmbeddingServer {
 				e := createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1")
 				replicas := int32(3)
 				e.Spec.Replicas = &replicas
@@ -718,16 +718,16 @@ func TestUpdateEmbeddingServerStatus(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		embedding     *mcpv1alpha1.EmbeddingServer
+		embedding     *mcpv1beta1.EmbeddingServer
 		statefulSet   *appsv1.StatefulSet
-		expectedPhase mcpv1alpha1.EmbeddingServerPhase
+		expectedPhase mcpv1beta1.EmbeddingServerPhase
 		expectedURL   string
 	}{
 		{
 			name:          "no statefulset - pending",
 			embedding:     createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1"),
 			statefulSet:   nil,
-			expectedPhase: mcpv1alpha1.EmbeddingServerPhasePending,
+			expectedPhase: mcpv1beta1.EmbeddingServerPhasePending,
 			expectedURL:   "http://test.default.svc.cluster.local:8080",
 		},
 		{
@@ -743,7 +743,7 @@ func TestUpdateEmbeddingServerStatus(t *testing.T) {
 					ReadyReplicas: 1,
 				},
 			},
-			expectedPhase: mcpv1alpha1.EmbeddingServerPhaseReady,
+			expectedPhase: mcpv1beta1.EmbeddingServerPhaseReady,
 			expectedURL:   "http://test.default.svc.cluster.local:8080",
 		},
 		{
@@ -759,7 +759,7 @@ func TestUpdateEmbeddingServerStatus(t *testing.T) {
 					ReadyReplicas: 0,
 				},
 			},
-			expectedPhase: mcpv1alpha1.EmbeddingServerPhaseDownloading,
+			expectedPhase: mcpv1beta1.EmbeddingServerPhaseDownloading,
 			expectedURL:   "http://test.default.svc.cluster.local:8080",
 		},
 	}
@@ -789,7 +789,7 @@ func TestUpdateEmbeddingServerStatus(t *testing.T) {
 			assert.NoError(t, err)
 
 			// Verify status was updated
-			updatedEmbedding := &mcpv1alpha1.EmbeddingServer{}
+			updatedEmbedding := &mcpv1beta1.EmbeddingServer{}
 			err = fakeClient.Get(context.TODO(), types.NamespacedName{
 				Name:      tt.embedding.Name,
 				Namespace: tt.embedding.Namespace,

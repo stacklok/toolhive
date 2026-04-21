@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 func TestGenerateOIDCClientSecretEnvVar(t *testing.T) {
@@ -22,7 +22,7 @@ func TestGenerateOIDCClientSecretEnvVar(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		clientSecretRef *mcpv1alpha1.SecretKeyRef
+		clientSecretRef *mcpv1beta1.SecretKeyRef
 		secret          *corev1.Secret
 		expectError     bool
 		errContains     string
@@ -39,7 +39,7 @@ func TestGenerateOIDCClientSecretEnvVar(t *testing.T) {
 		},
 		{
 			name: "valid secret ref generates env var",
-			clientSecretRef: &mcpv1alpha1.SecretKeyRef{
+			clientSecretRef: &mcpv1beta1.SecretKeyRef{
 				Name: "oidc-secret",
 				Key:  "client-secret",
 			},
@@ -65,7 +65,7 @@ func TestGenerateOIDCClientSecretEnvVar(t *testing.T) {
 		},
 		{
 			name: "missing secret returns error",
-			clientSecretRef: &mcpv1alpha1.SecretKeyRef{
+			clientSecretRef: &mcpv1beta1.SecretKeyRef{
 				Name: "missing-secret",
 				Key:  "client-secret",
 			},
@@ -74,7 +74,7 @@ func TestGenerateOIDCClientSecretEnvVar(t *testing.T) {
 		},
 		{
 			name: "missing key in secret returns error",
-			clientSecretRef: &mcpv1alpha1.SecretKeyRef{
+			clientSecretRef: &mcpv1beta1.SecretKeyRef{
 				Name: "oidc-secret",
 				Key:  "wrong-key",
 			},
@@ -99,7 +99,7 @@ func TestGenerateOIDCClientSecretEnvVar(t *testing.T) {
 			scheme := runtime.NewScheme()
 			err := corev1.AddToScheme(scheme)
 			require.NoError(t, err)
-			err = mcpv1alpha1.AddToScheme(scheme)
+			err = mcpv1beta1.AddToScheme(scheme)
 			require.NoError(t, err)
 
 			var fakeClient *fake.ClientBuilder

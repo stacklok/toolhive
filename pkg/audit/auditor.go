@@ -56,6 +56,18 @@ func NewAuditLogger(w io.Writer) *slog.Logger {
 
 	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
 		Level: LevelAudit,
+		// Render LevelAudit as "AUDIT" rather than slog's default
+		// "INFO+2" so log aggregators (Loki's detected_level,
+		// Elasticsearch, Splunk, etc.) can match the level facet
+		// and users can filter on `level = "AUDIT"` (#4296).
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.LevelKey {
+				if level, ok := a.Value.Any().(slog.Level); ok && level == LevelAudit {
+					a.Value = slog.StringValue("AUDIT")
+				}
+			}
+			return a
+		},
 	})
 
 	return slog.New(handler)

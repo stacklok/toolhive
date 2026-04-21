@@ -28,8 +28,9 @@ import (
 )
 
 const (
-	// defaultTEIImage is the default HuggingFace Text Embeddings Inference image.
-	defaultTEIImage = "ghcr.io/huggingface/text-embeddings-inference:cpu-latest"
+	// DefaultEmbeddingImage is the default HuggingFace Text Embeddings
+	// Inference image used when ServeConfig.EmbeddingImage is empty.
+	DefaultEmbeddingImage = "ghcr.io/huggingface/text-embeddings-inference:cpu-latest"
 
 	// DefaultEmbeddingModel is the HuggingFace model used when EmbeddingModel is empty.
 	DefaultEmbeddingModel = "BAAI/bge-small-en-v1.5"
@@ -89,7 +90,7 @@ type EmbeddingServiceManagerConfig struct {
 	Model string
 
 	// Image is the TEI container image to run.
-	// Defaults to defaultTEIImage when empty.
+	// Defaults to DefaultEmbeddingImage when empty.
 	Image string
 }
 
@@ -142,7 +143,7 @@ func NewEmbeddingServiceManager(factory ContainerFactory, cfg EmbeddingServiceMa
 		return nil, fmt.Errorf("model must not be empty")
 	}
 	if cfg.Image == "" {
-		cfg.Image = defaultTEIImage
+		cfg.Image = DefaultEmbeddingImage
 	}
 
 	containerName := containerNameForModel(cfg.Model)

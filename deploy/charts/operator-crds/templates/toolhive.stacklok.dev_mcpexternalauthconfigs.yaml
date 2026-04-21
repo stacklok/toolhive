@@ -428,9 +428,9 @@ spec:
                         - aclUserConfig
                         type: object
                         x-kubernetes-validations:
-                        - message: ”exactly one of addr (standalone) or sentinelConfig
-                            (Sentinel) must be set”
-                          rule: ”(self.addr != '') != has(self.sentinelConfig)”
+                        - message: exactly one of addr (standalone) or sentinelConfig
+                            (Sentinel) must be set
+                          rule: (self.addr.size() > 0) != has(self.sentinelConfig)
                       type:
                         default: memory
                         description: |-
@@ -1457,9 +1457,9 @@ spec:
                         - aclUserConfig
                         type: object
                         x-kubernetes-validations:
-                        - message: ”exactly one of addr (standalone) or sentinelConfig
-                            (Sentinel) must be set”
-                          rule: ”(self.addr != '') != has(self.sentinelConfig)”
+                        - message: exactly one of addr (standalone) or sentinelConfig
+                            (Sentinel) must be set
+                          rule: (self.addr.size() > 0) != has(self.sentinelConfig)
                       type:
                         default: memory
                         description: |-

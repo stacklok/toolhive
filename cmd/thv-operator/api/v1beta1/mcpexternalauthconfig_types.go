@@ -523,7 +523,9 @@ type AuthServerStorageConfig struct {
 // RedisStorageConfig configures Redis connection for auth server storage.
 // Exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set.
 //
-// +kubebuilder:validation:XValidation:rule=”(self.addr != '') != has(self.sentinelConfig)”,message=”exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set”
+// +kubebuilder:validation:XValidation:rule="(self.addr.size() > 0) != has(self.sentinelConfig)",message="exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type RedisStorageConfig struct {
 	// Addr is the Redis server address for standalone mode (e.g., "host:port").
 	// Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present

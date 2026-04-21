@@ -521,11 +521,20 @@ type AuthServerStorageConfig struct {
 }
 
 // RedisStorageConfig configures Redis connection for auth server storage.
-// Redis is deployed in Sentinel mode with ACL user authentication (the only supported configuration).
+// Exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set.
+//
+// +kubebuilder:validation:XValidation:rule="(self.addr != '') != has(self.sentinelConfig)",message="exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set"
 type RedisStorageConfig struct {
+	// Addr is the Redis server address for standalone mode (e.g., "host:port").
+	// Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present
+	// a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig.
+	// +optional
+	Addr string `json:"addr,omitempty"`
+
 	// SentinelConfig holds Redis Sentinel configuration.
-	// +kubebuilder:validation:Required
-	SentinelConfig *RedisSentinelConfig `json:"sentinelConfig"`
+	// Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr.
+	// +optional
+	SentinelConfig *RedisSentinelConfig `json:"sentinelConfig,omitempty"`
 
 	// ACLUserConfig configures Redis ACL user authentication.
 	// +kubebuilder:validation:Required
@@ -558,8 +567,7 @@ type RedisStorageConfig struct {
 	TLS *RedisTLSConfig `json:"tls,omitempty"`
 
 	// SentinelTLS configures TLS for connections to Sentinel instances.
-	// Presence of this field enables TLS. Omit to use plaintext.
-	// When omitted, sentinel connections use plaintext (no fallback to TLS config).
+	// Only applies when sentinelConfig is set. Presence of this field enables TLS.
 	// +optional
 	SentinelTLS *RedisTLSConfig `json:"sentinelTls,omitempty"`
 }

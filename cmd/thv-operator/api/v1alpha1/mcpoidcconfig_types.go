@@ -5,6 +5,7 @@ package v1alpha1
 
 import (
 	"fmt"
+	"net/url"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -257,7 +258,22 @@ type MCPOIDCConfigReference struct {
 // CEL catches issues at API admission time, but this method also validates stored objects
 // to catch any that bypassed CEL or were stored before CEL rules were added.
 func (r *MCPOIDCConfig) Validate() error {
-	return r.validateTypeConfigConsistency()
+	if err := r.validateTypeConfigConsistency(); err != nil {
+		return err
+	}
+	if r.Spec.Inline != nil {
+		// URL sanity checks for the inline config. Issuer and JWKS URLs
+		// must be well-formed and must use HTTPS unless the user has
+		// explicitly opted into HTTP via insecureAllowHTTP (#4823).
+		allowInsecure := r.Spec.Inline.InsecureAllowHTTP
+		if err := validateOIDCIssuerURL(r.Spec.Inline.Issuer, allowInsecure); err != nil {
+			return err
+		}
+		if err := validateJWKSURL(r.Spec.Inline.JWKSURL, allowInsecure); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // validateTypeConfigConsistency validates that the correct config is set for the selected type.
@@ -268,6 +284,45 @@ func (r *MCPOIDCConfig) validateTypeConfigConsistency() error {
 	}
 	if (r.Spec.Inline == nil) == (r.Spec.Type == MCPOIDCConfigTypeInline) {
 		return fmt.Errorf("inline configuration must be set if and only if type is 'inline'")
+	}
+	return nil
+}
+
+// validateOIDCIssuerURL checks that an OIDC issuer URL is well-formed and uses
+// HTTPS (or HTTP when allowInsecure is true). Mirrors the validation that used
+// to live in pkg/validation/oidc_validation.go but is inlined here to avoid an
+// import cycle between the types package and pkg/validation.
+// Returns nil if issuer is empty.
+func validateOIDCIssuerURL(issuer string, allowInsecure bool) error {
+	return validateHTTPLikeURL("OIDC issuer URL", issuer, allowInsecure)
+}
+
+// validateJWKSURL checks that a JWKS URL is well-formed and uses HTTPS (or HTTP
+// when allowInsecure is true). Returns nil if jwks is empty; JWKS URLs are
+// optional and otherwise discovered from the issuer.
+func validateJWKSURL(jwks string, allowInsecure bool) error {
+	return validateHTTPLikeURL("JWKS URL", jwks, allowInsecure)
+}
+
+func validateHTTPLikeURL(label, raw string, allowInsecure bool) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s %q is malformed: %w", label, raw, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("%s %q is malformed: missing scheme or host", label, raw)
+	}
+	if u.Scheme == "http" && !allowInsecure {
+		return fmt.Errorf(
+			"%s %q uses HTTP scheme, which is insecure; "+
+				"use HTTPS or set insecureAllowHTTP: true for development only", label, raw,
+		)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%s %q has unsupported scheme %q; must be http or https", label, raw, u.Scheme)
 	}
 	return nil
 }

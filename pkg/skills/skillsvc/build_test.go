@@ -528,6 +528,98 @@ func TestListBuilds(t *testing.T) {
 		require.Len(t, artifacts, 1)
 		assert.Equal(t, "real-skill", artifacts[0].Tag)
 	})
+
+	t.Run("pulled tags are hidden from ListBuilds", func(t *testing.T) {
+		t.Parallel()
+		storeRoot := t.TempDir()
+		ociStore, err := ociskills.NewStore(storeRoot)
+		require.NoError(t, err)
+
+		// Construct the service first so the provenance migration runs on an
+		// empty store and records nothing.
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+
+		// Simulate a pull: a skill artifact tagged with a fully-qualified OCI
+		// reference. Build provenance is intentionally not touched by pulls.
+		d := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), d, "ghcr.io/org/my-skill:v1.0.0"))
+
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		assert.Empty(t, artifacts, "pulled tags must not appear in ListBuilds")
+	})
+
+	t.Run("only Build-recorded tags are listed when pull and build coexist", func(t *testing.T) {
+		t.Parallel()
+		storeRoot := t.TempDir()
+		ociStore, err := ociskills.NewStore(storeRoot)
+		require.NoError(t, err)
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+
+		// Pre-stage a "pulled" artifact — never goes through provenance.
+		pulled := buildTestArtifact(t, ociStore, "pulled-skill", "9.9.9")
+		require.NoError(t, ociStore.Tag(t.Context(), pulled, "ghcr.io/org/pulled-skill:v9.9.9"))
+
+		// Manually record a build provenance entry to simulate a Build call
+		// without exercising the full packager path. Pointing at an existing
+		// skill digest is sufficient for ListBuilds to surface it.
+		svcImpl := svc.(*service)
+		built := buildTestArtifact(t, ociStore, "built-skill", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), built, "built-skill"))
+		require.NoError(t, svcImpl.provenance.Record("built-skill", built.String()))
+
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		require.Len(t, artifacts, 1)
+		assert.Equal(t, "built-skill", artifacts[0].Tag)
+	})
+
+	t.Run("migration grandfathers existing simple tags as builds", func(t *testing.T) {
+		t.Parallel()
+		storeRoot := t.TempDir()
+		ociStore, err := ociskills.NewStore(storeRoot)
+		require.NoError(t, err)
+
+		// Tags present BEFORE the service is constructed should be migrated.
+		builtDigest := buildTestArtifact(t, ociStore, "legacy-build", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), builtDigest, "legacy-build"))
+		pulledDigest := buildTestArtifact(t, ociStore, "legacy-pull", "2.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), pulledDigest, "ghcr.io/org/legacy-pull:v2"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		require.Len(t, artifacts, 1, "simple tags migrate, OCI-ref tags do not")
+		assert.Equal(t, "legacy-build", artifacts[0].Tag)
+
+		// builds.json must exist so the migration does not repeat.
+		info, statErr := os.Stat(filepath.Join(storeRoot, provenanceFileName))
+		require.NoError(t, statErr)
+		assert.Greater(t, info.Size(), int64(0))
+	})
+
+	t.Run("stale provenance entries are pruned on list", func(t *testing.T) {
+		t.Parallel()
+		storeRoot := t.TempDir()
+		ociStore, err := ociskills.NewStore(storeRoot)
+		require.NoError(t, err)
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		svcImpl := svc.(*service)
+
+		// Record a provenance entry for a tag that is not (yet) in the store.
+		require.NoError(t, svcImpl.provenance.Record("ghost-tag", "sha256:aaa"))
+
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		assert.Empty(t, artifacts)
+
+		// The stale entry must be pruned as a side effect.
+		has, err := svcImpl.provenance.Has("ghost-tag")
+		require.NoError(t, err)
+		assert.False(t, has, "stale provenance entry should have been pruned")
+	})
 }
 
 func TestDeleteBuild(t *testing.T) {
@@ -587,4 +679,59 @@ func TestDeleteBuild(t *testing.T) {
 		require.Len(t, builds, 1)
 		assert.Equal(t, "tag-b", builds[0].Tag)
 	})
+
+	t.Run("delete removes provenance entry", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		d := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), d, "my-skill"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		svcImpl := svc.(*service)
+
+		// Migration should have seeded the entry.
+		has, err := svcImpl.provenance.Has("my-skill")
+		require.NoError(t, err)
+		require.True(t, has)
+
+		require.NoError(t, svc.DeleteBuild(t.Context(), "my-skill"))
+
+		has, err = svcImpl.provenance.Has("my-skill")
+		require.NoError(t, err)
+		assert.False(t, has, "provenance entry must be forgotten after DeleteBuild")
+	})
+}
+
+func TestBuild_RecordsProvenance(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	ociStore, err := ociskills.NewStore(t.TempDir())
+	require.NoError(t, err)
+
+	d := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+
+	p := ocimocks.NewMockSkillPackager(ctrl)
+	p.EXPECT().Package(gomock.Any(), "/some/dir", gomock.Any()).
+		Return(&ociskills.PackageResult{
+			IndexDigest: d,
+			Config:      &ociskills.SkillConfig{Name: "my-skill"},
+		}, nil)
+
+	svc := New(&storage.NoopSkillStore{},
+		WithPackager(p),
+		WithOCIStore(ociStore),
+	)
+
+	_, err = svc.Build(t.Context(), skills.BuildOptions{Path: "/some/dir", Tag: "my-skill"})
+	require.NoError(t, err)
+
+	// After a successful Build, the tag must be surfaced by ListBuilds
+	// because the build provenance index recorded it.
+	builds, err := svc.ListBuilds(t.Context())
+	require.NoError(t, err)
+	require.Len(t, builds, 1)
+	assert.Equal(t, "my-skill", builds[0].Tag)
 }

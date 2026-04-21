@@ -5,7 +5,11 @@
 package skillsvc
 
 import (
+	"context"
+	"log/slog"
+	"strings"
 	"sync"
+	"time"
 
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
@@ -118,6 +122,11 @@ type service struct {
 	registry     ociskills.RegistryClient
 	skillLookup  SkillLookup
 	gitResolver  gitresolver.Resolver
+	// provenance records which OCI-store tags were produced by `thv skill
+	// build`. Tags created by OCI pulls (install, content preview) are
+	// deliberately absent so they remain invisible to ListBuilds while their
+	// blobs stay in the store as a cache. Nil when ociStore is not configured.
+	provenance *buildProvenance
 }
 
 // New creates a new SkillService backed by the given store.
@@ -135,5 +144,67 @@ func New(store storage.SkillStore, opts ...Option) skills.SkillService {
 	if s.gitResolver == nil {
 		s.gitResolver = gitresolver.NewResolver()
 	}
+	if s.ociStore != nil {
+		s.provenance = newBuildProvenance(s.ociStore.Root())
+		migrateBuildProvenance(s.ociStore, s.provenance)
+	}
 	return s
+}
+
+// migrateBuildProvenance seeds the provenance file on first run so tags
+// present before this feature existed continue to appear in ListBuilds.
+// Tags that look like fully-qualified OCI references (contain '/', ':' or '@')
+// are treated as pulled artifacts and omitted. Best-effort: any error is
+// logged and swallowed so service construction never fails on a migration
+// glitch.
+func migrateBuildProvenance(store *ociskills.Store, p *buildProvenance) {
+	if store == nil || p == nil {
+		return
+	}
+	exists, err := p.Exists()
+	if err != nil {
+		slog.Warn("checking build provenance file", "error", err)
+		return
+	}
+	if exists {
+		return
+	}
+
+	ctx := context.Background()
+	tags, err := store.ListTags(ctx)
+	if err != nil {
+		slog.Warn("listing OCI tags for provenance migration", "error", err)
+		return
+	}
+
+	now := time.Now().UTC()
+	entries := make([]provenanceEntry, 0, len(tags))
+	for _, tag := range tags {
+		if looksLikePulledRef(tag) {
+			continue
+		}
+		d, resolveErr := store.Resolve(ctx, tag)
+		if resolveErr != nil {
+			slog.Debug("resolving tag during provenance migration", "tag", tag, "error", resolveErr)
+			continue
+		}
+		entries = append(entries, provenanceEntry{
+			Tag:       tag,
+			Digest:    d.String(),
+			CreatedAt: now,
+		})
+	}
+
+	if err := p.Seed(entries); err != nil {
+		slog.Warn("seeding build provenance file", "error", err)
+	}
+}
+
+// looksLikePulledRef returns true when a tag string resembles a
+// fully-qualified OCI reference (e.g. "ghcr.io/org/skill:v1") rather than a
+// simple build tag (e.g. "my-skill" or "v1.0.0"). Used only by the one-shot
+// migration — ongoing provenance decisions are explicit (Build records,
+// pulls do not).
+func looksLikePulledRef(tag string) bool {
+	return strings.ContainsAny(tag, "/:@")
 }

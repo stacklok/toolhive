@@ -67,6 +67,15 @@ func (s *service) Build(ctx context.Context, opts skills.BuildOptions) (*skills.
 		if tagErr := s.ociStore.Tag(ctx, result.IndexDigest, tag); tagErr != nil {
 			return nil, fmt.Errorf("tagging artifact: %w", tagErr)
 		}
+		// Record build provenance so ListBuilds surfaces this tag. Tags
+		// created by OCI pulls (install, content preview) deliberately skip
+		// this step and stay hidden from ListBuilds while their blobs remain
+		// as a cache.
+		if s.provenance != nil {
+			if recErr := s.provenance.Record(tag, result.IndexDigest.String()); recErr != nil {
+				return nil, fmt.Errorf("recording build provenance: %w", recErr)
+			}
+		}
 	}
 
 	ref := func() string {
@@ -111,6 +120,9 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 }
 
 // ListBuilds returns all locally-built OCI skill artifacts in the local store.
+// It iterates the build provenance index (populated by Build) rather than the
+// full tag list, so artifacts pulled into the store by install or the content
+// API for caching do not appear here.
 func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 	if s.ociStore == nil {
 		return nil, httperr.WithCode(
@@ -118,23 +130,33 @@ func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 			http.StatusInternalServerError,
 		)
 	}
-
-	tags, err := s.ociStore.ListTags(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing local OCI builds: %w", err)
+	if s.provenance == nil {
+		// ociStore is set but provenance failed to initialize; treat as
+		// empty rather than surfacing every pulled tag.
+		return []skills.LocalBuild{}, nil
 	}
 
-	builds := make([]skills.LocalBuild, 0, len(tags))
-	for _, tag := range tags {
-		d, resolveErr := s.ociStore.Resolve(ctx, tag)
+	entries, err := s.provenance.List()
+	if err != nil {
+		return nil, fmt.Errorf("listing build provenance: %w", err)
+	}
+
+	builds := make([]skills.LocalBuild, 0, len(entries))
+	for _, entry := range entries {
+		d, resolveErr := s.ociStore.Resolve(ctx, entry.Tag)
 		if resolveErr != nil {
-			slog.Debug("failed to resolve tag in local OCI store", "tag", tag, "error", resolveErr)
+			// Tag no longer resolves (e.g. deleted outside of DeleteBuild).
+			// Prune the stale provenance entry and skip.
+			slog.Debug("pruning stale provenance entry", "tag", entry.Tag, "error", resolveErr)
+			if forgetErr := s.provenance.Forget(entry.Tag); forgetErr != nil {
+				slog.Debug("failed to prune stale provenance entry", "tag", entry.Tag, "error", forgetErr)
+			}
 			continue
 		}
 
 		isSkill, typeErr := s.isSkillArtifact(ctx, d)
 		if typeErr != nil {
-			slog.Debug("failed to check artifact type in local OCI store", "tag", tag, "error", typeErr)
+			slog.Debug("failed to check artifact type in local OCI store", "tag", entry.Tag, "error", typeErr)
 			continue
 		}
 		if !isSkill {
@@ -142,7 +164,7 @@ func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 		}
 
 		build := skills.LocalBuild{
-			Tag:    tag,
+			Tag:    entry.Tag,
 			Digest: d.String(),
 		}
 
@@ -152,7 +174,7 @@ func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 			build.Description = cfg.Description
 			build.Version = cfg.Version
 		} else if extractErr != nil {
-			slog.Debug("failed to extract skill config from local build", "tag", tag, "error", extractErr)
+			slog.Debug("failed to extract skill config from local build", "tag", entry.Tag, "error", extractErr)
 		}
 
 		builds = append(builds, build)
@@ -163,7 +185,7 @@ func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 
 // DeleteBuild removes a locally-built OCI skill artifact from the local store.
 // It deletes the tag and, when no other tag shares the same digest, also
-// garbage-collects all associated blobs.
+// garbage-collects all associated blobs. The provenance entry is also forgotten.
 func (s *service) DeleteBuild(ctx context.Context, tag string) error {
 	if s.ociStore == nil {
 		return httperr.WithCode(
@@ -171,7 +193,18 @@ func (s *service) DeleteBuild(ctx context.Context, tag string) error {
 			http.StatusInternalServerError,
 		)
 	}
-	return s.ociStore.DeleteBuild(ctx, tag)
+	if err := s.ociStore.DeleteBuild(ctx, tag); err != nil {
+		return err
+	}
+	if s.provenance != nil {
+		if forgetErr := s.provenance.Forget(tag); forgetErr != nil {
+			// The underlying artifact is gone; failing to clean up the
+			// provenance entry is non-fatal — ListBuilds will prune stale
+			// entries on the next call.
+			slog.Debug("failed to forget provenance entry", "tag", tag, "error", forgetErr)
+		}
+	}
+	return nil
 }
 
 // validateLocalPath checks that a path is non-empty, absolute, and does not

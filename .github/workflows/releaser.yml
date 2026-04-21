@@ -145,6 +145,35 @@ jobs:
           mkdir -p build
           tar -czf build/thv-cli-docs.tar.gz -C docs/cli .
 
+      - name: Bundle CRD manifests
+        run: |
+          mkdir -p build
+          tar -czf build/thv-crds.tar.gz -C deploy/charts/operator-crds/files/crds .
+
+      - name: Download toolhive-core schemas at pinned version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Resolve the toolhive-core version this release was built against
+          # (from go.mod, since we ship binaries compiled against that version).
+          # Re-exporting the schemas here lets downstream consumers (notably
+          # docs-website) skip the two-repo dance of deriving the version and
+          # fetching from a separate release.
+          mkdir -p build
+          CORE_VERSION=$(grep 'github.com/stacklok/toolhive-core' go.mod | awk '{print $2}' | head -1)
+          if [ -z "$CORE_VERSION" ]; then
+            echo "::error::Could not determine toolhive-core version from go.mod"
+            exit 1
+          fi
+          echo "Using toolhive-core version: $CORE_VERSION"
+          gh release download "$CORE_VERSION" \
+            --repo stacklok/toolhive-core \
+            --pattern "toolhive-legacy-registry.schema.json" \
+            --pattern "upstream-registry.schema.json" \
+            --pattern "publisher-provided.schema.json" \
+            --pattern "skill.schema.json" \
+            --dir build/
+
       - name: Remove existing release assets (allows re-runs)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -213,44 +242,6 @@ jobs:
       id-token: write
     uses: ./.github/workflows/helm-publish.yml
 
-  extract-release-actor:
-    name: Extract Release Actor
-    runs-on: ubuntu-slim
-    outputs:
-      triggered_by: ${{ steps.extract.outputs.triggered_by }}
-    permissions:
-      contents: read
-    steps:
-      - name: Extract actor from release body
-        id: extract
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Fetch the release body and extract the Release-Triggered-By metadata
-          RELEASE_BODY=$(gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json body --jq '.body')
-
-          # Extract username from HTML comment: <!-- Release-Triggered-By: username -->
-          TRIGGERED_BY=$(echo "$RELEASE_BODY" | grep -oP '(?<=<!-- Release-Triggered-By: )[^[:space:]]+(?= -->)' || true)
-
-          if [ -n "$TRIGGERED_BY" ]; then
-            echo "Found release triggering actor: $TRIGGERED_BY"
-            echo "triggered_by=$TRIGGERED_BY" >> $GITHUB_OUTPUT
-          else
-            echo "No Release-Triggered-By metadata found, falling back to github.actor"
-            echo "triggered_by=${{ github.actor }}" >> $GITHUB_OUTPUT
-          fi
-
-  update-docs-website:
-    name: Trigger Docs Update
-    needs: [ publish-helm, extract-release-actor ]
-    permissions: {}
-    uses: ./.github/workflows/update-docs-website.yml
-    with:
-      version: ${{ github.ref_name }}
-      assign_to: ${{ needs.extract-release-actor.outputs.triggered_by }}
-    secrets:
-      DOCS_REPO_DISPATCH_TOKEN: ${{ secrets.DOCS_REPO_DISPATCH_TOKEN }}
-
 #  provenance:
 #    name: Generate provenance (SLSA3)
 #    needs:
@@ -311,9 +302,7 @@ jobs:
       - release-binaries
       - image-build-and-push
       - skills-build-and-push
-      - update-docs-website
       - publish-helm
-      - extract-release-actor
     if: ${{ failure() }}
     runs-on: ubuntu-slim
     permissions: {}

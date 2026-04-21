@@ -170,7 +170,7 @@ func (s *service) getContentFromOCI(ctx context.Context, ref string) (*skills.Sk
 		if pullErr != nil {
 			return nil, httperr.WithCode(
 				fmt.Errorf("pulling OCI artifact %q: %w", qualifiedRef, pullErr),
-				http.StatusBadRequest,
+				http.StatusBadGateway,
 			)
 		}
 	}

@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -32,7 +31,7 @@ func allocateVMCPPort() int {
 // prevent the test suite from hanging. Safe to call on a nil cmd or on a cmd
 // whose process has already exited.
 func stopVMCPProcess(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
+	if cmd == nil || cmd.Process == nil || cmd.ProcessState != nil {
 		return
 	}
 	_ = cmd.Process.Signal(syscall.SIGINT)
@@ -97,19 +96,4 @@ func initVMCPConfig(config *e2e.TestConfig, groupName, path string) {
 		"--group", groupName,
 		"--config", path,
 	).ExpectSuccess()
-}
-
-// vmcpEndpointURL returns the MCP endpoint URL for a vMCP serve process
-// listening on the given port.
-func vmcpEndpointURL(port int) string {
-	return fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
-}
-
-// toolNames returns the Name field of each tool in order.
-func toolNames(tools []mcp.Tool) []string {
-	names := make([]string, len(tools))
-	for i, t := range tools {
-		names[i] = t.Name
-	}
-	return names
 }

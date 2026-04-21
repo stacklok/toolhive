@@ -1710,6 +1710,60 @@ func TestDeriveScopesSupported(t *testing.T) {
 	}
 }
 
+func TestDeriveResourceURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		config   *vmcpconfig.Config
+		expected string
+	}{
+		{
+			name:     "nil IncomingAuth returns empty",
+			config:   &vmcpconfig.Config{},
+			expected: "",
+		},
+		{
+			name: "nil OIDC returns empty",
+			config: &vmcpconfig.Config{
+				IncomingAuth: &vmcpconfig.IncomingAuthConfig{Type: "oidc"},
+			},
+			expected: "",
+		},
+		{
+			name: "empty Resource returns empty",
+			config: &vmcpconfig.Config{
+				IncomingAuth: &vmcpconfig.IncomingAuthConfig{
+					Type: "oidc",
+					OIDC: &vmcpconfig.OIDCConfig{},
+				},
+			},
+			expected: "",
+		},
+		{
+			name: "populated Resource is returned",
+			config: &vmcpconfig.Config{
+				IncomingAuth: &vmcpconfig.IncomingAuthConfig{
+					Type: "oidc",
+					OIDC: &vmcpconfig.OIDCConfig{
+						Resource: "https://resource.example.com",
+					},
+				},
+			},
+			expected: "https://resource.example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := deriveResourceURL(tt.config)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 // TestConvert_AuthServerConfigIntegration is an integration-level test that exercises the
 // full Convert() path with an AuthServerConfig set on the VirtualMCPServer. It verifies that
 // the returned RunConfig has the correct Issuer, Upstreams, and AllowedAudiences derived

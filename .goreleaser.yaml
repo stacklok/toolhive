@@ -101,6 +101,7 @@ release:
     name: toolhive
   extra_files:
     - glob: build/thv-cli-docs.tar.gz
+    - glob: build/thv-crds.tar.gz
     - glob: docs/server/swagger.yaml
     - glob: docs/server/swagger.json
     - glob: docs/operator/crd-api.md

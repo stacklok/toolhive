@@ -145,6 +145,11 @@ jobs:
           mkdir -p build
           tar -czf build/thv-cli-docs.tar.gz -C docs/cli .
 
+      - name: Bundle CRD manifests
+        run: |
+          mkdir -p build
+          tar -czf build/thv-crds.tar.gz -C deploy/charts/operator-crds/files/crds .
+
       - name: Remove existing release assets (allows re-runs)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

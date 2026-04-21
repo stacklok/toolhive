@@ -258,7 +258,7 @@ func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 			buildArgs:     []string{"start"},
 			wantContains: []string{
 				`ENTRYPOINT ["npx", "@launchdarkly/mcp-server", "start"]`,
-				"FROM node:22-alpine",
+				"FROM node:24-alpine",
 			},
 			wantErr: false,
 		},
@@ -270,7 +270,7 @@ func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 				"example-package",
 				"--transport",
 				"stdio",
-				"FROM python:3.13-slim",
+				"FROM python:3.14-slim",
 			},
 			wantErr: false,
 		},
@@ -333,7 +333,7 @@ func TestMergeRuntimeConfig(t *testing.T) {
 				BuilderImage:       "",
 				AdditionalPackages: []string{"curl"},
 			},
-			wantImage:    "node:22-alpine",
+			wantImage:    "node:24-alpine",
 			wantPackages: []string{"git", "ca-certificates", "curl"},
 		},
 		{
@@ -353,7 +353,7 @@ func TestMergeRuntimeConfig(t *testing.T) {
 				BuilderImage:       "",
 				AdditionalPackages: []string{"git"},
 			},
-			wantImage:    "node:22-alpine",
+			wantImage:    "node:24-alpine",
 			wantPackages: []string{"git", "ca-certificates"},
 		},
 		{
@@ -363,7 +363,7 @@ func TestMergeRuntimeConfig(t *testing.T) {
 				BuilderImage:       "",
 				AdditionalPackages: nil,
 			},
-			wantImage:    "node:22-alpine",
+			wantImage:    "node:24-alpine",
 			wantPackages: []string{"git", "ca-certificates"},
 		},
 		{
@@ -373,7 +373,7 @@ func TestMergeRuntimeConfig(t *testing.T) {
 				BuilderImage:       "",
 				AdditionalPackages: []string{"make"},
 			},
-			wantImage:    "golang:1.25-alpine",
+			wantImage:    "golang:1.26-alpine",
 			wantPackages: []string{"ca-certificates", "git", "make"},
 		},
 		{
@@ -383,7 +383,7 @@ func TestMergeRuntimeConfig(t *testing.T) {
 				BuilderImage:       "",
 				AdditionalPackages: []string{"curl"},
 			},
-			wantImage:    "python:3.13-slim",
+			wantImage:    "python:3.14-slim",
 			wantPackages: []string{"ca-certificates", "git", "curl"},
 		},
 	}
@@ -426,8 +426,8 @@ func TestLoadRuntimeConfigMergesOverrideWithDefaults(t *testing.T) {
 	if got.BuilderImage == "" {
 		t.Error("loadRuntimeConfig() returned empty BuilderImage — should fall back to default")
 	}
-	if got.BuilderImage != "node:22-alpine" {
-		t.Errorf("BuilderImage = %q, want %q", got.BuilderImage, "node:22-alpine")
+	if got.BuilderImage != "node:24-alpine" {
+		t.Errorf("BuilderImage = %q, want %q", got.BuilderImage, "node:24-alpine")
 	}
 }
 

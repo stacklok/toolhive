@@ -106,11 +106,17 @@ func (*EntityFactory) CreateResourceEntity(
 // Cedar's `in` operator works for group-based policies. Unlike the pre-refactor
 // code, no separate THVGroup entities are inserted into the entity map — those
 // must come from entities_json to preserve the role hierarchy.
+//
+// When serverName is non-empty, resource entities include an MCP parent UID so
+// that server-scoped Cedar policies (e.g. `resource in MCP::"github"`) evaluate
+// correctly via Cedar's `in` operator. When serverName is empty, resource
+// entities have no parents, preserving backward compatibility.
 func (f *EntityFactory) CreateEntitiesForRequest(
 	principal, action, resource string,
 	claimsMap map[string]interface{},
 	attributes map[string]interface{},
 	groups []string,
+	serverName string,
 ) (cedar.EntityMap, error) {
 	// Parse principal, action, and resource
 	principalType, principalID, err := parseCedarEntityID(principal)
@@ -149,8 +155,15 @@ func (f *EntityFactory) CreateEntitiesForRequest(
 	actionUID, actionEntity := f.CreateActionEntity(actionType, actionID, nil)
 	entities[actionUID] = actionEntity
 
+	// Build MCP parent for resource entity when serverName is set so that
+	// server-scoped policies (e.g. resource in MCP::"github") can match.
+	var resourceParents []cedar.EntityUID
+	if serverName != "" {
+		resourceParents = append(resourceParents, cedar.NewEntityUID("MCP", cedar.String(serverName)))
+	}
+
 	// Create resource entity
-	resourceUID, resourceEntity := f.CreateResourceEntity(resourceType, resourceID, attributes)
+	resourceUID, resourceEntity := f.CreateResourceEntity(resourceType, resourceID, attributes, resourceParents...)
 	entities[resourceUID] = resourceEntity
 
 	return entities, nil

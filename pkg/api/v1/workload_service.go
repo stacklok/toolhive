@@ -66,6 +66,10 @@ type WorkloadService struct {
 	imageRetriever   retriever.Retriever
 	imagePuller      retriever.ImagePuller
 	configProvider   config.Provider
+	// imageVerification is the mode (warn/enabled/disabled) used when verifying
+	// image provenance for both the registry-resolved path and the imageRetriever
+	// path. Kept as a single field so the two paths can't drift.
+	imageVerification string
 }
 
 // NewWorkloadService creates a new WorkloadService instance
@@ -76,13 +80,14 @@ func NewWorkloadService(
 	debugMode bool,
 ) *WorkloadService {
 	return &WorkloadService{
-		workloadManager:  workloadManager,
-		groupManager:     groupManager,
-		containerRuntime: containerRuntime,
-		debugMode:        debugMode,
-		imageRetriever:   retriever.ResolveMCPServer,
-		imagePuller:      retriever.PullMCPServerImage,
-		configProvider:   config.NewProvider(),
+		workloadManager:   workloadManager,
+		groupManager:      groupManager,
+		containerRuntime:  containerRuntime,
+		debugMode:         debugMode,
+		imageRetriever:    retriever.ResolveMCPServer,
+		imagePuller:       retriever.PullMCPServerImage,
+		configProvider:    config.NewProvider(),
+		imageVerification: retriever.VerifyImageWarn,
 	}
 }
 
@@ -228,8 +233,9 @@ func (s *WorkloadService) BuildFullRunConfig(
 	// Verify image provenance for registry-resolved image servers.
 	// The normal imageRetriever path calls verifyImage internally, but
 	// we bypass it for registry references, so we must verify here.
+	// Both paths use s.imageVerification so their behavior stays in sync.
 	if imageMetadata != nil && registryResolvedMetadata != nil {
-		if err := retriever.VerifyImage(imageURL, imageMetadata, retriever.VerifyImageWarn); err != nil {
+		if err := retriever.VerifyImage(imageURL, imageMetadata, s.imageVerification); err != nil {
 			return nil, fmt.Errorf("image verification failed: %w", err)
 		}
 	}
@@ -264,7 +270,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			imageCtx,
 			req.Image,
 			"", // We do not let the user specify a CA cert path here.
-			retriever.VerifyImageWarn,
+			s.imageVerification,
 			"", // Registry-based group lookups are not supported
 			retrievalRuntimeConfig,
 		)

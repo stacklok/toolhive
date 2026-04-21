@@ -125,7 +125,7 @@ func TestGetContent(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
 	})
 
-	t.Run("pull failure propagates as 400", func(t *testing.T) {
+	t.Run("pull failure propagates as 502", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
 
@@ -142,7 +142,7 @@ func TestGetContent(t *testing.T) {
 		)
 		_, err = svc.GetContent(t.Context(), skills.ContentOptions{Reference: "ghcr.io/org/my-skill:v1"})
 		require.Error(t, err)
-		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+		assert.Equal(t, http.StatusBadGateway, httperr.Code(err))
 		assert.Contains(t, err.Error(), "registry unreachable")
 	})
 

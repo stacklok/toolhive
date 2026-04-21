@@ -56,7 +56,7 @@ func (s *service) installFromOCI(
 	if err != nil {
 		return nil, httperr.WithCode(
 			fmt.Errorf("pulling OCI artifact %q: %w", ociRef, err),
-			http.StatusBadRequest,
+			http.StatusBadGateway,
 		)
 	}
 

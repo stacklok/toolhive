@@ -62,6 +62,11 @@ type RunConfig struct {
 	// If nil, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).
 	TokenLifespans *TokenLifespanRunConfig `json:"token_lifespans,omitempty" yaml:"token_lifespans,omitempty"`
 
+	// DelegationTokenLifespan is the maximum lifetime for delegated tokens issued
+	// via RFC 8693 token exchange. Specified as a Go duration string (e.g., "15m").
+	// If empty, defaults to 15 minutes.
+	DelegationTokenLifespan string `json:"delegation_token_lifespan,omitempty" yaml:"delegation_token_lifespan,omitempty"`
+
 	// Upstreams configures connections to upstream Identity Providers.
 	// At least one upstream is required - the server delegates authentication to these providers.
 	// Multiple upstreams are supported for sequential authorization chains.
@@ -597,6 +602,11 @@ type Config struct {
 	// If zero, defaults to 10 minutes.
 	AuthCodeLifespan time.Duration
 
+	// DelegationTokenLifespan is the maximum lifetime for delegated tokens issued
+	// via RFC 8693 token exchange. The actual lifetime is the minimum of this value
+	// and the subject token's remaining lifetime. If zero, defaults to 15 minutes.
+	DelegationTokenLifespan time.Duration
+
 	// Upstreams contains configurations for connecting to upstream IDPs.
 	// At least one upstream is required - the server delegates authentication to the upstream IDP.
 	// Multiple upstreams form a sequential authorization chain.
@@ -704,6 +714,16 @@ func (c *Config) Validate() error {
 	}
 	if c.CIMDEnabled && c.CIMDCacheFallbackTTL < 0 {
 		return fmt.Errorf("cimd.cache_fallback_ttl must be non-negative when CIMD is enabled")
+	}
+
+	// DelegationTokenLifespan is validated after defaults are applied.
+	// Negative values or excessively long lifespans are rejected.
+	// Capped at 24h (same as access tokens) — delegated tokens should be short-lived.
+	if c.DelegationTokenLifespan < 0 {
+		return fmt.Errorf("delegation token lifespan must not be negative")
+	}
+	if c.DelegationTokenLifespan > 24*time.Hour {
+		return fmt.Errorf("delegation token lifespan must not exceed 24h")
 	}
 
 	slog.Debug("authserver config validation passed",
@@ -917,6 +937,10 @@ func (c *Config) applyDefaults() error {
 	if c.AuthCodeLifespan == 0 {
 		c.AuthCodeLifespan = 10 * time.Minute
 		slog.Debug("applied default auth code lifespan", "duration", c.AuthCodeLifespan)
+	}
+	if c.DelegationTokenLifespan == 0 {
+		c.DelegationTokenLifespan = 15 * time.Minute
+		slog.Debug("applied default delegation token lifespan", "duration", c.DelegationTokenLifespan)
 	}
 	if c.HMACSecrets == nil {
 		secret := make([]byte, servercrypto.MinSecretLength)

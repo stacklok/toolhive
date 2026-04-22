@@ -768,6 +768,7 @@ type MCPExternalAuthConfigStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
+// +kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 // +kubebuilder:resource:shortName=extauth;mcpextauth,categories=toolhive
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`

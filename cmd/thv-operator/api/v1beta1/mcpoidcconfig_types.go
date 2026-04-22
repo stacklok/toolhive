@@ -196,6 +196,7 @@ type MCPOIDCConfigStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
+// +kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 // +kubebuilder:resource:shortName=mcpoidc,categories=toolhive
 // +kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`

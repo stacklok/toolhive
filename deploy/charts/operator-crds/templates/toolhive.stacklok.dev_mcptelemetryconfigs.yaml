@@ -7,6 +7,8 @@ metadata:
     helm.sh/resource-policy: keep
     {{- end }}
     controller-gen.kubebuilder.io/version: v0.17.3
+  labels:
+    toolhive.stacklok.dev/auto-migrate-storage-version: "true"
   name: mcptelemetryconfigs.toolhive.stacklok.dev
 spec:
   group: toolhive.stacklok.dev

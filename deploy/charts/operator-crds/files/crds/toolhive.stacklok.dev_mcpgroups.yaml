@@ -4,6 +4,8 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.3
+  labels:
+    toolhive.stacklok.dev/auto-migrate-storage-version: "true"
   name: mcpgroups.toolhive.stacklok.dev
 spec:
   group: toolhive.stacklok.dev

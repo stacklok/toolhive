@@ -139,6 +139,7 @@ type MCPTelemetryConfigStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
+// +kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 // +kubebuilder:resource:shortName=mcpotel,categories=toolhive
 // +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.spec.openTelemetry.endpoint`
 // +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`

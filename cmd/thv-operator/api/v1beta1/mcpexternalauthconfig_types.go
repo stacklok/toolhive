@@ -689,6 +689,20 @@ type AWSStsConfig struct {
 	// +kubebuilder:default="sub"
 	// +optional
 	SessionNameClaim string `json:"sessionNameClaim,omitempty"`
+
+	// TokenProviderName is the name of the upstream provider whose access token
+	// is used as the web identity token for STS AssumeRoleWithWebIdentity.
+	// This field is used exclusively by VirtualMCPServer, where there is no
+	// upstream swap middleware to replace the bearer token before the strategy runs.
+	// When left empty and an embedded authorization server is configured on the
+	// VirtualMCPServer, the controller automatically populates this field with
+	// the first configured upstream provider name. Set it explicitly to override
+	// that default or to select a specific provider when multiple upstreams are
+	// configured.
+	// When no embedded auth server is present, the bearer token from the incoming
+	// request's Authorization header is used instead.
+	// +optional
+	TokenProviderName string `json:"tokenProviderName,omitempty"`
 }
 
 // RoleMapping defines a rule for mapping JWT claims to IAM roles.

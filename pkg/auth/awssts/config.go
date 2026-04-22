@@ -35,6 +35,11 @@ type Config struct {
 
 	// SessionNameClaim is the JWT claim to use for role session name (default: "sub").
 	SessionNameClaim string `json:"session_name_claim,omitempty" yaml:"session_name_claim,omitempty"`
+
+	// TokenProviderName identifies which upstream provider's access token to use
+	// for STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer
+	// token from the incoming HTTP request is used.
+	TokenProviderName string `json:"token_provider_name,omitempty" yaml:"token_provider_name,omitempty"`
 }
 
 // defaultSessionDuration is the default session duration in seconds (1 hour).

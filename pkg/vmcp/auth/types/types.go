@@ -38,6 +38,11 @@ const (
 	// This strategy injects an upstream IDP token obtained by the embedded
 	// authorization server into requests to the backend service.
 	StrategyTypeUpstreamInject = "upstream_inject"
+
+	// StrategyTypeAwsSts identifies the AWS STS authentication strategy.
+	// This strategy exchanges incoming tokens for AWS STS temporary credentials
+	// and signs requests using SigV4.
+	StrategyTypeAwsSts = "aws_sts"
 )
 
 // BackendAuthStrategy defines how to authenticate to a specific backend.
@@ -47,7 +52,7 @@ const (
 // +kubebuilder:object:generate=true
 // +gendoc
 type BackendAuthStrategy struct {
-	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject"
+	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts"
 	Type string `json:"type" yaml:"type"`
 
 	// HeaderInjection contains configuration for header injection auth strategy.
@@ -61,6 +66,10 @@ type BackendAuthStrategy struct {
 	// UpstreamInject contains configuration for upstream inject auth strategy.
 	// Used when Type = "upstream_inject".
 	UpstreamInject *UpstreamInjectConfig `json:"upstreamInject,omitempty" yaml:"upstreamInject,omitempty"`
+
+	// AwsSts contains configuration for AWS STS auth strategy.
+	// Used when Type = "aws_sts".
+	AwsSts *AwsStsConfig `json:"awsSts,omitempty" yaml:"awsSts,omitempty"`
 }
 
 // HeaderInjectionConfig configures the header injection auth strategy.
@@ -129,4 +138,56 @@ type UpstreamInjectConfig struct {
 	// ProviderName is the name of the upstream provider configured in the
 	// embedded authorization server. Must match an entry in AuthServer.Upstreams.
 	ProviderName string `json:"providerName" yaml:"providerName"`
+}
+
+// RoleMapping defines a rule for mapping JWT claims to IAM roles.
+// Mappings are evaluated in priority order (lower number = higher priority).
+// +kubebuilder:object:generate=true
+// +gendoc
+type RoleMapping struct {
+	// Claim is a simple claim value to match against the RoleClaim field.
+	Claim string `json:"claim,omitempty" yaml:"claim,omitempty"`
+
+	// Matcher is a CEL expression for complex matching against JWT claims.
+	Matcher string `json:"matcher,omitempty" yaml:"matcher,omitempty"`
+
+	// RoleArn is the IAM role ARN to assume when this mapping matches.
+	RoleArn string `json:"roleArn" yaml:"roleArn"`
+
+	// Priority determines evaluation order (lower values = higher priority).
+	Priority *int32 `json:"priority,omitempty" yaml:"priority,omitempty"`
+}
+
+// AwsStsConfig configures AWS STS authentication with SigV4 request signing.
+// This strategy exchanges incoming tokens for AWS STS temporary credentials.
+// +kubebuilder:object:generate=true
+// +gendoc
+type AwsStsConfig struct {
+	// Region is the AWS region for the STS endpoint and service.
+	Region string `json:"region" yaml:"region"`
+
+	// Service is the AWS service name for SigV4 signing.
+	Service string `json:"service,omitempty" yaml:"service,omitempty"`
+
+	// FallbackRoleArn is the IAM role ARN to assume when no role mappings match.
+	FallbackRoleArn string `json:"fallbackRoleArn,omitempty" yaml:"fallbackRoleArn,omitempty"`
+
+	// RoleMappings defines claim-based role selection rules.
+	// +listType=atomic
+	RoleMappings []RoleMapping `json:"roleMappings,omitempty" yaml:"roleMappings,omitempty"`
+
+	// RoleClaim is the JWT claim to use for role mapping evaluation.
+	RoleClaim string `json:"roleClaim,omitempty" yaml:"roleClaim,omitempty"`
+
+	// SessionDuration is the duration in seconds for the STS session.
+	SessionDuration *int32 `json:"sessionDuration,omitempty" yaml:"sessionDuration,omitempty"`
+
+	// SessionNameClaim is the JWT claim to use for the role session name.
+	SessionNameClaim string `json:"sessionNameClaim,omitempty" yaml:"sessionNameClaim,omitempty"`
+
+	// TokenProviderName selects which upstream provider's token to use as the
+	// web identity token for AssumeRoleWithWebIdentity. When set, the token is
+	// looked up from Identity.UpstreamTokens instead of the request's
+	// Authorization header.
+	TokenProviderName string `json:"tokenProviderName,omitempty" yaml:"tokenProviderName,omitempty"`
 }

@@ -20,6 +20,13 @@ operator:
     # This automatically sets ENABLE_VMCP environment variable.
     # Requires server to be enabled (server: true).
     virtualMCP: true
+    # -- Enable the StorageVersionMigrator controller, which auto-cleans
+    # status.storedVersions on opted-in toolhive.stacklok.dev CRDs so a
+    # future release can drop deprecated versions (e.g. v1alpha1) without
+    # orphaning etcd objects. Leave this on unless you are running
+    # kube-storage-version-migrator externally.
+    # This automatically sets ENABLE_STORAGE_VERSION_MIGRATOR environment variable.
+    storageVersionMigrator: true
   # -- Number of replicas for the operator deployment
   replicaCount: 1
 

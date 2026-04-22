@@ -64,6 +64,8 @@ spec:
             value: {{ .Values.operator.features.registry | quote }}
           - name: ENABLE_VMCP
             value: {{ .Values.operator.features.virtualMCP | quote }}
+          - name: ENABLE_STORAGE_VERSION_MIGRATOR
+            value: {{ .Values.operator.features.storageVersionMigrator | quote }}
           {{- if eq .Values.operator.rbac.scope "namespace" }}
           - name: WATCH_NAMESPACE
             value: "{{ .Values.operator.rbac.allowedNamespaces | join "," }}"

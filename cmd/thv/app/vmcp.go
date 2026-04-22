@@ -20,7 +20,6 @@ func newVMCPCommand() *cobra.Command {
 		Long: `The vmcp command provides subcommands to run and validate a Virtual MCP
 Server (vMCP) locally without Kubernetes. A vMCP aggregates multiple MCP
 servers from a ToolHive group into a single unified endpoint.`,
-		Hidden: true,
 	}
 	cmd.AddCommand(newVMCPServeCommand())
 	cmd.AddCommand(newVMCPValidateCommand())

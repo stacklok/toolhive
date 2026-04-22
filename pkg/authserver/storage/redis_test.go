@@ -131,11 +131,6 @@ func TestRedisConfig_Validation(t *testing.T) {
 			wantErr: "ACL user configuration is required",
 		},
 		{
-			name:    "missing ACL username",
-			cfg:     RedisConfig{Addr: "localhost:6379", ACLUserConfig: &ACLUserConfig{Password: "pass"}, KeyPrefix: "test:"},
-			wantErr: "ACL username is required",
-		},
-		{
 			name:    "missing ACL password",
 			cfg:     RedisConfig{Addr: "localhost:6379", ACLUserConfig: &ACLUserConfig{Username: "user"}, KeyPrefix: "test:"},
 			wantErr: "ACL password is required",

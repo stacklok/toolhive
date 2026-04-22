@@ -1223,6 +1223,23 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 		assert.Equal(t, "redis.example.com:6379", cfg.Addr)
 		assert.Nil(t, cfg.SentinelConfig)
 	})
+
+	t.Run("empty UsernameEnvVar uses legacy password-only auth", func(t *testing.T) {
+		t.Setenv("TEST_REDIS_PASS_LEGACY", "mypass")
+
+		cfg, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "memorystore.example.com:6379",
+			KeyPrefix: "thv:auth:ns:name:",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "", // omitted: triggers legacy AUTH <password>
+				PasswordEnvVar: "TEST_REDIS_PASS_LEGACY",
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, cfg.ACLUserConfig)
+		assert.Empty(t, cfg.ACLUserConfig.Username)
+		assert.Equal(t, "mypass", cfg.ACLUserConfig.Password)
+	})
 }
 
 // stubServer is a minimal authserver.Server implementation for testing RegisterHandlers.

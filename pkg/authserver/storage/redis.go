@@ -310,9 +310,6 @@ func validateConfig(cfg *RedisConfig) error {
 	if cfg.ACLUserConfig == nil {
 		return errors.New("ACL user configuration is required")
 	}
-	if cfg.ACLUserConfig.Username == "" {
-		return errors.New("ACL username is required")
-	}
 	if cfg.ACLUserConfig.Password == "" {
 		return errors.New("ACL password is required")
 	}

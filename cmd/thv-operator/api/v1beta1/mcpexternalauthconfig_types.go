@@ -630,8 +630,12 @@ type RedisTLSConfig struct {
 // RedisACLUserConfig configures Redis ACL user authentication.
 type RedisACLUserConfig struct {
 	// UsernameSecretRef references a Secret containing the Redis ACL username.
-	// +kubebuilder:validation:Required
-	UsernameSecretRef *SecretKeyRef `json:"usernameSecretRef"`
+	// When omitted, connections use legacy password-only AUTH. Omit for managed
+	// Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard
+	// HA, Azure Cache for Redis). Set for services that support ACL users (e.g. AWS
+	// ElastiCache non-cluster with Redis 6+ RBAC).
+	// +optional
+	UsernameSecretRef *SecretKeyRef `json:"usernameSecretRef,omitempty"`
 
 	// PasswordSecretRef references a Secret containing the Redis ACL password.
 	// +kubebuilder:validation:Required

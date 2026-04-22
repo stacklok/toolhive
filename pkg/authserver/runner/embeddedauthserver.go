@@ -523,13 +523,22 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (*storage.RedisConfig, er
 }
 
 // convertRedisACLConfig resolves ACL user credentials from environment variables.
+// When UsernameEnvVar is empty, no username is resolved; go-redis then sends
+// HELLO with "default" as the username (or falls back to legacy AUTH <password>
+// for servers that do not support HELLO). This is required for managed Redis
+// tiers without ACL users (e.g. GCP Memorystore Basic/Standard HA, Azure Cache
+// for Redis).
 func convertRedisACLConfig(rc *storage.ACLUserRunConfig) (*storage.ACLUserConfig, error) {
 	if rc == nil {
 		return nil, fmt.Errorf("acl user config is required")
 	}
-	username, err := resolveEnvVar(rc.UsernameEnvVar)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve Redis username: %w", err)
+	var username string
+	if rc.UsernameEnvVar != "" {
+		var err error
+		username, err = resolveEnvVar(rc.UsernameEnvVar)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve Redis username: %w", err)
+		}
 	}
 	password, err := resolveEnvVar(rc.PasswordEnvVar)
 	if err != nil {

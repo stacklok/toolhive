@@ -553,7 +553,6 @@ func buildStorageRunConfig(
 	}
 
 	if redisConfig.ACLUserConfig == nil ||
-		redisConfig.ACLUserConfig.UsernameSecretRef == nil ||
 		redisConfig.ACLUserConfig.PasswordSecretRef == nil {
 		return nil, fmt.Errorf("ACL user config is required for Redis storage")
 	}
@@ -561,18 +560,22 @@ func buildStorageRunConfig(
 	// Build key prefix for multi-tenancy using namespace and MCP server name
 	keyPrefix := storage.DeriveKeyPrefix(namespace, mcpServerName)
 
+	aclRunConfig := &storage.ACLUserRunConfig{
+		PasswordEnvVar: authrunner.RedisPasswordEnvVar,
+	}
+	if redisConfig.ACLUserConfig.UsernameSecretRef != nil {
+		aclRunConfig.UsernameEnvVar = authrunner.RedisUsernameEnvVar
+	}
+
 	rc := &storage.RedisRunConfig{
-		Addr:     redisConfig.Addr,
-		AuthType: storage.AuthTypeACLUser,
-		ACLUserConfig: &storage.ACLUserRunConfig{
-			UsernameEnvVar: authrunner.RedisUsernameEnvVar,
-			PasswordEnvVar: authrunner.RedisPasswordEnvVar,
-		},
-		KeyPrefix:    keyPrefix,
-		DialTimeout:  redisConfig.DialTimeout,
-		ReadTimeout:  redisConfig.ReadTimeout,
-		WriteTimeout: redisConfig.WriteTimeout,
-		TLS:          convertRedisTLSConfig(redisConfig.TLS, false),
+		Addr:          redisConfig.Addr,
+		AuthType:      storage.AuthTypeACLUser,
+		ACLUserConfig: aclRunConfig,
+		KeyPrefix:     keyPrefix,
+		DialTimeout:   redisConfig.DialTimeout,
+		ReadTimeout:   redisConfig.ReadTimeout,
+		WriteTimeout:  redisConfig.WriteTimeout,
+		TLS:           convertRedisTLSConfig(redisConfig.TLS, false),
 	}
 
 	if redisConfig.SentinelConfig != nil {

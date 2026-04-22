@@ -1757,6 +1757,28 @@ func TestBuildStorageRunConfig(t *testing.T) {
 			wantErr:     true,
 			errContains: "ACL user config is required",
 		},
+		{
+			name: "Redis standalone with password-only auth omits UsernameEnvVar",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				Storage: &mcpv1beta1.AuthServerStorageConfig{
+					Type: mcpv1beta1.AuthServerStorageTypeRedis,
+					Redis: &mcpv1beta1.RedisStorageConfig{
+						Addr: "memorystore.example.com:6379",
+						ACLUserConfig: &mcpv1beta1.RedisACLUserConfig{
+							PasswordSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+					},
+				},
+			},
+			checkFunc: func(t *testing.T, cfg *storage.RunConfig) {
+				t.Helper()
+				assert.Equal(t, "memorystore.example.com:6379", cfg.RedisConfig.Addr)
+				require.NotNil(t, cfg.RedisConfig.ACLUserConfig)
+				assert.Empty(t, cfg.RedisConfig.ACLUserConfig.UsernameEnvVar)
+				assert.Equal(t, authrunner.RedisPasswordEnvVar, cfg.RedisConfig.ACLUserConfig.PasswordEnvVar)
+			},
+		},
 	}
 
 	for _, tt := range tests {

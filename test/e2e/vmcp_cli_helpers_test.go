@@ -31,7 +31,7 @@ func allocateVMCPPort() int {
 // prevent the test suite from hanging. Safe to call on a nil cmd or on a cmd
 // whose process has already exited.
 func stopVMCPProcess(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
+	if cmd == nil || cmd.Process == nil || cmd.ProcessState != nil {
 		return
 	}
 	_ = cmd.Process.Signal(syscall.SIGINT)

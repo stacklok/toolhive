@@ -40,9 +40,14 @@ import (
 // status stanza, and forcing a 409 on every disjoint-field overlap would
 // produce permanent churn with nothing gained — use MutateAndPatchStatus.
 //
+// If Patch returns an error, obj has already been mutated; callers must
+// re-fetch obj before retrying rather than reusing the modified in-memory
+// copy. The standard reconciler pattern — returning the error so
+// controller-runtime requeues with a fresh Get — is the correct retry path.
+//
 // Typical usage:
 //
-//	err := controllerutil.MutateAndPatchSpec(ctx, r.Client, mcpServer,
+//	err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, mcpServer,
 //	    func(m *mcpv1beta1.MCPServer) {
 //	        controllerutil.AddFinalizer(m, MCPServerFinalizerName)
 //	    })

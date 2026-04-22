@@ -279,3 +279,39 @@ func TestMutateAndPatchSpec_PreservesDisjointSpecFields(t *testing.T) {
 	require.NotNil(t, live.Spec.AuthzConfig.ConfigMap)
 	assert.Equal(t, "external-authz-policy", live.Spec.AuthzConfig.ConfigMap.Name)
 }
+
+// TestMutateAndPatchSpec_NoOpMutateStillPatches pins the documented
+// divergence from MutateAndPatchStatus: the spec helper does NOT
+// short-circuit empty diffs, because MergeFromWithOptimisticLock always
+// emits metadata.resourceVersion into the body and the 409 guard must
+// reach the apiserver on every call.
+//
+// A future refactor that copy-pasted the status helper's "body == {}"
+// short-circuit into this helper would silently pass every other test
+// in this file while breaking OL-on-every-reconcile semantics. This
+// test is the direct wire-level pin of that contract.
+func TestMutateAndPatchSpec_NoOpMutateStillPatches(t *testing.T) {
+	t.Parallel()
+
+	seed := newSeedMCPServer("mutate-spec-noop")
+	recorder, inner := buildSpecTestClient(t, seed)
+
+	got := &mcpv1beta1.MCPServer{}
+	require.NoError(t, inner.Get(context.TODO(), client.ObjectKeyFromObject(seed), got))
+
+	err := MutateAndPatchSpec(context.TODO(), recorder, got, func(*mcpv1beta1.MCPServer) {
+		// Empty mutation: no fields change. Unlike the status helper,
+		// this must still reach the apiserver.
+	})
+	require.NoError(t, err)
+
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	require.Len(t, recorder.bodies, 1,
+		"the spec helper must issue exactly one PATCH even for a no-op "+
+			"mutate; a short-circuit regression would record zero bodies")
+	body := recorder.bodies[0]
+	assert.NotEqual(t, "{}", body,
+		"no-op mutate under MergeFromWithOptimisticLock must still carry "+
+			"the resourceVersion precondition; body=%s", body)
+}

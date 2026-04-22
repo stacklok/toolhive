@@ -44,9 +44,10 @@ var (
 
 // Feature flags for controller groups
 const (
-	featureServer   = "ENABLE_SERVER"
-	featureRegistry = "ENABLE_REGISTRY"
-	featureVMCP     = "ENABLE_VMCP"
+	featureServer                 = "ENABLE_SERVER"
+	featureRegistry               = "ENABLE_REGISTRY"
+	featureVMCP                   = "ENABLE_VMCP"
+	featureStorageVersionMigrator = "ENABLE_STORAGE_VERSION_MIGRATOR"
 )
 
 // controllerDependencies maps each controller group to its required dependencies
@@ -135,12 +136,14 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 	enableServer := isFeatureEnabled(featureServer, true)
 	enableRegistry := isFeatureEnabled(featureRegistry, true)
 	enableVMCP := isFeatureEnabled(featureVMCP, true)
+	enableStorageVersionMigrator := isFeatureEnabled(featureStorageVersionMigrator, true)
 
 	// Track enabled features for dependency checking
 	enabledFeatures := map[string]bool{
-		featureServer:   enableServer,
-		featureRegistry: enableRegistry,
-		featureVMCP:     enableVMCP,
+		featureServer:                 enableServer,
+		featureRegistry:               enableRegistry,
+		featureVMCP:                   enableVMCP,
+		featureStorageVersionMigrator: enableStorageVersionMigrator,
 	}
 
 	// Check dependencies and log warnings for missing dependencies
@@ -188,7 +191,32 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 		setupLog.Info("ENABLE_VMCP is disabled, skipping Virtual MCP controllers and webhooks")
 	}
 
+	// Set up StorageVersionMigrator controller
+	if enabledFeatures[featureStorageVersionMigrator] {
+		if err := setupStorageVersionMigrator(mgr); err != nil {
+			return err
+		}
+	} else {
+		setupLog.Info("ENABLE_STORAGE_VERSION_MIGRATOR is disabled, skipping StorageVersionMigrator controller")
+	}
+
 	//+kubebuilder:scaffold:builder
+	return nil
+}
+
+// setupStorageVersionMigrator sets up the StorageVersionMigrator controller,
+// which reconciles status.storedVersions on opted-in toolhive.stacklok.dev CRDs
+// down to [<currentStorageVersion>] so future releases can drop deprecated
+// versions from spec.versions without orphaning etcd objects.
+func setupStorageVersionMigrator(mgr ctrl.Manager) error {
+	if err := (&controllers.StorageVersionMigratorReconciler{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		Recorder:  mgr.GetEventRecorderFor("storageversionmigrator-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller StorageVersionMigrator: %w", err)
+	}
 	return nil
 }
 

@@ -49,6 +49,21 @@ rules:
   verbs:
   - get
 - apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions/status
+  verbs:
+  - patch
+  - update
+- apiGroups:
   - apps
   resources:
   - deployments
@@ -95,6 +110,20 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
+  - patch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - '*/status'
+  verbs:
+  - patch
 - apiGroups:
   - toolhive.stacklok.dev
   resources:

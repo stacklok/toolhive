@@ -37,12 +37,6 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-// vmcpEndpointURL returns the MCP endpoint URL for a vMCP serve process
-// listening on the given port.
-func vmcpEndpointURL(port int) string {
-	return fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
-}
-
 // toolNames returns the Name field of each tool in order.
 func toolNames(tools []mcp.Tool) []string {
 	names := make([]string, len(tools))

@@ -352,23 +352,53 @@ func (r *VirtualMCPServerReconciler) runValidations(
 		}
 	}
 
-	// Validate inline AuthServerConfig (when specified).
-	if vmcp.Spec.AuthServerConfig != nil {
-		if err := r.validateAuthServerConfig(vmcp, statusManager); err != nil {
-			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
-				ctxLogger.Error(applyErr, "Failed to apply status updates after AuthServerConfig validation error")
-			}
-			return false, nil
-		}
-	} else {
-		// Remove stale condition if AuthServerConfig was previously set then removed.
-		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthServerConfigValidated, []string{})
+	// Validate auth-related spec fields (AuthServerConfig + AuthzConfig coherence).
+	if ok := r.runAuthValidations(ctx, vmcp, statusManager); !ok {
+		return false, nil
 	}
 
 	// Advisory: warn when replicas > 1 but session storage is not Redis-backed.
 	r.validateSessionStorageForReplicas(vmcp, statusManager)
 
 	return true, nil
+}
+
+// runAuthValidations runs the auth-related spec validations: the inline
+// AuthServerConfig (when specified) and the AuthzConfig/upstream coherence
+// check. Returns false when a validation fails and the caller should stop
+// reconciliation (user must fix the spec); true to continue.
+func (r *VirtualMCPServerReconciler) runAuthValidations(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) bool {
+	ctxLogger := log.FromContext(ctx)
+
+	// Validate inline AuthServerConfig (when specified).
+	if vmcp.Spec.AuthServerConfig != nil {
+		if err := r.validateAuthServerConfig(vmcp, statusManager); err != nil {
+			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+				ctxLogger.Error(applyErr, "Failed to apply status updates after AuthServerConfig validation error")
+			}
+			return false
+		}
+	} else {
+		// Remove stale condition if AuthServerConfig was previously set then removed.
+		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthServerConfigValidated, []string{})
+	}
+
+	// Validate that authz policies have an upstream IDP available to source
+	// claims from. Runs after the AuthServerConfig branch so it can set the
+	// AuthServerConfigValidated condition without being clobbered by the
+	// RemoveConditionsWithPrefix call above when AuthServerConfig is nil.
+	if err := r.validateAuthzUpstreamAvailable(vmcp, statusManager); err != nil {
+		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+			ctxLogger.Error(applyErr, "Failed to apply status updates after AuthzUpstreamAvailable validation error")
+		}
+		return false
+	}
+
+	return true
 }
 
 // validateSessionStorageForReplicas emits a SessionStorageWarning condition when
@@ -466,6 +496,45 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 	statusManager.SetObservedGeneration(vmcp.Generation)
 
 	return nil
+}
+
+// validateAuthzUpstreamAvailable ensures that when authorization policies are
+// configured via IncomingAuth.AuthzConfig, an upstream IDP is available to
+// source claims from. Without an upstream, Cedar evaluates claim references
+// (e.g. principal.claim_department) against the ToolHive-issued AS token,
+// whose claim namespace (sub, aud, tsid) can overlap upstream claims and
+// silently authorize against the wrong identity.
+//
+// This is a belt-and-suspenders check that complements the converter's
+// PrimaryUpstreamProvider population: when the user omits AuthServerConfig or
+// leaves UpstreamProviders empty but still sets AuthzConfig, surface a
+// misconfiguration status condition instead of silently deploying.
+func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	if vmcp.Spec.IncomingAuth == nil || vmcp.Spec.IncomingAuth.AuthzConfig == nil {
+		return nil
+	}
+	if vmcp.Spec.AuthServerConfig != nil && len(vmcp.Spec.AuthServerConfig.UpstreamProviders) > 0 {
+		return nil
+	}
+
+	message := "spec.incomingAuth.authzConfig is set but no upstream IDP is configured: " +
+		"Cedar policies referencing principal.claim_* would evaluate against the " +
+		"ToolHive-issued token instead of the upstream IDP token. Configure " +
+		"spec.authServerConfig.upstreamProviders with at least one upstream IDP."
+
+	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+	statusManager.SetMessage(message)
+	statusManager.SetAuthServerConfigValidatedCondition(
+		mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
+		message,
+		metav1.ConditionFalse,
+	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+
+	return fmt.Errorf("%s", message)
 }
 
 // handleSpecValidationError checks whether err is a SpecValidationError (user must fix the spec).

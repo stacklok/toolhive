@@ -346,6 +346,13 @@ const (
 	// ConditionReasonAuthServerConfigInvalid indicates the AuthServerConfig is invalid
 	ConditionReasonAuthServerConfigInvalid = "AuthServerConfigInvalid"
 
+	// ConditionReasonAuthzRequiresUpstream indicates that authorization policies are
+	// configured but no upstream IDP is available to source claims from. Without an
+	// upstream, Cedar evaluates against the ToolHive-issued AS token, whose claim
+	// namespace (sub, aud, tsid) can overlap upstream claims and silently authorize
+	// against the wrong identity.
+	ConditionReasonAuthzRequiresUpstream = "AuthzRequiresUpstream"
+
 	// ConditionReasonVirtualMCPServerTelemetryConfigRefValid indicates the referenced MCPTelemetryConfig is valid
 	ConditionReasonVirtualMCPServerTelemetryConfigRefValid = "TelemetryConfigRefValid"
 

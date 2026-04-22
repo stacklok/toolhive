@@ -3476,3 +3476,150 @@ func TestDiscoveredRBACRulesIncludeMCPServerEntries(t *testing.T) {
 	}
 	assert.True(t, foundMCPServerEntries, "vmcpDiscoveredRBACRules should include mcpserverentries")
 }
+
+// TestVirtualMCPServerValidateAuthzUpstreamAvailable verifies that the
+// validator surfaces a misconfiguration when AuthzConfig is set but no
+// upstream IDP is available to source claims from. Without this check,
+// Cedar silently evaluates policies against the ToolHive-issued AS token,
+// whose claim namespace (sub, aud, tsid) can overlap upstream claims and
+// authorize against the wrong identity.
+func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
+	t.Parallel()
+
+	inlineAuthzRef := &mcpv1beta1.AuthzConfigRef{
+		Type: "inline",
+		Inline: &mcpv1beta1.InlineAuthzConfig{
+			Policies: []string{`permit(principal, action, resource);`},
+		},
+	}
+
+	tests := []struct {
+		name             string
+		incomingAuth     *mcpv1beta1.IncomingAuthConfig
+		authServerConfig *mcpv1beta1.EmbeddedAuthServerConfig
+		expectError      bool
+		expectedReason   string
+	}{
+		{
+			name:         "no incoming auth is valid",
+			incomingAuth: nil,
+		},
+		{
+			name: "incoming auth without authz is valid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			},
+		},
+		{
+			name: "authz with nil auth server config is invalid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: nil,
+			expectError:      true,
+			expectedReason:   mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
+		},
+		{
+			name: "anonymous incoming auth with authz and no upstream is invalid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "anonymous",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: nil,
+			expectError:      true,
+			expectedReason:   mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
+		},
+		{
+			name: "authz with empty upstream providers is invalid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:            "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{},
+			},
+			expectError:    true,
+			expectedReason: mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
+		},
+		{
+			name: "authz with single upstream is valid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+		},
+		{
+			name: "authz with multiple upstreams is valid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+					{Name: "entra", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := &mcpv1beta1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testVmcpName,
+					Namespace:  "default",
+					Generation: 1,
+				},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:         &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					IncomingAuth:     tt.incomingAuth,
+					AuthServerConfig: tt.authServerConfig,
+				},
+			}
+
+			r := &VirtualMCPServerReconciler{}
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+			err := r.validateAuthzUpstreamAvailable(vmcp, statusManager)
+			_ = statusManager.UpdateStatus(context.Background(), &vmcp.Status)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase)
+				assert.NotEmpty(t, vmcp.Status.Message)
+
+				found := false
+				for _, cond := range vmcp.Status.Conditions {
+					if cond.Type == mcpv1beta1.ConditionTypeAuthServerConfigValidated {
+						found = true
+						assert.Equal(t, metav1.ConditionFalse, cond.Status)
+						assert.Equal(t, tt.expectedReason, cond.Reason)
+					}
+				}
+				assert.True(t, found, "AuthServerConfigValidated condition should be set to False")
+			} else {
+				require.NoError(t, err)
+				// The validator does not set a positive condition when valid;
+				// it only surfaces the negative case. Make sure it did not
+				// spuriously mark the server failed.
+				assert.NotEqual(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase)
+				for _, cond := range vmcp.Status.Conditions {
+					if cond.Type == mcpv1beta1.ConditionTypeAuthServerConfigValidated {
+						assert.NotEqual(t, mcpv1beta1.ConditionReasonAuthzRequiresUpstream, cond.Reason)
+					}
+				}
+			}
+		})
+	}
+}

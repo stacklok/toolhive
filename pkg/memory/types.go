@@ -6,16 +6,19 @@ package memory
 
 import "time"
 
-// MemoryType distinguishes the two long-term memory namespaces.
-//
-//nolint:revive // MemoryType is the canonical cross-package name; renaming to Type causes ambiguity.
-type MemoryType string
+// Type distinguishes the two long-term memory namespaces.
+type Type string
 
 const (
-	// MemoryTypeSemantic represents factual knowledge and world-state memories.
-	MemoryTypeSemantic MemoryType = "semantic"
-	// MemoryTypeProcedural represents how-to knowledge and step-based memories.
-	MemoryTypeProcedural MemoryType = "procedural"
+	// TypeSemantic represents factual, aggregated knowledge and world-state memories
+	// (e.g. "company does not sponsor visas"). Contrast with TypeEpisodic.
+	TypeSemantic Type = "semantic"
+	// TypeProcedural represents how-to knowledge and step-based memories.
+	TypeProcedural Type = "procedural"
+	// TypeEpisodic represents time-indexed event records tied to a specific
+	// moment (e.g. "recruiter archived candidate on 2024-03-15 — visa required").
+	// Use CreatedAfter/CreatedBefore in ListFilter to query timelines.
+	TypeEpisodic Type = "episodic"
 )
 
 // AuthorType records whether a memory was written by a human or an agent.
@@ -67,12 +70,10 @@ const (
 	ArchiveReasonExpired ArchiveReason = "expired"
 )
 
-// MemoryEntry is the core domain type representing one stored memory.
-//
-//nolint:revive // MemoryEntry is the canonical cross-package name; renaming to Entry conflicts with common identifiers.
-type MemoryEntry struct {
+// Entry is the core domain type representing one stored memory.
+type Entry struct {
 	ID               string
-	Type             MemoryType
+	Type             Type
 	Content          string
 	Tags             []string
 	Author           AuthorType
@@ -92,15 +93,13 @@ type MemoryEntry struct {
 	ArchivedAt       *time.Time
 	ConsolidatedInto string
 	CrystallizedInto string
-	History          []MemoryRevision
+	History          []Revision
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
 
-// MemoryRevision records a single correction to a memory entry.
-//
-//nolint:revive // MemoryRevision is the canonical cross-package name; renaming to Revision causes ambiguity.
-type MemoryRevision struct {
+// Revision records a single correction to a memory entry.
+type Revision struct {
 	Content        string
 	Author         AuthorType
 	CorrectionNote string
@@ -109,18 +108,20 @@ type MemoryRevision struct {
 
 // ListFilter restricts results returned by MemoryStore.List.
 type ListFilter struct {
-	Type   *MemoryType
-	Author *AuthorType
-	Tags   []string
-	Source *SourceType
-	Status *EntryStatus
-	Limit  int
-	Offset int
+	Type          *Type
+	Author        *AuthorType
+	Tags          []string
+	Source        *SourceType
+	Status        *EntryStatus
+	CreatedAfter  *time.Time
+	CreatedBefore *time.Time
+	Limit         int
+	Offset        int
 }
 
 // VectorFilter restricts similarity search to a subset of entries.
 type VectorFilter struct {
-	Type   *MemoryType
+	Type   *Type
 	Status *EntryStatus
 }
 
@@ -130,9 +131,9 @@ type ScoredID struct {
 	Similarity float32
 }
 
-// ScoredEntry pairs a full MemoryEntry with its similarity to a query.
+// ScoredEntry pairs a full Entry with its similarity to a query.
 type ScoredEntry struct {
-	Entry      MemoryEntry
+	Entry      Entry
 	Similarity float32
 }
 

@@ -8,8 +8,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 
+	"github.com/adrg/xdg"
 	"github.com/docker/docker/client"
+	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
@@ -49,15 +53,44 @@ const (
 
 var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker, runtime.TypeColima}
 
+// loadSocketOverrides reads socket path overrides from the ToolHive config file.
+// Best-effort: returns empty overrides on any error so auto-detection takes over.
+func loadSocketOverrides() runtime.SocketConfig {
+	configPath, err := xdg.ConfigFile("toolhive/config.yaml")
+	if err != nil {
+		slog.Debug("failed to resolve config path for socket overrides", "error", err)
+		return runtime.SocketConfig{}
+	}
+
+	// #nosec G304: path is derived from XDG config dir, not user input.
+	data, err := os.ReadFile(filepath.Clean(configPath))
+	if err != nil {
+		slog.Debug("failed to read config file for socket overrides", "error", err)
+		return runtime.SocketConfig{}
+	}
+
+	var cfg struct {
+		ContainerRuntime runtime.SocketConfig `yaml:"container_runtime,omitempty"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		slog.Debug("failed to parse config file for socket overrides", "error", err)
+		return runtime.SocketConfig{}
+	}
+
+	return cfg.ContainerRuntime
+}
+
 // NewDockerClient creates a new container client
 func NewDockerClient(ctx context.Context) (*client.Client, string, runtime.Type, error) {
 	var lastErr error
+
+	overrides := loadSocketOverrides()
 
 	// We try to find a container socket for the given runtime
 	// We try Podman first, then Docker as fallback
 	for _, sp := range supportedSocketPaths {
 		// Try to find a container socket for the given runtime
-		socketPath, runtimeType, err := findContainerSocket(sp)
+		socketPath, runtimeType, err := findContainerSocket(sp, overrides)
 		if err != nil {
 			//nolint:gosec // G706: runtime type from internal config
 			slog.Debug("failed to find socket", "runtime", sp, "error", err)
@@ -105,7 +138,7 @@ func newClientWithSocketPath(ctx context.Context, socketPath string) (*client.Cl
 }
 
 // findContainerSocket finds a container socket path, preferring Podman over Docker
-func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
+func findContainerSocket(rt runtime.Type, overrides runtime.SocketConfig) (string, runtime.Type, error) {
 	// Use platform-specific implementation
-	return findPlatformContainerSocket(rt)
+	return findPlatformContainerSocket(rt, overrides)
 }

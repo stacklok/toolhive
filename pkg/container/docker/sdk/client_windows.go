@@ -59,7 +59,7 @@ func newPlatformClient(pipePath string) (*http.Client, []client.Opt) {
 }
 
 // findPlatformContainerSocket finds a container socket path on Windows
-func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
+func findPlatformContainerSocket(rt runtime.Type, overrides runtime.SocketConfig) (string, runtime.Type, error) {
 	// First check for custom socket paths via environment variables
 	if customPipePath := os.Getenv(PodmanSocketEnv); customPipePath != "" {
 		//nolint:gosec // G706: pipe path from trusted environment variable
@@ -89,6 +89,15 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 		return customPipePath, runtime.TypeDocker, nil
 	}
 
+	// Check config file overrides (after env vars, before auto-detection).
+	// Colima is not supported on Windows.
+	if overrides.PodmanSocket != "" {
+		return resolveConfigPipe(overrides.PodmanSocket, runtime.TypePodman, "Podman")
+	}
+	if overrides.DockerSocket != "" {
+		return resolveConfigPipe(overrides.DockerSocket, runtime.TypeDocker, "Docker")
+	}
+
 	if rt == runtime.TypePodman {
 		// Try Podman named pipe with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), pipeConnectionTimeout)
@@ -116,4 +125,17 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 	}
 
 	return "", "", ErrRuntimeNotFound
+}
+
+// resolveConfigPipe validates that a config-supplied named pipe path is connectable and returns it.
+func resolveConfigPipe(pipePath string, rt runtime.Type, runtimeName string) (string, runtime.Type, error) {
+	slog.Debug("using pipe from config", "runtime", runtimeName, "path", pipePath)
+	ctx, cancel := context.WithTimeout(context.Background(), pipeConnectionTimeout)
+	defer cancel()
+	conn, err := winio.DialPipeContext(ctx, pipePath)
+	if err != nil {
+		return "", rt, fmt.Errorf("invalid %s pipe path from config: %w", runtimeName, err)
+	}
+	conn.Close()
+	return pipePath, rt, nil
 }

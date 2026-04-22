@@ -192,6 +192,15 @@ type Monitor interface {
 	StopMonitoring()
 }
 
+// SocketConfig holds optional socket path overrides for container runtimes.
+// When set, these paths take precedence over auto-detection but not over
+// environment variables (TOOLHIVE_PODMAN_SOCKET, TOOLHIVE_DOCKER_SOCKET, etc.).
+type SocketConfig struct {
+	PodmanSocket string `yaml:"podman_socket,omitempty"`
+	DockerSocket string `yaml:"docker_socket,omitempty"`
+	ColimaSocket string `yaml:"colima_socket,omitempty"`
+}
+
 // Type represents the type of container runtime
 type Type string
 

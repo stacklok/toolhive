@@ -44,7 +44,7 @@ func newPlatformClient(socketPath string) (*http.Client, []client.Opt) {
 }
 
 // findPlatformContainerSocket finds a container socket path on Unix systems
-func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
+func findPlatformContainerSocket(rt runtime.Type, overrides runtime.SocketConfig) (string, runtime.Type, error) {
 	// First check for custom socket paths via environment variables
 	if customSocketPath := os.Getenv(PodmanSocketEnv); customSocketPath != "" {
 		//nolint:gosec // G706: socket path from trusted environment variable
@@ -74,6 +74,11 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 			return "", runtime.TypeDocker, fmt.Errorf("invalid Colima socket path: %w", err)
 		}
 		return customSocketPath, runtime.TypeDocker, nil
+	}
+
+	// Check config file overrides (after env vars, before auto-detection)
+	if p, runtimeType, err := checkSocketConfigOverrides(overrides); p != "" || err != nil {
+		return p, runtimeType, err
 	}
 
 	if rt == runtime.TypePodman {
@@ -253,4 +258,28 @@ func findColimaSocket() (string, error) {
 	}
 
 	return "", fmt.Errorf("colima socket not found in standard locations")
+}
+
+// checkSocketConfigOverrides checks config file socket overrides in priority order.
+// Returns ("", "", nil) if no override applies.
+func checkSocketConfigOverrides(overrides runtime.SocketConfig) (string, runtime.Type, error) {
+	if overrides.PodmanSocket != "" {
+		return resolveConfigSocket(overrides.PodmanSocket, runtime.TypePodman, "Podman")
+	}
+	if overrides.DockerSocket != "" {
+		return resolveConfigSocket(overrides.DockerSocket, runtime.TypeDocker, "Docker")
+	}
+	if overrides.ColimaSocket != "" {
+		return resolveConfigSocket(overrides.ColimaSocket, runtime.TypeDocker, "Colima")
+	}
+	return "", "", nil
+}
+
+// resolveConfigSocket validates that a config-supplied socket path exists and returns it.
+func resolveConfigSocket(socketPath string, rt runtime.Type, runtimeName string) (string, runtime.Type, error) {
+	slog.Debug("using socket from config", "runtime", runtimeName, "path", socketPath)
+	if _, err := os.Stat(socketPath); err != nil {
+		return "", rt, fmt.Errorf("invalid %s socket path from config: %w", runtimeName, err)
+	}
+	return socketPath, rt, nil
 }

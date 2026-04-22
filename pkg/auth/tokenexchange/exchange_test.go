@@ -19,6 +19,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/oauth"
 )
 
 const (
@@ -39,7 +41,7 @@ func newResponse() *responseBuilder {
 	return &responseBuilder{
 		resp: response{
 			AccessToken:     "token",
-			IssuedTokenType: tokenTypeAccessToken,
+			IssuedTokenType: oauth.TokenTypeAccessToken,
 			TokenType:       "Bearer",
 		},
 	}
@@ -93,37 +95,37 @@ func TestNormalizeTokenType(t *testing.T) {
 		{
 			name:      "short form access_token",
 			input:     "access_token",
-			want:      tokenTypeAccessToken,
+			want:      oauth.TokenTypeAccessToken,
 			wantError: false,
 		},
 		{
 			name:      "short form id_token",
 			input:     "id_token",
-			want:      tokenTypeIDToken,
+			want:      oauth.TokenTypeIDToken,
 			wantError: false,
 		},
 		{
 			name:      "short form jwt",
 			input:     "jwt",
-			want:      tokenTypeJWT,
+			want:      oauth.TokenTypeJWT,
 			wantError: false,
 		},
 		{
 			name:      "full URN access_token",
-			input:     tokenTypeAccessToken,
-			want:      tokenTypeAccessToken,
+			input:     oauth.TokenTypeAccessToken,
+			want:      oauth.TokenTypeAccessToken,
 			wantError: false,
 		},
 		{
 			name:      "full URN id_token",
-			input:     tokenTypeIDToken,
-			want:      tokenTypeIDToken,
+			input:     oauth.TokenTypeIDToken,
+			want:      oauth.TokenTypeIDToken,
 			wantError: false,
 		},
 		{
 			name:      "full URN jwt",
-			input:     tokenTypeJWT,
-			want:      tokenTypeJWT,
+			input:     oauth.TokenTypeJWT,
+			want:      oauth.TokenTypeJWT,
 			wantError: false,
 		},
 		{
@@ -1054,7 +1056,7 @@ func TestExchangeToken_MinimalResponse(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "access-token-value", resp.AccessToken)
 	assert.Equal(t, "Bearer", resp.TokenType)
-	assert.Equal(t, tokenTypeAccessToken, resp.IssuedTokenType)
+	assert.Equal(t, oauth.TokenTypeAccessToken, resp.IssuedTokenType)
 	assert.Equal(t, 0, resp.ExpiresIn)
 	assert.Empty(t, resp.Scope)
 	assert.Empty(t, resp.RefreshToken)
@@ -1408,17 +1410,17 @@ func TestExchangeConfig_Validate_SubjectTokenType(t *testing.T) {
 	}{
 		{
 			name:             "valid access_token",
-			subjectTokenType: tokenTypeAccessToken,
+			subjectTokenType: oauth.TokenTypeAccessToken,
 			wantErr:          false,
 		},
 		{
 			name:             "valid id_token",
-			subjectTokenType: tokenTypeIDToken,
+			subjectTokenType: oauth.TokenTypeIDToken,
 			wantErr:          false,
 		},
 		{
 			name:             "valid jwt",
-			subjectTokenType: tokenTypeJWT,
+			subjectTokenType: oauth.TokenTypeJWT,
 			wantErr:          false,
 		},
 		{
@@ -1453,6 +1455,155 @@ func TestExchangeConfig_Validate_SubjectTokenType(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
+		})
+	}
+}
+
+// TestTokenSource_Token_RequestedTokenTypeAndResource verifies that
+// ExchangeConfig.RequestedTokenType and ExchangeConfig.Resource propagate
+// through tokenSource.Token() onto the token-exchange form body.
+func TestTokenSource_Token_RequestedTokenTypeAndResource(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name                   string
+		requestedTokenType     string
+		resource               string
+		wantRequestedTokenType string
+		wantResource           string
+	}{
+		{
+			name:                   "defaults when unset",
+			requestedTokenType:     "",
+			resource:               "",
+			wantRequestedTokenType: oauth.TokenTypeAccessToken,
+			wantResource:           "",
+		},
+		{
+			name:                   "override requested_token_type",
+			requestedTokenType:     oauth.TokenTypeJWT,
+			resource:               "",
+			wantRequestedTokenType: oauth.TokenTypeJWT,
+			wantResource:           "",
+		},
+		{
+			name:                   "resource forwarded on the wire",
+			requestedTokenType:     "",
+			resource:               "https://mcp.example.com/api",
+			wantRequestedTokenType: oauth.TokenTypeAccessToken,
+			wantResource:           "https://mcp.example.com/api",
+		},
+		{
+			name:                   "both set",
+			requestedTokenType:     oauth.TokenTypeJWT,
+			resource:               "https://mcp.example.com/api",
+			wantRequestedTokenType: oauth.TokenTypeJWT,
+			wantResource:           "https://mcp.example.com/api",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				err := r.ParseForm()
+				require.NoError(t, err)
+
+				assert.Equal(t, tt.wantRequestedTokenType, r.Form.Get("requested_token_type"))
+				assert.Equal(t, tt.wantResource, r.Form.Get("resource"))
+
+				resp := newResponse().build()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			}))
+			t.Cleanup(server.Close)
+
+			config := &ExchangeConfig{
+				TokenURL: server.URL,
+				ClientID: "test-client",
+				SubjectTokenProvider: func() (string, error) {
+					return testSubjectToken, nil
+				},
+				RequestedTokenType: tt.requestedTokenType,
+				Resource:           tt.resource,
+			}
+
+			ctx := context.Background()
+			ts := config.TokenSource(ctx)
+			_, err := ts.Token()
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestExchangeConfig_Validate_Resource(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		resource    string
+		wantErr     bool
+		wantErrText string
+	}{
+		{
+			name:     "empty resource",
+			resource: "",
+			wantErr:  false,
+		},
+		{
+			name:     "absolute https URI",
+			resource: "https://mcp.example.com/api",
+			wantErr:  false,
+		},
+		{
+			name:     "absolute urn",
+			resource: "urn:example:resource",
+			wantErr:  false,
+		},
+		{
+			name:        "relative path",
+			resource:    "/api",
+			wantErr:     true,
+			wantErrText: "absolute URI",
+		},
+		{
+			name:        "scheme-less host",
+			resource:    "mcp.example.com/api",
+			wantErr:     true,
+			wantErrText: "absolute URI",
+		},
+		{
+			name:        "URI with fragment",
+			resource:    "https://api.example.com#v2",
+			wantErr:     true,
+			wantErrText: "fragment",
+		},
+		{
+			name:        "malformed URI",
+			resource:    "http://[::1",
+			wantErr:     true,
+			wantErrText: "invalid Resource URI",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config := &ExchangeConfig{
+				TokenURL: "https://sts.example.com/token",
+				SubjectTokenProvider: func() (string, error) {
+					return testSubjectToken, nil
+				},
+				Resource: tt.resource,
+			}
+
+			err := config.Validate()
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErrText)
+				return
+			}
+			require.NoError(t, err)
 		})
 	}
 }

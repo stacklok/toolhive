@@ -372,7 +372,7 @@
                         "uniqueItems": false
                     },
                     "subject_token_type": {
-                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.\nIf empty, defaults to tokenTypeAccessToken.",
+                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: oauth.TokenTypeAccessToken (default), oauth.TokenTypeIDToken, oauth.TokenTypeJWT.\nIf empty, defaults to oauth.TokenTypeAccessToken.",
                         "type": "string"
                     },
                     "token_url": {

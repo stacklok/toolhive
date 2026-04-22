@@ -18,25 +18,11 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/oauth"
 )
 
 const (
-	// grantTypeTokenExchange is the OAuth 2.0 Token Exchange grant type (RFC 8693)
-	//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
-	grantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
-
-	// tokenTypeAccessToken indicates an OAuth 2.0 access token
-	//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
-	tokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
-
-	// tokenTypeIDToken indicates an OpenID Connect ID Token (required by Google STS)
-	//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
-	tokenTypeIDToken = "urn:ietf:params:oauth:token-type:id_token"
-
-	// tokenTypeJWT indicates a JSON Web Token
-	//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
-	tokenTypeJWT = "urn:ietf:params:oauth:token-type:jwt"
-
 	// defaultHTTPTimeout is the timeout for HTTP requests
 	defaultHTTPTimeout = 30 * time.Second
 
@@ -64,18 +50,18 @@ func NormalizeTokenType(tokenType string) (string, error) {
 
 	// Check if already a full URN (backward compatibility)
 	switch tokenType {
-	case tokenTypeAccessToken, tokenTypeIDToken, tokenTypeJWT:
+	case oauth.TokenTypeAccessToken, oauth.TokenTypeIDToken, oauth.TokenTypeJWT:
 		return tokenType, nil
 	}
 
 	// Convert short form to full URN
 	switch tokenType {
 	case "access_token":
-		return tokenTypeAccessToken, nil
+		return oauth.TokenTypeAccessToken, nil
 	case "id_token":
-		return tokenTypeIDToken, nil
+		return oauth.TokenTypeIDToken, nil
 	case "jwt":
-		return tokenTypeJWT, nil
+		return oauth.TokenTypeJWT, nil
 	default:
 		return "", fmt.Errorf("invalid token type %q: must be one of: access_token, id_token, jwt", tokenType)
 	}
@@ -152,8 +138,8 @@ func (r exchangeRequest) String() string {
 		}
 	}
 
-	return fmt.Sprintf("exchangeRequest{GrantType: %s, Audience: %s, Scope: %v, SubjectToken: %s, ActorToken: %s}",
-		r.GrantType, r.Audience, r.Scope, subjectToken, actorToken)
+	return fmt.Sprintf("exchangeRequest{GrantType: %s, Audience: %s, Resource: %s, Scope: %v, SubjectToken: %s, ActorToken: %s}",
+		r.GrantType, r.Audience, r.Resource, r.Scope, subjectToken, actorToken)
 }
 
 // response is used to decode the remote server response during an OAuth 2.0 token exchange.
@@ -217,9 +203,20 @@ type ExchangeConfig struct {
 	Scopes []string
 
 	// SubjectTokenType specifies the type of the subject token being exchanged.
-	// Common values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.
-	// If empty, defaults to tokenTypeAccessToken.
+	// Common values: oauth.TokenTypeAccessToken (default), oauth.TokenTypeIDToken, oauth.TokenTypeJWT.
+	// If empty, defaults to oauth.TokenTypeAccessToken.
 	SubjectTokenType string
+
+	// RequestedTokenType specifies the desired token type in the exchange response.
+	// Defaults to oauth.TokenTypeAccessToken per RFC 8693. Set to any RFC 8693
+	// token-type URN to request a different issued token type.
+	RequestedTokenType string
+
+	// Resource identifies the target resource per RFC 8693 Section 2.1 and RFC 8707.
+	// Must be an absolute URI without a fragment. This implementation accepts a
+	// single resource indicator; RFC 8707 permits multiple but multi-value support
+	// is not yet exposed at this layer.
+	Resource string
 
 	// SubjectTokenProvider is a function that returns the subject token to exchange
 	// we use a function to allow dynamic retrieval of the token (e.g. from request context)
@@ -253,6 +250,20 @@ func (c *ExchangeConfig) Validate() error {
 		}
 		// Update the config with the normalized value
 		c.SubjectTokenType = normalized
+	}
+
+	// Validate Resource per RFC 8707 Section 2: absolute URI, no fragment.
+	if c.Resource != "" {
+		u, err := url.Parse(c.Resource)
+		if err != nil {
+			return fmt.Errorf("invalid Resource URI: %w", err)
+		}
+		if !u.IsAbs() {
+			return fmt.Errorf("invalid Resource: must be an absolute URI (got %q)", c.Resource)
+		}
+		if u.Fragment != "" {
+			return fmt.Errorf("invalid Resource: must not include a fragment (RFC 8707 Section 2)")
+		}
 	}
 
 	// Validate URL format
@@ -289,15 +300,21 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 	// Determine subject token type (default to access_token if not specified)
 	subjectTokenType := conf.SubjectTokenType
 	if subjectTokenType == "" {
-		subjectTokenType = tokenTypeAccessToken
+		subjectTokenType = oauth.TokenTypeAccessToken
 	}
 
 	// Build the token exchange request
+	requestedTokenType := conf.RequestedTokenType
+	if requestedTokenType == "" {
+		requestedTokenType = oauth.TokenTypeAccessToken
+	}
+
 	request := &exchangeRequest{
-		GrantType:          grantTypeTokenExchange,
+		GrantType:          oauth.GrantTypeTokenExchange,
 		Audience:           conf.Audience,
 		Scope:              conf.Scopes,
-		RequestedTokenType: tokenTypeAccessToken,
+		RequestedTokenType: requestedTokenType,
+		Resource:           conf.Resource,
 		SubjectToken:       subjectToken,
 		SubjectTokenType:   subjectTokenType,
 	}
@@ -392,7 +409,7 @@ func buildTokenExchangeFormData(request *exchangeRequest) (url.Values, error) {
 
 	// Grant type is always token exchange
 	if request.GrantType == "" {
-		request.GrantType = grantTypeTokenExchange
+		request.GrantType = oauth.GrantTypeTokenExchange
 	}
 	data.Set("grant_type", request.GrantType)
 
@@ -404,13 +421,13 @@ func buildTokenExchangeFormData(request *exchangeRequest) (url.Values, error) {
 
 	// Subject token type defaults to access_token if not specified
 	if request.SubjectTokenType == "" {
-		request.SubjectTokenType = tokenTypeAccessToken
+		request.SubjectTokenType = oauth.TokenTypeAccessToken
 	}
 	data.Set("subject_token_type", request.SubjectTokenType)
 
 	// Requested token type defaults to access_token if not specified
 	if request.RequestedTokenType == "" {
-		request.RequestedTokenType = tokenTypeAccessToken
+		request.RequestedTokenType = oauth.TokenTypeAccessToken
 	}
 	data.Set("requested_token_type", request.RequestedTokenType)
 

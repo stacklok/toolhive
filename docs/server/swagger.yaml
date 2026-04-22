@@ -372,8 +372,8 @@ components:
         subject_token_type:
           description: |-
             SubjectTokenType specifies the type of the subject token being exchanged.
-            Common values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.
-            If empty, defaults to tokenTypeAccessToken.
+            Common values: oauth.TokenTypeAccessToken (default), oauth.TokenTypeIDToken, oauth.TokenTypeJWT.
+            If empty, defaults to oauth.TokenTypeAccessToken.
           type: string
         token_url:
           description: TokenURL is the OAuth 2.0 token endpoint URL

@@ -73,7 +73,7 @@ sequenceDiagram
 
 When `--config` is omitted and `--group` is set, `thv vmcp serve` generates an in-memory YAML configuration from the named ToolHive group. No configuration file is required.
 
-Security requirement: the server always binds to `127.0.0.1` (loopback only) in quick mode. The `--host` flag allows overriding this only when a config file is explicitly provided.
+Security requirement: in quick mode, `--host` is still honoured but `validateQuickModeHost()` rejects any value that is not a loopback address. Accepted values are an empty string (defaults to `127.0.0.1`), `"localhost"`, or any IP for which `net.IP.IsLoopback()` returns true (e.g. `::1`). Any non-loopback address is rejected to prevent an unauthenticated server from being exposed on the network.
 
 **Implementation**: `pkg/vmcp/cli/serve.go` — `buildConfigFromGroup()`
 

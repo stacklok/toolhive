@@ -38,6 +38,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
@@ -95,6 +96,11 @@ type testServerOptions struct {
 	// which delegates to setupTestServer. setupTestServerWithRTProxy does not
 	// accept testServerOption at all, so this field does not apply to it.
 	upstreamFilter handlers.UpstreamFilter
+	// extraClients, when non-empty, are registered in storage in addition to the
+	// default public PKCE test client. Used to install a confidential client for
+	// flows the default public client cannot exercise (e.g. RFC 8693 token
+	// exchange, which requires a confidential acting client).
+	extraClients []fosite.Client
 }
 
 // testServerOption is a functional option for test server setup.
@@ -127,6 +133,14 @@ func withAccessTokenLifespan(d time.Duration) testServerOption {
 func withUpstreamFilter(f handlers.UpstreamFilter) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.upstreamFilter = f
+	}
+}
+
+// withExtraClient registers an additional client in storage alongside the
+// default public PKCE test client.
+func withExtraClient(c fosite.Client) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.extraClients = append(opts.extraClients, c)
 	}
 }
 
@@ -225,6 +239,11 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		Public:        true,
 	})
 	require.NoError(t, err)
+
+	// Register any extra clients (e.g. a confidential client for token exchange).
+	for _, c := range options.extraClients {
+		require.NoError(t, stor.RegisterClient(ctx, c))
+	}
 
 	// 5. Build upstream config for newServer
 	// When no upstream is provided, use a dummy config that satisfies validation
@@ -583,6 +602,191 @@ func TestIntegration_TokenEndpoint_RefreshToken(t *testing.T) {
 	replayResp := makeTokenRequest(t, ts.Server.URL, replayParams)
 	defer replayResp.Body.Close()
 	require.GreaterOrEqual(t, replayResp.StatusCode, 400, "old refresh token must be rejected after rotation")
+}
+
+// ============================================================================
+// RFC 8693 Token Exchange Wiring Tests
+// ============================================================================
+
+// TestIntegration_TokenExchange_PublicClientRejected proves that public clients
+// are barred from the RFC 8693 token-exchange grant (only confidential clients
+// may act on a user's behalf), and that the grant is wired into the fosite
+// provider and reachable at the token endpoint.
+//
+// It does not assert a full delegated-token issuance: the handler requires a
+// confidential client (RFC 8693 §2.1) and the shared test harness only
+// registers a public client. Instead it relies on a decisive dispatch
+// discriminator observable at the token endpoint:
+//
+//   - With the token-exchange factory registered, a token-exchange request is
+//     routed to the handler, whose first guard rejects the public client with
+//     error=invalid_grant and a "token-exchange"-specific hint.
+//   - Without the factory, no handler claims grant_type=token-exchange and
+//     fosite returns error=invalid_request (see fosite NewAccessRequest: an
+//     unmatched grant yields ErrInvalidRequest).
+//
+// So invalid_grant with a token-exchange hint proves the handler is registered
+// and executed — exactly the regression a dropped factory would introduce.
+func TestIntegration_TokenExchange_PublicClientRejected(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	// Mint a genuine server-issued access token to use as the subject_token, so
+	// the request is a well-formed RFC 8693 exchange up to the client-type gate.
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "token-exchange-dispatch",
+		Challenge:    challenge,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+	subjectToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	require.NotEmpty(t, subjectToken)
+
+	resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":         {oauthproto.GrantTypeTokenExchange},
+		"subject_token":      {subjectToken},
+		"subject_token_type": {oauthproto.TokenTypeAccessToken},
+		"client_id":          {testClientID},
+	})
+	defer resp.Body.Close()
+
+	body := parseTokenResponse(t, resp)
+	errCode, _ := body["error"].(string)
+	errDesc, _ := body["error_description"].(string)
+
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode,
+		"token-exchange from a public client should be a 400, got %d (body: %v)", resp.StatusCode, body)
+	// The decisive assertion: the token-exchange handler ran and rejected the
+	// public client (invalid_grant), rather than the request falling through
+	// unhandled (invalid_request), which is what a missing factory would produce.
+	require.Equal(t, "invalid_grant", errCode,
+		"expected invalid_grant from the token-exchange handler; invalid_request would mean "+
+			"the token-exchange factory is not wired into the provider")
+	assert.Contains(t, errDesc, "token-exchange",
+		"the rejection must originate from the token-exchange handler specifically")
+}
+
+// TestIntegration_TokenExchange_ConfidentialClientHappyPath drives a full RFC 8693
+// delegation exchange over HTTP through the real fosite provider: a confidential
+// acting client authenticates with client_secret_post, presents a server-signed
+// subject token, and receives a delegated access token.
+//
+// Unlike the unit tests in the tokenexchange package (which call the handler
+// directly with mock strategy/storage), this exercises the complete glued path —
+// fosite NewAccessRequest -> client authentication -> handler dispatch ->
+// PopulateTokenEndpointResponse JSON issuance — proving the token exchange is not
+// just registered but functional end-to-end.
+func TestIntegration_TokenExchange_ConfidentialClientHappyPath(t *testing.T) {
+	t.Parallel()
+
+	const (
+		agentClientID     = "test-agent-client"
+		agentClientSecret = "test-agent-secret"
+		delegatedUserSub  = "delegated-user-sub"
+	)
+
+	// A confidential client registered for the token-exchange grant is the acting
+	// agent. The handler rejects public clients, so this must be confidential.
+	agentClient, err := registration.New(registration.Config{
+		ID:         agentClientID,
+		Secret:     agentClientSecret,
+		Public:     false,
+		GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+		Scopes:     registration.DefaultScopes,
+		Audience:   []string{testAudience},
+	})
+	require.NoError(t, err)
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m, withExtraClient(agentClient))
+
+	// Mint a subject token signed by the server's own key (the validator verifies
+	// against the server's JWKS). client_id must equal the acting client so the
+	// RFC 8693 §4.1 delegation-consent check (client_id binding) passes.
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: ts.PrivateKey},
+		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "test-key"),
+	)
+	require.NoError(t, err)
+
+	now := time.Now()
+	subjectToken, err := jwt.Signed(signer).
+		Claims(jwt.Claims{
+			Issuer:   testIssuer,
+			Subject:  delegatedUserSub,
+			Audience: jwt.Audience{testAudience},
+			Expiry:   jwt.NewNumericDate(now.Add(30 * time.Minute)),
+			IssuedAt: jwt.NewNumericDate(now),
+		}).
+		Claims(map[string]any{
+			"client_id": agentClientID,
+			"name":      "Delegated User",
+			"email":     "deleg@example.com",
+		}).
+		Serialize()
+	require.NoError(t, err)
+
+	// No resource/audience is sent: the server defaults to its sole allowed
+	// audience (testAudience), which the agent client is registered for.
+	resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":         {oauthproto.GrantTypeTokenExchange},
+		"subject_token":      {subjectToken},
+		"subject_token_type": {oauthproto.TokenTypeAccessToken},
+		"client_id":          {agentClientID},
+		"client_secret":      {agentClientSecret},
+	})
+	defer resp.Body.Close()
+
+	body := parseTokenResponse(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"token exchange should succeed, got %d (body: %v)", resp.StatusCode, body)
+
+	// RFC 8693 §2.2.1 requires issued_token_type in the response.
+	assert.Equal(t, oauthproto.TokenTypeAccessToken, body["issued_token_type"],
+		"response must advertise the issued token type")
+
+	delegated, ok := body["access_token"].(string)
+	require.True(t, ok, "access_token should be a string")
+	require.NotEmpty(t, delegated)
+
+	// The delegated token is a JWT signed by the server; verify and inspect claims.
+	parsed, err := jwt.ParseSigned(delegated, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+	var claims map[string]any
+	require.NoError(t, parsed.Claims(ts.PrivateKey.Public(), &claims))
+
+	// The delegated token carries the USER as subject and the AGENT as the
+	// RFC 8693 §4.1 "act" (acting party).
+	assert.Equal(t, delegatedUserSub, claims["sub"], "delegated token subject must be the user")
+	assert.Equal(t, testIssuer, claims["iss"])
+	act, ok := claims["act"].(map[string]any)
+	require.True(t, ok, "delegated token must carry an 'act' claim")
+	assert.Equal(t, agentClientID, act["sub"], "act.sub must identify the acting agent client")
+
+	// Audience: no resource/audience was requested, so grantDefaultAudience must
+	// bind the token to the server's sole allowed audience.
+	aud, ok := claims["aud"].([]interface{})
+	require.True(t, ok, "aud claim should be an array")
+	require.Len(t, aud, 1, "aud should have exactly one audience")
+	assert.Equal(t, testAudience, aud[0], "delegated token audience should default to the sole allowed audience")
+
+	// Lifetime cap: the delegated token's exp must be min(subject_remaining=30m,
+	// delegationLifespan=15m default) ≈ 15m — NOT the subject token's 30m. This
+	// verifies the handler's min() cap and rules out a "subject token echoed
+	// back" regression, which would otherwise satisfy sub/iss/signature.
+	exp, ok := claims["exp"].(float64)
+	require.True(t, ok, "exp claim should be a number")
+	assert.WithinDuration(t, now.Add(15*time.Minute), time.Unix(int64(exp), 0), 2*time.Minute,
+		"delegated token exp must be capped at the 15m delegation lifespan, not the subject token's 30m")
 }
 
 // ============================================================================

@@ -638,6 +638,12 @@ components:
           uniqueItems: false
         cimd:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig'
+        delegation_token_lifespan:
+          description: |-
+            DelegationTokenLifespan is the maximum lifetime for delegated tokens issued
+            via RFC 8693 token exchange. Specified as a Go duration string (e.g., "15m").
+            If empty, defaults to 15 minutes.
+          type: string
         disable_upstream_token_injection:
           description: |-
             DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.

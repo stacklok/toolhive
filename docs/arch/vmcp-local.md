@@ -26,7 +26,7 @@ The original vMCP deployment model required a Kubernetes cluster and a `VirtualM
 
 `thv vmcp` provides the same aggregation, tool routing, and optimizer capabilities without requiring a cluster. It runs as a foreground process driven by Cobra CLI flags, with a zero-config quick mode for the common case of aggregating a local ToolHive group.
 
-This path replaces the earlier Python [`StacklokLabs/mcp-optimizer`](https://github.com/StacklokLabs/mcp-optimizer) project (see [Migration from mcp-optimizer](#migration-from-stacklok-labsmcp-optimizer)).
+This path replaces the earlier Python [`StacklokLabs/mcp-optimizer`](https://github.com/StacklokLabs/mcp-optimizer) project (see [Migration from mcp-optimizer](#migration-from-stackloklabsmcp-optimizer)).
 
 ## How It Works
 
@@ -75,7 +75,7 @@ When `--config` is omitted and `--group` is set, `thv vmcp serve` generates an i
 
 Security requirement: in quick mode, `--host` is still honoured but `validateQuickModeHost()` rejects any value that is not a loopback address. Accepted values are an empty string (defaults to `127.0.0.1`), `"localhost"`, or any IP for which `net.IP.IsLoopback()` returns true (e.g. `::1`). Any non-loopback address is rejected to prevent an unauthenticated server from being exposed on the network.
 
-**Implementation**: `pkg/vmcp/cli/serve.go` — `buildConfigFromGroup()`
+**Implementation**: `pkg/vmcp/cli/serve.go` — `generateQuickModeConfig()`
 
 ### Config-File Mode
 
@@ -118,31 +118,38 @@ sequenceDiagram
     participant RT as Container Runtime
     participant TEI as TEI Container
 
-    Serve->>EM: Start(ctx, model, image)
+    Serve->>EM: Start(ctx)
     EM->>EM: containerNameForModel(model)<br/>→ thv-embedding-<8-char-hash>
     EM->>RT: inspect existing container
     alt container exists and is running
         RT-->>EM: running
-        EM->>EM: reuse (idempotent)
+        EM->>EM: reuse; started=false (no ownership)
     else container absent or stopped
         EM->>RT: create container
         RT->>TEI: start thv-embedding-<hash>
-        EM->>EM: poll /health with exponential backoff<br/>(2s → 4s → 8s … max 30s, 30–60s total budget)
+        EM->>EM: poll /health with exponential backoff<br/>(2s → 4s → 8s … max 30s, until ctx cancelled)
         TEI-->>EM: 200 OK (model loaded)
+        EM->>EM: started=true (owns container)
     end
     EM-->>Serve: embedding URL
     Serve->>Serve: run vMCP server
-    Serve->>EM: Stop() on shutdown
-    EM->>RT: stop container
+    Serve->>EM: Stop(ctx) on shutdown
+    alt started==true
+        EM->>RT: stop container
+    else started==false
+        EM->>EM: no-op (container not owned)
+    end
 ```
 
 **Container naming**: `thv-embedding-<model-short-hash>` where the hash is the first 8 hex characters of the SHA-256 of the model name. This avoids invalid container-name characters (e.g., slashes in `BAAI/bge-small-en-v1.5`).
 
-**Idempotent reuse**: if a container with the correct name is already running, ToolHive reuses it without restarting. This means repeated `thv vmcp serve` invocations do not re-pull or restart TEI unnecessarily.
+**Ownership tracking**: `EmbeddingServiceManager` sets an internal `started` flag only when it deploys the container itself (`deployContainer`). When it finds an already-running container and calls `reuseContainer`, `started` remains false.
 
-**Health polling**: exponential backoff starting at 2 s, multiplier 2, cap at 30 s. First-start budget is 30–60 s (time for the model to download and load). If `--optimizer-embedding` is set explicitly and the container fails to become healthy, the server exits immediately (fail-fast).
+**Reuse semantics**: if a container with the correct name is already running when `thv vmcp serve` starts (e.g. left running by another process or a previous invocation that did not shut down cleanly), ToolHive reuses it and does not stop it on exit. In the normal case — where `thv vmcp serve` itself deployed the container — it will stop it on shutdown, so the next invocation will redeploy from scratch.
 
-**Graceful shutdown**: when `thv vmcp serve` exits, `EmbeddingServiceManager.Stop()` stops the TEI container.
+**Health polling**: exponential backoff starting at 2 s, multiplier 2, cap at 30 s per interval. `pollHealth()` polls until the passed `context.Context` is cancelled — there is no built-in total-time budget. `thv vmcp serve` passes `cmd.Context()` without an additional deadline, so polling continues indefinitely until the user cancels (Ctrl-C) or the context is otherwise closed.
+
+**Graceful shutdown**: `EmbeddingServiceManager.Stop()` stops the TEI container only if this instance deployed it (`started == true`). It is a no-op when the container was reused from an external process.
 
 **Implementation**: `pkg/vmcp/cli/embedding_manager.go`
 

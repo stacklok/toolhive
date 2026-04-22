@@ -18,7 +18,6 @@ import (
     "github.com/stacklok/toolhive/pkg/vmcp/server"
     "github.com/stacklok/toolhive/pkg/vmcp/aggregator"
     "github.com/stacklok/toolhive/pkg/vmcp/router"
-    "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 ```
 
@@ -29,9 +28,9 @@ The `pkg/vmcp/` root package (`github.com/stacklok/toolhive/pkg/vmcp`) contains 
 [`github.com/stacklok/brood-box`](https://github.com/stacklok/brood-box) embeds `pkg/vmcp/` under `internal/infra/mcp/`. It demonstrates the recommended pattern:
 
 1. Load a `vmcpconfig.Config` from YAML or programmatically.
-2. Instantiate an aggregator, router, and session factory.
-3. Build a `server.Server` via `server.New(cfg, aggregator, router, ...)`.
-4. Call `server.Start(ctx)` and `server.Stop()` for lifecycle management.
+2. Instantiate a `discovery.Manager`, `vmcp.BackendRegistry`, router, and backend client.
+3. Build a `server.Server` via `server.New(ctx, cfg, router, backendClient, discoveryMgr, backendRegistry, workflowDefs)`.
+4. Call `server.Start(ctx)` and `server.Stop(ctx)` for lifecycle management.
 
 This is the same path used by `pkg/vmcp/cli/serve.go` in the `thv vmcp serve` command; the library has no CLI-specific coupling.
 
@@ -61,31 +60,9 @@ The table below maps every sub-package to its stability level per RFC THV-0059. 
 | `pkg/vmcp/workloads` | Internal | Backend workload helpers for K8s mode; not for local embedding |
 | `pkg/vmcp/schema` | Internal | MCP schema parsing; subject to change |
 
-## `doc.go` Annotation Convention
+## Stability Declaration Convention
 
-Each sub-package declares its stability level in its `doc.go` file using a `//go:doc:stability` annotation in the package comment. Example from a Stable package:
-
-```go
-// Package config provides the vMCP configuration model and YAML loader.
-//
-//go:doc:stability Stable
-//
-// Config is the top-level configuration struct...
-package config
-```
-
-And from an Experimental package:
-
-```go
-// Package optimizer provides the tool optimizer interface and factory.
-//
-//go:doc:stability Experimental
-//
-// The optimizer API may change before it is promoted to Stable...
-package optimizer
-```
-
-The annotation is informational — it does not affect compilation. It is used by documentation generators and reviewers to surface the stability level alongside the package docs.
+The `pkg/vmcp/` sub-packages do not currently carry in-source stability annotations. The stability levels in the table above are derived from RFC THV-0059 and are documented here as the authoritative reference for downstream consumers. Reviewers should consult this table (and the RFC) when evaluating whether a proposed change to a `pkg/vmcp/` package constitutes a breaking change.
 
 ## Compatibility Guarantees for Stable Packages
 

@@ -102,7 +102,7 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
 12. **[vMCP Library Embedding](vmcp-library.md)**
     - Library embedding pattern and `brood-box` reference implementation
     - `pkg/vmcp/` stability table (Stable, Experimental, Internal per sub-package)
-    - `doc.go` annotation convention for package-level stability declarations
+    - Stability declaration convention and how to use the table as a reviewer
     - Compatibility guarantees and semver-aligned deprecation policy
     - Guidance for downstream embedders on pinning and upgrading
 

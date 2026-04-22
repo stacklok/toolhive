@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
@@ -299,6 +300,96 @@ func (r *VirtualMCPServerReconciler) buildTransportMap(
 	return transportMap, nil
 }
 
+// buildHeaderForwardMap returns a map keyed by backend name (MCPServerEntry name)
+// carrying the per-backend HeaderForwardConfig to embed in the vMCP ConfigMap.
+//
+// Plaintext headers are copied verbatim. Secret-backed headers are mapped to their
+// env-var identifiers via ctrlutil.GenerateHeaderForwardSecretEnvVarName so the
+// vMCP runtime can resolve them through secrets.EnvironmentProvider
+// (TOOLHIVE_SECRET_<identifier>). Secret values themselves are never read or stored
+// here — only identifiers — keeping values out of the ConfigMap.
+//
+// Only entries with a non-nil headerForward that produces at least one header are
+// included. Entries without headerForward (or with only nil-ValueSecretRef entries)
+// are omitted; the caller treats absence as "no per-backend header injection".
+func (r *VirtualMCPServerReconciler) buildHeaderForwardMap(
+	ctx context.Context,
+	namespace string,
+	typedWorkloads []workloads.TypedWorkload,
+) (map[string]*vmcptypes.HeaderForwardConfig, error) {
+	result := make(map[string]*vmcptypes.HeaderForwardConfig)
+
+	// Early return if no MCPServerEntry workloads to avoid unnecessary API calls.
+	hasEntries := false
+	for _, workload := range typedWorkloads {
+		if workload.Type == workloads.WorkloadTypeMCPServerEntry {
+			hasEntries = true
+			break
+		}
+	}
+	if !hasEntries {
+		return result, nil
+	}
+
+	mcpServerEntryMap, err := r.listMCPServerEntriesAsMap(ctx, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list MCPServerEntries: %w", err)
+	}
+
+	for _, workload := range typedWorkloads {
+		if workload.Type != workloads.WorkloadTypeMCPServerEntry {
+			continue
+		}
+		entry, found := mcpServerEntryMap[workload.Name]
+		if !found || entry.Spec.HeaderForward == nil {
+			continue
+		}
+		if cfg := staticHeaderForwardFromEntry(entry); cfg != nil {
+			result[workload.Name] = cfg
+		}
+	}
+
+	return result, nil
+}
+
+// staticHeaderForwardFromEntry builds the ConfigMap-ready HeaderForwardConfig for
+// a single MCPServerEntry. Returns nil when the entry declares no headers (e.g.,
+// all AddHeadersFromSecret entries have nil ValueSecretRef).
+func staticHeaderForwardFromEntry(entry *mcpv1beta1.MCPServerEntry) *vmcptypes.HeaderForwardConfig {
+	src := entry.Spec.HeaderForward
+	if src == nil {
+		return nil
+	}
+
+	var plaintext map[string]string
+	if len(src.AddPlaintextHeaders) > 0 {
+		plaintext = make(map[string]string, len(src.AddPlaintextHeaders))
+		for k, v := range src.AddPlaintextHeaders {
+			plaintext[k] = v
+		}
+	}
+
+	var secretIdents map[string]string
+	if len(src.AddHeadersFromSecret) > 0 {
+		secretIdents = make(map[string]string, len(src.AddHeadersFromSecret))
+		for _, ref := range src.AddHeadersFromSecret {
+			if ref.ValueSecretRef == nil {
+				continue
+			}
+			_, identifier := ctrlutil.GenerateHeaderForwardSecretEnvVarName(entry.Name, ref.HeaderName)
+			secretIdents[ref.HeaderName] = identifier
+		}
+	}
+
+	if len(plaintext) == 0 && len(secretIdents) == 0 {
+		return nil
+	}
+	return &vmcptypes.HeaderForwardConfig{
+		AddPlaintextHeaders:  plaintext,
+		AddHeadersFromSecret: secretIdents,
+	}
+}
+
 // buildCABundlePathMap builds a map of backend names to CA bundle file paths for MCPServerEntry backends.
 // Only entries with a caBundleRef are included in the map.
 func (r *VirtualMCPServerReconciler) buildCABundlePathMap(
@@ -437,7 +528,14 @@ func (r *VirtualMCPServerReconciler) processOutgoingAuth(
 			return fmt.Errorf("failed to build CA bundle path map for static mode: %w", err)
 		}
 
-		config.Backends = convertBackendsToStaticBackends(ctx, backends, transportMap, caBundlePathMap)
+		headerForwardMap, err := r.buildHeaderForwardMap(ctx, vmcp.Namespace, typedWorkloads)
+		if err != nil {
+			return fmt.Errorf("failed to build header forward map for static mode: %w", err)
+		}
+
+		config.Backends = convertBackendsToStaticBackends(
+			ctx, backends, transportMap, caBundlePathMap, headerForwardMap,
+		)
 
 		// Validate at least one backend exists
 		if len(config.Backends) == 0 {

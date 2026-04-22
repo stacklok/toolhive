@@ -155,4 +155,6 @@
 // - MCP Specification: https://modelcontextprotocol.io/specification
 //
 // See individual subpackage documentation for detailed usage and examples.
+//
+// +groupName=toolhive.stacklok.dev
 package vmcp

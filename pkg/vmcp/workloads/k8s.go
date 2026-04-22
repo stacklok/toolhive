@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/k8s"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -582,7 +583,49 @@ func (d *k8sDiscoverer) mcpServerEntryToBackend(ctx context.Context, entry *mcpv
 		return nil
 	}
 
+	// Extract header forward configuration. Plaintext headers are copied verbatim.
+	// Secret-backed headers are mapped to secret identifiers resolved at runtime via
+	// secrets.EnvironmentProvider (env var TOOLHIVE_SECRET_<identifier>). The operator
+	// injects the actual Secret value into the vMCP pod via valueFrom.secretKeyRef.
+	backend.HeaderForward = buildHeaderForwardFromEntry(entry)
+
 	return backend
+}
+
+// buildHeaderForwardFromEntry converts MCPServerEntry.spec.headerForward into the
+// runtime vmcp.HeaderForwardConfig. Returns nil if the entry declares no header
+// forwarding. Secret values are never read or stored here — only identifiers.
+func buildHeaderForwardFromEntry(entry *mcpv1beta1.MCPServerEntry) *vmcp.HeaderForwardConfig {
+	if entry.Spec.HeaderForward == nil {
+		return nil
+	}
+	src := entry.Spec.HeaderForward
+
+	var plaintext map[string]string
+	if len(src.AddPlaintextHeaders) > 0 {
+		plaintext = make(map[string]string, len(src.AddPlaintextHeaders))
+		maps.Copy(plaintext, src.AddPlaintextHeaders)
+	}
+
+	var secretIdents map[string]string
+	if len(src.AddHeadersFromSecret) > 0 {
+		secretIdents = make(map[string]string, len(src.AddHeadersFromSecret))
+		for _, ref := range src.AddHeadersFromSecret {
+			if ref.ValueSecretRef == nil {
+				continue
+			}
+			_, identifier := ctrlutil.GenerateHeaderForwardSecretEnvVarName(entry.Name, ref.HeaderName)
+			secretIdents[ref.HeaderName] = identifier
+		}
+	}
+
+	if plaintext == nil && secretIdents == nil {
+		return nil
+	}
+	return &vmcp.HeaderForwardConfig{
+		AddPlaintextHeaders:  plaintext,
+		AddHeadersFromSecret: secretIdents,
+	}
 }
 
 // mapMCPServerEntryPhaseToHealth converts a MCPServerEntryPhase to a backend health status.

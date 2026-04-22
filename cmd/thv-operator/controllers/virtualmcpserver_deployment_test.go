@@ -868,3 +868,208 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildHeaderForwardEnvVarsForEntries verifies that MCPServerEntry backends
+// with headerForward.addHeadersFromSecret produce deterministic env vars on the
+// vMCP deployment pointing at the referenced Kubernetes Secrets.
+func TestBuildHeaderForwardEnvVarsForEntries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		entries   []mcpv1beta1.MCPServerEntry
+		workloads []workloads.TypedWorkload
+		wantNames []string
+		validate  func(t *testing.T, envVars []corev1.EnvVar)
+	}{
+		{
+			name: "no entry workloads returns nil",
+			workloads: []workloads.TypedWorkload{
+				{Name: "srv", Type: workloads.WorkloadTypeMCPServer},
+			},
+			wantNames: nil,
+		},
+		{
+			name: "entry without headerForward emits nothing",
+			entries: []mcpv1beta1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-x", Namespace: "default"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "g"},
+					},
+				},
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "entry-x", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			wantNames: nil,
+		},
+		{
+			name: "entry with plaintext-only headerForward emits nothing (no secrets needed)",
+			entries: []mcpv1beta1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-p", Namespace: "default"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "g"},
+						HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+							AddPlaintextHeaders: map[string]string{"X-A": "1"},
+						},
+					},
+				},
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "entry-p", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			wantNames: nil,
+		},
+		{
+			name: "entry with secret-backed headers emits one env var per header",
+			entries: []mcpv1beta1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-s", Namespace: "default"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "g"},
+						HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+							AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+								{
+									HeaderName:     "X-API-Key",
+									ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "k-secret", Key: "tok"},
+								},
+								{
+									HeaderName:     "Authorization",
+									ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "auth-secret", Key: "val"},
+								},
+							},
+						},
+					},
+				},
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "entry-s", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			wantNames: []string{
+				"TOOLHIVE_SECRET_HEADER_FORWARD_X_API_KEY_ENTRY_S",
+				"TOOLHIVE_SECRET_HEADER_FORWARD_AUTHORIZATION_ENTRY_S",
+			},
+			validate: func(t *testing.T, envVars []corev1.EnvVar) {
+				t.Helper()
+				for _, ev := range envVars {
+					require.NotNil(t, ev.ValueFrom, "env var %q must use valueFrom.secretKeyRef", ev.Name)
+					require.NotNil(t, ev.ValueFrom.SecretKeyRef)
+					assert.Empty(t, ev.Value, "secret-backed env var must not inline a value")
+				}
+			},
+		},
+		{
+			name: "two entries declaring same header get distinct env var names",
+			entries: []mcpv1beta1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-a", Namespace: "default"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						RemoteURL: "https://a.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "g"},
+						HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+							AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+								{
+									HeaderName:     "X-API-Key",
+									ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "sec-a", Key: "v"},
+								},
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-b", Namespace: "default"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						RemoteURL: "https://b.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "g"},
+						HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+							AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+								{
+									HeaderName:     "X-API-Key",
+									ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "sec-b", Key: "v"},
+								},
+							},
+						},
+					},
+				},
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "entry-a", Type: workloads.WorkloadTypeMCPServerEntry},
+				{Name: "entry-b", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			wantNames: []string{
+				"TOOLHIVE_SECRET_HEADER_FORWARD_X_API_KEY_ENTRY_A",
+				"TOOLHIVE_SECRET_HEADER_FORWARD_X_API_KEY_ENTRY_B",
+			},
+		},
+		{
+			name: "secret ref with nil ValueSecretRef is skipped",
+			entries: []mcpv1beta1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-n", Namespace: "default"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "g"},
+						HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+							AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+								{HeaderName: "X-Skip", ValueSecretRef: nil},
+							},
+						},
+					},
+				},
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "entry-n", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			wantNames: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
+
+			objs := make([]client.Object, 0, len(tt.entries))
+			for i := range tt.entries {
+				objs = append(objs, &tt.entries[i])
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objs...).
+				Build()
+
+			r := &VirtualMCPServerReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			envVars, err := r.buildHeaderForwardEnvVarsForEntries(t.Context(), "default", tt.workloads)
+			require.NoError(t, err)
+
+			gotNames := make([]string, 0, len(envVars))
+			for _, ev := range envVars {
+				gotNames = append(gotNames, ev.Name)
+			}
+			assert.ElementsMatch(t, tt.wantNames, gotNames)
+
+			if tt.validate != nil {
+				tt.validate(t, envVars)
+			}
+		})
+	}
+}

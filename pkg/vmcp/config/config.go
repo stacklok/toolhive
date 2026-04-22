@@ -304,6 +304,13 @@ type StaticBackendConfig struct {
 	// +optional
 	CABundlePath string `json:"caBundlePath,omitempty" yaml:"caBundlePath,omitempty"`
 
+	// HeaderForward configures per-backend HTTP headers to inject on outbound requests
+	// to this backend. Only valid when Type is "entry". Populated by the operator from
+	// MCPServerEntry.spec.headerForward; secret values are never stored here, only
+	// identifiers that resolve to TOOLHIVE_SECRET_<ident> env vars in the vMCP pod.
+	// +optional
+	HeaderForward *vmcp.HeaderForwardConfig `json:"headerForward,omitempty" yaml:"headerForward,omitempty"`
+
 	// Metadata is a custom key-value map for storing additional backend information
 	// such as labels, tags, or other arbitrary data (e.g., "env": "prod", "region": "us-east-1").
 	// This is NOT Kubernetes ObjectMeta - it's a simple string map for user-defined metadata.

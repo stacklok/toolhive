@@ -48,22 +48,28 @@ func GenerateUniqueHeaderInjectionEnvVarName(configName string) string {
 // The generated name follows the TOOLHIVE_SECRET_<identifier> pattern expected by the EnvironmentProvider.
 //
 // Parameters:
-//   - proxyName: The name of the MCPRemoteProxy resource
-//   - headerName: The HTTP header name (e.g., "X-API-Key")
+//   - ownerName: The name of the CRD instance that owns the Secret reference.
+//     For MCPRemoteProxy this is the proxy name; for MCPServerEntry backends
+//     consumed by a VirtualMCPServer this is the entry name. Scoping the
+//     identifier by ownerName ensures multiple owners sharing a pod cannot
+//     collide on env var names.
+//   - headerName: The HTTP header name (e.g., "X-API-Key").
 //
-// Returns the full environment variable name (e.g., "TOOLHIVE_SECRET_HEADER_FORWARD_X_API_KEY_MY_PROXY")
-// and the secret identifier portion (e.g., "HEADER_FORWARD_X_API_KEY_MY_PROXY") for use in RunConfig.
-func GenerateHeaderForwardSecretEnvVarName(proxyName, headerName string) (envVarName, secretIdentifier string) {
+// Returns the full environment variable name (e.g., "TOOLHIVE_SECRET_HEADER_FORWARD_X_API_KEY_MY_OWNER")
+// and the secret identifier portion (e.g., "HEADER_FORWARD_X_API_KEY_MY_OWNER") for use in RunConfig
+// or vMCP StaticBackendConfig.
+func GenerateHeaderForwardSecretEnvVarName(ownerName, headerName string) (envVarName, secretIdentifier string) {
 	// Sanitize header name for use in env var (uppercase, replace hyphens with underscore)
 	sanitizedHeader := strings.ToUpper(strings.ReplaceAll(headerName, "-", "_"))
 	sanitizedHeader = envVarSanitizer.ReplaceAllString(sanitizedHeader, "_")
 
-	// Sanitize proxy name for use in env var
-	sanitizedProxy := strings.ToUpper(strings.ReplaceAll(proxyName, "-", "_"))
-	sanitizedProxy = envVarSanitizer.ReplaceAllString(sanitizedProxy, "_")
+	// Sanitize owner name for use in env var
+	sanitizedOwner := strings.ToUpper(strings.ReplaceAll(ownerName, "-", "_"))
+	sanitizedOwner = envVarSanitizer.ReplaceAllString(sanitizedOwner, "_")
 
-	// Build the secret identifier (what gets stored in RunConfig.AddHeadersFromSecret)
-	secretIdentifier = fmt.Sprintf("HEADER_FORWARD_%s_%s", sanitizedHeader, sanitizedProxy)
+	// Build the secret identifier (what gets stored in RunConfig.AddHeadersFromSecret
+	// or StaticBackendConfig.HeaderForward.AddHeadersFromSecret).
+	secretIdentifier = fmt.Sprintf("HEADER_FORWARD_%s_%s", sanitizedHeader, sanitizedOwner)
 
 	// Build the full env var name (TOOLHIVE_SECRET_ prefix + identifier)
 	// This follows the pattern expected by secrets.EnvironmentProvider

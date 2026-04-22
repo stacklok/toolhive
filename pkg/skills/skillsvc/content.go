@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -57,14 +58,36 @@ func (s *service) GetContent(ctx context.Context, opts skills.ContentOptions) (*
 		return content, nil
 	}
 
-	// OCI failed — try resolving via registry name lookup (e.g. "skill-creator"
-	// or "io.github.stacklok/skill-creator" from the catalog index). Skip for
-	// refs that are unambiguously OCI (digest, explicit tag, or multi-segment
-	// path) to avoid a wasted network round-trip.
+	// OCI failed. The fallback strategy depends on how the caller referenced
+	// the skill:
+	//
+	//   - Unambiguous OCI refs (tag/digest/multi-segment path) — try a
+	//     registry lookup *by OCI identifier* to find the same skill's git
+	//     package, so an ephemeral OCI outage can transparently fall back to
+	//     git when the registry catalog has both.
+	//   - Ambiguous refs (plain skill name) — use the existing name-based
+	//     registry resolution which preferred OCI → git.
 	if parsedRef, isOCI, parseErr := parseOCIReference(ref); parseErr == nil && isOCI &&
 		isUnambiguousOCIRef(ref, parsedRef) {
+		if gitURL, _ := s.resolveGitFallbackForOCIRef(parsedRef); gitURL != "" {
+			slog.Info(
+				"OCI content fetch failed; falling back to git package declared in registry entry",
+				"oci_ref", ref,
+				"git_url", gitURL,
+				"oci_error", ociErr,
+			)
+			if c, gitErr := s.getContentFromGit(ctx, gitURL); gitErr == nil {
+				return c, nil
+			} else {
+				return nil, fmt.Errorf(
+					"OCI pull failed (%w); registry git fallback also failed: %v",
+					ociErr, gitErr,
+				)
+			}
+		}
 		return nil, ociErr
 	}
+
 	resolved, regErr := s.resolveFromRegistry(ref)
 	if regErr != nil {
 		return nil, regErr
@@ -176,7 +199,7 @@ func (s *service) getContentFromOCI(ctx context.Context, ref string) (*skills.Sk
 		if pullErr != nil {
 			return nil, httperr.WithCode(
 				fmt.Errorf("pulling OCI artifact %q: %w", qualifiedRef, pullErr),
-				http.StatusBadGateway,
+				classifyPullError(pullErr),
 			)
 		}
 	}

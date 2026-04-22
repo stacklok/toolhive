@@ -116,6 +116,64 @@ func TestErrorHandler(t *testing.T) {
 		require.Contains(t, rec.Body.String(), "Internal Server Error")
 	})
 
+	t.Run("surfaces 502 upstream error message to client", func(t *testing.T) {
+		t.Parallel()
+
+		handler := ErrorHandler(func(_ http.ResponseWriter, _ *http.Request) error {
+			return httperr.WithCode(
+				fmt.Errorf("pulling OCI artifact %q: registry returned 401", "ghcr.io/org/skill:v1"),
+				http.StatusBadGateway,
+			)
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+
+		handler.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusBadGateway, rec.Code)
+		require.Contains(t, rec.Body.String(), "pulling OCI artifact")
+		require.Contains(t, rec.Body.String(), "registry returned 401")
+	})
+
+	t.Run("surfaces 503 upstream error message to client", func(t *testing.T) {
+		t.Parallel()
+
+		handler := ErrorHandler(func(_ http.ResponseWriter, _ *http.Request) error {
+			return httperr.WithCode(
+				fmt.Errorf("downstream service unavailable"),
+				http.StatusServiceUnavailable,
+			)
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+
+		handler.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		require.Contains(t, rec.Body.String(), "downstream service unavailable")
+	})
+
+	t.Run("surfaces 504 gateway timeout message to client", func(t *testing.T) {
+		t.Parallel()
+
+		handler := ErrorHandler(func(_ http.ResponseWriter, _ *http.Request) error {
+			return httperr.WithCode(
+				fmt.Errorf("upstream deadline exceeded while pulling %q", "ghcr.io/org/skill:v1"),
+				http.StatusGatewayTimeout,
+			)
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+
+		handler.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusGatewayTimeout, rec.Code)
+		require.Contains(t, rec.Body.String(), "upstream deadline exceeded")
+	})
+
 	t.Run("error without code defaults to 500 with generic message", func(t *testing.T) {
 		t.Parallel()
 

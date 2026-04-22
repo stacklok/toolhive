@@ -10,6 +10,14 @@ name: API Compatibility
 
 on:
   pull_request:
+    # Include `labeled` and `unlabeled` so applying or removing
+    # `api-break-allowed` triggers a fresh workflow run. Without these,
+    # re-running the job from the UI uses the original event payload
+    # (which still has the old label set) and the skip condition misfires.
+    # Re-evaluating on `unlabeled` closes the gap where a user could
+    # apply the label, watch the check skip, then remove the label and
+    # merge without the check ever running against the current state.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - 'cmd/thv-operator/api/**'
       # files/crds is the source of truth — controller-gen emits here, and
@@ -19,8 +27,10 @@ on:
       # crd-helm-wrapper only affect Helm conditionals and annotations the
       # checker ignores, so they can't change what we compare.
       - 'deploy/charts/operator-crds/files/crds/**'
-      # Self-exercise the workflow when the workflow itself changes.
-      - '.github/workflows/api-compat.yml'
+      # Self-exercise when either workflow file (real or no-op companion)
+      # changes. The companion file reports the same required check on
+      # PRs that don't touch the api surface; see api-compat-noop.yml.
+      - '.github/workflows/api-compat*.yml'
 
 permissions:
   contents: read

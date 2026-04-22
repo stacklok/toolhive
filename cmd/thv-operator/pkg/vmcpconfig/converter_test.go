@@ -1893,3 +1893,122 @@ func TestConverter_TelemetryConfigRef(t *testing.T) {
 	assert.True(t, config.Telemetry.TracingEnabled, "Tracing should be enabled from MCPTelemetryConfig")
 	assert.True(t, config.Telemetry.MetricsEnabled, "Metrics should be enabled from MCPTelemetryConfig")
 }
+
+// TestConvertIncomingAuth_PrimaryUpstreamProvider verifies that convertIncomingAuth
+// propagates the first configured upstream provider name into AuthzConfig so Cedar
+// evaluates claims from the upstream IDP token rather than the ToolHive-issued
+// AS token. Without this, policies referencing upstream claims (e.g. "department")
+// fail at runtime because Cedar reads the wrong token.
+func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
+	t.Parallel()
+
+	inlineAuthzRef := &mcpv1beta1.AuthzConfigRef{
+		Type: "inline",
+		Inline: &mcpv1beta1.InlineAuthzConfig{
+			Policies: []string{`permit(principal, action, resource);`},
+		},
+	}
+
+	tests := []struct {
+		name             string
+		authServerConfig *mcpv1beta1.EmbeddedAuthServerConfig
+		authzConfig      *mcpv1beta1.AuthzConfigRef
+		expectAuthzNil   bool
+		expectedProvider string
+	}{
+		{
+			name:             "no auth server leaves provider unset",
+			authServerConfig: nil,
+			authzConfig:      inlineAuthzRef,
+			expectedProvider: "",
+		},
+		{
+			name: "auth server with empty upstream list leaves provider unset",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:            "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{},
+			},
+			authzConfig:      inlineAuthzRef,
+			expectedProvider: "",
+		},
+		{
+			name: "single named upstream becomes primary",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			authzConfig:      inlineAuthzRef,
+			expectedProvider: "okta",
+		},
+		{
+			name: "empty upstream name resolves to default",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			authzConfig:      inlineAuthzRef,
+			expectedProvider: "default",
+		},
+		{
+			name: "first upstream wins with multiple providers",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+					{Name: "github", Type: mcpv1beta1.UpstreamProviderTypeOAuth2},
+					{Name: "google", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			authzConfig:      inlineAuthzRef,
+			expectedProvider: "okta",
+		},
+		{
+			name: "no authz config leaves Authz nil without panic",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			authzConfig:    nil,
+			expectAuthzNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+
+			vmcp := &mcpv1beta1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
+						Type:        "anonymous",
+						AuthzConfig: tt.authzConfig,
+					},
+					AuthServerConfig: tt.authServerConfig,
+				},
+			}
+
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			incoming, err := converter.convertIncomingAuth(ctx, vmcp)
+			require.NoError(t, err)
+			require.NotNil(t, incoming)
+
+			if tt.expectAuthzNil {
+				assert.Nil(t, incoming.Authz)
+				return
+			}
+
+			require.NotNil(t, incoming.Authz)
+			assert.Equal(t, tt.expectedProvider, incoming.Authz.PrimaryUpstreamProvider)
+		})
+	}
+}

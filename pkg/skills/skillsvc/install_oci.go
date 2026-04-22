@@ -52,6 +52,11 @@ func (s *service) installFromOCI(
 	pullCtx, cancel := context.WithTimeout(ctx, ociPullTimeout)
 	defer cancel()
 
+	// Install pulls intentionally do NOT carry the local-build marker:
+	// Registry.Pull tags by digest, which returns a plain descriptor from
+	// the OCI store, so no annotations land on the root-index entry. The
+	// pulled blobs stay in the OCI store as a cache, but the tag is invisible
+	// to ListBuilds so installed remote skills don't appear as local builds.
 	pulledDigest, err := s.registry.Pull(pullCtx, s.ociStore, ociRef)
 	if err != nil {
 		return nil, httperr.WithCode(

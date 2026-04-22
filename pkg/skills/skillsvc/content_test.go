@@ -255,6 +255,49 @@ func TestGetContent(t *testing.T) {
 		assert.Contains(t, content.Body, "Skill Creator")
 	})
 
+	t.Run("remote pull does not pollute ListBuilds", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		// The real Pull would tag the pulled artifact in the local store.
+		// Simulate that side-effect here so we can verify ListBuilds still
+		// reports an empty list: pulls tag by digest, which yields a plain
+		// descriptor, so the local-build marker is never applied.
+		reg := ocimocks.NewMockRegistryClient(ctrl)
+		reg.EXPECT().
+			Pull(gomock.Any(), ociStore, "ghcr.io/org/my-skill:v1").
+			DoAndReturn(func(ctx context.Context, store *ociskills.Store, _ string) (godigest.Digest, error) {
+				d := buildTestArtifact(t, store, "my-skill", "1.0.0")
+				require.NoError(t, store.Tag(ctx, d, "ghcr.io/org/my-skill:v1"))
+				return d, nil
+			})
+
+		svc := New(&storage.NoopSkillStore{},
+			WithOCIStore(ociStore),
+			WithRegistryClient(reg),
+		)
+
+		// Baseline: no builds before the content request.
+		builds, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		require.Empty(t, builds)
+
+		content, err := svc.GetContent(t.Context(), skills.ContentOptions{
+			Reference: "ghcr.io/org/my-skill:v1",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "my-skill", content.Name)
+
+		// After a content-preview pull, ListBuilds must still be empty: the
+		// blobs stay on disk as a cache but the tag is not treated as a local build.
+		builds, err = svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		assert.Empty(t, builds, "content API must not leak pulled artifacts into ListBuilds")
+	})
+
 	t.Run("qualified namespace/name filters registry matches", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)

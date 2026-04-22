@@ -1,0 +1,177 @@
+name: API Compatibility
+
+# This workflow guards the stability of the v1beta1 operator API surface.
+#
+# A breaking CRD schema change (field removal, type change, required-field
+# addition, etc.) fails this check and blocks the PR. If the break is
+# intentional — almost exclusively for graduation to v1beta2 — apply the
+# `api-break-allowed` label to skip the check. See CONTRIBUTING.md → "API
+# Stability" for the full rubric.
+
+on:
+  pull_request:
+    # Include `labeled` and `unlabeled` so applying or removing
+    # `api-break-allowed` triggers a fresh workflow run. Without these,
+    # re-running the job from the UI uses the original event payload
+    # (which still has the old label set) and the skip condition misfires.
+    # Re-evaluating on `unlabeled` closes the gap where a user could
+    # apply the label, watch the check skip, then remove the label and
+    # merge without the check ever running against the current state.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - 'cmd/thv-operator/api/**'
+      # files/crds is the source of truth — controller-gen emits here, and
+      # crd-helm-wrapper copies from here into templates/. Any drift in
+      # templates/ is caught by operator-ci.yml's generate-crds job, so
+      # watching templates/ would be redundant. values.yaml and the
+      # crd-helm-wrapper only affect Helm conditionals and annotations the
+      # checker ignores, so they can't change what we compare.
+      - 'deploy/charts/operator-crds/files/crds/**'
+      # Self-exercise when either workflow file (real or no-op companion)
+      # changes. The companion file reports the same required check on
+      # PRs that don't touch the api surface; see api-compat-noop.yml.
+      - '.github/workflows/api-compat*.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  crd-schema-check:
+    name: CRD Schema Compatibility
+    runs-on: ubuntu-latest
+    # Skip the check entirely when `api-break-allowed` is applied — a
+    # required check that is skipped (rather than failed) counts as passing
+    # for branch protection, so this is the escape hatch for intentional
+    # breaks. Do not remove the label guard without a replacement path.
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'api-break-allowed') }}
+    # Expected runtime is ~1 minute (checkout + go setup + git fetch tag +
+    # go install + per-CRD checker loop). 10 minutes is a cheap upper
+    # bound that protects against a hung go install or git fetch.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout PR HEAD
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Resolve baseline tag
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Baseline is the most recent release tag. Tags are immutable, so
+          # comparing against the tag gives us a stable, released reference
+          # without needing to render the Helm chart or pull from OCI.
+          # Falling back to origin/main would silently compare against an
+          # already-broken baseline once a break lands on main.
+          LATEST_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')"
+          if [ -z "$LATEST_TAG" ]; then
+            echo "::error::No releases found for $GITHUB_REPOSITORY; cannot establish an API compatibility baseline."
+            exit 1
+          fi
+
+          # Fetch just the tag, shallow — no need to unshallow the repo.
+          git fetch origin "refs/tags/$LATEST_TAG:refs/tags/$LATEST_TAG" --depth=1
+          echo "tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install crd-schema-checker
+        # SHA-pinned: openshift/crd-schema-checker has no release tags at the
+        # time of writing, so @latest is the only other option. Pinning makes
+        # CI deterministic and mitigates supply-chain risk (upstream compromise
+        # would otherwise execute attacker code on the runner with GITHUB_TOKEN
+        # in env). Bump via a deliberate PR after verifying the new output
+        # locally. SHA pinned on 2026-04-21.
+        run: go install github.com/openshift/crd-schema-checker/cmd/crd-schema-checker@3fee146022bfe6f4adf84998de35d7267b864bef
+
+      - name: Check CRD schema compatibility
+        id: checker
+        env:
+          # Route step outputs through env vars so bash quotes them instead
+          # of the runner substituting them directly into the script body.
+          # Defense-in-depth against a future edit that routes a
+          # PR-controlled string through these outputs.
+          BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # NoBools and NoMaps are OpenShift API-style conventions, not
+          # compat-breaking rules. They fire on fields we legitimately use
+          # (e.g. embeddingservers.spec.modelCache.enabled) and drown out
+          # real findings. Re-enable only if upstream clarifies breaking-
+          # change semantics for them.
+          DISABLED_VALIDATORS="NoBools,NoMaps"
+
+          CRD_DIR="deploy/charts/operator-crds/files/crds"
+          mkdir -p /tmp/api-compat
+          : > /tmp/api-compat/output.txt
+
+          OVERALL_EXIT=0
+
+          # Detect CRD files removed between baseline and HEAD — a removed
+          # CRD is a break that the checker can't report (it needs both
+          # inputs present). Compare the set of filenames directly.
+          BASELINE_FILES=$(git ls-tree --name-only "$BASELINE_TAG" -- "$CRD_DIR/" | sed "s|$CRD_DIR/||" | sort)
+          HEAD_FILES=$(ls "$CRD_DIR" | sort)
+          REMOVED=$(comm -23 <(echo "$BASELINE_FILES") <(echo "$HEAD_FILES") || true)
+          if [ -n "$REMOVED" ]; then
+            {
+              echo "ERROR: CRD files removed from HEAD (present at $BASELINE_TAG):"
+              echo "$REMOVED" | sed 's/^/  - /'
+            } | tee -a /tmp/api-compat/output.txt
+            OVERALL_EXIT=1
+          fi
+
+          # For each CRD present on HEAD, fetch the baseline version from the
+          # tag and run the checker. New CRDs (HEAD-only) are additive and
+          # skipped — note that in the output so reviewers see the full
+          # inventory.
+          for crd in "$CRD_DIR"/*.yaml; do
+            fname=$(basename "$crd")
+            rel="$CRD_DIR/$fname"
+            if ! git show "$BASELINE_TAG:$rel" > /tmp/api-compat/baseline.yaml 2>/dev/null; then
+              echo "  (new CRD on HEAD, skipping: $fname)" >> /tmp/api-compat/output.txt
+              continue
+            fi
+            set +e
+            crd-schema-checker check-manifests \
+              --existing-crd-filename /tmp/api-compat/baseline.yaml \
+              --new-crd-filename "$crd" \
+              --disabled-validators="$DISABLED_VALIDATORS" \
+              >> /tmp/api-compat/output.txt 2>&1
+            RC=$?
+            set -e
+            [ "$RC" -ne 0 ] && OVERALL_EXIT=1
+          done
+
+          # Surface the combined output in the step log too, not only in the
+          # summary — some reviewers check the raw log first.
+          cat /tmp/api-compat/output.txt
+
+          if [ "$OVERALL_EXIT" -eq 0 ]; then
+            STATUS="Compatible"
+          else
+            STATUS="Incompatible or Unknown"
+          fi
+
+          {
+            echo "## API Compatibility — CRD Schema Check"
+            echo ""
+            echo "**Baseline**: $BASELINE_TAG"
+            echo "**Status**: $STATUS"
+            echo ""
+            echo "<details><summary>crd-schema-checker output</summary>"
+            echo ""
+            echo '```'
+            cat /tmp/api-compat/output.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$OVERALL_EXIT"

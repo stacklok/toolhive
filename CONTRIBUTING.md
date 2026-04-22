@@ -148,3 +148,41 @@ We follow the commit formatting recommendations found on
 1. Do not end the subject line with a period
 1. Use the imperative mood in the subject line
 1. Use the body to explain what and why vs. how
+
+## API Stability
+
+The `v1beta1` operator API is stable. CRD schemas and Go types under
+`cmd/thv-operator/api/v1beta1/` carry a compatibility commitment to users
+running the published operator chart. Contributors must not:
+
+- Remove or rename any field, type, or CRD kind in `v1beta1`.
+- Change a field's Go type, JSON tag, or OpenAPI schema type.
+- Add new required fields to existing types.
+- Narrow validation rules (smaller `maxLength`, stricter `pattern`, fewer
+  `enum` values).
+- Rename a finalizer or change a CRD `shortName`.
+- Flip a CRD's `spec.scope` between `Namespaced` and `Cluster`.
+- Un-serve a currently-served version without a deprecation-cycle release.
+
+New fields must be optional. New behaviour must be opt-in via new fields.
+The `CRD Schema Compatibility` CI check enforces the CRD side of this
+contract against the last published release tag on every PR that touches
+`cmd/thv-operator/api/**` or `deploy/charts/operator-crds/files/crds/**`.
+
+### The `api-break-allowed` escape hatch
+
+If you have a genuine reason to break the API — the main expected use
+case is graduation to `v1beta2` — apply the `api-break-allowed` label to
+the PR. This skips the compatibility check.
+
+Before applying the label:
+
+1. **Coordinate with maintainers first.** Open a Discord thread or an
+   issue describing what you are breaking and why.
+2. **Describe the break in the PR description.** Spell out which API
+   elements are changing, what clusters need to do to migrate, and whether
+   downstream consumers (CLI, chart users, operator integrations) need
+   coordinated releases.
+3. **Do not use the label to silence a false positive.** If the check
+   fires on a change you believe is non-breaking, file a bug against the
+   workflow — silencing it hides real breaks on subsequent PRs.

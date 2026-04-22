@@ -280,6 +280,12 @@ const (
 	// ConditionTypeAuthServerConfigValidated indicates whether the AuthServerConfig has been validated
 	ConditionTypeAuthServerConfigValidated = "AuthServerConfigValidated"
 
+	// ConditionTypeAuthzUpstreamSelectionWarning is an advisory condition set to True when
+	// multiple AuthServerConfig.UpstreamProviders are configured alongside AuthzConfig.
+	// Only the first upstream is authoritative for Cedar claim resolution; this warns the
+	// operator that the auto-selection has taken effect and names the selected upstream.
+	ConditionTypeAuthzUpstreamSelectionWarning = "AuthzUpstreamSelectionWarning"
+
 	// ConditionTypeVirtualMCPServerTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
 	ConditionTypeVirtualMCPServerTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
 )
@@ -345,6 +351,18 @@ const (
 
 	// ConditionReasonAuthServerConfigInvalid indicates the AuthServerConfig is invalid
 	ConditionReasonAuthServerConfigInvalid = "AuthServerConfigInvalid"
+
+	// ConditionReasonAuthzRequiresUpstream indicates that authorization policies are
+	// configured but no upstream IDP is available to source claims from. Without an
+	// upstream, Cedar evaluates against the ToolHive-issued AS token, whose claim
+	// namespace (sub, aud, tsid) can overlap upstream claims and silently authorize
+	// against the wrong identity.
+	ConditionReasonAuthzRequiresUpstream = "AuthzRequiresUpstream"
+
+	// ConditionReasonAuthzUpstreamAutoSelected is set when authorization is configured
+	// alongside multiple upstream providers and the first upstream has been chosen as
+	// the Cedar claim source. The advisory message names the selected upstream.
+	ConditionReasonAuthzUpstreamAutoSelected = "AuthzUpstreamAutoSelected"
 
 	// ConditionReasonVirtualMCPServerTelemetryConfigRefValid indicates the referenced MCPTelemetryConfig is valid
 	ConditionReasonVirtualMCPServerTelemetryConfigRefValid = "TelemetryConfigRefValid"

@@ -159,13 +159,19 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 		logger.Info("Triggering reconciliation of MCPServer due to MCPToolConfig change",
 			"mcpserver", server.Name, "toolconfig", toolConfig.Name)
 
+		// Use an optimistic-lock merge patch rather than Update so we do not
+		// silently overwrite spec fields (e.g. spec.authzConfig) that are owned
+		// by another controller. The resourceVersion is sent, so concurrent
+		// writers cause a 409 Conflict and a clean requeue.
+		original := server.DeepCopy()
 		if server.Annotations == nil {
 			server.Annotations = make(map[string]string)
 		}
 		server.Annotations["toolhive.stacklok.dev/toolconfig-hash"] = configHash
 
-		if err := r.Update(ctx, &server); err != nil {
-			logger.Error(err, "Failed to update MCPServer annotation", "mcpserver", server.Name)
+		if err := r.Patch(ctx, &server,
+			client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
+			logger.Error(err, "Failed to patch MCPServer annotation", "mcpserver", server.Name)
 		}
 	}
 

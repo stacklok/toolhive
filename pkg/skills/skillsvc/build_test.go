@@ -4,6 +4,7 @@
 package skillsvc
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -446,7 +448,7 @@ func TestListBuilds(t *testing.T) {
 
 		// Build a real artifact via the packager so extractOCIContent works.
 		d := buildTestArtifact(t, ociStore, "my-skill", "1.2.3")
-		require.NoError(t, ociStore.Tag(t.Context(), d, "my-skill"))
+		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "my-skill"))
 
 		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
 		artifacts, err := svc.ListBuilds(t.Context())
@@ -465,9 +467,9 @@ func TestListBuilds(t *testing.T) {
 		require.NoError(t, err)
 
 		d1 := buildTestArtifact(t, ociStore, "skill-a", "1.0.0")
-		require.NoError(t, ociStore.Tag(t.Context(), d1, "skill-a"))
+		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d1, "skill-a"))
 		d2 := buildTestArtifact(t, ociStore, "skill-b", "2.0.0")
-		require.NoError(t, ociStore.Tag(t.Context(), d2, "skill-b"))
+		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d2, "skill-b"))
 
 		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
 		artifacts, err := svc.ListBuilds(t.Context())
@@ -493,7 +495,7 @@ func TestListBuilds(t *testing.T) {
 		skillIndex := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","artifactType":"dev.toolhive.skills.v1","manifests":[]}`
 		d, putErr := ociStore.PutManifest(t.Context(), []byte(skillIndex))
 		require.NoError(t, putErr)
-		require.NoError(t, ociStore.Tag(t.Context(), d, "bare-skill-tag"))
+		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "bare-skill-tag"))
 
 		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
 		artifacts, err := svc.ListBuilds(t.Context())
@@ -513,20 +515,77 @@ func TestListBuilds(t *testing.T) {
 
 		// Store a valid skill artifact that should be returned.
 		skillDigest := buildTestArtifact(t, ociStore, "real-skill", "1.0.0")
-		require.NoError(t, ociStore.Tag(t.Context(), skillDigest, "real-skill"))
+		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, skillDigest, "real-skill"))
 
-		// Store an index whose ArtifactType is not the skill type — simulates a
-		// remotely-pulled non-skill OCI artifact sharing the same store.
+		// Store an index whose ArtifactType is not the skill type. Tagging it
+		// as a local build simulates a caller that mistakenly flagged a
+		// non-skill artifact — ListBuilds must still exclude it by type.
 		otherIndex := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","artifactType":"application/vnd.docker.distribution.manifest.v2","manifests":[]}`
 		otherDigest, putErr := ociStore.PutManifest(t.Context(), []byte(otherIndex))
 		require.NoError(t, putErr)
-		require.NoError(t, ociStore.Tag(t.Context(), otherDigest, "non-skill-tag"))
+		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, otherDigest, "non-skill-tag"))
 
 		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
 		artifacts, err := svc.ListBuilds(t.Context())
 		require.NoError(t, err)
 		require.Len(t, artifacts, 1)
 		assert.Equal(t, "real-skill", artifacts[0].Tag)
+	})
+
+	t.Run("pulled tags are hidden from ListBuilds", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+
+		// Simulate a pull: tag the artifact via the plain ociStore.Tag path,
+		// which mirrors what Registry.Pull does internally (resolve by digest
+		// → plain descriptor → no local-build annotation).
+		d := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), d, "ghcr.io/org/my-skill:v1.0.0"))
+
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		assert.Empty(t, artifacts, "pulled tags must not appear in ListBuilds")
+	})
+
+	t.Run("only locally-built tags are listed when pull and build coexist", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+
+		// Pulled artifact: tagged without the local-build marker.
+		pulled := buildTestArtifact(t, ociStore, "pulled-skill", "9.9.9")
+		require.NoError(t, ociStore.Tag(t.Context(), pulled, "ghcr.io/org/pulled-skill:v9.9.9"))
+
+		// Locally-built artifact: tagged with the marker.
+		built := buildTestArtifact(t, ociStore, "built-skill", "1.0.0")
+		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, built, "built-skill"))
+
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		require.Len(t, artifacts, 1)
+		assert.Equal(t, "built-skill", artifacts[0].Tag)
+	})
+
+	t.Run("pre-feature tags without the marker do not appear", func(t *testing.T) {
+		t.Parallel()
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		// Tag via the plain path, as if the artifact had been built before
+		// this feature existed. The honest gap: ListBuilds hides it until
+		// the user rebuilds and re-tags.
+		d := buildTestArtifact(t, ociStore, "legacy-build", "1.0.0")
+		require.NoError(t, ociStore.Tag(t.Context(), d, "legacy-build"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		artifacts, err := svc.ListBuilds(t.Context())
+		require.NoError(t, err)
+		assert.Empty(t, artifacts)
 	})
 }
 
@@ -547,7 +606,7 @@ func TestDeleteBuild(t *testing.T) {
 		require.NoError(t, err)
 
 		d := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
-		require.NoError(t, ociStore.Tag(t.Context(), d, "my-skill"))
+		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "my-skill"))
 
 		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
 		require.NoError(t, svc.DeleteBuild(t.Context(), "my-skill"))
@@ -575,8 +634,8 @@ func TestDeleteBuild(t *testing.T) {
 		require.NoError(t, err)
 
 		d := buildTestArtifact(t, ociStore, "shared-skill", "1.0.0")
-		require.NoError(t, ociStore.Tag(t.Context(), d, "tag-a"))
-		require.NoError(t, ociStore.Tag(t.Context(), d, "tag-b"))
+		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "tag-a"))
+		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "tag-b"))
 
 		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
 		require.NoError(t, svc.DeleteBuild(t.Context(), "tag-a"))
@@ -587,4 +646,79 @@ func TestDeleteBuild(t *testing.T) {
 		require.Len(t, builds, 1)
 		assert.Equal(t, "tag-b", builds[0].Tag)
 	})
+
+	t.Run("delete removes local-build marker from index.json", func(t *testing.T) {
+		t.Parallel()
+		storeRoot := t.TempDir()
+		ociStore, err := ociskills.NewStore(storeRoot)
+		require.NoError(t, err)
+
+		d := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "my-skill"))
+
+		// Sanity: the marker is on the tagged descriptor.
+		require.True(t, indexContainsTaggedMarker(t, storeRoot, "my-skill"))
+
+		svc := New(&storage.NoopSkillStore{}, WithOCIStore(ociStore))
+		require.NoError(t, svc.DeleteBuild(t.Context(), "my-skill"))
+
+		assert.False(t, indexContainsTaggedMarker(t, storeRoot, "my-skill"),
+			"descriptor carrying the marker must be gone after DeleteBuild")
+	})
+}
+
+func TestBuild_StampsLocalBuildAnnotation(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	storeRoot := t.TempDir()
+	ociStore, err := ociskills.NewStore(storeRoot)
+	require.NoError(t, err)
+
+	d := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+
+	p := ocimocks.NewMockSkillPackager(ctrl)
+	p.EXPECT().Package(gomock.Any(), "/some/dir", gomock.Any()).
+		Return(&ociskills.PackageResult{
+			IndexDigest: d,
+			Config:      &ociskills.SkillConfig{Name: "my-skill"},
+		}, nil)
+
+	svc := New(&storage.NoopSkillStore{},
+		WithPackager(p),
+		WithOCIStore(ociStore),
+	)
+
+	_, err = svc.Build(t.Context(), skills.BuildOptions{Path: "/some/dir", Tag: "my-skill"})
+	require.NoError(t, err)
+
+	// After a successful Build, the tag must be surfaced by ListBuilds
+	// because the root-index descriptor carries the local-build marker.
+	builds, err := svc.ListBuilds(t.Context())
+	require.NoError(t, err)
+	require.Len(t, builds, 1)
+	assert.Equal(t, "my-skill", builds[0].Tag)
+
+	// The marker must land on the descriptor entry in index.json.
+	assert.True(t, indexContainsTaggedMarker(t, storeRoot, "my-skill"),
+		"root index.json must carry the local-build annotation for the tag")
+}
+
+// indexContainsTaggedMarker reads the OCI store's root index.json and reports
+// whether the descriptor entry tagged `tag` has the local-build annotation.
+func indexContainsTaggedMarker(t *testing.T, storeRoot, tag string) bool {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(storeRoot, "index.json"))
+	require.NoError(t, err)
+	var idx ocispec.Index
+	require.NoError(t, json.Unmarshal(data, &idx))
+	for _, m := range idx.Manifests {
+		if m.Annotations[ocispec.AnnotationRefName] != tag {
+			continue
+		}
+		if m.Annotations[LocalBuildAnnotation] == "true" {
+			return true
+		}
+	}
+	return false
 }

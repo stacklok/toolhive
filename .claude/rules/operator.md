@@ -67,3 +67,43 @@ task operator-test            # Run unit tests
 task operator-e2e-test        # Run e2e tests
 task crdref-gen              # Generate CRD API docs (run from cmd/thv-operator/)
 ```
+
+## Spec / metadata patching
+
+Never use `r.Update` on a CR spec or metadata: `Update` is a full PUT,
+so any field our local copy does not track (e.g. `spec.authzConfig`
+written by a separate authorization controller) gets zeroed on every
+reconcile.
+
+Use an **optimistic-lock merge patch** instead. The merge-patch body
+only contains fields the caller changed, and `MergeFromWithOptimisticLock`
+sends `resourceVersion` as a precondition: if the server moved between
+our Get and Patch, the apiserver returns 409 and controller-runtime
+requeues with a fresh Get.
+
+This is what protects `metadata.finalizers`. Merge-patch has no
+array-append semantics — arrays are replaced wholesale — so when our
+diff includes `finalizers` (e.g. an `AddFinalizer` call) it must have
+been computed from an up-to-date snapshot. The 409 + requeue is what
+guarantees that: any concurrent finalizer added by another controller
+fails our precondition, and the next reconcile observes it via a fresh
+Get before recomputing the diff.
+
+```go
+original := mcpServer.DeepCopy()
+controllerutil.AddFinalizer(mcpServer, MCPServerFinalizerName)
+if err := r.Patch(ctx, mcpServer,
+    client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
+    return ctrl.Result{}, err
+}
+```
+
+Do not put unrelated work between the `DeepCopy` and the `Patch`: the
+wire diff is computed from that snapshot, so anything you mutate in
+between leaks into the patch body.
+
+Expect 409s as routine log noise once the external controller lands —
+the guard doing its job, not a bug.
+
+Status-subresource patching follows the same "never `Update`" rule and
+is covered separately once the shared helper lands (#4633).

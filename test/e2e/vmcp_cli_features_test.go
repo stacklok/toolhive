@@ -61,10 +61,10 @@ type singleBackendFixture struct {
 	tmpDir      string // empty when withTmpDir is false
 }
 
-func (f *singleBackendFixture) setup(groupPrefix, backendPrefix, tmpDirPattern string) {
+func (f *singleBackendFixture) setup(groupPrefix, tmpDirPattern string) {
 	f.cfg = e2e.NewTestConfig()
 	f.groupName = e2e.GenerateUniqueServerName(groupPrefix)
-	f.backendName = e2e.GenerateUniqueServerName(backendPrefix)
+	f.backendName = e2e.GenerateUniqueServerName("yardstick")
 	f.vMCPPort = allocateVMCPPort()
 
 	if tmpDirPattern != "" {
@@ -81,6 +81,9 @@ func (f *singleBackendFixture) setup(groupPrefix, backendPrefix, tmpDirPattern s
 }
 
 func (f *singleBackendFixture) teardown() {
+	if f.cfg == nil {
+		return
+	}
 	stopVMCPProcess(f.vMCPCmd)
 	if f.cfg.CleanupAfter {
 		if err := e2e.StopAndRemoveMCPServer(f.cfg, f.backendName); err != nil {
@@ -131,6 +134,9 @@ func (f *twoBackendFixture) setupBackends(groupPrefix string) {
 // teardownBackends stops and removes the group and both backends. Call in
 // AfterAll to match setupBackends.
 func (f *twoBackendFixture) teardownBackends() {
+	if f.cfg == nil {
+		return
+	}
 	if f.cfg.CleanupAfter {
 		if err := e2e.StopAndRemoveMCPServer(f.cfg, f.backendAName); err != nil {
 			GinkgoWriter.Printf("cleanup: StopAndRemoveMCPServer(%s) failed: %v\n", f.backendAName, err)
@@ -305,7 +311,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 	Context("global ExcludeAll (all tools hidden)", func() {
 		var fx singleBackendFixture
 
-		BeforeEach(func() { fx.setup("vmcp-feat-excludeall", "yardstick", "vmcp-feat-excludeall-*") })
+		BeforeEach(func() { fx.setup("vmcp-feat-excludeall", "vmcp-feat-excludeall-*") })
 		AfterEach(func() { fx.teardown() })
 
 		It("returns an empty tools list when ExcludeAllTools is true", func() {
@@ -351,7 +357,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 	Context("composite sequential tool", func() {
 		var fx singleBackendFixture
 
-		BeforeEach(func() { fx.setup("vmcp-feat-composite", "yardstick", "vmcp-feat-composite-*") })
+		BeforeEach(func() { fx.setup("vmcp-feat-composite", "vmcp-feat-composite-*") })
 		AfterEach(func() { fx.teardown() })
 
 		It("exposes the composite tool in tools/list and executes it successfully", func() {
@@ -452,7 +458,7 @@ var _ = Describe("vMCP CLI features", Label("vmcp", "e2e", "features"), func() {
 	Context("Tier-1 optimizer (--optimizer flag, quick mode)", func() {
 		var fx singleBackendFixture
 
-		BeforeEach(func() { fx.setup("vmcp-feat-optimizer", "yardstick", "") })
+		BeforeEach(func() { fx.setup("vmcp-feat-optimizer", "") })
 		AfterEach(func() { fx.teardown() })
 
 		It("exposes only find_tool and call_tool when --optimizer is set", func() {

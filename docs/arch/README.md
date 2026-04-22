@@ -25,71 +25,86 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
 
 ### Detailed Component Documentation
 
-4. **[Core Concepts](02-core-concepts.md)**
+1. **[Core Concepts](02-core-concepts.md)**
    - Nouns: Workloads, Transports, Proxy, Middleware, RunConfig, Permissions, Groups, Registry, Sessions
    - Verbs: Deploy, Proxy, Attach, Parse, Filter, Authorize, Audit, Export, Import, Monitor
    - Terminology quick reference
 
-5. **[Secrets Management](04-secrets-management.md)**
+2. **[Secrets Management](04-secrets-management.md)**
    - Provider types (encrypted, 1password, environment)
    - OS keyring integration
    - Fallback chain
    - Security model
 
-6. **[RunConfig and Permission Profiles](05-runconfig-and-permissions.md)**
+3. **[RunConfig and Permission Profiles](05-runconfig-and-permissions.md)**
    - RunConfig schema and versioning
    - Permission profiles (read, write, network)
    - Built-in profiles and custom profiles
    - Mount declarations and resource URIs
    - Security best practices
 
-7. **[Registry System](06-registry-system.md)**
+4. **[Registry System](06-registry-system.md)**
    - Built-in curated registry
    - Custom registries (file and remote)
    - Registry API server architecture
    - MCPRegistry CRD
    - Image and remote server metadata
 
-8. **[Groups](07-groups.md)**
+5. **[Groups](07-groups.md)**
    - Group concept and use cases
    - Registry groups
    - Client configuration
 
-9. **[Workloads Lifecycle Management](08-workloads-lifecycle.md)**
+6. **[Workloads Lifecycle Management](08-workloads-lifecycle.md)**
    - Workloads API interface
    - Lifecycle: deploy, stop, restart, delete, update
    - State management
    - Container vs remote workloads
    - Async operations
 
-10. **[Kubernetes Operator Architecture](09-operator-architecture.md)**
-    - CRD design (MCPServer, MCPRegistry, MCPToolConfig, MCPExternalAuthConfig, VirtualMCPServer)
-    - Two-binary architecture (operator + proxy-runner)
-    - Deployment pattern
-    - Status management
-    - Design principles
+7. **[Kubernetes Operator Architecture](09-operator-architecture.md)**
+   - CRD design (MCPServer, MCPRegistry, MCPToolConfig, MCPExternalAuthConfig, VirtualMCPServer)
+   - Two-binary architecture (operator + proxy-runner)
+   - Deployment pattern
+   - Status management
+   - Design principles
 
-11. **[Virtual MCP Server Architecture](10-virtual-mcp-architecture.md)**
-    - MCP Gateway for aggregating multiple backends
-    - Backend discovery and capability aggregation
-    - Conflict resolution strategies
-    - Two-boundary authentication model
-    - Composite tool workflows
+8. **[Virtual MCP Server Architecture](10-virtual-mcp-architecture.md)**
+   - MCP Gateway for aggregating multiple backends
+   - Backend discovery and capability aggregation
+   - Conflict resolution strategies
+   - Two-boundary authentication model
+   - Composite tool workflows
 
-12. **[Auth Server Storage Architecture](11-auth-server-storage.md)**
-    - Storage interface design (fosite + ToolHive extensions)
-    - Memory and Redis Sentinel backends
-    - Multi-tenancy via key prefixes
-    - Atomic operations with Lua scripts
-    - Configuration and security model
+9. **[Auth Server Storage Architecture](11-auth-server-storage.md)**
+   - Storage interface design (fosite + ToolHive extensions)
+   - Memory and Redis Sentinel backends
+   - Multi-tenancy via key prefixes
+   - Atomic operations with Lua scripts
+   - Configuration and security model
 
-13. **[Skills System](12-skills-system.md)**
+10. **[Skills System](12-skills-system.md)**
     - Agent Skills lifecycle (discover, build, publish, install)
     - SKILL.md format and validation
     - OCI-based distribution and git resolution
     - Installation scopes (user, project) and multi-client support
     - Security model (archive safety, SSRF prevention, supply chain)
     - Skills vs MCP servers design rationale
+
+11. **[Local vMCP CLI Mode](vmcp-local.md)**
+    - `thv vmcp` CLI surface (`serve`, `validate`, `init`)
+    - Zero-config quick mode and config-file workflow
+    - Optimizer tier table (Tier 0–3: none, FTS5, TEI semantic, external service)
+    - TEI container lifecycle (naming, idempotent reuse, health polling, graceful shutdown)
+    - ARM64/Apple Silicon Rosetta 2 emulation note
+    - Migration guide from StacklokLabs/mcp-optimizer
+
+12. **[vMCP Library Embedding](vmcp-library.md)**
+    - Library embedding pattern and `brood-box` reference implementation
+    - `pkg/vmcp/` stability table (Stable, Experimental, Internal per sub-package)
+    - Stability declaration convention and how to use the table as a reviewer
+    - Compatibility guarantees and semver-aligned deprecation policy
+    - Guidance for downstream embedders on pinning and upgrading
 
 ### Existing Documentation
 

@@ -1977,6 +1977,15 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig:    nil,
 			expectAuthzNil: true,
 		},
+		{
+			// Direct-IdP flow with anonymous incoming auth: neither the embedded
+			// AS nor authz is configured. Converter must not panic and must leave
+			// Authz unset.
+			name:             "both auth server and authz nil leaves Authz nil without panic",
+			authServerConfig: nil,
+			authzConfig:      nil,
+			expectAuthzNil:   true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1997,7 +2006,7 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 				},
 			}
 
-			ctx := log.IntoContext(context.Background(), logr.Discard())
+			ctx := log.IntoContext(t.Context(), logr.Discard())
 			incoming, err := converter.convertIncomingAuth(ctx, vmcp)
 			require.NoError(t, err)
 			require.NotNil(t, incoming)

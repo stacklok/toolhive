@@ -16,6 +16,7 @@
 //   - config.go: General configuration merging and validation utilities
 //   - podtemplatespec_builder.go: PodTemplateSpec builder for constructing pod template patches
 //   - maps.go: Map comparison utilities (e.g. subset checks for annotations)
+//   - status.go: Status-subresource merge-patch helper (MutateAndPatchStatus)
 //
 // These utilities are used by multiple controllers including MCPServer, MCPRemoteProxy,
 // and ToolConfig controllers to maintain consistent behavior across the operator.

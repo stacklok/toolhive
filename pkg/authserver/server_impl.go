@@ -16,6 +16,7 @@ import (
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
@@ -126,9 +127,14 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		"auth_code_lifespan", cfg.AuthCodeLifespan,
 	)
 
+	// Build extra factories for extension grant types.
+	extraFactories := []oauthserver.Factory{
+		tokenexchange.Factory(cfg.DelegationTokenLifespan),
+	}
+
 	// Create fosite provider
 	slog.Debug("creating fosite OAuth2 provider")
-	fositeProvider := createProvider(authServerConfig, stor)
+	fositeProvider := createProvider(authServerConfig, stor, extraFactories...)
 
 	// Build ordered upstream provider list from all configured upstreams.
 	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
@@ -213,9 +219,10 @@ func (s *server) Close() error {
 
 // createProvider creates a fosite OAuth2Provider configured for the authorization code flow.
 //
-// Fosite is an OAuth 2.0 framework that implements the protocol details. The compose package
-// provides a builder pattern to wire together configuration, storage, token strategies,
-// and grant type handlers into a single OAuth2Provider that can handle all OAuth endpoints.
+// Fosite is an OAuth 2.0 framework that implements the protocol details. We use
+// server.NewAuthorizationServer which accepts server.Factory functions to register
+// grant type handlers. The standard compose factories are wrapped via wrapComposeFactory
+// and any extra factories (e.g., token exchange) are appended.
 //
 // The provider is configured with:
 //   - JWT strategy for access tokens (asymmetric signing, distributed validation via JWKS)
@@ -223,7 +230,13 @@ func (s *server) Close() error {
 //   - Authorization code grant (RFC 6749 Section 4.1)
 //   - Refresh token grant (RFC 6749 Section 6)
 //   - PKCE (RFC 7636) for public client security
-func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage) fosite.OAuth2Provider {
+//   - Client credentials grant (RFC 6749 Section 4.4)
+//   - Any extra factories passed in (e.g., RFC 8693 token exchange)
+func createProvider(
+	authServerConfig *oauthserver.AuthorizationServerConfig,
+	stor storage.Storage,
+	extraFactories ...oauthserver.Factory,
+) fosite.OAuth2Provider {
 	slog.Debug("configuring fosite OAuth2 provider",
 		"key_id", authServerConfig.SigningKey.KeyID,
 		"algorithm", authServerConfig.SigningKey.Algorithm,
@@ -253,17 +266,31 @@ func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, sto
 		authServerConfig.Config,
 	)
 
-	// compose.Compose wires together all the pieces into an OAuth2Provider:
-	// - Config: token lifespans, issuer URL, HMAC secret
-	// - Storage: where to persist authorization codes, tokens, and client data
-	// - Strategy: how to generate and validate tokens
-	// - Factories: which OAuth grant types to enable (each adds handlers for specific flows)
-	return compose.Compose(
-		authServerConfig.Config,
+	commonStrategy := &compose.CommonStrategy{CoreStrategy: jwtStrategy}
+
+	// Wrap fosite's compose factories to match server.Factory signature.
+	factories := []oauthserver.Factory{
+		wrapComposeFactory(compose.OAuth2AuthorizeExplicitFactory),      // Authorization code grant
+		wrapComposeFactory(compose.OAuth2RefreshTokenGrantFactory),      // Refresh token grant
+		wrapComposeFactory(compose.OAuth2PKCEFactory),                   // PKCE for public clients
+		wrapComposeFactory(compose.OAuth2ClientCredentialsGrantFactory), // Client credentials grant
+	}
+	factories = append(factories, extraFactories...)
+
+	return oauthserver.NewAuthorizationServer(
+		authServerConfig,
 		stor,
-		&compose.CommonStrategy{CoreStrategy: jwtStrategy},
-		compose.OAuth2AuthorizeExplicitFactory, // Authorization code grant
-		compose.OAuth2RefreshTokenGrantFactory, // Refresh token grant
-		compose.OAuth2PKCEFactory,              // PKCE for public clients
+		commonStrategy,
+		factories...,
 	)
+}
+
+// wrapComposeFactory adapts a compose.Factory to a server.Factory.
+// Compose factories take (fosite.Configurator, interface{}, interface{}) while
+// server factories take (*AuthorizationServerConfig, fosite.Storage, any).
+// The embedded *fosite.Config satisfies fosite.Configurator.
+func wrapComposeFactory(cf func(fosite.Configurator, interface{}, interface{}) interface{}) oauthserver.Factory {
+	return func(config *oauthserver.AuthorizationServerConfig, storage fosite.Storage, strategy any) any {
+		return cf(config.Config, storage, strategy)
+	}
 }

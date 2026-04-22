@@ -100,7 +100,16 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		return nil, fmt.Errorf("failed to build upstream configs: %w", err)
 	}
 
-	// 5. Build the resolved Config
+	// 5. Parse delegation token lifespan if configured
+	var delegationLifespan time.Duration
+	if cfg.DelegationTokenLifespan != "" {
+		delegationLifespan, err = time.ParseDuration(cfg.DelegationTokenLifespan)
+		if err != nil {
+			return nil, fmt.Errorf("invalid delegation token lifespan: %w", err)
+		}
+	}
+
+	// 6. Build the resolved Config
 	resolvedCfg := authserver.Config{
 		Issuer:                       cfg.Issuer,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
@@ -109,6 +118,7 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		AccessTokenLifespan:          accessLifespan,
 		RefreshTokenLifespan:         refreshLifespan,
 		AuthCodeLifespan:             authCodeLifespan,
+		DelegationTokenLifespan:      delegationLifespan,
 		Upstreams:                    upstreams,
 		ScopesSupported:              cfg.ScopesSupported,
 		AllowedAudiences:             cfg.AllowedAudiences,

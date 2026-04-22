@@ -96,7 +96,7 @@ func splitQualifiedName(s string) (namespace, name string) {
 //
 // The lookup is purely advisory: any error, ambiguity, or missing data is
 // treated as "no fallback available" so the caller can simply return the
-// original OCI error. Returning ("", nil) means "no fallback found".
+// original OCI error. Returning "" means "no fallback found".
 //
 // Matching strategy:
 //   - Derive a search term from the ref's tail path segment (e.g.
@@ -108,9 +108,9 @@ func splitQualifiedName(s string) (namespace, name string) {
 //   - If exactly one entry matches and it has a git package, build and return
 //     its git:// URL. Multiple matches would be ambiguous so we skip the
 //     fallback rather than guess.
-func (s *service) resolveGitFallbackForOCIRef(ref nameref.Reference) (string, error) {
+func (s *service) resolveGitFallbackForOCIRef(ref nameref.Reference) string {
 	if s.skillLookup == nil {
-		return "", nil
+		return ""
 	}
 
 	repo := ref.Context().RepositoryStr()
@@ -119,14 +119,14 @@ func (s *service) resolveGitFallbackForOCIRef(ref nameref.Reference) (string, er
 		tail = repo[idx+1:]
 	}
 	if tail == "" {
-		return "", nil
+		return ""
 	}
 
 	results, err := s.skillLookup.SearchSkills(tail)
 	if err != nil {
 		slog.Debug("registry lookup for OCI fallback failed, skipping fallback",
 			"ref", ref.String(), "error", err)
-		return "", nil
+		return ""
 	}
 
 	wantRepo := canonicalOCIRepo(ref)
@@ -143,10 +143,10 @@ func (s *service) resolveGitFallbackForOCIRef(ref nameref.Reference) (string, er
 	// than surfacing the original OCI error because it could silently serve
 	// content from the wrong skill.
 	if len(matches) != 1 {
-		return "", nil
+		return ""
 	}
 
-	return firstGitPackageURL(matches[0].Packages), nil
+	return firstGitPackageURL(matches[0].Packages)
 }
 
 // canonicalOCIRepo returns the registry+repository portion of ref without a

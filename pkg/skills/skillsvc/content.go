@@ -69,21 +69,21 @@ func (s *service) GetContent(ctx context.Context, opts skills.ContentOptions) (*
 	//     registry resolution which preferred OCI → git.
 	if parsedRef, isOCI, parseErr := parseOCIReference(ref); parseErr == nil && isOCI &&
 		isUnambiguousOCIRef(ref, parsedRef) {
-		if gitURL, _ := s.resolveGitFallbackForOCIRef(parsedRef); gitURL != "" {
+		if gitURL := s.resolveGitFallbackForOCIRef(parsedRef); gitURL != "" {
 			slog.Info(
 				"OCI content fetch failed; falling back to git package declared in registry entry",
 				"oci_ref", ref,
 				"git_url", gitURL,
 				"oci_error", ociErr,
 			)
-			if c, gitErr := s.getContentFromGit(ctx, gitURL); gitErr == nil {
+			c, gitErr := s.getContentFromGit(ctx, gitURL)
+			if gitErr == nil {
 				return c, nil
-			} else {
-				return nil, fmt.Errorf(
-					"OCI pull failed (%w); registry git fallback also failed: %v",
-					ociErr, gitErr,
-				)
 			}
+			return nil, fmt.Errorf(
+				"OCI pull failed (%w); registry git fallback also failed: %v",
+				ociErr, gitErr,
+			)
 		}
 		return nil, ociErr
 	}

@@ -91,6 +91,126 @@ func splitQualifiedName(s string) (namespace, name string) {
 	return s[:idx], s[idx+1:]
 }
 
+// resolveGitFallbackForOCIRef attempts to find a git:// URL in the skill
+// registry that can serve as a fallback when an OCI pull failed for ref.
+//
+// The lookup is purely advisory: any error, ambiguity, or missing data is
+// treated as "no fallback available" so the caller can simply return the
+// original OCI error. Returning ("", nil) means "no fallback found".
+//
+// Matching strategy:
+//   - Derive a search term from the ref's tail path segment (e.g.
+//     "yara-rule-authoring" from "ghcr.io/stacklok/dockyard/skills/yara-rule-authoring:0.1.0").
+//   - Query the registry via SearchSkills — no new interface method required.
+//   - Post-filter to registry entries whose OCI packages share the same
+//     repository path as ref (ignoring tag/digest, so :0.1.0 and :latest match
+//     the same entry).
+//   - If exactly one entry matches and it has a git package, build and return
+//     its git:// URL. Multiple matches would be ambiguous so we skip the
+//     fallback rather than guess.
+func (s *service) resolveGitFallbackForOCIRef(ref nameref.Reference) (string, error) {
+	if s.skillLookup == nil {
+		return "", nil
+	}
+
+	repo := ref.Context().RepositoryStr()
+	tail := repo
+	if idx := strings.LastIndex(repo, "/"); idx >= 0 {
+		tail = repo[idx+1:]
+	}
+	if tail == "" {
+		return "", nil
+	}
+
+	results, err := s.skillLookup.SearchSkills(tail)
+	if err != nil {
+		slog.Debug("registry lookup for OCI fallback failed, skipping fallback",
+			"ref", ref.String(), "error", err)
+		return "", nil
+	}
+
+	wantRepo := canonicalOCIRepo(ref)
+
+	var matches []regtypes.Skill
+	for _, sk := range results {
+		if !skillHasMatchingOCIRepo(sk, wantRepo) {
+			continue
+		}
+		matches = append(matches, sk)
+	}
+
+	// Ambiguous: bail out rather than guess. An ambiguous fallback is worse
+	// than surfacing the original OCI error because it could silently serve
+	// content from the wrong skill.
+	if len(matches) != 1 {
+		return "", nil
+	}
+
+	return firstGitPackageURL(matches[0].Packages), nil
+}
+
+// canonicalOCIRepo returns the registry+repository portion of ref without a
+// tag or digest so two references to the same repository at different versions
+// compare equal.
+func canonicalOCIRepo(ref nameref.Reference) string {
+	ctx := ref.Context()
+	return ctx.RegistryStr() + "/" + ctx.RepositoryStr()
+}
+
+// skillHasMatchingOCIRepo reports whether sk has any OCI package whose
+// identifier refers to the same repository as wantRepo.
+func skillHasMatchingOCIRepo(sk regtypes.Skill, wantRepo string) bool {
+	for _, pkg := range sk.Packages {
+		if pkg.RegistryType != "oci" || pkg.Identifier == "" {
+			continue
+		}
+		parsed, err := nameref.ParseReference(pkg.Identifier)
+		if err != nil {
+			continue
+		}
+		if canonicalOCIRepo(parsed) == wantRepo {
+			return true
+		}
+	}
+	return false
+}
+
+// firstGitPackageURL returns the git:// URL for the first usable git package
+// in pkgs, or "" if none is usable. The format follows gitresolver's parser:
+//
+//	git://host/owner/repo[@ref][#subfolder]
+//
+// Commit is preferred over Ref for reproducibility; both are optional.
+func firstGitPackageURL(pkgs []regtypes.SkillPackage) string {
+	for _, pkg := range pkgs {
+		if pkg.RegistryType != "git" || pkg.URL == "" {
+			continue
+		}
+		gitURL, err := buildGitReferenceFromRegistryURL(pkg.URL)
+		if err != nil {
+			continue
+		}
+		if ref := preferredGitRef(pkg); ref != "" {
+			gitURL += "@" + ref
+		}
+		if pkg.Subfolder != "" {
+			gitURL += "#" + pkg.Subfolder
+		}
+		return gitURL
+	}
+	return ""
+}
+
+// preferredGitRef returns the ref to pin the git fallback to. Commit is
+// preferred over branch/tag for reproducibility because the registry records
+// both when available.
+func preferredGitRef(pkg regtypes.SkillPackage) string {
+	if pkg.Commit != "" {
+		return pkg.Commit
+	}
+	return pkg.Ref
+}
+
 // resolveRegistryPackages selects the best installable package from a registry
 // entry. OCI packages are preferred; git is the fallback.
 func resolveRegistryPackages(name string, packages []regtypes.SkillPackage) (*registryResolveResult, error) {

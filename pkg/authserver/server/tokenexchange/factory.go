@@ -1,0 +1,49 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package tokenexchange
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/ory/fosite"
+	"github.com/ory/fosite/handler/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server"
+)
+
+// Factory returns a server.Factory that creates a token exchange Handler.
+// The delegationLifespan parameter sets the maximum lifetime for delegated tokens;
+// the actual lifetime is the minimum of this value and the subject token's remaining lifetime.
+func Factory(delegationLifespan time.Duration) server.Factory {
+	return func(config *server.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
+		validator, err := NewSubjectTokenValidator(config.SigningJWKS, config.GetAccessTokenIssuer())
+		if err != nil {
+			return nil, fmt.Errorf("tokenexchange: failed to create subject token validator: %w", err)
+		}
+
+		// Use the embedded *fosite.Config for HandleHelper and handlerConfig
+		// because AuthorizationServerConfig shadows GetAccessTokenLifespan() without
+		// a context parameter, which doesn't satisfy fosite's provider interfaces.
+		atStrategy, ok := strategy.(oauth2.AccessTokenStrategy)
+		if !ok {
+			return nil, fmt.Errorf("tokenexchange: strategy does not implement oauth2.AccessTokenStrategy (got %T)", strategy)
+		}
+		atStorage, ok := storage.(oauth2.AccessTokenStorage)
+		if !ok {
+			return nil, fmt.Errorf("tokenexchange: storage does not implement oauth2.AccessTokenStorage (got %T)", storage)
+		}
+		return &Handler{
+			HandleHelper: &oauth2.HandleHelper{
+				AccessTokenStrategy: atStrategy,
+				AccessTokenStorage:  atStorage,
+				Config:              config.Config,
+			},
+			validator:          validator,
+			delegationLifespan: delegationLifespan,
+			config:             config.Config,
+			allowedAudiences:   config.AllowedAudiences,
+		}, nil
+	}
+}

@@ -79,7 +79,7 @@ type AuthorizationServerConfig struct {
 // The strategy parameter is typed as any because fosite uses different strategy
 // interfaces for different flows (e.g., oauth2.CoreStrategy, openid.OpenIDConnectTokenStrategy)
 // that do not share a common base interface.
-type Factory func(config *AuthorizationServerConfig, storage fosite.Storage, strategy any) any
+type Factory func(config *AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error)
 
 // AuthorizationServerParams contains the configuration needed to create an AuthorizationServerConfig.
 // This is a minimal subset of the authserver.Config fields needed for OAuth2.
@@ -273,12 +273,15 @@ func NewAuthorizationServer(
 	storage fosite.Storage,
 	strategy any,
 	factories ...Factory,
-) fosite.OAuth2Provider {
+) (fosite.OAuth2Provider, error) {
 	fositeConfig := config.Config
 	provider := fosite.NewOAuth2Provider(storage, fositeConfig)
 
 	for _, factory := range factories {
-		result := factory(config, storage, strategy)
+		result, err := factory(config, storage, strategy)
+		if err != nil {
+			return nil, fmt.Errorf("authorization server factory failed: %w", err)
+		}
 
 		if ah, ok := result.(fosite.AuthorizeEndpointHandler); ok {
 			fositeConfig.AuthorizeEndpointHandlers.Append(ah)
@@ -301,7 +304,7 @@ func NewAuthorizationServer(
 		}
 	}
 
-	return provider
+	return provider, nil
 }
 
 // GetSigningKey returns the config's signing key.

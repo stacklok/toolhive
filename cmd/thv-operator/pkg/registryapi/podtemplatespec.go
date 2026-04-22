@@ -367,7 +367,7 @@ func BuildRegistryAPIContainer(image string) corev1.Container {
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: HealthCheckPath,
-					Port: intstr.FromInt32(RegistryAPIPort),
+					Port: intstr.FromInt32(RegistryAPIHealthPort),
 				},
 			},
 			InitialDelaySeconds: LivenessInitialDelay,
@@ -377,7 +377,7 @@ func BuildRegistryAPIContainer(image string) corev1.Container {
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: ReadinessCheckPath,
-					Port: intstr.FromInt32(RegistryAPIPort),
+					Port: intstr.FromInt32(RegistryAPIHealthPort),
 				},
 			},
 			InitialDelaySeconds: ReadinessInitialDelay,

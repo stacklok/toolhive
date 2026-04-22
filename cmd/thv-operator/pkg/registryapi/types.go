@@ -19,6 +19,11 @@ const (
 	RegistryAPIPort = 8080
 	// RegistryAPIPortName is the name assigned to the registry API port
 	RegistryAPIPortName = "http"
+	// RegistryAPIHealthPort is the port of the registry API's internal HTTP
+	// listener that serves liveness and readiness probes. Introduced in
+	// toolhive-registry-server v1.1.0 to separate probe traffic from the
+	// public API listener on RegistryAPIPort.
+	RegistryAPIHealthPort = 8081
 
 	// DefaultCPURequest is the default CPU request for the registry API container
 	DefaultCPURequest = "100m"

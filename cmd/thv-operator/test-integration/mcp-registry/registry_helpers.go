@@ -47,7 +47,6 @@ const (
 // registryBuilderConfig holds the configuration data used to generate configYAML
 type registryBuilderConfig struct {
 	SourceName   string
-	Format       string
 	SourceType   string
 	FilePath     string // for file sources: path inside the mounted volume
 	GitRepo      string
@@ -83,7 +82,6 @@ func (h *MCPRegistryTestHelper) NewRegistryBuilder(name string) *RegistryBuilder
 		},
 		config: registryBuilderConfig{
 			SourceName: "default",
-			Format:     "toolhive",
 		},
 	}
 }
@@ -121,12 +119,6 @@ func (rb *RegistryBuilder) WithRegistryName(name string) *RegistryBuilder {
 	if rb.config.SourceType == sourceTypeFile {
 		rb.config.FilePath = fmt.Sprintf("/config/registry/%s/registry.json", name)
 	}
-	return rb
-}
-
-// WithUpstreamFormat configures the source to use upstream MCP format
-func (rb *RegistryBuilder) WithUpstreamFormat() *RegistryBuilder {
-	rb.config.Format = "upstream"
 	return rb
 }
 
@@ -244,7 +236,6 @@ func (rb *RegistryBuilder) buildConfigYAML() string {
 	// Sources section
 	b.WriteString("sources:\n")
 	fmt.Fprintf(&b, "  - name: %s\n", rb.config.SourceName)
-	fmt.Fprintf(&b, "    format: %s\n", rb.config.Format)
 
 	// Source type specific fields
 	switch rb.config.SourceType {
@@ -336,15 +327,6 @@ func (h *MCPRegistryTestHelper) CreateBasicConfigMapRegistry(name, configMapName
 func (h *MCPRegistryTestHelper) CreateManualSyncRegistry(name, configMapName string) *mcpv1beta1.MCPRegistry {
 	return h.NewRegistryBuilder(name).
 		WithConfigMapSource(configMapName, "registry.json").
-		Create(h)
-}
-
-// CreateUpstreamFormatRegistry creates an MCPRegistry with upstream format
-func (h *MCPRegistryTestHelper) CreateUpstreamFormatRegistry(name, configMapName string) *mcpv1beta1.MCPRegistry {
-	return h.NewRegistryBuilder(name).
-		WithConfigMapSource(configMapName, "registry.json").
-		WithUpstreamFormat().
-		WithSyncPolicy("30m").
 		Create(h)
 }
 
@@ -494,18 +476,13 @@ func containsFinalizer(finalizers []string, _ string) bool {
 }
 
 // buildConfigYAMLForMultipleSources generates a configYAML string for multiple sources.
-// Each source is specified as a map with keys: name, format, sourceType, and type-specific fields.
+// Each source is specified as a map with keys: name, sourceType, and type-specific fields.
 func buildConfigYAMLForMultipleSources(sources []map[string]string) string {
 	var b strings.Builder
 
 	b.WriteString("sources:\n")
 	for _, src := range sources {
 		fmt.Fprintf(&b, "  - name: %s\n", src["name"])
-		format := src["format"]
-		if format == "" {
-			format = "toolhive"
-		}
-		fmt.Fprintf(&b, "    format: %s\n", format)
 
 		switch src["sourceType"] {
 		case sourceTypeFile:

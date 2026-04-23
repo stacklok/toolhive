@@ -571,6 +571,125 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 			},
 			expectErr: false,
 		},
+		{
+			name: "OAuth2 provider with valid DCRConfig (discoveryUrl only)",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-discovery",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with valid DCRConfig (registrationEndpoint only)",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-endpoint",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					Scopes:                []string{"openid"},
+					DCRConfig: &DCRUpstreamConfig{
+						RegistrationEndpoint: "https://idp.example.com/register",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with DCRConfig and non-empty ClientID",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-with-clientid",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					ClientID:              "pre-provisioned-id",
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "exactly one of clientId or dcrConfig must be set",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig specifying both endpoints",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-both-endpoints",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL:         "https://idp.example.com/.well-known/openid-configuration",
+						RegistrationEndpoint: "https://idp.example.com/register",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "exactly one of discoveryUrl or registrationEndpoint must be set",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig specifying neither endpoint",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-neither-endpoint",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig:             &DCRUpstreamConfig{},
+				},
+			},
+			expectErr: true,
+			errMsg:    "exactly one of discoveryUrl or registrationEndpoint must be set",
+		},
+		{
+			name: "OAuth2 provider with neither ClientID nor DCRConfig",
+			provider: UpstreamProviderConfig{
+				Name: "oauth2-missing-auth",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+				},
+			},
+			expectErr: true,
+			// Pin the scoped prefix so a rename of the oauth2Config label surfaces as a test failure.
+			errMsg: "oauth2Config: exactly one of clientId or dcrConfig must be set",
+		},
+		{
+			// Regression guard: conversion only maps DCRConfig in the OAuth2
+			// branch, so an OIDC-typed provider carrying OAuth2Config/DCRConfig
+			// must be rejected at validate time rather than silently dropped.
+			name: "OIDC provider with OAuth2Config carrying DCRConfig is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "mismatched-oidc",
+				Type: UpstreamProviderTypeOIDC,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "oidcConfig must be set when type is 'oidc' and must not be set otherwise",
+		},
 	}
 
 	for _, tt := range tests {

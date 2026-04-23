@@ -49,6 +49,12 @@ type RunConfig struct {
 	// SchemaVersion is the version of the RunConfig schema
 	SchemaVersion string `json:"schema_version" yaml:"schema_version"`
 
+	// MCPServerGeneration is the K8s .metadata.generation of the MCPServer CR that rendered
+	// this RunConfig. The Kubernetes runtime uses it as a monotonic version to prevent stale
+	// rolling-update pods from overwriting a newer RunConfig's StatefulSet apply. Zero value
+	// means unversioned (backward-compat with older operators, or non-operator callers).
+	MCPServerGeneration int64 `json:"mcpserver_generation,omitempty" yaml:"mcpserver_generation,omitempty"`
+
 	// Image is the Docker image to run
 	Image string `json:"image" yaml:"image"`
 

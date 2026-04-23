@@ -43,7 +43,6 @@ spec:
   configYAML: |
     sources:
       - name: private-repo
-        format: toolhive
         git:
           repository: https://github.com/your-org/private-mcp-registry
           branch: main

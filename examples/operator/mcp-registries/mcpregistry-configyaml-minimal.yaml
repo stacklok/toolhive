@@ -23,7 +23,6 @@ spec:
   configYAML: |
     sources:
       - name: k8s
-        format: upstream
         kubernetes: {}
     registries:
       - name: default

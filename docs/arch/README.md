@@ -91,7 +91,14 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Security model (archive safety, SSRF prevention, supply chain)
     - Skills vs MCP servers design rationale
 
-11. **[Local vMCP CLI Mode](vmcp-local.md)**
+11. **[vMCP Scalability Limits and Constraints](13-vmcp-scalability.md)**
+    - Per-pod session cache cap (1,000 sessions, LRU eviction)
+    - Session TTL and Redis sliding-window behavior
+    - File descriptor constraints and estimation
+    - Redis sizing, eviction policy, and persistence guidance
+    - Stateful backend data loss on pod restart
+
+12. **[Local vMCP CLI Mode](vmcp-local.md)**
     - `thv vmcp` CLI surface (`serve`, `validate`, `init`)
     - Zero-config quick mode and config-file workflow
     - Optimizer tier table (Tier 0–3: none, FTS5, TEI semantic, external service)
@@ -99,7 +106,7 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - ARM64/Apple Silicon Rosetta 2 emulation note
     - Migration guide from StacklokLabs/mcp-optimizer
 
-12. **[vMCP Library Embedding](vmcp-library.md)**
+13. **[vMCP Library Embedding](vmcp-library.md)**
     - Library embedding pattern and `brood-box` reference implementation
     - `pkg/vmcp/` stability table (Stable, Experimental, Internal per sub-package)
     - Stability declaration convention and how to use the table as a reviewer

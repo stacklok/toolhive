@@ -298,6 +298,247 @@ func TestGetContent(t *testing.T) {
 		assert.Empty(t, builds, "content API must not leak pulled artifacts into ListBuilds")
 	})
 
+	t.Run("unambiguous OCI falls back to registry-declared git package on pull failure", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		reg := ocimocks.NewMockRegistryClient(ctrl)
+		reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/stacklok/dockyard/skills/yara-rule-authoring:0.1.0").
+			Return(godigest.Digest(""), fmt.Errorf("registry unreachable"))
+
+		// Registry entry has both an OCI package (the one we just failed to
+		// pull) and a git package with pinned commit. The fallback should
+		// reach the git resolver.
+		lookup := regmocks.NewMockProvider(ctrl)
+		lookup.EXPECT().SearchSkills("yara-rule-authoring").Return([]regtypes.Skill{
+			{
+				Namespace: "io.github.stacklok",
+				Name:      "yara-rule-authoring",
+				Packages: []regtypes.SkillPackage{
+					{
+						RegistryType: "oci",
+						Identifier:   "ghcr.io/stacklok/dockyard/skills/yara-rule-authoring:0.1.0",
+					},
+					{
+						RegistryType: "git",
+						URL:          "https://github.com/trailofbits/skills",
+						Ref:          "e8cc5baf9329ccb491bfa200e82eacbac83b1ead",
+						Subfolder:    "plugins/yara-authoring/skills/yara-rule-authoring",
+					},
+				},
+			},
+		}, nil)
+
+		gr := gitmocks.NewMockResolver(ctrl)
+		gr.EXPECT().Resolve(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, ref *gitresolver.GitReference) (*gitresolver.ResolveResult, error) {
+				// Verify the fallback pinned ref and subfolder. Scheme depends on
+				// TOOLHIVE_DEV (http in dev, https in prod) so we only assert the
+				// suffix here.
+				assert.True(t, strings.HasSuffix(ref.URL, "://github.com/trailofbits/skills"),
+					"unexpected clone URL %q", ref.URL)
+				assert.Equal(t, "e8cc5baf9329ccb491bfa200e82eacbac83b1ead", ref.Ref)
+				assert.Equal(t, "plugins/yara-authoring/skills/yara-rule-authoring", ref.Path)
+				return &gitresolver.ResolveResult{
+					SkillConfig: &skills.ParseResult{
+						Name: "yara-rule-authoring",
+						Body: []byte("# YARA Rule Authoring"),
+					},
+					Files:      []gitresolver.FileEntry{{Path: "SKILL.md", Content: []byte("# YARA"), Mode: 0644}},
+					CommitHash: testCommitHash,
+				}, nil
+			})
+
+		svc := New(&storage.NoopSkillStore{},
+			WithOCIStore(ociStore),
+			WithRegistryClient(reg),
+			WithSkillLookup(lookup),
+			WithGitResolver(gr),
+		)
+		content, err := svc.GetContent(t.Context(), skills.ContentOptions{
+			Reference: "ghcr.io/stacklok/dockyard/skills/yara-rule-authoring:0.1.0",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "yara-rule-authoring", content.Name)
+		assert.Contains(t, content.Body, "YARA Rule Authoring")
+	})
+
+	t.Run("registry fallback tolerates different OCI version tag", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		reg := ocimocks.NewMockRegistryClient(ctrl)
+		reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-skill:v9").
+			Return(godigest.Digest(""), fmt.Errorf("manifest unknown"))
+
+		// The registry entry records :0.1.0 while the caller asked for :v9.
+		// Both resolve to the same repository path so the fallback must fire.
+		lookup := regmocks.NewMockProvider(ctrl)
+		lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
+			{
+				Namespace: "io.github.example",
+				Name:      "my-skill",
+				Packages: []regtypes.SkillPackage{
+					{RegistryType: "oci", Identifier: "ghcr.io/org/my-skill:0.1.0"},
+					{RegistryType: "git", URL: "https://github.com/example/repo"},
+				},
+			},
+		}, nil)
+
+		gr := gitmocks.NewMockResolver(ctrl)
+		gr.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(&gitresolver.ResolveResult{
+			SkillConfig: &skills.ParseResult{Name: "my-skill", Body: []byte("# git fallback")},
+			Files:       []gitresolver.FileEntry{{Path: "SKILL.md", Content: []byte("# x"), Mode: 0644}},
+			CommitHash:  testCommitHash,
+		}, nil)
+
+		svc := New(&storage.NoopSkillStore{},
+			WithOCIStore(ociStore),
+			WithRegistryClient(reg),
+			WithSkillLookup(lookup),
+			WithGitResolver(gr),
+		)
+		content, err := svc.GetContent(t.Context(), skills.ContentOptions{Reference: "ghcr.io/org/my-skill:v9"})
+		require.NoError(t, err)
+		assert.Equal(t, "my-skill", content.Name)
+	})
+
+	t.Run("OCI failure with registry match but no git package returns original error", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		reg := ocimocks.NewMockRegistryClient(ctrl)
+		reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-skill:v1").
+			Return(godigest.Digest(""), fmt.Errorf("registry offline"))
+
+		// Registry entry matches but only has an OCI package.
+		lookup := regmocks.NewMockProvider(ctrl)
+		lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
+			{
+				Namespace: "io.github.example",
+				Name:      "my-skill",
+				Packages: []regtypes.SkillPackage{
+					{RegistryType: "oci", Identifier: "ghcr.io/org/my-skill:v1"},
+				},
+			},
+		}, nil)
+
+		// Git resolver must NOT be invoked.
+		svc := New(&storage.NoopSkillStore{},
+			WithOCIStore(ociStore),
+			WithRegistryClient(reg),
+			WithSkillLookup(lookup),
+		)
+		_, err = svc.GetContent(t.Context(), skills.ContentOptions{Reference: "ghcr.io/org/my-skill:v1"})
+		require.Error(t, err)
+		assert.Equal(t, http.StatusBadGateway, httperr.Code(err))
+		assert.Contains(t, err.Error(), "registry offline")
+	})
+
+	t.Run("OCI failure with ambiguous registry matches skips git fallback", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		reg := ocimocks.NewMockRegistryClient(ctrl)
+		reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-skill:v1").
+			Return(godigest.Digest(""), fmt.Errorf("registry offline"))
+
+		// Two registry entries both point at the same repo path — ambiguous.
+		// We refuse to guess and propagate the original OCI error.
+		lookup := regmocks.NewMockProvider(ctrl)
+		lookup.EXPECT().SearchSkills("my-skill").Return([]regtypes.Skill{
+			{
+				Namespace: "io.github.alice",
+				Name:      "my-skill",
+				Packages: []regtypes.SkillPackage{
+					{RegistryType: "oci", Identifier: "ghcr.io/org/my-skill:v1"},
+					{RegistryType: "git", URL: "https://github.com/alice/repo"},
+				},
+			},
+			{
+				Namespace: "io.github.bob",
+				Name:      "my-skill",
+				Packages: []regtypes.SkillPackage{
+					{RegistryType: "oci", Identifier: "ghcr.io/org/my-skill:v2"},
+					{RegistryType: "git", URL: "https://github.com/bob/repo"},
+				},
+			},
+		}, nil)
+
+		// Git resolver must NOT be invoked.
+		svc := New(&storage.NoopSkillStore{},
+			WithOCIStore(ociStore),
+			WithRegistryClient(reg),
+			WithSkillLookup(lookup),
+		)
+		_, err = svc.GetContent(t.Context(), skills.ContentOptions{Reference: "ghcr.io/org/my-skill:v1"})
+		require.Error(t, err)
+		assert.Equal(t, http.StatusBadGateway, httperr.Code(err))
+		assert.Contains(t, err.Error(), "registry offline")
+	})
+
+	t.Run("OCI success skips registry lookup entirely", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+		indexDigest := buildTestArtifact(t, ociStore, "my-skill", "2.0.0")
+
+		reg := ocimocks.NewMockRegistryClient(ctrl)
+		reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-skill:v2").
+			Return(indexDigest, nil)
+
+		// lookup mock with NO expectations — gomock will fail the test if
+		// SearchSkills is ever invoked.
+		lookup := regmocks.NewMockProvider(ctrl)
+
+		svc := New(&storage.NoopSkillStore{},
+			WithOCIStore(ociStore),
+			WithRegistryClient(reg),
+			WithSkillLookup(lookup),
+		)
+		_, err = svc.GetContent(t.Context(), skills.ContentOptions{Reference: "ghcr.io/org/my-skill:v2"})
+		require.NoError(t, err)
+	})
+
+	t.Run("registry lookup error treated as no fallback, returns original OCI error", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+
+		ociStore, err := ociskills.NewStore(t.TempDir())
+		require.NoError(t, err)
+
+		reg := ocimocks.NewMockRegistryClient(ctrl)
+		reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-skill:v1").
+			Return(godigest.Digest(""), fmt.Errorf("registry offline"))
+
+		lookup := regmocks.NewMockProvider(ctrl)
+		lookup.EXPECT().SearchSkills("my-skill").Return(nil, fmt.Errorf("registry index unreachable"))
+
+		svc := New(&storage.NoopSkillStore{},
+			WithOCIStore(ociStore),
+			WithRegistryClient(reg),
+			WithSkillLookup(lookup),
+		)
+		_, err = svc.GetContent(t.Context(), skills.ContentOptions{Reference: "ghcr.io/org/my-skill:v1"})
+		require.Error(t, err)
+		assert.Equal(t, http.StatusBadGateway, httperr.Code(err))
+		assert.Contains(t, err.Error(), "registry offline")
+	})
+
 	t.Run("qualified namespace/name filters registry matches", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)

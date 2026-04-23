@@ -5409,6 +5409,26 @@ const docTemplate = `{
                         },
                         "description": "Bad Request"
                     },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized (registry refused credentials)"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found (artifact not present in registry)"
+                    },
                     "409": {
                         "content": {
                             "application/json": {
@@ -5418,6 +5438,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "Conflict"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Too Many Requests (registry rate limit)"
                     },
                     "500": {
                         "content": {
@@ -5437,7 +5467,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Bad Gateway"
+                        "description": "Bad Gateway (upstream registry failure)"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Gateway Timeout (upstream pull timed out)"
                     }
                 },
                 "summary": "Install a skill",
@@ -5625,6 +5665,36 @@ const docTemplate = `{
                         },
                         "description": "Bad Request"
                     },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized (registry refused credentials)"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found (artifact not present in registry)"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Too Many Requests (registry rate limit)"
+                    },
                     "500": {
                         "content": {
                             "application/json": {
@@ -5643,7 +5713,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Bad Gateway"
+                        "description": "Bad Gateway (upstream registry or git resolver failure)"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Gateway Timeout (upstream pull timed out)"
                     }
                 },
                 "summary": "Get skill content",

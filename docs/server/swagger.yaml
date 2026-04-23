@@ -372,8 +372,8 @@ components:
         subject_token_type:
           description: |-
             SubjectTokenType specifies the type of the subject token being exchanged.
-            Common values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.
-            If empty, defaults to tokenTypeAccessToken.
+            Common values: oauth.TokenTypeAccessToken (default), oauth.TokenTypeIDToken, oauth.TokenTypeJWT.
+            If empty, defaults to oauth.TokenTypeAccessToken.
           type: string
         token_url:
           description: TokenURL is the OAuth 2.0 token endpoint URL
@@ -1182,6 +1182,13 @@ components:
             K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template
             Only applicable when using Kubernetes runtime
           type: string
+        mcpserver_generation:
+          description: |-
+            MCPServerGeneration is the K8s .metadata.generation of the MCPServer CR that rendered
+            this RunConfig. The Kubernetes runtime uses it as a monotonic version to prevent stale
+            rolling-update pods from overwriting a newer RunConfig's StatefulSet apply. Zero value
+            means unversioned (backward-compat with older operators, or non-operator callers).
+          type: integer
         middleware_configs:
           description: |-
             MiddlewareConfigs contains the list of middleware to apply to the transport
@@ -4330,12 +4337,30 @@ paths:
               schema:
                 type: string
           description: Bad Request
+        "401":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Unauthorized (registry refused credentials)
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found (artifact not present in registry)
         "409":
           content:
             application/json:
               schema:
                 type: string
           description: Conflict
+        "429":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Too Many Requests (registry rate limit)
         "500":
           content:
             application/json:
@@ -4347,7 +4372,13 @@ paths:
             application/json:
               schema:
                 type: string
-          description: Bad Gateway
+          description: Bad Gateway (upstream registry failure)
+        "504":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Gateway Timeout (upstream pull timed out)
       summary: Install a skill
       tags:
       - skills
@@ -4566,6 +4597,24 @@ paths:
               schema:
                 type: string
           description: Bad Request
+        "401":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Unauthorized (registry refused credentials)
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found (artifact not present in registry)
+        "429":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Too Many Requests (registry rate limit)
         "500":
           content:
             application/json:
@@ -4577,7 +4626,13 @@ paths:
             application/json:
               schema:
                 type: string
-          description: Bad Gateway
+          description: Bad Gateway (upstream registry or git resolver failure)
+        "504":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Gateway Timeout (upstream pull timed out)
       summary: Get skill content
       tags:
       - skills

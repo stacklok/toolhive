@@ -18,6 +18,12 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
+// vmcpEndpointURL returns the MCP endpoint URL for a vMCP serve process
+// listening on the given port.
+func vmcpEndpointURL(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
+}
+
 // allocateVMCPPort returns a free TCP port on 127.0.0.1 for use by thv vmcp serve.
 func allocateVMCPPort() int {
 	l, err := net.Listen("tcp", "127.0.0.1:0")

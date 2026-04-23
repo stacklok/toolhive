@@ -49,6 +49,15 @@ const (
 	defaultNamespace = "default"
 	// serviceFieldManager is the field manager name for server-side apply operations
 	serviceFieldManager = "toolhive-container-manager"
+
+	// RunConfigMCPServerGenerationAnnotation carries the MCPServer .metadata.generation that
+	// produced the RunConfig applied to this StatefulSet. Used as a monotonic version stamp
+	// to prevent stale proxyrunner pods (from an old Deployment ReplicaSet) from clobbering
+	// a newer RunConfig's apply. The gate only becomes effective once proxyrunner is upgraded
+	// to a version that reads this annotation; operator-only upgrades leave the race window
+	// in place until proxyrunner is also rolled. Exported because it forms a wire contract
+	// that external readers (operator, diagnostic tooling) may consume.
+	RunConfigMCPServerGenerationAnnotation = "toolhive.stacklok.dev/mcpserver-generation"
 )
 
 // RuntimeName is the name identifier for the Kubernetes runtime
@@ -397,22 +406,26 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		return 0, err
 	}
 
-	// Create an apply configuration for the statefulset
-	statefulSetApply := appsv1apply.StatefulSet(containerName, namespace).
-		WithLabels(containerLabels).
-		WithSpec(buildStatefulSetSpec(containerName, podTemplateSpec, options))
-
-	// Apply the statefulset using server-side apply
-	createdStatefulSet, err := c.client.AppsV1().StatefulSets(namespace).
-		Apply(ctx, statefulSetApply, metav1.ApplyOptions{
-			FieldManager: serviceFieldManager,
-			Force:        true,
-		})
+	ourGen := runConfigGeneration(options)
+	skip, err := c.shouldSkipStatefulSetApply(ctx, namespace, containerName, ourGen)
 	if err != nil {
-		return 0, fmt.Errorf("failed to apply statefulset: %w", err)
+		return 0, err
+	}
+	if skip {
+		// Intentionally skip ensureBackendServices in the gated path: this pod's RunConfig
+		// is stale, so reconciling services here would clobber port/config fields set by
+		// the newer-generation pod under the same field manager + Force: true — the same
+		// race this gate prevents for the StatefulSet. The newer pod already reconciled
+		// services; if that failed, it returns an error and retries on its own.
+		return 0, nil
 	}
 
-	slog.Debug("applied statefulset", "name", createdStatefulSet.Name)
+	createdStatefulSet, err := c.applyStatefulSet(
+		ctx, namespace, containerName, containerLabels, podTemplateSpec, options, ourGen,
+	)
+	if err != nil {
+		return 0, err
+	}
 
 	err = c.ensureBackendServices(
 		ctx, containerName, namespace, containerLabels, transportType, options, createdStatefulSet)
@@ -433,6 +446,84 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	}
 
 	return 0, nil
+}
+
+// runConfigGeneration extracts the RunConfig MCPServer generation from options,
+// returning 0 when options is nil (backward-compat / non-operator callers).
+func runConfigGeneration(options *runtime.DeployWorkloadOptions) int64 {
+	if options == nil {
+		return 0
+	}
+	return options.RunConfigMCPServerGeneration
+}
+
+// applyStatefulSet stamps the MCPServer generation annotation when non-zero,
+// builds the StatefulSet apply configuration, and performs the server-side apply.
+func (c *Client) applyStatefulSet(
+	ctx context.Context,
+	namespace, containerName string,
+	containerLabels map[string]string,
+	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
+	options *runtime.DeployWorkloadOptions,
+	ourGen int64,
+) (*appsv1.StatefulSet, error) {
+	if ourGen > 0 {
+		podTemplateSpec = podTemplateSpec.WithAnnotations(map[string]string{
+			RunConfigMCPServerGenerationAnnotation: strconv.FormatInt(ourGen, 10),
+		})
+	}
+	statefulSetApply := appsv1apply.StatefulSet(containerName, namespace).
+		WithLabels(containerLabels).
+		WithSpec(buildStatefulSetSpec(containerName, podTemplateSpec, options))
+	createdStatefulSet, err := c.client.AppsV1().StatefulSets(namespace).
+		Apply(ctx, statefulSetApply, metav1.ApplyOptions{
+			FieldManager: serviceFieldManager,
+			Force:        true,
+		})
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply statefulset: %w", err)
+	}
+	slog.Debug("applied statefulset", "name", createdStatefulSet.Name)
+	return createdStatefulSet, nil
+}
+
+// shouldSkipStatefulSetApply returns true when the existing StatefulSet is already
+// stamped with a strictly greater MCPServer generation than ours, meaning a newer
+// proxyrunner pod has already reconciled the workload and ours would be a regression.
+// Returns false (apply as normal) when ourGen is zero or negative, when the StatefulSet
+// does not yet exist, when the annotation is absent, or when the annotation is unparsable.
+func (c *Client) shouldSkipStatefulSetApply(
+	ctx context.Context, namespace, name string, ourGen int64,
+) (bool, error) {
+	if ourGen <= 0 {
+		return false, nil
+	}
+	existing, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to get existing statefulset: %w", err)
+	}
+	if existing.Spec.Template.Annotations == nil {
+		return false, nil
+	}
+	theirs := existing.Spec.Template.Annotations[RunConfigMCPServerGenerationAnnotation]
+	if theirs == "" {
+		return false, nil
+	}
+	theirsGen, parseErr := strconv.ParseInt(theirs, 10, 64)
+	if parseErr != nil {
+		slog.Warn("unparsable mcpserver-generation annotation; proceeding with apply",
+			"sts", name, "value", theirs, "err", parseErr)
+		return false, nil
+	}
+	if theirsGen > ourGen {
+		slog.Debug("skipping StatefulSet apply; newer MCPServer generation already applied",
+			"sts", name, "ours", ourGen, "theirs", theirsGen)
+		return true, nil
+	}
+	return false, nil
 }
 
 // buildStatefulSetSpec constructs the StatefulSet spec apply configuration.

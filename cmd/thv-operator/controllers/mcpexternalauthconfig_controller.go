@@ -177,19 +177,13 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 		logger.Info("Triggering reconciliation of MCPServer due to MCPExternalAuthConfig change",
 			"mcpserver", server.Name, "externalAuthConfig", externalAuthConfig.Name)
 
-		// Use an optimistic-lock merge patch rather than Update so we do not
-		// silently overwrite spec fields (e.g. spec.authzConfig) that are owned
-		// by another controller. The resourceVersion is sent, so concurrent
-		// writers cause a 409 Conflict and a clean requeue.
-		original := server.DeepCopy()
-		// Add an annotation to the MCPServer to trigger reconciliation
-		if server.Annotations == nil {
-			server.Annotations = make(map[string]string)
-		}
-		server.Annotations["toolhive.stacklok.dev/externalauthconfig-hash"] = configHash
-
-		if err := r.Patch(ctx, &server,
-			client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
+		// Add an annotation to the MCPServer to trigger reconciliation.
+		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, &server, func(m *mcpv1beta1.MCPServer) {
+			if m.Annotations == nil {
+				m.Annotations = make(map[string]string)
+			}
+			m.Annotations["toolhive.stacklok.dev/externalauthconfig-hash"] = configHash
+		}); err != nil {
 			logger.Error(err, "Failed to patch MCPServer annotation", "mcpserver", server.Name)
 			// Continue with other servers even if one fails
 		}

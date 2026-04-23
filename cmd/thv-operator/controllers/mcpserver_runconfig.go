@@ -144,6 +144,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 	options := []runner.RunConfigBuilderOption{
 		runner.WithName(m.Name),
 		runner.WithImage(m.Spec.Image),
+		runner.WithMCPServerGeneration(m.Generation),
 		runner.WithCmdArgs(m.Spec.Args),
 		runner.WithTransportAndPorts(m.Spec.Transport, int(m.GetProxyPort()), int(m.GetMCPPort())),
 		runner.WithProxyMode(transporttypes.ProxyMode(effectiveProxyMode)),

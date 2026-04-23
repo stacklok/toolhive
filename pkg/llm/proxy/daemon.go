@@ -50,7 +50,11 @@ func isRunningAt(pidPath string) (bool, int, error) {
 	if err != nil {
 		return false, 0, fmt.Errorf("parsing PID file: %w", err)
 	}
-	return processAlive(pid), pid, nil
+	alive, err := process.FindProcess(pid)
+	if err != nil {
+		return false, 0, fmt.Errorf("checking process liveness: %w", err)
+	}
+	return alive, pid, nil
 }
 
 // Stop sends SIGTERM to the running proxy and removes the PID file.
@@ -144,6 +148,10 @@ func startDetachedAt(pidPath, logPath, execPath string, debug bool) (int, error)
 	childPID := cmd.Process.Pid
 
 	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(childPID)), 0600); err != nil {
+		// Kill the child so it doesn't run unmanaged without a PID file.
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			slog.Warn("failed to kill orphaned LLM proxy process", "pid", childPID, "error", killErr)
+		}
 		return 0, fmt.Errorf("writing PID file: %w", err)
 	}
 

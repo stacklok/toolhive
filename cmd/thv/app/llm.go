@@ -253,6 +253,9 @@ full log output (useful for debugging).`,
 			if !llmCfg.IsConfigured() {
 				return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
 			}
+			if err := llmCfg.Validate(); err != nil {
+				return fmt.Errorf("LLM gateway configuration is invalid: %w", err)
+			}
 
 			if foreground || process.IsDetached() {
 				llmCfgCopy := llmCfg

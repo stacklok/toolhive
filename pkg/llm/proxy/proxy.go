@@ -42,7 +42,7 @@ func New(cfg *llm.Config, ts TokenSource) (*Proxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid gateway URL %q: %w", cfg.GatewayURL, err)
 	}
-	listenAddr := fmt.Sprintf("127.0.0.1:%d", cfg.Proxy.ListenPort)
+	listenAddr := fmt.Sprintf("127.0.0.1:%d", cfg.EffectiveProxyPort())
 	if err := checkLoopback(listenAddr); err != nil {
 		return nil, err
 	}

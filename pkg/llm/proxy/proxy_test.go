@@ -31,6 +31,18 @@ func (s *stubTokenSource) Token(_ context.Context) (string, error) {
 	return s.token, s.err
 }
 
+// freePort returns an available TCP port on loopback.
+// It binds then immediately closes to discover the port number; there is a
+// small TOCTOU window before the caller binds, which is acceptable in tests.
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := l.Addr().(*net.TCPAddr).Port
+	require.NoError(t, l.Close())
+	return port
+}
+
 func TestCheckLoopback(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -61,7 +73,7 @@ func TestNew_ValidConfig(t *testing.T) {
 	t.Parallel()
 	cfg := &llm.Config{
 		GatewayURL: "https://gateway.example.com",
-		Proxy:      llm.ProxyConfig{ListenPort: 0},
+		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
 	}
 	p, err := New(cfg, &stubTokenSource{token: "tok"})
 	require.NoError(t, err)
@@ -85,7 +97,7 @@ func TestHandler_InjectsToken(t *testing.T) {
 
 	cfg := &llm.Config{
 		GatewayURL: gateway.URL,
-		Proxy:      llm.ProxyConfig{ListenPort: 0},
+		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
 	}
 	p, err := New(cfg, &stubTokenSource{token: "fresh-token-abc"})
 	require.NoError(t, err)
@@ -112,7 +124,7 @@ func TestHandler_StripsIncomingAuthorization(t *testing.T) {
 
 	cfg := &llm.Config{
 		GatewayURL: gateway.URL,
-		Proxy:      llm.ProxyConfig{ListenPort: 0},
+		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
 	}
 	p, err := New(cfg, &stubTokenSource{token: "injected"})
 	require.NoError(t, err)
@@ -132,7 +144,7 @@ func TestHandler_Returns502OnTokenError(t *testing.T) {
 	t.Parallel()
 	cfg := &llm.Config{
 		GatewayURL: "https://gateway.example.com",
-		Proxy:      llm.ProxyConfig{ListenPort: 0},
+		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
 	}
 	p, err := New(cfg, &stubTokenSource{err: errors.New("token unavailable")})
 	require.NoError(t, err)
@@ -152,7 +164,7 @@ func startTestProxy(t *testing.T, gatewayURL string) string {
 	t.Helper()
 	cfg := &llm.Config{
 		GatewayURL: gatewayURL,
-		Proxy:      llm.ProxyConfig{ListenPort: 0},
+		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
 	}
 	p, err := New(cfg, &stubTokenSource{token: "test-token"})
 	require.NoError(t, err)

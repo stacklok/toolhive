@@ -6,18 +6,11 @@
 package proxy
 
 import (
-	"os"
 	"syscall"
 )
 
-func processAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
-}
-
+// getSysProcAttr returns Unix-specific SysProcAttr that creates a new session,
+// detaching the child process from the terminal.
 func getSysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setsid: true}
 }

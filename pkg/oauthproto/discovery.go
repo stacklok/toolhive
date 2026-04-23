@@ -122,7 +122,7 @@ func buildDiscoveryURLs(issuer string) ([]string, error) {
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return nil, fmt.Errorf("invalid issuer URL: scheme and host are required")
 	}
-	if parsed.Scheme != "https" && !IsLoopbackHost(parsed.Host) {
+	if parsed.Scheme != schemeHTTPS && !IsLoopbackHost(parsed.Host) {
 		return nil, fmt.Errorf("issuer must use https (got %q)", parsed.Scheme)
 	}
 
@@ -174,6 +174,69 @@ func buildDiscoveryHTTPClient(client *http.Client) *http.Client {
 			ResponseHeaderTimeout: 5 * time.Second,
 		},
 	}
+}
+
+// FetchAuthorizationServerMetadataFromURL fetches RFC 8414 authorization
+// server metadata from a single caller-supplied URL, bypassing the
+// well-known-path fallback used by FetchAuthorizationServerMetadata.
+//
+// It is intended for cases where the operator has configured an explicit
+// discovery document URL (for example a multi-tenant IdP that does not
+// advertise the tenant-aware path at {issuer}/.well-known/...). The same
+// RFC 8414 §3.3 issuer-equality check is enforced: the returned metadata's
+// issuer field must exactly match the caller-supplied expectedIssuer.
+//
+// If client is nil, the same bounded default client used by
+// FetchAuthorizationServerMetadata is constructed. A 10 s per-call timeout
+// is applied via context.WithTimeout regardless of the caller's context
+// deadline.
+//
+// Return contract mirrors FetchAuthorizationServerMetadata:
+//
+//   - On full success, returns (metadata, nil) with a non-empty
+//     RegistrationEndpoint.
+//   - When the document is otherwise valid but omits
+//     registration_endpoint, returns (metadata, ErrRegistrationEndpointMissing).
+//     The metadata is non-nil so callers can reuse the other fields.
+//   - On any other failure (transport/decode error, issuer mismatch),
+//     returns (nil, err).
+func FetchAuthorizationServerMetadataFromURL(
+	ctx context.Context,
+	discoveryURL string,
+	expectedIssuer string,
+	client *http.Client,
+) (*AuthorizationServerMetadata, error) {
+	if discoveryURL == "" {
+		return nil, fmt.Errorf("discovery URL is required")
+	}
+	if expectedIssuer == "" {
+		return nil, fmt.Errorf("expected issuer is required")
+	}
+
+	parsed, err := url.Parse(discoveryURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid discovery URL: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("invalid discovery URL: scheme and host are required")
+	}
+	if parsed.Scheme != schemeHTTPS && !IsLoopbackHost(parsed.Host) {
+		return nil, fmt.Errorf("discovery URL must use https (got %q)", parsed.Scheme)
+	}
+
+	httpClient := buildDiscoveryHTTPClient(client)
+
+	fetchCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	defer cancel()
+
+	metadata, err := fetchDiscoveryDocument(fetchCtx, httpClient, discoveryURL, expectedIssuer)
+	if err != nil {
+		return nil, fmt.Errorf("fetch discovery document from %q: %w", discoveryURL, err)
+	}
+	if metadata.RegistrationEndpoint == "" {
+		return metadata, ErrRegistrationEndpointMissing
+	}
+	return metadata, nil
 }
 
 // fetchDiscoveryDocument performs a single GET against a discovery URL and

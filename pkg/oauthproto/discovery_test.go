@@ -379,3 +379,170 @@ func TestFetchAuthorizationServerMetadata_MissingRegistrationEndpoint(t *testing
 	assert.Equal(t, issuer+"/token", metadata.TokenEndpoint)
 	assert.Empty(t, metadata.RegistrationEndpoint)
 }
+
+func TestFetchAuthorizationServerMetadataFromURL(t *testing.T) {
+	t.Parallel()
+
+	var issuer string
+	var wellKnownHits int32
+	var customHits int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(_ http.ResponseWriter, _ *http.Request) {
+		// Tripwire — must not be contacted when caller pins an exact URL.
+		wellKnownHits++
+	})
+	mux.HandleFunc("/tenants/acme/metadata", func(w http.ResponseWriter, _ *http.Request) {
+		customHits++
+		md := AuthorizationServerMetadata{
+			Issuer:                issuer,
+			AuthorizationEndpoint: issuer + "/authorize",
+			TokenEndpoint:         issuer + "/token",
+			JWKSURI:               issuer + "/jwks",
+			RegistrationEndpoint:  issuer + "/register",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(md)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	issuer = server.URL
+
+	metadata, err := FetchAuthorizationServerMetadataFromURL(
+		context.Background(),
+		issuer+"/tenants/acme/metadata",
+		issuer,
+		server.Client(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, metadata)
+	assert.Equal(t, issuer, metadata.Issuer)
+	assert.Equal(t, issuer+"/register", metadata.RegistrationEndpoint)
+	assert.EqualValues(t, 1, customHits, "caller-supplied discovery URL must be fetched exactly once")
+	assert.EqualValues(t, 0, wellKnownHits, "well-known fallback must not be contacted")
+}
+
+func TestFetchAuthorizationServerMetadataFromURL_IssuerMismatchRejected(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		md := AuthorizationServerMetadata{
+			Issuer:               "https://different.example.com",
+			TokenEndpoint:        "https://different.example.com/token",
+			RegistrationEndpoint: "https://different.example.com/register",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(md)
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := FetchAuthorizationServerMetadataFromURL(
+		context.Background(),
+		server.URL+"/metadata",
+		server.URL, // expected issuer disagrees with server-advertised issuer
+		server.Client(),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "issuer mismatch")
+}
+
+func TestFetchAuthorizationServerMetadataFromURL_MissingRegistrationEndpoint(t *testing.T) {
+	t.Parallel()
+
+	var issuer string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		md := AuthorizationServerMetadata{
+			Issuer:        issuer,
+			TokenEndpoint: issuer + "/token",
+			// RegistrationEndpoint intentionally omitted.
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(md)
+	}))
+	t.Cleanup(server.Close)
+	issuer = server.URL
+
+	metadata, err := FetchAuthorizationServerMetadataFromURL(
+		context.Background(),
+		issuer+"/metadata",
+		issuer,
+		server.Client(),
+	)
+	require.ErrorIs(t, err, ErrRegistrationEndpointMissing)
+	require.NotNil(t, metadata)
+	assert.Equal(t, issuer, metadata.Issuer)
+	assert.Equal(t, issuer+"/token", metadata.TokenEndpoint)
+	assert.Empty(t, metadata.RegistrationEndpoint)
+}
+
+func TestFetchAuthorizationServerMetadataFromURL_InputValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		discoveryURL string
+		issuer       string
+		wantErrMsg   string
+	}{
+		{
+			name:         "empty discovery URL",
+			discoveryURL: "",
+			issuer:       "https://example.com",
+			wantErrMsg:   "discovery URL is required",
+		},
+		{
+			name:         "empty issuer",
+			discoveryURL: "https://example.com/metadata",
+			issuer:       "",
+			wantErrMsg:   "expected issuer is required",
+		},
+		{
+			name:         "http non-loopback discovery URL rejected",
+			discoveryURL: "http://example.com/metadata",
+			issuer:       "http://example.com",
+			wantErrMsg:   "discovery URL must use https",
+		},
+		{
+			name:         "missing scheme",
+			discoveryURL: "example.com/metadata",
+			issuer:       "https://example.com",
+			wantErrMsg:   "scheme and host are required",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := FetchAuthorizationServerMetadataFromURL(
+				context.Background(), tc.discoveryURL, tc.issuer, nil,
+			)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErrMsg)
+		})
+	}
+}
+
+func TestFetchAuthorizationServerMetadataFromURL_AllowsLoopbackHTTP(t *testing.T) {
+	t.Parallel()
+
+	var issuer string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		md := AuthorizationServerMetadata{
+			Issuer:               issuer,
+			TokenEndpoint:        issuer + "/token",
+			RegistrationEndpoint: issuer + "/register",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(md)
+	}))
+	t.Cleanup(server.Close)
+	issuer = server.URL
+
+	metadata, err := FetchAuthorizationServerMetadataFromURL(
+		context.Background(),
+		issuer+"/metadata",
+		issuer,
+		server.Client(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, metadata)
+	assert.Equal(t, issuer, metadata.Issuer)
+}

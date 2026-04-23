@@ -199,7 +199,7 @@ func validateRegistrationEndpoint(registrationEndpoint string) (*url.URL, error)
 	}
 
 	// Ensure HTTPS for security (except loopback addresses for development)
-	if registrationURL.Scheme != "https" && !IsLoopbackHost(registrationURL.Host) {
+	if registrationURL.Scheme != schemeHTTPS && !IsLoopbackHost(registrationURL.Host) {
 		return nil, fmt.Errorf("registration endpoint must use HTTPS: %s", registrationEndpoint)
 	}
 
@@ -263,12 +263,19 @@ func createHTTPRequest(
 	return req, nil
 }
 
-// buildHTTPClient returns the caller-supplied client, or a default client if nil.
-func buildHTTPClient(client *http.Client) *http.Client {
-	if client != nil {
-		return client
-	}
-
+// NewDefaultDCRClient returns the canonical bounded *http.Client used by
+// RegisterClientDynamically when its caller does not supply one. It is
+// exported so callers that need to wrap the transport (for example, to
+// inject an RFC 7591 initial access token as an Authorization header) can
+// reuse the same timeout policy and benefit automatically from any future
+// tightening of these bounds.
+//
+// Timeouts:
+//
+//   - Overall request timeout: 30 s
+//   - TLS handshake timeout: 10 s
+//   - Response-header timeout: 10 s
+func NewDefaultDCRClient() *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
@@ -276,6 +283,14 @@ func buildHTTPClient(client *http.Client) *http.Client {
 			ResponseHeaderTimeout: 10 * time.Second,
 		},
 	}
+}
+
+// buildHTTPClient returns the caller-supplied client, or a default client if nil.
+func buildHTTPClient(client *http.Client) *http.Client {
+	if client != nil {
+		return client
+	}
+	return NewDefaultDCRClient()
 }
 
 // handleHTTPResponse handles the HTTP response and validates it.

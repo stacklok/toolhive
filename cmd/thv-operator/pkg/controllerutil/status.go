@@ -56,13 +56,17 @@ import (
 //     refresh the object via a fresh Get before calling this helper.
 //
 // Do NOT use for metadata or spec writes. Those need optimistic locking
-// and should call r.Patch directly with
-// client.MergeFromWithOptions(orig, client.MergeFromWithOptimisticLock{}).
+// via the sibling helper MutateAndPatchSpec.
 // Rationale and MCPServer spec migration: #4767 (tracking), #4914 (implementation).
+//
+// If Patch returns an error, obj has already been mutated; callers must
+// re-fetch obj before retrying rather than reusing the modified in-memory
+// copy. The standard reconciler pattern — returning the error so
+// controller-runtime requeues with a fresh Get — is the correct retry path.
 //
 // Typical usage:
 //
-//	err := controllerutil.MutateAndPatchStatus(ctx, r.Client, mcpServer,
+//	err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, mcpServer,
 //	    func(s *mcpv1alpha1.MCPServer) {
 //	        meta.SetStatusCondition(&s.Status.Conditions, metav1.Condition{
 //	            Type:   mcpv1alpha1.ConditionReady,

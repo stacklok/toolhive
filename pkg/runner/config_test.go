@@ -2532,3 +2532,52 @@ func TestRunConfig_SessionRedis(t *testing.T) {
 		assert.Equal(t, "redis:6379", got.ScalingConfig.SessionRedis.Address)
 	})
 }
+
+func TestRunConfig_MCPServerGenerationJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("preserves non-zero value", func(t *testing.T) {
+		t.Parallel()
+		cfg := NewRunConfig()
+		cfg.Name = "generation-server"
+		cfg.MCPServerGeneration = 42
+
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		assert.Equal(t, int64(42), got.MCPServerGeneration,
+			"MCPServerGeneration not preserved: got %d, want 42", got.MCPServerGeneration)
+	})
+
+	t.Run("missing field decodes as zero", func(t *testing.T) {
+		t.Parallel()
+		minimalJSON := `{"schema_version":"v0.1.0","image":"img","name":"n","transport":"stdio","host":"127.0.0.1","port":8080,"permission_profile":null}` //nolint:lll
+
+		got, err := ReadJSON(strings.NewReader(minimalJSON))
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), got.MCPServerGeneration,
+			"MCPServerGeneration should be zero when missing, got %d", got.MCPServerGeneration)
+	})
+
+	t.Run("omitempty omits zero value", func(t *testing.T) {
+		t.Parallel()
+		// With the int64 type and `omitempty`, a zero MCPServerGeneration must not
+		// appear in the marshaled JSON. This is the key property that makes ConfigMap
+		// checksums deterministic across reconciles for unversioned (CLI) callers.
+		cfg := NewRunConfig()
+		cfg.Name = "zero-generation"
+
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+		assert.False(t, bytes.Contains(buf.Bytes(), []byte("mcpserver_generation")),
+			"zero MCPServerGeneration should be omitted from JSON output; got:\n%s", buf.String())
+
+		// Round-trip: absent field decodes back to zero.
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), got.MCPServerGeneration,
+			"decoded missing field should be zero, got %d", got.MCPServerGeneration)
+	})
+}

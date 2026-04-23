@@ -1782,3 +1782,34 @@ func TestCreateRunConfigFromMCPServer_RateLimiting(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateRunConfigFromMCPServer_SetsMCPServerGeneration(t *testing.T) {
+	t.Parallel()
+
+	m := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "generation-server",
+			Namespace:  "default",
+			Generation: 7,
+		},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image:     "ghcr.io/example/mcp:v1",
+			Transport: stdioTransport,
+			ProxyPort: 8080,
+		},
+	}
+
+	r := newTestMCPServerReconciler(
+		fake.NewClientBuilder().WithScheme(createRunConfigTestScheme()).WithObjects(m).Build(),
+		createRunConfigTestScheme(),
+		kubernetes.PlatformKubernetes,
+	)
+
+	rc, err := r.createRunConfigFromMCPServer(m)
+
+	require.NoError(t, err)
+	require.NotNil(t, rc)
+
+	assert.Equal(t, int64(7), rc.MCPServerGeneration,
+		"MCPServerGeneration should match MCPServer .metadata.generation")
+}

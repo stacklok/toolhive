@@ -341,6 +341,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.TargetHost,
 			r.Config.Publish,
 			scalingConfig,
+			r.Config.MCPServerGeneration,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to set up workload: %w", err)

@@ -1227,6 +1227,10 @@ const docTemplate = `{
                         "description": "K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template\nOnly applicable when using Kubernetes runtime",
                         "type": "string"
                     },
+                    "mcpserver_generation": {
+                        "description": "MCPServerGeneration is the K8s .metadata.generation of the MCPServer CR that rendered\nthis RunConfig. The Kubernetes runtime uses it as a monotonic version to prevent stale\nrolling-update pods from overwriting a newer RunConfig's StatefulSet apply. Zero value\nmeans unversioned (backward-compat with older operators, or non-operator callers).",
+                        "type": "integer"
+                    },
                     "middleware_configs": {
                         "description": "MiddlewareConfigs contains the list of middleware to apply to the transport\nand the configuration for each middleware.",
                         "items": {

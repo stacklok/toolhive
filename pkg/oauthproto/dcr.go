@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package oauth provides OAuth 2.0 and OIDC authentication functionality.
-package oauth
+package oauthproto
 
 import (
 	"context"
@@ -14,15 +13,12 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/stacklok/toolhive/pkg/networking"
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
 )
 
-// ToolHiveMCPClientName is the name of the ToolHive MCP client
+// ToolHiveMCPClientName is the name advertised in dynamic client registration requests.
 const ToolHiveMCPClientName = "ToolHive MCP Client"
 
-// DynamicClientRegistrationRequest represents the request for dynamic client registration (RFC 7591)
+// DynamicClientRegistrationRequest represents the request for dynamic client registration (RFC 7591).
 type DynamicClientRegistrationRequest struct {
 	// Required field according to RFC 7591
 	RedirectURIs []string `json:"redirect_uris"`
@@ -33,23 +29,6 @@ type DynamicClientRegistrationRequest struct {
 	GrantTypes              []string  `json:"grant_types,omitempty"`
 	ResponseTypes           []string  `json:"response_types,omitempty"`
 	Scopes                  ScopeList `json:"scope,omitempty"`
-}
-
-// NewDynamicClientRegistrationRequest creates a new dynamic client registration request
-func NewDynamicClientRegistrationRequest(scopes []string, callbackPort int) *DynamicClientRegistrationRequest {
-
-	redirectURIs := []string{fmt.Sprintf("http://localhost:%d/callback", callbackPort)}
-
-	// Create dynamic registration request
-	registrationRequest := &DynamicClientRegistrationRequest{
-		ClientName:              ToolHiveMCPClientName,
-		RedirectURIs:            redirectURIs,
-		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone, // For PKCE flow
-		GrantTypes:              []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken},
-		ResponseTypes:           []string{oauthproto.ResponseTypeCode},
-		Scopes:                  scopes,
-	}
-	return registrationRequest
 }
 
 // ScopeList represents the "scope" field in both dynamic client registration requests and responses.
@@ -131,7 +110,7 @@ func (s *ScopeList) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("invalid scope format: %s", string(data))
 }
 
-// DynamicClientRegistrationResponse represents the response from dynamic client registration (RFC 7591)
+// DynamicClientRegistrationResponse represents the response from dynamic client registration (RFC 7591).
 type DynamicClientRegistrationResponse struct {
 	// Required fields
 	ClientID     string `json:"client_id"`
@@ -152,35 +131,83 @@ type DynamicClientRegistrationResponse struct {
 	Scopes                  ScopeList `json:"scope,omitempty"`
 }
 
-// RegisterClientDynamically performs dynamic client registration (RFC 7591)
+// RegisterClientDynamically performs RFC 7591 Dynamic Client Registration against
+// the given registrationEndpoint.
+//
+// If client is nil, a default *http.Client with a 30 s timeout, 10 s TLS handshake
+// timeout, and 10 s response-header timeout is used. Pass a non-nil client to supply
+// custom transport settings (e.g., in tests using httptest.NewServer).
 func RegisterClientDynamically(
 	ctx context.Context,
 	registrationEndpoint string,
 	request *DynamicClientRegistrationRequest,
+	client *http.Client,
 ) (*DynamicClientRegistrationResponse, error) {
-	return registerClientDynamicallyWithClient(ctx, registrationEndpoint, request, nil)
+	// Validate registration endpoint URL
+	if _, err := validateRegistrationEndpoint(registrationEndpoint); err != nil {
+		return nil, err
+	}
+
+	// Reject a nil request before the dereference below; the nil check previously
+	// lived inside validateAndSetDefaults, but the shallow copy must come first.
+	if request == nil {
+		return nil, fmt.Errorf("registration request cannot be nil")
+	}
+
+	// Shallow-copy the request before passing it to validateAndSetDefaults so
+	// that the caller's original struct is never mutated. Slice fields (RedirectURIs,
+	// GrantTypes, ResponseTypes, Scopes) share the same backing arrays, but
+	// validateAndSetDefaults only assigns new slices to nil/zero fields — it never
+	// appends to or modifies existing ones — so a shallow copy is safe here.
+	reqCopy := *request
+	if err := validateAndSetDefaults(&reqCopy); err != nil {
+		return nil, err
+	}
+
+	// Create HTTP request
+	req, err := createHTTPRequest(ctx, registrationEndpoint, &reqCopy)
+	if err != nil {
+		return nil, err
+	}
+
+	// Use caller-supplied client or build a default one
+	httpClient := buildHTTPClient(client)
+
+	// Make the request
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to perform dynamic client registration: %w", err)
+	}
+
+	// Handle response
+	response, err := handleHTTPResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	//nolint:gosec // G706: client_id is public metadata from DCR response
+	slog.Debug("Successfully registered OAuth client dynamically",
+		"client_id", response.ClientID)
+	return response, nil
 }
 
-// validateRegistrationEndpoint validates the registration endpoint URL
+// validateRegistrationEndpoint validates the registration endpoint URL.
 func validateRegistrationEndpoint(registrationEndpoint string) (*url.URL, error) {
 	registrationURL, err := url.Parse(registrationEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("invalid registration endpoint URL: %w", err)
 	}
 
-	// Ensure HTTPS for security (except localhost for development)
-	if registrationURL.Scheme != "https" && !networking.IsLocalhost(registrationURL.Host) {
+	// Ensure HTTPS for security (except loopback addresses for development)
+	if registrationURL.Scheme != "https" && !IsLoopbackHost(registrationURL.Host) {
 		return nil, fmt.Errorf("registration endpoint must use HTTPS: %s", registrationEndpoint)
 	}
 
 	return registrationURL, nil
 }
 
-// validateAndSetDefaults validates the request and sets default values
+// validateAndSetDefaults validates the request and sets default values.
 func validateAndSetDefaults(request *DynamicClientRegistrationRequest) error {
-	if request == nil {
-		return fmt.Errorf("registration request cannot be nil")
-	}
 	if len(request.RedirectURIs) == 0 {
 		return fmt.Errorf("at least one redirect URI is required")
 	}
@@ -198,19 +225,19 @@ func validateAndSetDefaults(request *DynamicClientRegistrationRequest) error {
 		request.ClientName = ToolHiveMCPClientName
 	}
 	if len(request.GrantTypes) == 0 {
-		request.GrantTypes = []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken}
+		request.GrantTypes = []string{GrantTypeAuthorizationCode, GrantTypeRefreshToken}
 	}
 	if len(request.ResponseTypes) == 0 {
-		request.ResponseTypes = []string{oauthproto.ResponseTypeCode}
+		request.ResponseTypes = []string{ResponseTypeCode}
 	}
 	if request.TokenEndpointAuthMethod == "" {
-		request.TokenEndpointAuthMethod = oauthproto.TokenEndpointAuthMethodNone // For PKCE flow
+		request.TokenEndpointAuthMethod = TokenEndpointAuthMethodNone // For PKCE flow
 	}
 
 	return nil
 }
 
-// createHTTPRequest creates the HTTP request for dynamic client registration
+// createHTTPRequest creates the HTTP request for dynamic client registration.
 func createHTTPRequest(
 	ctx context.Context,
 	registrationEndpoint string,
@@ -236,8 +263,8 @@ func createHTTPRequest(
 	return req, nil
 }
 
-// getHTTPClient returns the HTTP client to use for the request
-func getHTTPClient(client networking.HTTPClient) networking.HTTPClient {
+// buildHTTPClient returns the caller-supplied client, or a default client if nil.
+func buildHTTPClient(client *http.Client) *http.Client {
 	if client != nil {
 		return client
 	}
@@ -251,7 +278,7 @@ func getHTTPClient(client networking.HTTPClient) networking.HTTPClient {
 	}
 }
 
-// handleHTTPResponse handles the HTTP response and validates it
+// handleHTTPResponse handles the HTTP response and validates it.
 func handleHTTPResponse(resp *http.Response) (*DynamicClientRegistrationResponse, error) {
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -264,26 +291,27 @@ func handleHTTPResponse(resp *http.Response) (*DynamicClientRegistrationResponse
 		// Try to read error response
 		errorBody, _ := io.ReadAll(resp.Body)
 
-		// Detect if DCR is not supported by the provider
+		// Detect if DCR is not supported by the provider.
 		// Common HTTP status codes when DCR is unsupported:
-		// - 404 Not Found: endpoint doesn't exist
-		// - 405 Method Not Allowed: endpoint exists but POST not allowed
-		// - 501 Not Implemented: DCR feature not implemented
+		//   - 404 Not Found: endpoint doesn't exist
+		//   - 405 Method Not Allowed: endpoint exists but POST not allowed
+		//   - 501 Not Implemented: DCR feature not implemented
 		if resp.StatusCode == http.StatusNotFound ||
 			resp.StatusCode == http.StatusMethodNotAllowed ||
 			resp.StatusCode == http.StatusNotImplemented {
-			return nil, fmt.Errorf("this provider does not support Dynamic Client Registration (DCR) - HTTP %d. "+
-				"Please configure OAuth client credentials using --remote-auth-client-id and --remote-auth-client-secret flags, "+
-				"or register a client manually with the provider. Error details: %s",
+			return nil, fmt.Errorf(
+				"the provider does not support RFC 7591 Dynamic Client Registration (HTTP %d); "+
+					"configure client credentials out of band. Error details: %s",
 				resp.StatusCode, string(errorBody))
 		}
 
 		return nil, fmt.Errorf("dynamic client registration failed with status %d: %s", resp.StatusCode, string(errorBody))
 	}
 
-	// Check content type
+	// Check content type; drain before returning to allow TCP connection reuse.
 	contentType := resp.Header.Get("Content-Type")
 	if !strings.Contains(contentType, "application/json") {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil, fmt.Errorf("unexpected content type: %s", contentType)
 	}
 
@@ -304,48 +332,4 @@ func handleHTTPResponse(resp *http.Response) (*DynamicClientRegistrationResponse
 	}
 
 	return &response, nil
-}
-
-// registerClientDynamicallyWithClient performs dynamic client registration with a custom HTTP client (private for testing)
-func registerClientDynamicallyWithClient(
-	ctx context.Context,
-	registrationEndpoint string,
-	request *DynamicClientRegistrationRequest,
-	client networking.HTTPClient,
-) (*DynamicClientRegistrationResponse, error) {
-	// Validate registration endpoint URL
-	if _, err := validateRegistrationEndpoint(registrationEndpoint); err != nil {
-		return nil, err
-	}
-
-	// Validate request and set defaults
-	if err := validateAndSetDefaults(request); err != nil {
-		return nil, err
-	}
-
-	// Create HTTP request
-	req, err := createHTTPRequest(ctx, registrationEndpoint, request)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get HTTP client
-	httpClient := getHTTPClient(client)
-
-	// Make the request
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to perform dynamic client registration: %w", err)
-	}
-
-	// Handle response
-	response, err := handleHTTPResponse(resp)
-	if err != nil {
-		return nil, err
-	}
-
-	//nolint:gosec // G706: client_id is public metadata from DCR response
-	slog.Debug("Successfully registered OAuth client dynamically",
-		"client_id", response.ClientID)
-	return response, nil
 }

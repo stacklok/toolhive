@@ -19,8 +19,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/time/rate"
 
-	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // GitHubTokenCheckURL is the base URL pattern for GitHub OAuth token validation
@@ -152,7 +152,7 @@ func (g *GitHubProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", oauth.UserAgent)
+	req.Header.Set("User-Agent", oauthproto.UserAgent)
 
 	// GitHub requires Basic Auth with OAuth App credentials
 	req.SetBasicAuth(g.clientID, g.clientSecret)

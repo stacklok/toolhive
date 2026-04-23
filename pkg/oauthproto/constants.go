@@ -3,6 +3,8 @@
 
 package oauthproto
 
+import "time"
+
 // Well-known endpoint paths as defined by RFC 8414, OpenID Connect Discovery 1.0, and RFC 9728.
 const (
 	// WellKnownOIDCPath is the standard OIDC discovery endpoint path
@@ -49,7 +51,7 @@ const (
 
 // Token type URNs as defined by RFC 8693.
 //
-//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
+//nolint:gosec // G101: these are RFC 8693 token-type URN identifiers, not credentials
 const (
 	// TokenTypeAccessToken indicates an OAuth 2.0 access token (RFC 8693 Section 3).
 	TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
@@ -63,7 +65,7 @@ const (
 
 // Grant type URNs for token exchange protocols.
 //
-//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
+//nolint:gosec // G101: this is an RFC 8693 grant-type URN identifier, not a credential
 const (
 	// GrantTypeTokenExchange is the OAuth 2.0 Token Exchange grant type (RFC 8693).
 	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
@@ -74,4 +76,12 @@ const (
 	// UserAgent is the User-Agent header value sent on all HTTP requests
 	// originating from this package and its callers.
 	UserAgent = "ToolHive/1.0"
+)
+
+// HTTP client and response-handling defaults used by the OAuth grant helpers
+// in this package (DoTokenRequest, ParseTokenResponse). Unexported: they are
+// implementation defaults shared between grants, not part of the public API.
+const (
+	defaultHTTPTimeout  = 30 * time.Second
+	maxResponseBodySize = 1 << 20 // 1 MiB — matches x/oauth2/internal/token.go.
 )

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +32,37 @@ func (s *stubTokenSource) Token(_ context.Context) (string, error) {
 	return s.token, s.err
 }
 
+// testClient returns an http.Client with a 5-second timeout for use in tests.
+func testClient() *http.Client {
+	return &http.Client{Timeout: 5 * time.Second}
+}
+
+// loopbackRequest returns a GET server request with Host set to 127.0.0.1 so
+// it passes the DNS-rebinding guard in the proxy handler.
+func loopbackRequest(target string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.Host = "127.0.0.1"
+	return req
+}
+
+// newTLSGateway starts a TLS test server and returns a Proxy configured to
+// trust its self-signed certificate.
+func newTLSGateway(t *testing.T, handler http.Handler) *Proxy {
+	t.Helper()
+	gateway := httptest.NewTLSServer(handler)
+	t.Cleanup(gateway.Close)
+
+	cfg := &llm.Config{
+		GatewayURL: gateway.URL,
+		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
+	}
+	p, err := New(cfg, &stubTokenSource{token: "test-token"})
+	require.NoError(t, err)
+	p.transport = gateway.Client().Transport
+	t.Cleanup(func() { _ = p.listener.Close() })
+	return p
+}
+
 // freePort returns an available TCP port on loopback.
 // It binds then immediately closes to discover the port number; there is a
 // small TOCTOU window before the caller binds, which is acceptable in tests.
@@ -43,30 +75,14 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-func TestCheckLoopback(t *testing.T) {
+func TestNew_RejectsHTTPGatewayURL(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		addr    string
-		wantErr bool
-	}{
-		{"127.0.0.1:14000", false},
-		{"localhost:14000", false},
-		{"[::1]:14000", false},
-		{"0.0.0.0:14000", true},
-		{"192.168.1.1:14000", true},
-		{"10.0.0.1:14000", true},
+	cfg := &llm.Config{
+		GatewayURL: "http://gateway.example.com",
+		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
 	}
-	for _, tt := range tests {
-		t.Run(tt.addr, func(t *testing.T) {
-			t.Parallel()
-			err := checkLoopback(tt.addr)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
+	_, err := New(cfg, &stubTokenSource{token: "tok"})
+	require.ErrorContains(t, err, "must use HTTPS")
 }
 
 func TestNew_ValidConfig(t *testing.T) {
@@ -88,26 +104,25 @@ func TestNew_ValidConfig(t *testing.T) {
 
 func TestHandler_InjectsToken(t *testing.T) {
 	t.Parallel()
-	var receivedAuth string
-	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var (
+		mu           sync.Mutex
+		receivedAuth string
+	)
+	p := newTLSGateway(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		receivedAuth = r.Header.Get("Authorization")
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer gateway.Close()
+	p.tokenSource = &stubTokenSource{token: "fresh-token-abc"}
 
-	cfg := &llm.Config{
-		GatewayURL: gateway.URL,
-		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
-	}
-	p, err := New(cfg, &stubTokenSource{token: "fresh-token-abc"})
-	require.NoError(t, err)
-	defer p.listener.Close()
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req := loopbackRequest("/v1/models")
 	req.Header.Set("Authorization", "Bearer old-token")
 	w := httptest.NewRecorder()
 	p.handler().ServeHTTP(w, req)
 
+	mu.Lock()
+	defer mu.Unlock()
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "Bearer fresh-token-abc", receivedAuth,
 		"gateway should receive the fresh token, not the original")
@@ -115,29 +130,56 @@ func TestHandler_InjectsToken(t *testing.T) {
 
 func TestHandler_StripsIncomingAuthorization(t *testing.T) {
 	t.Parallel()
-	var receivedAuth string
-	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var (
+		mu           sync.Mutex
+		receivedAuth string
+	)
+	p := newTLSGateway(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		receivedAuth = r.Header.Get("Authorization")
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer gateway.Close()
+	p.tokenSource = &stubTokenSource{token: "injected"}
 
-	cfg := &llm.Config{
-		GatewayURL: gateway.URL,
-		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
-	}
-	p, err := New(cfg, &stubTokenSource{token: "injected"})
-	require.NoError(t, err)
-	defer p.listener.Close()
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req := loopbackRequest("/v1/models")
 	req.Header.Set("Authorization", "Bearer user-supplied-token")
 	w := httptest.NewRecorder()
 	p.handler().ServeHTTP(w, req)
 
+	mu.Lock()
+	defer mu.Unlock()
 	assert.NotContains(t, receivedAuth, "user-supplied-token",
 		"incoming Authorization must be stripped")
 	assert.Equal(t, "Bearer injected", receivedAuth)
+}
+
+func TestHandler_RejectsDNSRebindingHost(t *testing.T) {
+	t.Parallel()
+	cfg := &llm.Config{
+		GatewayURL: "https://gateway.example.com",
+		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
+	}
+	p, err := New(cfg, &stubTokenSource{token: "tok"})
+	require.NoError(t, err)
+	defer p.listener.Close()
+
+	for _, host := range []string{"evil.com", "evil.com:80", "192.168.1.1", "192.168.1.1:8080"} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Host = host
+		w := httptest.NewRecorder()
+		p.handler().ServeHTTP(w, req)
+		assert.Equal(t, http.StatusForbidden, w.Code, "host %q should be rejected", host)
+	}
+
+	// Legitimate loopback hosts must be allowed through.
+	for _, host := range []string{"127.0.0.1:14000", "localhost:14000", "[::1]:14000"} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Host = host
+		w := httptest.NewRecorder()
+		p.handler().ServeHTTP(w, req)
+		assert.NotEqual(t, http.StatusForbidden, w.Code, "host %q should be allowed", host)
+	}
 }
 
 func TestHandler_Returns502OnTokenError(t *testing.T) {
@@ -150,37 +192,78 @@ func TestHandler_Returns502OnTokenError(t *testing.T) {
 	require.NoError(t, err)
 	defer p.listener.Close()
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+	req := loopbackRequest("/v1/chat/completions")
 	w := httptest.NewRecorder()
 	p.handler().ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadGateway, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+	assert.Contains(t, w.Body.String(), `"type":"server_error"`)
+	assert.NotContains(t, w.Body.String(), "token unavailable",
+		"internal error detail must not be leaked to the client")
 }
 
-// startTestProxy starts the proxy against the given gateway URL using a real
+func TestHandler_Returns401WithActionableMessageOnErrTokenRequired(t *testing.T) {
+	t.Parallel()
+	cfg := &llm.Config{
+		GatewayURL: "https://gateway.example.com",
+		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
+	}
+	p, err := New(cfg, &stubTokenSource{err: llm.ErrTokenRequired})
+	require.NoError(t, err)
+	defer p.listener.Close()
+
+	req := loopbackRequest("/v1/chat/completions")
+	w := httptest.NewRecorder()
+	p.handler().ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+	body := w.Body.String()
+	assert.Contains(t, body, "thv llm setup")
+	assert.Contains(t, body, `"type":"authentication_error"`)
+	assert.Contains(t, body, `"code":"token_required"`)
+}
+
+// startTestProxy starts the proxy against the given TLS gateway using a real
 // TCP listener and returns the proxy's base URL. The proxy is stopped when
 // t.Cleanup runs.
-func startTestProxy(t *testing.T, gatewayURL string) string {
+func startTestProxy(t *testing.T, gateway *httptest.Server) string {
 	t.Helper()
 	cfg := &llm.Config{
-		GatewayURL: gatewayURL,
+		GatewayURL: gateway.URL,
 		Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
 	}
 	p, err := New(cfg, &stubTokenSource{token: "test-token"})
 	require.NoError(t, err)
+	p.transport = gateway.Client().Transport
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	go func() { _ = p.Start(ctx) }()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- p.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-serveErr; err != nil {
+			t.Errorf("proxy exited with unexpected error: %v", err)
+		}
+	})
 
-	// Wait for Serve to begin accepting connections.
+	// Wait until the HTTP server is actually serving — a TCP dial can succeed
+	// as soon as the listener is bound (kernel backlog), before Serve() runs.
+	// An HTTP response (any status) confirms the handler loop is active.
+	// The request must have a loopback Host to pass the DNS-rebinding guard.
+	addr := p.Addr()
+	client := &http.Client{Timeout: 100 * time.Millisecond}
 	require.Eventually(t, func() bool {
-		conn, dialErr := net.Dial("tcp", p.Addr())
-		if dialErr != nil {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+addr+"/readyz", nil)
+		req.Host = "127.0.0.1"
+		resp, err := client.Do(req)
+		if err != nil {
 			return false
 		}
-		_ = conn.Close()
+		resp.Body.Close()
 		return true
 	}, 2*time.Second, 10*time.Millisecond, "proxy did not start in time")
 
@@ -190,27 +273,35 @@ func startTestProxy(t *testing.T, gatewayURL string) string {
 func TestProxy_ForwardsPathQueryAndBody(t *testing.T) {
 	t.Parallel()
 	var (
+		mu       sync.Mutex
 		gotPath  string
 		gotQuery string
 		gotBody  []byte
 		gotAuth  string
 	)
-	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
 		gotPath = r.URL.Path
 		gotQuery = r.URL.RawQuery
-		gotBody, _ = io.ReadAll(r.Body)
+		gotBody = b
 		gotAuth = r.Header.Get("Authorization")
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer gateway.Close()
 
-	proxyURL := startTestProxy(t, gateway.URL)
+	proxyURL := startTestProxy(t, gateway)
 
 	body := strings.NewReader(`{"model":"gpt-4"}`)
-	resp, err := http.Post(proxyURL+"/v1/chat/completions?stream=true", "application/json", body)
+	resp, err := testClient().Post(proxyURL+"/v1/chat/completions?stream=true", "application/json", body)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
+	// The HTTP response completing guarantees the handler has returned, so the
+	// mutex is not held at this point. Reading under the lock is still correct.
+	mu.Lock()
+	defer mu.Unlock()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "/v1/chat/completions", gotPath)
 	assert.Equal(t, "stream=true", gotQuery)
@@ -220,7 +311,7 @@ func TestProxy_ForwardsPathQueryAndBody(t *testing.T) {
 
 func TestProxy_PassesThroughSSE(t *testing.T) {
 	t.Parallel()
-	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
@@ -237,9 +328,9 @@ func TestProxy_PassesThroughSSE(t *testing.T) {
 	}))
 	defer gateway.Close()
 
-	proxyURL := startTestProxy(t, gateway.URL)
+	proxyURL := startTestProxy(t, gateway)
 
-	resp, err := http.Get(proxyURL + "/v1/chat/completions")
+	resp, err := testClient().Get(proxyURL + "/v1/chat/completions")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -258,14 +349,14 @@ func TestProxy_PassesThroughErrorResponses(t *testing.T) {
 		statusCode := statusCode
 		t.Run(http.StatusText(statusCode), func(t *testing.T) {
 			t.Parallel()
-			gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				http.Error(w, "upstream error", statusCode)
 			}))
 			defer gateway.Close()
 
-			proxyURL := startTestProxy(t, gateway.URL)
+			proxyURL := startTestProxy(t, gateway)
 
-			resp, err := http.Get(proxyURL + "/v1/models")
+			resp, err := testClient().Get(proxyURL + "/v1/models")
 			require.NoError(t, err)
 			defer resp.Body.Close()
 

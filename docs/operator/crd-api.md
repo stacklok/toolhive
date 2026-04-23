@@ -389,6 +389,7 @@ _Appears in:_
 | `protectedResourceAllowPrivateIp` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses<br />Use with caution - only enable for trusted internal IDPs or testing |  |  |
 | `jwksAllowPrivateIp` _boolean_ | JwksAllowPrivateIP allows OIDC discovery and JWKS fetches to private IP addresses.<br />Enable when the embedded auth server runs on a loopback address and<br />the OIDC middleware needs to fetch its JWKS from that address.<br />Use with caution - only enable for trusted internal IDPs or testing. |  |  |
 | `insecureAllowHttp` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing<br />WARNING: This is insecure and should NEVER be used in production |  |  |
+| `caBundlePath` _string_ | CABundlePath is the absolute file path to a PEM-encoded CA certificate bundle<br />used when the OIDC middleware performs HTTPS requests to the issuer<br />(OIDC discovery, JWKS fetch, token introspection). When set, the CA bundle<br />at this path is added to the trust store used for verifying the issuer's<br />TLS certificate. Typically populated by the Kubernetes operator from<br />MCPOIDCConfig.spec.inline.caBundleRef (ConfigMap) or from the in-cluster<br />service-account CA when using Kubernetes service-account auth. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.OperationalConfig

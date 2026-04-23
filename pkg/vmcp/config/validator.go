@@ -165,6 +165,16 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 		// - PKCE flows (public clients)
 		// - Token validation without introspection
 		// - Kubernetes service account token validation
+
+		// Validate CA bundle path: reject null bytes, path traversal, and relative paths.
+		if auth.OIDC.CABundlePath != "" {
+			if strings.ContainsRune(auth.OIDC.CABundlePath, 0) || strings.Contains(auth.OIDC.CABundlePath, "..") {
+				return fmt.Errorf("incomingAuth.oidc.caBundlePath contains invalid path characters")
+			}
+			if !filepath.IsAbs(auth.OIDC.CABundlePath) {
+				return fmt.Errorf("incomingAuth.oidc.caBundlePath must be an absolute path")
+			}
+		}
 	}
 
 	// Validate authorization configuration

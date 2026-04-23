@@ -11,10 +11,13 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 
 	"github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/llm"
+	llmproxy "github.com/stacklok/toolhive/pkg/llm/proxy"
+	"github.com/stacklok/toolhive/pkg/process"
 	pkgsecrets "github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -226,21 +229,107 @@ func newLLMProxyCommand() *cobra.Command {
 		Use:   "proxy",
 		Short: "Manage the LLM gateway localhost proxy",
 	}
-
 	cmd.AddCommand(newLLMProxyStartCommand())
-
+	cmd.AddCommand(newLLMProxyStopCommand())
 	return cmd
 }
 
 func newLLMProxyStartCommand() *cobra.Command {
-	return &cobra.Command{
+	var foreground bool
+
+	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start the LLM proxy in the foreground (coming soon)",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return fmt.Errorf("not implemented: coming in a future release")
+		Short: "Start the LLM gateway localhost proxy",
+		Long: `Start a localhost reverse proxy that injects fresh OIDC tokens for AI tools
+that only accept static API keys (e.g. Cursor).
+
+By default the proxy runs as a background process. Use --foreground for
+full log output (useful for debugging).`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			provider := config.NewDefaultProvider()
+			llmCfg := provider.GetConfig().LLM
+
+			if !llmCfg.IsConfigured() {
+				return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
+			}
+
+			if foreground || process.IsDetached() {
+				llmCfgCopy := llmCfg
+				return runLLMProxyForeground(cmd.Context(), &llmCfgCopy)
+			}
+
+			execPath, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("resolving executable path: %w", err)
+			}
+			debug := viper.GetBool("debug")
+			pid, err := llmproxy.StartDetached(execPath, debug)
+			if err != nil {
+				return fmt.Errorf("starting LLM proxy: %w", err)
+			}
+			fmt.Printf("LLM proxy started on http://localhost:%d/v1 (PID %d)\n",
+				llmCfg.EffectiveProxyPort(), pid)
+			fmt.Printf("Logs: %s\n", llmProxyLogPath())
+			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&foreground, "foreground", false,
+		"Run in the foreground (blocks until Ctrl+C, outputs full logs)")
+	return cmd
+}
+
+func newLLMProxyStopCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop",
+		Short: "Stop the running LLM gateway proxy",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			if err := llmproxy.Stop(); err != nil {
+				return fmt.Errorf("stopping LLM proxy: %w", err)
+			}
+			fmt.Println("LLM proxy stopped")
+			return nil
+		},
+	}
+}
+
+// runLLMProxyForeground builds a TokenSource and starts the proxy in this process.
+func runLLMProxyForeground(ctx context.Context, llmCfg *llm.Config) error {
+	secretsProvider, err := secrets.GetSystemSecretsProvider()
+	if err != nil {
+		return fmt.Errorf("failed to get secrets provider: %w", err)
+	}
+	scoped := pkgsecrets.NewScopedProvider(secretsProvider, pkgsecrets.ScopeLLM)
+
+	updater := func(key string, expiry time.Time) {
+		if updateErr := config.UpdateConfig(func(c *config.Config) error {
+			c.LLM.OIDC.CachedRefreshTokenRef = key
+			c.LLM.OIDC.CachedTokenExpiry = expiry
+			return nil
+		}); updateErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to persist LLM token reference: %v\n", updateErr)
+		}
+	}
+
+	ts := llm.NewTokenSource(llmCfg, scoped, false, updater)
+	p, err := llmproxy.New(llmCfg, ts)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("LLM proxy listening on http://%s/v1\n", p.Addr())
+	return p.Start(ctx)
+}
+
+// llmProxyLogPath returns the display path for the LLM proxy log file.
+func llmProxyLogPath() string {
+	path, err := llmproxy.LogFilePath()
+	if err != nil {
+		return "(unknown)"
+	}
+	return path
 }
 
 // ── token helper (hidden) ─────────────────────────────────────────────────────

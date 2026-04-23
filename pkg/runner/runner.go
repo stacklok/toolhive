@@ -713,63 +713,19 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 	// Set up token persister to save tokens across restarts
 	if secretManager != nil {
 		authHandler.SetTokenPersister(func(refreshToken string, expiry time.Time) error {
-			// Generate a unique secret name for this workload's refresh token
-			secretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
-				r.Config.Name,
-				"OAUTH_REFRESH_TOKEN_",
-				secretManager,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to generate secret name: %w", err)
-			}
-
-			// Store the refresh token in the secret manager
-			if err := authsecrets.StoreSecretInManagerWithProvider(ctx, secretName, refreshToken, secretManager); err != nil {
-				return fmt.Errorf("failed to store refresh token: %w", err)
-			}
-
-			// Store the secret reference (not the actual token) in the config
-			r.Config.RemoteAuthConfig.CachedRefreshTokenRef = secretName
-			r.Config.RemoteAuthConfig.CachedTokenExpiry = expiry
-
-			// Save the updated config to persist the reference
-			if err := r.Config.SaveState(ctx); err != nil {
-				return fmt.Errorf("failed to save config with token reference: %w", err)
-			}
-
-			slog.Debug("Stored OAuth refresh token in secret manager", "secret_name", secretName)
-			return nil
+			return r.persistRefreshToken(ctx, secretManager, refreshToken, expiry)
 		})
 
 		// Set up client credentials persister for DCR (Dynamic Client Registration)
-		authHandler.SetClientCredentialsPersister(func(clientID, clientSecret string) error {
-			// Store client ID directly (it's public information)
-			r.Config.RemoteAuthConfig.CachedClientID = clientID
-
-			// Only store client secret if it's non-empty (PKCE flows may not have one)
-			if clientSecret != "" {
-				clientSecretSecretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
-					r.Config.Name,
-					"OAUTH_CLIENT_SECRET_",
-					secretManager,
-				)
-				if err != nil {
-					return fmt.Errorf("failed to generate client secret secret name: %w", err)
-				}
-
-				if err := authsecrets.StoreSecretInManagerWithProvider(ctx, clientSecretSecretName, clientSecret, secretManager); err != nil {
-					return fmt.Errorf("failed to store client secret: %w", err)
-				}
-				r.Config.RemoteAuthConfig.CachedClientSecretRef = clientSecretSecretName
-			}
-
-			// Save the updated config to persist the credentials
-			if err := r.Config.SaveState(ctx); err != nil {
-				return fmt.Errorf("failed to save config with client credentials: %w", err)
-			}
-
-			slog.Debug("Stored DCR client credentials", "client_id", clientID)
-			return nil
+		authHandler.SetClientCredentialsPersister(func(
+			clientID, clientSecret string,
+			secretExpiry time.Time,
+			regAccessToken, regClientURI string,
+			tokenEndpointAuthMethod string,
+		) error {
+			return r.persistClientCredentials(
+				ctx, secretManager, clientID, clientSecret,
+				secretExpiry, regAccessToken, regClientURI, tokenEndpointAuthMethod)
 		})
 	}
 
@@ -780,6 +736,91 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 	}
 
 	return tokenSource, nil
+}
+
+func (r *Runner) persistRefreshToken(
+	ctx context.Context,
+	secretManager secrets.Provider,
+	refreshToken string,
+	expiry time.Time,
+) error {
+	secretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
+		r.Config.Name,
+		"OAUTH_REFRESH_TOKEN_",
+		secretManager,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to generate secret name: %w", err)
+	}
+
+	if err := authsecrets.StoreSecretInManagerWithProvider(ctx, secretName, refreshToken, secretManager); err != nil {
+		return fmt.Errorf("failed to store refresh token: %w", err)
+	}
+
+	r.Config.RemoteAuthConfig.CachedRefreshTokenRef = secretName
+	r.Config.RemoteAuthConfig.CachedTokenExpiry = expiry
+
+	if err := r.Config.SaveState(ctx); err != nil {
+		return fmt.Errorf("failed to save config with token reference: %w", err)
+	}
+
+	slog.Debug("Stored OAuth refresh token in secret manager", "secret_name", secretName)
+	return nil
+}
+
+func (r *Runner) persistClientCredentials(
+	ctx context.Context,
+	secretManager secrets.Provider,
+	clientID, clientSecret string,
+	secretExpiry time.Time,
+	regAccessToken, regClientURI string,
+	tokenEndpointAuthMethod string,
+) error {
+	r.Config.RemoteAuthConfig.CachedClientID = clientID
+
+	if clientSecret != "" {
+		clientSecretSecretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
+			r.Config.Name,
+			"OAUTH_CLIENT_SECRET_",
+			secretManager,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to generate client secret secret name: %w", err)
+		}
+
+		if err := authsecrets.StoreSecretInManagerWithProvider(ctx, clientSecretSecretName, clientSecret, secretManager); err != nil {
+			return fmt.Errorf("failed to store client secret: %w", err)
+		}
+		r.Config.RemoteAuthConfig.CachedClientSecretRef = clientSecretSecretName
+	}
+
+	r.Config.RemoteAuthConfig.CachedSecretExpiry = secretExpiry
+
+	if regAccessToken != "" {
+		regTokenSecretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(r.Config.Name, "OAUTH_REG_TOKEN_", secretManager)
+		if err != nil {
+			return fmt.Errorf("failed to generate registration token secret name: %w", err)
+		}
+
+		if err := authsecrets.StoreSecretInManagerWithProvider(ctx, regTokenSecretName, regAccessToken, secretManager); err != nil {
+			return fmt.Errorf("failed to store registration access token: %w", err)
+		}
+		r.Config.RemoteAuthConfig.CachedRegTokenRef = regTokenSecretName
+		slog.Debug("Stored DCR registration access token for RFC 7592 operations")
+	}
+
+	r.Config.RemoteAuthConfig.CachedRegClientURI = regClientURI
+	r.Config.RemoteAuthConfig.CachedTokenEndpointAuthMethod = tokenEndpointAuthMethod
+
+	if err := r.Config.SaveState(ctx); err != nil {
+		return fmt.Errorf("failed to save config with client credentials: %w", err)
+	}
+
+	slog.Debug("Stored DCR client credentials", "client_id", clientID,
+		"has_expiry", !secretExpiry.IsZero(),
+		"has_reg_token", regAccessToken != "",
+		"has_reg_uri", regClientURI != "")
+	return nil
 }
 
 // Cleanup performs cleanup operations for the runner, including shutting down all middleware.

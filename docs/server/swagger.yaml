@@ -289,15 +289,27 @@ components:
             contains the reference to retrieve it (e.g., "OAUTH_REFRESH_TOKEN_workload").
             This enables session restoration without requiring a new browser-based login.
           type: string
+        cached_reg_client_uri:
+          description: |-
+            CachedRegClientURI is the registration_client_uri from the DCR response.
+            This is the endpoint used for RFC 7592 client read/update/delete operations.
+            Stored as plain text since it is not sensitive.
+          type: string
         cached_reg_token_ref:
           description: |-
-            RegistrationAccessToken is used to update/delete the client registration.
+            CachedRegTokenRef is a secret manager reference to the registration_access_token
+            returned in the DCR response. Used for RFC 7592 client update operations.
             Stored as a secret reference since it's sensitive.
           type: string
         cached_secret_expiry:
           description: |-
             ClientSecretExpiresAt indicates when the client secret expires (if provided by the DCR server).
             A zero value means the secret does not expire.
+          type: string
+        cached_token_auth_method:
+          description: |-
+            CachedTokenEndpointAuthMethod is the auth method used for the token endpoint
+            (e.g., "client_secret_basic", "none"). Persisted for RFC 7592 updates.
           type: string
         cached_token_expiry:
           type: string

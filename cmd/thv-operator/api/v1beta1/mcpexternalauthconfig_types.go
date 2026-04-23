@@ -97,7 +97,7 @@ type MCPExternalAuthConfigSpec struct {
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
 // This configuration is used to exchange incoming authentication tokens for tokens
 // that can be used with external services.
-// The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middleware.go
+// The structure matches the tokenexchange.Config from pkg/oauthproto/tokenexchange/middleware.go
 type TokenExchangeConfig struct {
 	// TokenURL is the OAuth 2.0 token endpoint URL for token exchange
 	// +kubebuilder:validation:Required

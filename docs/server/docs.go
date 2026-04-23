@@ -355,48 +355,6 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_pkg_auth_tokenexchange.Config": {
-                "description": "TokenExchangeConfig contains token exchange configuration for external authentication",
-                "properties": {
-                    "audience": {
-                        "description": "Audience is the target audience for the exchanged token",
-                        "type": "string"
-                    },
-                    "client_id": {
-                        "description": "ClientID is the OAuth 2.0 client identifier",
-                        "type": "string"
-                    },
-                    "client_secret": {
-                        "description": "ClientSecret is the OAuth 2.0 client secret",
-                        "type": "string"
-                    },
-                    "external_token_header_name": {
-                        "description": "ExternalTokenHeaderName is the name of the custom header to use when HeaderStrategy is \"custom\"",
-                        "type": "string"
-                    },
-                    "header_strategy": {
-                        "description": "HeaderStrategy determines how to inject the token\nValid values: HeaderStrategyReplace (default), HeaderStrategyCustom",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "description": "Scopes is the list of scopes to request for the exchanged token",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "subject_token_type": {
-                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.\nIf empty, defaults to oauthproto.TokenTypeAccessToken.",
-                        "type": "string"
-                    },
-                    "token_url": {
-                        "description": "TokenURL is the OAuth 2.0 token endpoint URL",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
             "github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config": {
                 "description": "UpstreamSwapConfig contains configuration for upstream token swap middleware.\nWhen set along with EmbeddedAuthServerConfig, this middleware exchanges ToolHive JWTs\nfor upstream IdP tokens before forwarding requests to the MCP server.",
                 "properties": {
@@ -1136,6 +1094,48 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_oauthproto_tokenexchange.Config": {
+                "description": "TokenExchangeConfig contains token exchange configuration for external authentication",
+                "properties": {
+                    "audience": {
+                        "description": "Audience is the target audience for the exchanged token",
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "description": "ClientID is the OAuth 2.0 client identifier",
+                        "type": "string"
+                    },
+                    "client_secret": {
+                        "description": "ClientSecret is the OAuth 2.0 client secret",
+                        "type": "string"
+                    },
+                    "external_token_header_name": {
+                        "description": "ExternalTokenHeaderName is the name of the custom header to use when HeaderStrategy is \"custom\"",
+                        "type": "string"
+                    },
+                    "header_strategy": {
+                        "description": "HeaderStrategy determines how to inject the token\nValid values: HeaderStrategyReplace (default), HeaderStrategyCustom",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "Scopes is the list of scopes to request for the exchanged token",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "subject_token_type": {
+                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.\nIf empty, defaults to oauthproto.TokenTypeAccessToken.",
+                        "type": "string"
+                    },
+                    "token_url": {
+                        "description": "TokenURL is the OAuth 2.0 token endpoint URL",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig": {
                 "description": "AuthConfig contains the non-secret OAuth configuration when auth is configured.\nNil when auth_status is \"none\".",
                 "properties": {
@@ -1386,7 +1386,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "token_exchange_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_tokenexchange.Config"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_oauthproto_tokenexchange.Config"
                     },
                     "tools_filter": {
                         "description": "DEPRECATED: Middleware configuration.\nToolsFilter is the list of tools to filter",

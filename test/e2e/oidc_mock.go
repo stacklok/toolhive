@@ -16,9 +16,11 @@ import (
 
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
+	fositeoauth2 "github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/fosite/handler/openid"
 	"github.com/ory/fosite/storage"
 	"github.com/ory/fosite/token/jwt"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // OIDCMockServer represents a lightweight OIDC server using Ory Fosite
@@ -44,42 +46,85 @@ type AuthRequest struct {
 	Scope         string
 }
 
+// jwtKeyID is the key ID used in both the JWKS response and the JWT header.
+// pkg/auth's token validator requires the kid claim to look up the signing key.
+const jwtKeyID = "test-key-1"
+
+// OIDCMockServerOption configures the OIDCMockServer client registration.
+type OIDCMockServerOption func(*fosite.DefaultClient)
+
+// WithClientAudience sets the allowed audience(s) on the registered test client.
+// Use this when the vMCP OIDC config requires a specific audience claim in tokens.
+func WithClientAudience(audiences ...string) OIDCMockServerOption {
+	return func(c *fosite.DefaultClient) {
+		c.Audience = audiences
+	}
+}
+
 // NewOIDCMockServer creates a new OIDC mock server using Ory Fosite
 func NewOIDCMockServer(port int, clientID, clientSecret string, opts ...func(*fosite.Config)) (*OIDCMockServer, error) {
+	config := defaultFositeConfig(port)
+	for _, opt := range opts {
+		opt(config)
+	}
+	return newOIDCMockServer(port, clientID, clientSecret, config)
+}
+
+// NewOIDCMockServerWithClientOptions creates a new OIDC mock server, applying
+// clientOpts to the registered test client. Use this when you need to control
+// client-level settings such as Audience.
+func NewOIDCMockServerWithClientOptions(
+	port int, clientID, clientSecret string, clientOpts ...OIDCMockServerOption,
+) (*OIDCMockServer, error) {
+	return newOIDCMockServer(port, clientID, clientSecret, defaultFositeConfig(port), clientOpts...)
+}
+
+// defaultFositeConfig returns the standard Fosite config for the mock server.
+func defaultFositeConfig(port int) *fosite.Config {
+	issuer := fmt.Sprintf("http://localhost:%d", port)
+	return &fosite.Config{
+		AccessTokenLifespan:   time.Hour,
+		RefreshTokenLifespan:  time.Hour * 24,
+		AuthorizeCodeLifespan: time.Minute * 10,
+		IDTokenLifespan:       time.Hour,
+		IDTokenIssuer:         issuer,
+		AccessTokenIssuer:     issuer,
+		HashCost:              12,
+	}
+}
+
+// newOIDCMockServer is the shared implementation for the public constructors.
+func newOIDCMockServer(
+	port int, clientID, clientSecret string, config *fosite.Config, clientOpts ...OIDCMockServerOption,
+) (*OIDCMockServer, error) {
 	// Generate RSA key for JWT signing
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate RSA key: %w", err)
 	}
 
-	// Create memory store
-	store := storage.NewMemoryStore()
+	// Hash the client secret — Fosite's DefaultClientAuthenticationStrategy uses
+	// BCryptHasher.Compare, so the stored secret must be bcrypt-hashed.
+	// Use the same cost as the Fosite config to keep them consistent.
+	hashedSecret, err := bcrypt.GenerateFromPassword([]byte(clientSecret), config.HashCost)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash client secret: %w", err)
+	}
 
-	// Add test client
+	// Create memory store and register the test client.
+	store := storage.NewMemoryStore()
 	client := &fosite.DefaultClient{
 		ID:            clientID,
-		Secret:        []byte(clientSecret),
+		Secret:        hashedSecret,
 		RedirectURIs:  []string{"http://localhost:8080/callback", "http://127.0.0.1:8080/callback"},
 		ResponseTypes: []string{"code"},
 		GrantTypes:    []string{"authorization_code", "refresh_token", "client_credentials"},
 		Scopes:        []string{"openid", "profile", "email"},
 	}
+	for _, opt := range clientOpts {
+		opt(client)
+	}
 	store.Clients[clientID] = client
-
-	// Create Fosite configuration
-	config := &fosite.Config{
-		AccessTokenLifespan:   time.Hour,
-		RefreshTokenLifespan:  time.Hour * 24,
-		AuthorizeCodeLifespan: time.Minute * 10,
-		IDTokenLifespan:       time.Hour,
-		IDTokenIssuer:         fmt.Sprintf("http://localhost:%d", port),
-		HashCost:              12,
-	}
-
-	// Apply any overrides provided via opts
-	for _, opt := range opts {
-		opt(config)
-	}
 
 	// Create JWT strategy
 	jwtStrategy := compose.NewOAuth2JWTStrategy(
@@ -271,11 +316,36 @@ func (m *OIDCMockServer) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create token request
-	accessRequest, err := m.provider.NewAccessRequest(ctx, r, &openid.DefaultSession{})
+	// Create token request.
+	// Use JWTSession so DefaultJWTStrategy can populate JWT claims;
+	// openid.DefaultSession does not implement JWTSessionContainer and causes
+	// a 500 for client_credentials flows.
+	accessRequest, err := m.provider.NewAccessRequest(ctx, r, &fositeoauth2.JWTSession{})
 	if err != nil {
 		m.provider.WriteAccessError(ctx, w, accessRequest, err)
 		return
+	}
+
+	// For client_credentials, grant requested scopes and audiences so they appear
+	// in the issued token's scp/aud claims. Other grant types handle this during
+	// the authorization step, but client_credentials has no authorization step.
+	// Also set the kid in the JWT header so pkg/auth's token validator can look
+	// up the signing key in the JWKS by key ID — it rejects tokens without a kid.
+	if accessRequest.GetGrantTypes().ExactOne("client_credentials") {
+		for _, scope := range accessRequest.GetRequestedScopes() {
+			accessRequest.GrantScope(scope)
+		}
+		for _, aud := range accessRequest.GetRequestedAudience() {
+			accessRequest.GrantAudience(aud)
+		}
+		if jwtSess, ok := accessRequest.GetSession().(*fositeoauth2.JWTSession); ok {
+			jwtSess.GetJWTHeader().Add("kid", jwtKeyID)
+			// Set subject to the client ID — OIDC Core § 5.1 requires a non-empty
+			// sub claim and pkg/auth rejects tokens without one.
+			if jwtClaims, ok := jwtSess.GetJWTClaims().(*jwt.JWTClaims); ok {
+				jwtClaims.Subject = accessRequest.GetClient().GetID()
+			}
+		}
 	}
 
 	// Create token response
@@ -340,7 +410,7 @@ func (m *OIDCMockServer) handleJWKS(w http.ResponseWriter, _ *http.Request) {
 			{
 				"kty": "RSA",
 				"use": "sig",
-				"kid": "test-key-1",
+				"kid": jwtKeyID,
 				"alg": "RS256",
 				"n":   nB64,
 				"e":   eB64,

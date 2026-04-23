@@ -170,8 +170,12 @@ spec:
                                 - name
                                 type: object
                               usernameSecretRef:
-                                description: UsernameSecretRef references a Secret
-                                  containing the Redis ACL username.
+                                description: |-
+                                  UsernameSecretRef references a Secret containing the Redis ACL username.
+                                  When omitted, connections use legacy password-only AUTH. Omit for managed
+                                  Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard
+                                  HA, Azure Cache for Redis). Set for services that support ACL users (e.g. AWS
+                                  ElastiCache non-cluster with Redis 6+ RBAC).
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -185,7 +189,6 @@ spec:
                                 type: object
                             required:
                             - passwordSecretRef
-                            - usernameSecretRef
                             type: object
                           addr:
                             description: |-
@@ -2467,8 +2470,12 @@ spec:
                                 - name
                                 type: object
                               usernameSecretRef:
-                                description: UsernameSecretRef references a Secret
-                                  containing the Redis ACL username.
+                                description: |-
+                                  UsernameSecretRef references a Secret containing the Redis ACL username.
+                                  When omitted, connections use legacy password-only AUTH. Omit for managed
+                                  Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard
+                                  HA, Azure Cache for Redis). Set for services that support ACL users (e.g. AWS
+                                  ElastiCache non-cluster with Redis 6+ RBAC).
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -2482,7 +2489,6 @@ spec:
                                 type: object
                             required:
                             - passwordSecretRef
-                            - usernameSecretRef
                             type: object
                           addr:
                             description: |-

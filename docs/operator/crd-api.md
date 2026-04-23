@@ -2686,7 +2686,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `usernameSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | UsernameSecretRef references a Secret containing the Redis ACL username. |  | Required: \{\} <br /> |
+| `usernameSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | UsernameSecretRef references a Secret containing the Redis ACL username.<br />When omitted, connections use legacy password-only AUTH. Omit for managed<br />Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard<br />HA, Azure Cache for Redis). Set for services that support ACL users (e.g. AWS<br />ElastiCache non-cluster with Redis 6+ RBAC). |  | Optional: \{\} <br /> |
 | `passwordSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PasswordSecretRef references a Secret containing the Redis ACL password. |  | Required: \{\} <br /> |
 
 

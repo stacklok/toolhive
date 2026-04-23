@@ -6,6 +6,8 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -698,4 +700,129 @@ func TestResolveDCRCredentials_EmptyScopesOmitted(t *testing.T) {
 	require.NoError(t, json.Unmarshal(gotBody, &raw))
 	_, present := raw["scope"]
 	assert.False(t, present, "registration request must omit the scope field when no scopes are configured")
+}
+
+func TestDCRStepError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Error formats step and cause", func(t *testing.T) {
+		t.Parallel()
+
+		cause := fmt.Errorf("boom")
+		e := newDCRStepError(dcrStepRegister, "https://as", "https://app/cb", cause)
+		assert.Equal(t, "dcr: dcr_call: boom", e.Error())
+	})
+
+	t.Run("Unwrap returns cause", func(t *testing.T) {
+		t.Parallel()
+
+		cause := fmt.Errorf("inner")
+		e := newDCRStepError(dcrStepValidate, "", "", cause)
+		assert.Same(t, cause, errors.Unwrap(e))
+	})
+
+	t.Run("errors.As extracts the typed error", func(t *testing.T) {
+		t.Parallel()
+
+		cause := fmt.Errorf("inner")
+		e := newDCRStepError(dcrStepCacheRead, "https://as", "https://app/cb", cause)
+		wrapped := fmt.Errorf("outer: %w", e)
+
+		var got *DCRStepError
+		require.True(t, errors.As(wrapped, &got))
+		assert.Equal(t, dcrStepCacheRead, got.Step)
+		assert.Equal(t, "https://as", got.Issuer)
+		assert.Equal(t, "https://app/cb", got.RedirectURI)
+	})
+
+	t.Run("resolveDCRCredentials wraps every failure in a DCRStepError", func(t *testing.T) {
+		t.Parallel()
+
+		// Precondition failure → dcrStepValidate.
+		_, err := resolveDCRCredentials(context.Background(), nil, "https://as",
+			NewInMemoryDCRCredentialStore())
+		require.Error(t, err)
+		var stepErr *DCRStepError
+		require.True(t, errors.As(err, &stepErr))
+		assert.Equal(t, dcrStepValidate, stepErr.Step)
+	})
+}
+
+func TestSanitizeErrorForLog(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		in       error
+		expected string
+	}{
+		{
+			name:     "nil error returns empty string",
+			in:       nil,
+			expected: "",
+		},
+		{
+			name:     "no URL passes through unchanged",
+			in:       fmt.Errorf("something went wrong"),
+			expected: "something went wrong",
+		},
+		{
+			name:     "URL without query is preserved",
+			in:       fmt.Errorf("GET https://as.example.com/register failed"),
+			expected: "GET https://as.example.com/register failed",
+		},
+		{
+			name:     "URL query is stripped",
+			in:       fmt.Errorf("GET https://as.example.com/register?token=leak&foo=bar failed"),
+			expected: "GET https://as.example.com/register failed",
+		},
+		{
+			name:     "multiple URLs — only queries are stripped, hosts and paths remain",
+			in:       fmt.Errorf("from https://a.example/p1?x=1 to https://b.example/p2?y=2"),
+			expected: "from https://a.example/p1 to https://b.example/p2",
+		},
+		// Trailing punctuation regression cases: the query is stripped
+		// but the sentence punctuation adjacent to the URL must be
+		// preserved verbatim. Without trimURLTrailingPunctuation the
+		// regex's greedy character class would absorb these into the
+		// raw query and drop them along with it.
+		{
+			name:     "trailing comma is preserved when query is stripped",
+			in:       fmt.Errorf("error reaching https://as.example.com/register?x=1, retrying."),
+			expected: "error reaching https://as.example.com/register, retrying.",
+		},
+		{
+			name:     "trailing period is preserved when query is stripped",
+			in:       fmt.Errorf("failed: https://a.example/p?q=1."),
+			expected: "failed: https://a.example/p.",
+		},
+		{
+			name:     "trailing closing paren is preserved when query is stripped",
+			in:       fmt.Errorf("(see https://ex.com/a?b=1)"),
+			expected: "(see https://ex.com/a)",
+		},
+		{
+			name:     "mixed trailing punctuation is preserved when query is stripped",
+			in:       fmt.Errorf("at https://ex.com/a?b=1]!"),
+			expected: "at https://ex.com/a]!",
+		},
+		{
+			name:     "trailing punctuation on URL without query is still preserved",
+			in:       fmt.Errorf("see https://ex.com/a."),
+			expected: "see https://ex.com/a.",
+		},
+		{
+			name:     "go http client style quoted URL is sanitised",
+			in:       fmt.Errorf(`Get "https://as.example.com/register?token=abc": EOF`),
+			expected: `Get "https://as.example.com/register": EOF`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tc.expected, sanitizeErrorForLog(tc.in))
+		})
+	}
 }

@@ -53,3 +53,11 @@ const (
 	// originating from this package and its callers.
 	UserAgent = "ToolHive/1.0"
 )
+
+// URL scheme constants.
+const (
+	// schemeHTTPS is the URL scheme required for all OAuth / OIDC endpoints,
+	// except when the host is a loopback address (development). Unexported
+	// so the check stays internally consistent within this package.
+	schemeHTTPS = "https"
+)

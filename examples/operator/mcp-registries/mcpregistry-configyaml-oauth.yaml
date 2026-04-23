@@ -25,7 +25,6 @@ spec:
   configYAML: |
     sources:
       - name: production
-        format: toolhive
         file:
           path: /config/registry/production/registry.json
     registries:

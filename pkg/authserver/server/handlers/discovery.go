@@ -23,7 +23,7 @@ import (
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
-	sharedobauth "github.com/stacklok/toolhive/pkg/oauth"
+	sharedobauth "github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // Cache-Control max-age values for discovery endpoints.

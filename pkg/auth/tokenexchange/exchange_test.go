@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
-	"github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
@@ -41,7 +41,7 @@ func newResponse() *responseBuilder {
 	return &responseBuilder{
 		resp: response{
 			AccessToken:     "token",
-			IssuedTokenType: oauth.TokenTypeAccessToken,
+			IssuedTokenType: oauthproto.TokenTypeAccessToken,
 			TokenType:       "Bearer",
 		},
 	}
@@ -95,37 +95,37 @@ func TestNormalizeTokenType(t *testing.T) {
 		{
 			name:      "short form access_token",
 			input:     "access_token",
-			want:      oauth.TokenTypeAccessToken,
+			want:      oauthproto.TokenTypeAccessToken,
 			wantError: false,
 		},
 		{
 			name:      "short form id_token",
 			input:     "id_token",
-			want:      oauth.TokenTypeIDToken,
+			want:      oauthproto.TokenTypeIDToken,
 			wantError: false,
 		},
 		{
 			name:      "short form jwt",
 			input:     "jwt",
-			want:      oauth.TokenTypeJWT,
+			want:      oauthproto.TokenTypeJWT,
 			wantError: false,
 		},
 		{
 			name:      "full URN access_token",
-			input:     oauth.TokenTypeAccessToken,
-			want:      oauth.TokenTypeAccessToken,
+			input:     oauthproto.TokenTypeAccessToken,
+			want:      oauthproto.TokenTypeAccessToken,
 			wantError: false,
 		},
 		{
 			name:      "full URN id_token",
-			input:     oauth.TokenTypeIDToken,
-			want:      oauth.TokenTypeIDToken,
+			input:     oauthproto.TokenTypeIDToken,
+			want:      oauthproto.TokenTypeIDToken,
 			wantError: false,
 		},
 		{
 			name:      "full URN jwt",
-			input:     oauth.TokenTypeJWT,
-			want:      oauth.TokenTypeJWT,
+			input:     oauthproto.TokenTypeJWT,
+			want:      oauthproto.TokenTypeJWT,
 			wantError: false,
 		},
 		{
@@ -1056,7 +1056,7 @@ func TestExchangeToken_MinimalResponse(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "access-token-value", resp.AccessToken)
 	assert.Equal(t, "Bearer", resp.TokenType)
-	assert.Equal(t, oauth.TokenTypeAccessToken, resp.IssuedTokenType)
+	assert.Equal(t, oauthproto.TokenTypeAccessToken, resp.IssuedTokenType)
 	assert.Equal(t, 0, resp.ExpiresIn)
 	assert.Empty(t, resp.Scope)
 	assert.Empty(t, resp.RefreshToken)
@@ -1410,17 +1410,17 @@ func TestExchangeConfig_Validate_SubjectTokenType(t *testing.T) {
 	}{
 		{
 			name:             "valid access_token",
-			subjectTokenType: oauth.TokenTypeAccessToken,
+			subjectTokenType: oauthproto.TokenTypeAccessToken,
 			wantErr:          false,
 		},
 		{
 			name:             "valid id_token",
-			subjectTokenType: oauth.TokenTypeIDToken,
+			subjectTokenType: oauthproto.TokenTypeIDToken,
 			wantErr:          false,
 		},
 		{
 			name:             "valid jwt",
-			subjectTokenType: oauth.TokenTypeJWT,
+			subjectTokenType: oauthproto.TokenTypeJWT,
 			wantErr:          false,
 		},
 		{
@@ -1475,28 +1475,28 @@ func TestTokenSource_Token_RequestedTokenTypeAndResource(t *testing.T) {
 			name:                   "defaults when unset",
 			requestedTokenType:     "",
 			resource:               "",
-			wantRequestedTokenType: oauth.TokenTypeAccessToken,
+			wantRequestedTokenType: oauthproto.TokenTypeAccessToken,
 			wantResource:           "",
 		},
 		{
 			name:                   "override requested_token_type",
-			requestedTokenType:     oauth.TokenTypeJWT,
+			requestedTokenType:     oauthproto.TokenTypeJWT,
 			resource:               "",
-			wantRequestedTokenType: oauth.TokenTypeJWT,
+			wantRequestedTokenType: oauthproto.TokenTypeJWT,
 			wantResource:           "",
 		},
 		{
 			name:                   "resource forwarded on the wire",
 			requestedTokenType:     "",
 			resource:               "https://mcp.example.com/api",
-			wantRequestedTokenType: oauth.TokenTypeAccessToken,
+			wantRequestedTokenType: oauthproto.TokenTypeAccessToken,
 			wantResource:           "https://mcp.example.com/api",
 		},
 		{
 			name:                   "both set",
-			requestedTokenType:     oauth.TokenTypeJWT,
+			requestedTokenType:     oauthproto.TokenTypeJWT,
 			resource:               "https://mcp.example.com/api",
-			wantRequestedTokenType: oauth.TokenTypeJWT,
+			wantRequestedTokenType: oauthproto.TokenTypeJWT,
 			wantResource:           "https://mcp.example.com/api",
 		},
 	}

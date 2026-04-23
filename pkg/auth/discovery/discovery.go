@@ -29,7 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/networking"
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // Default timeout constants for authentication operations
@@ -721,20 +721,28 @@ func registerDynamicClient(
 	ctx context.Context,
 	config *OAuthFlowConfig,
 	discoveredDoc *oauthproto.OIDCDiscoveryDocument,
-) (*oauth.DynamicClientRegistrationResponse, error) {
+) (*oauthproto.DynamicClientRegistrationResponse, error) {
 
-	// Check if the provider supports Dynamic Client Registration
+	// Check if the provider supports Dynamic Client Registration.
+	// The CLI-flag hint below is intentional: this function is CLI-facing
+	// (pkg/auth/discovery is not a protocol-level package) and the flags
+	// named here are the correct fallback for operators who need to supply
+	// credentials manually. The protocol-neutral version of this message lives
+	// in pkg/oauthproto.handleHTTPResponse for the HTTP 404/405/501 paths.
+	// TODO(#4978): when authserver wiring is added, consider surfacing a
+	// more structured error type here so non-CLI consumers can inspect the cause.
 	if discoveredDoc.RegistrationEndpoint == "" {
 		return nil, fmt.Errorf("this provider does not support Dynamic Client Registration (DCR). " +
 			"Please configure OAuth client credentials using --remote-auth-client-id and --remote-auth-client-secret flags, " +
 			"or register a client manually with the provider")
 	}
 
-	// Use default client name if not provided
-	registrationRequest := oauth.NewDynamicClientRegistrationRequest(config.Scopes, config.CallbackPort)
+	// Build the CLI-specific DCR request (loopback redirect URI per RFC 8252 Section 7.3)
+	registrationRequest := NewDynamicClientRegistrationRequest(config.Scopes, config.CallbackPort)
 
-	// Perform dynamic client registration
-	registrationResponse, err := oauth.RegisterClientDynamically(ctx, discoveredDoc.RegistrationEndpoint, registrationRequest)
+	// Perform dynamic client registration; nil client uses the default HTTP client.
+	registrationResponse, err := oauthproto.RegisterClientDynamically(
+		ctx, discoveredDoc.RegistrationEndpoint, registrationRequest, nil)
 	if err != nil {
 		return nil, fmt.Errorf("dynamic client registration failed: %w", err)
 	}

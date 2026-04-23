@@ -19,7 +19,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
@@ -50,18 +50,18 @@ func NormalizeTokenType(tokenType string) (string, error) {
 
 	// Check if already a full URN (backward compatibility)
 	switch tokenType {
-	case oauth.TokenTypeAccessToken, oauth.TokenTypeIDToken, oauth.TokenTypeJWT:
+	case oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT:
 		return tokenType, nil
 	}
 
 	// Convert short form to full URN
 	switch tokenType {
 	case "access_token":
-		return oauth.TokenTypeAccessToken, nil
+		return oauthproto.TokenTypeAccessToken, nil
 	case "id_token":
-		return oauth.TokenTypeIDToken, nil
+		return oauthproto.TokenTypeIDToken, nil
 	case "jwt":
-		return oauth.TokenTypeJWT, nil
+		return oauthproto.TokenTypeJWT, nil
 	default:
 		return "", fmt.Errorf("invalid token type %q: must be one of: access_token, id_token, jwt", tokenType)
 	}
@@ -203,12 +203,12 @@ type ExchangeConfig struct {
 	Scopes []string
 
 	// SubjectTokenType specifies the type of the subject token being exchanged.
-	// Common values: oauth.TokenTypeAccessToken (default), oauth.TokenTypeIDToken, oauth.TokenTypeJWT.
-	// If empty, defaults to oauth.TokenTypeAccessToken.
+	// Common values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.
+	// If empty, defaults to oauthproto.TokenTypeAccessToken.
 	SubjectTokenType string
 
 	// RequestedTokenType specifies the desired token type in the exchange response.
-	// Defaults to oauth.TokenTypeAccessToken per RFC 8693. Set to any RFC 8693
+	// Defaults to oauthproto.TokenTypeAccessToken per RFC 8693. Set to any RFC 8693
 	// token-type URN to request a different issued token type.
 	RequestedTokenType string
 
@@ -300,17 +300,17 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 	// Determine subject token type (default to access_token if not specified)
 	subjectTokenType := conf.SubjectTokenType
 	if subjectTokenType == "" {
-		subjectTokenType = oauth.TokenTypeAccessToken
+		subjectTokenType = oauthproto.TokenTypeAccessToken
 	}
 
 	// Build the token exchange request
 	requestedTokenType := conf.RequestedTokenType
 	if requestedTokenType == "" {
-		requestedTokenType = oauth.TokenTypeAccessToken
+		requestedTokenType = oauthproto.TokenTypeAccessToken
 	}
 
 	request := &exchangeRequest{
-		GrantType:          oauth.GrantTypeTokenExchange,
+		GrantType:          oauthproto.GrantTypeTokenExchange,
 		Audience:           conf.Audience,
 		Scope:              conf.Scopes,
 		RequestedTokenType: requestedTokenType,
@@ -409,7 +409,7 @@ func buildTokenExchangeFormData(request *exchangeRequest) (url.Values, error) {
 
 	// Grant type is always token exchange
 	if request.GrantType == "" {
-		request.GrantType = oauth.GrantTypeTokenExchange
+		request.GrantType = oauthproto.GrantTypeTokenExchange
 	}
 	data.Set("grant_type", request.GrantType)
 
@@ -421,13 +421,13 @@ func buildTokenExchangeFormData(request *exchangeRequest) (url.Values, error) {
 
 	// Subject token type defaults to access_token if not specified
 	if request.SubjectTokenType == "" {
-		request.SubjectTokenType = oauth.TokenTypeAccessToken
+		request.SubjectTokenType = oauthproto.TokenTypeAccessToken
 	}
 	data.Set("subject_token_type", request.SubjectTokenType)
 
 	// Requested token type defaults to access_token if not specified
 	if request.RequestedTokenType == "" {
-		request.RequestedTokenType = oauth.TokenTypeAccessToken
+		request.RequestedTokenType = oauthproto.TokenTypeAccessToken
 	}
 	data.Set("requested_token_type", request.RequestedTokenType)
 

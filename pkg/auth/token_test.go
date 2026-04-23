@@ -29,7 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	keysmocks "github.com/stacklok/toolhive/pkg/authserver/server/keys/mocks"
 	"github.com/stacklok/toolhive/pkg/networking"
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (

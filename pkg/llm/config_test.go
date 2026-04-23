@@ -7,19 +7,19 @@ import (
 	"testing"
 )
 
-func TestLLMConfig_IsConfigured(t *testing.T) {
+func TestConfig_IsConfigured(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name string
-		cfg  LLMConfig
+		cfg  Config
 		want bool
 	}{
 		{
 			name: "fully configured",
-			cfg: LLMConfig{
+			cfg: Config{
 				GatewayURL: "https://llm.example.com",
-				OIDC: LLMOIDCConfig{
+				OIDC: OIDCConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "my-client",
 				},
@@ -28,8 +28,8 @@ func TestLLMConfig_IsConfigured(t *testing.T) {
 		},
 		{
 			name: "missing gateway URL",
-			cfg: LLMConfig{
-				OIDC: LLMOIDCConfig{
+			cfg: Config{
+				OIDC: OIDCConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "my-client",
 				},
@@ -38,9 +38,9 @@ func TestLLMConfig_IsConfigured(t *testing.T) {
 		},
 		{
 			name: "missing issuer",
-			cfg: LLMConfig{
+			cfg: Config{
 				GatewayURL: "https://llm.example.com",
-				OIDC: LLMOIDCConfig{
+				OIDC: OIDCConfig{
 					ClientID: "my-client",
 				},
 			},
@@ -48,9 +48,9 @@ func TestLLMConfig_IsConfigured(t *testing.T) {
 		},
 		{
 			name: "missing client ID",
-			cfg: LLMConfig{
+			cfg: Config{
 				GatewayURL: "https://llm.example.com",
-				OIDC: LLMOIDCConfig{
+				OIDC: OIDCConfig{
 					Issuer: "https://auth.example.com",
 				},
 			},
@@ -58,7 +58,7 @@ func TestLLMConfig_IsConfigured(t *testing.T) {
 		},
 		{
 			name: "empty config",
-			cfg:  LLMConfig{},
+			cfg:  Config{},
 			want: false,
 		},
 	}
@@ -74,12 +74,12 @@ func TestLLMConfig_IsConfigured(t *testing.T) {
 	}
 }
 
-func TestLLMConfig_Validate(t *testing.T) {
+func TestConfig_Validate(t *testing.T) {
 	t.Parallel()
 
-	valid := LLMConfig{
+	valid := Config{
 		GatewayURL: "https://llm.example.com",
-		OIDC: LLMOIDCConfig{
+		OIDC: OIDCConfig{
 			Issuer:   "https://auth.example.com",
 			ClientID: "my-client",
 		},
@@ -87,7 +87,7 @@ func TestLLMConfig_Validate(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		cfg     LLMConfig
+		cfg     Config
 		wantErr bool
 	}{
 		{
@@ -97,8 +97,8 @@ func TestLLMConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "missing gateway URL",
-			cfg: LLMConfig{
-				OIDC: LLMOIDCConfig{
+			cfg: Config{
+				OIDC: OIDCConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "my-client",
 				},
@@ -107,9 +107,9 @@ func TestLLMConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "HTTP gateway URL rejected",
-			cfg: LLMConfig{
+			cfg: Config{
 				GatewayURL: "http://llm.example.com",
-				OIDC: LLMOIDCConfig{
+				OIDC: OIDCConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "my-client",
 				},
@@ -118,9 +118,9 @@ func TestLLMConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "missing issuer",
-			cfg: LLMConfig{
+			cfg: Config{
 				GatewayURL: "https://llm.example.com",
-				OIDC: LLMOIDCConfig{
+				OIDC: OIDCConfig{
 					ClientID: "my-client",
 				},
 			},
@@ -128,9 +128,9 @@ func TestLLMConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "missing client ID",
-			cfg: LLMConfig{
+			cfg: Config{
 				GatewayURL: "https://llm.example.com",
-				OIDC: LLMOIDCConfig{
+				OIDC: OIDCConfig{
 					Issuer: "https://auth.example.com",
 				},
 			},
@@ -138,45 +138,45 @@ func TestLLMConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "proxy port below range",
-			cfg: LLMConfig{
+			cfg: Config{
 				GatewayURL: "https://llm.example.com",
-				OIDC: LLMOIDCConfig{
+				OIDC: OIDCConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "my-client",
 				},
-				Proxy: LLMProxyConfig{ListenPort: 80},
+				Proxy: ProxyConfig{ListenPort: 80},
 			},
 			wantErr: true,
 		},
 		{
 			name: "proxy port above range",
-			cfg: LLMConfig{
+			cfg: Config{
 				GatewayURL: "https://llm.example.com",
-				OIDC: LLMOIDCConfig{
+				OIDC: OIDCConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "my-client",
 				},
-				Proxy: LLMProxyConfig{ListenPort: 99999},
+				Proxy: ProxyConfig{ListenPort: 99999},
 			},
 			wantErr: true,
 		},
 		{
 			name: "valid custom proxy port",
-			cfg: LLMConfig{
+			cfg: Config{
 				GatewayURL: "https://llm.example.com",
-				OIDC: LLMOIDCConfig{
+				OIDC: OIDCConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "my-client",
 				},
-				Proxy: LLMProxyConfig{ListenPort: 8080},
+				Proxy: ProxyConfig{ListenPort: 8080},
 			},
 			wantErr: false,
 		},
 		{
 			name: "callback port below range",
-			cfg: LLMConfig{
+			cfg: Config{
 				GatewayURL: "https://llm.example.com",
-				OIDC: LLMOIDCConfig{
+				OIDC: OIDCConfig{
 					Issuer:       "https://auth.example.com",
 					ClientID:     "my-client",
 					CallbackPort: 100,
@@ -186,9 +186,9 @@ func TestLLMConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "valid callback port",
-			cfg: LLMConfig{
+			cfg: Config{
 				GatewayURL: "https://llm.example.com",
-				OIDC: LLMOIDCConfig{
+				OIDC: OIDCConfig{
 					Issuer:       "https://auth.example.com",
 					ClientID:     "my-client",
 					CallbackPort: 9000,
@@ -209,12 +209,12 @@ func TestLLMConfig_Validate(t *testing.T) {
 	}
 }
 
-func TestLLMConfig_EffectiveProxyPort(t *testing.T) {
+func TestConfig_EffectiveProxyPort(t *testing.T) {
 	t.Parallel()
 
 	t.Run("returns default when not set", func(t *testing.T) {
 		t.Parallel()
-		cfg := LLMConfig{}
+		cfg := Config{}
 		if got := cfg.EffectiveProxyPort(); got != DefaultProxyListenPort {
 			t.Errorf("EffectiveProxyPort() = %d, want %d", got, DefaultProxyListenPort)
 		}
@@ -222,19 +222,19 @@ func TestLLMConfig_EffectiveProxyPort(t *testing.T) {
 
 	t.Run("returns configured port", func(t *testing.T) {
 		t.Parallel()
-		cfg := LLMConfig{Proxy: LLMProxyConfig{ListenPort: 8080}}
+		cfg := Config{Proxy: ProxyConfig{ListenPort: 8080}}
 		if got := cfg.EffectiveProxyPort(); got != 8080 {
 			t.Errorf("EffectiveProxyPort() = %d, want 8080", got)
 		}
 	})
 }
 
-func TestLLMOIDCConfig_EffectiveScopes(t *testing.T) {
+func TestOIDCConfig_EffectiveScopes(t *testing.T) {
 	t.Parallel()
 
 	t.Run("returns defaults when not set", func(t *testing.T) {
 		t.Parallel()
-		cfg := LLMOIDCConfig{}
+		cfg := OIDCConfig{}
 		scopes := cfg.EffectiveScopes()
 		if len(scopes) == 0 {
 			t.Error("EffectiveScopes() returned empty slice for zero-value config")
@@ -243,7 +243,7 @@ func TestLLMOIDCConfig_EffectiveScopes(t *testing.T) {
 
 	t.Run("returns configured scopes", func(t *testing.T) {
 		t.Parallel()
-		cfg := LLMOIDCConfig{Scopes: []string{"openid", "email"}}
+		cfg := OIDCConfig{Scopes: []string{"openid", "email"}}
 		scopes := cfg.EffectiveScopes()
 		if len(scopes) != 2 || scopes[0] != "openid" || scopes[1] != "email" {
 			t.Errorf("EffectiveScopes() = %v, want [openid email]", scopes)

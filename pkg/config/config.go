@@ -48,7 +48,7 @@ type Config struct {
 	BuildAuthFiles               map[string]string                   `yaml:"build_auth_files,omitempty"`
 	RuntimeConfigs               map[string]*templates.RuntimeConfig `yaml:"runtime_configs,omitempty"`
 	RegistryAuth                 RegistryAuth                        `yaml:"registry_auth,omitempty"`
-	LLM                         llm.LLMConfig                       `yaml:"llm,omitempty"`
+	LLM                          llm.Config                          `yaml:"llm,omitempty"`
 }
 
 // RegistryAuthTypeOAuth is the auth type for OAuth/OIDC authentication.

@@ -95,6 +95,41 @@ func validateEndpointURLWithSkip(endpoint string, skipValidation bool) error {
 	return nil
 }
 
+// ValidateHTTPSURL checks that rawURL is a valid URL using the https scheme.
+// Unlike ValidateEndpointURL, no localhost exception is made — HTTPS is always
+// required (suitable for gateway URLs and other production endpoints).
+func ValidateHTTPSURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("URL must include a host: %s", rawURL)
+	}
+	if parsed.Scheme != HttpsScheme {
+		return fmt.Errorf("must use HTTPS, got scheme %q", parsed.Scheme)
+	}
+	return nil
+}
+
+// ValidateIssuerURL validates that an OIDC issuer URL is well-formed and uses
+// HTTPS. HTTP is permitted only for localhost (development). Per OIDC Core
+// Section 3.1.2.1 and RFC 8414 Section 2, the issuer MUST use the "https"
+// scheme.
+func ValidateIssuerURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid issuer URL %q: %w", rawURL, err)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("issuer URL must include a host: %s", rawURL)
+	}
+	if u.Scheme != HttpsScheme && !IsLocalhost(u.Host) {
+		return fmt.Errorf("issuer URL must use HTTPS (except localhost for development): %s", rawURL)
+	}
+	return nil
+}
+
 // IsLocalhost checks if a host is localhost (for development)
 func IsLocalhost(host string) bool {
 	return strings.HasPrefix(host, "localhost:") ||

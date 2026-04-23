@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -18,8 +19,9 @@ import (
 
 func newLLMCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "llm",
-		Short: "Manage LLM gateway authentication",
+		Use:    "llm",
+		Hidden: true,
+		Short:  "Manage LLM gateway authentication",
 		Long: `Configure and manage authentication for OIDC-protected LLM gateways.
 
 The llm command bridges AI coding tools to LLM gateways by handling OIDC
@@ -34,7 +36,7 @@ authentication transparently. Two modes are supported:
 Run "thv llm setup" to get started.`,
 	}
 
-	cmd.AddCommand(newLLMConfigCommand())
+	cmd.AddCommand(newConfigCommand())
 	cmd.AddCommand(newLLMSetupCommand())
 	cmd.AddCommand(newLLMTeardownCommand())
 	cmd.AddCommand(newLLMProxyCommand())
@@ -45,21 +47,21 @@ Run "thv llm setup" to get started.`,
 
 // ── config subcommand group ───────────────────────────────────────────────────
 
-func newLLMConfigCommand() *cobra.Command {
+func newConfigCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Manage LLM gateway configuration",
 		Long:  "The config command provides subcommands to manage LLM gateway connection settings.",
 	}
 
-	cmd.AddCommand(newLLMConfigSetCommand())
-	cmd.AddCommand(newLLMConfigShowCommand())
-	cmd.AddCommand(newLLMConfigResetCommand())
+	cmd.AddCommand(newConfigSetCommand())
+	cmd.AddCommand(newConfigShowCommand())
+	cmd.AddCommand(newConfigResetCommand())
 
 	return cmd
 }
 
-func newLLMConfigSetCommand() *cobra.Command {
+func newConfigSetCommand() *cobra.Command {
 	var (
 		gatewayURL   string
 		issuer       string
@@ -100,6 +102,12 @@ Example:
 				if callbackPort != 0 {
 					c.LLM.OIDC.CallbackPort = callbackPort
 				}
+				// Only run full validation once all required fields are present.
+				// Partial updates (e.g. --proxy-port only) are allowed so that
+				// users can configure the gateway incrementally.
+				if !c.LLM.IsConfigured() {
+					return nil
+				}
 				return c.LLM.Validate()
 			})
 		},
@@ -115,18 +123,19 @@ Example:
 	return cmd
 }
 
-func newLLMConfigShowCommand() *cobra.Command {
+func newConfigShowCommand() *cobra.Command {
 	var outputFormat string
 
 	cmd := &cobra.Command{
-		Use:   "show",
-		Short: "Display current LLM gateway configuration",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Use:     "show",
+		Short:   "Display current LLM gateway configuration",
+		Args:    cobra.NoArgs,
+		PreRunE: ValidateFormat(&outputFormat, FormatJSON, FormatText),
+		RunE: func(_ *cobra.Command, _ []string) error {
 			provider := config.NewDefaultProvider()
 			llmCfg := provider.GetConfig().LLM
 
-			if outputFormat == "json" {
+			if outputFormat == FormatJSON {
 				enc, err := json.MarshalIndent(llmCfg, "", "  ")
 				if err != nil {
 					return fmt.Errorf("failed to encode config as JSON: %w", err)
@@ -159,12 +168,12 @@ func newLLMConfigShowCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&outputFormat, "output", "o", "", "Output format (json)")
+	AddFormatFlag(cmd, &outputFormat, FormatJSON, FormatText)
 
 	return cmd
 }
 
-func newLLMConfigResetCommand() *cobra.Command {
+func newConfigResetCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "reset",
 		Short: "Clear all LLM gateway configuration and cached tokens",
@@ -175,11 +184,11 @@ tokens from the secrets provider.`,
 			// Delete cached tokens from the secrets provider first.
 			if err := deleteLLMSecrets(cmd.Context()); err != nil {
 				// Non-fatal: log and continue so the config is still cleared.
-				fmt.Printf("Warning: could not remove cached LLM tokens: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Warning: could not remove cached LLM tokens: %v\n", err)
 			}
 
 			return config.UpdateConfig(func(c *config.Config) error {
-				c.LLM = llm.LLMConfig{}
+				c.LLM = llm.Config{}
 				return nil
 			})
 		},
@@ -187,13 +196,24 @@ tokens from the secrets provider.`,
 }
 
 // deleteLLMSecrets removes all secrets stored under the LLM scope.
-func deleteLLMSecrets(_ context.Context) error {
+func deleteLLMSecrets(ctx context.Context) error {
 	provider, err := secrets.GetSystemSecretsProvider()
 	if err != nil {
 		return fmt.Errorf("failed to get secrets provider: %w", err)
 	}
 	scoped := pkgsecrets.NewScopedProvider(provider, pkgsecrets.ScopeLLM)
-	return scoped.Cleanup()
+	descs, err := scoped.ListSecrets(ctx)
+	if err != nil {
+		return err
+	}
+	if len(descs) == 0 {
+		return nil
+	}
+	names := make([]string, len(descs))
+	for i, d := range descs {
+		names[i] = d.Key
+	}
+	return scoped.DeleteSecrets(ctx, names)
 }
 
 // ── setup / teardown stubs ────────────────────────────────────────────────────
@@ -201,12 +221,8 @@ func deleteLLMSecrets(_ context.Context) error {
 func newLLMSetupCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "setup",
-		Short: "Detect installed AI tools, configure them, and trigger OIDC login",
-		Long: `Detect installed AI coding tools, configure each to use the LLM gateway,
-start the background proxy for proxy-mode tools, and trigger an OIDC browser login.
-
-Run "thv llm config set" first to set the gateway URL, issuer, and client ID.`,
-		Args: cobra.NoArgs,
+		Short: "Detect installed AI tools, configure them, and trigger OIDC login (coming soon)",
+		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return fmt.Errorf("not implemented: coming in a future release")
 		},
@@ -216,12 +232,8 @@ Run "thv llm config set" first to set the gateway URL, issuer, and client ID.`,
 func newLLMTeardownCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "teardown [tool-name]",
-		Short: "Remove LLM gateway configuration from all tools and stop the proxy",
-		Long: `Remove LLM gateway configuration from all configured AI tools and stop the
-background proxy. Optionally target a single tool by name.
-
-Use --purge-tokens to also delete cached OIDC tokens from the secrets provider.`,
-		Args: cobra.MaximumNArgs(1),
+		Short: "Remove LLM gateway configuration from all tools and stop the proxy (coming soon)",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return fmt.Errorf("not implemented: coming in a future release")
 		},
@@ -248,10 +260,8 @@ func newLLMProxyCommand() *cobra.Command {
 func newLLMProxyStartCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "start",
-		Short: "Start the LLM proxy in the foreground (for debugging)",
-		Long: `Start the localhost reverse proxy in the foreground with full log output.
-This is a debugging aid — use "thv llm setup" to start the proxy in the background.`,
-		Args: cobra.NoArgs,
+		Short: "Start the LLM proxy in the foreground (coming soon)",
+		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return fmt.Errorf("not implemented: coming in a future release")
 		},
@@ -270,7 +280,10 @@ Intended for use as apiKeyHelper or auth.command in OIDC-capable AI tools.
 Runs non-interactively — will not launch a browser flow.`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return fmt.Errorf("not implemented: coming in a future release")
+			// Print the error to stderr so it doesn't corrupt the token value
+			// expected on stdout by callers such as apiKeyHelper or auth.command.
+			return fmt.Errorf("thv llm token is not yet implemented — " +
+				"run \"thv llm setup\" once it is available to configure your tools")
 		},
 	}
 

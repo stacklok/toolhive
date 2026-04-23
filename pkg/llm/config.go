@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 const (
@@ -18,68 +20,71 @@ const (
 	DefaultOIDCScopes = "openid offline_access"
 )
 
-// LLMConfig holds all LLM gateway settings persisted under the llm: key in
+// Config holds all LLM gateway settings persisted under the llm: key in
 // ToolHive's config.yaml.
-type LLMConfig struct {
-	GatewayURL      string          `yaml:"gateway_url,omitempty"`
-	OIDC            LLMOIDCConfig   `yaml:"oidc,omitempty"`
-	Proxy           LLMProxyConfig  `yaml:"proxy,omitempty"`
-	Auth            LLMAuthState    `yaml:"auth,omitempty"`
-	ConfiguredTools []LLMToolConfig `yaml:"configured_tools,omitempty"`
+type Config struct {
+	GatewayURL      string       `yaml:"gateway_url,omitempty"       json:"gateway_url,omitempty"`
+	OIDC            OIDCConfig   `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
+	Proxy           ProxyConfig  `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
+	ConfiguredTools []ToolConfig `yaml:"configured_tools,omitempty"  json:"configured_tools,omitempty"`
 }
 
-// LLMOIDCConfig holds OIDC provider settings for the LLM gateway.
-type LLMOIDCConfig struct {
-	Issuer       string   `yaml:"issuer,omitempty"`
-	ClientID     string   `yaml:"client_id,omitempty"`
-	Scopes       []string `yaml:"scopes,omitempty"`
-	Audience     string   `yaml:"audience,omitempty"`
-	CallbackPort int      `yaml:"callback_port,omitempty"`
+// OIDCConfig holds OIDC provider settings and cached token state for the LLM
+// gateway. Cached fields follow the same pattern as RegistryOAuthConfig in
+// pkg/config/config.go — token values are never stored here, only references
+// and expiry metadata.
+type OIDCConfig struct {
+	Issuer       string   `yaml:"issuer,omitempty"        json:"issuer,omitempty"`
+	ClientID     string   `yaml:"client_id,omitempty"     json:"client_id,omitempty"`
+	Scopes       []string `yaml:"scopes,omitempty"        json:"scopes,omitempty"`
+	Audience     string   `yaml:"audience,omitempty"      json:"audience,omitempty"`
+	CallbackPort int      `yaml:"callback_port,omitempty" json:"callback_port,omitempty"`
+
+	// CachedRefreshTokenRef is the secrets-provider key under which the refresh
+	// token is stored (never the token value itself).
+	CachedRefreshTokenRef string `yaml:"cached_refresh_token_ref,omitempty" json:"cached_refresh_token_ref,omitempty"`
+	// CachedTokenExpiry is the expiry of the most recently cached access token,
+	// used to surface helpful messages when the token is about to expire.
+	CachedTokenExpiry time.Time `yaml:"cached_token_expiry,omitempty" json:"cached_token_expiry,omitempty"`
 }
 
-// LLMProxyConfig holds configuration for the localhost reverse proxy.
-type LLMProxyConfig struct {
-	ListenPort int `yaml:"listen_port,omitempty"`
+// ProxyConfig holds configuration for the localhost reverse proxy.
+type ProxyConfig struct {
+	ListenPort int `yaml:"listen_port,omitempty" json:"listen_port,omitempty"`
 }
 
-// LLMAuthState records token lifecycle metadata persisted to config (no token
-// values — those live in the secrets provider or memory only).
-type LLMAuthState struct {
-	// CachedTokenExpiry is the expiry time of the most recently cached access
-	// token. Used to surface helpful messages when the token is about to expire.
-	CachedTokenExpiry time.Time `yaml:"cached_token_expiry,omitempty"`
-}
-
-// LLMToolConfig records a tool that setup has configured, so teardown knows
+// ToolConfig records a tool that setup has configured, so teardown knows
 // exactly what to reverse.
-type LLMToolConfig struct {
+type ToolConfig struct {
 	// Tool is the canonical tool identifier (e.g. "claude-code", "cursor").
-	Tool string `yaml:"tool"`
+	Tool string `yaml:"tool" json:"tool"`
 	// Mode is the authentication mode: "direct" or "proxy".
-	Mode string `yaml:"mode"`
+	Mode string `yaml:"mode" json:"mode"`
 	// ConfigPath is the absolute path to the tool's config file that was patched.
-	ConfigPath string `yaml:"config_path"`
+	ConfigPath string `yaml:"config_path" json:"config_path"`
 }
 
 // IsConfigured reports whether the minimum required fields are present for the
 // LLM gateway to be usable: gateway URL, OIDC issuer, and OIDC client ID.
-func (c *LLMConfig) IsConfigured() bool {
+func (c *Config) IsConfigured() bool {
 	return c.GatewayURL != "" && c.OIDC.Issuer != "" && c.OIDC.ClientID != ""
 }
 
 // Validate performs full validation of the LLM config, including HTTPS
 // enforcement, port range checks, and OIDC field requirements.
-func (c *LLMConfig) Validate() error {
+func (c *Config) Validate() error {
 	var errs []error
 
 	if c.GatewayURL == "" {
 		errs = append(errs, errors.New("gateway_url is required"))
-	} else if !strings.HasPrefix(c.GatewayURL, "https://") {
-		errs = append(errs, fmt.Errorf("gateway_url must use HTTPS, got: %s", c.GatewayURL))
+	} else if err := networking.ValidateHTTPSURL(c.GatewayURL); err != nil {
+		errs = append(errs, fmt.Errorf("gateway_url: %w", err))
 	}
 
 	if c.OIDC.Issuer == "" {
 		errs = append(errs, errors.New("oidc.issuer is required"))
+	} else if err := networking.ValidateIssuerURL(c.OIDC.Issuer); err != nil {
+		errs = append(errs, fmt.Errorf("oidc.issuer: %w", err))
 	}
 
 	if c.OIDC.ClientID == "" {
@@ -90,8 +95,12 @@ func (c *LLMConfig) Validate() error {
 		errs = append(errs, fmt.Errorf("proxy.listen_port must be between 1024 and 65535, got: %d", c.Proxy.ListenPort))
 	}
 
-	if c.OIDC.CallbackPort != 0 && (c.OIDC.CallbackPort < 1024 || c.OIDC.CallbackPort > 65535) {
-		errs = append(errs, fmt.Errorf("oidc.callback_port must be between 1024 and 65535, got: %d", c.OIDC.CallbackPort))
+	// Reuse networking.ValidateCallbackPort for the OIDC callback port — same
+	// range check (1024–65535), zero means ephemeral (auto-assigned). Pass the
+	// client ID so the validator applies strict availability checking for
+	// pre-registered clients (clientID != "").
+	if err := networking.ValidateCallbackPort(c.OIDC.CallbackPort, c.OIDC.ClientID); err != nil {
+		errs = append(errs, fmt.Errorf("oidc.callback_port: %w", err))
 	}
 
 	return errors.Join(errs...)
@@ -99,7 +108,7 @@ func (c *LLMConfig) Validate() error {
 
 // EffectiveProxyPort returns the configured proxy listen port, or
 // DefaultProxyListenPort if none is set.
-func (c *LLMConfig) EffectiveProxyPort() int {
+func (c *Config) EffectiveProxyPort() int {
 	if c.Proxy.ListenPort > 0 {
 		return c.Proxy.ListenPort
 	}
@@ -108,7 +117,7 @@ func (c *LLMConfig) EffectiveProxyPort() int {
 
 // EffectiveScopes returns the configured OIDC scopes, or the default scopes
 // (openid, offline_access) if none are set.
-func (c *LLMOIDCConfig) EffectiveScopes() []string {
+func (c *OIDCConfig) EffectiveScopes() []string {
 	if len(c.Scopes) > 0 {
 		return c.Scopes
 	}

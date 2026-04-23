@@ -42,6 +42,12 @@ const (
 
 	// MaxClientNameLength is the maximum allowed length for a client name.
 	MaxClientNameLength = 256
+
+	// MaxSoftwareIDLength is the maximum allowed length for a software_id
+	// value. RFC 7591 does not mandate an upper bound, so we reuse the
+	// client_name cap for consistency — a software_id is a similar-purpose
+	// human-oriented identifier and the same ballpark DoS concerns apply.
+	MaxSoftwareIDLength = 256
 )
 
 // DCRRequest represents an OAuth 2.0 Dynamic Client Registration request
@@ -70,6 +76,15 @@ type DCRRequest struct {
 	// If not specified, defaults to the server's default scopes.
 	// All requested scopes must be supported by the server.
 	Scope string `json:"scope,omitempty"`
+
+	// SoftwareID is the RFC 7591 "software_id" — a unique identifier for the
+	// client software. Captured from the incoming registration request for
+	// observability (audit logs surfaced on the successful-registration
+	// Info log); not persisted as part of the registered client, so it
+	// cannot be correlated with subsequent token requests. Bounded by
+	// MaxSoftwareIDLength and restricted to printable ASCII by
+	// ValidateDCRRequest.
+	SoftwareID string `json:"software_id,omitempty"`
 }
 
 // DCRResponse represents a successful OAuth 2.0 Dynamic Client Registration
@@ -164,6 +179,15 @@ func ValidateDCRRequest(req *DCRRequest) (*DCRRequest, *DCRError) {
 		}
 	}
 
+	// 4a. Validate software_id: length cap + printable-ASCII charset.
+	// RFC 7591 does not mandate an upper bound or a character class for
+	// software_id, but since we capture the value in audit logs we want a
+	// predictable shape and a hard cap against DoS — a caller sending
+	// multi-MB strings would slip past only the 64 KiB body cap otherwise.
+	if dcrErr := validateSoftwareID(req.SoftwareID); dcrErr != nil {
+		return nil, dcrErr
+	}
+
 	// 5. Validate/default token_endpoint_auth_method
 	authMethod := req.TokenEndpointAuthMethod
 	if authMethod == "" {
@@ -195,7 +219,36 @@ func ValidateDCRRequest(req *DCRRequest) (*DCRRequest, *DCRError) {
 		TokenEndpointAuthMethod: authMethod,
 		GrantTypes:              grantTypes,
 		ResponseTypes:           responseTypes,
+		SoftwareID:              req.SoftwareID,
 	}, nil
+}
+
+// validateSoftwareID enforces the length cap and printable-ASCII charset
+// for a DCR request's software_id. An empty value is accepted (the field
+// is optional per RFC 7591).
+func validateSoftwareID(softwareID string) *DCRError {
+	if softwareID == "" {
+		return nil
+	}
+	if len(softwareID) > MaxSoftwareIDLength {
+		return &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "software_id too long (maximum 256 characters)",
+		}
+	}
+	// Allow printable ASCII (0x20..0x7E) only. Control characters and
+	// non-ASCII input are rejected: we log this value and want a
+	// predictable on-disk representation regardless of handler choice.
+	for i := 0; i < len(softwareID); i++ {
+		c := softwareID[i]
+		if c < 0x20 || c > 0x7E {
+			return &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "software_id must contain only printable ASCII characters",
+			}
+		}
+	}
+	return nil
 }
 
 func validateGrantTypes(grantTypes []string) ([]string, *DCRError) {

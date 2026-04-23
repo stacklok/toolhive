@@ -1071,6 +1071,40 @@ _Appears in:_
 | `key` _string_ | Key is the key in the ConfigMap that contains the authorization configuration | authz.json | Optional: \{\} <br /> |
 
 
+#### api.v1beta1.DCRUpstreamConfig
+
+
+
+DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an
+OAuth 2.0 upstream. When present on an OAuth2 upstream, the authserver
+performs registration at runtime to obtain client credentials, replacing
+the need to pre-provision a ClientID.
+
+Exactly one of DiscoveryURL or RegistrationEndpoint must be set. DiscoveryURL
+points at an RFC 8414 / OIDC Discovery document from which the registration
+endpoint is resolved; RegistrationEndpoint is used directly when the upstream
+does not publish discovery metadata.
+
+The XOR rule uses has() alone (not has() + size() > 0) to keep the rule's
+estimated CEL cost under the apiserver's per-rule static budget. With
+`omitempty` on both fields, an unset field is absent on the wire and has()
+returns false; the explicit-empty-string edge case is rejected at reconcile
+time by ValidateOAuth2DCRConfig.
+
+
+
+_Appears in:_
+- [api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `discoveryUrl` _string_ | DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver<br />issues a single GET against this URL (no well-known-path fallback) and<br />reads registration_endpoint, authorization_endpoint, token_endpoint,<br />token_endpoint_auth_methods_supported, and scopes_supported from the<br />response.<br />Mutually exclusive with RegistrationEndpoint.<br />MaxLength bounds CEL cost estimation on the parent struct's<br />XValidation rule and matches the conventional URL length cap. |  | MaxLength: 2048 <br />Pattern: `^https?://.*$` <br />Optional: \{\} <br /> |
+| `registrationEndpoint` _string_ | RegistrationEndpoint is the RFC 7591 registration endpoint URL used<br />directly, bypassing discovery. When using this field, the caller is<br />expected to also supply AuthorizationEndpoint, TokenEndpoint, and an<br />explicit Scopes list on the parent OAuth2UpstreamConfig.<br />Mutually exclusive with DiscoveryURL.<br />MaxLength bounds CEL cost estimation on the parent struct's<br />XValidation rule and matches the conventional URL length cap. |  | MaxLength: 2048 <br />Pattern: `^https?://.*$` <br />Optional: \{\} <br /> |
+| `initialAccessTokenRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | InitialAccessTokenRef is an optional reference to a Kubernetes Secret<br />carrying an RFC 7591 §3 initial access token. When set, the resolver<br />presents the token value as a Bearer credential on the registration<br />request. Mirrors the ClientSecretRef pattern. |  | Optional: \{\} <br /> |
+| `softwareId` _string_ | SoftwareID is the RFC 7591 "software_id" registration metadata value,<br />identifying the client software independent of any particular<br />registration instance. Typically a UUID or short identifier. |  | MaxLength: 255 <br />Optional: \{\} <br /> |
+| `softwareStatement` _string_ | SoftwareStatement is the RFC 7591 "software_statement" JWT asserting<br />metadata about the client software, signed by a party the authorization<br />server trusts. Bounded to 4096 characters to prevent unbounded<br />user input from inflating the CR beyond etcd object limits. |  | MaxLength: 4096 <br />Optional: \{\} <br /> |
+
+
 
 
 #### api.v1beta1.EmbeddedAuthServerConfig
@@ -2516,6 +2550,10 @@ _Appears in:_
 OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
 OAuth 2.0 providers require explicit endpoint configuration.
 
+Exactly one of ClientID or DCRConfig must be set: ClientID is used when the
+client is pre-provisioned out of band, DCRConfig enables RFC 7591 Dynamic
+Client Registration at runtime.
+
 
 
 _Appears in:_
@@ -2526,12 +2564,13 @@ _Appears in:_
 | `authorizationEndpoint` _string_ | AuthorizationEndpoint is the URL for the OAuth authorization endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
 | `tokenEndpoint` _string_ | TokenEndpoint is the URL for the OAuth token endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
 | `userInfo` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfo contains configuration for fetching user information from the upstream provider.<br />When omitted, the embedded auth server runs in synthesis mode for this<br />upstream: a non-PII subject derived from the access token, no Name/Email.<br />Use this shape for upstreams with no userinfo surface (e.g., MCP<br />authorization servers per the MCP spec). |  | Optional: \{\} <br /> |
-| `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IDP. |  | Required: \{\} <br /> |
+| `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.<br />Mutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained<br />at runtime via RFC 7591 Dynamic Client Registration and must be left empty. |  | Optional: \{\} <br /> |
 | `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
 | `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IDP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IDP. |  | Optional: \{\} <br /> |
 | `tokenResponseMapping` _[api.v1beta1.TokenResponseMapping](#apiv1beta1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
+| `dcrConfig` _[api.v1beta1.DCRUpstreamConfig](#apiv1beta1dcrupstreamconfig)_ | DCRConfig enables RFC 7591 Dynamic Client Registration against the upstream<br />authorization server. When set, the client credentials are obtained at<br />runtime rather than being pre-provisioned, and ClientID must be left empty.<br />Mutually exclusive with ClientID. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.OIDCUpstreamConfig
@@ -2903,6 +2942,7 @@ SecretKeyRef is a reference to a key within a Secret
 
 _Appears in:_
 - [api.v1beta1.BearerTokenConfig](#apiv1beta1bearertokenconfig)
+- [api.v1beta1.DCRUpstreamConfig](#apiv1beta1dcrupstreamconfig)
 - [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
 - [api.v1beta1.EmbeddingServerSpec](#apiv1beta1embeddingserverspec)
 - [api.v1beta1.HeaderFromSecret](#apiv1beta1headerfromsecret)
@@ -3166,6 +3206,17 @@ _Appears in:_
 
 
 UpstreamProviderConfig defines configuration for an upstream Identity Provider.
+
+Exactly one of OIDCConfig or OAuth2Config must be set and must match the
+declared Type: oidc-typed providers set OIDCConfig, oauth2-typed providers
+set OAuth2Config. The CEL rule below enforces the pairing at admission; the
+matching Go-level check in validateUpstreamProvider provides defense-in-depth
+for stored objects.
+
+The rule is structured as a chain of equality checks ending in an explicit
+`false`, so adding a new UpstreamProviderType value without extending this
+rule fails admission instead of silently demanding the OAuth2 shape. When
+adding a new type, extend both this rule and validateUpstreamProvider.
 
 
 

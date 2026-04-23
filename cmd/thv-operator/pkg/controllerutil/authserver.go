@@ -55,27 +55,38 @@ const (
 
 	// UpstreamClientSecretEnvVar is the prefix for upstream client secret environment variables.
 	// Actual names are TOOLHIVE_UPSTREAM_CLIENT_SECRET_<PROVIDER> where PROVIDER is the
-	// upstream name uppercased with hyphens replaced by underscores.
+	// upstream name uppercased with hyphens replaced by underscores (e.g.,
+	// "acme-idp" -> TOOLHIVE_UPSTREAM_CLIENT_SECRET_ACME_IDP).
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
 	UpstreamClientSecretEnvVar = "TOOLHIVE_UPSTREAM_CLIENT_SECRET"
+
+	// UpstreamDCRInitialAccessTokenEnvVarPrefix is the prefix for RFC 7591
+	// initial access token environment variables used with Dynamic Client
+	// Registration. Actual env var names are constructed as
+	// <prefix>_<PROVIDER> where PROVIDER is the upstream name uppercased
+	// with hyphens replaced by underscores (e.g., "acme-idp" ->
+	// TOOLHIVE_UPSTREAM_DCR_INITIAL_ACCESS_TOKEN_ACME_IDP).
+	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
+	UpstreamDCRInitialAccessTokenEnvVarPrefix = "TOOLHIVE_UPSTREAM_DCR_INITIAL_ACCESS_TOKEN"
 
 	// DefaultSentinelPort is the default Redis Sentinel port
 	DefaultSentinelPort = 26379
 )
 
-// upstreamSecretBinding binds an upstream provider to its env var name for the
-// client secret. Both GenerateAuthServerEnvVars (Pod env) and
-// buildUpstreamRunConfig (runtime config) MUST use these bindings so the
-// env var names stay consistent.
+// upstreamSecretBinding binds an upstream provider to the env var names for
+// the secrets it owns (client secret and, optionally, the DCR initial access
+// token). Both GenerateAuthServerEnvVars (Pod env) and buildUpstreamRunConfig
+// (runtime config) MUST use these bindings so the env var names stay consistent.
 type upstreamSecretBinding struct {
-	Provider   *mcpv1beta1.UpstreamProviderConfig
-	EnvVarName string
+	Provider                    *mcpv1beta1.UpstreamProviderConfig
+	EnvVarName                  string
+	DCRInitialAccessTokenEnvVar string
 }
 
-// buildUpstreamSecretBindings computes the canonical env var name for each
-// upstream provider's client secret. The env var name is derived from the
-// provider's Name field (uppercased, hyphens replaced with underscores) to
-// keep bindings stable across provider reordering in the CRD.
+// buildUpstreamSecretBindings computes the canonical env var names for each
+// upstream provider's secrets. Names are derived from the provider's Name
+// field (uppercased, hyphens replaced with underscores) to keep bindings
+// stable across provider reordering in the CRD.
 func buildUpstreamSecretBindings(
 	providers []mcpv1beta1.UpstreamProviderConfig,
 ) []upstreamSecretBinding {
@@ -83,11 +94,81 @@ func buildUpstreamSecretBindings(
 	for i := range providers {
 		suffix := strings.ToUpper(strings.ReplaceAll(providers[i].Name, "-", "_"))
 		bindings[i] = upstreamSecretBinding{
-			Provider:   &providers[i],
-			EnvVarName: fmt.Sprintf("%s_%s", UpstreamClientSecretEnvVar, suffix),
+			Provider:                    &providers[i],
+			EnvVarName:                  fmt.Sprintf("%s_%s", UpstreamClientSecretEnvVar, suffix),
+			DCRInitialAccessTokenEnvVar: fmt.Sprintf("%s_%s", UpstreamDCRInitialAccessTokenEnvVarPrefix, suffix),
 		}
 	}
 	return bindings
+}
+
+// buildUpstreamSecretEnvVars returns the Pod env vars that expose the
+// client-secret and, when DCR is configured, the initial access token for a
+// single upstream provider. Returns nil if the provider has no relevant
+// secret references.
+func buildUpstreamSecretEnvVars(b *upstreamSecretBinding) []corev1.EnvVar {
+	clientSecretRef, initialAccessTokenRef := extractUpstreamSecretRefs(b.Provider)
+
+	var envVars []corev1.EnvVar
+	if clientSecretRef != nil {
+		envVars = append(envVars, envVarFromSecretRef(b.EnvVarName, clientSecretRef))
+	}
+	if initialAccessTokenRef != nil {
+		envVars = append(envVars, envVarFromSecretRef(b.DCRInitialAccessTokenEnvVar, initialAccessTokenRef))
+	}
+	return envVars
+}
+
+// extractUpstreamSecretRefs returns the client-secret and DCR initial-access-token
+// secret references for an upstream provider.
+//
+// What can be returned, given the admission-time invariants on
+// UpstreamProviderConfig (see the kubebuilder XValidation rule on the type and
+// the matching Go-level check in validateUpstreamProvider, which together
+// enforce that exactly one of OIDCConfig / OAuth2Config is set and that it
+// matches Type):
+//   - OIDC providers: only `clientSecretRef` is ever non-nil.
+//     `initialAccessTokenRef` is always nil because DCR is OAuth2-only and
+//     OAuth2Config must be nil for OIDC-typed providers.
+//   - OAuth2 providers: `clientSecretRef` and `initialAccessTokenRef` are
+//     independent — either, both, or neither may be non-nil.
+//   - Any other (currently unreachable) Type value: both are nil.
+//
+// Callers must not rely on the third bullet to mask an admission-bypassing
+// object — `BuildAuthServerRunConfig` is the reconcile-time backstop for that.
+func extractUpstreamSecretRefs(
+	provider *mcpv1beta1.UpstreamProviderConfig,
+) (clientSecretRef, initialAccessTokenRef *mcpv1beta1.SecretKeyRef) {
+	switch provider.Type {
+	case mcpv1beta1.UpstreamProviderTypeOIDC:
+		if provider.OIDCConfig != nil {
+			clientSecretRef = provider.OIDCConfig.ClientSecretRef
+		}
+	case mcpv1beta1.UpstreamProviderTypeOAuth2:
+		if provider.OAuth2Config != nil {
+			clientSecretRef = provider.OAuth2Config.ClientSecretRef
+			if provider.OAuth2Config.DCRConfig != nil {
+				initialAccessTokenRef = provider.OAuth2Config.DCRConfig.InitialAccessTokenRef
+			}
+		}
+	}
+	return clientSecretRef, initialAccessTokenRef
+}
+
+// envVarFromSecretRef builds a corev1.EnvVar that sources its value from the
+// given SecretKeyRef.
+func envVarFromSecretRef(name string, ref *mcpv1beta1.SecretKeyRef) corev1.EnvVar {
+	return corev1.EnvVar{
+		Name: name,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: ref.Name,
+				},
+				Key: ref.Key,
+			},
+		},
+	}
 }
 
 // EmbeddedAuthServerConfigName returns the config name that should be used for
@@ -282,33 +363,7 @@ func GenerateAuthServerEnvVars(
 
 	// Generate env vars for upstream client secrets using shared bindings
 	for _, b := range buildUpstreamSecretBindings(authConfig.UpstreamProviders) {
-		// Extract client secret reference based on provider type
-		var clientSecretRef *mcpv1beta1.SecretKeyRef
-
-		switch b.Provider.Type {
-		case mcpv1beta1.UpstreamProviderTypeOIDC:
-			if b.Provider.OIDCConfig != nil {
-				clientSecretRef = b.Provider.OIDCConfig.ClientSecretRef
-			}
-		case mcpv1beta1.UpstreamProviderTypeOAuth2:
-			if b.Provider.OAuth2Config != nil {
-				clientSecretRef = b.Provider.OAuth2Config.ClientSecretRef
-			}
-		}
-
-		if clientSecretRef != nil {
-			envVars = append(envVars, corev1.EnvVar{
-				Name: b.EnvVarName,
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: clientSecretRef.Name,
-						},
-						Key: clientSecretRef.Key,
-					},
-				},
-			})
-		}
+		envVars = append(envVars, buildUpstreamSecretEnvVars(&b)...)
 	}
 
 	// Generate env vars for Redis ACL credentials if configured
@@ -511,7 +566,11 @@ func BuildAuthServerRunConfig(
 	bindings := buildUpstreamSecretBindings(authConfig.UpstreamProviders)
 	config.Upstreams = make([]authserver.UpstreamRunConfig, 0, len(bindings))
 	for _, b := range bindings {
-		config.Upstreams = append(config.Upstreams, *buildUpstreamRunConfig(b.Provider, b.EnvVarName, resourceURL))
+		upstream, err := buildUpstreamRunConfig(&b, resourceURL)
+		if err != nil {
+			return nil, fmt.Errorf("upstream %q: %w", b.Provider.Name, err)
+		}
+		config.Upstreams = append(config.Upstreams, *upstream)
 	}
 
 	// Build storage configuration
@@ -645,14 +704,20 @@ func defaultRedirectURI(resourceURL string) string {
 }
 
 // buildUpstreamRunConfig converts CRD UpstreamProviderConfig to authserver.UpstreamRunConfig.
-// The envVarName is computed by buildUpstreamSecretBindings to keep Pod env
-// and runtime config in sync. When a provider's RedirectURI is empty, it is
-// defaulted to {resourceURL}/oauth/callback.
+// The binding carries the provider and the env var names computed by
+// buildUpstreamSecretBindings so Pod env and runtime config stay in sync.
+// When a provider's RedirectURI is empty, it is defaulted to
+// {resourceURL}/oauth/callback.
+//
+// Returns an error when the OAuth2 provider's ClientID and DCRConfig
+// combination is invalid (the same XOR enforced at admission by CEL).
+// Failing at reconcile time — rather than at authserver startup — matches
+// the project convention of rejecting malformed objects as early as possible.
 func buildUpstreamRunConfig(
-	provider *mcpv1beta1.UpstreamProviderConfig,
-	envVarName string,
+	b *upstreamSecretBinding,
 	resourceURL string,
-) *authserver.UpstreamRunConfig {
+) (*authserver.UpstreamRunConfig, error) {
+	provider := b.Provider
 	config := &authserver.UpstreamRunConfig{
 		Name: provider.Name,
 		Type: authserver.UpstreamProviderType(provider.Type),
@@ -661,59 +726,121 @@ func buildUpstreamRunConfig(
 	switch provider.Type {
 	case mcpv1beta1.UpstreamProviderTypeOIDC:
 		if provider.OIDCConfig != nil {
-			redirectURI := provider.OIDCConfig.RedirectURI
-			if redirectURI == "" && resourceURL != "" {
-				redirectURI = defaultRedirectURI(resourceURL)
-			}
-			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
-				IssuerURL:                     provider.OIDCConfig.IssuerURL,
-				ClientID:                      provider.OIDCConfig.ClientID,
-				RedirectURI:                   redirectURI,
-				Scopes:                        provider.OIDCConfig.Scopes,
-				AdditionalAuthorizationParams: provider.OIDCConfig.AdditionalAuthorizationParams,
-			}
-			// If client secret is configured, reference it via env var
-			if provider.OIDCConfig.ClientSecretRef != nil {
-				config.OIDCConfig.ClientSecretEnvVar = envVarName
-			}
-			if provider.OIDCConfig.UserInfoOverride != nil {
-				config.OIDCConfig.UserInfoOverride = buildUserInfoRunConfig(provider.OIDCConfig.UserInfoOverride)
-			}
+			config.OIDCConfig = buildOIDCUpstreamRunConfig(provider.OIDCConfig, b.EnvVarName, resourceURL)
 		}
 	case mcpv1beta1.UpstreamProviderTypeOAuth2:
 		if provider.OAuth2Config != nil {
-			redirectURI := provider.OAuth2Config.RedirectURI
-			if redirectURI == "" && resourceURL != "" {
-				redirectURI = defaultRedirectURI(resourceURL)
+			oauth2, err := buildOAuth2UpstreamRunConfig(provider, b, resourceURL)
+			if err != nil {
+				return nil, err
 			}
-			config.OAuth2Config = &authserver.OAuth2UpstreamRunConfig{
-				AuthorizationEndpoint:         provider.OAuth2Config.AuthorizationEndpoint,
-				TokenEndpoint:                 provider.OAuth2Config.TokenEndpoint,
-				ClientID:                      provider.OAuth2Config.ClientID,
-				RedirectURI:                   redirectURI,
-				Scopes:                        provider.OAuth2Config.Scopes,
-				AdditionalAuthorizationParams: provider.OAuth2Config.AdditionalAuthorizationParams,
-			}
-			// If client secret is configured, reference it via env var
-			if provider.OAuth2Config.ClientSecretRef != nil {
-				config.OAuth2Config.ClientSecretEnvVar = envVarName
-			}
-			if provider.OAuth2Config.UserInfo != nil {
-				config.OAuth2Config.UserInfo = buildUserInfoRunConfig(provider.OAuth2Config.UserInfo)
-			}
-			if provider.OAuth2Config.TokenResponseMapping != nil {
-				m := provider.OAuth2Config.TokenResponseMapping
-				config.OAuth2Config.TokenResponseMapping = &authserver.TokenResponseMappingRunConfig{
-					AccessTokenPath:  m.AccessTokenPath,
-					ScopePath:        m.ScopePath,
-					RefreshTokenPath: m.RefreshTokenPath,
-					ExpiresInPath:    m.ExpiresInPath,
-				}
-			}
+			config.OAuth2Config = oauth2
 		}
 	}
 
-	return config
+	return config, nil
+}
+
+// buildOIDCUpstreamRunConfig converts a CRD OIDCUpstreamConfig to the
+// runtime representation. `clientSecretEnvVar` is the resolved env var name
+// used when ClientSecretRef is configured.
+func buildOIDCUpstreamRunConfig(
+	cfg *mcpv1beta1.OIDCUpstreamConfig,
+	clientSecretEnvVar string,
+	resourceURL string,
+) *authserver.OIDCUpstreamRunConfig {
+	redirectURI := cfg.RedirectURI
+	if redirectURI == "" && resourceURL != "" {
+		redirectURI = defaultRedirectURI(resourceURL)
+	}
+	runConfig := &authserver.OIDCUpstreamRunConfig{
+		IssuerURL:                     cfg.IssuerURL,
+		ClientID:                      cfg.ClientID,
+		RedirectURI:                   redirectURI,
+		Scopes:                        cfg.Scopes,
+		AdditionalAuthorizationParams: cfg.AdditionalAuthorizationParams,
+	}
+	if cfg.ClientSecretRef != nil {
+		runConfig.ClientSecretEnvVar = clientSecretEnvVar
+	}
+	if cfg.UserInfoOverride != nil {
+		runConfig.UserInfoOverride = buildUserInfoRunConfig(cfg.UserInfoOverride)
+	}
+	return runConfig
+}
+
+// buildOAuth2UpstreamRunConfig converts a CRD OAuth2UpstreamConfig to the
+// runtime representation. It rejects malformed ClientID/DCRConfig pairs
+// before producing a RunConfig — mirroring the CEL XValidation rules on
+// OAuth2UpstreamConfig / DCRUpstreamConfig — so objects that reached etcd
+// without passing admission (stored-before-CEL, apiserver patches, test
+// fixtures bypassing validation) fail at reconcile time rather than at
+// authserver startup.
+func buildOAuth2UpstreamRunConfig(
+	provider *mcpv1beta1.UpstreamProviderConfig,
+	b *upstreamSecretBinding,
+	resourceURL string,
+) (*authserver.OAuth2UpstreamRunConfig, error) {
+	cfg := provider.OAuth2Config
+	// Pass an empty prefix so the upstream name appears once — supplied by the
+	// outer wrap in BuildAuthServerRunConfig — instead of duplicating it on
+	// both the inner and outer error messages.
+	if err := mcpv1beta1.ValidateOAuth2DCRConfig("", cfg); err != nil {
+		return nil, err
+	}
+
+	redirectURI := cfg.RedirectURI
+	if redirectURI == "" && resourceURL != "" {
+		redirectURI = defaultRedirectURI(resourceURL)
+	}
+	runConfig := &authserver.OAuth2UpstreamRunConfig{
+		AuthorizationEndpoint:         cfg.AuthorizationEndpoint,
+		TokenEndpoint:                 cfg.TokenEndpoint,
+		ClientID:                      cfg.ClientID,
+		RedirectURI:                   redirectURI,
+		Scopes:                        cfg.Scopes,
+		AdditionalAuthorizationParams: cfg.AdditionalAuthorizationParams,
+	}
+	if cfg.ClientSecretRef != nil {
+		runConfig.ClientSecretEnvVar = b.EnvVarName
+	}
+	if cfg.UserInfo != nil {
+		runConfig.UserInfo = buildUserInfoRunConfig(cfg.UserInfo)
+	}
+	if cfg.TokenResponseMapping != nil {
+		m := cfg.TokenResponseMapping
+		runConfig.TokenResponseMapping = &authserver.TokenResponseMappingRunConfig{
+			AccessTokenPath:  m.AccessTokenPath,
+			ScopePath:        m.ScopePath,
+			RefreshTokenPath: m.RefreshTokenPath,
+			ExpiresInPath:    m.ExpiresInPath,
+		}
+	}
+	if cfg.DCRConfig != nil {
+		runConfig.DCRConfig = buildDCRUpstreamRunConfig(cfg.DCRConfig, b.DCRInitialAccessTokenEnvVar)
+	}
+	return runConfig, nil
+}
+
+// buildDCRUpstreamRunConfig converts CRD DCRUpstreamConfig to
+// authserver.DCRUpstreamConfig. When an InitialAccessTokenRef is present on
+// the CRD, the resolver reads the token value from the supplied env var
+// (populated from the secret ref by GenerateAuthServerEnvVars), mirroring the
+// ClientSecretRef → env-var pattern.
+func buildDCRUpstreamRunConfig(
+	dcr *mcpv1beta1.DCRUpstreamConfig,
+	initialAccessTokenEnvVar string,
+) *authserver.DCRUpstreamConfig {
+	rc := &authserver.DCRUpstreamConfig{
+		DiscoveryURL:         dcr.DiscoveryURL,
+		RegistrationEndpoint: dcr.RegistrationEndpoint,
+		SoftwareID:           dcr.SoftwareID,
+		SoftwareStatement:    dcr.SoftwareStatement,
+	}
+	if dcr.InitialAccessTokenRef != nil {
+		rc.InitialAccessTokenEnvVar = initialAccessTokenEnvVar
+	}
+	return rc
 }
 
 // buildUserInfoRunConfig converts CRD UserInfoConfig to authserver.UserInfoRunConfig.

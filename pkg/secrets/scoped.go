@@ -42,6 +42,9 @@ const (
 
 	// ScopeAuth is reserved for enterprise CLI/Desktop login tokens.
 	ScopeAuth SecretScope = "auth"
+
+	// ScopeLLM is the scope for LLM gateway OIDC refresh tokens.
+	ScopeLLM SecretScope = "llm"
 )
 
 // ErrReservedKeyName is returned when a user command attempts to manage a

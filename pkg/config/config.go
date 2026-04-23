@@ -19,6 +19,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/container/templates"
+	"github.com/stacklok/toolhive/pkg/llm"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -47,6 +48,7 @@ type Config struct {
 	BuildAuthFiles               map[string]string                   `yaml:"build_auth_files,omitempty"`
 	RuntimeConfigs               map[string]*templates.RuntimeConfig `yaml:"runtime_configs,omitempty"`
 	RegistryAuth                 RegistryAuth                        `yaml:"registry_auth,omitempty"`
+	LLM                         llm.LLMConfig                       `yaml:"llm,omitempty"`
 }
 
 // RegistryAuthTypeOAuth is the auth type for OAuth/OIDC authentication.

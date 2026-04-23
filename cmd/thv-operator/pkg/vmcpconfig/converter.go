@@ -190,6 +190,19 @@ func (c *Converter) convertIncomingAuth(
 			incoming.Authz.Policies = vmcp.Spec.IncomingAuth.AuthzConfig.Inline.Policies
 		}
 		// TODO: Load policies from ConfigMap if Type is "configMap"
+
+		// When an embedded auth server with upstream providers is configured, Cedar
+		// policies must evaluate claims from the upstream IDP token rather than the
+		// ToolHive-issued AS token. Mirrors injectSubjectProviderIfNeeded in
+		// virtualmcpserver_controller.go (outgoing auth) and
+		// injectUpstreamProviderIfNeeded in pkg/runner/middleware.go (thv run path).
+		// Leaving PrimaryUpstreamProvider empty (no embedded AS or no upstreams) lets
+		// Cedar fall back to claims from the ToolHive-issued token.
+		if vmcp.Spec.AuthServerConfig != nil && len(vmcp.Spec.AuthServerConfig.UpstreamProviders) > 0 {
+			incoming.Authz.PrimaryUpstreamProvider = authserver.ResolveUpstreamName(
+				vmcp.Spec.AuthServerConfig.UpstreamProviders[0].Name,
+			)
+		}
 	}
 
 	return incoming, nil

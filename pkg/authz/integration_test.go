@@ -1070,3 +1070,120 @@ func TestIntegrationUpstreamProviderGroupAuth(t *testing.T) {
 		})
 	}
 }
+
+// TestIntegrationPrimaryUpstreamProviderClaimAttributeAccess verifies the
+// behavioral effect of the VirtualMCPServer operator converter fix in
+// stacklok/toolhive#4997: when PrimaryUpstreamProvider is populated, Cedar
+// reads scalar JWT claim attributes (e.g. `email`) from the upstream IDP token
+// rather than the ToolHive-issued AS token.
+//
+// Prior to the fix the operator left PrimaryUpstreamProvider empty, so Cedar
+// evaluated policies against the AS-issued token's claims — which do not carry
+// upstream-provider attributes such as `email`. Policies referencing those
+// attributes (via `has` or `==`) failed with Cedar's
+// "does not have the attribute" error. This test pins the two branches of
+// cedar.Authorizer.resolveClaims (see core.go:421) against the same identity
+// and policy set, demonstrating that only the upstream-provider branch admits
+// the reproducer policy from #4997.
+func TestIntegrationPrimaryUpstreamProviderClaimAttributeAccess(t *testing.T) {
+	t.Parallel()
+
+	const providerName = "okta"
+
+	// AS-issued token claims: realistic ToolHive-AS fields, deliberately
+	// without `email`. This is what Cedar sees when PrimaryUpstreamProvider
+	// is empty (the pre-fix behavior).
+	directClaims := jwt.MapClaims{
+		"sub":  "thv-as|alice",
+		"aud":  "toolhive-vmcp",
+		"iss":  "https://thv-as.example.com/",
+		"tsid": "sess-abc123",
+	}
+
+	// Upstream IDP token: carries the `email` claim that the policy inspects.
+	upstreamToken := makeUnsignedJWT(t, jwt.MapClaims{
+		"sub":   "okta|alice",
+		"email": "alice@example.com",
+	})
+
+	// Using has-attribute rather than equality so failure uniquely signals
+	// "the claim source Cedar read from lacked this attribute", which is
+	// exactly the #4997 regression surface.
+	policies := []string{
+		`permit(principal, action == Action::"call_tool", resource) when { principal has claim_email };`,
+	}
+
+	tests := []struct {
+		name                    string
+		primaryUpstreamProvider string
+		expectAllowed           bool
+	}{
+		{
+			// With the #4997 fix: converter populates PrimaryUpstreamProvider,
+			// Cedar reads the upstream token which has `email`, policy permits.
+			name:                    "upstream_provider_set_reads_upstream_claim_and_permits",
+			primaryUpstreamProvider: providerName,
+			expectAllowed:           true,
+		},
+		{
+			// Pre-fix behavior: PrimaryUpstreamProvider empty, Cedar falls
+			// back to direct claims which lack `email`, policy denies with
+			// Cedar's "does not have the attribute claim_email" error.
+			name:                    "upstream_provider_empty_falls_back_to_direct_claims_and_denies",
+			primaryUpstreamProvider: "",
+			expectAllowed:           false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+				Policies:                policies,
+				EntitiesJSON:            "[]",
+				PrimaryUpstreamProvider: tt.primaryUpstreamProvider,
+			}, "")
+			require.NoError(t, err)
+
+			params, err := json.Marshal(map[string]interface{}{"name": "deploy", "arguments": map[string]interface{}{}})
+			require.NoError(t, err)
+			callReq, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), string(mcp.MethodToolsCall), json.RawMessage(params))
+			require.NoError(t, err)
+			reqJSON, err := jsonrpc2.EncodeMessage(callReq)
+			require.NoError(t, err)
+
+			httpReq, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBuffer(reqJSON))
+			require.NoError(t, err)
+			httpReq.Header.Set("Content-Type", "application/json")
+
+			identity := &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: directClaims["sub"].(string),
+					Claims:  directClaims,
+				},
+				UpstreamTokens: map[string]string{providerName: upstreamToken},
+			}
+			httpReq = httpReq.WithContext(auth.WithIdentity(httpReq.Context(), identity))
+
+			rr := httptest.NewRecorder()
+			var handlerCalled bool
+			mockHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"result": "ok"}`))
+			})
+
+			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, mockHandler, nil))
+			middleware.ServeHTTP(rr, httpReq)
+
+			if tt.expectAllowed {
+				assert.Equal(t, http.StatusOK, rr.Code)
+				assert.True(t, handlerCalled)
+			} else {
+				assert.Equal(t, http.StatusForbidden, rr.Code)
+				assert.False(t, handlerCalled)
+			}
+		})
+	}
+}

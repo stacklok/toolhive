@@ -178,7 +178,6 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 
 			registry2 := registryHelper.NewRegistryBuilder("registry-2").
 				WithConfigMapSource(configMap2.Name, "registry.json").
-				// WithUpstreamFormat().
 				WithSyncPolicy("30m").
 				Create(registryHelper)
 
@@ -189,8 +188,6 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 			// Verify they operate independently by checking their configYAML
 			Expect(registry1.Spec.ConfigYAML).To(ContainSubstring("interval: 1h"))
 			Expect(registry2.Spec.ConfigYAML).To(ContainSubstring("interval: 30m"))
-			Expect(registry1.Spec.ConfigYAML).To(ContainSubstring("format: toolhive"))
-			Expect(registry2.Spec.ConfigYAML).To(ContainSubstring("format: toolhive"))
 		})
 
 		It("should allow multiple registries with same ConfigMap source", func() {

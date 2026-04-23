@@ -60,3 +60,25 @@ const (
 	// PKCEMethodS256 uses SHA-256 hash of the code verifier (recommended).
 	PKCEMethodS256 = "S256"
 )
+
+// Token type URNs as defined by RFC 8693.
+//
+//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
+const (
+	// TokenTypeAccessToken indicates an OAuth 2.0 access token (RFC 8693 Section 3).
+	TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
+
+	// TokenTypeIDToken indicates an OpenID Connect ID Token (RFC 8693 Section 3).
+	TokenTypeIDToken = "urn:ietf:params:oauth:token-type:id_token"
+
+	// TokenTypeJWT indicates a JSON Web Token (RFC 8693 Section 3).
+	TokenTypeJWT = "urn:ietf:params:oauth:token-type:jwt"
+)
+
+// Grant type URNs for token exchange protocols.
+//
+//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
+const (
+	// GrantTypeTokenExchange is the OAuth 2.0 Token Exchange grant type (RFC 8693).
+	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+)

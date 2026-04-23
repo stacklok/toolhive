@@ -298,8 +298,10 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 	return nil
 }
 
-// runValidations runs all pre-reconciliation validations (PodTemplateSpec, GroupRef,
-// CompositeToolRefs, EmbeddingServerRef, AuthServerConfig).
+// runValidations runs all pre-reconciliation validations in order: schema-level
+// spec validation, PodTemplateSpec, GroupRef, CompositeToolRefs, EmbeddingServerRef,
+// auth-related checks (inline AuthServerConfig + AuthzConfig/upstream coherence,
+// delegated to runAuthValidations), and the advisory SessionStorage warning.
 // Returns (true, nil) to continue reconciliation.
 // Returns (false, nil) for spec validation errors that should NOT trigger requeue
 // (user must fix the spec; next reconciliation is triggered by spec changes).
@@ -352,23 +354,53 @@ func (r *VirtualMCPServerReconciler) runValidations(
 		}
 	}
 
-	// Validate inline AuthServerConfig (when specified).
-	if vmcp.Spec.AuthServerConfig != nil {
-		if err := r.validateAuthServerConfig(vmcp, statusManager); err != nil {
-			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
-				ctxLogger.Error(applyErr, "Failed to apply status updates after AuthServerConfig validation error")
-			}
-			return false, nil
-		}
-	} else {
-		// Remove stale condition if AuthServerConfig was previously set then removed.
-		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthServerConfigValidated, []string{})
+	// Validate auth-related spec fields (AuthServerConfig + AuthzConfig coherence).
+	if ok := r.runAuthValidations(ctx, vmcp, statusManager); !ok {
+		return false, nil
 	}
 
 	// Advisory: warn when replicas > 1 but session storage is not Redis-backed.
 	r.validateSessionStorageForReplicas(vmcp, statusManager)
 
 	return true, nil
+}
+
+// runAuthValidations runs the auth-related spec validations: the inline
+// AuthServerConfig (when specified) and the AuthzConfig/upstream coherence
+// check. Returns false when a validation fails and the caller should stop
+// reconciliation (user must fix the spec); true to continue.
+func (r *VirtualMCPServerReconciler) runAuthValidations(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) bool {
+	ctxLogger := log.FromContext(ctx)
+
+	// Validate inline AuthServerConfig (when specified).
+	if vmcp.Spec.AuthServerConfig != nil {
+		if err := r.validateAuthServerConfig(vmcp, statusManager); err != nil {
+			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+				ctxLogger.Error(applyErr, "Failed to apply status updates after AuthServerConfig validation error")
+			}
+			return false
+		}
+	} else {
+		// Remove stale condition if AuthServerConfig was previously set then removed.
+		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthServerConfigValidated, []string{})
+	}
+
+	// Validate that authz policies have an upstream IDP available to source
+	// claims from. Runs after the AuthServerConfig branch so it can set the
+	// AuthServerConfigValidated condition without being clobbered by the
+	// RemoveConditionsWithPrefix call above when AuthServerConfig is nil.
+	if err := r.validateAuthzUpstreamAvailable(ctx, vmcp, statusManager); err != nil {
+		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+			ctxLogger.Error(applyErr, "Failed to apply status updates after AuthzUpstreamAvailable validation error")
+		}
+		return false
+	}
+
+	return true
 }
 
 // validateSessionStorageForReplicas emits a SessionStorageWarning condition when
@@ -464,6 +496,98 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		metav1.ConditionTrue,
 	)
 	statusManager.SetObservedGeneration(vmcp.Generation)
+
+	return nil
+}
+
+// validateAuthzUpstreamAvailable ensures that when authorization policies are
+// configured via IncomingAuth.AuthzConfig AND an embedded AuthServer is in use,
+// at least one upstream IDP is declared so Cedar evaluates claim references
+// (e.g. principal.claim_department) against the upstream token rather than the
+// ToolHive-issued AS token — whose claim namespace (sub, aud, tsid) can overlap
+// upstream claims and silently authorize against the wrong identity.
+//
+// Direct-IdP incoming auth (clients present an already-validated IdP token, no
+// embedded AS) is legitimate: Cedar evaluates against the identity's claims via
+// the default branch and no upstream is needed. The validator ignores that case.
+//
+// When multiple upstream providers are declared alongside AuthzConfig, only the
+// first one is authoritative for Cedar. Surface an advisory
+// AuthzUpstreamSelectionWarning condition naming the selected provider so the
+// operator can reorder or prune the list if the auto-selection is wrong.
+func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	// No authz configured, or no incoming auth at all: nothing to check and
+	// no advisory to maintain. Remove any stale condition from a previous
+	// multi-upstream configuration.
+	if vmcp.Spec.IncomingAuth == nil || vmcp.Spec.IncomingAuth.AuthzConfig == nil {
+		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
+		return nil
+	}
+
+	// Direct-IdP flow: no embedded AS. Cedar evaluates against identity.Claims
+	// populated by incoming OIDC middleware from the IdP token. No upstream
+	// needed; nothing to warn about. Remove any stale condition.
+	if vmcp.Spec.AuthServerConfig == nil {
+		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
+		return nil
+	}
+
+	// Embedded AS configured but no upstreams: this is the misconfiguration
+	// that silently evaluates policies against the AS-issued token.
+	if len(vmcp.Spec.AuthServerConfig.UpstreamProviders) == 0 {
+		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
+
+		// User-facing message includes full remediation guidance and ends with
+		// a period, matching other validator messages. The returned error uses
+		// a trimmed form without trailing punctuation to satisfy staticcheck.
+		message := "spec.authServerConfig is set but has no upstream providers, and " +
+			"spec.incomingAuth.authzConfig references claims. Cedar would evaluate " +
+			"against the ToolHive-issued AS token rather than the upstream IDP token. " +
+			"Configure spec.authServerConfig.upstreamProviders with at least one " +
+			"upstream IDP, or remove authServerConfig if clients will present IdP " +
+			"tokens directly."
+
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Info("authz configured without an upstream IDP; rejecting VirtualMCPServer",
+			"name", vmcp.Name,
+			"namespace", vmcp.Namespace,
+			"reason", mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
+		)
+
+		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetAuthServerConfigValidatedCondition(
+			mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
+			message,
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		return stderrors.New("authz configured without an upstream IDP")
+	}
+
+	// Valid configuration. When multiple upstreams are declared, surface an
+	// advisory naming the auto-selected upstream; otherwise ensure any stale
+	// warning is cleared.
+	if len(vmcp.Spec.AuthServerConfig.UpstreamProviders) > 1 {
+		selected := vmcp.Spec.AuthServerConfig.UpstreamProviders[0].Name
+		statusManager.SetCondition(
+			mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning,
+			mcpv1beta1.ConditionReasonAuthzUpstreamAutoSelected,
+			fmt.Sprintf(
+				"multiple upstreamProviders configured; Cedar policies will evaluate "+
+					"claims from the first upstream (%q). If another upstream should be "+
+					"authoritative, remove or reorder the list.",
+				selected,
+			),
+			metav1.ConditionTrue,
+		)
+	} else {
+		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
+	}
 
 	return nil
 }

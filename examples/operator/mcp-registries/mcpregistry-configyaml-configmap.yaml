@@ -23,55 +23,77 @@ metadata:
 data:
   registry.json: |
     {
-      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive-core/main/registry/types/data/upstream-registry.schema.json",
       "version": "1.0.0",
-      "last_updated": "2025-09-08T12:00:00Z",
-      "servers": {
-        "filesystem": {
-          "description": "Allows you to do filesystem operations",
-          "tier": "Official",
-          "status": "Active",
-          "transport": "stdio",
-          "tools": ["read_file", "write_file", "list_directory"],
-          "tags": ["filesystem", "production"],
-          "image": "docker.io/mcp/filesystem:latest",
-          "permissions": {
-            "network": {
-              "outbound": {}
+      "meta": {
+        "last_updated": "2025-09-08T12:00:00Z"
+      },
+      "data": {
+        "servers": [
+          {
+            "name": "io.github.example/filesystem",
+            "description": "Allows you to do filesystem operations",
+            "version": "1.0.0",
+            "packages": [
+              {
+                "registryType": "oci",
+                "identifier": "docker.io/mcp/filesystem:latest",
+                "transport": { "type": "stdio" }
+              }
+            ],
+            "_meta": {
+              "io.modelcontextprotocol.registry/publisher-provided": {
+                "io.github.example": {
+                  "docker.io/mcp/filesystem:latest": {
+                    "tags": ["filesystem", "production"]
+                  }
+                }
+              }
             }
-          }
-        },
-        "github": {
-          "description": "Provides integration with GitHub APIs",
-          "tier": "Official",
-          "status": "Active",
-          "transport": "stdio",
-          "tools": ["create_issue", "create_pull_request"],
-          "tags": ["github", "production"],
-          "image": "ghcr.io/github/github-mcp-server:latest",
-          "permissions": {
-            "network": {
-              "outbound": {
-                "allow_host": [".github.com"],
-                "allow_port": [443]
+          },
+          {
+            "name": "io.github.example/github",
+            "description": "Provides integration with GitHub APIs",
+            "version": "1.0.0",
+            "packages": [
+              {
+                "registryType": "oci",
+                "identifier": "ghcr.io/github/github-mcp-server:latest",
+                "transport": { "type": "stdio" }
+              }
+            ],
+            "_meta": {
+              "io.modelcontextprotocol.registry/publisher-provided": {
+                "io.github.example": {
+                  "ghcr.io/github/github-mcp-server:latest": {
+                    "tags": ["github", "production"]
+                  }
+                }
+              }
+            }
+          },
+          {
+            "name": "io.github.example/experimental-ai",
+            "description": "Experimental AI tools - not production ready",
+            "version": "0.1.0",
+            "packages": [
+              {
+                "registryType": "oci",
+                "identifier": "docker.io/mcp/experimental-ai:latest",
+                "transport": { "type": "stdio" }
+              }
+            ],
+            "_meta": {
+              "io.modelcontextprotocol.registry/publisher-provided": {
+                "io.github.example": {
+                  "docker.io/mcp/experimental-ai:latest": {
+                    "tags": ["ai", "experimental"]
+                  }
+                }
               }
             }
           }
-        },
-        "experimental-ai": {
-          "description": "Experimental AI tools - not production ready",
-          "tier": "Community",
-          "status": "Active",
-          "transport": "stdio",
-          "tools": ["analyze_code"],
-          "tags": ["ai", "experimental"],
-          "image": "docker.io/mcp/experimental-ai:latest",
-          "permissions": {
-            "network": {
-              "outbound": {}
-            }
-          }
-        }
+        ]
       }
     }
 ---
@@ -85,7 +107,6 @@ spec:
   configYAML: |
     sources:
       - name: production
-        format: toolhive
         file:
           # This path must match the volumeMount mountPath below
           path: /config/registry/production/registry.json

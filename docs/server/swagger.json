@@ -404,6 +404,36 @@
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig": {
+                "description": "DCRConfig enables RFC 7591 Dynamic Client Registration against the\nupstream authorization server. When set, the client credentials are\nobtained at runtime rather than being pre-provisioned via ClientID /\nClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.\nMutually exclusive with ClientID.",
+                "properties": {
+                    "discovery_url": {
+                        "description": "DiscoveryURL is the RFC 8414 / OIDC Discovery URL from which the\nregistration_endpoint is resolved at runtime. Mutually exclusive with\nRegistrationEndpoint.",
+                        "type": "string"
+                    },
+                    "initial_access_token_env_var": {
+                        "description": "InitialAccessTokenEnvVar is the name of an environment variable\ncontaining the RFC 7591 initial access token. Mutually exclusive with\nInitialAccessTokenFile.",
+                        "type": "string"
+                    },
+                    "initial_access_token_file": {
+                        "description": "InitialAccessTokenFile is the path to a file containing the RFC 7591\ninitial access token presented to the registration endpoint. Mutually\nexclusive with InitialAccessTokenEnvVar. Both may be omitted for open\nregistration endpoints.",
+                        "type": "string"
+                    },
+                    "registration_endpoint": {
+                        "description": "RegistrationEndpoint is the RFC 7591 registration endpoint URL used\ndirectly, bypassing discovery. Mutually exclusive with DiscoveryURL.",
+                        "type": "string"
+                    },
+                    "software_id": {
+                        "description": "SoftwareID is the RFC 7591 \"software_id\" registration metadata value,\nidentifying the client software independent of any particular\nregistration instance.",
+                        "type": "string"
+                    },
+                    "software_statement": {
+                        "description": "SoftwareStatement is the RFC 7591 \"software_statement\" JWT asserting\nmetadata about the client software, signed by a party the authorization\nserver trusts.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig": {
                 "description": "OAuth2Config contains OAuth 2.0-specific configuration.\nRequired when Type is \"oauth2\", must be nil when Type is \"oidc\".",
                 "properties": {
@@ -419,7 +449,7 @@
                         "type": "string"
                     },
                     "client_id": {
-                        "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.",
+                        "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.\nMutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained\nat runtime via RFC 7591 Dynamic Client Registration and must be left empty.",
                         "type": "string"
                     },
                     "client_secret_env_var": {
@@ -429,6 +459,9 @@
                     "client_secret_file": {
                         "description": "ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.\nMutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.",
                         "type": "string"
+                    },
+                    "dcr_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig"
                     },
                     "redirect_uri": {
                         "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nWhen not specified, defaults to `{issuer}/oauth/callback`.",

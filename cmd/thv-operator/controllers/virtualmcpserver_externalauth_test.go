@@ -965,6 +965,17 @@ func TestGenerateUniqueHeaderInjectionEnvVarName(t *testing.T) {
 }
 
 // tokenExchangeStrategy returns a minimal token_exchange BackendAuthStrategy for tests.
+func awsStsStrategy(tokenProviderName string) *authtypes.BackendAuthStrategy {
+	return &authtypes.BackendAuthStrategy{
+		Type: authtypes.StrategyTypeAwsSts,
+		AwsSts: &authtypes.AwsStsConfig{
+			Region:            "us-east-1",
+			FallbackRoleArn:   "arn:aws:iam::123456789012:role/test",
+			TokenProviderName: tokenProviderName,
+		},
+	}
+}
+
 func tokenExchangeStrategy(subjectProviderName string) *authtypes.BackendAuthStrategy {
 	return &authtypes.BackendAuthStrategy{
 		Type: authtypes.StrategyTypeTokenExchange,
@@ -1054,6 +1065,26 @@ func TestInjectSubjectProviderIfNeeded(t *testing.T) {
 			embeddedCfg:             embeddedAuthServerCfg("first", "second"),
 			wantSubjectProviderName: "first",
 		},
+		// aws_sts strategy cases
+		{
+			name:                    "aws_sts_populates_token_provider_name",
+			strategy:                awsStsStrategy(""),
+			embeddedCfg:             embeddedAuthServerCfg("github"),
+			wantSubjectProviderName: "github",
+		},
+		{
+			name:                    "aws_sts_already_set_provider_not_overridden",
+			strategy:                awsStsStrategy("explicit-provider"),
+			embeddedCfg:             embeddedAuthServerCfg("github"),
+			wantSamePointer:         true,
+			wantSubjectProviderName: "explicit-provider",
+		},
+		{
+			name:            "aws_sts_nil_AwsSts_config_returned_unchanged",
+			strategy:        &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeAwsSts, AwsSts: nil},
+			embeddedCfg:     embeddedAuthServerCfg("github"),
+			wantSamePointer: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1065,20 +1096,35 @@ func TestInjectSubjectProviderIfNeeded(t *testing.T) {
 			if tt.wantSamePointer {
 				assert.Same(t, tt.strategy, result)
 				// When the pointer is unchanged and a provider was set, verify it wasn't mutated.
-				if tt.wantSubjectProviderName != "" && result != nil && result.TokenExchange != nil {
-					assert.Equal(t, tt.wantSubjectProviderName, result.TokenExchange.SubjectProviderName)
+				if tt.wantSubjectProviderName != "" && result != nil {
+					switch {
+					case result.TokenExchange != nil:
+						assert.Equal(t, tt.wantSubjectProviderName, result.TokenExchange.SubjectProviderName)
+					case result.AwsSts != nil:
+						assert.Equal(t, tt.wantSubjectProviderName, result.AwsSts.TokenProviderName)
+					}
 				}
 				return
 			}
 
 			require.NotNil(t, result)
-			require.NotNil(t, result.TokenExchange)
-			assert.Equal(t, tt.wantSubjectProviderName, result.TokenExchange.SubjectProviderName)
-
-			// Verify the original strategy was not mutated.
-			if tt.strategy != nil && tt.strategy.TokenExchange != nil {
-				assert.Empty(t, tt.strategy.TokenExchange.SubjectProviderName,
-					"original strategy must not be mutated")
+			switch result.Type {
+			case authtypes.StrategyTypeTokenExchange:
+				require.NotNil(t, result.TokenExchange)
+				assert.Equal(t, tt.wantSubjectProviderName, result.TokenExchange.SubjectProviderName)
+				// Verify the original strategy was not mutated.
+				if tt.strategy != nil && tt.strategy.TokenExchange != nil {
+					assert.Empty(t, tt.strategy.TokenExchange.SubjectProviderName,
+						"original strategy must not be mutated")
+				}
+			case authtypes.StrategyTypeAwsSts:
+				require.NotNil(t, result.AwsSts)
+				assert.Equal(t, tt.wantSubjectProviderName, result.AwsSts.TokenProviderName)
+				// Verify the original strategy was not mutated.
+				if tt.strategy != nil && tt.strategy.AwsSts != nil {
+					assert.Empty(t, tt.strategy.AwsSts.TokenProviderName,
+						"original strategy must not be mutated")
+				}
 			}
 		})
 	}

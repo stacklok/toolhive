@@ -19,10 +19,12 @@ import (
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
-// awsStsContext holds the per-config roleMapper and exchanger instances.
+// awsStsContext holds the per-config roleMapper, exchanger, signer, and session duration.
 type awsStsContext struct {
-	roleMapper *awssts.RoleMapper
-	exchanger  *awssts.Exchanger
+	roleMapper      *awssts.RoleMapper
+	exchanger       *awssts.Exchanger
+	signer          *awssts.RequestSigner
+	sessionDuration int32
 }
 
 // AwsStsStrategy authenticates backend requests using AWS STS token exchange and SigV4 signing.
@@ -97,22 +99,21 @@ func (s *AwsStsStrategy) Authenticate(
 	}
 
 	cfg := toAwsStsConfig(strategy.AwsSts)
-	stsCtx, err := s.getOrCreateContext(cfg)
+	stsCtx, err := s.getOrCreateContext(ctx, cfg)
 	if err != nil {
 		return err
 	}
 
-	return authenticateWithCached(ctx, req, cfg, stsCtx.roleMapper, stsCtx.exchanger)
+	return authenticateWithCached(ctx, req, cfg, stsCtx)
 }
 
 // authenticateWithCached performs the STS token exchange and SigV4 signing
-// for an outgoing request using pre-built roleMapper and exchanger instances.
+// for an outgoing request using pre-built components from awsStsContext.
 func authenticateWithCached(
 	ctx context.Context,
 	req *http.Request,
 	cfg *awssts.Config,
-	roleMapper *awssts.RoleMapper,
-	exchanger *awssts.Exchanger,
+	stsCtx *awsStsContext,
 ) error {
 	identity, ok := auth.IdentityFromContext(ctx)
 	if !ok {
@@ -123,7 +124,7 @@ func authenticateWithCached(
 		return fmt.Errorf("no claims in identity")
 	}
 
-	roleArn, err := selectRole(roleMapper, identity.Claims)
+	roleArn, err := selectRole(stsCtx.roleMapper, identity.Claims)
 	if err != nil {
 		return err
 	}
@@ -147,7 +148,16 @@ func authenticateWithCached(
 		return err
 	}
 
-	return exchangeAndSign(ctx, req, cfg, exchanger, bearerToken, roleArn, sessionName)
+	creds, err := stsCtx.exchanger.ExchangeToken(ctx, bearerToken, roleArn, sessionName, stsCtx.sessionDuration)
+	if err != nil {
+		return fmt.Errorf("STS token exchange failed: %w", err)
+	}
+
+	if err := stsCtx.signer.SignRequest(ctx, req, creds); err != nil {
+		return fmt.Errorf("failed to sign request: %w", err)
+	}
+
+	return nil
 }
 
 // selectRole uses the provided role mapper to return the IAM role ARN for the given claims.
@@ -175,34 +185,6 @@ func resolveSessionName(cfg *awssts.Config, claims map[string]any) (string, erro
 	return sessionName, nil
 }
 
-// exchangeAndSign exchanges bearerToken for temporary AWS credentials via STS and
-// signs req in place with SigV4 using those credentials.
-func exchangeAndSign(
-	ctx context.Context,
-	req *http.Request,
-	cfg *awssts.Config,
-	exchanger *awssts.Exchanger,
-	bearerToken, roleArn, sessionName string,
-) error {
-	creds, err := exchanger.ExchangeToken(ctx, bearerToken, roleArn, sessionName, cfg.GetSessionDuration())
-	if err != nil {
-		return fmt.Errorf("STS token exchange failed: %w", err)
-	}
-
-	// Sign in place — the reverse proxy's Director handles host rewriting,
-	// so we only need to add SigV4 headers to the request as presented.
-	signer, err := awssts.NewRequestSigner(cfg.Region, cfg.GetService())
-	if err != nil {
-		return fmt.Errorf("failed to create request signer: %w", err)
-	}
-
-	if err := signer.SignRequest(ctx, req, creds); err != nil {
-		return fmt.Errorf("failed to sign request: %w", err)
-	}
-
-	return nil
-}
-
 // Validate checks if the required strategy configuration fields are present and valid,
 // and warms the per-config cache entry for this backend.
 //
@@ -224,15 +206,17 @@ func (s *AwsStsStrategy) Validate(strategy *authtypes.BackendAuthStrategy) error
 		return err
 	}
 
-	_, err := s.getOrCreateContext(cfg)
+	_, err := s.getOrCreateContext(context.Background(), cfg)
 	return err
 }
 
 // getOrCreateContext retrieves or creates a cached awsStsContext for the given config.
 //
 // Thread-safe: uses double-checked locking so that concurrent callers with the
-// same config key build the roleMapper/exchanger pair only once.
-func (s *AwsStsStrategy) getOrCreateContext(cfg *awssts.Config) (*awsStsContext, error) {
+// same config key build the roleMapper/exchanger/signer only once.
+// ValidateConfig is called on cache miss to ensure structurally invalid configs
+// are rejected even when Authenticate is called without prior Validate.
+func (s *AwsStsStrategy) getOrCreateContext(ctx context.Context, cfg *awssts.Config) (*awsStsContext, error) {
 	cacheKey := buildAwsStsCacheKey(cfg)
 
 	// Fast path: read lock.
@@ -252,17 +236,31 @@ func (s *AwsStsStrategy) getOrCreateContext(cfg *awssts.Config) (*awsStsContext,
 		return cached, nil
 	}
 
+	if err := awssts.ValidateConfig(cfg); err != nil {
+		return nil, err
+	}
+
 	roleMapper, err := awssts.NewRoleMapper(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build role mapper: %w", err)
 	}
 
-	exchanger, err := awssts.NewExchanger(context.Background(), cfg.Region)
+	exchanger, err := awssts.NewExchanger(ctx, cfg.Region)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build STS exchanger: %w", err)
 	}
 
-	entry := &awsStsContext{roleMapper: roleMapper, exchanger: exchanger}
+	signer, err := awssts.NewRequestSigner(cfg.Region, cfg.GetService())
+	if err != nil {
+		return nil, fmt.Errorf("failed to build request signer: %w", err)
+	}
+
+	entry := &awsStsContext{
+		roleMapper:      roleMapper,
+		exchanger:       exchanger,
+		signer:          signer,
+		sessionDuration: cfg.GetSessionDuration(),
+	}
 	s.cached[cacheKey] = entry
 	return entry, nil
 }
@@ -283,18 +281,28 @@ func buildAwsStsCacheKey(cfg *awssts.Config) string {
 
 	var sb strings.Builder
 	sb.WriteString(cfg.Region)
+	sb.WriteByte(0)
 	sb.WriteString(cfg.Service)
+	sb.WriteByte(0)
 	sb.WriteString(cfg.FallbackRoleArn)
+	sb.WriteByte(0)
 	sb.WriteString(cfg.RoleClaim)
+	sb.WriteByte(0)
 	sb.WriteString(cfg.SessionNameClaim)
+	sb.WriteByte(0)
 	sb.WriteString(cfg.TokenProviderName)
+	sb.WriteByte(0)
 	for _, rm := range mappings {
 		sb.WriteString(rm.RoleArn)
+		sb.WriteByte(0)
 		sb.WriteString(rm.Claim)
+		sb.WriteByte(0)
 		sb.WriteString(rm.Matcher)
+		sb.WriteByte(0)
 		if rm.Priority != nil {
 			fmt.Fprintf(&sb, "%d", *rm.Priority)
 		}
+		sb.WriteByte(0)
 	}
 
 	sum := sha256.Sum256([]byte(sb.String()))

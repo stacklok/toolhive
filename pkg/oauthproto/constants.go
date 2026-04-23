@@ -85,3 +85,11 @@ const (
 	defaultHTTPTimeout  = 30 * time.Second
 	maxResponseBodySize = 1 << 20 // 1 MiB — matches x/oauth2/internal/token.go.
 )
+
+// URL scheme constants.
+const (
+	// schemeHTTPS is the URL scheme required for all OAuth / OIDC endpoints,
+	// except when the host is a loopback address (development). Unexported
+	// so the check stays internally consistent within this package.
+	schemeHTTPS = "https"
+)

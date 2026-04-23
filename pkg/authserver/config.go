@@ -267,13 +267,33 @@ type OAuth2UpstreamRunConfig struct {
 // endpoint is resolved; RegistrationEndpoint is used directly when the upstream
 // does not publish discovery metadata.
 type DCRUpstreamConfig struct {
-	// DiscoveryURL is the RFC 8414 / OIDC Discovery URL from which the
-	// registration_endpoint is resolved at runtime. Mutually exclusive with
-	// RegistrationEndpoint.
+	// DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
+	// fetch at runtime. The resolver issues a single GET against this URL
+	// (no well-known-path fallback) and reads registration_endpoint,
+	// authorization_endpoint, token_endpoint,
+	// token_endpoint_auth_methods_supported, and scopes_supported from the
+	// response. Per RFC 8414 §3.3, the document's "issuer" field must
+	// exactly match the upstream issuer configured on the parent
+	// run-config.
+	//
+	// Use this field when the upstream publishes discovery metadata at a
+	// path that differs from the issuer-derived well-known paths — for
+	// example a multi-tenant IdP whose metadata lives at
+	// https://idp.example.com/tenants/acme/.well-known/openid-configuration.
+	//
+	// Mutually exclusive with RegistrationEndpoint.
 	DiscoveryURL string `json:"discovery_url,omitempty" yaml:"discovery_url,omitempty"`
 
 	// RegistrationEndpoint is the RFC 7591 registration endpoint URL used
-	// directly, bypassing discovery. Mutually exclusive with DiscoveryURL.
+	// directly, bypassing discovery. Because no discovery is performed,
+	// server-capability fields (token_endpoint_auth_methods_supported,
+	// scopes_supported) are unavailable on this code path; the caller is
+	// expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
+	// explicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth
+	// method falls back to the resolver's default (client_secret_basic).
+	//
+	// Mutually exclusive with DiscoveryURL.
+	//nolint:lll // field tags require full JSON+YAML names
 	RegistrationEndpoint string `json:"registration_endpoint,omitempty" yaml:"registration_endpoint,omitempty"`
 
 	// InitialAccessTokenFile is the path to a file containing the RFC 7591

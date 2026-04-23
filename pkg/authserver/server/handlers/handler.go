@@ -136,3 +136,17 @@ func (h *Handler) upstreamByName(name string) (upstream.OAuth2Provider, bool) {
 	}
 	return nil, false
 }
+
+// issuer returns the authorization-server issuer URL. Both h.config and
+// the embedded *fosite.Config are required to be non-nil — NewHandler does
+// not exercise this path (no separate constructor validation for the
+// embedded Config), but every handler that calls issuer() reaches it only
+// after the handler has been fully wired via a working
+// AuthorizationServerConfig. Tests that exercise issuer()-emitting
+// handlers must therefore supply a valid *fosite.Config (even if its
+// fields are zero-valued). Returning a silent default on a nil config
+// would hide real wiring bugs — see .claude/rules/go-style.md
+// §"Constructor Validation: Fail Loudly on Invalid Input".
+func (h *Handler) issuer() string {
+	return h.config.AccessTokenIssuer
+}

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -148,4 +149,38 @@ func TestNextMissingUpstream_StorageError(t *testing.T) {
 	assert.ErrorContains(t, err, "failed to check upstream token state")
 	assert.ErrorIs(t, err, storageErr)
 	assert.Empty(t, got)
+}
+
+func TestHandler_issuer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		config   *server.AuthorizationServerConfig
+		expected string
+	}{
+		{
+			name: "returns configured AccessTokenIssuer",
+			config: &server.AuthorizationServerConfig{
+				Config: &fosite.Config{AccessTokenIssuer: "https://as.example.com"},
+			},
+			expected: "https://as.example.com",
+		},
+		{
+			name: "returns empty string when AccessTokenIssuer is unset",
+			config: &server.AuthorizationServerConfig{
+				Config: &fosite.Config{},
+			},
+			expected: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &Handler{config: tc.config}
+			assert.Equal(t, tc.expected, h.issuer())
+		})
+	}
 }

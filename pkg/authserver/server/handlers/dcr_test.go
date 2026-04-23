@@ -82,6 +82,7 @@ func TestRegisterClientHandler(t *testing.T) {
 			stor := mocks.NewMockStorage(ctrl)
 			stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).Return(tc.storageErr).AnyTimes()
 			cfg := &server.AuthorizationServerConfig{
+				Config:          &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
 				ScopesSupported: registration.DefaultScopes,
 			}
 			handler := &Handler{storage: stor, config: cfg}
@@ -131,6 +132,7 @@ func TestRegisterClientHandler_ScopeInResponse(t *testing.T) {
 	handler := &Handler{
 		storage: stor,
 		config: &server.AuthorizationServerConfig{
+			Config:          &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
 			ScopesSupported: registration.DefaultScopes,
 		},
 	}
@@ -167,6 +169,7 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 
 	allowedAudiences := []string{"https://mcp.example.com"}
 	cfg := &server.AuthorizationServerConfig{
+		Config:           &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
 		ScopesSupported:  registration.DefaultScopes,
 		AllowedAudiences: allowedAudiences,
 	}

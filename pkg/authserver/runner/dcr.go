@@ -12,11 +12,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -78,6 +81,15 @@ type DCRResolution struct {
 	// token endpoint for this client.
 	TokenEndpointAuthMethod string
 
+	// RedirectURI is the redirect URI presented to the authorization server
+	// during registration. When the caller's run-config did not specify one,
+	// this holds the defaulted value derived from the issuer + /oauth/callback
+	// (via resolveUpstreamRedirectURI). Persisting it on the resolution lets
+	// applyResolution write it back onto the run-config COPY so that
+	// downstream consumers (buildPureOAuth2Config, upstream.OAuth2Config
+	// validation) see a non-empty RedirectURI.
+	RedirectURI string
+
 	// CreatedAt is the wall-clock time at which the resolution was completed.
 	// Used by Step 2g observability to compute staleness against
 	// dcrStaleAgeThreshold.
@@ -107,6 +119,13 @@ func needsDCR(rc *authserver.OAuth2UpstreamRunConfig) bool {
 //
 // The authorization and token endpoints are written only when rc does not
 // already specify them, so explicit caller configuration always wins.
+//
+// Note on ClientSecret: applyResolution does NOT write the resolved secret
+// to rc because OAuth2UpstreamRunConfig models secrets as file-or-env
+// references only. To propagate the DCR-resolved secret into the final
+// upstream.OAuth2Config, callers must pair this call with
+// applyResolutionToOAuth2Config once the config has been built. Keeping the
+// two helpers side-by-side localises the DCR-specific application logic.
 func applyResolution(rc *authserver.OAuth2UpstreamRunConfig, res *DCRResolution) {
 	if rc == nil || res == nil {
 		return
@@ -118,10 +137,33 @@ func applyResolution(rc *authserver.OAuth2UpstreamRunConfig, res *DCRResolution)
 	if rc.TokenEndpoint == "" {
 		rc.TokenEndpoint = res.TokenEndpoint
 	}
-	// Note: the resolved ClientSecret is NOT copied onto rc because
-	// OAuth2UpstreamRunConfig models secrets as file-or-env references, not
-	// inline values. Callers that need the resolved secret must read it from
-	// the DCRResolution directly.
+	// When the caller's run-config left RedirectURI empty, the resolver
+	// defaulted it (issuer + /oauth/callback). Write the defaulted value
+	// back so the downstream upstream.OAuth2Config has a non-empty
+	// RedirectURI — otherwise authserver.Config validation rejects the
+	// OAuth2 upstream with "redirect_uri is required".
+	if rc.RedirectURI == "" {
+		rc.RedirectURI = res.RedirectURI
+	}
+}
+
+// applyResolutionToOAuth2Config overlays the DCR-resolved ClientSecret onto
+// a built *upstream.OAuth2Config. This is the companion to applyResolution:
+// where that function writes fields representable in the file-or-env run-
+// config model, this one writes the inline-only ClientSecret directly on
+// the runtime config.
+//
+// The split exists because buildPureOAuth2Config intentionally retains a
+// narrow file-or-env contract (no DCR awareness) and because OAuth2's
+// ClientSecret on the run-config is modelled as a reference rather than an
+// inline string. Any future output path from OAuth2UpstreamRunConfig to
+// upstream.OAuth2Config must call both helpers to get a fully-resolved
+// DCR client — exercised by TestBuildUpstreamConfigs_DCR.
+func applyResolutionToOAuth2Config(cfg *upstream.OAuth2Config, res *DCRResolution) {
+	if cfg == nil || res == nil {
+		return
+	}
+	cfg.ClientSecret = res.ClientSecret
 }
 
 // scopesHash returns the SHA-256 hex digest of the canonical scope set.
@@ -153,6 +195,58 @@ func scopesHash(scopes []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// Step identifiers for structured error logs emitted by the caller of
+// resolveDCRCredentials. These values flow through the "step" attribute so
+// operators can narrow failures to a specific phase without parsing error
+// messages. They are reported only at the boundary log — see
+// DCRStepError — so a single failure produces a single slog.Error record.
+const (
+	dcrStepValidate         = "validate"
+	dcrStepResolveRedirect  = "resolve_redirect_uri"
+	dcrStepCacheRead        = "cache_read"
+	dcrStepMetadata         = "metadata_discovery"
+	dcrStepSelectAuthMethod = "select_auth_method"
+	dcrStepRegister         = "dcr_call"
+	dcrStepCacheWrite       = "cache_write"
+)
+
+// DCRStepError annotates a resolver error with the phase it was produced
+// in. The boundary caller (buildUpstreamConfigs) emits the single
+// slog.Error record for the failure; individual error branches inside
+// resolveDCRCredentials do not log so that each failure surfaces exactly
+// once in the combined log stream.
+//
+// RedirectURI is included when known so that operators can correlate the
+// failure with a specific upstream registration without parsing the
+// wrapped error string. A zero-value DCRStepError is invalid; construct
+// via newDCRStepError or the resolver's internal helpers.
+type DCRStepError struct {
+	Step        string
+	Issuer      string
+	RedirectURI string
+	Err         error
+}
+
+// Error implements error. The "step" tag mirrors the structured-log
+// attribute so command-line log scrapers see the same phase identifier.
+func (e *DCRStepError) Error() string {
+	return fmt.Sprintf("dcr: %s: %s", e.Step, e.Err.Error())
+}
+
+// Unwrap lets errors.Is / errors.As reach the wrapped cause.
+func (e *DCRStepError) Unwrap() error { return e.Err }
+
+// newDCRStepError builds a DCRStepError. It never returns nil for a
+// non-nil cause.
+func newDCRStepError(step, issuer, redirectURI string, err error) *DCRStepError {
+	return &DCRStepError{
+		Step:        step,
+		Issuer:      issuer,
+		RedirectURI: redirectURI,
+		Err:         err,
+	}
+}
+
 // resolveDCRCredentials performs Dynamic Client Registration for rc against
 // the given issuer, caching the resulting credentials in cache. On cache hit
 // the resolver returns immediately without any network I/O.
@@ -165,6 +259,16 @@ func scopesHash(scopes []string) string {
 // The caller is responsible for applying the returned resolution onto a COPY
 // of rc via applyResolution (per the copy-before-mutate rule). This function
 // neither mutates rc nor the cache on failure.
+//
+// Observability: this function never calls slog.Error directly — all
+// failures are annotated with a *DCRStepError and returned to the caller,
+// which is expected to emit the boundary Error record. This avoids the
+// double-logging pattern where both the resolver and the outer frame
+// report the same failure. Cache-hit Debug / stale-Warn logs and the
+// successful-registration Debug log are emitted here because they have no
+// outer-frame equivalent. No secret values (client_secret,
+// registration_access_token, initial_access_token) are ever logged — only
+// public metadata such as client_id and redirect_uri.
 func resolveDCRCredentials(
 	ctx context.Context,
 	rc *authserver.OAuth2UpstreamRunConfig,
@@ -172,12 +276,13 @@ func resolveDCRCredentials(
 	cache DCRCredentialStore,
 ) (*DCRResolution, error) {
 	if err := validateResolveInputs(rc, issuer, cache); err != nil {
-		return nil, err
+		return nil, newDCRStepError(dcrStepValidate, issuer, "", err)
 	}
 
 	redirectURI, err := resolveUpstreamRedirectURI(rc.RedirectURI, issuer)
 	if err != nil {
-		return nil, fmt.Errorf("dcr: resolve redirect uri: %w", err)
+		return nil, newDCRStepError(dcrStepResolveRedirect, issuer, "",
+			fmt.Errorf("resolve redirect uri: %w", err))
 	}
 
 	scopes := slices.Clone(rc.Scopes)
@@ -189,7 +294,7 @@ func resolveDCRCredentials(
 
 	// Cache lookup short-circuits before any network I/O.
 	if cached, hit, err := lookupCachedResolution(ctx, cache, key, issuer, redirectURI); err != nil {
-		return nil, err
+		return nil, newDCRStepError(dcrStepCacheRead, issuer, redirectURI, err)
 	} else if hit {
 		return cached, nil
 	}
@@ -198,7 +303,7 @@ func resolveDCRCredentials(
 	// the caller-supplied RegistrationEndpoint directly.
 	endpoints, err := resolveDCREndpoints(ctx, rc.DCRConfig, issuer)
 	if err != nil {
-		return nil, err
+		return nil, newDCRStepError(dcrStepMetadata, issuer, redirectURI, err)
 	}
 	applyExplicitEndpointOverrides(endpoints, rc)
 
@@ -207,7 +312,7 @@ func resolveDCRCredentials(
 	// not advertise the field at all.
 	authMethod, err := selectTokenEndpointAuthMethod(endpoints.tokenEndpointAuthMethodsSupported)
 	if err != nil {
-		return nil, fmt.Errorf("dcr: %w", err)
+		return nil, newDCRStepError(dcrStepSelectAuthMethod, issuer, redirectURI, err)
 	}
 
 	registrationScopes := chooseRegistrationScopes(scopes, endpoints.scopesSupported, issuer)
@@ -215,15 +320,16 @@ func resolveDCRCredentials(
 	response, err := performRegistration(ctx, rc.DCRConfig, endpoints.registrationEndpoint,
 		redirectURI, authMethod, registrationScopes)
 	if err != nil {
-		return nil, err
+		return nil, newDCRStepError(dcrStepRegister, issuer, redirectURI, err)
 	}
 
-	resolution := buildResolution(response, endpoints, authMethod)
+	resolution := buildResolution(response, endpoints, authMethod, redirectURI)
 
 	// Write to durable storage before updating caller state (per
 	// .claude/rules/go-style.md "write to durable storage before in-memory").
 	if err := cache.Put(ctx, key, resolution); err != nil {
-		return nil, fmt.Errorf("dcr: cache put: %w", err)
+		return nil, newDCRStepError(dcrStepCacheWrite, issuer, redirectURI,
+			fmt.Errorf("cache put: %w", err))
 	}
 
 	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
@@ -234,6 +340,113 @@ func resolveDCRCredentials(
 	)
 	return resolution, nil
 }
+
+// LogDCRStepError emits the single boundary slog.Error record for a DCR
+// resolver failure, carrying the step / issuer / redirect_uri attributes
+// extracted from err. If err is not a *DCRStepError, it is logged with a
+// generic "unknown" step — resolveDCRCredentials always wraps its errors,
+// so this branch indicates a programming error in a future caller rather
+// than a runtime condition.
+//
+// Every wrapped error is passed through sanitizeErrorForLog to strip URL
+// query parameters that could plausibly contain sensitive tokens (defense
+// in depth — the current DCR flow sends the initial access token as an
+// Authorization header, not a query parameter, but nothing in the type
+// system prevents a future refactor from doing otherwise).
+func LogDCRStepError(upstreamName string, err error) {
+	var stepErr *DCRStepError
+	if !errors.As(err, &stepErr) {
+		slog.Error("dcr: resolve failed",
+			"upstream", upstreamName,
+			"step", "unknown",
+			"error", sanitizeErrorForLog(err),
+		)
+		return
+	}
+
+	attrs := []any{
+		"upstream", upstreamName,
+		"step", stepErr.Step,
+		"issuer", stepErr.Issuer,
+		"error", sanitizeErrorForLog(stepErr.Err),
+	}
+	if stepErr.RedirectURI != "" {
+		attrs = append(attrs, "redirect_uri", stepErr.RedirectURI)
+	}
+	slog.Error("dcr: resolve failed", attrs...)
+}
+
+// sanitizeErrorForLog strips query strings from any URLs embedded in err's
+// message. The Go HTTP client, url.Error, and other net/* wrappers embed
+// the full request URL — including query parameters — in their error
+// strings. Query parameters rarely carry secrets in our DCR flow (the
+// initial access token is sent as an Authorization header), but a future
+// change could silently introduce a token in a query parameter; stripping
+// query strings here is defense in depth that protects the log regardless.
+//
+// Only the query component of URL-shaped substrings is replaced; scheme,
+// host, and path are preserved so operators retain enough context to
+// correlate with upstream server logs. Trailing sentence punctuation
+// adjacent to the URL (e.g. the comma in "reaching URL?q=1, retrying")
+// is preserved — see trimURLTrailingPunctuation for the list of
+// characters considered terminators.
+//
+// Scope: the regex only matches http:// and https:// schemes. Other
+// schemes (file://, raw host:port) are not sanitised; the current DCR
+// flow never embeds those in errors, and broadening the match risks
+// false positives on unrelated text.
+func sanitizeErrorForLog(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	return queryStrippingPattern.ReplaceAllStringFunc(msg, func(match string) string {
+		// Split any trailing sentence punctuation off the match before
+		// handing it to url.Parse. Without this, a period / comma /
+		// closing bracket at the end of the sentence is absorbed into
+		// the URL's raw query and dropped along with the rest of the
+		// query component, mangling the error text. The trimmed
+		// punctuation is re-appended to the replacement so the
+		// surrounding prose is preserved verbatim.
+		core, tail := trimURLTrailingPunctuation(match)
+		u, parseErr := url.Parse(core)
+		if parseErr != nil || u.RawQuery == "" {
+			return match
+		}
+		u.RawQuery = ""
+		return u.String() + tail
+	})
+}
+
+// trimURLTrailingPunctuation returns (core, tail) where tail is the run of
+// trailing ASCII punctuation that commonly terminates a URL inside prose
+// but is never a meaningful part of the URL itself. The characters chosen
+// here mirror those used by general-purpose URL extractors (e.g.,
+// Chromium's autolinker): sentence-ending punctuation, closing brackets,
+// and a few separators that appear between URLs in freeform text.
+//
+// Note that ')' and ']' are stripped unconditionally — a URL legitimately
+// containing a percent-encoded closing bracket will have it as "%29" or
+// "%5D", not as a literal, so this cannot truncate a real URL path or
+// query. The reverse case (an unescaped ')' inside a path) is
+// non-conforming per RFC 3986 and out of scope for a log sanitiser.
+func trimURLTrailingPunctuation(s string) (core, tail string) {
+	const terminators = ".,;:!?)]}>"
+	i := len(s)
+	for i > 0 && strings.ContainsRune(terminators, rune(s[i-1])) {
+		i--
+	}
+	return s[:i], s[i:]
+}
+
+// queryStrippingPattern matches URL-shaped substrings inside an error
+// message — sufficient to reach the url.Parse path in sanitizeErrorForLog
+// and let it decide whether a query component exists to strip. The regexp
+// is intentionally narrow (http/https schemes only) to avoid false
+// positives. Trailing sentence punctuation that the character class
+// happens to include (e.g. '.', ',', ')') is stripped by
+// trimURLTrailingPunctuation before the match is parsed.
+var queryStrippingPattern = regexp.MustCompile(`https?://[^\s"']+`)
 
 // -----------------------------------------------------------------------------
 // Private helpers
@@ -269,6 +482,11 @@ func validateResolveInputs(
 // lookupCachedResolution checks the cache and logs the hit. On hit it
 // returns (resolution, true, nil). On miss it returns (nil, false, nil). An
 // error is returned only on backend failure.
+//
+// On a hit the resolution's age (now - CreatedAt) is computed and logged as
+// dcr_age_days; if the age exceeds dcrStaleAgeThreshold, an additional
+// slog.Warn is emitted with a remediation hint so operators can act on
+// long-lived registrations that may need rotation or re-registration.
 func lookupCachedResolution(
 	ctx context.Context,
 	cache DCRCredentialStore,
@@ -282,11 +500,32 @@ func lookupCachedResolution(
 	if !ok {
 		return nil, false, nil
 	}
+
+	age := time.Since(cached.CreatedAt)
+	ageDays := int(age / (24 * time.Hour))
+
+	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
 	slog.Debug("dcr: cache hit",
 		"issuer", issuer,
 		"redirect_uri", redirectURI,
 		"client_id", cached.ClientID,
+		"dcr_age_days", ageDays,
 	)
+
+	if age > dcrStaleAgeThreshold {
+		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
+		slog.Warn(
+			"dcr: cached registration exceeds staleness threshold; "+
+				"consider rotating the registration via RFC 7592 deregistration "+
+				"and re-registering at next startup",
+			"issuer", issuer,
+			"redirect_uri", redirectURI,
+			"client_id", cached.ClientID,
+			"dcr_age_days", ageDays,
+			"stale_threshold_days", int(dcrStaleAgeThreshold/(24*time.Hour)),
+		)
+	}
+
 	return cached, true, nil
 }
 
@@ -358,11 +597,15 @@ func performRegistration(
 // buildResolution assembles the DCRResolution from the RFC 7591 response and
 // the resolved endpoints. If the server did not echo a
 // token_endpoint_auth_method in the response, the method actually sent is
-// recorded so downstream consumers see a definite value.
+// recorded so downstream consumers see a definite value. redirectURI is the
+// value passed to the registration endpoint (caller-supplied or defaulted
+// via resolveUpstreamRedirectURI); it is persisted on the resolution so
+// applyResolution can propagate a defaulted value back to the run-config.
 func buildResolution(
 	response *oauthproto.DynamicClientRegistrationResponse,
 	endpoints *dcrEndpoints,
 	sentAuthMethod string,
+	redirectURI string,
 ) *DCRResolution {
 	authMethod := response.TokenEndpointAuthMethod
 	if authMethod == "" {
@@ -376,6 +619,7 @@ func buildResolution(
 		RegistrationAccessToken: response.RegistrationAccessToken,
 		RegistrationClientURI:   response.RegistrationClientURI,
 		TokenEndpointAuthMethod: authMethod,
+		RedirectURI:             redirectURI,
 		CreatedAt:               time.Now(),
 	}
 }

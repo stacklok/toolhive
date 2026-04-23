@@ -401,7 +401,25 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.monitoringCtx, r.monitoringCancel = context.WithCancel(ctx)
 			// Create adapter to bridge statuses.StatusManager to auth.StatusUpdater
 			adapter := &statusManagerAdapter{sm: r.statusManager}
-			r.authenticatedTokenSource = auth.NewMonitoredTokenSource(r.monitoringCtx, tokenSource, r.Config.BaseName, adapter)
+
+			// Capture the upstream issuer and resolved client_id so the DCR
+			// remediation warning emitted by isTransientNetworkError on a
+			// permanent 4xx (indicating a stale RFC 7591 registration)
+			// carries enough context for an operator to identify which
+			// upstream AS + client_id to re-register. The cached DCR
+			// client_id wins over any statically configured ClientID,
+			// matching the precedence used by resolveClientCredentials in
+			// pkg/auth/remote.
+			upstream, clientID := remoteAuthLogContext(r.Config.RemoteAuthConfig)
+
+			r.authenticatedTokenSource = auth.NewMonitoredTokenSource(
+				r.monitoringCtx,
+				tokenSource,
+				r.Config.BaseName,
+				upstream,
+				clientID,
+				adapter,
+			)
 			tokenSource = r.authenticatedTokenSource
 			r.authenticatedTokenSource.StartBackgroundMonitoring()
 		}
@@ -780,6 +798,25 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 	}
 
 	return tokenSource, nil
+}
+
+// remoteAuthLogContext extracts the upstream issuer and resolved client_id
+// from a remote auth config for use as log-correlation fields on the
+// MonitoredTokenSource. Returns ("", "") when cfg is nil so callers do not
+// need to guard the call. DCR-cached credentials win over statically
+// configured ones, mirroring the precedence used by
+// remote.Handler.resolveClientCredentials at runtime.
+func remoteAuthLogContext(cfg *remote.Config) (upstream, clientID string) {
+	if cfg == nil {
+		return "", ""
+	}
+	upstream = cfg.Issuer
+	if cfg.CachedClientID != "" {
+		clientID = cfg.CachedClientID
+	} else {
+		clientID = cfg.ClientID
+	}
+	return upstream, clientID
 }
 
 // Cleanup performs cleanup operations for the runner, including shutting down all middleware.

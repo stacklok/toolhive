@@ -129,6 +129,15 @@ type transientRefresher struct {
 	source   oauth2.TokenSource
 	workload string
 
+	// upstream identifies the upstream authorization server that issued the
+	// token, and clientID is the OAuth 2.0 client_id used by this workload.
+	// Both are optional and are only surfaced in structured logs (notably the
+	// DCR remediation warning emitted from isTransientNetworkError when a
+	// permanent 4xx indicates a stale cached DCR client). Empty strings are
+	// acceptable and are omitted from log output by the slog handler.
+	upstream string
+	clientID string
+
 	// newBackOff is a factory for the backoff used during retries.
 	// Nil in production; overridable in tests for fast execution.
 	newBackOff func() backoff.BackOff
@@ -172,7 +181,7 @@ func (r *transientRefresher) retry(ctx context.Context, origErr error) (*oauth2.
 		if tokenErr == nil {
 			return t, nil
 		}
-		if !isTransientNetworkError(tokenErr) {
+		if !isTransientNetworkError(tokenErr, r.workload, r.upstream, r.clientID) {
 			return nil, backoff.Permanent(tokenErr)
 		}
 		return nil, tokenErr
@@ -212,6 +221,8 @@ func (r *transientRefresher) getBackOff() backoff.BackOff {
 type MonitoredTokenSource struct {
 	tokenSource    oauth2.TokenSource
 	workloadName   string
+	upstream       string
+	clientID       string
 	statusUpdater  StatusUpdater
 	monitoringCtx  context.Context
 	stopMonitoring chan struct{}
@@ -226,20 +237,41 @@ type MonitoredTokenSource struct {
 
 // NewMonitoredTokenSource creates a new MonitoredTokenSource that wraps the provided
 // oauth2.TokenSource and monitors it for authentication failures.
+//
+// upstream and clientID annotate structured logs emitted by the token source,
+// most importantly the DCR remediation warning fired from
+// isTransientNetworkError when the token endpoint returns a permanent 4xx
+// (which frequently indicates a stale cached RFC 7591 registration). Pass
+// empty strings when the workload does not use DCR or the upstream issuer
+// is unknown; the slog handler will render the attributes as empty.
+//
+// The fields are fixed at construction time rather than exposed via a setter
+// so there is no data race between a late writer and the readers in Token()
+// / transientRefresher.retry() — both of which may run on the background
+// monitor goroutine started by StartBackgroundMonitoring.
 func NewMonitoredTokenSource(
 	ctx context.Context,
 	tokenSource oauth2.TokenSource,
 	workloadName string,
+	upstream string,
+	clientID string,
 	statusUpdater StatusUpdater,
 ) *MonitoredTokenSource {
 	return &MonitoredTokenSource{
 		tokenSource:    tokenSource,
 		workloadName:   workloadName,
+		upstream:       upstream,
+		clientID:       clientID,
 		statusUpdater:  statusUpdater,
 		monitoringCtx:  ctx,
 		stopMonitoring: make(chan struct{}),
 		stopped:        make(chan struct{}),
-		refresher:      &transientRefresher{source: tokenSource, workload: workloadName},
+		refresher: &transientRefresher{
+			source:   tokenSource,
+			workload: workloadName,
+			upstream: upstream,
+			clientID: clientID,
+		},
 	}
 }
 
@@ -263,7 +295,7 @@ func (mts *MonitoredTokenSource) Token() (*oauth2.Token, error) {
 		return tok, nil
 	}
 
-	if !isTransientNetworkError(err) {
+	if !isTransientNetworkError(err, mts.workloadName, mts.upstream, mts.clientID) {
 		mts.markAsUnauthenticated(fmt.Sprintf("Token retrieval failed: %v", err))
 		return nil, err
 	}
@@ -349,7 +381,13 @@ func (mts *MonitoredTokenSource) onTick() (bool, time.Duration) {
 // OAuth2 client-level auth failures (invalid_grant, 401, 400) and TLS errors
 // (certificate verification, handshake failure) are NOT considered transient and
 // return false so the workload is marked unauthenticated immediately.
-func isTransientNetworkError(err error) bool {
+//
+// workload, upstream, and clientID are context strings used only in
+// structured logs — notably the DCR remediation warning emitted in the
+// permanent-4xx branch, which suggests the cached RFC 7591 registration is
+// no longer recognised by the authorization server. All three are optional;
+// pass empty strings when the context is unknown.
+func isTransientNetworkError(err error, workload, upstream, clientID string) bool {
 	if err == nil ||
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
@@ -365,6 +403,20 @@ func isTransientNetworkError(err error) bool {
 			)
 			return true
 		}
+		// Permanent 4xx from the token endpoint frequently indicates that the
+		// cached Dynamic Client Registration has been revoked, rotated, or is
+		// no longer recognised by the authorization server. Emit a remediation
+		// hint before returning false so operators can correlate the
+		// unauthentication with a stale DCR rather than a user-action issue.
+		// The returned boolean is unchanged.
+		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
+		slog.Warn(
+			"cached DCR client is no longer recognized by the authorization server; "+
+				"delete the cached credentials and restart to re-register.",
+			"workload", workload,
+			"upstream", upstream,
+			"client_id", clientID,
+		)
 		return false
 	}
 

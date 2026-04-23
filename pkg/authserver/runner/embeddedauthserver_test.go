@@ -9,12 +9,15 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +28,7 @@ import (
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestCreateKeyProvider(t *testing.T) {
@@ -1299,4 +1303,269 @@ func TestRegisterHandlers(t *testing.T) {
 		assert.Equal(t, http.StatusNotFound, rec.Code,
 			"expected 404 for unregistered root path")
 	})
+}
+
+// newMockAuthorizationServer stands up a mock authorization server that
+// serves RFC 8414 discovery metadata and an RFC 7591 /register endpoint.
+// Every request is counted via the returned *int32 so tests can assert that
+// cache hits issue zero additional network I/O. The issuer advertised in
+// metadata is the server's own URL (loopback), which satisfies the HTTPS
+// redirect-URI policy in resolveUpstreamRedirectURI.
+func newMockAuthorizationServer(t *testing.T) (*httptest.Server, *int32) {
+	t.Helper()
+
+	var total int32
+	var server *httptest.Server
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&total, 1)
+		md := oauthproto.AuthorizationServerMetadata{
+			Issuer:                            server.URL,
+			AuthorizationEndpoint:             server.URL + "/authorize",
+			TokenEndpoint:                     server.URL + "/token",
+			RegistrationEndpoint:              server.URL + "/register",
+			TokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
+			ScopesSupported:                   []string{"openid", "profile"},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(md)
+	})
+
+	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&total, 1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_ = r.Body.Close()
+		var req oauthproto.DynamicClientRegistrationRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		resp := oauthproto.DynamicClientRegistrationResponse{
+			ClientID:                "dcr-client-id",
+			ClientSecret:            "dcr-client-secret",
+			RegistrationAccessToken: "dcr-reg-token",
+			TokenEndpointAuthMethod: req.TokenEndpointAuthMethod,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	// Catch-all to count unexpected requests.
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&total, 1)
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server, &total
+}
+
+// TestBuildUpstreamConfigs_DCR verifies the end-to-end DCR wiring inside
+// buildUpstreamConfigs: on first call it registers with the mock AS and
+// overlays the resolved client_id/client_secret; on second call it hits the
+// in-memory store and issues zero additional HTTP requests; and neither call
+// mutates the caller's original RunConfig.Upstreams slice.
+func TestBuildUpstreamConfigs_DCR(t *testing.T) {
+	t.Parallel()
+
+	t.Run("DCR boot registers and overlays credentials", func(t *testing.T) {
+		t.Parallel()
+
+		server, requestCount := newMockAuthorizationServer(t)
+
+		cfg := &authserver.RunConfig{
+			SchemaVersion: authserver.CurrentSchemaVersion,
+			Issuer:        server.URL,
+			Upstreams: []authserver.UpstreamRunConfig{
+				{
+					Name: "dcr-upstream",
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						// ClientID intentionally empty: triggers DCR.
+						ClientID:              "",
+						AuthorizationEndpoint: server.URL + "/authorize",
+						TokenEndpoint:         server.URL + "/token",
+						Scopes:                []string{"openid", "profile"},
+						DCRConfig: &authserver.DCRUpstreamConfig{
+							DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+						},
+					},
+				},
+			},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+
+		store := NewInMemoryDCRCredentialStore()
+		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+
+		// DCR-resolved credentials appear on the built OAuth2Config.
+		require.NotNil(t, got[0].OAuth2Config)
+		assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID)
+		assert.Equal(t, "dcr-client-secret", got[0].OAuth2Config.ClientSecret)
+
+		// Store now contains the resolution under the canonical DCRKey.
+		redirectURI := server.URL + "/oauth/callback"
+		key := DCRKey{
+			Issuer:      server.URL,
+			RedirectURI: redirectURI,
+			ScopesHash:  scopesHash([]string{"openid", "profile"}),
+		}
+		cached, ok, err := store.Get(context.Background(), key)
+		require.NoError(t, err)
+		require.True(t, ok, "store should contain the DCR resolution keyed by DCRKey")
+		assert.Equal(t, "dcr-client-id", cached.ClientID)
+
+		// First call must have hit the mock AS at least once (metadata +
+		// register). The exact count depends on well-known path fallbacks,
+		// but it must be strictly greater than zero.
+		assert.Greater(t, atomic.LoadInt32(requestCount), int32(0),
+			"DCR boot should have issued network I/O to the mock AS")
+
+		// Copy-before-mutate: the caller's original slice element is
+		// unchanged — ClientID is still empty; DCRConfig is still set.
+		assert.Equal(t, "", cfg.Upstreams[0].OAuth2Config.ClientID,
+			"original OAuth2Config.ClientID must not be mutated by DCR resolution")
+		assert.NotNil(t, cfg.Upstreams[0].OAuth2Config.DCRConfig,
+			"original OAuth2Config.DCRConfig must not be cleared by DCR resolution")
+	})
+
+	t.Run("cache hit on second call issues zero additional HTTP requests", func(t *testing.T) {
+		t.Parallel()
+
+		server, requestCount := newMockAuthorizationServer(t)
+
+		cfg := &authserver.RunConfig{
+			SchemaVersion: authserver.CurrentSchemaVersion,
+			Issuer:        server.URL,
+			Upstreams: []authserver.UpstreamRunConfig{
+				{
+					Name: "dcr-upstream",
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						ClientID:              "",
+						AuthorizationEndpoint: server.URL + "/authorize",
+						TokenEndpoint:         server.URL + "/token",
+						Scopes:                []string{"openid", "profile"},
+						DCRConfig: &authserver.DCRUpstreamConfig{
+							DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+						},
+					},
+				},
+			},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+
+		store := NewInMemoryDCRCredentialStore()
+
+		// First call: populates the store.
+		_, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)
+		require.NoError(t, err)
+		firstCallRequests := atomic.LoadInt32(requestCount)
+		require.Greater(t, firstCallRequests, int32(0),
+			"first call should have issued network I/O")
+
+		// Second call: must short-circuit on the cache and issue zero
+		// additional HTTP requests against the mock AS.
+		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID)
+		assert.Equal(t, "dcr-client-secret", got[0].OAuth2Config.ClientSecret)
+
+		assert.Equal(t, firstCallRequests, atomic.LoadInt32(requestCount),
+			"second call must not issue any additional HTTP requests to the mock AS")
+
+		// Copy-before-mutate still holds after both calls.
+		assert.Equal(t, "", cfg.Upstreams[0].OAuth2Config.ClientID,
+			"original OAuth2Config.ClientID must remain empty after both calls")
+		assert.NotNil(t, cfg.Upstreams[0].OAuth2Config.DCRConfig,
+			"original OAuth2Config.DCRConfig must remain set after both calls")
+	})
+}
+
+// TestNewEmbeddedAuthServer_DCRBoot drives the full NewEmbeddedAuthServer
+// boot path against a mock upstream AS: signing keys are generated
+// ephemerally, storage defaults to memory, and the DCR resolver runs
+// inside the constructor. It verifies that (a) the constructor plumbs a
+// dcrStore onto EmbeddedAuthServer, (b) that store is populated with the
+// canonical DCRKey after boot, and (c) the caller's original
+// RunConfig.Upstreams[i] slice element is unchanged.
+//
+// This complements TestBuildUpstreamConfigs_DCR by exercising the full
+// wiring — signing-key creation, HMAC secret defaults, storage
+// instantiation, authserver.New() — rather than the internal helper in
+// isolation.
+func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
+	t.Parallel()
+
+	server, requestCount := newMockAuthorizationServer(t)
+
+	cfg := &authserver.RunConfig{
+		SchemaVersion: authserver.CurrentSchemaVersion,
+		Issuer:        server.URL,
+		Upstreams: []authserver.UpstreamRunConfig{
+			{
+				Name: "dcr-upstream",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					ClientID:              "",
+					AuthorizationEndpoint: server.URL + "/authorize",
+					TokenEndpoint:         server.URL + "/token",
+					Scopes:                []string{"openid", "profile"},
+					DCRConfig: &authserver.DCRUpstreamConfig{
+						DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+					},
+				},
+			},
+		},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+	}
+
+	// Retain a pointer to the caller's OAuth2Config to verify that the
+	// constructor did not mutate it via the shared pointer.
+	originalOAuth2 := cfg.Upstreams[0].OAuth2Config
+
+	embed, err := NewEmbeddedAuthServer(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, embed)
+	t.Cleanup(func() { _ = embed.Close() })
+
+	// The constructor must have populated a non-nil dcrStore.
+	require.NotNil(t, embed.dcrStore, "NewEmbeddedAuthServer must initialise a dcrStore")
+
+	// The DCR registration must have hit the mock AS at least once.
+	assert.Greater(t, atomic.LoadInt32(requestCount), int32(0),
+		"DCR boot should have issued network I/O to the mock AS")
+
+	// The store on the EmbeddedAuthServer contains the canonical DCRKey
+	// for this upstream — no separate in-memory store was created.
+	redirectURI := server.URL + "/oauth/callback"
+	key := DCRKey{
+		Issuer:      server.URL,
+		RedirectURI: redirectURI,
+		ScopesHash:  scopesHash([]string{"openid", "profile"}),
+	}
+	cached, ok, err := embed.dcrStore.Get(context.Background(), key)
+	require.NoError(t, err)
+	require.True(t, ok, "dcrStore on EmbeddedAuthServer must hold the DCR resolution")
+	assert.Equal(t, "dcr-client-id", cached.ClientID)
+	assert.Equal(t, "dcr-client-secret", cached.ClientSecret)
+
+	// Copy-before-mutate: the caller's OAuth2Config pointer is unchanged.
+	assert.Equal(t, "", originalOAuth2.ClientID,
+		"NewEmbeddedAuthServer must not mutate the caller's OAuth2Config.ClientID")
+	assert.NotNil(t, originalOAuth2.DCRConfig,
+		"NewEmbeddedAuthServer must not clear the caller's OAuth2Config.DCRConfig")
+	assert.Same(t, originalOAuth2, cfg.Upstreams[0].OAuth2Config,
+		"NewEmbeddedAuthServer must not replace the caller's OAuth2Config pointer")
 }

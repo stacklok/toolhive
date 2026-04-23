@@ -69,28 +69,39 @@ func NewMCPClientForStreamableHTTPWithToken(config *TestConfig, serverURL, token
 // is configured (MCP Initialize would fail with 401 for unauthenticated probes).
 func WaitForVMCPHealthReady(healthURL string, timeout time.Duration) error {
 	httpClient := &http.Client{Timeout: 5 * time.Second}
-	deadline := time.Now().Add(timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 	var lastErr error
 	var lastStatus int
 	var lastBody string
-	for time.Now().Before(deadline) {
-		resp, err := httpClient.Get(healthURL) //nolint:gosec // URL is test-controlled
-		if resp != nil {
-			lastStatus = resp.StatusCode
-			bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-			_ = resp.Body.Close()
-			lastBody = string(bodyBytes)
+	for {
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return fmt.Errorf("timeout waiting for vMCP health endpoint at %s: last error: %w", healthURL, lastErr)
+			}
+			return fmt.Errorf("timeout waiting for vMCP health endpoint at %s: last status: %d, body: %s", healthURL, lastStatus, lastBody)
+		case <-ticker.C:
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil) //nolint:gosec // URL is test-controlled
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			resp, err := httpClient.Do(req)
+			if resp != nil {
+				lastStatus = resp.StatusCode
+				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+				_ = resp.Body.Close()
+				lastBody = string(bodyBytes)
+			}
+			lastErr = err
+			if err == nil && resp.StatusCode == http.StatusOK {
+				return nil
+			}
 		}
-		lastErr = err
-		if err == nil && resp.StatusCode == http.StatusOK {
-			return nil
-		}
-		time.Sleep(2 * time.Second)
 	}
-	if lastErr != nil {
-		return fmt.Errorf("timeout waiting for vMCP health endpoint at %s: last error: %w", healthURL, lastErr)
-	}
-	return fmt.Errorf("timeout waiting for vMCP health endpoint at %s: last status: %d, body: %s", healthURL, lastStatus, lastBody)
 }
 
 // Initialize initializes the MCP connection

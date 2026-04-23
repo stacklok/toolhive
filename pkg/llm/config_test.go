@@ -209,6 +209,93 @@ func TestConfig_Validate(t *testing.T) {
 	}
 }
 
+func TestConfig_ValidatePartial(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{
+			name:    "empty config is valid",
+			cfg:     Config{},
+			wantErr: false,
+		},
+		{
+			name:    "valid gateway URL only",
+			cfg:     Config{GatewayURL: "https://llm.example.com"},
+			wantErr: false,
+		},
+		{
+			name:    "HTTP gateway URL rejected",
+			cfg:     Config{GatewayURL: "http://llm.example.com"},
+			wantErr: true,
+		},
+		{
+			name:    "valid issuer only",
+			cfg:     Config{OIDC: OIDCConfig{Issuer: "https://auth.example.com"}},
+			wantErr: false,
+		},
+		{
+			name:    "invalid issuer rejected",
+			cfg:     Config{OIDC: OIDCConfig{Issuer: "not-a-url"}},
+			wantErr: true,
+		},
+		{
+			name:    "proxy port below range rejected",
+			cfg:     Config{Proxy: ProxyConfig{ListenPort: 80}},
+			wantErr: true,
+		},
+		{
+			name:    "proxy port above range rejected",
+			cfg:     Config{Proxy: ProxyConfig{ListenPort: 99999}},
+			wantErr: true,
+		},
+		{
+			name:    "valid proxy port accepted",
+			cfg:     Config{Proxy: ProxyConfig{ListenPort: 8080}},
+			wantErr: false,
+		},
+		{
+			name:    "callback port below range rejected",
+			cfg:     Config{OIDC: OIDCConfig{CallbackPort: 100}},
+			wantErr: true,
+		},
+		{
+			name:    "valid callback port accepted",
+			cfg:     Config{OIDC: OIDCConfig{CallbackPort: 9000}},
+			wantErr: false,
+		},
+		{
+			name: "multiple invalid fields all reported",
+			cfg: Config{
+				GatewayURL: "http://llm.example.com",
+				Proxy:      ProxyConfig{ListenPort: 80},
+			},
+			wantErr: true,
+		},
+		{
+			name: "required fields absent but valid values accepted",
+			cfg: Config{
+				GatewayURL: "https://llm.example.com",
+				Proxy:      ProxyConfig{ListenPort: 8080},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.cfg.ValidatePartial()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidatePartial() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestConfig_EffectiveProxyPort(t *testing.T) {
 	t.Parallel()
 

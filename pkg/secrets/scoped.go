@@ -21,8 +21,8 @@ import (
 //     ends and the name begins.
 //
 // All constants declared in this package (ScopeRegistry, ScopeWorkloads,
-// ScopeAuth) satisfy these invariants. Custom scopes introduced in the future
-// must be validated against them.
+// ScopeAuth, ScopeLLM) satisfy these invariants. Custom scopes introduced in
+// the future must be validated against them.
 type SecretScope string
 
 const (

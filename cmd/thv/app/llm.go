@@ -25,7 +25,7 @@ func newLLMCommand() *cobra.Command {
 		Long: `Configure and manage authentication for OIDC-protected LLM gateways.
 
 The llm command bridges AI coding tools to LLM gateways by handling OIDC
-authentication transparently. Two modes are supported:
+authentication transparently. Two modes are planned:
 
   Proxy mode    — a localhost reverse proxy injects fresh tokens for tools
                   that only accept static API keys (e.g. Cursor).
@@ -33,7 +33,13 @@ authentication transparently. Two modes are supported:
                   apiKeyHelper or auth.command in OIDC-capable tools
                   (e.g. Claude Code).
 
-Run "thv llm setup" to get started.`,
+To configure the gateway connection settings, use:
+
+  thv llm config set --gateway-url https://llm.example.com \
+                     --issuer https://auth.example.com \
+                     --client-id my-client-id
+
+Use "thv llm config show" to view the current configuration.`,
 	}
 
 	cmd.AddCommand(newConfigCommand())
@@ -102,11 +108,13 @@ Example:
 				if callbackPort != 0 {
 					c.LLM.OIDC.CallbackPort = callbackPort
 				}
-				// Only run full validation once all required fields are present.
-				// Partial updates (e.g. --proxy-port only) are allowed so that
-				// users can configure the gateway incrementally.
+				// Always validate format/range for any fields that were set,
+				// so invalid values (e.g. http:// URL, out-of-range port) are
+				// rejected immediately rather than silently persisted.
+				// Full validation (required-field checks) only runs once the
+				// mandatory trio is present, allowing incremental configuration.
 				if !c.LLM.IsConfigured() {
-					return nil
+					return c.LLM.ValidatePartial()
 				}
 				return c.LLM.Validate()
 			})

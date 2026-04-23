@@ -70,25 +70,23 @@ func (c *Config) IsConfigured() bool {
 	return c.GatewayURL != "" && c.OIDC.Issuer != "" && c.OIDC.ClientID != ""
 }
 
-// Validate performs full validation of the LLM config, including HTTPS
-// enforcement, port range checks, and OIDC field requirements.
-func (c *Config) Validate() error {
+// ValidatePartial validates any fields that are explicitly set, without
+// requiring the mandatory trio (gateway_url, oidc.issuer, oidc.client_id).
+// Use this to catch URL format or port range errors during incremental
+// configuration, before all required fields have been provided.
+func (c *Config) ValidatePartial() error {
 	var errs []error
 
-	if c.GatewayURL == "" {
-		errs = append(errs, errors.New("gateway_url is required"))
-	} else if err := networking.ValidateHTTPSURL(c.GatewayURL); err != nil {
-		errs = append(errs, fmt.Errorf("gateway_url: %w", err))
+	if c.GatewayURL != "" {
+		if err := networking.ValidateHTTPSURL(c.GatewayURL); err != nil {
+			errs = append(errs, fmt.Errorf("gateway_url: %w", err))
+		}
 	}
 
-	if c.OIDC.Issuer == "" {
-		errs = append(errs, errors.New("oidc.issuer is required"))
-	} else if err := networking.ValidateIssuerURL(c.OIDC.Issuer); err != nil {
-		errs = append(errs, fmt.Errorf("oidc.issuer: %w", err))
-	}
-
-	if c.OIDC.ClientID == "" {
-		errs = append(errs, errors.New("oidc.client_id is required"))
+	if c.OIDC.Issuer != "" {
+		if err := networking.ValidateIssuerURL(c.OIDC.Issuer); err != nil {
+			errs = append(errs, fmt.Errorf("oidc.issuer: %w", err))
+		}
 	}
 
 	if c.Proxy.ListenPort != 0 && (c.Proxy.ListenPort < 1024 || c.Proxy.ListenPort > 65535) {
@@ -104,6 +102,26 @@ func (c *Config) Validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// Validate performs full validation of the LLM config, including HTTPS
+// enforcement, port range checks, and OIDC field requirements.
+func (c *Config) Validate() error {
+	var errs []error
+
+	if c.GatewayURL == "" {
+		errs = append(errs, errors.New("gateway_url is required"))
+	}
+
+	if c.OIDC.Issuer == "" {
+		errs = append(errs, errors.New("oidc.issuer is required"))
+	}
+
+	if c.OIDC.ClientID == "" {
+		errs = append(errs, errors.New("oidc.client_id is required"))
+	}
+
+	return errors.Join(append(errs, c.ValidatePartial())...)
 }
 
 // EffectiveProxyPort returns the configured proxy listen port, or

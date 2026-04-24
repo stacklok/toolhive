@@ -5,6 +5,7 @@ package workloads
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1827,5 +1828,167 @@ func TestFetchCABundleData(t *testing.T) {
 				assert.Equal(t, tt.wantData, data)
 			}
 		})
+	}
+}
+
+func TestBuildHeaderForwardFromEntry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		entry *mcpv1beta1.MCPServerEntry
+		want  *vmcp.HeaderForwardConfig
+	}{
+		{
+			name: "nil when headerForward absent",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "entry-x"},
+				Spec:       mcpv1beta1.MCPServerEntrySpec{},
+			},
+			want: nil,
+		},
+		{
+			name: "plaintext only",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "github-copilot"},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddPlaintextHeaders: map[string]string{
+							"X-MCP-Toolsets": "projects,issues",
+							"X-Tenant":       "acme",
+						},
+					},
+				},
+			},
+			want: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"X-MCP-Toolsets": "projects,issues",
+					"X-Tenant":       "acme",
+				},
+			},
+		},
+		{
+			name: "secret refs mapped to identifiers scoped by entry name",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-copilot"},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+							{
+								HeaderName:     "X-API-Key",
+								ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "api-key-secret", Key: "token"},
+							},
+							{
+								HeaderName:     "Authorization",
+								ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "auth-secret", Key: "value"},
+							},
+						},
+					},
+				},
+			},
+			want: &vmcp.HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{
+					"X-API-Key":     "HEADER_FORWARD_X_API_KEY_GH_COPILOT",
+					"Authorization": "HEADER_FORWARD_AUTHORIZATION_GH_COPILOT",
+				},
+			},
+		},
+		{
+			name: "mixed plaintext and secret",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "entry-mix"},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddPlaintextHeaders: map[string]string{"X-Tenant": "acme"},
+						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+							{
+								HeaderName:     "X-API-Key",
+								ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "s", Key: "k"},
+							},
+						},
+					},
+				},
+			},
+			want: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{"X-Tenant": "acme"},
+				AddHeadersFromSecret: map[string]string{
+					"X-API-Key": "HEADER_FORWARD_X_API_KEY_ENTRY_MIX",
+				},
+			},
+		},
+		{
+			name: "secret ref without ValueSecretRef is skipped",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "entry-partial"},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+							{HeaderName: "X-Bad", ValueSecretRef: nil},
+							{
+								HeaderName:     "X-Good",
+								ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "s", Key: "k"},
+							},
+						},
+					},
+				},
+			},
+			want: &vmcp.HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{
+					"X-Good": "HEADER_FORWARD_X_GOOD_ENTRY_PARTIAL",
+				},
+			},
+		},
+		{
+			name: "empty headerForward maps returns nil",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "entry-empty"},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{},
+				},
+			},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := buildHeaderForwardFromEntry(tt.entry)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestBuildHeaderForwardFromEntry_NoSecretValuesLeaked asserts that no value in
+// AddHeadersFromSecret contains anything that looks like a Secret key or name —
+// only the HEADER_FORWARD_ identifier prefix. Secret values must be resolved at
+// runtime via the env, not carried through the static config.
+func TestBuildHeaderForwardFromEntry_NoSecretValuesLeaked(t *testing.T) {
+	t.Parallel()
+
+	entry := &mcpv1beta1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "leak-check"},
+		Spec: mcpv1beta1.MCPServerEntrySpec{
+			HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+				AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+					{
+						HeaderName: "X-API-Key",
+						ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+							Name: "super-secret-kubernetes-secret",
+							Key:  "do-not-leak-this-key",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	got := buildHeaderForwardFromEntry(entry)
+	require.NotNil(t, got)
+	for header, ident := range got.AddHeadersFromSecret {
+		assert.NotContains(t, ident, "super-secret", "header %q leaked Secret name", header)
+		assert.NotContains(t, ident, "do-not-leak", "header %q leaked Secret key", header)
+		assert.True(t, strings.HasPrefix(ident, "HEADER_FORWARD_"),
+			"header %q identifier %q must carry HEADER_FORWARD_ prefix", header, ident)
 	}
 }

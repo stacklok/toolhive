@@ -19,7 +19,9 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/container/templates"
+	"github.com/stacklok/toolhive/pkg/llm"
 	"github.com/stacklok/toolhive/pkg/lockfile"
+	"github.com/stacklok/toolhive/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -47,6 +49,7 @@ type Config struct {
 	BuildAuthFiles               map[string]string                   `yaml:"build_auth_files,omitempty"`
 	RuntimeConfigs               map[string]*templates.RuntimeConfig `yaml:"runtime_configs,omitempty"`
 	RegistryAuth                 RegistryAuth                        `yaml:"registry_auth,omitempty"`
+	LLM                          llm.Config                          `yaml:"llm,omitempty"`
 }
 
 // RegistryAuthTypeOAuth is the auth type for OAuth/OIDC authentication.
@@ -63,17 +66,10 @@ type RegistryAuth struct {
 
 // RegistryOAuthConfig holds OAuth/OIDC configuration for registry authentication.
 // PKCE (S256) is always enforced per OAuth 2.1 requirements for public clients.
-type RegistryOAuthConfig struct {
-	Issuer       string   `yaml:"issuer"`
-	ClientID     string   `yaml:"client_id"`
-	Scopes       []string `yaml:"scopes,omitempty"`
-	Audience     string   `yaml:"audience,omitempty"`
-	CallbackPort int      `yaml:"callback_port,omitempty"`
-
-	// Cached token references for session restoration across CLI invocations.
-	CachedRefreshTokenRef string    `yaml:"cached_refresh_token_ref,omitempty"`
-	CachedTokenExpiry     time.Time `yaml:"cached_token_expiry,omitempty"`
-}
+//
+// This is a type alias for oidc.ClientConfig so that registry and LLM gateway
+// authentication always share the same field set and validation logic.
+type RegistryOAuthConfig = oidc.ClientConfig
 
 // Secrets contains the settings for secrets management.
 type Secrets struct {

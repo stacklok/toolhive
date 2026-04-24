@@ -71,6 +71,7 @@ func NewRootCmd(enableUpdates bool) *cobra.Command {
 	rootCmd.AddCommand(inspectorCommand())
 	rootCmd.AddCommand(newMCPCommand())
 	rootCmd.AddCommand(newVMCPCommand())
+	rootCmd.AddCommand(newLLMCommand())
 	rootCmd.AddCommand(groupCmd)
 	rootCmd.AddCommand(skillCmd)
 	rootCmd.AddCommand(statusCmd)
@@ -113,6 +114,7 @@ func IsInformationalCommand(args []string) bool {
 		"mcp":        true,
 		"skill":      true,
 		"vmcp":       true,
+		"llm":        true,
 	}
 
 	return informationalCommands[command]

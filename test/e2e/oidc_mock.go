@@ -50,33 +50,35 @@ type AuthRequest struct {
 // pkg/auth's token validator requires the kid claim to look up the signing key.
 const jwtKeyID = "test-key-1"
 
-// OIDCMockServerOption configures the OIDCMockServer client registration.
-type OIDCMockServerOption func(*fosite.DefaultClient)
+// OIDCMockOption is a unified option type for configuring the OIDC mock server.
+// Use WithClientAudience for client-registration settings and WithAccessTokenLifespan
+// (or other fosite-level helpers) for token-lifecycle settings. A single constructor
+// accepts both, so tests needing both a custom token lifetime and a specific audience
+// no longer require separate constructors.
+type OIDCMockOption struct {
+	fositeOpt func(*fosite.Config)
+	clientOpt func(*fosite.DefaultClient)
+}
 
 // WithClientAudience sets the allowed audience(s) on the registered test client.
 // Use this when the vMCP OIDC config requires a specific audience claim in tokens.
-func WithClientAudience(audiences ...string) OIDCMockServerOption {
-	return func(c *fosite.DefaultClient) {
+func WithClientAudience(audiences ...string) OIDCMockOption {
+	return OIDCMockOption{clientOpt: func(c *fosite.DefaultClient) {
 		c.Audience = audiences
-	}
+	}}
 }
 
-// NewOIDCMockServer creates a new OIDC mock server using Ory Fosite
-func NewOIDCMockServer(port int, clientID, clientSecret string, opts ...func(*fosite.Config)) (*OIDCMockServer, error) {
+// NewOIDCMockServer creates a new OIDC mock server using Ory Fosite.
+// Use WithClientAudience to set client-level options and WithAccessTokenLifespan
+// for Fosite-level settings. Both option kinds may be mixed in a single call.
+func NewOIDCMockServer(port int, clientID, clientSecret string, opts ...OIDCMockOption) (*OIDCMockServer, error) {
 	config := defaultFositeConfig(port)
 	for _, opt := range opts {
-		opt(config)
+		if opt.fositeOpt != nil {
+			opt.fositeOpt(config)
+		}
 	}
-	return newOIDCMockServer(port, clientID, clientSecret, config)
-}
-
-// NewOIDCMockServerWithClientOptions creates a new OIDC mock server, applying
-// clientOpts to the registered test client. Use this when you need to control
-// client-level settings such as Audience.
-func NewOIDCMockServerWithClientOptions(
-	port int, clientID, clientSecret string, clientOpts ...OIDCMockServerOption,
-) (*OIDCMockServer, error) {
-	return newOIDCMockServer(port, clientID, clientSecret, defaultFositeConfig(port), clientOpts...)
+	return newOIDCMockServer(port, clientID, clientSecret, config, opts...)
 }
 
 // defaultFositeConfig returns the standard Fosite config for the mock server.
@@ -93,9 +95,9 @@ func defaultFositeConfig(port int) *fosite.Config {
 	}
 }
 
-// newOIDCMockServer is the shared implementation for the public constructors.
+// newOIDCMockServer is the shared implementation for NewOIDCMockServer.
 func newOIDCMockServer(
-	port int, clientID, clientSecret string, config *fosite.Config, clientOpts ...OIDCMockServerOption,
+	port int, clientID, clientSecret string, config *fosite.Config, opts ...OIDCMockOption,
 ) (*OIDCMockServer, error) {
 	// Generate RSA key for JWT signing
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -121,8 +123,10 @@ func newOIDCMockServer(
 		GrantTypes:    []string{"authorization_code", "refresh_token", "client_credentials"},
 		Scopes:        []string{"openid", "profile", "email"},
 	}
-	for _, opt := range clientOpts {
-		opt(client)
+	for _, opt := range opts {
+		if opt.clientOpt != nil {
+			opt.clientOpt(client)
+		}
 	}
 	store.Clients[clientID] = client
 
@@ -497,8 +501,8 @@ func (*OIDCMockServer) CompleteAuthRequest(authReq *AuthRequest) error {
 }
 
 // WithAccessTokenLifespan sets the lifespan of access tokens for the OIDC mock server.
-func WithAccessTokenLifespan(d time.Duration) func(*fosite.Config) {
-	return func(c *fosite.Config) {
+func WithAccessTokenLifespan(d time.Duration) OIDCMockOption {
+	return OIDCMockOption{fositeOpt: func(c *fosite.Config) {
 		c.AccessTokenLifespan = d
-	}
+	}}
 }

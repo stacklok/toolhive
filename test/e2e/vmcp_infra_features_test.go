@@ -4,7 +4,6 @@
 // Package e2e_test contains infrastructure-heavy vMCP CLI e2e tests that require
 // external services (OIDC server, Redis) as test fixtures.
 // These complement the basic feature tests in vmcp_cli_features_test.go.
-// Tracked by: https://github.com/stacklok/toolhive/issues/4944
 package e2e_test
 
 import (
@@ -107,7 +106,7 @@ var _ = Describe("vMCP infra features", Label("vmcp", "e2e", "infra"), func() {
 
 			oidcPort = allocateVMCPPort()
 			var err error
-			oidcServer, err = e2e.NewOIDCMockServerWithClientOptions(oidcPort, "test-client", "test-secret",
+			oidcServer, err = e2e.NewOIDCMockServer(oidcPort, "test-client", "test-secret",
 				e2e.WithClientAudience("vmcp-e2e-test"),
 			)
 			Expect(err).ToNot(HaveOccurred())

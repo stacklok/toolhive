@@ -351,7 +351,7 @@ func TestTokenSource_TryRestoreFromCache_CallsGetSecretWithDerivedKey(t *testing
 		"error must be from OIDC discovery, not from missing token")
 }
 
-// ── makeTokenPersister – stores refresh token and calls updater ──────────────
+// ── makeTokenPersister – stores refresh token, calls updater, invalidates AT ──
 
 func TestTokenSource_MakeTokenPersister_StoresTokenAndCallsUpdater(t *testing.T) {
 	t.Parallel()
@@ -360,13 +360,22 @@ func TestTokenSource_MakeTokenPersister_StoresTokenAndCallsUpdater(t *testing.T)
 	t.Cleanup(ctrl.Finish)
 	mockSecrets := secretsmocks.NewMockProvider(ctrl)
 
+	cfg := minimalConfig()
 	const secretKey = "LLM_OAUTH_test"
 	wantToken := "new-refresh-token"
 	wantExpiry := time.Now().Add(time.Hour)
 
-	mockSecrets.EXPECT().
-		SetSecret(gomock.Any(), secretKey, wantToken).
-		Return(nil)
+	// The persister must write the refresh token then invalidate the AT cache.
+	// accessTokenCacheKey is derived from the config, not from secretKey.
+	atKey := DeriveSecretKey(cfg.GatewayURL, cfg.OIDC.Issuer) + "_AT"
+	gomock.InOrder(
+		mockSecrets.EXPECT().
+			SetSecret(gomock.Any(), secretKey, wantToken).
+			Return(nil),
+		mockSecrets.EXPECT().
+			SetSecret(gomock.Any(), atKey, "").
+			Return(nil),
+	)
 
 	var updaterKey string
 	var updaterExpiry time.Time
@@ -375,7 +384,7 @@ func TestTokenSource_MakeTokenPersister_StoresTokenAndCallsUpdater(t *testing.T)
 		updaterExpiry = expiry
 	}
 
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false, updater)
+	ts := NewTokenSource(cfg, mockSecrets, false, updater)
 	persister := ts.makeTokenPersister(secretKey)
 
 	require.NoError(t, persister(wantToken, wantExpiry))
@@ -595,6 +604,82 @@ func TestTokenSource_CacheAccessToken_WriteFailure_DoesNotPanic(t *testing.T) {
 	assert.NotPanics(t, func() {
 		ts.cacheAccessToken(context.Background(), "token", time.Now().Add(time.Hour))
 	})
+}
+
+// ── withPreemptiveRefresh – composition regression ───────────────────────────
+
+// countingTokenSource is a test helper that counts Token() invocations and
+// delegates to a caller-supplied function so each call can return a distinct
+// token. It is not safe for concurrent use; all calls come through the
+// ReuseTokenSource mutex so no additional locking is needed.
+type countingTokenSource struct {
+	calls   int
+	tokenFn func(call int) *oauth2.Token
+}
+
+func (c *countingTokenSource) Token() (*oauth2.Token, error) {
+	c.calls++
+	return c.tokenFn(c.calls), nil
+}
+
+// TestWithPreemptiveRefresh_ExactlyOneRefreshPerWindow is a regression test for
+// the composition bug where an inner ReuseTokenSource inside the preemptive
+// chain would return the same stale cached token on every call inside the
+// preemptive window, causing the outer ReuseTokenSource to see an expired token
+// on every successive call and re-enter the inner chain indefinitely.
+//
+// Correct behaviour: the first call inside the preemptive window triggers
+// exactly one inner Token() call that returns a fresh long-lived token. The
+// outer ReuseTokenSource caches the shifted expiry (which is now in the future)
+// and serves all subsequent calls from cache — no further inner calls.
+func TestWithPreemptiveRefresh_ExactlyOneRefreshPerWindow(t *testing.T) {
+	t.Parallel()
+
+	// Call 1 returns a short-lived token whose shifted expiry is already in the
+	// past, so the outer ReuseTokenSource immediately re-enters the inner chain
+	// on the very next call.
+	// Call 2+ returns a long-lived token; after shifting its expiry is well in
+	// the future, so the outer ReuseTokenSource can cache it and serve all
+	// subsequent Token() calls without touching the inner source again.
+	fake := &countingTokenSource{
+		tokenFn: func(call int) *oauth2.Token {
+			if call == 1 {
+				return &oauth2.Token{
+					AccessToken: "token-short",
+					Expiry:      time.Now().Add(preemptiveRefreshWindow / 2),
+				}
+			}
+			return &oauth2.Token{
+				AccessToken: "token-fresh",
+				Expiry:      time.Now().Add(2 * time.Minute),
+			}
+		},
+	}
+
+	src := withPreemptiveRefresh(fake)
+
+	// First call: outer has no token → calls inner (fake call 1) → short token.
+	tok, err := src.Token()
+	require.NoError(t, err)
+	assert.Equal(t, "token-short", tok.AccessToken)
+	assert.Equal(t, 1, fake.calls)
+
+	// Subsequent calls: the short token's shifted expiry is already past, so the
+	// outer calls the inner once more (fake call 2), receives a long-lived token,
+	// and caches its shifted expiry which is well in the future. All remaining
+	// calls must be served from the outer cache — inner must not be called again.
+	const iterations = 10
+	for i := 0; i < iterations; i++ {
+		tok, err = src.Token()
+		require.NoError(t, err)
+		assert.Equal(t, "token-fresh", tok.AccessToken,
+			"all calls after the preemptive refresh must return the cached fresh token")
+	}
+
+	assert.Equal(t, 2, fake.calls,
+		"inner source must be called exactly twice: once for the initial short-lived "+
+			"token and once for the preemptive refresh; all remaining calls must be "+
+			"served from the outer ReuseTokenSource cache")
 }
 
 // ── accessTokenCacheKey ───────────────────────────────────────────────────────

@@ -191,12 +191,29 @@ func (t *TokenSource) tryRestoreFromCache(ctx context.Context) error {
 		return fmt.Errorf("building oauth2 config for cache restore: %w", err)
 	}
 
-	base := remote.CreateTokenSourceFromCached(oauth2Cfg, refreshToken, t.cfg.OIDC.CachedTokenExpiry, t.cfg.OIDC.Audience)
+	// Build the raw refresher directly without an inner ReuseTokenSource.
+	// CreateTokenSourceFromCached wraps in ReuseTokenSource, which causes the
+	// preemptive window to loop: the inner source returns the cached real token,
+	// preemptiveTokenSource shifts it back, the outer ReuseTokenSource caches an
+	// already-expired shifted token, and every subsequent Token() call re-enters
+	// the inner chain instead of one refresh per window.
+	// Target stacking: ReuseTokenSource(nil, preemptive{PersistingTokenSource{rawRefresher}})
+	rawToken := &oauth2.Token{
+		RefreshToken: refreshToken,
+		Expiry:       t.cfg.OIDC.CachedTokenExpiry,
+		TokenType:    "Bearer",
+	}
+	var rawRefresher oauth2.TokenSource
+	if t.cfg.OIDC.Audience != "" {
+		rawRefresher = oauth.NewResourceTokenSource(oauth2Cfg, rawToken, t.cfg.OIDC.Audience)
+	} else {
+		rawRefresher = oauth2Cfg.TokenSource(ctx, rawToken)
+	}
 
 	// Persist rotated refresh tokens back to the secrets provider so future CLI
 	// invocations can still restore the session if the provider invalidates the
 	// old token on refresh (common with OIDC providers that rotate refresh tokens).
-	base = remote.NewPersistingTokenSource(base, t.makeTokenPersister(key))
+	base := remote.NewPersistingTokenSource(rawRefresher, t.makeTokenPersister(key))
 
 	// Wrap with preemptive refresh so tokens are renewed 30 s before real expiry
 	// on every subsequent refresh, not just the first restore.
@@ -222,7 +239,24 @@ func (t *TokenSource) performBrowserFlow(ctx context.Context) error {
 		return fmt.Errorf("OAuth flow start failed: %w", err)
 	}
 
-	base := flow.TokenSource()
+	// Build raw token source from flowCfg fields directly instead of calling
+	// flow.TokenSource(), which returns a ReuseTokenSource and causes the same
+	// double-caching composition issue as CreateTokenSourceFromCached (see
+	// tryRestoreFromCache for a detailed explanation).
+	// Reuse the already-discovered flowCfg to avoid a second OIDC round-trip.
+	oauth2Cfg := oauth2ConfigFrom(flowCfg)
+	initialToken := &oauth2.Token{
+		AccessToken:  tokenResult.AccessToken,
+		RefreshToken: tokenResult.RefreshToken,
+		Expiry:       tokenResult.Expiry,
+		TokenType:    tokenResult.TokenType,
+	}
+	var base oauth2.TokenSource
+	if flowCfg.Resource != "" {
+		base = oauth.NewResourceTokenSource(oauth2Cfg, initialToken, flowCfg.Resource)
+	} else {
+		base = oauth2Cfg.TokenSource(ctx, initialToken)
+	}
 	key := t.refreshTokenKey()
 
 	if t.secretsProvider != nil {
@@ -265,6 +299,13 @@ func (t *TokenSource) buildOAuth2Config(ctx context.Context) (*oauth2.Config, er
 	if err != nil {
 		return nil, err
 	}
+	return oauth2ConfigFrom(flowCfg), nil
+}
+
+// oauth2ConfigFrom converts an oauth.Config (from OIDC discovery) into the
+// minimal oauth2.Config used for headless token refresh. Callers that already
+// hold a *oauth.Config should use this to avoid a second OIDC discovery round-trip.
+func oauth2ConfigFrom(flowCfg *oauth.Config) *oauth2.Config {
 	return &oauth2.Config{
 		ClientID: flowCfg.ClientID,
 		Scopes:   flowCfg.Scopes,
@@ -273,11 +314,15 @@ func (t *TokenSource) buildOAuth2Config(ctx context.Context) (*oauth2.Config, er
 			TokenURL:  flowCfg.TokenURL,
 			AuthStyle: oauth2.AuthStyleInParams,
 		},
-	}, nil
+	}
 }
 
 // makeTokenPersister returns a remote.TokenPersister that stores the refresh
 // token in the secrets provider and updates the config expiry reference.
+// It also invalidates the access-token cache (_AT entry) so that the next
+// Token() call does not serve an access token minted against the now-rotated
+// refresh token. Without this, a concurrent process could read the stale _AT
+// entry between the SetSecret for the refresh token and the next Token() call.
 func (t *TokenSource) makeTokenPersister(key string) remote.TokenPersister {
 	return func(refreshToken string, expiry time.Time) error {
 		ctx := context.Background()
@@ -285,6 +330,9 @@ func (t *TokenSource) makeTokenPersister(key string) remote.TokenPersister {
 			return fmt.Errorf("persisting LLM gateway refresh token: %w", err)
 		}
 		t.updateConfigTokenRef(key, expiry)
+		// Invalidate the access-token cache so the next call does not serve a
+		// token minted against the now-rotated refresh token.
+		_ = t.secretsProvider.SetSecret(ctx, t.accessTokenCacheKey(), "")
 		return nil
 	}
 }

@@ -1,0 +1,15 @@
+You are a recruiter at Stacklok. You have just finished a phone screen with Bob Martinez for the Senior Go Engineer role.
+
+Before recording anything, use memory_search to check existing pipeline context: query "candidates phone screen pipeline".
+
+Use memory_remember to record the following as EPISODIC memories (author="human"):
+1. Bob Martinez: 5 years Go, mostly microservices. US citizen, no visa issues. Asking $145K base — within band. Weak on distributed systems fundamentals; struggled explaining consensus algorithms.
+2. Bob phone screen completed 2024-03-12. Technically below bar for senior level. Archived.
+3. Pattern observed: two candidates archived in a row due to either visa issues or weak distributed systems knowledge. Phone screen question on consensus algorithms is a strong signal.
+
+Now record the following as a PROCEDURAL memory — a learned process from these screens (author="human", tags: ["hiring", "phone-screen", "process"]):
+"Phone screen gate for Senior Go Engineer: (1) confirm visa/work-auth status in first 5 minutes — saves everyone's time if there is a blocker; (2) ask candidate to explain Raft or Paxos at a high level — weak answers here correlate strongly with underperformance in distributed systems work."
+
+After recording, use memory_list with type=procedural to confirm the procedure was saved.
+
+Be concise — just use the tools and report what you stored.

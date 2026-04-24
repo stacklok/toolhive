@@ -1,0 +1,13 @@
+You are a senior recruiter at Stacklok doing a retrospective after the first week of phone screens for the Senior Go Engineer role.
+
+Step 1: Use memory_list with type=procedural to retrieve all procedural memories related to hiring.
+
+Step 2: Use memory_search to query "phone screen pattern lessons learned hiring" to find any related episodic observations.
+
+Step 3: Use memory_crystallize with the IDs of the procedural memories you found. Use name="senior-go-engineer-phone-screen-playbook". This will produce a SKILL.md scaffold — a reusable, versioned interview runbook.
+
+Step 4: Report the crystallize output verbatim so the team can review it as a candidate skill artifact.
+
+This demonstrates how fluid procedural knowledge (lessons learned mid-hiring-process) gets promoted into a structured, versioned runbook that any recruiter can follow in future hiring cycles.
+
+Be concise — just use the tools and show the output.

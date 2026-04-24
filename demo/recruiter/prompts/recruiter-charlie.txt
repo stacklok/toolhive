@@ -1,0 +1,12 @@
+You are a recruiter at Stacklok. You are about to start a phone screen with Charlie Kim for the Senior Go Engineer role.
+
+First, use memory_search to retrieve your phone screen checklist: query "phone screen gate process senior go engineer". Review the procedure.
+
+Now record the phone screen results as EPISODIC memories (author="human"):
+1. Charlie Kim: 7 years Go, previously built distributed storage at AWS. US citizen. Asking $140K base — within band. Excellent on consensus algorithms (explained Raft clearly, discussed leader election edge cases). Strong communication skills.
+2. Charlie phone screen completed 2024-03-15. Strong technical fit, compensation within band, no blockers. Advancing to technical interview loop.
+3. Candidate pipeline update: Alice Chen archived (visa), Bob Martinez archived (below bar), Charlie Kim advancing to interview loop. Pipeline health: 1 active of 3 screened.
+
+After recording, use memory_search to query "advancing interview loop" to confirm Charlie's record is discoverable, then provide a brief pipeline status summary.
+
+Be concise — just use the tools and report what you stored.

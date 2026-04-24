@@ -6,10 +6,12 @@
 #   • Ollama running locally with nomic-embed-text pulled
 #       brew install ollama && ollama pull nomic-embed-text && ollama serve
 #   • Go 1.22+
+#   • Claude Code CLI installed and authenticated (for agent sessions)
+#       npm install -g @anthropic-ai/claude-code
 #
 # Quick start
-#   make all          — build binaries, start server, run demo, stop server
-#   make demo         — run demo only  (server must already be running)
+#   make all          — build binaries, start server, run full demo, stop server
+#   make demo         — run full demo  (server must already be running)
 #   make teardown     — stop server, delete DB and demo binary (safe to repeat)
 #
 # Individual targets
@@ -18,6 +20,13 @@
 #   make server-stop  — stop memory server
 #   make server-logs  — tail server log file
 #   make status       — check server health
+#
+# Agent sessions (run individually after setup phase)
+#   make session-recruiter-alice   — Phase 3: recruiter records Alice's phone screen
+#   make session-hiring-manager    — Phase 4: hiring manager searches memory cold
+#   make session-recruiter-bob     — Phase 5: recruiter records Bob + procedural lesson
+#   make session-recruiter-charlie — Phase 6: recruiter uses checklist, records Charlie
+#   make session-crystallize       — Phase 7: crystallize phone-screen pattern → Skill
 # ══════════════════════════════════════════════════════════════════════════════
 
 SHELL := /bin/bash
@@ -43,21 +52,78 @@ LOG_FILE    := $(CURDIR)/.server.log
 PORT        := 8765
 BASE_URL    := http://127.0.0.1:$(PORT)
 
+# MCP config file for Claude Code agent sessions
+MCP_CONFIG  := $(CURDIR)/.demo.mcp.json
+
 # Env for the demo binary
 DEMO_ENV := \
   MEMORY_MCP_URL=$(BASE_URL)/mcp \
   MEMORY_API_URL=$(BASE_URL)/api/resources \
   MEMORY_JD_FILE=$(CURDIR)/data/job-description.txt
 
-.PHONY: all demo build server-start server-stop server-wait server-logs status teardown
+.PHONY: all demo build \
+        server-start server-stop server-wait server-logs status \
+        mcp-config \
+        session-recruiter-alice session-hiring-manager \
+        session-recruiter-bob session-recruiter-charlie \
+        session-crystallize \
+        teardown
 
 # ── all: one-shot full demo ───────────────────────────────────────────────────
 all: build server-start server-wait demo server-stop
 
-# ── demo: run scenario (server must be up) ────────────────────────────────────
-demo: $(DEMO_BIN)
+# ── demo: run full scenario (server must be up) ───────────────────────────────
+# Runs setup (Phases 1-2) then all five Claude Code agent sessions (Phases 3-7)
+demo: $(DEMO_BIN) mcp-config
 	@echo ""
 	$(DEMO_ENV) $(DEMO_BIN)
+	@$(MAKE) --no-print-directory session-recruiter-alice
+	@$(MAKE) --no-print-directory session-hiring-manager
+	@$(MAKE) --no-print-directory session-recruiter-bob
+	@$(MAKE) --no-print-directory session-recruiter-charlie
+	@$(MAKE) --no-print-directory session-crystallize
+
+# ── mcp-config: generate MCP config for Claude Code sessions ─────────────────
+mcp-config:
+	@printf '{\n  "mcpServers": {\n    "toolhive-memory": {\n      "type": "http",\n      "url": "$(BASE_URL)/mcp"\n    }\n  }\n}\n' > $(MCP_CONFIG)
+	@echo "✓  MCP config written to $(MCP_CONFIG)"
+
+# ── agent sessions (Phase 3-7) ────────────────────────────────────────────────
+
+session-recruiter-alice: mcp-config
+	@echo ""
+	@echo "═══════════════════════════════════════════════════════════════"
+	@echo "  Phase 3 · Recruiter Session — Alice Chen phone screen"
+	@echo "═══════════════════════════════════════════════════════════════"
+	claude --print --mcp-config $(MCP_CONFIG) -p "$$(cat $(CURDIR)/prompts/recruiter-alice.txt)"
+
+session-hiring-manager: mcp-config
+	@echo ""
+	@echo "═══════════════════════════════════════════════════════════════"
+	@echo "  Phase 4 · Hiring Manager — cold memory search"
+	@echo "═══════════════════════════════════════════════════════════════"
+	claude --print --mcp-config $(MCP_CONFIG) -p "$$(cat $(CURDIR)/prompts/hiring-manager.txt)"
+
+session-recruiter-bob: mcp-config
+	@echo ""
+	@echo "═══════════════════════════════════════════════════════════════"
+	@echo "  Phase 5 · Recruiter Session — Bob Martinez + procedural lesson"
+	@echo "═══════════════════════════════════════════════════════════════"
+	claude --print --mcp-config $(MCP_CONFIG) -p "$$(cat $(CURDIR)/prompts/recruiter-bob.txt)"
+
+session-recruiter-charlie: mcp-config
+	@echo ""
+	@echo "═══════════════════════════════════════════════════════════════"
+	@echo "  Phase 6 · Recruiter Session — Charlie Kim (HIRE)"
+	@echo "═══════════════════════════════════════════════════════════════"
+	claude --print --mcp-config $(MCP_CONFIG) -p "$$(cat $(CURDIR)/prompts/recruiter-charlie.txt)"
+
+session-crystallize: mcp-config
+	@echo ""
+	@echo "═══════════════════════════════════════════════════════════════"
+	@echo "  Phase 7 · Crystallize — phone-screen pattern → Skill"
+	@echo "═══════════════════════════════════════════════════════════════"
+	claude --print --mcp-config $(MCP_CONFIG) -p "$$(cat $(CURDIR)/prompts/crystallize.txt)"
 
 # ── build: compile both binaries ─────────────────────────────────────────────
 build: $(SERVER_BIN) $(DEMO_BIN)
@@ -128,5 +194,5 @@ status:
 # ── teardown: stop server + wipe all demo data ───────────────────────────────
 teardown: server-stop
 	@echo "▶  Removing demo data..."
-	@rm -f $(DB_FILE) $(DEMO_BIN) $(SERVER_BIN) $(LOG_FILE) $(CONFIG)
+	@rm -f $(DB_FILE) $(DEMO_BIN) $(SERVER_BIN) $(LOG_FILE) $(CONFIG) $(MCP_CONFIG)
 	@echo "✓  Teardown complete — safe to run 'make all' again"

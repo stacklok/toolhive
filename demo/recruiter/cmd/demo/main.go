@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Command demo runs the ToolHive Memory recruiter scenario.
+// Command demo is the automated setup phase of the ToolHive Memory recruiter demo.
 //
-// It exercises all four memory types (semantic, episodic, procedural, resource),
-// demonstrates cross-session recall between a recruiter and a hiring manager,
-// and finishes by crystallizing the learned interview pattern into a Skill scaffold.
+// It handles Phase 1 (upload the job description as a static MCP Resource and
+// print it in full) and Phase 2 (write shared semantic memories). Phases 3-7
+// are run as real Claude Code agent sessions — see the Makefile targets.
 //
 // Configuration via environment variables:
 //
@@ -50,7 +50,6 @@ const (
 	ansiReset  = "\033[0m"
 	ansiBold   = "\033[1m"
 	ansiDim    = "\033[2m"
-	ansiRed    = "\033[31m"
 	ansiGreen  = "\033[32m"
 	ansiYellow = "\033[33m"
 	ansiPurple = "\033[35m"
@@ -59,7 +58,7 @@ const (
 	ansiGray   = "\033[90m"
 )
 
-func c(color, s string) string { return color + s + ansiReset }
+func col(color, s string) string { return color + s + ansiReset }
 
 // ─── main ─────────────────────────────────────────────────────────────────────
 
@@ -68,7 +67,7 @@ func main() {
 
 	jd, err := os.ReadFile(jdFile)
 	if err != nil {
-		fatalf("reading %s: %v\n  Hint: run 'make demo' from demo/recruiter/", jdFile, err)
+		fatalf("reading %s: %v\n  Hint: run from demo/recruiter/ directory", jdFile, err)
 	}
 
 	printBanner()
@@ -76,80 +75,26 @@ func main() {
 	// ── Phase 1 · Resource ────────────────────────────────────────────────────
 	phase(1, "Resources", "Upload the job description as a static MCP Resource (read-only to agents)")
 	resID := uploadResource(ctx, jd)
+	printJobDescription(jd)
 	pause()
 
 	// ── Phase 2 · Semantic Memory ─────────────────────────────────────────────
-	phase(2, "Semantic Memory", "Company-wide facts — any agent session can recall these at any time")
-	shared := newSession(ctx, "shared")
-	defer shared.Close()
+	phase(2, "Semantic Memory", "Company-wide facts — written once, recalled by any agent session at any time")
+	cl := newSession(ctx, "setup")
+	defer cl.Close()
 
-	remember(ctx, shared, "semantic",
+	remember(ctx, cl, "semantic",
 		"Company does not sponsor US work visas for any engineering role",
 		"policy", "visa", "hiring")
-	remember(ctx, shared, "semantic",
+	remember(ctx, cl, "semantic",
 		"Senior Go Engineer base salary band: $100,000–$150,000 USD; total comp includes equity",
 		"compensation", "hiring", "senior-go-engineer")
-	remember(ctx, shared, "semantic",
+	remember(ctx, cl, "semantic",
 		"Engineering team is fully remote, US timezone preferred (EST/PST). Async-first culture.",
 		"remote", "culture", "hiring")
 	pause()
 
-	// ── Phase 3 · Session 1 — Recruiter: Alice Chen (2026-04-24) ─────────────
-	phase(3, "Session 1 · Recruiter  —  Interview: Alice Chen", "2026-04-24")
-	recruiter := newSession(ctx, "recruiter")
-	defer recruiter.Close()
-
-	remember(ctx, recruiter, "episodic",
-		"Interviewed Alice Chen on 2026-04-24 for Senior Go Engineer. "+
-			"Strong distributed systems background (8 years Go, ex-Cloudflare). "+
-			"Struggled under time pressure on the consensus algorithm question. "+
-			"Technical screen: pass. Moved to final round with hiring manager.",
-		"alice-chen", "interview", "2026-04-24", "final-round")
-	remember(ctx, recruiter, "episodic",
-		"Alice Chen requires H1B visa sponsorship — ineligible per company policy. "+
-			"Hiring manager loop should be cancelled to avoid wasting candidate and interviewer time.",
-		"alice-chen", "visa", "blocker", "2026-04-24")
-	pause()
-
-	// ── Phase 4 · Session 2 — Hiring Manager: cold search ────────────────────
-	phase(4, "Session 2 · Hiring Manager  —  Searching memory before the Alice call",
-		"Brand new session — no prior context loaded")
-	hm := newSession(ctx, "hiring-manager")
-	defer hm.Close()
-
-	search(ctx, hm, "Alice Chen Senior Go Engineer interview")
-	search(ctx, hm, "visa sponsorship policy")
-	pause()
-
-	// ── Phase 5 · Session 1 — Recruiter: Bob Martinez (2026-04-25) ───────────
-	phase(5, "Session 1 · Recruiter  —  Interview: Bob Martinez", "2026-04-25")
-	remember(ctx, recruiter, "episodic",
-		"Interviewed Bob Martinez on 2026-04-25 for Senior Go Engineer. "+
-			"Strong full-stack background but limited distributed systems experience. "+
-			"Expects $160K base — above the $150K band ceiling. Not progressing.",
-		"bob-martinez", "interview", "2026-04-25")
-	proc1 := remember(ctx, recruiter, "procedural",
-		"Always clarify visa status and salary expectations within the first 15 minutes of "+
-			"every phone screen. Two candidates in this cycle consumed significant recruiter "+
-			"and hiring manager time before disqualifying on logistics.",
-		"phone-screen", "process", "hiring", "lesson-learned")
-	pause()
-
-	// ── Phase 6 · Session 1 — Recruiter: Charlie Kim (2026-04-26) ────────────
-	phase(6, "Session 1 · Recruiter  —  Interview: Charlie Kim", "2026-04-26  ·  HIRE")
-	remember(ctx, recruiter, "episodic",
-		"Interviewed Charlie Kim on 2026-04-26 for Senior Go Engineer. "+
-			"US citizen, no sponsorship needed. 6 years Go, strong Kubernetes and controller-runtime experience. "+
-			"Accepted $135K offer. RECOMMENDED FOR HIRE.",
-		"charlie-kim", "interview", "hire", "2026-04-26")
-	pause()
-
-	// ── Phase 7 · Crystallize → Skill ─────────────────────────────────────────
-	phase(7, "Crystallize  →  Skill", "Promoting the phone-screen pattern to a reusable Skill scaffold")
-	crystallize(ctx, recruiter, "go-eng-phone-screen", proc1)
-	pause()
-
-	printSummary(resID)
+	printHandoff(resID)
 }
 
 // ─── MCP helpers ──────────────────────────────────────────────────────────────
@@ -171,7 +116,7 @@ func newSession(ctx context.Context, name string) *mcpclient.Client {
 	}); err != nil {
 		fatalf("initialize (%s): %v", name, err)
 	}
-	fmt.Printf("  %s  Session opened: %s%s\n", c(ansiGray, "→"), c(ansiBold+ansiCyan, name), ansiReset)
+	fmt.Printf("  %s  Session opened: %s\n", col(ansiGray, "→"), col(ansiBold+ansiCyan, name))
 	return cl
 }
 
@@ -197,7 +142,7 @@ func remember(ctx context.Context, cl *mcpclient.Client, memType, content string
 		"author":  "human",
 		"tags":    tags,
 	})
-	// RememberResult serialises as {"MemoryID":"...","Conflicts":null} (no json tags).
+	// RememberResult serialises without json tags: {"MemoryID":"...","Conflicts":null}
 	var resp struct {
 		MemoryID  string `json:"MemoryID"`
 		Conflicts []any  `json:"Conflicts"`
@@ -207,72 +152,12 @@ func remember(ctx context.Context, cl *mcpclient.Client, memType, content string
 	icon := typeIcon(memType)
 	fmt.Printf("\n  %s %s %s\n",
 		icon,
-		c(ansiBold+typeColor(memType), "["+memType+"]"),
+		col(ansiBold+typeColor(memType), "["+memType+"]"),
 		truncate(content, 72))
 	if resp.MemoryID != "" {
-		fmt.Printf("      %sid=%-28s tags=%v%s\n", ansiGray, resp.MemoryID, tags, ansiReset)
+		fmt.Printf("      %sid=%-36s tags=%v%s\n", ansiGray, resp.MemoryID, tags, ansiReset)
 	}
 	return resp.MemoryID
-}
-
-func search(ctx context.Context, cl *mcpclient.Client, query string) {
-	fmt.Printf("\n  %s %s\n", c(ansiYellow, "🔍"), c(ansiBold, "search: ")+c(ansiCyan, `"`+query+`"`))
-
-	raw := callTool(ctx, cl, "memory_search", map[string]any{
-		"query": query,
-		"top_k": 3,
-	})
-
-	// ScoredEntry serialises as {"Entry":{...},"Similarity":0.xx} (no json tags).
-	var results []struct {
-		Entry      struct {
-			ID      string `json:"ID"`
-			Content string `json:"Content"`
-			Type    string `json:"Type"`
-		} `json:"Entry"`
-		Similarity float64 `json:"Similarity"`
-	}
-	if err := json.Unmarshal([]byte(raw), &results); err != nil || len(results) == 0 {
-		fmt.Printf("     %sno results%s\n", ansiGray, ansiReset)
-		return
-	}
-	for _, r := range results {
-		fmt.Printf("    %s %s %s %s\n",
-			c(ansiGray, fmt.Sprintf("%.2f", r.Similarity)),
-			simBar(r.Similarity),
-			c(ansiDim+typeColor(r.Entry.Type), "["+r.Entry.Type+"]"),
-			truncate(r.Entry.Content, 62))
-	}
-}
-
-func crystallize(ctx context.Context, cl *mcpclient.Client, skillName string, ids ...string) {
-	raw := callTool(ctx, cl, "memory_crystallize", map[string]any{
-		"ids":  ids,
-		"name": skillName,
-	})
-	var resp struct {
-		SkillName string `json:"skill_name"`
-		SkillMD   string `json:"skill_md"`
-		Note      string `json:"note"`
-	}
-	_ = json.Unmarshal([]byte(raw), &resp)
-
-	fmt.Printf("\n  %s Skill scaffold generated: %s\n",
-		c(ansiPurple, "💎"),
-		c(ansiBold+ansiCyan, resp.SkillName))
-	fmt.Printf("  %s %s%s\n\n", ansiGray, resp.Note, ansiReset)
-
-	divider := c(ansiDim, strings.Repeat("─", 62))
-	fmt.Println(divider)
-	lines := strings.Split(resp.SkillMD, "\n")
-	limit := min(len(lines), 14)
-	for _, line := range lines[:limit] {
-		fmt.Printf("  %s%s%s\n", ansiGray, line, ansiReset)
-	}
-	if len(lines) > 14 {
-		fmt.Printf("  %s… (%d more lines)%s\n", ansiGray, len(lines)-14, ansiReset)
-	}
-	fmt.Println(divider)
 }
 
 // ─── Resources REST API helper ─────────────────────────────────────────────────
@@ -286,7 +171,7 @@ func uploadResource(ctx context.Context, content []byte) string {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
 	if err != nil {
-		fatalf("building resource request: %v", err)
+		fatalf("building request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -307,48 +192,56 @@ func uploadResource(ctx context.Context, content []byte) string {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&r)
 
-	fmt.Printf("\n  %s POST /api/resources  ←  Senior Go Engineer job description\n", c(ansiGray, "→"))
-	fmt.Printf("  %s Resource created: %s\n", c(ansiGreen, "✓"), c(ansiCyan, r.ID))
-	fmt.Printf("  %s Agents discover it via memory_search or MCP resources/list%s\n",
-		c(ansiGreen, "✓"), ansiReset)
+	fmt.Printf("\n  %s POST /api/resources  ←  Senior Go Engineer job description\n", col(ansiGray, "→"))
+	fmt.Printf("  %s Resource registered: %s\n", col(ansiGreen, "✓"), col(ansiCyan, r.ID))
+	fmt.Printf("  %s Agents discover it via memory_search or MCP resources/list\n", col(ansiGreen, "✓"))
 	return r.ID
+}
+
+func printJobDescription(content []byte) {
+	divider := col(ansiDim, strings.Repeat("─", 64))
+	fmt.Printf("\n%s\n", divider)
+	for _, line := range strings.Split(string(content), "\n") {
+		fmt.Printf("  %s%s%s\n", ansiGray, line, ansiReset)
+	}
+	fmt.Printf("%s\n", divider)
 }
 
 // ─── display helpers ─────────────────────────────────────────────────────────
 
 func printBanner() {
 	bar := strings.Repeat("═", 64)
-	fmt.Printf("\n%s\n", c(ansiBold+ansiCyan, bar))
-	fmt.Printf("%s\n", c(ansiBold+ansiCyan, "  ToolHive Memory Demo — The Recruiter"))
-	fmt.Printf("%s\n", c(ansiCyan, "  Scenario: Hiring a Senior Go Engineer at Stacklok"))
-	fmt.Printf("%s\n\n", c(ansiBold+ansiCyan, bar))
-	fmt.Printf("  MCP endpoint : %s\n", c(ansiGray, mcpURL))
-	fmt.Printf("  REST API     : %s\n\n", c(ansiGray, apiURL))
+	fmt.Printf("\n%s\n", col(ansiBold+ansiCyan, bar))
+	fmt.Printf("%s\n", col(ansiBold+ansiCyan, "  ToolHive Memory Demo — The Recruiter"))
+	fmt.Printf("%s\n", col(ansiCyan, "  Scenario: Hiring a Senior Go Engineer at Stacklok"))
+	fmt.Printf("%s\n\n", col(ansiBold+ansiCyan, bar))
+	fmt.Printf("  Server : %s\n\n", col(ansiGray, mcpURL))
 }
 
 func phase(n int, title, subtitle string) {
 	bar := strings.Repeat("─", 64)
-	fmt.Printf("\n%s\n", c(ansiYellow, bar))
-	fmt.Printf("  %s\n", c(ansiBold+ansiWhite, fmt.Sprintf("Phase %d · %s", n, title)))
+	fmt.Printf("\n%s\n", col(ansiYellow, bar))
+	fmt.Printf("  %s\n", col(ansiBold+ansiWhite, fmt.Sprintf("Phase %d · %s", n, title)))
 	if subtitle != "" {
 		fmt.Printf("  %s%s%s\n", ansiGray, subtitle, ansiReset)
 	}
-	fmt.Printf("%s\n", c(ansiYellow, bar))
+	fmt.Printf("%s\n", col(ansiYellow, bar))
 }
 
-func printSummary(resourceID string) {
+func printHandoff(resourceID string) {
 	bar := strings.Repeat("═", 64)
-	fmt.Printf("\n\n%s\n", c(ansiBold+ansiGreen, bar))
-	fmt.Printf("%s\n", c(ansiBold+ansiGreen, "  Demo complete!"))
-	fmt.Printf("%s\n\n", c(ansiBold+ansiGreen, bar))
-	fmt.Printf("  %-22s %s\n", "Resource uploaded:", c(ansiCyan, resourceID))
-	fmt.Printf("  %-22s %s\n", "Semantic memories:", "3")
-	fmt.Printf("  %-22s %s\n", "Episodic memories:", "4  (Alice, Alice-visa, Bob, Charlie)")
-	fmt.Printf("  %-22s %s\n", "Procedural:", "1  →  crystallized to Skill")
-	fmt.Printf("  %-22s %s\n", "Sessions demoed:", "3  (shared, recruiter, hiring-manager)")
-	fmt.Println()
-	fmt.Printf("  %sTo repeat the demo:%s  make teardown && make all\n\n",
-		ansiGray, ansiReset)
+	fmt.Printf("\n\n%s\n", col(ansiBold+ansiGreen, bar))
+	fmt.Printf("%s\n", col(ansiBold+ansiGreen, "  Setup complete — memory server is primed"))
+	fmt.Printf("%s\n\n", col(ansiBold+ansiGreen, bar))
+	fmt.Printf("  Resource : %s\n", col(ansiCyan, resourceID))
+	fmt.Printf("  Semantic : 3 company-wide facts written\n\n")
+	fmt.Printf("  %sNext: run the agent sessions to see Claude use the memory:%s\n\n", ansiBold, ansiReset)
+	fmt.Printf("    %smake session-recruiter-alice%s   — recruiter records Alice Chen's interview\n", ansiCyan, ansiReset)
+	fmt.Printf("    %smake session-hiring-manager%s    — hiring manager searches cold\n", ansiCyan, ansiReset)
+	fmt.Printf("    %smake session-recruiter-bob%s     — recruiter records Bob + procedural lesson\n", ansiCyan, ansiReset)
+	fmt.Printf("    %smake session-recruiter-charlie%s — recruiter records Charlie (HIRE)\n", ansiCyan, ansiReset)
+	fmt.Printf("    %smake session-crystallize%s       — crystallize phone-screen pattern → Skill\n\n", ansiCyan, ansiReset)
+	fmt.Printf("    %smake demo%s                      — run all sessions in sequence\n\n", ansiPurple, ansiReset)
 }
 
 func typeIcon(t string) string {
@@ -377,25 +270,17 @@ func typeColor(t string) string {
 	}
 }
 
-func simBar(sim float64) string {
-	n := int(sim * 10)
-	n = min(n, 10)
-	return c(ansiGreen, strings.Repeat("█", n)+strings.Repeat("░", 10-n))
-}
-
 func truncate(s string, n int) string {
-	s = strings.Join(strings.Fields(s), " ") // normalize whitespace
+	s = strings.Join(strings.Fields(s), " ")
 	if len(s) <= n {
 		return s
 	}
 	return s[:n-1] + "…"
 }
 
-func pause() {
-	time.Sleep(200 * time.Millisecond)
-}
+func pause() { time.Sleep(200 * time.Millisecond) }
 
 func fatalf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, c(ansiRed, "ERROR: ")+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, col(ansiGreen, "ERROR: ")+format+"\n", args...)
 	os.Exit(1)
 }

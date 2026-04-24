@@ -1135,6 +1135,14 @@ const docTemplate = `{
                         "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.",
                         "type": "boolean"
                     },
+                    "allowed_origins": {
+                        "description": "AllowedOrigins is the allowlist of values accepted on the HTTP Origin header,\nused for DNS-rebinding protection per MCP 2025-11-25 §\"Security Warning\".\nWhen empty and Host is loopback (127.0.0.1 / localhost / [::1]), a default\nloopback-only allowlist is derived at middleware-wiring time.\nWhen empty and Host is non-loopback, the middleware is disabled — operators\nexposing the proxy publicly must configure an explicit allowlist.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "audit_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_audit.Config"
                     },

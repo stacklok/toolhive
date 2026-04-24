@@ -137,6 +137,12 @@ type RunFlags struct {
 	RemoteForwardHeaders       []string
 	RemoteForwardHeadersSecret []string
 
+	// AllowedOrigins is the HTTP Origin-header allowlist for DNS-rebinding protection
+	// (MCP 2025-11-25 §"Security Warning"). Empty with a loopback host auto-derives
+	// loopback-only defaults; empty with a non-loopback host disables the check
+	// (operator must supply explicit origins for public bind).
+	AllowedOrigins []string
+
 	// Runtime configuration
 	RuntimeImage       string
 	RuntimeAddPackages []string
@@ -156,6 +162,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (default to auto-generated from image)")
 	cmd.Flags().StringVar(&config.Group, "group", "default", "Name of the group this workload should belong to")
 	cmd.Flags().StringVar(&config.Host, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
+	cmd.Flags().StringArrayVar(&config.AllowedOrigins, "allowed-origins", nil,
+		"Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; "+
+			"loopback binds derive a default allowlist automatically, non-loopback binds log a warning when "+
+			"no value is supplied. Example: https://my-mcp.example.com")
 	cmd.Flags().IntVar(&config.ProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
 	cmd.Flags().IntVar(&config.TargetPort, "target-port", 0,
 		"Port for the container to expose (only applicable to SSE or Streamable HTTP transport)")
@@ -678,6 +688,7 @@ func buildRunnerConfig(
 			PrintOverlays: runFlags.PrintOverlays,
 		}),
 		runner.WithPublish(runFlags.Publish),
+		runner.WithAllowedOrigins(runFlags.AllowedOrigins),
 	}
 	opts = append(opts, extraOpts...)
 

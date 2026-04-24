@@ -88,6 +88,14 @@ func WithImage(image string) RunConfigBuilderOption {
 	}
 }
 
+// WithMCPServerGeneration sets the MCPServer generation as the monotonic version stamp.
+func WithMCPServerGeneration(gen int64) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.MCPServerGeneration = gen
+		return nil
+	}
+}
+
 // WithRuntimeConfig sets the runtime configuration (base images and packages)
 func WithRuntimeConfig(runtimeConfig *templates.RuntimeConfig) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

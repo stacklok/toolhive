@@ -18,8 +18,9 @@ func RegisterRemember(s *server.MCPServer, svc *memory.Service) {
 	tool := mcp.NewTool("memory_remember",
 		mcp.WithDescription("Store a new semantic or procedural memory. Returns conflict_detected if a similar memory exists."),
 		mcp.WithString("content", mcp.Required(), mcp.Description("The knowledge to store")),
-		mcp.WithString("type", mcp.Required(), mcp.Description("Memory type: semantic or procedural")),
+		mcp.WithString("type", mcp.Required(), mcp.Description("Memory type: semantic, procedural, or episodic")),
 		mcp.WithString("author", mcp.Description("Author type: human or agent (default: agent)")),
+		mcp.WithArray("tags", mcp.Description("Optional labels for filtering and retrieval"), mcp.WithStringItems()),
 		mcp.WithString("session_id", mcp.Description("Originating session ID")),
 		mcp.WithNumber("ttl_days", mcp.Description("Optional TTL in days")),
 		mcp.WithBoolean("force", mcp.Description("Write even if conflicts detected")),
@@ -31,6 +32,7 @@ func RegisterRemember(s *server.MCPServer, svc *memory.Service) {
 		if authorStr == "" {
 			authorStr = "agent"
 		}
+		tags, _ := req.RequireStringSlice("tags") // optional; ignore error when absent
 		force := req.GetBool("force", false)
 		sessionID := req.GetString("session_id", "")
 
@@ -45,6 +47,7 @@ func RegisterRemember(s *server.MCPServer, svc *memory.Service) {
 			Content:   content,
 			Type:      memory.Type(memTypeStr),
 			Author:    memory.AuthorType(authorStr),
+			Tags:      tags,
 			SessionID: sessionID,
 			TTLDays:   ttlDays,
 			Force:     force,

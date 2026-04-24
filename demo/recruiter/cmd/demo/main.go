@@ -197,9 +197,10 @@ func remember(ctx context.Context, cl *mcpclient.Client, memType, content string
 		"author":  "human",
 		"tags":    tags,
 	})
+	// RememberResult serialises as {"MemoryID":"...","Conflicts":null} (no json tags).
 	var resp struct {
-		Status   string `json:"status"`
-		MemoryID string `json:"memory_id"`
+		MemoryID  string `json:"MemoryID"`
+		Conflicts []any  `json:"Conflicts"`
 	}
 	_ = json.Unmarshal([]byte(raw), &resp)
 
@@ -222,11 +223,14 @@ func search(ctx context.Context, cl *mcpclient.Client, query string) {
 		"top_k": 3,
 	})
 
+	// ScoredEntry serialises as {"Entry":{...},"Similarity":0.xx} (no json tags).
 	var results []struct {
-		ID         string  `json:"id"`
-		Content    string  `json:"content"`
-		Type       string  `json:"type"`
-		Similarity float64 `json:"similarity"`
+		Entry      struct {
+			ID      string `json:"ID"`
+			Content string `json:"Content"`
+			Type    string `json:"Type"`
+		} `json:"Entry"`
+		Similarity float64 `json:"Similarity"`
 	}
 	if err := json.Unmarshal([]byte(raw), &results); err != nil || len(results) == 0 {
 		fmt.Printf("     %sno results%s\n", ansiGray, ansiReset)
@@ -236,8 +240,8 @@ func search(ctx context.Context, cl *mcpclient.Client, query string) {
 		fmt.Printf("    %s %s %s %s\n",
 			c(ansiGray, fmt.Sprintf("%.2f", r.Similarity)),
 			simBar(r.Similarity),
-			c(ansiDim+typeColor(r.Type), "["+r.Type+"]"),
-			truncate(r.Content, 62))
+			c(ansiDim+typeColor(r.Entry.Type), "["+r.Entry.Type+"]"),
+			truncate(r.Entry.Content, 62))
 	}
 }
 
@@ -291,6 +295,12 @@ func uploadResource(ctx context.Context, content []byte) string {
 		fatalf("POST %s: %v", apiURL, err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		var errBody map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		fatalf("POST /api/resources returned %d: %v", resp.StatusCode, errBody["error"])
+	}
 
 	var r struct {
 		ID string `json:"id"`

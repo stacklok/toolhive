@@ -128,5 +128,5 @@ status:
 # ── teardown: stop server + wipe all demo data ───────────────────────────────
 teardown: server-stop
 	@echo "▶  Removing demo data..."
-	@rm -f $(DB_FILE) $(DEMO_BIN) $(LOG_FILE) $(CONFIG)
+	@rm -f $(DB_FILE) $(DEMO_BIN) $(SERVER_BIN) $(LOG_FILE) $(CONFIG)
 	@echo "✓  Teardown complete — safe to run 'make all' again"

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -203,6 +204,43 @@ tokens from the secrets provider.`,
 	}
 }
 
+// runLLMToken prints a fresh LLM gateway access token to stdout.
+// All diagnostic output goes to stderr so the caller can capture the token
+// cleanly (e.g. apiKeyHelper or auth.command in Claude Code / Cursor).
+func runLLMToken(ctx context.Context) error {
+	provider := config.NewDefaultProvider()
+	llmCfg := provider.GetConfig().LLM
+
+	if !llmCfg.IsConfigured() {
+		return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
+	}
+
+	secretsProvider, err := secrets.GetSystemSecretsProvider()
+	if err != nil {
+		return fmt.Errorf("failed to get secrets provider: %w", err)
+	}
+	scoped := pkgsecrets.NewScopedProvider(secretsProvider, pkgsecrets.ScopeLLM)
+
+	updater := func(key string, expiry time.Time) {
+		if err := config.UpdateConfig(func(c *config.Config) error {
+			c.LLM.OIDC.CachedRefreshTokenRef = key
+			c.LLM.OIDC.CachedTokenExpiry = expiry
+			return nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to persist LLM token reference: %v\n", err)
+		}
+	}
+
+	ts := llm.NewTokenSource(&llmCfg, scoped, false /* non-interactive */, updater)
+	token, err := ts.Token(ctx)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(token)
+	return nil
+}
+
 // deleteLLMSecrets removes all secrets stored under the LLM scope.
 func deleteLLMSecrets(ctx context.Context) error {
 	provider, err := secrets.GetSystemSecretsProvider()
@@ -287,11 +325,8 @@ func newLLMTokenCommand() *cobra.Command {
 Intended for use as apiKeyHelper or auth.command in OIDC-capable AI tools.
 Runs non-interactively — will not launch a browser flow.`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			// Print the error to stderr so it doesn't corrupt the token value
-			// expected on stdout by callers such as apiKeyHelper or auth.command.
-			return fmt.Errorf("thv llm token is not yet implemented — " +
-				"run \"thv llm setup\" once it is available to configure your tools")
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runLLMToken(cmd.Context())
 		},
 	}
 

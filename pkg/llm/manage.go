@@ -55,10 +55,15 @@ type SetOptions struct {
 }
 
 // DeleteCachedTokens removes all cached OIDC tokens stored under the LLM
-// scope via the provided secrets provider. It is a no-op if no secrets are
-// found.
+// scope via the provided secrets provider. It is a no-op if the provider does
+// not support listing or deletion (e.g. the environment provider), since such
+// providers cannot hold cached tokens.
 func DeleteCachedTokens(ctx context.Context, provider pkgsecrets.Provider) error {
 	scoped := pkgsecrets.NewScopedProvider(provider, pkgsecrets.ScopeLLM)
+	caps := scoped.Capabilities()
+	if !caps.CanList || !caps.CanDelete {
+		return nil
+	}
 	descs, err := scoped.ListSecrets(ctx)
 	if err != nil {
 		return err

@@ -548,8 +548,14 @@ type Summary struct {
 }
 
 // Routable returns the number of backends that can serve traffic.
-// This includes healthy backends and unauthenticated backends (which are
-// reachable but require per-request user auth, e.g., upstream OAuth).
+//
+// TODO(#4920 follow-up): This counts BackendUnauthenticated toward the routable
+// total for historical reasons (PR #4866 added this when BackendUnauthenticated
+// meant "reachable but needs per-request user auth"). After the #4920 fix,
+// BackendUnauthenticated indicates misconfiguration (backend requires auth but
+// no outgoing auth strategy is configured) and should not be considered routable.
+// Revert to `s.Healthy` in a follow-up PR that also updates the operator status
+// collector and controller counterparts of this logic.
 func (s Summary) Routable() int {
 	return s.Healthy + s.Unauthenticated
 }
@@ -564,11 +570,11 @@ func (s Summary) String() string {
 // This converts backend health information into the format needed for status reporting
 // to the Kubernetes API or CLI output.
 //
-// Phase determination (unauthenticated backends are routable — they need per-request user auth
-// but are reachable and running):
-// - Ready: All backends healthy or unauthenticated, or no backends configured (cold start)
+// Phase determination (see Summary.Routable for the TODO about unauthenticated
+// backends being counted as routable — legacy from PR #4866, to be reverted):
+// - Ready: All backends routable, or no backends configured (cold start)
 // - Pending: Backends configured but no health check data yet (waiting for first check)
-// - Degraded: Some backends routable (healthy/unauthenticated), some degraded/unhealthy
+// - Degraded: Some backends routable, some degraded/unhealthy
 // - Failed: No routable backends (and at least one backend exists)
 //
 // Returns a Status instance with current health information and discovered backends.
@@ -606,12 +612,12 @@ func (m *Monitor) BuildStatus() *vmcp.Status {
 }
 
 // determinePhase determines the overall phase based on backend health.
-// Unauthenticated backends are treated as routable — they are reachable and running,
-// they just require per-request user auth (e.g., upstream OAuth).
+// See Summary.Routable for the TODO about unauthenticated backends being
+// counted as routable (legacy from PR #4866, to be reverted in a follow-up).
 // Takes both the health summary and the count of configured backends to distinguish:
 // - No backends configured (configuredCount==0): Ready (cold start)
 // - Backends configured but no health data (configuredCount>0 && summary.Total==0): Pending
-// - Has health data: Ready/Degraded/Failed based on routable (healthy + unauthenticated) count
+// - Has health data: Ready/Degraded/Failed based on routable count
 func determinePhase(summary Summary, configuredBackendCount int) vmcp.Phase {
 	if summary.Total == 0 {
 		// No health data yet - distinguish cold start from waiting for first check
@@ -785,7 +791,7 @@ func formatBackendMessage(state *State) string {
 		case vmcp.BackendUnhealthy:
 			baseMsg = "Unhealthy"
 		case vmcp.BackendUnauthenticated:
-			baseMsg = "Authentication required"
+			baseMsg = "Authentication misconfigured (backend requires auth, none configured)"
 		case vmcp.BackendUnknown:
 			baseMsg = "Unknown"
 		default:

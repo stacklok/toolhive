@@ -75,24 +75,32 @@ func DeleteCachedTokens(ctx context.Context, provider pkgsecrets.Provider) error
 
 // Show writes a human-readable representation of the config to w.
 // If the config is not yet configured it prints a hint to run "config set".
-func (c *Config) Show(w io.Writer) {
+func (c *Config) Show(w io.Writer) error {
 	if !c.IsConfigured() {
-		fmt.Fprintln(w, "LLM gateway is not configured. Run \"thv llm config set\" to configure it.")
-		return
+		_, err := fmt.Fprintln(w, "LLM gateway is not configured. Run \"thv llm config set\" to configure it.")
+		return err
 	}
 
-	fmt.Fprintf(w, "Gateway URL:   %s\n", c.GatewayURL)
-	fmt.Fprintf(w, "OIDC Issuer:   %s\n", c.OIDC.Issuer)
-	fmt.Fprintf(w, "OIDC Client:   %s\n", c.OIDC.ClientID)
-	if c.OIDC.Audience != "" {
-		fmt.Fprintf(w, "Audience:      %s\n", c.OIDC.Audience)
-	}
-	fmt.Fprintf(w, "Proxy Port:    %d\n", c.EffectiveProxyPort())
-	fmt.Fprintf(w, "Scopes:        %v\n", c.OIDC.EffectiveScopes())
-	if len(c.ConfiguredTools) > 0 {
-		fmt.Fprintln(w, "Configured tools:")
-		for _, t := range c.ConfiguredTools {
-			fmt.Fprintf(w, "  - %s (%s)  %s\n", t.Tool, t.Mode, t.ConfigPath)
+	var err error
+	writef := func(format string, args ...any) {
+		if err == nil {
+			_, err = fmt.Fprintf(w, format, args...)
 		}
 	}
+
+	writef("Gateway URL:   %s\n", c.GatewayURL)
+	writef("OIDC Issuer:   %s\n", c.OIDC.Issuer)
+	writef("OIDC Client:   %s\n", c.OIDC.ClientID)
+	if c.OIDC.Audience != "" {
+		writef("Audience:      %s\n", c.OIDC.Audience)
+	}
+	writef("Proxy Port:    %d\n", c.EffectiveProxyPort())
+	writef("Scopes:        %v\n", c.OIDC.EffectiveScopes())
+	if len(c.ConfiguredTools) > 0 {
+		writef("Configured tools:\n")
+		for _, t := range c.ConfiguredTools {
+			writef("  - %s (%s)  %s\n", t.Tool, t.Mode, t.ConfigPath)
+		}
+	}
+	return err
 }

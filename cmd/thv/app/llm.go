@@ -120,8 +120,7 @@ func newConfigShowCommand() *cobra.Command {
 				return nil
 			}
 
-			llmCfg.Show(os.Stdout)
-			return nil
+			return llmCfg.Show(os.Stdout)
 		},
 	}
 

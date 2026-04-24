@@ -33,6 +33,14 @@ var _ = Describe("thv llm config", Label("cli", "llm", "e2e"), func() {
 					"HOME="+tempDir,
 				)
 		}
+
+		// Configure the environment secrets provider so that commands like
+		// "llm config reset" never touch the user's real keychain or 1Password.
+		// The environment provider is non-interactive and read-only, making it
+		// safe for E2E tests. DeleteCachedTokens is a no-op when the provider
+		// cannot list or delete secrets.
+		By("Configuring environment secrets provider")
+		thvCmd("secret", "provider", "environment").ExpectSuccess()
 	})
 
 	Describe("thv llm config set", func() {

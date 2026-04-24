@@ -21,8 +21,8 @@ import (
 //     ends and the name begins.
 //
 // All constants declared in this package (ScopeRegistry, ScopeWorkloads,
-// ScopeAuth) satisfy these invariants. Custom scopes introduced in the future
-// must be validated against them.
+// ScopeAuth, ScopeLLM) satisfy these invariants. Custom scopes introduced in
+// the future must be validated against them.
 type SecretScope string
 
 const (
@@ -42,6 +42,9 @@ const (
 
 	// ScopeAuth is reserved for enterprise CLI/Desktop login tokens.
 	ScopeAuth SecretScope = "auth"
+
+	// ScopeLLM is the scope for LLM gateway OIDC refresh tokens.
+	ScopeLLM SecretScope = "llm"
 )
 
 // ErrReservedKeyName is returned when a user command attempts to manage a

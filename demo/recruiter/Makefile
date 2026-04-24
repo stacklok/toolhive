@@ -64,7 +64,8 @@ build: $(SERVER_BIN) $(DEMO_BIN)
 
 $(SERVER_BIN):
 	@echo "▶  Building thv-memory server..."
-	cd $(WORKTREE_ROOT) && task build
+	@mkdir -p $(WORKTREE_ROOT)/bin
+	cd $(WORKTREE_ROOT) && go build -o $(SERVER_BIN) ./cmd/thv-memory/
 	@echo "✓  $(SERVER_BIN)"
 
 $(DEMO_BIN): $(CURDIR)/cmd/demo/main.go

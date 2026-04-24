@@ -6,19 +6,21 @@ package llm
 import (
 	"errors"
 	"fmt"
-	"strings"
-	"time"
 
 	"github.com/stacklok/toolhive/pkg/networking"
+	pkgoidc "github.com/stacklok/toolhive/pkg/oidc"
 )
 
 const (
 	// DefaultProxyListenPort is the default port the localhost proxy listens on.
 	DefaultProxyListenPort = 14000
-
-	// DefaultOIDCScopes are the default OAuth scopes requested during login.
-	DefaultOIDCScopes = "openid offline_access"
 )
+
+// OIDCConfig is a type alias for oidc.ClientConfig, holding OIDC provider
+// settings and cached token state for the LLM gateway. Using a type alias
+// ensures this type stays in sync with pkg/config.RegistryOAuthConfig, which
+// is also an alias for the same underlying type.
+type OIDCConfig = pkgoidc.ClientConfig
 
 // Config holds all LLM gateway settings persisted under the llm: key in
 // ToolHive's config.yaml.
@@ -27,25 +29,6 @@ type Config struct {
 	OIDC            OIDCConfig   `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
 	Proxy           ProxyConfig  `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
 	ConfiguredTools []ToolConfig `yaml:"configured_tools,omitempty"  json:"configured_tools,omitempty"`
-}
-
-// OIDCConfig holds OIDC provider settings and cached token state for the LLM
-// gateway. Cached fields follow the same pattern as RegistryOAuthConfig in
-// pkg/config/config.go — token values are never stored here, only references
-// and expiry metadata.
-type OIDCConfig struct {
-	Issuer       string   `yaml:"issuer,omitempty"        json:"issuer,omitempty"`
-	ClientID     string   `yaml:"client_id,omitempty"     json:"client_id,omitempty"`
-	Scopes       []string `yaml:"scopes,omitempty"        json:"scopes,omitempty"`
-	Audience     string   `yaml:"audience,omitempty"      json:"audience,omitempty"`
-	CallbackPort int      `yaml:"callback_port,omitempty" json:"callback_port,omitempty"`
-
-	// CachedRefreshTokenRef is the secrets-provider key under which the refresh
-	// token is stored (never the token value itself).
-	CachedRefreshTokenRef string `yaml:"cached_refresh_token_ref,omitempty" json:"cached_refresh_token_ref,omitempty"`
-	// CachedTokenExpiry is the expiry of the most recently cached access token,
-	// used to surface helpful messages when the token is about to expire.
-	CachedTokenExpiry time.Time `yaml:"cached_token_expiry,omitempty" json:"cached_token_expiry,omitempty"`
 }
 
 // ProxyConfig holds configuration for the localhost reverse proxy.
@@ -131,13 +114,4 @@ func (c *Config) EffectiveProxyPort() int {
 		return c.Proxy.ListenPort
 	}
 	return DefaultProxyListenPort
-}
-
-// EffectiveScopes returns the configured OIDC scopes, or the default scopes
-// (openid, offline_access) if none are set.
-func (c *OIDCConfig) EffectiveScopes() []string {
-	if len(c.Scopes) > 0 {
-		return c.Scopes
-	}
-	return strings.Fields(DefaultOIDCScopes)
 }

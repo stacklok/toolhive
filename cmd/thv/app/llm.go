@@ -69,14 +69,7 @@ func newConfigCommand() *cobra.Command {
 }
 
 func newConfigSetCommand() *cobra.Command {
-	var (
-		gatewayURL   string
-		issuer       string
-		clientID     string
-		audience     string
-		proxyPort    int
-		callbackPort int
-	)
+	var opts llm.SetOptions
 
 	cmd := &cobra.Command{
 		Use:   "set",
@@ -91,43 +84,17 @@ Example:
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return config.UpdateConfig(func(c *config.Config) error {
-				if gatewayURL != "" {
-					c.LLM.GatewayURL = gatewayURL
-				}
-				if issuer != "" {
-					c.LLM.OIDC.Issuer = issuer
-				}
-				if clientID != "" {
-					c.LLM.OIDC.ClientID = clientID
-				}
-				if audience != "" {
-					c.LLM.OIDC.Audience = audience
-				}
-				if proxyPort != 0 {
-					c.LLM.Proxy.ListenPort = proxyPort
-				}
-				if callbackPort != 0 {
-					c.LLM.OIDC.CallbackPort = callbackPort
-				}
-				// Always validate format/range for any fields that were set,
-				// so invalid values (e.g. http:// URL, out-of-range port) are
-				// rejected immediately rather than silently persisted.
-				// Full validation (required-field checks) only runs once the
-				// mandatory trio is present, allowing incremental configuration.
-				if !c.LLM.IsConfigured() {
-					return c.LLM.ValidatePartial()
-				}
-				return c.LLM.Validate()
+				return c.LLM.SetFields(opts)
 			})
 		},
 	}
 
-	cmd.Flags().StringVar(&gatewayURL, "gateway-url", "", "LLM gateway base URL (must use HTTPS)")
-	cmd.Flags().StringVar(&issuer, "issuer", "", "OIDC issuer URL")
-	cmd.Flags().StringVar(&clientID, "client-id", "", "OIDC client ID")
-	cmd.Flags().StringVar(&audience, "audience", "", "OIDC audience (optional)")
-	cmd.Flags().IntVar(&proxyPort, "proxy-port", 0, "Localhost proxy listen port (default 14000)")
-	cmd.Flags().IntVar(&callbackPort, "callback-port", 0, "OIDC callback port (default: ephemeral)")
+	cmd.Flags().StringVar(&opts.GatewayURL, "gateway-url", "", "LLM gateway base URL (must use HTTPS)")
+	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
+	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
+	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
+	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (default 14000)")
+	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (default: ephemeral)")
 
 	return cmd
 }
@@ -153,27 +120,7 @@ func newConfigShowCommand() *cobra.Command {
 				return nil
 			}
 
-			if !llmCfg.IsConfigured() {
-				fmt.Println("LLM gateway is not configured. Run \"thv llm config set\" to configure it.")
-				return nil
-			}
-
-			fmt.Printf("Gateway URL:   %s\n", llmCfg.GatewayURL)
-			fmt.Printf("OIDC Issuer:   %s\n", llmCfg.OIDC.Issuer)
-			fmt.Printf("OIDC Client:   %s\n", llmCfg.OIDC.ClientID)
-			if llmCfg.OIDC.Audience != "" {
-				fmt.Printf("Audience:      %s\n", llmCfg.OIDC.Audience)
-			}
-			fmt.Printf("Proxy Port:    %d\n", llmCfg.EffectiveProxyPort())
-			fmt.Printf("Scopes:        %v\n", llmCfg.OIDC.EffectiveScopes())
-			if len(llmCfg.ConfiguredTools) > 0 {
-				fmt.Println("Configured tools:")
-				for _, t := range llmCfg.ConfiguredTools {
-					fmt.Printf("  - %s (%s)  %s\n", t.Tool, t.Mode, t.ConfigPath)
-				}
-			}
-
-			return nil
+			return llmCfg.Show(os.Stdout)
 		},
 	}
 
@@ -191,8 +138,11 @@ tokens from the secrets provider.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Delete cached tokens from the secrets provider first.
-			if err := deleteLLMSecrets(cmd.Context()); err != nil {
+			provider, err := secrets.GetSystemSecretsProvider()
+			if err != nil {
 				// Non-fatal: log and continue so the config is still cleared.
+				fmt.Fprintf(os.Stderr, "Warning: could not get secrets provider: %v\n", err)
+			} else if err := llm.DeleteCachedTokens(cmd.Context(), provider); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not remove cached LLM tokens: %v\n", err)
 			}
 
@@ -239,27 +189,6 @@ func runLLMToken(ctx context.Context) error {
 
 	fmt.Println(token)
 	return nil
-}
-
-// deleteLLMSecrets removes all secrets stored under the LLM scope.
-func deleteLLMSecrets(ctx context.Context) error {
-	provider, err := secrets.GetSystemSecretsProvider()
-	if err != nil {
-		return fmt.Errorf("failed to get secrets provider: %w", err)
-	}
-	scoped := pkgsecrets.NewScopedProvider(provider, pkgsecrets.ScopeLLM)
-	descs, err := scoped.ListSecrets(ctx)
-	if err != nil {
-		return err
-	}
-	if len(descs) == 0 {
-		return nil
-	}
-	names := make([]string, len(descs))
-	for i, d := range descs {
-		names[i] = d.Key
-	}
-	return scoped.DeleteSecrets(ctx, names)
 }
 
 // ── setup / teardown stubs ────────────────────────────────────────────────────

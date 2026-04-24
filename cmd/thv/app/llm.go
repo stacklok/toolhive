@@ -191,7 +191,6 @@ func runLLMToken(ctx context.Context) error {
 	return nil
 }
 
-
 // ── setup / teardown stubs ────────────────────────────────────────────────────
 
 func newLLMSetupCommand() *cobra.Command {

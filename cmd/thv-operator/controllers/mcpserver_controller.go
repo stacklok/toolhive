@@ -190,14 +190,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				return ctrl.Result{}, err
 			}
 
-			// Use an optimistic-lock merge patch rather than Update so we do not
-			// silently overwrite spec fields (e.g. spec.authzConfig) that are owned
-			// by another controller. The resourceVersion is sent, so concurrent
-			// writers cause a 409 Conflict and a clean requeue.
-			original := mcpServer.DeepCopy()
-			controllerutil.RemoveFinalizer(mcpServer, MCPServerFinalizerName)
-			if err := r.Patch(ctx, mcpServer,
-				client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
+			if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, mcpServer, func(m *mcpv1beta1.MCPServer) {
+				controllerutil.RemoveFinalizer(m, MCPServerFinalizerName)
+			}); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -206,14 +201,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Add finalizer for this CR
 	if !controllerutil.ContainsFinalizer(mcpServer, MCPServerFinalizerName) {
-		// Use an optimistic-lock merge patch rather than Update so we do not
-		// silently overwrite spec fields (e.g. spec.authzConfig) that are owned
-		// by another controller. The resourceVersion is sent, so concurrent
-		// writers cause a 409 Conflict and a clean requeue.
-		original := mcpServer.DeepCopy()
-		controllerutil.AddFinalizer(mcpServer, MCPServerFinalizerName)
-		if err := r.Patch(ctx, mcpServer,
-			client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
+		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, mcpServer, func(m *mcpv1beta1.MCPServer) {
+			controllerutil.AddFinalizer(m, MCPServerFinalizerName)
+		}); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -759,17 +749,12 @@ func (r *MCPServerReconciler) handleRestartAnnotation(ctx context.Context, mcpSe
 	}
 
 	// Update the last processed restart timestamp in annotations.
-	// Use an optimistic-lock merge patch rather than Update so we do not
-	// silently overwrite spec fields (e.g. spec.authzConfig) that are owned
-	// by another controller. The resourceVersion is sent, so concurrent
-	// writers cause a 409 Conflict and a clean requeue.
-	original := mcpServer.DeepCopy()
-	if mcpServer.Annotations == nil {
-		mcpServer.Annotations = make(map[string]string)
-	}
-	mcpServer.Annotations[LastProcessedRestartAnnotationKey] = currentRestartedAt
-	if err := r.Patch(ctx, mcpServer,
-		client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, mcpServer, func(m *mcpv1beta1.MCPServer) {
+		if m.Annotations == nil {
+			m.Annotations = make(map[string]string)
+		}
+		m.Annotations[LastProcessedRestartAnnotationKey] = currentRestartedAt
+	}); err != nil {
 		return false, fmt.Errorf("failed to update MCPServer with last processed restart annotation: %w", err)
 	}
 

@@ -75,11 +75,11 @@ so any field our local copy does not track (e.g. `spec.authzConfig`
 written by a separate authorization controller) gets zeroed on every
 reconcile.
 
-Use an **optimistic-lock merge patch** instead. The merge-patch body
-only contains fields the caller changed, and `MergeFromWithOptimisticLock`
-sends `resourceVersion` as a precondition: if the server moved between
-our Get and Patch, the apiserver returns 409 and controller-runtime
-requeues with a fresh Get.
+Use `controllerutil.MutateAndPatchSpec` instead. The helper wraps an
+optimistic-lock merge patch: the body only contains fields the caller
+changed, and `MergeFromWithOptimisticLock` sends `resourceVersion` as a
+precondition, so if the server moved between our Get and Patch the
+apiserver returns 409 and controller-runtime requeues with a fresh Get.
 
 This is what protects `metadata.finalizers`. Merge-patch has no
 array-append semantics — arrays are replaced wholesale — so when our
@@ -90,20 +90,16 @@ fails our precondition, and the next reconcile observes it via a fresh
 Get before recomputing the diff.
 
 ```go
-original := mcpServer.DeepCopy()
-controllerutil.AddFinalizer(mcpServer, MCPServerFinalizerName)
-if err := r.Patch(ctx, mcpServer,
-    client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
+if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, mcpServer, func(m *mcpv1beta1.MCPServer) {
+    controllerutil.AddFinalizer(m, MCPServerFinalizerName)
+}); err != nil {
     return ctrl.Result{}, err
 }
 ```
 
-Do not put unrelated work between the `DeepCopy` and the `Patch`: the
-wire diff is computed from that snapshot, so anything you mutate in
-between leaks into the patch body.
-
 Expect 409s as routine log noise once the external controller lands —
 the guard doing its job, not a bug.
 
-Status-subresource patching follows the same "never `Update`" rule and
-is covered separately once the shared helper lands (#4633).
+Status-subresource patching uses the sibling helper
+`controllerutil.MutateAndPatchStatus` (see the "Status Writes" section
+above).

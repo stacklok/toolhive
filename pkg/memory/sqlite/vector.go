@@ -59,6 +59,10 @@ func (v *VectorStore) Search(
 		q += " AND m.status=?"
 		args = append(args, string(*filter.Status))
 	}
+	if filter.Source != nil {
+		q += " AND m.source=?"
+		args = append(args, string(*filter.Source))
+	}
 
 	rows, err := v.db.QueryContext(ctx, q, args...)
 	if err != nil {

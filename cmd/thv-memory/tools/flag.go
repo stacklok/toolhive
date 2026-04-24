@@ -22,6 +22,9 @@ func RegisterFlag(s *server.MCPServer, store memory.Store) {
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("id", "")
 		reason := req.GetString("reason", "")
+		if err := checkMutable(ctx, store, id); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		if err := store.Flag(ctx, id, reason); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

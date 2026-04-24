@@ -20,6 +20,9 @@ func RegisterForget(s *server.MCPServer, store memory.Store) {
 	)
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("id", "")
+		if err := checkMutable(ctx, store, id); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		if err := store.Delete(ctx, id); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

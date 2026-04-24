@@ -31,6 +31,9 @@ func RegisterUpdate(s *server.MCPServer, store memory.Store) {
 		}
 		note := req.GetString("correction_note", "")
 
+		if err := checkMutable(ctx, store, id); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		if err := store.Update(ctx, id, content, memory.AuthorType(authorStr), note); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

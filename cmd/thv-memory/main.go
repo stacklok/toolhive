@@ -15,9 +15,11 @@ import (
 	"syscall"
 	"time"
 
+	mcpserver "github.com/mark3labs/mcp-go/server"
 	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/cmd/thv-memory/lifecycle"
+	"github.com/stacklok/toolhive/cmd/thv-memory/resources"
 	"github.com/stacklok/toolhive/pkg/memory"
 	"github.com/stacklok/toolhive/pkg/memory/embedder/ollama"
 	memorysqlite "github.com/stacklok/toolhive/pkg/memory/sqlite"
@@ -26,7 +28,7 @@ import (
 const (
 	readHeaderTimeout = 10 * time.Second
 	readTimeout       = 30 * time.Second
-	// writeTimeout is intentionally long: SSE streams for MCP can be long-lived.
+	// writeTimeout is intentionally zero: SSE streams for MCP can be long-lived.
 	writeTimeout    = 0
 	idleTimeout     = 120 * time.Second
 	shutdownTimeout = 10 * time.Second
@@ -80,20 +82,36 @@ func main() {
 	job := lifecycle.New(store, logger)
 	go job.Run(ctx, time.Duration(cfg.Server.LifecycleHours)*time.Hour)
 
-	if err := serve(ctx, cfg, svc, store, logger); err != nil {
+	s := newMCPServer(cfg, svc, store)
+	LoadExistingResources(ctx, s, store, logger)
+
+	resourceAPI := resources.NewHandler(
+		store, vectors, embedder,
+		func(e memory.Entry) { RegisterResourceEntry(s, store, e) },
+		func(id string) { UnregisterResourceEntry(s, id) },
+		logger,
+	)
+
+	if err := serve(ctx, cfg, s, resourceAPI, logger); err != nil {
 		logger.Error("server exited with error", zap.Error(err))
 		os.Exit(1)
 	}
 }
 
-func serve(ctx context.Context, cfg *Config, svc *memory.Service, store memory.Store, logger *zap.Logger) error {
+func serve(
+	ctx context.Context,
+	cfg *Config,
+	s *mcpserver.MCPServer,
+	resourceAPI http.Handler,
+	logger *zap.Logger,
+) error {
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("creating listener: %w", err)
 	}
 
-	handler := newHandler(cfg, svc, store, logger)
+	handler := newHandler(s, resourceAPI, logger)
 	httpServer := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
@@ -106,7 +124,8 @@ func serve(ctx context.Context, cfg *Config, svc *memory.Service, store memory.S
 	go func() {
 		logger.Info("memory MCP server listening",
 			zap.String("addr", listener.Addr().String()),
-			zap.String("endpoint", mcpEndpointPath),
+			zap.String("mcp_endpoint", mcpEndpointPath),
+			zap.String("resource_api", "/api/resources"),
 		)
 		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err

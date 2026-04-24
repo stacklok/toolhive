@@ -40,6 +40,11 @@ const (
 	SourceMemory SourceType = "memory"
 	// SourceSkill indicates the entry is a read-only index of an installed Skill.
 	SourceSkill SourceType = "skill"
+	// SourceResource indicates the entry is a UI-managed resource document that
+	// is read-only to agents. Resources are written via the management REST API
+	// and are progressively discovered by agents through memory_search and MCP
+	// Resources protocol (resources/list, resources/read).
+	SourceResource SourceType = "resource"
 )
 
 // EntryStatus is the lifecycle state of a memory entry.
@@ -123,6 +128,7 @@ type ListFilter struct {
 type VectorFilter struct {
 	Type   *Type
 	Status *EntryStatus
+	Source *SourceType
 }
 
 // ScoredID pairs an entry ID with its cosine similarity to a query.

@@ -229,11 +229,78 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	Storage *AuthServerStorageConfig `json:"storage,omitempty"`
 
+	// OnUpstreamAuthFailure configures how the embedded auth server responds when
+	// the downstream MCP backend rejects a forwarded request with HTTP 401 +
+	// `WWW-Authenticate: Bearer error="invalid_token"` (per RFC 6750).
+	//
+	// This covers the case where the server's cached upstream access token has
+	// become unusable (upstream provider rotated its OAuth session, role claims
+	// drifted, underlying user had access revoked, etc.) but the local Toolhive
+	// session is still valid. Without intervention, every subsequent request
+	// uses the same stale cached upstream token and fails identically until the
+	// user manually re-authenticates.
+	//
+	// Defaults to `silent-refresh` which preserves current behavior: pass the
+	// 401 through to the client unchanged and rely on the next scheduled
+	// refresh to pick up new claims.
+	// +optional
+	OnUpstreamAuthFailure *UpstreamAuthFailurePolicy `json:"onUpstreamAuthFailure,omitempty"`
+
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
 	// For an embedded auth server, this can be determined by the servers (MCP or vMCP) it serves.
 
 	// ScopesSupported is the list of OAuth 2.0 scopes that this authorization server supports.
 	// For an embedded auth server, this can be derived from the server's (MCP or vMCP) OIDC configuration.
+}
+
+// UpstreamAuthFailurePolicy configures the embedded auth server's response
+// when the downstream MCP backend rejects a forwarded request due to an
+// invalid upstream token.
+type UpstreamAuthFailurePolicy struct {
+	// Policy selects how the embedded auth server reacts to a backend auth
+	// rejection.
+	//
+	//   - `silent-refresh` (default): pass the backend 401 through to the
+	//     client unchanged. The current cached upstream tokens remain in
+	//     place; the next scheduled refresh is expected to resolve the
+	//     problem. This preserves pre-existing behavior.
+	//
+	//   - `invalidate-session`: mark the user's upstream token set as
+	//     unusable and revoke the Toolhive-issued access + refresh tokens.
+	//     The response to the client is rewritten to HTTP 401 with
+	//     `WWW-Authenticate: Bearer error="invalid_token", error_description="..."`
+	//     per RFC 6750, which spec-compliant MCP clients interpret as
+	//     "re-auth required" and triggers a fresh OAuth flow.
+	//
+	// +kubebuilder:validation:Enum=silent-refresh;invalidate-session
+	// +kubebuilder:default=silent-refresh
+	Policy string `json:"policy"`
+
+	// TriggerOn optionally constrains which upstream response patterns are
+	// treated as an auth failure. When multiple matchers are specified the
+	// response only needs to match one. If omitted, the default matcher is
+	// HTTP status 401 with `WWW-Authenticate: Bearer error="invalid_token"`.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=8
+	TriggerOn []UpstreamAuthFailureMatcher `json:"triggerOn,omitempty"`
+}
+
+// UpstreamAuthFailureMatcher describes a response pattern that counts as an
+// upstream auth failure for purposes of OnUpstreamAuthFailure.
+type UpstreamAuthFailureMatcher struct {
+	// Status is the HTTP status codes to match. Defaults to [401] if empty.
+	// +kubebuilder:validation:MaxItems=4
+	// +listType=atomic
+	// +optional
+	Status []int32 `json:"status,omitempty"`
+
+	// WWWAuthenticateError optionally matches the `error` parameter of the
+	// `WWW-Authenticate: Bearer` response header (e.g. "invalid_token",
+	// "insufficient_scope"). Empty means any value matches.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	WWWAuthenticateError string `json:"wwwAuthenticateError,omitempty"`
 }
 
 // TokenLifespanConfig holds configuration for token lifetimes.

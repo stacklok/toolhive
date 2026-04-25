@@ -31,12 +31,19 @@ type sdkElicitationAdapter struct {
 	mcpServer *server.MCPServer
 }
 
-// newSDKElicitationAdapter creates a new elicitation adapter that wraps the mark3labs SDK server.
+// NewSDKElicitationAdapter creates a new elicitation adapter that wraps the mark3labs SDK server.
 //
 // The returned adapter implements composer.SDKElicitationRequester by delegating to the
 // SDK's RequestElicitation method. Session management and JSON-RPC ID correlation are
 // handled entirely by the SDK.
-func newSDKElicitationAdapter(mcpServer *server.MCPServer) composer.SDKElicitationRequester {
+//
+// Intended for embedders that wrap the vMCP composer in their own pipeline and need to
+// drive MCP elicitation through the same SDK server that serves /mcp traffic. Pass the
+// *server.MCPServer obtained from (*Server).MCPServer() so the returned requester
+// correlates with the server handling incoming client sessions; a parallel MCPServer
+// constructed by the caller will not work because ClientSession correlation is keyed
+// to the server that received the initialize request.
+func NewSDKElicitationAdapter(mcpServer *server.MCPServer) composer.SDKElicitationRequester {
 	return &sdkElicitationAdapter{
 		mcpServer: mcpServer,
 	}

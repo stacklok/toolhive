@@ -1,0 +1,7 @@
+About to jump on a screen with Charlie Kim. Before I start — do we have anything on how to run these calls? I remember we were going to standardize the approach after the last couple of screens didn't go well.
+
+---
+
+[30 minutes later]
+
+That went really well. Charlie has 7 years of Go, spent time at AWS building distributed storage. US citizen. Asking $140K. He explained Raft clearly and even got into leader election edge cases without me prompting him. Great communicator too. I want to move him to the full interview loop. Can you record this and give me a quick status on where the pipeline stands overall?

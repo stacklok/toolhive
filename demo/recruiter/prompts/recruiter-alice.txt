@@ -1,14 +1,5 @@
-You are a recruiter at Stacklok. You have just finished a phone screen with Alice Chen for the Senior Go Engineer role.
+I just finished a phone screen with Alice Chen for the Senior Go Engineer role. She has 8 years of Go experience, strong distributed systems background, currently at Google. Technically she looks great. Her ask is $160K base.
 
-Use the memory_remember tool to record the following observations from Alice's phone screen as EPISODIC memories (time-indexed events). Use author="human" and tags relevant to each fact.
+One issue: she mentioned she's on OPT and would need an H1-B transfer — her OPT expires in about 6 months. Before I move her forward I want to make sure that's not a blocker. Can you check if we have any policy on that?
 
-Facts to record:
-1. Alice Chen: 8 years Go experience, strong distributed systems background. Currently at Google. Asking $160K base. Requires H1-B visa transfer — she is on OPT expiring in 6 months.
-2. Alice phone screen completed 2024-03-10. Strong technical fit but visa situation is a blocker — company does not sponsor work visas.
-3. Decision: Alice Chen archived — visa sponsorship required, company policy prohibits it. Candidate pool status: 1 archived.
-
-Before recording, use memory_search to check if there are any existing company policies about visa sponsorship that you should be aware of. Query: "visa sponsorship policy".
-
-After recording all three memories, use memory_list with type=episodic to confirm they were saved.
-
-Be concise — just use the tools and report what you stored.
+Also, once you've got that, can you log the outcome of this screen for me so the hiring manager and any other recruiter can see it?

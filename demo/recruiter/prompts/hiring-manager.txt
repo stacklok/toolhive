@@ -1,12 +1,1 @@
-You are the hiring manager for the Senior Go Engineer role at Stacklok. You are doing a cold check on the pipeline — you have not been involved in any recruiter sessions.
-
-Use memory_search to answer the following questions. Issue each search separately and report what you find:
-
-1. Search "candidates phone screen" — what candidates have been screened so far?
-2. Search "visa sponsorship" — does the company sponsor work visas?
-3. Search "salary compensation senior go engineer" — what is the approved compensation range?
-4. Search "job description senior go engineer" — retrieve the job requirements.
-
-After all searches, write a brief summary: what do you know about the pipeline so far, and what salary range should offers stay within?
-
-Be concise and grounded in what the memory search returns — do not invent facts.
+Hey, I'm the hiring manager for the Senior Go Engineer opening. I haven't been in the loop on recruiting — can you catch me up? I'd like to know who's been screened so far, where they stand, what the approved comp range looks like, and a reminder of what we're actually hiring for.

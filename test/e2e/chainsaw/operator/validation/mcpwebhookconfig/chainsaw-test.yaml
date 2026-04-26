@@ -1,0 +1,96 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# Test CEL validation for MCPWebhookConfig CRD
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mcpwebhookconfig-cel-validation
+spec:
+  description: |
+    Test CEL validation rules for MCPWebhookConfig.
+    These validations happen at the API server level and reject invalid specs immediately.
+  steps:
+    # Test 1: Empty config is rejected
+    - name: reject-empty-webhook
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPWebhookConfig
+              metadata:
+                name: test-valid-empty
+                namespace: default
+              spec: {}
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* at least one validating or mutating webhook must be defined *"
+
+    # Test 2: Valid validating and mutating config
+    - name: accept-valid-webhooks
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPWebhookConfig
+              metadata:
+                name: test-valid-webhooks
+                namespace: default
+              spec:
+                validating:
+                  - name: authz
+                    url: https://authz.example.com
+                    failurePolicy: fail
+                    timeout: 5s
+                mutating:
+                  - name: custom-mutator
+                    url: https://mutate.example.com
+                    failurePolicy: ignore
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPWebhookConfig
+              metadata:
+                name: test-valid-webhooks
+
+    # Test 3: Mutating-only config should also be valid
+    - name: accept-mutating-only-webhook
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPWebhookConfig
+              metadata:
+                name: test-mutating-only-webhook
+                namespace: default
+              spec:
+                mutating:
+                  - name: custom-mutator
+                    url: https://mutate.example.com
+                    failurePolicy: ignore
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPWebhookConfig
+              metadata:
+                name: test-mutating-only-webhook
+
+    # Test 4: Invalid URL
+    - name: reject-invalid-url
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPWebhookConfig
+              metadata:
+                name: test-invalid-url
+                namespace: default
+              spec:
+                validating:
+                  - name: "test"
+                    url: "not-a-valid-url"
+            expect:
+              - check:
+                  ($error != null): true
+                  ($error.message): "?* Invalid value: \"uri\" *"

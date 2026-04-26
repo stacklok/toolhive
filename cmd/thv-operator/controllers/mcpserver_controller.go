@@ -271,6 +271,18 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Check if MCPWebhookConfig is referenced and handle it
+	if err := r.handleWebhookConfig(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to handle MCPWebhookConfig")
+		// Update status to reflect the error
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPWebhookConfig error")
+		}
+		return ctrl.Result{}, err
+	}
+
 	// Check if authServerRef is referenced and handle config hash tracking
 	if err := r.handleAuthServerRef(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to handle authServerRef")
@@ -1034,6 +1046,26 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		}
 	}
 
+	// Add webhook environment variables for secrets
+	if m.Spec.WebhookConfigRef != nil {
+		webhookEnvVars, err := ctrlutil.GenerateWebhookEnvVars(ctx, r.Client, m.Namespace, m.Spec.WebhookConfigRef)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate webhook environment variables")
+		} else {
+			env = append(env, webhookEnvVars...)
+		}
+
+		webhookVolumes, webhookMounts, err := ctrlutil.GenerateWebhookVolumes(ctx, r.Client, m.Namespace, m.Spec.WebhookConfigRef)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate webhook TLS volumes")
+			return nil
+		}
+		volumes = append(volumes, webhookVolumes...)
+		volumeMounts = append(volumeMounts, webhookMounts...)
+	}
+
 	// Add OIDC client secret environment variable if using MCPOIDCConfigRef with inline config
 	if m.Spec.OIDCConfigRef != nil {
 		// Check MCPOIDCConfig inline config for client secret
@@ -1627,6 +1659,17 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			expectedProxyEnv = append(expectedProxyEnv, tokenExchangeEnvVars...)
 		}
 
+		// Add webhook environment variables for secrets
+		if mcpServer.Spec.WebhookConfigRef != nil {
+			webhookEnvVars, err := ctrlutil.GenerateWebhookEnvVars(
+				ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.WebhookConfigRef,
+			)
+			if err != nil {
+				return true
+			}
+			expectedProxyEnv = append(expectedProxyEnv, webhookEnvVars...)
+		}
+
 		// Add OIDC client secret environment variable if using MCPOIDCConfigRef with inline config
 		if mcpServer.Spec.OIDCConfigRef != nil {
 			oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.OIDCConfigRef)
@@ -2216,6 +2259,48 @@ func (r *MCPServerReconciler) updateOIDCConfigReferencingWorkloads(
 	return nil
 }
 
+// handleWebhookConfig validates and tracks the hash of the referenced MCPWebhookConfig.
+func (r *MCPServerReconciler) handleWebhookConfig(ctx context.Context, m *mcpv1beta1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
+	if m.Spec.WebhookConfigRef == nil {
+		if m.Status.WebhookConfigHash != "" {
+			m.Status.WebhookConfigHash = ""
+			if err := r.Status().Update(ctx, m); err != nil {
+				return fmt.Errorf("failed to clear MCPWebhookConfig hash from status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	webhookConfig, err := ctrlutil.GetWebhookConfigForMCPServer(ctx, r.Client, m)
+	if err != nil {
+		return err
+	}
+
+	if webhookConfig == nil {
+		return fmt.Errorf("MCPWebhookConfig %s not found", m.Spec.WebhookConfigRef.Name)
+	}
+
+	if err := ctrlutil.ValidateMCPWebhookConfigSpec(webhookConfig.Spec); err != nil {
+		return fmt.Errorf("invalid MCPWebhookConfig %s: %w", webhookConfig.Name, err)
+	}
+
+	if m.Status.WebhookConfigHash != webhookConfig.Status.ConfigHash {
+		ctxLogger.Info("MCPWebhookConfig has changed, updating MCPServer",
+			"mcpserver", m.Name,
+			"webhookConfig", webhookConfig.Name,
+			"oldHash", m.Status.WebhookConfigHash,
+			"newHash", webhookConfig.Status.ConfigHash)
+
+		m.Status.WebhookConfigHash = webhookConfig.Status.ConfigHash
+		if err := r.Status().Update(ctx, m); err != nil {
+			return fmt.Errorf("failed to update MCPWebhookConfig hash in status: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // ensureAuthzConfigMap ensures the authorization ConfigMap exists for inline configuration
 func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	return ctrlutil.EnsureAuthzConfigMap(
@@ -2364,6 +2449,39 @@ func (r *MCPServerReconciler) validateRateLimitConfig(ctx context.Context, mcpSe
 	}
 }
 
+// mapWebhookConfigToServers maps MCPWebhookConfig changes to MCPServer reconciliation requests.
+func (r *MCPServerReconciler) mapWebhookConfigToServers(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	webhookConfig, ok := obj.(*mcpv1beta1.MCPWebhookConfig)
+	if !ok {
+		return nil
+	}
+
+	// List all MCPServers in the same namespace
+	mcpServerList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, mcpServerList, client.InNamespace(webhookConfig.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPServers for MCPWebhookConfig watch")
+		return nil
+	}
+
+	// Find MCPServers that reference this MCPWebhookConfig
+	var requests []reconcile.Request
+	for _, server := range mcpServerList.Items {
+		if server.Spec.WebhookConfigRef != nil &&
+			server.Spec.WebhookConfigRef.Name == webhookConfig.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      server.Name,
+					Namespace: server.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
@@ -2433,6 +2551,7 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	)
 
 	telemetryConfigHandler := handler.EnqueueRequestsFromMapFunc(r.mapTelemetryConfigToServers)
+	webhookConfigHandler := handler.EnqueueRequestsFromMapFunc(r.mapWebhookConfigToServers)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPServer{}).
@@ -2441,5 +2560,6 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mcpv1beta1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
 		Watches(&mcpv1beta1.MCPOIDCConfig{}, oidcConfigHandler).
 		Watches(&mcpv1beta1.MCPTelemetryConfig{}, telemetryConfigHandler).
+		Watches(&mcpv1beta1.MCPWebhookConfig{}, webhookConfigHandler).
 		Complete(r)
 }

@@ -5,6 +5,7 @@ package validating
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -67,7 +68,12 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	// Create clients for each webhook
 	var executors []clientExecutor
 	for i, whCfg := range params.Webhooks {
-		client, err := webhook.NewClient(whCfg, webhook.TypeValidating, nil) // HMAC secret not yet plumbed
+		hmacSecret, err := webhook.ResolveSecret(context.Background(), whCfg.HMACSecretRef)
+		if err != nil {
+			return fmt.Errorf("failed to resolve HMAC secret for webhook[%d] (%q): %w", i, whCfg.Name, err)
+		}
+
+		client, err := webhook.NewClient(whCfg, webhook.TypeValidating, hmacSecret)
 		if err != nil {
 			return fmt.Errorf("failed to create client for webhook[%d] (%q): %w", i, whCfg.Name, err)
 		}

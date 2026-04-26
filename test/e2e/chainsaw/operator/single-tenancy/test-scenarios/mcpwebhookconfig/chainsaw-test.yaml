@@ -1,0 +1,139 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mcpwebhookconfig-reconciliation
+spec:
+  description: |
+    Tests that MCPServers properly wait for and reconcile their referenced MCPWebhookConfig
+  timeouts:
+    assert: 90s
+    cleanup: 90s
+    delete: 90s
+    exec: 180s
+  catch:
+    - script:
+        content: |
+          kubectl delete mcpserver missing-webhook-server -n toolhive-system --ignore-not-found --timeout=60s
+          kubectl wait --for=delete mcpserver/missing-webhook-server -n toolhive-system --timeout=60s 2>/dev/null || true
+          kubectl delete mcpwebhookconfig non-existent-webhook-config -n toolhive-system --ignore-not-found --timeout=60s
+          kubectl wait --for=delete mcpwebhookconfig/non-existent-webhook-config -n toolhive-system --timeout=60s 2>/dev/null || true
+  steps:
+    # Set up
+    - name: create-mcpserver-with-missing-webhook-config
+      # MCPWebhookConfig has a protective finalizer while MCPServers reference it.
+      # Use explicit ordered cleanup so Chainsaw does not auto-delete the config
+      # before the referencing server when an earlier assertion fails.
+      skipDelete: true
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: missing-webhook-server
+                namespace: toolhive-system
+              spec:
+                image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
+                transport: streamable-http
+                env:
+                  - name: TRANSPORT
+                    value: streamable-http
+                proxyPort: 8080
+                mcpPort: 8080
+                permissionProfile:
+                  type: builtin
+                  name: network
+                resources:
+                  limits:
+                    cpu: "100m"
+                    memory: "128Mi"
+                  requests:
+                    cpu: "50m"
+                    memory: "64Mi"
+                webhookConfigRef:
+                  name: non-existent-webhook-config
+
+    # Wait for the system to process the MCPServer
+    - name: wait-for-failure-condition
+      try:
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: missing-webhook-server
+                namespace: toolhive-system
+              status:
+                phase: Failed
+
+    # Create the webhook config and wait for reconciliation
+    - name: create-webhook-config
+      skipDelete: true
+      try:
+        - apply:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPWebhookConfig
+              metadata:
+                name: non-existent-webhook-config
+                namespace: toolhive-system
+              spec:
+                validating:
+                  - name: validate-1
+                    url: https://validate.example.com
+                mutating:
+                  - name: mutate-1
+                    url: https://mutate.example.com
+
+    # The MCPServer should now enter Ready phase since the WebhookConfig was created
+    - name: wait-for-ready-condition
+      try:
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPServer
+              metadata:
+                name: missing-webhook-server
+                namespace: toolhive-system
+              status:
+                phase: Ready
+        - script:
+            content: |
+              timeout=60
+              while [ $timeout -gt 0 ]; do
+                HASH=$(kubectl get mcpserver missing-webhook-server -n toolhive-system -o jsonpath='{.status.webhookConfigHash}' 2>/dev/null || echo "")
+                if [ -n "$HASH" ]; then
+                  echo "MCPServer has webhookConfigHash: $HASH"
+                  exit 0
+                fi
+                sleep 2
+                timeout=$((timeout - 2))
+              done
+
+              echo "MCPServer did not get a webhookConfigHash"
+              kubectl get mcpserver missing-webhook-server -n toolhive-system -o yaml
+              exit 1
+        - assert:
+            resource:
+              apiVersion: toolhive.stacklok.dev/v1beta1
+              kind: MCPWebhookConfig
+              metadata:
+                name: non-existent-webhook-config
+                namespace: toolhive-system
+              status:
+                referencingWorkloads:
+                  - kind: MCPServer
+                    name: missing-webhook-server
+
+    # Delete in dependency order so the MCPWebhookConfig finalizer can clear before Chainsaw cleanup.
+    - name: cleanup-webhook-config-dependencies
+      try:
+        - script:
+            content: |
+              kubectl delete mcpserver missing-webhook-server -n toolhive-system --ignore-not-found --timeout=60s
+              kubectl wait --for=delete mcpserver/missing-webhook-server -n toolhive-system --timeout=60s 2>/dev/null || true
+              kubectl delete mcpwebhookconfig non-existent-webhook-config -n toolhive-system --ignore-not-found --timeout=60s
+              kubectl wait --for=delete mcpwebhookconfig/non-existent-webhook-config -n toolhive-system --timeout=60s 2>/dev/null || true

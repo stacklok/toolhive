@@ -894,6 +894,94 @@ func TestDeployWorkloadCreatesBackendServices(t *testing.T) {
 	}
 }
 
+// TestDeployWorkloadEnvVarOrderingDeterministic verifies that DeployWorkload
+// produces an env list in deterministic (sorted) order regardless of Go map
+// iteration randomness. Without this, the StatefulSet pod template hash
+// flapped between reconciles, triggering needless pod rollouts (#5063).
+func TestDeployWorkloadEnvVarOrderingDeterministic(t *testing.T) {
+	t.Parallel()
+
+	containerName := "test-svc"
+	envVars := map[string]string{
+		"ULI_MCP_TOKEN": "tok",
+		"MCP_PORT":      "8080",
+		"MCP_TRANSPORT": "streamable-http",
+		"MCP_HOST":      "0.0.0.0",
+		"FASTMCP_PORT":  "8080",
+	}
+
+	deploy := func() []corev1.EnvVar {
+		mockStatefulSet := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: containerName, Namespace: "default", UID: "test-uid",
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: ptr.To(int32(1)),
+				Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{}}},
+			},
+			Status: appsv1.StatefulSetStatus{ReadyReplicas: 1},
+		}
+		clientset := fake.NewClientset(mockStatefulSet)
+		fakeConfig := &rest.Config{Host: "https://fake-k8s-api.example.com"}
+		mockDetector := &mockPlatformDetector{platform: PlatformKubernetes}
+
+		client := NewClientWithConfigAndPlatformDetector(clientset, fakeConfig, mockDetector)
+		client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
+		client.namespaceFunc = func() string { return "default" }
+
+		options := runtime.NewDeployWorkloadOptions()
+		options.PortBindings = map[string][]runtime.PortBinding{"8080/tcp": {{HostPort: "8080"}}}
+
+		_, err := client.DeployWorkload(
+			t.Context(),
+			"test-image",
+			containerName,
+			[]string{"serve"},
+			envVars,
+			map[string]string{"app": containerName},
+			nil,
+			"streamable-http",
+			options,
+			false,
+		)
+		require.NoError(t, err)
+
+		sts, err := clientset.AppsV1().StatefulSets("default").Get(t.Context(), containerName, metav1.GetOptions{})
+		require.NoError(t, err)
+		var mcp *corev1.Container
+		for i := range sts.Spec.Template.Spec.Containers {
+			if sts.Spec.Template.Spec.Containers[i].Name == mcpContainerName {
+				mcp = &sts.Spec.Template.Spec.Containers[i]
+				break
+			}
+		}
+		require.NotNil(t, mcp, "mcp container should exist on the StatefulSet")
+		return mcp.Env
+	}
+
+	// Sorted ordering is the contract; assert against it explicitly so the
+	// reason for the order is documented in the test, not just stable across runs.
+	expected := []string{"FASTMCP_PORT", "MCP_HOST", "MCP_PORT", "MCP_TRANSPORT", "ULI_MCP_TOKEN"}
+
+	first := deploy()
+	firstNames := make([]string, len(first))
+	for i, e := range first {
+		firstNames[i] = e.Name
+	}
+	assert.Equal(t, expected, firstNames, "first DeployWorkload should produce sorted env order")
+
+	// Run multiple times to catch any non-determinism that would slip through
+	// a single-call test (Go map iteration order is randomized per call).
+	for i := 0; i < 10; i++ {
+		got := deploy()
+		gotNames := make([]string, len(got))
+		for j, e := range got {
+			gotNames[j] = e.Name
+		}
+		assert.Equal(t, expected, gotNames, "iteration %d: env order must be deterministic", i)
+	}
+}
+
 // TestAttachToWorkloadExitFunc tests that the exit function is properly configured
 // and can be mocked for testing
 func TestAttachToWorkloadExitFunc(t *testing.T) {

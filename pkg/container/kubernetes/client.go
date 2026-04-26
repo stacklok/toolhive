@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -357,10 +358,18 @@ func (c *Client) DeployWorkload(ctx context.Context,
 
 	attachStdio := options == nil || options.AttachStdio
 
-	// Convert environment variables to Kubernetes format
-	var envVarList []*corev1apply.EnvVarApplyConfiguration
-	for k, v := range envVars {
-		envVarList = append(envVarList, corev1apply.EnvVar().WithName(k).WithValue(v))
+	// Convert environment variables to Kubernetes format.
+	// Sort keys so the resulting list is deterministic — Go map iteration
+	// is randomized, and any ordering shift here changes the pod template
+	// hash and triggers an unnecessary StatefulSet rollout (#5063).
+	envKeys := make([]string, 0, len(envVars))
+	for k := range envVars {
+		envKeys = append(envKeys, k)
+	}
+	sort.Strings(envKeys)
+	envVarList := make([]*corev1apply.EnvVarApplyConfiguration, 0, len(envKeys))
+	for _, k := range envKeys {
+		envVarList = append(envVarList, corev1apply.EnvVar().WithName(k).WithValue(envVars[k]))
 	}
 
 	// Create a pod template spec

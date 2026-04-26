@@ -755,10 +755,16 @@ _Appears in:_
 - [api.v1alpha1.MCPTelemetryConfigList](#apiv1alpha1mcptelemetryconfiglist)
 - [api.v1alpha1.MCPToolConfig](#apiv1alpha1mcptoolconfig)
 - [api.v1alpha1.MCPToolConfigList](#apiv1alpha1mcptoolconfiglist)
+- [api.v1alpha1.MCPWebhookConfig](#apiv1alpha1mcpwebhookconfig)
+- [api.v1alpha1.MCPWebhookConfigList](#apiv1alpha1mcpwebhookconfiglist)
 - [api.v1alpha1.VirtualMCPCompositeToolDefinition](#apiv1alpha1virtualmcpcompositetooldefinition)
 - [api.v1alpha1.VirtualMCPCompositeToolDefinitionList](#apiv1alpha1virtualmcpcompositetooldefinitionlist)
 - [api.v1alpha1.VirtualMCPServer](#apiv1alpha1virtualmcpserver)
 - [api.v1alpha1.VirtualMCPServerList](#apiv1alpha1virtualmcpserverlist)
+
+
+
+
 
 
 
@@ -833,6 +839,8 @@ _Appears in:_
 - [api.v1beta1.MCPTelemetryConfigList](#apiv1beta1mcptelemetryconfiglist)
 - [api.v1beta1.MCPToolConfig](#apiv1beta1mcptoolconfig)
 - [api.v1beta1.MCPToolConfigList](#apiv1beta1mcptoolconfiglist)
+- [api.v1beta1.MCPWebhookConfig](#apiv1beta1mcpwebhookconfig)
+- [api.v1beta1.MCPWebhookConfigList](#apiv1beta1mcpwebhookconfiglist)
 - [api.v1beta1.VirtualMCPCompositeToolDefinition](#apiv1beta1virtualmcpcompositetooldefinition)
 - [api.v1beta1.VirtualMCPCompositeToolDefinitionList](#apiv1beta1virtualmcpcompositetooldefinitionlist)
 - [api.v1beta1.VirtualMCPServer](#apiv1beta1virtualmcpserver)
@@ -2171,6 +2179,7 @@ _Appears in:_
 | `audit` _[api.v1beta1.AuditConfig](#apiv1beta1auditconfig)_ | Audit defines audit logging configuration for the MCP server |  | Optional: \{\} <br /> |
 | `toolConfigRef` _[api.v1beta1.ToolConfigRef](#apiv1beta1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
 | `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer. |  | Optional: \{\} <br /> |
+| `webhookConfigRef` _[api.v1beta1.WebhookConfigRef](#apiv1beta1webhookconfigref)_ | WebhookConfigRef references a MCPWebhookConfig resource for webhook middleware configuration.<br />The referenced MCPWebhookConfig must exist in the same namespace as this MCPServer. |  | Optional: \{\} <br /> |
 | `authServerRef` _[api.v1beta1.AuthServerRef](#apiv1beta1authserverref)_ | AuthServerRef optionally references a resource that configures an embedded<br />OAuth 2.0/OIDC authorization server to authenticate MCP clients.<br />Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer). |  | Optional: \{\} <br /> |
 | `telemetryConfigRef` _[api.v1beta1.MCPTelemetryConfigReference](#apiv1beta1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false | Optional: \{\} <br /> |
@@ -2203,6 +2212,7 @@ _Appears in:_
 | `authServerConfigHash` _string_ | AuthServerConfigHash is the hash of the referenced authServerRef spec,<br />used to detect configuration changes and trigger reconciliation. |  | Optional: \{\} <br /> |
 | `oidcConfigHash` _string_ | OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection |  | Optional: \{\} <br /> |
 | `telemetryConfigHash` _string_ | TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection |  | Optional: \{\} <br /> |
+| `webhookConfigHash` _string_ | WebhookConfigHash is the hash of the referenced MCPWebhookConfig spec |  | Optional: \{\} <br /> |
 | `url` _string_ | URL is the URL where the MCP server can be accessed |  | Optional: \{\} <br /> |
 | `phase` _[api.v1beta1.MCPServerPhase](#apiv1beta1mcpserverphase)_ | Phase is the current phase of the MCPServer |  | Enum: [Pending Ready Failed Terminating Stopped] <br />Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
@@ -2424,6 +2434,84 @@ _Appears in:_
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPToolConfig.<br />It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
 | `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.MCPWebhookConfig
+
+
+
+MCPWebhookConfig is the Schema for the mcpwebhookconfigs API.
+
+
+
+_Appears in:_
+- [api.v1beta1.MCPWebhookConfigList](#apiv1beta1mcpwebhookconfiglist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
+| `kind` _string_ | `MCPWebhookConfig` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.MCPWebhookConfigSpec](#apiv1beta1mcpwebhookconfigspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPWebhookConfigStatus](#apiv1beta1mcpwebhookconfigstatus)_ |  |  |  |
+
+
+#### api.v1beta1.MCPWebhookConfigList
+
+
+
+MCPWebhookConfigList contains a list of MCPWebhookConfig
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
+| `kind` _string_ | `MCPWebhookConfigList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1beta1.MCPWebhookConfig](#apiv1beta1mcpwebhookconfig) array_ |  |  |  |
+
+
+#### api.v1beta1.MCPWebhookConfigSpec
+
+
+
+MCPWebhookConfigSpec defines the desired state of MCPWebhookConfig
+
+
+
+_Appears in:_
+- [api.v1beta1.MCPWebhookConfig](#apiv1beta1mcpwebhookconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `validating` _[api.v1beta1.WebhookSpec](#apiv1beta1webhookspec) array_ | Validating webhooks are called to approve or deny MCP requests. |  | Optional: \{\} <br /> |
+| `mutating` _[api.v1beta1.WebhookSpec](#apiv1beta1webhookspec) array_ | Mutating webhooks are called to transform MCP requests before processing. |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.MCPWebhookConfigStatus
+
+
+
+MCPWebhookConfigStatus defines the observed state of MCPWebhookConfig
+
+
+
+_Appears in:_
+- [api.v1beta1.MCPWebhookConfig](#apiv1beta1mcpwebhookconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations |  | Optional: \{\} <br /> |
+| `observedGeneration` _integer_ | ObservedGeneration is the last observed generation corresponding to the current status |  | Optional: \{\} <br /> |
+| `configHash` _string_ | ConfigHash is a hash of the spec, used for detecting changes |  | Optional: \{\} <br /> |
+| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPWebhookConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.ModelCacheConfig
@@ -2868,6 +2956,8 @@ _Appears in:_
 - [api.v1beta1.SensitiveHeader](#apiv1beta1sensitiveheader)
 - [api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)
 - [api.v1beta1.TokenExchangeConfig](#apiv1beta1tokenexchangeconfig)
+- [api.v1beta1.WebhookSpec](#apiv1beta1webhookspec)
+- [api.v1beta1.WebhookTLSConfig](#apiv1beta1webhooktlsconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -3435,6 +3525,80 @@ _Appears in:_
 | `readOnly` _boolean_ | ReadOnly specifies whether the volume should be mounted read-only | false | Optional: \{\} <br /> |
 
 
+#### api.v1beta1.WebhookConfigRef
+
+
+
+WebhookConfigRef defines a reference to a MCPWebhookConfig resource.
+The referenced MCPWebhookConfig must be in the same namespace as the MCPServer.
+
+
+
+_Appears in:_
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the MCPWebhookConfig resource |  | Required: \{\} <br /> |
+
+
+#### api.v1beta1.WebhookFailurePolicy
+
+_Underlying type:_ _string_
+
+WebhookFailurePolicy defines how webhook errors are handled.
+
+
+
+_Appears in:_
+- [api.v1beta1.WebhookSpec](#apiv1beta1webhookspec)
+
+| Field | Description |
+| --- | --- |
+| `fail` | WebhookFailurePolicyFail denies the request on webhook error.<br /> |
+| `ignore` | WebhookFailurePolicyIgnore allows the request on webhook error.<br /> |
+
+
+#### api.v1beta1.WebhookSpec
+
+
+
+WebhookSpec defines the configuration for a single webhook middleware
+
+
+
+_Appears in:_
+- [api.v1beta1.MCPWebhookConfigSpec](#apiv1beta1mcpwebhookconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is a unique identifier for this webhook |  | MaxLength: 63 <br />MinLength: 1 <br /> |
+| `url` _string_ | URL is the endpoint to call for this webhook. Must be an HTTP/HTTPS URL. |  | Format: uri <br /> |
+| `timeout` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | Timeout configures the maximum time to wait for the webhook to respond.<br />Defaults to 10s if not specified. Maximum is 30s. |  | Format: duration <br />Type: string <br />Optional: \{\} <br /> |
+| `failurePolicy` _[api.v1beta1.WebhookFailurePolicy](#apiv1beta1webhookfailurepolicy)_ | FailurePolicy defines how to handle errors when communicating with the webhook.<br />Supported values: "fail", "ignore". Defaults to "fail". | fail | Enum: [fail ignore] <br />Optional: \{\} <br /> |
+| `tlsConfig` _[api.v1beta1.WebhookTLSConfig](#apiv1beta1webhooktlsconfig)_ | TLSConfig contains optional TLS configuration for the webhook connection. |  | Optional: \{\} <br /> |
+| `hmacSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | HMACSecretRef references a Kubernetes Secret containing the HMAC signing key<br />used to sign the webhook payload. If set, the X-Toolhive-Signature header will be injected. |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.WebhookTLSConfig
+
+
+
+WebhookTLSConfig contains TLS configuration for secure webhook connections
+
+
+
+_Appears in:_
+- [api.v1beta1.WebhookSpec](#apiv1beta1webhookspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `caSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | CASecretRef references a Secret containing the CA certificate bundle used to verify the webhook server's certificate.<br />Contains a bundle of PEM-encoded X.509 certificates. |  | Optional: \{\} <br /> |
+| `clientCertSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientCertSecretRef references a Secret containing the client certificate for mTLS authentication.<br />The referenced key must contain a PEM-encoded client certificate.<br />Use ClientKeySecretRef to provide the corresponding private key. |  | Optional: \{\} <br /> |
+| `clientKeySecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientKeySecretRef references a Secret containing the private key for the client certificate.<br />Required when ClientCertSecretRef is set to enable mTLS. |  | Optional: \{\} <br /> |
+| `insecureSkipVerify` _boolean_ | InsecureSkipVerify disables server certificate verification.<br />WARNING: This should only be used for development/testing and not in production environments. |  | Optional: \{\} <br /> |
+
+
 #### api.v1beta1.WorkloadReference
 
 
@@ -3449,6 +3613,7 @@ _Appears in:_
 - [api.v1beta1.MCPOIDCConfigStatus](#apiv1beta1mcpoidcconfigstatus)
 - [api.v1beta1.MCPTelemetryConfigStatus](#apiv1beta1mcptelemetryconfigstatus)
 - [api.v1beta1.MCPToolConfigStatus](#apiv1beta1mcptoolconfigstatus)
+- [api.v1beta1.MCPWebhookConfigStatus](#apiv1beta1mcpwebhookconfigstatus)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |

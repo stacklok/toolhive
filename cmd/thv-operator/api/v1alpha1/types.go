@@ -276,6 +276,34 @@ type MCPTelemetryConfigList struct {
 	Items           []MCPTelemetryConfig `json:"items"`
 }
 
+// ─── MCPWebhookConfig ────────────────────────────────────────────────────────
+
+//+kubebuilder:object:root=true
+//+kubebuilder:deprecatedversion:warning="toolhive.stacklok.dev/v1alpha1 is deprecated; use v1beta1"
+//+kubebuilder:subresource:status
+//+kubebuilder:resource:shortName=mwc,categories=toolhive
+//+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+//+kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
+//+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// MCPWebhookConfig is the deprecated v1alpha1 version of the MCPWebhookConfig resource.
+type MCPWebhookConfig struct {
+	metav1.TypeMeta   `json:",inline"` // nolint:revive
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   v1beta1.MCPWebhookConfigSpec   `json:"spec,omitempty"`
+	Status v1beta1.MCPWebhookConfigStatus `json:"status,omitempty"`
+}
+
+//+kubebuilder:object:root=true
+
+// MCPWebhookConfigList contains a list of MCPWebhookConfig.
+type MCPWebhookConfigList struct {
+	metav1.TypeMeta `json:",inline"` // nolint:revive
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []MCPWebhookConfig `json:"items"`
+}
+
 // ─── MCPToolConfig ───────────────────────────────────────────────────────────
 
 //+kubebuilder:object:root=true
@@ -378,6 +406,7 @@ func init() {
 		&MCPServer{}, &MCPServerList{},
 		&MCPServerEntry{}, &MCPServerEntryList{},
 		&MCPTelemetryConfig{}, &MCPTelemetryConfigList{},
+		&MCPWebhookConfig{}, &MCPWebhookConfigList{},
 		&MCPToolConfig{}, &MCPToolConfigList{},
 		&VirtualMCPCompositeToolDefinition{}, &VirtualMCPCompositeToolDefinitionList{},
 		&VirtualMCPServer{}, &VirtualMCPServerList{},

@@ -255,6 +255,13 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 		return nil, fmt.Errorf("failed to process authServerRef: %w", err)
 	}
 
+	// Add webhook configuration if specified
+	if err := ctrlutil.AddWebhookConfigOptions(
+		ctx, r.Client, m.Namespace, m.Spec.WebhookConfigRef, &options,
+	); err != nil {
+		return nil, fmt.Errorf("failed to process WebhookConfig: %w", err)
+	}
+
 	// Add audit configuration if specified
 	runconfig.AddAuditConfigOptions(&options, m.Spec.Audit)
 

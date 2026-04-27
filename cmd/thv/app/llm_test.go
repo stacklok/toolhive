@@ -5,6 +5,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -125,7 +126,7 @@ func TestRunLLMSetup_NotConfigured(t *testing.T) {
 	provider := llmProvider(t, llm.Config{}) // no gateway URL
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(&stdout, &stderr, cm, provider)
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, func(_ context.Context, _ *llm.Config) error { return nil })
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not configured")
 }
@@ -152,7 +153,7 @@ func TestRunLLMSetup_NoDetectedTools(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(&stdout, &stderr, cm, provider)
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, func(_ context.Context, _ *llm.Config) error { return nil })
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "No supported AI tools detected")
 }
@@ -196,7 +197,7 @@ func TestRunLLMSetup_PartialFailure(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(&stdout, &stderr, cm, provider)
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, func(_ context.Context, _ *llm.Config) error { return nil })
 	require.NoError(t, err)
 	assert.Contains(t, stderr.String(), "Warning: failed to configure claude-code")
 	assert.Contains(t, stdout.String(), "Configured gemini-cli")
@@ -230,7 +231,7 @@ func TestRunLLMSetup_RollbackOnConfigUpdateFailure(t *testing.T) {
 	provider := &errOnUpdateProvider{cfg: c, updateErr: errors.New("disk full")}
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(&stdout, &stderr, cm, provider)
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, func(_ context.Context, _ *llm.Config) error { return nil })
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "persisting tool configuration")
 
@@ -280,7 +281,7 @@ func TestRunLLMSetup_RollbackBothToolsOnConfigUpdateFailure(t *testing.T) {
 	provider := &errOnUpdateProvider{cfg: c, updateErr: errors.New("disk full")}
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(&stdout, &stderr, cm, provider)
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, func(_ context.Context, _ *llm.Config) error { return nil })
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "persisting tool configuration")
 

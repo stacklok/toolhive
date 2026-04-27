@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -143,17 +144,48 @@ func callTool(ctx context.Context, c *mcpclient.Client, toolName string, args ma
 	return c.CallTool(ctx, req)
 }
 
-// inspFieldValues builds a map[string]any from current form field input values, skipping empty fields.
-func inspFieldValues(fields []formField) map[string]any {
+// inspFieldValues builds a map[string]any from current form field input values,
+// coercing each value to the type declared in the tool's JSON Schema.
+// Required fields that are empty produce an error. Empty optional fields are skipped.
+// On error, errIdx is the index of the offending field (or -1 if unknown).
+func inspFieldValues(fields []formField) (map[string]any, int, error) {
 	result := make(map[string]any)
-	for _, f := range fields {
+	for i, f := range fields {
 		v := strings.TrimSpace(f.input.Value())
 		if v == "" {
+			if f.required {
+				return nil, i, fmt.Errorf("field %q is required", f.name)
+			}
 			continue
 		}
-		result[f.name] = v
+		parsed, err := parseFieldValue(v, f.typeName)
+		if err != nil {
+			return nil, i, fmt.Errorf("field %q: %w", f.name, err)
+		}
+		result[f.name] = parsed
 	}
-	return result
+	return result, -1, nil
+}
+
+// parseFieldValue converts a string input to the Go type matching the given
+// JSON Schema type name. Unknown types default to string.
+func parseFieldValue(v, typeName string) (any, error) {
+	switch typeName {
+	case "integer":
+		return strconv.ParseInt(v, 10, 64)
+	case "number":
+		return strconv.ParseFloat(v, 64)
+	case "boolean":
+		return strconv.ParseBool(v)
+	case "array", "object":
+		var parsed any
+		if err := json.Unmarshal([]byte(v), &parsed); err != nil {
+			return nil, fmt.Errorf("invalid JSON: %w", err)
+		}
+		return parsed, nil
+	default:
+		return v, nil
+	}
 }
 
 // formatInspResult formats a CallToolResult as a pretty-printed JSON string.

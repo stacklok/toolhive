@@ -119,7 +119,11 @@ func (m *Model) handleInspectorKey(msg tea.KeyMsg) tea.Cmd {
 		if sel := m.selected(); sel != nil {
 			if ft := m.filteredTools(); len(ft) > 0 && m.insp.toolIdx < len(ft) {
 				tool := ft[m.insp.toolIdx]
-				curl := buildCurlStr(sel, tool.Name, inspFieldValues(m.insp.fields))
+				args, _, err := inspFieldValues(m.insp.fields)
+				if err != nil {
+					return m.showNotif(err.Error(), false)
+				}
+				curl := buildCurlStr(sel, tool.Name, args)
 				_ = clipboard.WriteAll(curl)
 				return m.showNotif("✓ curl copied", true)
 			}
@@ -332,7 +336,15 @@ func (m *Model) inspDoCall() tea.Cmd {
 		return nil
 	}
 	tool := filtered[m.insp.toolIdx]
-	args := inspFieldValues(m.insp.fields)
+	args, errIdx, err := inspFieldValues(m.insp.fields)
+	if err != nil {
+		if errIdx >= 0 {
+			m.blurAllInspFields()
+			m.insp.fieldIdx = errIdx
+			m.insp.fields[errIdx].input.Focus()
+		}
+		return m.showNotif(err.Error(), false)
+	}
 	m.blurAllInspFields()
 	m.insp.loading = true
 	m.insp.spinFrame = 0

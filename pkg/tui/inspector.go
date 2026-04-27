@@ -65,9 +65,6 @@ func buildInspFields(tool mcp.Tool) []formField {
 
 		ti := textinput.New()
 		ti.Placeholder = fieldType
-		if reqSet[name] {
-			ti.Placeholder = fieldType + " (required)"
-		}
 		ti.Width = 40
 
 		fields = append(fields, formField{

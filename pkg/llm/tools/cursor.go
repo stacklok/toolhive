@@ -10,7 +10,7 @@ import (
 )
 
 func init() {
-	Register(newCursorAdapter(os.UserHomeDir))
+	Register(newCursorAdapter(os.UserHomeDir, windowsAppData))
 }
 
 // cursorAdapter configures Cursor to use the LLM gateway via the localhost
@@ -21,10 +21,11 @@ func init() {
 // Cursor settings.json uses literal dotted key names (not nested maps).
 type cursorAdapter struct {
 	homeDirFn func() (string, error)
+	appDataFn func() (string, error) // Windows %APPDATA%; unused on other platforms
 }
 
-func newCursorAdapter(homeDirFn func() (string, error)) *cursorAdapter {
-	return &cursorAdapter{homeDirFn: homeDirFn}
+func newCursorAdapter(homeDirFn, appDataFn func() (string, error)) *cursorAdapter {
+	return &cursorAdapter{homeDirFn: homeDirFn, appDataFn: appDataFn}
 }
 
 func (*cursorAdapter) Name() string { return "cursor" }
@@ -63,7 +64,7 @@ func (a *cursorAdapter) settingsPath() (string, error) {
 		}
 		return filepath.Join(home, "Library", "Application Support", "Cursor", "User", "settings.json"), nil
 	case "windows":
-		appData, err := windowsAppData()
+		appData, err := a.appDataFn()
 		if err != nil {
 			return "", err
 		}

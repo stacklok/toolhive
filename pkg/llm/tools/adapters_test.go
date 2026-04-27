@@ -146,14 +146,20 @@ func TestGeminiCLI_ApplyAndRevert(t *testing.T) {
 // ── Cursor ────────────────────────────────────────────────────────────────────
 
 func cursorSettingsDirForOS(home string) string {
-	if runtime.GOOS == testOSDarwin {
+	switch runtime.GOOS {
+	case testOSDarwin:
 		return filepath.Join(home, "Library", "Application Support", "Cursor", "User")
+	case "windows":
+		// NewCursorAdapterWithHome injects home as appDataFn too, so on Windows
+		// the settings path is <home>/Cursor/User/settings.json.
+		return filepath.Join(home, "Cursor", "User")
+	default:
+		configDir := os.Getenv("XDG_CONFIG_HOME")
+		if configDir == "" {
+			configDir = filepath.Join(home, ".config")
+		}
+		return filepath.Join(configDir, "Cursor", "User")
 	}
-	configDir := os.Getenv("XDG_CONFIG_HOME")
-	if configDir == "" {
-		configDir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(configDir, "Cursor", "User")
 }
 
 func TestCursor_DetectFalseWhenAbsent(t *testing.T) {
@@ -200,14 +206,20 @@ func TestCursor_ApplyAndRevert(t *testing.T) {
 // ── VS Code ───────────────────────────────────────────────────────────────────
 
 func vscodeSettingsDirForOS(home string) string {
-	if runtime.GOOS == testOSDarwin {
+	switch runtime.GOOS {
+	case testOSDarwin:
 		return filepath.Join(home, "Library", "Application Support", "Code", "User")
+	case "windows":
+		// NewVSCodeAdapterWithHome injects home as appDataFn too, so on Windows
+		// the settings path is <home>/Code/User/settings.json.
+		return filepath.Join(home, "Code", "User")
+	default:
+		configDir := os.Getenv("XDG_CONFIG_HOME")
+		if configDir == "" {
+			configDir = filepath.Join(home, ".config")
+		}
+		return filepath.Join(configDir, "Code", "User")
 	}
-	configDir := os.Getenv("XDG_CONFIG_HOME")
-	if configDir == "" {
-		configDir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(configDir, "Code", "User")
 }
 
 func TestVSCode_ApplyAndRevert(t *testing.T) {

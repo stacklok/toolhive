@@ -46,7 +46,9 @@ func TestPatchJSONFile_AcceptsJSONC(t *testing.T) {
   // VS Code comment
   "editor.fontSize": 14, // trailing comma
 }`)
-	_ = os.WriteFile(path, jsonc, 0o600)
+	if err := os.WriteFile(path, jsonc, 0o600); err != nil {
+		t.Fatalf("writing JSONC fixture: %v", err)
+	}
 
 	err := patchJSONFile(path, func(m map[string]any) {
 		m["github.copilot.advanced.serverUrl"] = "http://localhost:14000/v1"
@@ -55,7 +57,10 @@ func TestPatchJSONFile_AcceptsJSONC(t *testing.T) {
 		t.Fatalf("patchJSONFile with JSONC input: %v", err)
 	}
 
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading patched file: %v", err)
+	}
 	var m map[string]any
 	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
@@ -74,7 +79,9 @@ func TestPatchJSONFile_PreservesExistingKeys(t *testing.T) {
 	path := filepath.Join(dir, "settings.json")
 
 	// Seed the file with an existing key.
-	_ = os.WriteFile(path, []byte(`{"theme":"dark"}`), 0o600)
+	if err := os.WriteFile(path, []byte(`{"theme":"dark"}`), 0o600); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
 
 	err := patchJSONFile(path, func(m map[string]any) {
 		m["newKey"] = "newValue"
@@ -83,9 +90,14 @@ func TestPatchJSONFile_PreservesExistingKeys(t *testing.T) {
 		t.Fatalf("patchJSONFile: %v", err)
 	}
 
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading patched file: %v", err)
+	}
 	var m map[string]any
-	_ = json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshalling: %v", err)
+	}
 
 	if m["theme"] != testThemeValue {
 		t.Errorf("existing key theme lost, got %v", m["theme"])
@@ -116,15 +128,22 @@ func TestRevertJSONFile_RemovesKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 
-	_ = os.WriteFile(path, []byte(`{"apiKeyHelper":"thv llm token","theme":"dark"}`), 0o600)
+	if err := os.WriteFile(path, []byte(`{"apiKeyHelper":"thv llm token","theme":"dark"}`), 0o600); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
 
 	if err := revertJSONFile(path, "apiKeyHelper"); err != nil {
 		t.Fatalf("revertJSONFile: %v", err)
 	}
 
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading reverted file: %v", err)
+	}
 	var m map[string]any
-	_ = json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshalling: %v", err)
+	}
 
 	if _, ok := m["apiKeyHelper"]; ok {
 		t.Error("apiKeyHelper should have been removed")
@@ -139,15 +158,22 @@ func TestRevertFlatJSONFile_RemovesFlatDottedKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 
-	_ = os.WriteFile(path, []byte(`{"cursor.general.openAIBaseURL":"http://localhost:14000/v1","theme":"dark"}`), 0o600)
+	if err := os.WriteFile(path, []byte(`{"cursor.general.openAIBaseURL":"http://localhost:14000/v1","theme":"dark"}`), 0o600); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
 
 	if err := revertFlatJSONFile(path, "cursor.general.openAIBaseURL"); err != nil {
 		t.Fatalf("revertFlatJSONFile: %v", err)
 	}
 
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading reverted file: %v", err)
+	}
 	var m map[string]any
-	_ = json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshalling: %v", err)
+	}
 
 	if _, ok := m["cursor.general.openAIBaseURL"]; ok {
 		t.Error("flat dotted key should have been removed")

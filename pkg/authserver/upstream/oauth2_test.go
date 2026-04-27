@@ -627,7 +627,7 @@ func TestBaseOAuth2Provider_exchangeCodeForTokens(t *testing.T) {
 		assert.Contains(t, err.Error(), "unexpected token_type")
 	})
 
-	t.Run("default expiry when not specified", func(t *testing.T) {
+	t.Run("zero expiry when expires_in absent", func(t *testing.T) {
 		t.Parallel()
 
 		mock := newMockOAuth2Server()
@@ -638,7 +638,7 @@ func TestBaseOAuth2Provider_exchangeCodeForTokens(t *testing.T) {
 			resp := testTokenResponse{
 				AccessToken: "token",
 				TokenType:   "Bearer",
-				// ExpiresIn intentionally missing
+				// ExpiresIn intentionally missing — provider issues a non-expiring token
 			}
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -661,9 +661,8 @@ func TestBaseOAuth2Provider_exchangeCodeForTokens(t *testing.T) {
 		tokens, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
 		require.NoError(t, err)
 
-		// Should default to 1 hour
-		expectedExpiry := time.Now().Add(time.Hour)
-		assert.WithinDuration(t, expectedExpiry, tokens.ExpiresAt, 10*time.Second)
+		// No expires_in in the response means the token has no expiry.
+		assert.True(t, tokens.ExpiresAt.IsZero(), "ExpiresAt should be zero for non-expiring tokens")
 	})
 }
 

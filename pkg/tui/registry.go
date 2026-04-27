@@ -80,4 +80,3 @@ func buildRunFormFields(item regtypes.ServerMetadata) []formField {
 
 	return fields
 }
-

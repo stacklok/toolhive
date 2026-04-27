@@ -6,7 +6,12 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +20,7 @@ import (
 	"go.uber.org/mock/gomock"
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
 
@@ -685,6 +691,70 @@ func TestWithPreemptiveRefresh_ExactlyOneRefreshPerWindow(t *testing.T) {
 			"served from the outer ReuseTokenSource cache")
 }
 
+// TestWithPreemptiveRefresh_NoResource_ExactlyOneRefreshPerWindow is a sibling to
+// TestWithPreemptiveRefresh_ExactlyOneRefreshPerWindow, exercising the non-resource
+// (Audience == "") path through a real NonCachingRefresher and an HTTP test server.
+//
+// Regression guard: if tryRestoreFromCache were reverted to use oauth2Cfg.TokenSource
+// (which caches the token internally) instead of NonCachingRefresher, the inner source
+// would return the same stale token on every call inside the preemptive window. The
+// outer ReuseTokenSource would never see a fresh token and would thrash — calling the
+// inner source on every outer Token() call. That path never hits the server at all
+// after the first call, so this test would fail with serverCalls != 2.
+func TestWithPreemptiveRefresh_NoResource_ExactlyOneRefreshPerWindow(t *testing.T) {
+	t.Parallel()
+
+	var serverCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		call := int(serverCalls.Add(1))
+		// Call 1: short-lived token — shifted expiry (15 s − 30 s) is already past,
+		// so the outer ReuseTokenSource enters the inner chain again on the next call.
+		// Call 2+: long-lived token — shifted expiry (120 s − 30 s = 90 s) is well in
+		// the future, so the outer ReuseTokenSource can cache and stop calling the inner.
+		expiresIn := 120
+		if call == 1 {
+			expiresIn = 15
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":"token-%d","token_type":"Bearer","expires_in":%d}`,
+			call, expiresIn)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := &oauth2.Config{
+		ClientID: "test-client",
+		Endpoint: oauth2.Endpoint{
+			TokenURL:  srv.URL,
+			AuthStyle: oauth2.AuthStyleInParams,
+		},
+	}
+	ncr := oauth.NewNonCachingRefresher(cfg, "refresh-token", "" /* Audience == "" — standard OAuth 2.0 */)
+	src := withPreemptiveRefresh(ncr)
+
+	// First call: outer has no token → calls inner (server call 1) → short-lived token.
+	tok, err := src.Token()
+	require.NoError(t, err)
+	assert.Equal(t, "token-1", tok.AccessToken)
+	assert.Equal(t, int32(1), serverCalls.Load())
+
+	// Subsequent calls: the short token's shifted expiry is already past, so the outer
+	// calls the inner once more (server call 2), receives a long-lived token, and caches
+	// its shifted expiry which is well in the future. All remaining calls must be served
+	// from the outer ReuseTokenSource cache — the server must not be called again.
+	const iterations = 10
+	for i := 0; i < iterations; i++ {
+		tok, err = src.Token()
+		require.NoError(t, err)
+		assert.Equal(t, "token-2", tok.AccessToken,
+			"all calls after the preemptive refresh must return the cached fresh token")
+	}
+
+	assert.Equal(t, int32(2), serverCalls.Load(),
+		"server must be called exactly twice: once for the initial short-lived token and "+
+			"once for the preemptive refresh; all remaining calls must be served from the "+
+			"outer ReuseTokenSource cache")
+}
+
 // ── withPreemptiveRefreshFrom – pre-seeds outer cache with shifted initial token ──
 
 // TestWithPreemptiveRefreshFrom_PreSeededToken verifies that withPreemptiveRefreshFrom
@@ -721,6 +791,39 @@ func TestWithPreemptiveRefreshFrom_PreSeededToken(t *testing.T) {
 	assert.Equal(t, 0, fake.calls, "inner source must not be called while initial token is valid")
 }
 
+// TestWithPreemptiveRefreshFrom_ShortLivedInitial_NoSeed verifies that when the
+// initial token's lifetime is shorter than preemptiveRefreshWindow, the shifted
+// expiry is already in the past and the outer ReuseTokenSource is not pre-seeded.
+// The first Token() call must therefore go to the inner source immediately.
+func TestWithPreemptiveRefreshFrom_ShortLivedInitial_NoSeed(t *testing.T) {
+	t.Parallel()
+
+	fake := &countingTokenSource{
+		tokenFn: func(_ int) *oauth2.Token {
+			return &oauth2.Token{
+				AccessToken: "inner-token",
+				Expiry:      time.Now().Add(2 * time.Minute),
+			}
+		},
+	}
+
+	// Token lifetime (15 s) is shorter than preemptiveRefreshWindow (30 s), so
+	// the shifted expiry (now − 15 s) is already past — seeding is skipped.
+	initial := &oauth2.Token{
+		AccessToken: "short-lived-token",
+		Expiry:      time.Now().Add(preemptiveRefreshWindow / 2),
+	}
+
+	src := withPreemptiveRefreshFrom(initial, fake)
+
+	tok, err := src.Token()
+	require.NoError(t, err)
+	// Must come from the inner source, not the stale initial token.
+	assert.Equal(t, "inner-token", tok.AccessToken)
+	assert.Equal(t, 1, fake.calls,
+		"short-lived initial token must not be seeded; first Token() must call inner source")
+}
+
 func TestWithPreemptiveRefreshFrom_NilInitial_BehavesLikeWithPreemptiveRefresh(t *testing.T) {
 	t.Parallel()
 
@@ -747,33 +850,68 @@ func TestNonCachingRefresher_EmptyRefreshToken_ReturnsError(t *testing.T) {
 	t.Parallel()
 
 	cfg := &oauth2.Config{ClientID: "test"}
-	ncr := newNonCachingRefresher(cfg, "" /* no refresh token */, "")
+	ncr := oauth.NewNonCachingRefresher(cfg, "" /* no refresh token */, "")
 
 	_, err := ncr.Token()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no refresh token available")
 }
 
-// TestWithPreemptiveRefresh_CachingInnerSource_LoopRegression is a regression
-// test for the bug where a caching inner source (one that returns the same valid
-// token every call) caused the outer ReuseTokenSource to loop indefinitely inside
-// the preemptive window.
-//
-// A caching source always returns the same token regardless of how many times
-// Token() is called. When preemptiveTokenSource shifts its expiry back by 30 s,
-// the outer ReuseTokenSource sees an already-expired token on the very next call
-// and re-enters the chain — forever, with no actual IdP refresh.
-//
-// A non-caching inner source (nonCachingRefresher) fixes this: the first call
-// inside the window returns a fresh token with a real-future expiry, which the
-// outer cache can hold until the next window.
-func TestWithPreemptiveRefresh_CachingInnerSource_LoopRegression(t *testing.T) {
+// TestNonCachingRefresher_StandardPath_NoResourceParam verifies that when
+// Audience/resource is empty the standard OAuth 2.0 refresh path is taken:
+// no "resource" parameter is sent, the returned access token is used, and the
+// previous refresh token is preserved when the IdP does not rotate one.
+func TestNonCachingRefresher_StandardPath_NoResourceParam(t *testing.T) {
 	t.Parallel()
 
-	// cachingSource simulates the old resourceTokenSource / oauth2.ReuseTokenSource
-	// behaviour: always returns the same token with a fixed near-future expiry
-	// (within the preemptive window), so preemptiveTokenSource always shifts it
-	// to already-expired.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		// Assert inside the handler — no cross-goroutine variable sharing.
+		assert.NotContains(t, string(raw), "resource=",
+			"standard (audience=='') path must not include a resource parameter")
+		w.Header().Set("Content-Type", "application/json")
+		// IdP does not rotate the refresh token — omit it from the response.
+		fmt.Fprintln(w, `{"access_token":"new-at","token_type":"Bearer","expires_in":3600}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := &oauth2.Config{
+		ClientID: "test-client",
+		Endpoint: oauth2.Endpoint{
+			TokenURL:  srv.URL,
+			AuthStyle: oauth2.AuthStyleInParams,
+		},
+		Scopes: []string{"openid"},
+	}
+	ncr := oauth.NewNonCachingRefresher(cfg, "my-refresh-token", "" /* no audience — standard path */)
+
+	tok, err := ncr.Token()
+	require.NoError(t, err)
+	assert.Equal(t, "new-at", tok.AccessToken)
+	// When the IdP omits the refresh token the previous one must be preserved.
+	assert.Equal(t, "my-refresh-token", tok.RefreshToken,
+		"refresh token must be preserved when IdP does not rotate it")
+}
+
+// TestWithPreemptiveRefresh_CachingInnerSource_ThrashesAcrossOuterCalls documents
+// the failure mode of a caching inner source inside the preemptive chain.
+//
+// A caching inner source always returns the same token regardless of how many times
+// Token() is called. When that token's expiry falls within the preemptive window,
+// preemptiveTokenSource shifts it to already-expired. The outer ReuseTokenSource
+// therefore never caches — it thrashes, calling the inner source on every outer
+// Token() invocation instead of settling after one refresh.
+//
+// This test pins that thrashing behaviour: N outer calls → N inner calls. Contrast
+// with TestWithPreemptiveRefresh_ExactlyOneRefreshPerWindow, which shows that a
+// non-caching inner source (NonCachingRefresher) settles after exactly one
+// preemptive refresh — all subsequent outer calls are served from cache.
+func TestWithPreemptiveRefresh_CachingInnerSource_ThrashesAcrossOuterCalls(t *testing.T) {
+	t.Parallel()
+
+	// Simulates the old resourceTokenSource behaviour: always returns the same
+	// token with a fixed expiry inside the preemptive window, so the shifted
+	// expiry is always in the past and the outer cache never settles.
 	staleExpiry := time.Now().Add(preemptiveRefreshWindow / 2) // inside the window
 	cachingInner := &countingTokenSource{
 		tokenFn: func(_ int) *oauth2.Token {
@@ -786,27 +924,19 @@ func TestWithPreemptiveRefresh_CachingInnerSource_LoopRegression(t *testing.T) {
 
 	src := withPreemptiveRefresh(cachingInner)
 
-	// Drive the source several times. With the old caching inner source this
-	// would loop forever (calls >> iterations). With the fix (non-caching inner
-	// source that returns a fresh token each call), the outer cache eventually
-	// settles once the inner returns a token whose shifted expiry is in the future.
-	//
-	// Here we simply verify that the loop terminates and the number of inner calls
-	// is bounded — it should equal the number of Token() calls until the inner
-	// source returns a long-lived token. Since our fake always returns the same
-	// stale expiry, we expect exactly one call per outer Token() call (the outer
-	// never caches) but NOT an infinite loop within a single Token() call.
-	const iterations = 5
+	const iterations = 10
 	for i := 0; i < iterations; i++ {
 		tok, err := src.Token()
 		require.NoError(t, err)
 		assert.Equal(t, "stale-token", tok.AccessToken)
 	}
-	// Each outer Token() call results in exactly one inner call — never multiple
-	// calls per single outer invocation (which would indicate the inner loop bug).
+	// The outer cache never settles: every outer Token() call triggers one inner
+	// call. This is the thrashing behaviour the NonCachingRefresher fixes — once
+	// the inner source returns a long-lived token the outer cache holds it and
+	// subsequent calls cost zero inner calls (see ExactlyOneRefreshPerWindow).
 	assert.Equal(t, iterations, cachingInner.calls,
-		"each outer Token() call must result in exactly one inner call; "+
-			"more calls per invocation would indicate the infinite-loop regression")
+		"caching inner source must be called once per outer Token() call — "+
+			"the outer cache never settles when the inner always returns a stale token")
 }
 
 // ── accessTokenCacheKey ───────────────────────────────────────────────────────

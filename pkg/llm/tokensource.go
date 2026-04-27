@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -209,7 +208,7 @@ func (t *TokenSource) tryRestoreFromCache(ctx context.Context) error {
 	// serves it until the next window — exactly one refresh per window.
 	//
 	// Target stacking: ReuseTokenSource(nil, preemptive{PersistingTokenSource{nonCachingRefresher}})
-	rawRefresher := newNonCachingRefresher(oauth2Cfg, refreshToken, t.cfg.OIDC.Audience)
+	rawRefresher := oauth.NewNonCachingRefresher(oauth2Cfg, refreshToken, t.cfg.OIDC.Audience)
 
 	// Persist rotated refresh tokens back to the secrets provider so future CLI
 	// invocations can still restore the session if the provider invalidates the
@@ -251,7 +250,7 @@ func (t *TokenSource) performBrowserFlow(ctx context.Context) error {
 		Expiry:       tokenResult.Expiry,
 		TokenType:    tokenResult.TokenType,
 	}
-	var base oauth2.TokenSource = newNonCachingRefresher(oauth2Cfg, initialToken.RefreshToken, flowCfg.Resource)
+	var base oauth2.TokenSource = oauth.NewNonCachingRefresher(oauth2Cfg, initialToken.RefreshToken, flowCfg.Resource)
 	key := t.refreshTokenKey()
 
 	if t.secretsProvider != nil {
@@ -327,7 +326,14 @@ func (t *TokenSource) makeTokenPersister(key string) remote.TokenPersister {
 		}
 		t.updateConfigTokenRef(key, expiry)
 		// Invalidate the access-token cache so the next call does not serve a
-		// token minted against the now-rotated refresh token.
+		// token minted against the now-rotated refresh token. Order is intentional:
+		// the refresh token (durable) is written first, then the AT cache is cleared.
+		// A reader interleaved between the two writes sees the old AT for a short
+		// window, but will always eventually get a fresh token on the next call.
+		//
+		// We write "" rather than calling DeleteSecret for provider compatibility —
+		// some providers don't support deletion, and tryAccessTokenCache treats an
+		// empty value as a cache miss.
 		if err := t.secretsProvider.SetSecret(ctx, t.accessTokenCacheKey(), ""); err != nil {
 			slog.Warn("failed to invalidate access-token cache after refresh token rotation",
 				"error", err)
@@ -461,66 +467,14 @@ func withPreemptiveRefreshFrom(initial *oauth2.Token, src oauth2.TokenSource) oa
 	if initial != nil && initial.Valid() && !initial.Expiry.IsZero() {
 		shifted := *initial
 		shifted.Expiry = initial.Expiry.Add(-preemptiveRefreshWindow)
-		seeded = &shifted
+		// Only seed when the shifted expiry is still in the future; if the initial
+		// token lifetime is shorter than preemptiveRefreshWindow the shifted token
+		// is already expired and seeding would not avoid the immediate network call.
+		if shifted.Valid() {
+			seeded = &shifted
+		}
 	}
 	return oauth2.ReuseTokenSource(seeded, &preemptiveTokenSource{inner: src})
-}
-
-// nonCachingRefresher is an oauth2.TokenSource that always performs a network
-// refresh when Token() is called — it holds no internal token cache. This makes it
-// the correct innermost source for withPreemptiveRefresh: the outer ReuseTokenSource
-// provides caching; the inner source must always refresh when asked so that
-// preemptiveTokenSource triggers exactly one network round-trip per window.
-//
-// It handles both standard OAuth 2.0 refresh (resource == "") and RFC 8707
-// resource-indicator refresh (resource != "") in a single type, eliminating the
-// branching that previously introduced caching inner sources on the resource path.
-type nonCachingRefresher struct {
-	cfg          *oauth2.Config
-	resource     string // RFC 8707 resource indicator; empty for standard OAuth 2.0
-	refreshToken string
-	httpClient   *http.Client
-}
-
-func newNonCachingRefresher(cfg *oauth2.Config, refreshToken, resource string) *nonCachingRefresher {
-	return &nonCachingRefresher{
-		cfg:          cfg,
-		resource:     resource,
-		refreshToken: refreshToken,
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
-	}
-}
-
-// Token always performs a token-endpoint refresh. It updates the stored refresh
-// token when the IdP rotates it, so PersistingTokenSource above can detect the
-// change and persist it to the secrets provider.
-func (n *nonCachingRefresher) Token() (*oauth2.Token, error) {
-	if n.refreshToken == "" {
-		return nil, fmt.Errorf("no refresh token available")
-	}
-	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, n.httpClient)
-	opts := []oauth2.AuthCodeOption{
-		oauth2.SetAuthURLParam("grant_type", "refresh_token"),
-		oauth2.SetAuthURLParam("refresh_token", n.refreshToken),
-	}
-	if n.resource != "" {
-		opts = append(opts, oauth2.SetAuthURLParam("resource", n.resource))
-	}
-	// Include scope explicitly — RFC 6749 §6 says servers MUST preserve scopes
-	// when omitted, but not all do.
-	if len(n.cfg.Scopes) > 0 {
-		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(n.cfg.Scopes, " ")))
-	}
-	tok, err := n.cfg.Exchange(ctx, "", opts...)
-	if err != nil {
-		return nil, fmt.Errorf("token refresh failed: %w", err)
-	}
-	if tok.RefreshToken == "" {
-		tok.RefreshToken = n.refreshToken
-	} else {
-		n.refreshToken = tok.RefreshToken
-	}
-	return tok, nil
 }
 
 // ensureOfflineAccess returns scopes with "offline_access" appended if absent.

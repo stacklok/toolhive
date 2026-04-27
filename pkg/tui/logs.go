@@ -13,7 +13,7 @@ import (
 
 const (
 	logPollInterval = 500 * time.Millisecond
-	logFetchLines   = 50
+	logFetchLines   = 500
 )
 
 // StreamWorkloadLogs starts a goroutine that polls manager.GetLogs for the
@@ -24,6 +24,8 @@ func StreamWorkloadLogs(ctx context.Context, manager workloads.Manager, name str
 	go func() {
 		defer close(ch)
 		var lastLines []string
+		var errBackoff time.Duration
+		const maxBackoff = 5 * time.Second
 		for {
 			select {
 			case <-ctx.Done():
@@ -33,8 +35,24 @@ func StreamWorkloadLogs(ctx context.Context, manager workloads.Manager, name str
 
 			raw, err := manager.GetLogs(ctx, name, false, logFetchLines)
 			if err != nil {
+				select {
+				case ch <- "[error] " + err.Error():
+				case <-ctx.Done():
+					return
+				}
+				if errBackoff == 0 {
+					errBackoff = time.Second
+				} else {
+					errBackoff = min(errBackoff*2, maxBackoff)
+				}
+				select {
+				case <-time.After(errBackoff):
+				case <-ctx.Done():
+					return
+				}
 				continue
 			}
+			errBackoff = 0 // reset on success
 
 			lines := splitLines(raw)
 			newLines := diffLines(lastLines, lines)

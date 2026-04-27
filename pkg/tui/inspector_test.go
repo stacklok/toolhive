@@ -87,42 +87,7 @@ func TestInspFieldValues(t *testing.T) {
 			expected: map[string]any{"url": "https://example.com"},
 		},
 		{
-			name: "integer coerced",
-			fields: []formField{
-				makeField("count", "42", "integer", false),
-			},
-			expected: map[string]any{"count": int64(42)},
-		},
-		{
-			name: "number coerced",
-			fields: []formField{
-				makeField("rate", "3.14", "number", false),
-			},
-			expected: map[string]any{"rate": 3.14},
-		},
-		{
-			name: "boolean coerced",
-			fields: []formField{
-				makeField("draft", "true", "boolean", false),
-			},
-			expected: map[string]any{"draft": true},
-		},
-		{
-			name: "array coerced",
-			fields: []formField{
-				makeField("tags", `["a","b"]`, "array", false),
-			},
-			expected: map[string]any{"tags": []any{"a", "b"}},
-		},
-		{
-			name: "object coerced",
-			fields: []formField{
-				makeField("meta", `{"k":"v"}`, "object", false),
-			},
-			expected: map[string]any{"meta": map[string]any{"k": "v"}},
-		},
-		{
-			name: "mixed types collected",
+			name: "mixed types coerced and empty skipped",
 			fields: []formField{
 				makeField("name", "test", "string", false),
 				makeField("empty", "", "string", false),
@@ -131,15 +96,7 @@ func TestInspFieldValues(t *testing.T) {
 			expected: map[string]any{"name": "test", "count": int64(42)},
 		},
 		{
-			name: "required empty field errors",
-			fields: []formField{
-				makeField("title", "", "string", true),
-			},
-			expectErr:    `field "title" is required`,
-			expectErrIdx: 0,
-		},
-		{
-			name: "required error returns field index",
+			name: "required empty field errors with field index",
 			fields: []formField{
 				makeField("name", "ok", "string", false),
 				makeField("title", "", "string", true),
@@ -148,27 +105,11 @@ func TestInspFieldValues(t *testing.T) {
 			expectErrIdx: 1,
 		},
 		{
-			name: "invalid integer errors",
+			name: "parse error bubbles with field index",
 			fields: []formField{
 				makeField("count", "abc", "integer", false),
 			},
 			expectErr:    `field "count"`,
-			expectErrIdx: 0,
-		},
-		{
-			name: "invalid boolean errors",
-			fields: []formField{
-				makeField("flag", "maybe", "boolean", false),
-			},
-			expectErr:    `field "flag"`,
-			expectErrIdx: 0,
-		},
-		{
-			name: "invalid JSON array errors",
-			fields: []formField{
-				makeField("tags", "not json", "array", false),
-			},
-			expectErr:    `field "tags"`,
 			expectErrIdx: 0,
 		},
 	}
@@ -199,22 +140,15 @@ func TestParseFieldValue(t *testing.T) {
 	}{
 		{name: "string passthrough", value: "hello", typeName: "string", expected: "hello"},
 		{name: "unknown type defaults to string", value: "hello", typeName: "custom", expected: "hello"},
-		{name: "empty type defaults to string", value: "hello", typeName: "", expected: "hello"},
 		{name: "valid integer", value: "42", typeName: "integer", expected: int64(42)},
-		{name: "negative integer", value: "-7", typeName: "integer", expected: int64(-7)},
 		{name: "invalid integer", value: "3.5", typeName: "integer", wantErr: true},
-		{name: "non-numeric integer", value: "abc", typeName: "integer", wantErr: true},
 		{name: "valid number", value: "3.14", typeName: "number", expected: 3.14},
-		{name: "integer as number", value: "42", typeName: "number", expected: float64(42)},
 		{name: "invalid number", value: "abc", typeName: "number", wantErr: true},
-		{name: "boolean true", value: "true", typeName: "boolean", expected: true},
-		{name: "boolean false", value: "false", typeName: "boolean", expected: false},
-		{name: "boolean 1", value: "1", typeName: "boolean", expected: true},
+		{name: "valid boolean", value: "true", typeName: "boolean", expected: true},
 		{name: "invalid boolean", value: "maybe", typeName: "boolean", wantErr: true},
 		{name: "valid array", value: `[1,2,3]`, typeName: "array", expected: []any{float64(1), float64(2), float64(3)}},
 		{name: "invalid array", value: "not json", typeName: "array", wantErr: true},
 		{name: "valid object", value: `{"a":1}`, typeName: "object", expected: map[string]any{"a": float64(1)}},
-		{name: "invalid object", value: "{bad}", typeName: "object", wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

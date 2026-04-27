@@ -124,7 +124,9 @@ func (m *Model) handleInspectorKey(msg tea.KeyMsg) tea.Cmd {
 					return m.showNotif(err.Error(), false)
 				}
 				curl := buildCurlStr(sel, tool.Name, args)
-				_ = clipboard.WriteAll(curl)
+				if err := clipboard.WriteAll(curl); err != nil {
+					return m.showNotif("clipboard: "+err.Error(), false)
+				}
 				return m.showNotif("✓ curl copied", true)
 			}
 		}
@@ -315,7 +317,9 @@ func (m *Model) inspCopyNode() {
 	if m.insp.result == "" {
 		return
 	}
-	_ = clipboard.WriteAll(m.insp.result)
+	if err := clipboard.WriteAll(m.insp.result); err != nil {
+		return
+	}
 }
 
 // inspForwardToField forwards a key message to the currently focused field.

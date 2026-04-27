@@ -165,7 +165,9 @@ func (m *Model) handleNormalKey(msg tea.KeyMsg) tea.Cmd {
 
 	case key.Matches(msg, keys.CopyURL):
 		if sel := m.selected(); sel != nil && sel.URL != "" {
-			_ = clipboard.WriteAll(sel.URL)
+			if err := clipboard.WriteAll(sel.URL); err != nil {
+				return m.showNotif("clipboard: "+err.Error(), false)
+			}
 			return m.showNotif("✓ URL copied", true)
 		}
 	}

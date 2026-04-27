@@ -82,7 +82,9 @@ func (m *Model) handleRegistryDetailKey(msg tea.KeyMsg) tea.Cmd {
 		items := m.filteredRegistryItems()
 		if len(items) > 0 && m.registry.idx < len(items) {
 			cmd := buildRunCmd(items[m.registry.idx])
-			_ = clipboard.WriteAll(cmd)
+			if err := clipboard.WriteAll(cmd); err != nil {
+				return m.showNotif("clipboard: "+err.Error(), false)
+			}
 			return m.showNotif("✓ run command copied", true)
 		}
 	case key.Matches(msg, keys.Restart):

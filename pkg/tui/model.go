@@ -190,8 +190,10 @@ func (m *Model) selected() *core.Workload {
 }
 
 // filteredWorkloads returns workloads matching the current filter query.
+// Filtering applies whenever the query is non-empty, even after the prompt
+// is dismissed with Enter, so the user can navigate the filtered list.
 func (m *Model) filteredWorkloads() []core.Workload {
-	if !m.filterActive || m.filterQuery == "" {
+	if m.filterQuery == "" {
 		return m.workloads
 	}
 	var out []core.Workload

@@ -15,6 +15,7 @@ import (
 
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/core"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -78,6 +79,7 @@ type runFormState struct {
 type registryState struct {
 	open         bool
 	items        []regtypes.ServerMetadata
+	provider     registry.Provider // cached provider for SearchServers filtering
 	filter       string
 	idx          int
 	scrollOff    int // first visible item index in list
@@ -202,8 +204,20 @@ func (m *Model) filteredWorkloads() []core.Workload {
 }
 
 // filteredRegistryItems returns registry items matching the current registry filter.
+// When a provider is available it delegates to SearchServers so the TUI uses the
+// same matching semantics (name, description, tags) as `thv search`.
 func (m *Model) filteredRegistryItems() []regtypes.ServerMetadata {
-	return filterRegistryItems(m.registry.items, m.registry.filter)
+	if m.registry.filter == "" {
+		return m.registry.items
+	}
+	if m.registry.provider != nil {
+		results, err := m.registry.provider.SearchServers(m.registry.filter)
+		if err == nil {
+			return results
+		}
+		// On error fall through to unfiltered list so the UI stays responsive.
+	}
+	return m.registry.items
 }
 
 // filteredTools returns tools matching the current inspector filter query.

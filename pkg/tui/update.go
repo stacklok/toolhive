@@ -350,6 +350,7 @@ func (m *Model) handleRegistryLoaded(msg registryLoadedMsg) {
 	m.registry.loading = false
 	m.registry.err = msg.err
 	m.registry.items = msg.items
+	m.registry.provider = msg.provider
 	m.registry.idx = 0
 }
 

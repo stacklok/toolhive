@@ -40,16 +40,6 @@ func handleSearchKey(msg tea.KeyMsg, p searchParams) tea.Cmd {
 	case key.Matches(msg, keys.Enter):
 		// Enter closes the prompt but keeps highlights and the current match.
 		*p.active = false
-	case key.Matches(msg, keys.SearchNext):
-		if len(*p.matches) > 0 {
-			*p.idx = (*p.idx + 1) % len(*p.matches)
-			scrollToSearchMatch(p)
-		}
-	case key.Matches(msg, keys.SearchPrev):
-		if len(*p.matches) > 0 {
-			*p.idx = (*p.idx - 1 + len(*p.matches)) % len(*p.matches)
-			scrollToSearchMatch(p)
-		}
 	case msg.Type == tea.KeyBackspace:
 		if len(*p.query) > 0 {
 			// Remove last rune (not last byte) to handle multi-byte UTF-8.

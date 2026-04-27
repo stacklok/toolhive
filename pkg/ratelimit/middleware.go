@@ -15,10 +15,11 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	rlconfig "github.com/stacklok/toolhive/pkg/ratelimit/config"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
 
 const (
@@ -39,11 +40,11 @@ const (
 
 // MiddlewareParams holds the parameters for the rate limit middleware factory.
 type MiddlewareParams struct {
-	Namespace  string                   `json:"namespace"`
-	ServerName string                   `json:"server_name"`
-	Config     *v1beta1.RateLimitConfig `json:"config"`
-	RedisAddr  string                   `json:"redis_addr,omitempty"`
-	RedisDB    int32                    `json:"redis_db,omitempty"`
+	Namespace  string           `json:"namespace"`
+	ServerName string           `json:"server_name"`
+	Config     *rlconfig.Config `json:"config"`
+	RedisAddr  string           `json:"redis_addr,omitempty"`
+	RedisDB    int32            `json:"redis_db,omitempty"`
 }
 
 // rateLimitMiddleware wraps rate limiting functionality for the factory pattern.
@@ -99,16 +100,16 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	}
 
 	mw := &rateLimitMiddleware{
-		handler: rateLimitHandler(limiter),
+		handler: HTTPMiddleware(limiter),
 		client:  client,
 	}
 	runner.AddMiddleware(MiddlewareType, mw)
 	return nil
 }
 
-// rateLimitHandler returns a middleware function that enforces rate limits
+// HTTPMiddleware returns a middleware function that enforces rate limits
 // on tools/call requests.
-func rateLimitHandler(limiter Limiter) types.MiddlewareFunction {
+func HTTPMiddleware(limiter Limiter) types.MiddlewareFunction {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Rate limits only apply to parsed tools/call requests.
@@ -127,7 +128,8 @@ func rateLimitHandler(limiter Limiter) types.MiddlewareFunction {
 			if identity, ok := auth.IdentityFromContext(r.Context()); ok {
 				userID = identity.Subject
 			}
-			decision, err := limiter.Allow(r.Context(), parsed.ResourceID, userID)
+			toolName := rateLimitToolName(parsed)
+			decision, err := limiter.Allow(r.Context(), toolName, userID)
 			if err != nil {
 				slog.Warn("rate limit check failed, allowing request", "error", err)
 				next.ServeHTTP(w, r)
@@ -140,6 +142,18 @@ func rateLimitHandler(limiter Limiter) types.MiddlewareFunction {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func rateLimitToolName(parsed *mcp.ParsedMCPRequest) string {
+	if parsed == nil {
+		return ""
+	}
+	if parsed.ResourceID == optimizerdec.CallToolName && parsed.Arguments != nil {
+		if toolName, ok := parsed.Arguments[optimizerdec.CallToolArgToolName].(string); ok && toolName != "" {
+			return toolName
+		}
+	}
+	return parsed.ResourceID
 }
 
 // writeRateLimited writes an HTTP 429 response with a JSON-RPC error body.

@@ -14,7 +14,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	rlconfig "github.com/stacklok/toolhive/pkg/ratelimit/config"
 	"github.com/stacklok/toolhive/pkg/ratelimit/internal/bucket"
 )
 
@@ -39,17 +39,17 @@ type Decision struct {
 // NewLimiter constructs a Limiter from CRD configuration.
 // Returns a no-op limiter (always allows) when crd is nil.
 // namespace and name identify the MCP server for Redis key derivation.
-func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1beta1.RateLimitConfig) (Limiter, error) {
+func NewLimiter(client redis.Cmdable, namespace, name string, crd *rlconfig.Config) (Limiter, error) {
 	if crd == nil {
 		return noopLimiter{}, nil
 	}
 
 	l := &limiter{client: client}
 
-	if crd.Shared != nil {
-		b, err := newBucket(namespace, name, "shared", crd.Shared)
+	if global, suffix := serverGlobalBucket(crd); global != nil {
+		b, err := newBucket(namespace, name, suffix, global)
 		if err != nil {
-			return nil, fmt.Errorf("shared bucket: %w", err)
+			return nil, fmt.Errorf("%s bucket: %w", suffix, err)
 		}
 		l.serverBucket = b
 	}
@@ -63,10 +63,10 @@ func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1beta1.RateL
 	}
 
 	for _, t := range crd.Tools {
-		if t.Shared != nil {
-			b, err := newBucket(namespace, name, "shared:tool:"+t.Name, t.Shared)
+		if global, suffix := toolGlobalBucket(&t); global != nil {
+			b, err := newBucket(namespace, name, suffix+":tool:"+t.Name, global)
 			if err != nil {
-				return nil, fmt.Errorf("tool %q shared bucket: %w", t.Name, err)
+				return nil, fmt.Errorf("tool %q %s bucket: %w", t.Name, suffix, err)
 			}
 			if l.toolBuckets == nil {
 				l.toolBuckets = make(map[string]*bucket.TokenBucket)
@@ -86,6 +86,26 @@ func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1beta1.RateL
 	}
 
 	return l, nil
+}
+
+func serverGlobalBucket(crd *rlconfig.Config) (*rlconfig.Bucket, string) {
+	if crd.Global != nil {
+		return crd.Global, "global"
+	}
+	if crd.Shared != nil {
+		return crd.Shared, "shared"
+	}
+	return nil, ""
+}
+
+func toolGlobalBucket(tool *rlconfig.ToolConfig) (*rlconfig.Bucket, string) {
+	if tool.Global != nil {
+		return tool.Global, "global"
+	}
+	if tool.Shared != nil {
+		return tool.Shared, "shared"
+	}
+	return nil, ""
 }
 
 // bucketSpec holds deferred bucket parameters for per-user buckets that are
@@ -177,7 +197,7 @@ func (noopLimiter) Allow(context.Context, string, string) (*Decision, error) {
 }
 
 // validateBucketCRD checks that a CRD bucket spec has valid parameters.
-func validateBucketCRD(b *v1beta1.RateLimitBucket) (int32, time.Duration, error) {
+func validateBucketCRD(b *rlconfig.Bucket) (int32, time.Duration, error) {
 	if b.MaxTokens < 1 {
 		return 0, 0, fmt.Errorf("maxTokens must be >= 1, got %d", b.MaxTokens)
 	}
@@ -189,7 +209,7 @@ func validateBucketCRD(b *v1beta1.RateLimitBucket) (int32, time.Duration, error)
 }
 
 // newBucket validates a CRD bucket spec and creates a TokenBucket.
-func newBucket(namespace, serverName, suffix string, b *v1beta1.RateLimitBucket) (*bucket.TokenBucket, error) {
+func newBucket(namespace, serverName, suffix string, b *rlconfig.Bucket) (*bucket.TokenBucket, error) {
 	maxTokens, refillPeriod, err := validateBucketCRD(b)
 	if err != nil {
 		return nil, err
@@ -199,7 +219,7 @@ func newBucket(namespace, serverName, suffix string, b *v1beta1.RateLimitBucket)
 
 // newBucketSpec validates a CRD bucket spec and creates a deferred bucketSpec
 // for per-user buckets that are materialized at Allow() time.
-func newBucketSpec(namespace, serverName string, b *v1beta1.RateLimitBucket) (bucketSpec, error) {
+func newBucketSpec(namespace, serverName string, b *rlconfig.Bucket) (bucketSpec, error) {
 	maxTokens, refillPeriod, err := validateBucketCRD(b)
 	if err != nil {
 		return bucketSpec{}, err

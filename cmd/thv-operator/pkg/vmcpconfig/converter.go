@@ -140,6 +140,7 @@ func (c *Converter) Convert(
 	}
 
 	config.SessionStorage = convertSessionStorage(vmcp)
+	config.RateLimiting = vmcp.Spec.RateLimiting.ToInternal()
 
 	// Apply operational defaults (fills missing values)
 	config.EnsureOperationalDefaults()

@@ -386,6 +386,8 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		OptimizerConfig:         optCfg,
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
+		RateLimiting:            vmcpCfg.RateLimiting,
+		RateLimitNamespace:      os.Getenv("VMCP_NAMESPACE"),
 	}
 
 	// Assign Watcher only when backendWatcher is non-nil. A typed nil

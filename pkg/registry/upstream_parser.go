@@ -5,6 +5,7 @@ package registry
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
@@ -12,12 +13,29 @@ import (
 	types "github.com/stacklok/toolhive-core/registry/types"
 )
 
-// parseUpstreamRegistry parses raw JSON in the upstream registry format and
-// converts it into a legacy types.Registry plus any embedded skills.
-func parseUpstreamRegistry(data []byte) (*types.Registry, []types.Skill, error) {
+// errLegacyFormat is returned when the input looks like the legacy ToolHive
+// registry format. Without this check, Go's JSON decoder silently produces an
+// empty UpstreamRegistry (the legacy top-level "servers" field does not match
+// upstream's "data.servers" path), leaving the caller with an empty registry
+// and no actionable error. The error wording carries the migration step so
+// consumers can surface it without a typed match.
+var errLegacyFormat = errors.New(
+	"registry file appears to be in the legacy ToolHive format; " +
+		"run `thv registry convert --in <path> --in-place` to migrate to the upstream MCP format")
+
+// parseRegistryData parses raw JSON in the upstream MCP registry format and
+// converts it into the internal types.Registry plus any embedded skills.
+//
+// Returns errLegacyFormat if the input looks like the legacy ToolHive registry
+// format.
+func parseRegistryData(data []byte) (*types.Registry, []types.Skill, error) {
+	if !isUpstreamJSON(data) && looksLikeLegacyJSON(data) {
+		return nil, nil, errLegacyFormat
+	}
+
 	var upstream types.UpstreamRegistry
 	if err := json.Unmarshal(data, &upstream); err != nil {
-		return nil, nil, fmt.Errorf("failed to parse upstream registry data: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse registry data: %w", err)
 	}
 
 	// ConvertServersToMetadata expects []*v0.ServerJSON, but UpstreamData.Servers
@@ -29,10 +47,9 @@ func parseUpstreamRegistry(data []byte) (*types.Registry, []types.Skill, error) 
 
 	serverMetadata, err := ConvertServersToMetadata(serverPtrs)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to convert upstream servers to metadata: %w", err)
+		return nil, nil, fmt.Errorf("failed to convert servers to metadata: %w", err)
 	}
 
-	// Build the legacy Registry, separating container and remote servers.
 	registry := &types.Registry{
 		Version:       upstream.Version,
 		LastUpdated:   upstream.Meta.LastUpdated,
@@ -54,48 +71,4 @@ func parseUpstreamRegistry(data []byte) (*types.Registry, []types.Skill, error) 
 	}
 
 	return registry, upstream.Data.Skills, nil
-}
-
-// upstreamFormatProbe is a minimal struct used to detect whether JSON data is
-// in the upstream registry format without fully unmarshalling it.
-type upstreamFormatProbe struct {
-	Schema string          `json:"$schema"`
-	Data   json.RawMessage `json:"data"`
-}
-
-// isUpstreamFormat returns true when the raw JSON appears to be in the upstream
-// registry format. The key discriminator is the "data" wrapper object — only
-// the upstream format wraps servers inside a "data" object. The "$schema" key
-// alone is not sufficient because the legacy format also includes one.
-// NOTE: keep in sync with isUpstreamRegistryFormat in pkg/config/registry.go
-// (duplicated to avoid a circular import).
-func isUpstreamFormat(data []byte) bool {
-	var probe upstreamFormatProbe
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return false
-	}
-	// The "data" wrapper object is unique to the upstream format.
-	return len(probe.Data) > 0 && probe.Data[0] == '{'
-}
-
-// parseRegistryAutoDetect attempts to parse the given JSON data by first
-// checking whether it uses the upstream format. If so it delegates to
-// parseUpstreamRegistry; otherwise it falls back to the legacy parser
-// (parseRegistryData). The returned isLegacy flag indicates which path was
-// taken. Skills are only returned for the upstream format.
-func parseRegistryAutoDetect(data []byte) (*types.Registry, []types.Skill, bool, error) {
-	if isUpstreamFormat(data) {
-		reg, skills, err := parseUpstreamRegistry(data)
-		if err != nil {
-			return nil, nil, false, fmt.Errorf("upstream format detected but parsing failed: %w", err)
-		}
-		return reg, skills, false, nil
-	}
-
-	// Legacy format — no skills.
-	reg, err := parseRegistryData(data)
-	if err != nil {
-		return nil, nil, true, fmt.Errorf("failed to parse legacy registry data: %w", err)
-	}
-	return reg, nil, true, nil
 }

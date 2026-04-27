@@ -332,7 +332,7 @@ func TestConvertJSON_OutputPassesSchemaValidation(t *testing.T) {
 func TestConvertJSON_RoundTripEmbeddedCatalog(t *testing.T) {
 	t.Parallel()
 
-	original, _, err := parseUpstreamRegistry(catalog.Upstream())
+	original, _, err := parseRegistryData(catalog.Upstream())
 	require.NoError(t, err)
 
 	roundTripped, err := converters.NewUpstreamRegistryFromToolhiveRegistry(original)

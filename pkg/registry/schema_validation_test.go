@@ -27,7 +27,7 @@ func TestEmbeddedRegistrySchemaValidation(t *testing.T) {
 func TestValidateEmbeddedRegistryCanLoadData(t *testing.T) {
 	t.Parallel()
 
-	registry, skills, err := parseUpstreamRegistry(catalog.Upstream())
+	registry, skills, err := parseRegistryData(catalog.Upstream())
 	require.NoError(t, err, "Embedded upstream registry should parse successfully")
 
 	// Verify basic structure
@@ -40,115 +40,12 @@ func TestValidateEmbeddedRegistryCanLoadData(t *testing.T) {
 	_ = skills
 }
 
-func TestIsUpstreamFormat(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		input    string
-		expected bool
-	}{
-		{
-			name:     "upstream format with data object",
-			input:    `{"$schema": "https://example.com/schema.json", "data": {"servers": []}}`,
-			expected: true,
-		},
-		{
-			name:     "upstream format data only, no schema",
-			input:    `{"data": {"servers": []}}`,
-			expected: true,
-		},
-		{
-			name:     "legacy format with schema but no data object",
-			input:    `{"$schema": "https://example.com/legacy.json", "version": "1.0", "servers": {}}`,
-			expected: false,
-		},
-		{
-			name:     "legacy format no schema",
-			input:    `{"version": "1.0", "servers": {"osv": {}}}`,
-			expected: false,
-		},
-		{
-			name:     "data is a string not object",
-			input:    `{"data": "not an object"}`,
-			expected: false,
-		},
-		{
-			name:     "data is an array not object",
-			input:    `{"data": [1, 2, 3]}`,
-			expected: false,
-		},
-		{
-			name:     "data is null",
-			input:    `{"data": null}`,
-			expected: false,
-		},
-		{
-			name:     "empty JSON object",
-			input:    `{}`,
-			expected: false,
-		},
-		{
-			name:     "invalid JSON",
-			input:    `not json`,
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tt.expected, isUpstreamFormat([]byte(tt.input)))
-		})
-	}
-}
-
-func TestParseRegistryAutoDetect(t *testing.T) {
-	t.Parallel()
-
-	t.Run("upstream format returns isLegacy=false", func(t *testing.T) {
-		t.Parallel()
-		input := `{
-			"$schema": "https://example.com/schema.json",
-			"version": "1.0.0",
-			"meta": {"last_updated": "2025-01-01T00:00:00Z"},
-			"data": {"servers": []}
-		}`
-		_, _, isLegacy, err := parseRegistryAutoDetect([]byte(input))
-		require.NoError(t, err)
-		assert.False(t, isLegacy)
-	})
-
-	t.Run("legacy format returns isLegacy=true", func(t *testing.T) {
-		t.Parallel()
-		input := `{
-			"version": "1.0.0",
-			"servers": {"test": {"image": "test:latest"}}
-		}`
-		_, _, isLegacy, err := parseRegistryAutoDetect([]byte(input))
-		require.NoError(t, err)
-		assert.True(t, isLegacy)
-	})
-
-	t.Run("legacy format with schema returns isLegacy=true", func(t *testing.T) {
-		t.Parallel()
-		input := `{
-			"$schema": "https://example.com/legacy.json",
-			"version": "1.0.0",
-			"servers": {"test": {"image": "test:latest"}}
-		}`
-		_, _, isLegacy, err := parseRegistryAutoDetect([]byte(input))
-		require.NoError(t, err)
-		assert.True(t, isLegacy)
-	})
-}
-
-// TestUpstreamRegistryParsing verifies that parseUpstreamRegistry correctly converts
+// TestUpstreamRegistryParsing verifies that parseRegistryData correctly converts
 // the embedded upstream catalog data.
 func TestUpstreamRegistryParsing(t *testing.T) {
 	t.Parallel()
 
-	registry, _, err := parseUpstreamRegistry(catalog.Upstream())
+	registry, _, err := parseRegistryData(catalog.Upstream())
 	require.NoError(t, err)
 
 	// Verify servers have names set (from conversion)
@@ -159,4 +56,94 @@ func TestUpstreamRegistryParsing(t *testing.T) {
 	for _, server := range registry.RemoteServers {
 		assert.NotEmpty(t, server.Name, "Remote server should have a name")
 	}
+}
+
+// TestParseRegistryData_LegacyFormatDetection verifies that legacy ToolHive
+// registry files are rejected with errLegacyFormat instead of silently
+// producing an empty UpstreamRegistry. Without this check, Go's JSON decoder
+// drops the legacy top-level "servers"/"remote_servers"/"groups" fields and
+// the caller ends up with an empty registry and no actionable error.
+func TestParseRegistryData_LegacyFormatDetection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		input      string
+		wantLegacy bool
+	}{
+		{
+			name: "legacy with top-level servers is rejected",
+			input: `{
+				"version": "1.0.0",
+				"servers": {"test": {"image": "test:latest"}}
+			}`,
+			wantLegacy: true,
+		},
+		{
+			name: "legacy with top-level remote_servers is rejected",
+			input: `{
+				"version": "1.0.0",
+				"remote_servers": {"test": {"url": "https://example.com"}}
+			}`,
+			wantLegacy: true,
+		},
+		{
+			name: "legacy with top-level groups is rejected",
+			input: `{
+				"version": "1.0.0",
+				"groups": [{"name": "g", "servers": {}}]
+			}`,
+			wantLegacy: true,
+		},
+		{
+			name: "legacy with $schema header is still detected",
+			input: `{
+				"$schema": "https://example.com/legacy.json",
+				"version": "1.0.0",
+				"servers": {"test": {"image": "test:latest"}}
+			}`,
+			wantLegacy: true,
+		},
+		{
+			name: "upstream format passes through",
+			input: `{
+				"$schema": "https://example.com/schema.json",
+				"version": "1.0.0",
+				"meta": {"last_updated": "2025-01-01T00:00:00Z"},
+				"data": {"servers": []}
+			}`,
+			wantLegacy: false,
+		},
+		{
+			name:       "empty object is not classified as legacy",
+			input:      `{}`,
+			wantLegacy: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := parseRegistryData([]byte(tt.input))
+			if tt.wantLegacy {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, errLegacyFormat)
+				assert.Contains(t, err.Error(), "thv registry convert")
+				return
+			}
+			assert.NotErrorIs(t, err, errLegacyFormat)
+		})
+	}
+}
+
+// TestParseRegistryData_MalformedJSON ensures input that's neither upstream
+// nor legacy and isn't valid JSON returns the unmarshal error path rather
+// than a misleading legacy-format hint.
+func TestParseRegistryData_MalformedJSON(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := parseRegistryData([]byte("not json"))
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errLegacyFormat)
+	assert.Contains(t, err.Error(), "failed to parse registry data")
 }

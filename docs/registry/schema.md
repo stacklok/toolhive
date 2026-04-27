@@ -11,36 +11,27 @@ ToolHive MCP server registry and how to use it for validation and development.
 >
 > The registry data in this repository is now automatically synchronized from the external registry.
 
-## Overview
+## Migrating from the legacy format
 
-The [`toolhive-legacy-registry.schema.json`](../../pkg/registry/data/toolhive-legacy-registry.schema.json) file provides comprehensive validation for the
-[`registry.json`](../../pkg/registry/data/registry.json) file structure. It
-ensures consistency, catches common errors, and serves as living documentation
-for contributors.
-
-This can also be used to validate a custom registry file to be used with the
-[`thv config set-registry-url`](../cli/thv_config_set-registry-url.md) command.
+The legacy ToolHive registry format is no longer accepted. Run
+`thv registry convert --in <file> --in-place` to migrate any custom registry
+JSON file to the upstream MCP format. The conversion is lossless: every
+ToolHive-specific field maps to a publisher-provided extension on the
+corresponding upstream server entry.
 
 ## Schema files
 
-ToolHive uses multiple JSON schemas for different purposes:
-
-### Legacy Registry Schema
-
-- **File**: [`pkg/registry/data/toolhive-legacy-registry.schema.json`](../../pkg/registry/data/toolhive-legacy-registry.schema.json)
-- **Schema ID**: `https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json`
-- **Purpose**: Validates the internal ToolHive registry format (`registry.json`)
+ToolHive consumes registries in the upstream MCP registry format. The schemas
+live in the [`toolhive-core`](https://github.com/stacklok/toolhive-core) module:
 
 ### Upstream Registry Schema
 
-- **File**: [`pkg/registry/data/upstream-registry.schema.json`](../../pkg/registry/data/upstream-registry.schema.json)
-- **Schema ID**: `https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json`
+- **Schema ID**: `https://raw.githubusercontent.com/stacklok/toolhive-core/main/registry/types/data/upstream-registry.schema.json`
 - **Purpose**: Validates registries using the upstream MCP server format. References the official MCP server schema.
 
 ### Publisher-Provided Extensions Schema
 
-- **File**: [`pkg/registry/data/publisher-provided.schema.json`](../../pkg/registry/data/publisher-provided.schema.json)
-- **Schema ID**: `https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/publisher-provided.schema.json`
+- **Schema ID**: `https://raw.githubusercontent.com/stacklok/toolhive-core/main/registry/types/data/publisher-provided.schema.json`
 - **Purpose**: Defines the structure of ToolHive-specific metadata placed under `_meta["io.modelcontextprotocol.registry/publisher-provided"]` in MCP server definitions
 
 The publisher-provided extensions schema allows ToolHive and other publishers to add custom metadata to MCP server definitions in the upstream registry format. This metadata is stored in the `_meta` object under the key `io.modelcontextprotocol.registry/publisher-provided`.
@@ -308,26 +299,21 @@ Or via pipx (cross-platform):
 pipx install check-jsonschema
 ```
 
-Validate the registry with full format validation:
+Validate a custom registry file against the upstream schema:
 
 ```bash
-# Run from the root of the repository
-check-jsonschema --schemafile pkg/registry/data/toolhive-legacy-registry.schema.json pkg/registry/data/registry.json
+check-jsonschema \
+  --schemafile https://raw.githubusercontent.com/stacklok/toolhive-core/main/registry/types/data/upstream-registry.schema.json \
+  path/to/registry.json
 ```
 
 #### Using ajv-cli
 
-Install ajv-cli and ajv-formats globally:
-
 ```bash
 npm install -g ajv-cli ajv-formats
-```
-
-Validate the registry with format validation:
-
-```bash
-# Run from the root of the repository
-ajv validate -c ajv-formats -s pkg/registry/data/toolhive-legacy-registry.schema.json -d pkg/registry/data/registry.json
+ajv validate -c ajv-formats \
+  -s upstream-registry.schema.json \
+  -d path/to/registry.json
 ```
 
 #### Using VS Code
@@ -337,7 +323,7 @@ to the top of any registry JSON file:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
+  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive-core/main/registry/types/data/upstream-registry.schema.json",
   ...
 }
 ```

@@ -61,7 +61,9 @@ type UpstreamTokens struct {
 	AccessToken  string //nolint:gosec // G117: field legitimately holds sensitive data
 	RefreshToken string //nolint:gosec // G117: field legitimately holds sensitive data
 	IDToken      string
-	ExpiresAt    time.Time
+	// ExpiresAt is when the access token expires. Zero value means the provider
+	// did not assert an expiry; callers must treat it as non-expiring.
+	ExpiresAt time.Time
 
 	// Security binding fields - validated on lookup to prevent cross-session attacks
 
@@ -81,9 +83,14 @@ type UpstreamTokens struct {
 }
 
 // IsExpired returns true if the access token has expired.
+// Returns true for nil receivers (treating nil tokens as expired).
+// Zero ExpiresAt means the provider did not assert an expiry; returns false.
 // The now parameter allows for deterministic testing.
 func (t *UpstreamTokens) IsExpired(now time.Time) bool {
-	return now.After(t.ExpiresAt)
+	if t == nil {
+		return true
+	}
+	return !t.ExpiresAt.IsZero() && now.After(t.ExpiresAt)
 }
 
 // User represents a user account in the authorization server.

@@ -35,7 +35,8 @@ type Tokens struct {
 	// IDToken is the ID token from the upstream IDP (for OIDC).
 	IDToken string
 
-	// ExpiresAt is when the access token expires.
+	// ExpiresAt is when the access token expires. Zero value means the provider
+	// did not assert an expiry; callers must treat it as non-expiring.
 	ExpiresAt time.Time
 }
 
@@ -51,6 +52,9 @@ func (t *Tokens) IsExpired() bool {
 func (t *Tokens) IsExpiredAt(now time.Time) bool {
 	if t == nil {
 		return true
+	}
+	if t.ExpiresAt.IsZero() {
+		return false
 	}
 	// Token is expired if it expires at or before (now + buffer)
 	// Using !After to include the equality case (expires exactly at boundary)

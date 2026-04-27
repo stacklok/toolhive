@@ -4,6 +4,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 
 	"github.com/atotto/clipboard"
@@ -203,7 +204,10 @@ func (m *Model) runFormSubmit() tea.Cmd {
 
 	m.runForm.running = true
 	m.blurAllRunFormFields()
-	return runFromRegistry(m.ctx, m.runForm.item, workloadName, secrets, envs)
+	// Use context.WithoutCancel so the workload outlives the TUI session if
+	// the user quits while the launch is in progress.
+	runCtx := context.WithoutCancel(m.ctx)
+	return runFromRegistry(runCtx, m.manager, m.runForm.item, workloadName, secrets, envs)
 }
 
 // clampRunFormScroll ensures the focused field is visible in the form overlay.

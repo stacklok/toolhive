@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/pkg/core"
@@ -41,6 +42,13 @@ type logStreamDoneMsg struct{}
 
 // tickMsg is sent by the periodic workload refresh ticker.
 type tickMsg time.Time
+
+// mcpClientReadyMsg is sent when the async MCP client connect completes.
+type mcpClientReadyMsg struct {
+	workloadName string
+	client       *mcpclient.Client
+	err          error
+}
 
 // toolsFetchedMsg is sent when the tools list is loaded from an MCP server.
 type toolsFetchedMsg struct {
@@ -238,6 +246,8 @@ func (m *Model) handleMsg(msg tea.Msg) (tea.Cmd, bool) {
 	case notifClearMsg:
 		m.notifMsg = ""
 		return nil, false
+	case mcpClientReadyMsg:
+		return m.handleMCPClientReady(msg), false
 	case toolsFetchedMsg:
 		m.handleToolsFetched(msg)
 	case registryLoadedMsg:
@@ -302,6 +312,27 @@ func (m *Model) handleProxyLogLine(msg proxyLogLineMsg) (tea.Cmd, bool) {
 		return readProxyLogLine(m.proxyLogCh), false
 	}
 	return nil, false
+}
+
+func (m *Model) handleMCPClientReady(msg mcpClientReadyMsg) tea.Cmd {
+	// Ignore if the user switched to a different workload while connecting.
+	if msg.workloadName != m.toolsFor {
+		if msg.client != nil {
+			_ = msg.client.Close()
+		}
+		return nil
+	}
+	if msg.err != nil {
+		m.toolsLoading = false
+		m.toolsErr = msg.err
+		return nil
+	}
+	m.mcpClient = msg.client
+	sel := m.selected()
+	if sel == nil {
+		return nil
+	}
+	return startToolsFetch(m.ctx, m.mcpClient, sel)
 }
 
 func (m *Model) handleToolsFetched(msg toolsFetchedMsg) {

@@ -387,21 +387,9 @@ func (m *Model) maybeStartToolsFetch() tea.Cmd {
 	m.tools = nil
 	m.toolsErr = nil
 
-	// Create and connect the MCP client if not already present.
+	// Connect the MCP client asynchronously if not already present.
 	if m.mcpClient == nil {
-		c, err := createMCPClient(sel)
-		if err != nil {
-			m.toolsLoading = false
-			m.toolsErr = err
-			return nil
-		}
-		if err := connectMCPClient(m.ctx, c); err != nil {
-			_ = c.Close()
-			m.toolsLoading = false
-			m.toolsErr = err
-			return nil
-		}
-		m.mcpClient = c
+		return startMCPClientConnect(m.ctx, sel)
 	}
 	return startToolsFetch(m.ctx, m.mcpClient, sel)
 }

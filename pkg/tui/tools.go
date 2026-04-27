@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 
+	tea "github.com/charmbracelet/bubbletea"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -48,6 +49,23 @@ func connectMCPClient(ctx context.Context, c *mcpclient.Client) error {
 		return fmt.Errorf("initialize MCP client: %w", err)
 	}
 	return nil
+}
+
+// startMCPClientConnect returns a tea.Cmd that creates and connects an MCP
+// client asynchronously, keeping the Update goroutine non-blocking.
+func startMCPClientConnect(ctx context.Context, w *core.Workload) tea.Cmd {
+	name := w.Name
+	return func() tea.Msg {
+		c, err := createMCPClient(w)
+		if err != nil {
+			return mcpClientReadyMsg{workloadName: name, err: err}
+		}
+		if err := connectMCPClient(ctx, c); err != nil {
+			_ = c.Close()
+			return mcpClientReadyMsg{workloadName: name, err: err}
+		}
+		return mcpClientReadyMsg{workloadName: name, client: c}
+	}
 }
 
 // fetchTools queries the MCP server for its tool list via an already-connected client.

@@ -12,10 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package oauth provides RFC-defined types and constants for OAuth 2.0 and OpenID Connect.
-// This package contains ONLY protocol-level definitions with no business logic.
-// It serves as a shared foundation for both OAuth clients (consumers) and servers (producers).
+// Package oauth provides RFC-defined types, constants, and grant-request
+// helpers shared between OAuth 2.0 and OpenID Connect consumers in this
+// repository. It contains two kinds of material:
+//
+//  1. Protocol-level definitions (well-known discovery paths, grant-type
+//     URNs, token-type URNs, discovery document types) used by both clients
+//     and servers.
+//  2. Grant-request primitives (the shared *http.Client default, NewFormRequest,
+//     DoTokenRequest, ParseTokenResponse, *oauth2.RetrieveError construction)
+//     consumed by grant packages such as pkg/auth/tokenexchange and future
+//     pkg/oauth/jwtbearer.
+//
+// The grant-request helpers are intentionally NOT routed through
+// pkg/networking's SSRF-protected client builder. Doing so would refuse
+// loopback and RFC 1918 dials, which would break httptest.NewServer-backed
+// tests and localhost-hosted IdPs (dex, Keycloak-in-Docker) that developers
+// rely on.
 package oauth
+
+import "time"
 
 // Well-known endpoint paths as defined by RFC 8414, OpenID Connect Discovery 1.0, and RFC 9728.
 const (
@@ -63,7 +79,7 @@ const (
 
 // Token type URNs as defined by RFC 8693.
 //
-//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
+//nolint:gosec // G101: these are RFC 8693 token-type URN identifiers, not credentials
 const (
 	// TokenTypeAccessToken indicates an OAuth 2.0 access token (RFC 8693 Section 3).
 	TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
@@ -77,8 +93,16 @@ const (
 
 // Grant type URNs for token exchange protocols.
 //
-//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
+//nolint:gosec // G101: this is an RFC 8693 grant-type URN identifier, not a credential
 const (
 	// GrantTypeTokenExchange is the OAuth 2.0 Token Exchange grant type (RFC 8693).
 	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+)
+
+// HTTP client and response-handling defaults used by the OAuth grant helpers
+// in this package (DoTokenRequest, ParseTokenResponse). Unexported: they are
+// implementation defaults shared between grants, not part of the public API.
+const (
+	defaultHTTPTimeout  = 30 * time.Second
+	maxResponseBodySize = 1 << 20 // 1 MiB — matches x/oauth2/internal/token.go.
 )

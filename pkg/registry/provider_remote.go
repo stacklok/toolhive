@@ -80,29 +80,13 @@ func (p *RemoteRegistryProvider) validateConnectivity() error {
 		return fmt.Errorf("failed to read registry response: %w", err)
 	}
 
-	// Try upstream format first, fall back to legacy
-	if isUpstreamFormat(data) {
-		var upstream types.UpstreamRegistry
-		if err := json.Unmarshal(data, &upstream); err != nil {
-			return fmt.Errorf("registry returned invalid upstream JSON from %s: %w", p.registryURL, err)
-		}
-		if len(upstream.Data.Servers) == 0 && len(upstream.Data.Groups) == 0 {
-			return fmt.Errorf("registry at %s returned upstream format with no servers or groups", p.registryURL)
-		}
-		return nil
+	var upstream types.UpstreamRegistry
+	if err := json.Unmarshal(data, &upstream); err != nil {
+		return fmt.Errorf("registry returned invalid upstream JSON from %s: %w", p.registryURL, err)
 	}
-
-	registry := &types.Registry{}
-	if err := json.Unmarshal(data, registry); err != nil {
-		return fmt.Errorf("registry returned invalid JSON from %s: %w", p.registryURL, err)
+	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Groups) == 0 {
+		return fmt.Errorf("registry at %s returned upstream format with no servers or groups", p.registryURL)
 	}
-
-	// Validate the registry has at least the required structure
-	if registry.Servers == nil && registry.RemoteServers == nil && registry.Groups == nil {
-		return fmt.Errorf("registry at %s returned invalid structure: "+
-			"missing servers, remote_servers, and groups fields", p.registryURL)
-	}
-
 	return nil
 }
 
@@ -140,16 +124,11 @@ func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
 		return nil, fmt.Errorf("failed to read registry data from response body: %w", err)
 	}
 
-	registry, skills, isLegacy, err := parseRegistryAutoDetect(data)
+	registry, skills, err := parseRegistryData(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse registry data from %s: %w", p.registryURL, err)
 	}
 	p.setSkills(skills)
-	if isLegacy {
-		slog.Warn("Remote registry uses legacy format; please migrate to the upstream MCP format. "+
-			"Legacy format support will be removed in a future release.",
-			"url", p.registryURL)
-	}
 
 	// Set name field on each server based on map key
 	for name, server := range registry.Servers {

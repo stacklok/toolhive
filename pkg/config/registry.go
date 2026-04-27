@@ -169,29 +169,13 @@ func isValidRegistryJSON(client *http.Client, url string) error {
 		return fmt.Errorf("%w: failed to read response body: %v", ErrRegistryValidationFailed, err)
 	}
 
-	// Try upstream format first
-	if isUpstreamRegistryFormat(data) {
-		var upstream registrytypes.UpstreamRegistry
-		if err := json.Unmarshal(data, &upstream); err != nil {
-			return fmt.Errorf("%w: invalid upstream JSON format: %v", ErrRegistryValidationFailed, err)
-		}
-		if len(upstream.Data.Servers) > 0 || len(upstream.Data.Groups) > 0 {
-			return nil
-		}
+	var upstream registrytypes.UpstreamRegistry
+	if err := json.Unmarshal(data, &upstream); err != nil {
+		return fmt.Errorf("%w: invalid upstream JSON format: %v", ErrRegistryValidationFailed, err)
+	}
+	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Groups) == 0 {
 		return fmt.Errorf("%w: upstream registry contains no servers", ErrRegistryValidationFailed)
 	}
-
-	// Fall back to legacy format
-	registry := &registrytypes.Registry{}
-	if err := json.Unmarshal(data, registry); err != nil {
-		return fmt.Errorf("%w: invalid JSON format: %v", ErrRegistryValidationFailed, err)
-	}
-
-	// Verify registry contains at least one server (in top-level or groups)
-	if !registryHasServers(registry) {
-		return fmt.Errorf("%w: registry contains no servers", ErrRegistryValidationFailed)
-	}
-
 	return nil
 }
 
@@ -334,42 +318,8 @@ func setRegistryFile(provider Provider, registryPath string) error {
 	return nil
 }
 
-// isUpstreamRegistryFormat returns true if the JSON data appears to be in the
-// upstream MCP registry format. The key discriminator is the "data" wrapper
-// object — only the upstream format wraps servers inside it.
-// NOTE: keep in sync with isUpstreamFormat in pkg/registry/upstream_parser.go
-// (duplicated to avoid a circular import).
-func isUpstreamRegistryFormat(data []byte) bool {
-	var probe struct {
-		Data json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return false
-	}
-	// The "data" wrapper object is unique to the upstream format.
-	return len(probe.Data) > 0 && probe.Data[0] == '{'
-}
-
-// registryHasServers checks if a registry contains at least one server
-// (either in top-level servers/remote_servers or within groups)
-func registryHasServers(registry *registrytypes.Registry) bool {
-	// Check top-level servers
-	if len(registry.Servers) > 0 || len(registry.RemoteServers) > 0 {
-		return true
-	}
-
-	// Check servers within groups
-	for _, group := range registry.Groups {
-		if group != nil && (len(group.Servers) > 0 || len(group.RemoteServers) > 0) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// validateRegistryFileStructure checks if a file contains valid ToolHive registry structure
-// by parsing it into the actual Registry type. Accepts both upstream and legacy formats.
+// validateRegistryFileStructure checks if a file contains a valid upstream MCP
+// registry structure by parsing it into the UpstreamRegistry type.
 func validateRegistryFileStructure(path string) error {
 	// Read file content
 	// #nosec G304: File path is user-provided but validated by caller
@@ -378,29 +328,13 @@ func validateRegistryFileStructure(path string) error {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
 
-	// Try upstream format first
-	if isUpstreamRegistryFormat(data) {
-		var upstream registrytypes.UpstreamRegistry
-		if err := json.Unmarshal(data, &upstream); err != nil {
-			return fmt.Errorf("invalid upstream registry format: %w", err)
-		}
-		if len(upstream.Data.Servers) > 0 || len(upstream.Data.Groups) > 0 {
-			return nil
-		}
+	var upstream registrytypes.UpstreamRegistry
+	if err := json.Unmarshal(data, &upstream); err != nil {
+		return fmt.Errorf("invalid upstream registry format: %w", err)
+	}
+	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Groups) == 0 {
 		return fmt.Errorf("upstream registry contains no servers or groups")
 	}
-
-	// Fall back to legacy format
-	registry := &registrytypes.Registry{}
-	if err := json.Unmarshal(data, registry); err != nil {
-		return fmt.Errorf("invalid registry format: %w", err)
-	}
-
-	// Verify registry contains at least one server (in top-level or groups)
-	if !registryHasServers(registry) {
-		return fmt.Errorf("registry contains no servers (expected at least one server in 'servers', 'remote_servers', or 'groups')")
-	}
-
 	return nil
 }
 

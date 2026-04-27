@@ -1252,6 +1252,68 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 	}
 }
 
+// TestToolFilterWriter_WriteHeader verifies that Content-Length is stripped
+// from the underlying ResponseWriter's headers regardless of content type.
+// The middleware re-encodes tool list responses to apply filters/overrides,
+// which changes the body size; without this strip, net/http rejects the
+// rewritten body with "http: wrote more than the declared Content-Length"
+// and the client receives only the headers. Regression guard for #5075.
+func TestToolFilterWriter_WriteHeader(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		initialHeaders http.Header
+		statusCode     int
+	}{
+		{
+			name: "application/json with Content-Length is stripped",
+			initialHeaders: http.Header{
+				"Content-Type":   []string{"application/json"},
+				"Content-Length": []string{"123"},
+			},
+			statusCode: http.StatusOK,
+		},
+		{
+			name: "text/event-stream with Content-Length is stripped",
+			initialHeaders: http.Header{
+				"Content-Type":   []string{"text/event-stream"},
+				"Content-Length": []string{"14743"},
+			},
+			statusCode: http.StatusOK,
+		},
+		{
+			name: "no Content-Length leaves headers unchanged",
+			initialHeaders: http.Header{
+				"Content-Type": []string{"application/json"},
+			},
+			statusCode: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockWriter := &mockResponseWriter{
+				headers: tt.initialHeaders.Clone(),
+				buffer:  &bytes.Buffer{},
+			}
+			rw := &toolFilterWriter{ResponseWriter: mockWriter}
+
+			rw.WriteHeader(tt.statusCode)
+
+			assert.Equal(t, tt.statusCode, mockWriter.statusCode, "status code should pass through")
+			assert.Empty(t, mockWriter.headers.Get("Content-Length"), "Content-Length must be stripped")
+			// Other headers must survive — only Content-Length is removed.
+			assert.Equal(t,
+				tt.initialHeaders.Get("Content-Type"),
+				mockWriter.headers.Get("Content-Type"),
+				"Content-Type must be preserved")
+		})
+	}
+}
+
 // mockResponseWriter implements http.ResponseWriter for testing
 type mockResponseWriter struct {
 	headers    http.Header

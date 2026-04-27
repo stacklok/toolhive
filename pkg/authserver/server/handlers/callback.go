@@ -127,16 +127,25 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
 	}
 
-	// Convert IDP tokens to storage tokens with binding fields
+	// Convert IDP tokens to storage tokens with binding fields.
+	// SessionExpiresAt is only set for non-expiring upstream tokens (zero ExpiresAt).
+	// It bounds the storage lifetime to the Fosite session so tokens are evicted when
+	// the session is no longer live. For tokens with a provider-asserted ExpiresAt, the
+	// storage TTL is derived directly from that expiry and SessionExpiresAt is unused.
+	var sessionExpiresAt time.Time
+	if idpTokens.ExpiresAt.IsZero() {
+		sessionExpiresAt = time.Now().Add(h.config.RefreshTokenLifespan)
+	}
 	storageTokens := &storage.UpstreamTokens{
-		ProviderID:      providerID,
-		AccessToken:     idpTokens.AccessToken,
-		RefreshToken:    idpTokens.RefreshToken,
-		IDToken:         idpTokens.IDToken,
-		ExpiresAt:       idpTokens.ExpiresAt,
-		ClientID:        pending.ClientID,
-		UserID:          subject,         // Internal ToolHive user ID
-		UpstreamSubject: providerSubject, // Upstream IDP's subject claim
+		ProviderID:       providerID,
+		AccessToken:      idpTokens.AccessToken,
+		RefreshToken:     idpTokens.RefreshToken,
+		IDToken:          idpTokens.IDToken,
+		ExpiresAt:        idpTokens.ExpiresAt,
+		SessionExpiresAt: sessionExpiresAt,
+		ClientID:         pending.ClientID,
+		UserID:           subject,         // Internal ToolHive user ID
+		UpstreamSubject:  providerSubject, // Upstream IDP's subject claim
 	}
 
 	if err := h.storage.StoreUpstreamTokens(ctx, sessionID, providerID, storageTokens); err != nil {

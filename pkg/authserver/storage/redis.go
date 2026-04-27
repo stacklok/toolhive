@@ -793,15 +793,19 @@ func (s *RedisStorage) DeletePKCERequestSession(ctx context.Context, signature s
 // -----------------------
 
 // storedUpstreamTokens is a serializable wrapper for UpstreamTokens.
+// Time fields use int64 Unix epoch; 0 is the sentinel meaning "not set".
+// Neither time field uses omitempty so that 0 is always present and the
+// read path can use a consistent != 0 check for both.
 type storedUpstreamTokens struct {
-	ProviderID      string `json:"provider_id"`
-	AccessToken     string `json:"access_token"`  //nolint:gosec // G117: field legitimately holds sensitive data
-	RefreshToken    string `json:"refresh_token"` //nolint:gosec // G117: field legitimately holds sensitive data
-	IDToken         string `json:"id_token"`
-	ExpiresAt       int64  `json:"expires_at"`
-	UserID          string `json:"user_id"`
-	UpstreamSubject string `json:"upstream_subject"`
-	ClientID        string `json:"client_id"`
+	ProviderID       string `json:"provider_id"`
+	AccessToken      string `json:"access_token"`  //nolint:gosec // G117: field legitimately holds sensitive data
+	RefreshToken     string `json:"refresh_token"` //nolint:gosec // G117: field legitimately holds sensitive data
+	IDToken          string `json:"id_token"`
+	ExpiresAt        int64  `json:"expires_at"`
+	SessionExpiresAt int64  `json:"session_expires_at"`
+	UserID           string `json:"user_id"`
+	UpstreamSubject  string `json:"upstream_subject"`
+	ClientID         string `json:"client_id"`
 }
 
 // storeUpstreamTokensScript atomically reads the existing UserID, writes new token
@@ -875,15 +879,21 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 		expiresAtUnix = tokens.ExpiresAt.Unix()
 	}
 
+	var sessionExpiresAtUnix int64
+	if !tokens.SessionExpiresAt.IsZero() {
+		sessionExpiresAtUnix = tokens.SessionExpiresAt.Unix()
+	}
+
 	stored := storedUpstreamTokens{
-		ProviderID:      tokens.ProviderID,
-		AccessToken:     tokens.AccessToken,
-		RefreshToken:    tokens.RefreshToken,
-		IDToken:         tokens.IDToken,
-		ExpiresAt:       expiresAtUnix,
-		UserID:          tokens.UserID,
-		UpstreamSubject: tokens.UpstreamSubject,
-		ClientID:        tokens.ClientID,
+		ProviderID:       tokens.ProviderID,
+		AccessToken:      tokens.AccessToken,
+		RefreshToken:     tokens.RefreshToken,
+		IDToken:          tokens.IDToken,
+		ExpiresAt:        expiresAtUnix,
+		SessionExpiresAt: sessionExpiresAtUnix,
+		UserID:           tokens.UserID,
+		UpstreamSubject:  tokens.UpstreamSubject,
+		ClientID:         tokens.ClientID,
 	}
 
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
@@ -895,11 +905,18 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 	// survives in storage for transparent token refresh by the middleware.
 	// Zero ExpiresAt means the token never expires; return ttl=0 so the Lua script
 	// stores the key without a Redis TTL.
-	var ttl time.Duration // zero means no Redis TTL (non-expiring token)
+	var ttl time.Duration // zero means no Redis TTL (non-expiring token with no known session bound)
 	if !tokens.ExpiresAt.IsZero() {
 		ttl = time.Until(tokens.ExpiresAt) + DefaultRefreshTokenTTL
-		if ttl < 0 {
-			ttl = DefaultRefreshTokenTTL
+		if ttl <= 0 {
+			// Access token and its refresh grace period have both passed — evict promptly.
+			ttl = time.Second
+		}
+	} else if !tokens.SessionExpiresAt.IsZero() {
+		ttl = time.Until(tokens.SessionExpiresAt) + DefaultRefreshTokenTTL
+		if ttl <= 0 {
+			// Session bound and its refresh grace period have both passed — evict promptly.
+			ttl = time.Second
 		}
 	}
 
@@ -1111,15 +1128,21 @@ func unmarshalUpstreamTokens(data []byte) (*UpstreamTokens, error) {
 		expired = time.Now().After(expiresAt)
 	}
 
+	var sessionExpiresAt time.Time
+	if stored.SessionExpiresAt != 0 {
+		sessionExpiresAt = time.Unix(stored.SessionExpiresAt, 0)
+	}
+
 	tokens := &UpstreamTokens{
-		ProviderID:      stored.ProviderID,
-		AccessToken:     stored.AccessToken,
-		RefreshToken:    stored.RefreshToken,
-		IDToken:         stored.IDToken,
-		ExpiresAt:       expiresAt,
-		UserID:          stored.UserID,
-		UpstreamSubject: stored.UpstreamSubject,
-		ClientID:        stored.ClientID,
+		ProviderID:       stored.ProviderID,
+		AccessToken:      stored.AccessToken,
+		RefreshToken:     stored.RefreshToken,
+		IDToken:          stored.IDToken,
+		ExpiresAt:        expiresAt,
+		SessionExpiresAt: sessionExpiresAt,
+		UserID:           stored.UserID,
+		UpstreamSubject:  stored.UpstreamSubject,
+		ClientID:         stored.ClientID,
 	}
 
 	// Return tokens along with ErrExpired so callers can use the refresh token

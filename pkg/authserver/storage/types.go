@@ -64,6 +64,10 @@ type UpstreamTokens struct {
 	// ExpiresAt is when the access token expires. Zero value means the provider
 	// did not assert an expiry; callers must treat it as non-expiring.
 	ExpiresAt time.Time
+	// SessionExpiresAt is the Fosite session expiry time. When set and ExpiresAt is
+	// zero (non-expiring upstream token), storage backends use this as the maximum
+	// storage lifetime so tokens are evicted when the session is no longer live.
+	SessionExpiresAt time.Time
 
 	// Security binding fields - validated on lookup to prevent cross-session attacks
 
@@ -86,6 +90,10 @@ type UpstreamTokens struct {
 // Returns true for nil receivers (treating nil tokens as expired).
 // Zero ExpiresAt means the provider did not assert an expiry; returns false.
 // The now parameter allows for deterministic testing.
+//
+// This method is intended for storage eviction decisions only — it checks exact
+// expiry with no preemptive buffer. For "should I refresh before using?" decisions,
+// use upstream.Tokens.IsExpiredAt which includes a preemptive buffer window.
 func (t *UpstreamTokens) IsExpired(now time.Time) bool {
 	if t == nil {
 		return true

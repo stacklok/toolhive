@@ -690,6 +690,34 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 		})
 	})
 
+	t.Run("non-expiring token with SessionExpiresAt gets proper Redis TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			sessionExpiry := time.Now().Add(time.Hour)
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-bound", "github", &UpstreamTokens{
+				AccessToken:      "pat-token",
+				ProviderID:       "github",
+				SessionExpiresAt: sessionExpiry,
+			}))
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "sess-bound", "github")
+			require.NoError(t, err)
+			require.NotNil(t, retrieved)
+			assert.Equal(t, "pat-token", retrieved.AccessToken)
+			assert.True(t, retrieved.ExpiresAt.IsZero(), "ExpiresAt must remain zero for non-expiring token")
+			// Assert field survives JSON round-trip (Unix truncation → 1s tolerance).
+			// RefreshAndStore carries SessionExpiresAt forward; silent zeroing here
+			// would cause every token refresh to lose the session bound.
+			assert.WithinDuration(t, sessionExpiry, retrieved.SessionExpiresAt, time.Second,
+				"SessionExpiresAt must survive Store→Get round-trip")
+
+			// Fast-forward past SessionExpiresAt + DefaultRefreshTokenTTL
+			mr.FastForward(time.Hour + DefaultRefreshTokenTTL + time.Second)
+
+			_, err = s.GetUpstreamTokens(ctx, "sess-bound", "github")
+			requireRedisNotFoundError(t, err)
+		})
+	})
+
 	t.Run("nil tokens is valid", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-id", "provider-a", nil))

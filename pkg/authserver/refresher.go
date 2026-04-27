@@ -59,14 +59,15 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 
 	// Build updated storage tokens preserving binding fields from the original
 	updated := &storage.UpstreamTokens{
-		ProviderID:      expired.ProviderID,
-		AccessToken:     newTokens.AccessToken,
-		RefreshToken:    newTokens.RefreshToken,
-		IDToken:         newTokens.IDToken,
-		ExpiresAt:       newTokens.ExpiresAt,
-		UserID:          expired.UserID,
-		UpstreamSubject: expired.UpstreamSubject,
-		ClientID:        expired.ClientID,
+		ProviderID:       expired.ProviderID,
+		AccessToken:      newTokens.AccessToken,
+		RefreshToken:     newTokens.RefreshToken,
+		IDToken:          newTokens.IDToken,
+		ExpiresAt:        newTokens.ExpiresAt,
+		SessionExpiresAt: expired.SessionExpiresAt,
+		UserID:           expired.UserID,
+		UpstreamSubject:  expired.UpstreamSubject,
+		ClientID:         expired.ClientID,
 	}
 
 	// If the provider didn't rotate the refresh token, keep the original

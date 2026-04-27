@@ -846,6 +846,38 @@ func TestMemoryStorage_CleanupExpired(t *testing.T) {
 		})
 	})
 
+	t.Run("non-expiring token with SessionExpiresAt is evicted after session bound passes", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.StoreUpstreamTokens(ctx, "sess-1", "github", &UpstreamTokens{
+				AccessToken:      "pat-token",
+				SessionExpiresAt: time.Now().Add(-DefaultRefreshTokenTTL - time.Second),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, 1, s.Stats().UpstreamTokens)
+
+			s.cleanupExpired()
+
+			assert.Equal(t, 0, s.Stats().UpstreamTokens)
+			_, getErr := s.GetUpstreamTokens(ctx, "sess-1", "github")
+			requireNotFoundError(t, getErr)
+		})
+	})
+
+	t.Run("non-expiring token with future SessionExpiresAt is kept", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.StoreUpstreamTokens(ctx, "sess-2", "github", &UpstreamTokens{
+				AccessToken:      "pat-token",
+				SessionExpiresAt: time.Now().Add(time.Hour),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, 1, s.Stats().UpstreamTokens)
+
+			s.cleanupExpired()
+
+			assert.Equal(t, 1, s.Stats().UpstreamTokens)
+		})
+	})
+
 	t.Run("cleanup expired invalidated codes", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			request := newMockRequesterWithExpiration("req-1", client, fosite.AuthorizeCode, time.Now().Add(time.Hour))

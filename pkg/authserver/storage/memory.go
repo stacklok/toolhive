@@ -222,6 +222,10 @@ func (s *MemoryStorage) cleanupExpired() {
 
 	var expiredUpstreamTokens []upstreamKey
 	for k, v := range s.upstreamTokens {
+		// Zero expiresAt is the sentinel for "no TTL" (non-expiring token with no session
+		// bound). Other entry types never use zero expiresAt, so only upstream tokens need
+		// this guard — without it, time.Time{} would compare as before any real time and
+		// every non-expiring token would be swept on the next tick.
 		if !v.expiresAt.IsZero() && now.After(v.expiresAt) {
 			expiredUpstreamTokens = append(expiredUpstreamTokens, k)
 		}
@@ -712,21 +716,25 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 		if !tokens.ExpiresAt.IsZero() {
 			return tokens.ExpiresAt.Add(DefaultRefreshTokenTTL)
 		}
-		return time.Time{} // non-expiring token
+		if !tokens.SessionExpiresAt.IsZero() {
+			return tokens.SessionExpiresAt.Add(DefaultRefreshTokenTTL)
+		}
+		return time.Time{} // non-expiring token with no known session bound
 	}()
 
 	// Make a defensive copy to prevent aliasing issues
 	var tokensCopy *UpstreamTokens
 	if tokens != nil {
 		tokensCopy = &UpstreamTokens{
-			ProviderID:      tokens.ProviderID,
-			AccessToken:     tokens.AccessToken,
-			RefreshToken:    tokens.RefreshToken,
-			IDToken:         tokens.IDToken,
-			ExpiresAt:       tokens.ExpiresAt,
-			UserID:          tokens.UserID,
-			UpstreamSubject: tokens.UpstreamSubject,
-			ClientID:        tokens.ClientID,
+			ProviderID:       tokens.ProviderID,
+			AccessToken:      tokens.AccessToken,
+			RefreshToken:     tokens.RefreshToken,
+			IDToken:          tokens.IDToken,
+			ExpiresAt:        tokens.ExpiresAt,
+			SessionExpiresAt: tokens.SessionExpiresAt,
+			UserID:           tokens.UserID,
+			UpstreamSubject:  tokens.UpstreamSubject,
+			ClientID:         tokens.ClientID,
 		}
 	}
 
@@ -763,14 +771,15 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, provider
 		return nil, nil
 	}
 	result := &UpstreamTokens{
-		ProviderID:      tokens.ProviderID,
-		AccessToken:     tokens.AccessToken,
-		RefreshToken:    tokens.RefreshToken,
-		IDToken:         tokens.IDToken,
-		ExpiresAt:       tokens.ExpiresAt,
-		UserID:          tokens.UserID,
-		UpstreamSubject: tokens.UpstreamSubject,
-		ClientID:        tokens.ClientID,
+		ProviderID:       tokens.ProviderID,
+		AccessToken:      tokens.AccessToken,
+		RefreshToken:     tokens.RefreshToken,
+		IDToken:          tokens.IDToken,
+		ExpiresAt:        tokens.ExpiresAt,
+		SessionExpiresAt: tokens.SessionExpiresAt,
+		UserID:           tokens.UserID,
+		UpstreamSubject:  tokens.UpstreamSubject,
+		ClientID:         tokens.ClientID,
 	}
 
 	// Check the token's own ExpiresAt (access token expiry), not the entry's expiresAt
@@ -804,14 +813,15 @@ func (s *MemoryStorage) GetAllUpstreamTokens(_ context.Context, sessionID string
 		}
 		// Defensive copy
 		result[key.providerName] = &UpstreamTokens{
-			ProviderID:      tokens.ProviderID,
-			AccessToken:     tokens.AccessToken,
-			RefreshToken:    tokens.RefreshToken,
-			IDToken:         tokens.IDToken,
-			ExpiresAt:       tokens.ExpiresAt,
-			UserID:          tokens.UserID,
-			UpstreamSubject: tokens.UpstreamSubject,
-			ClientID:        tokens.ClientID,
+			ProviderID:       tokens.ProviderID,
+			AccessToken:      tokens.AccessToken,
+			RefreshToken:     tokens.RefreshToken,
+			IDToken:          tokens.IDToken,
+			ExpiresAt:        tokens.ExpiresAt,
+			SessionExpiresAt: tokens.SessionExpiresAt,
+			UserID:           tokens.UserID,
+			UpstreamSubject:  tokens.UpstreamSubject,
+			ClientID:         tokens.ClientID,
 		}
 	}
 

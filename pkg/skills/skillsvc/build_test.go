@@ -83,12 +83,13 @@ func TestBuild(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		opts     skills.BuildOptions
-		setup    func(*gomock.Controller) (ociskills.SkillPackager, *ociskills.Store)
-		wantCode int
-		wantRef  string
-		wantErr  string
+		name      string
+		opts      skills.BuildOptions
+		setup     func(*gomock.Controller) (ociskills.SkillPackager, *ociskills.Store)
+		wantCode  int
+		wantRef   string
+		wantErr   string
+		wantErrIs error
 	}{
 		{
 			name: "nil packager returns 500",
@@ -157,6 +158,76 @@ func TestBuild(t *testing.T) {
 				return p, ociStore
 			},
 			wantErr: "packaging skill",
+		},
+		{
+			name: "missing SKILL.md returns 400",
+			opts: skills.BuildOptions{Path: "/some/dir"},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				p := ocimocks.NewMockSkillPackager(ctrl)
+				p.EXPECT().Package(gomock.Any(), "/some/dir", gomock.Any()).
+					Return(nil, fmt.Errorf("reading skill directory: %w", ociskills.ErrSkillMDMissing))
+				return p, ociStore
+			},
+			wantCode:  http.StatusBadRequest,
+			wantErrIs: ociskills.ErrSkillMDMissing,
+		},
+		{
+			name: "invalid frontmatter returns 400",
+			opts: skills.BuildOptions{Path: "/some/dir"},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				p := ocimocks.NewMockSkillPackager(ctrl)
+				p.EXPECT().Package(gomock.Any(), "/some/dir", gomock.Any()).
+					Return(nil, fmt.Errorf("parsing frontmatter YAML: %w", ociskills.ErrInvalidFrontmatter))
+				return p, ociStore
+			},
+			wantCode:  http.StatusBadRequest,
+			wantErrIs: ociskills.ErrInvalidFrontmatter,
+		},
+		{
+			name: "empty name in frontmatter returns 400",
+			opts: skills.BuildOptions{Path: "/some/dir"},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				p := ocimocks.NewMockSkillPackager(ctrl)
+				p.EXPECT().Package(gomock.Any(), "/some/dir", gomock.Any()).
+					Return(nil, fmt.Errorf("skill name is required in SKILL.md frontmatter: %w", ociskills.ErrInvalidFrontmatter))
+				return p, ociStore
+			},
+			wantCode:  http.StatusBadRequest,
+			wantErrIs: ociskills.ErrInvalidFrontmatter,
+		},
+		{
+			name: "symlink in skill dir returns 400",
+			opts: skills.BuildOptions{Path: "/some/dir"},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				p := ocimocks.NewMockSkillPackager(ctrl)
+				p.EXPECT().Package(gomock.Any(), "/some/dir", gomock.Any()).
+					Return(nil, fmt.Errorf("symlinks not allowed in skill directory: sub/link: %w", ociskills.ErrInvalidSkillFile))
+				return p, ociStore
+			},
+			wantCode:  http.StatusBadRequest,
+			wantErrIs: ociskills.ErrInvalidSkillFile,
+		},
+		{
+			name: "oversized dir returns 400",
+			opts: skills.BuildOptions{Path: "/some/dir"},
+			setup: func(ctrl *gomock.Controller) (ociskills.SkillPackager, *ociskills.Store) {
+				ociStore, err := ociskills.NewStore(t.TempDir())
+				require.NoError(t, err)
+				p := ocimocks.NewMockSkillPackager(ctrl)
+				p.EXPECT().Package(gomock.Any(), "/some/dir", gomock.Any()).
+					Return(nil, fmt.Errorf("skill directory exceeds maximum total size: %w", ociskills.ErrSkillTooLarge))
+				return p, ociStore
+			},
+			wantCode:  http.StatusBadRequest,
+			wantErrIs: ociskills.ErrSkillTooLarge,
 		},
 		{
 			name: "successful build with explicit tag",
@@ -243,6 +314,9 @@ func TestBuild(t *testing.T) {
 			if tt.wantCode != 0 {
 				require.Error(t, err)
 				assert.Equal(t, tt.wantCode, httperr.Code(err))
+				if tt.wantErrIs != nil {
+					assert.ErrorIs(t, err, tt.wantErrIs)
+				}
 				return
 			}
 			if tt.wantErr != "" {

@@ -9,8 +9,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+
 	"github.com/stacklok/toolhive/pkg/registry"
 )
 

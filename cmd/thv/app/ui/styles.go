@@ -99,6 +99,8 @@ func RenderStatusDot(status rt.WorkloadStatus) string {
 		return dotWarning
 	case rt.WorkloadStatusRemoving:
 		return dotWarning
+	case rt.WorkloadStatusPolicyStopped:
+		return dotStopped
 	case rt.WorkloadStatusUnknown:
 		return dotStopped
 	}
@@ -126,6 +128,8 @@ func RenderStatusPill(status rt.WorkloadStatus) string {
 		return pillUnknown
 	case rt.WorkloadStatusUnauthenticated:
 		return pillUnauthed
+	case rt.WorkloadStatusPolicyStopped:
+		return pillStopped
 	default:
 		return pillUnknown
 	}

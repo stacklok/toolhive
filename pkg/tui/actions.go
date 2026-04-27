@@ -105,6 +105,41 @@ func runFromRegistry(
 	}
 }
 
+// validateAndMergeEnvVars validates that no key contains '=' and merges
+// secrets and env vars into a single map for the run config builder.
+func validateAndMergeEnvVars(secrets, envs map[string]string) (map[string]string, error) {
+	for k := range secrets {
+		if strings.ContainsRune(k, '=') {
+			return nil, fmt.Errorf("invalid secret name %q: must not contain '='", k)
+		}
+	}
+	for k := range envs {
+		if strings.ContainsRune(k, '=') {
+			return nil, fmt.Errorf("invalid env var name %q: must not contain '='", k)
+		}
+	}
+	merged := make(map[string]string, len(secrets)+len(envs))
+	for k, v := range secrets {
+		merged[k] = v
+	}
+	for k, v := range envs {
+		merged[k] = v
+	}
+	return merged, nil
+}
+
+// permissionProfileName extracts the permission profile name from ImageMetadata,
+// returning "" if none is set or the name is "none".
+func permissionProfileName(img *regtypes.ImageMetadata) string {
+	if img == nil || img.Permissions == nil {
+		return ""
+	}
+	if name := img.Permissions.Name; name != "" && name != "none" {
+		return name
+	}
+	return ""
+}
+
 // buildRunConfigFromRegistry constructs a runner.RunConfig from the registry
 // metadata and the form field values. It mirrors the logic in
 // cmd/thv/app/run_flags.go BuildRunnerConfig but only for the subset of
@@ -117,27 +152,9 @@ func buildRunConfigFromRegistry(
 ) (*runner.RunConfig, error) {
 	serverName := item.GetName()
 
-	// Validate env var / secret key names.
-	for k := range secrets {
-		if strings.ContainsRune(k, '=') {
-			return nil, fmt.Errorf("invalid secret name %q: must not contain '='", k)
-		}
-	}
-	for k := range envs {
-		if strings.ContainsRune(k, '=') {
-			return nil, fmt.Errorf("invalid env var name %q: must not contain '='", k)
-		}
-	}
-
-	// Merge secrets and explicit env vars into a single map.  The user
-	// entered actual values into the form, so they go into EnvVars directly
-	// (not the --secret flow which references the secrets manager).
-	mergedEnvVars := make(map[string]string, len(secrets)+len(envs))
-	for k, v := range secrets {
-		mergedEnvVars[k] = v
-	}
-	for k, v := range envs {
-		mergedEnvVars[k] = v
+	mergedEnvVars, err := validateAndMergeEnvVars(secrets, envs)
+	if err != nil {
+		return nil, err
 	}
 
 	// Extract ImageMetadata if available (needed for the builder).
@@ -159,14 +176,6 @@ func buildRunConfigFromRegistry(
 		transportType = "streamable-http"
 	}
 
-	// Determine the permission profile name from ImageMetadata.
-	var permissionProfile string
-	if imageMetadata != nil && imageMetadata.Permissions != nil {
-		if name := imageMetadata.Permissions.Name; name != "" && name != "none" {
-			permissionProfile = name
-		}
-	}
-
 	// Load application config for registry source URLs.
 	configProvider := cfg.NewProvider()
 	appConfig, loadErr := configProvider.LoadOrCreateConfig()
@@ -176,25 +185,20 @@ func buildRunConfigFromRegistry(
 	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, appConfig)
 	regServerName := runner.ResolveRegistryServerName(serverMetadata)
 
-	opts := []runner.RunConfigBuilderOption{
-		runner.WithName(workloadName),
-		runner.WithImage(imageURL),
-		runner.WithHost(transport.LocalhostIPv4),
-		runner.WithTargetHost(transport.LocalhostIPv4),
-		runner.WithTransportAndPorts(transportType, 0 /* proxyPort */, 0 /* targetPort */),
-		runner.WithPermissionProfileNameOrPath(permissionProfile),
-		runner.WithGroup("default"),
-		runner.WithRegistrySourceURLs(regAPIURL, regURL),
-		runner.WithRegistryServerName(regServerName),
-	}
-
-	// Use DetachedEnvVarValidator since the TUI cannot prompt interactively.
 	runConfig, err := runner.NewRunConfigBuilder(
 		ctx,
 		imageMetadata,
 		mergedEnvVars,
 		&runner.DetachedEnvVarValidator{},
-		opts...,
+		runner.WithName(workloadName),
+		runner.WithImage(imageURL),
+		runner.WithHost(transport.LocalhostIPv4),
+		runner.WithTargetHost(transport.LocalhostIPv4),
+		runner.WithTransportAndPorts(transportType, 0 /* proxyPort */, 0 /* targetPort */),
+		runner.WithPermissionProfileNameOrPath(permissionProfileName(imageMetadata)),
+		runner.WithGroup("default"),
+		runner.WithRegistrySourceURLs(regAPIURL, regURL),
+		runner.WithRegistryServerName(regServerName),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build run config: %w", err)

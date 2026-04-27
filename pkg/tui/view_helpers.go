@@ -180,7 +180,8 @@ func countStatuses(list []core.Workload) (running, stopped int) {
 		case rt.WorkloadStatusRunning, rt.WorkloadStatusUnauthenticated, rt.WorkloadStatusUnhealthy:
 			running++
 		case rt.WorkloadStatusStopped, rt.WorkloadStatusError, rt.WorkloadStatusStarting,
-			rt.WorkloadStatusStopping, rt.WorkloadStatusRemoving, rt.WorkloadStatusUnknown:
+			rt.WorkloadStatusStopping, rt.WorkloadStatusRemoving, rt.WorkloadStatusUnknown,
+			rt.WorkloadStatusPolicyStopped:
 			stopped++
 		}
 	}

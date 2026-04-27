@@ -7,10 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestSanitizeRegistryName(t *testing.T) {

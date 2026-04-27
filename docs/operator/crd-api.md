@@ -2686,7 +2686,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `usernameSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | UsernameSecretRef references a Secret containing the Redis ACL username. |  | Required: \{\} <br /> |
+| `usernameSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | UsernameSecretRef references a Secret containing the Redis ACL username.<br />When omitted, connections use legacy password-only AUTH. Omit for managed<br />Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard<br />HA, Azure Cache for Redis). Set for services that support ACL users (e.g. AWS<br />ElastiCache non-cluster with Redis 6+ RBAC). |  | Optional: \{\} <br /> |
 | `passwordSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PasswordSecretRef references a Secret containing the Redis ACL password. |  | Required: \{\} <br /> |
 
 
@@ -2714,7 +2714,7 @@ _Appears in:_
 
 
 RedisStorageConfig configures Redis connection for auth server storage.
-Redis is deployed in Sentinel mode with ACL user authentication (the only supported configuration).
+Exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set.
 
 
 
@@ -2723,13 +2723,14 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `sentinelConfig` _[api.v1beta1.RedisSentinelConfig](#apiv1beta1redissentinelconfig)_ | SentinelConfig holds Redis Sentinel configuration. |  | Required: \{\} <br /> |
+| `addr` _string_ | Addr is the Redis server address for standalone mode (e.g., "host:port").<br />Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present<br />a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig. |  | Optional: \{\} <br /> |
+| `sentinelConfig` _[api.v1beta1.RedisSentinelConfig](#apiv1beta1redissentinelconfig)_ | SentinelConfig holds Redis Sentinel configuration.<br />Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr. |  | Optional: \{\} <br /> |
 | `aclUserConfig` _[api.v1beta1.RedisACLUserConfig](#apiv1beta1redisacluserconfig)_ | ACLUserConfig configures Redis ACL user authentication. |  | Required: \{\} <br /> |
 | `dialTimeout` _string_ | DialTimeout is the timeout for establishing connections.<br />Format: Go duration string (e.g., "5s", "1m"). | 5s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `readTimeout` _string_ | ReadTimeout is the timeout for socket reads.<br />Format: Go duration string (e.g., "3s", "1m"). | 3s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `writeTimeout` _string_ | WriteTimeout is the timeout for socket writes.<br />Format: Go duration string (e.g., "3s", "1m"). | 3s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `tls` _[api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)_ | TLS configures TLS for connections to the Redis/Valkey master.<br />Presence of this field enables TLS. Omit to use plaintext. |  | Optional: \{\} <br /> |
-| `sentinelTls` _[api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)_ | SentinelTLS configures TLS for connections to Sentinel instances.<br />Presence of this field enables TLS. Omit to use plaintext.<br />When omitted, sentinel connections use plaintext (no fallback to TLS config). |  | Optional: \{\} <br /> |
+| `sentinelTls` _[api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)_ | SentinelTLS configures TLS for connections to Sentinel instances.<br />Only applies when sentinelConfig is set. Presence of this field enables TLS. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.RedisTLSConfig

@@ -42,10 +42,10 @@ func withRedisStorage(t *testing.T, fn func(context.Context, *RedisStorage, *min
 	t.Helper()
 	t.Parallel()
 	storage, mr := newTestRedisStorage(t)
-	defer func() {
+	t.Cleanup(func() {
 		_ = storage.Close()
 		mr.Close()
-	}()
+	})
 	fn(context.Background(), storage, mr)
 }
 
@@ -101,38 +101,43 @@ func TestRedisConfig_Validation(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "missing sentinel config",
-			cfg:     RedisConfig{ACLUserConfig: &ACLUserConfig{}, KeyPrefix: "test:"},
-			wantErr: "sentinel configuration is required",
+			name:    "neither addr nor sentinel config",
+			cfg:     RedisConfig{ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"}, KeyPrefix: "test:"},
+			wantErr: "one of addr (standalone) or sentinel configuration is required",
+		},
+		{
+			name: "addr and sentinel config both set",
+			cfg: RedisConfig{
+				Addr:           "localhost:6379",
+				SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}},
+				ACLUserConfig:  &ACLUserConfig{Username: "u", Password: "p"},
+				KeyPrefix:      "test:",
+			},
+			wantErr: "addr and sentinel configuration are mutually exclusive",
 		},
 		{
 			name:    "missing sentinel master name",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{}, KeyPrefix: "test:"},
+			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"}, KeyPrefix: "test:"},
 			wantErr: "sentinel master name is required",
 		},
 		{
 			name:    "missing sentinel addresses",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster"}, ACLUserConfig: &ACLUserConfig{}, KeyPrefix: "test:"},
+			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster"}, ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"}, KeyPrefix: "test:"},
 			wantErr: "at least one sentinel address is required",
 		},
 		{
 			name:    "missing ACL user config",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}}, KeyPrefix: "test:"},
+			cfg:     RedisConfig{Addr: "localhost:6379", KeyPrefix: "test:"},
 			wantErr: "ACL user configuration is required",
 		},
 		{
-			name:    "missing ACL username",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{Password: "pass"}, KeyPrefix: "test:"},
-			wantErr: "ACL username is required",
-		},
-		{
 			name:    "missing ACL password",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{Username: "user"}, KeyPrefix: "test:"},
+			cfg:     RedisConfig{Addr: "localhost:6379", ACLUserConfig: &ACLUserConfig{Username: "user"}, KeyPrefix: "test:"},
 			wantErr: "ACL password is required",
 		},
 		{
 			name:    "missing key prefix",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{Username: "user", Password: "pass"}},
+			cfg:     RedisConfig{Addr: "localhost:6379", ACLUserConfig: &ACLUserConfig{Username: "user", Password: "pass"}},
 			wantErr: "key prefix is required",
 		},
 	}
@@ -169,6 +174,52 @@ func TestNewRedisStorage_ConnectionFailure(t *testing.T) {
 	_, err := NewRedisStorage(ctx, cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to connect to redis")
+}
+
+func TestNewRedisStorage_Standalone_ConnectionFailure(t *testing.T) {
+	t.Parallel()
+
+	cfg := RedisConfig{
+		Addr: "localhost:19999",
+		ACLUserConfig: &ACLUserConfig{
+			Username: "user",
+			Password: "pass",
+		},
+		KeyPrefix:   "test:",
+		DialTimeout: 100 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	_, err := NewRedisStorage(ctx, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to connect to redis")
+}
+
+func TestNewRedisStorage_Standalone_WithMiniredis(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	// Register a non-default ACL user. miniredis enforces ACL when credentials are
+	// supplied, so we use RequireUserAuth to match the configured username/password.
+	mr.RequireUserAuth("testuser", "testpass")
+
+	cfg := RedisConfig{
+		Addr: mr.Addr(),
+		ACLUserConfig: &ACLUserConfig{
+			Username: "testuser",
+			Password: "testpass",
+		},
+		KeyPrefix: "test:",
+	}
+
+	ctx := context.Background()
+	s, err := NewRedisStorage(ctx, cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	require.NoError(t, s.Health(ctx))
 }
 
 // --- Client Tests ---

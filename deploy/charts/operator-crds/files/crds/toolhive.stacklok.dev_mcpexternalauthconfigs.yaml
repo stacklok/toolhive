@@ -280,8 +280,12 @@ spec:
                                 - name
                                 type: object
                               usernameSecretRef:
-                                description: UsernameSecretRef references a Secret
-                                  containing the Redis ACL username.
+                                description: |-
+                                  UsernameSecretRef references a Secret containing the Redis ACL username.
+                                  When omitted, connections use legacy password-only AUTH. Omit for managed
+                                  Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard
+                                  HA, Azure Cache for Redis). Set for services that support ACL users (e.g. AWS
+                                  ElastiCache non-cluster with Redis 6+ RBAC).
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -295,8 +299,13 @@ spec:
                                 type: object
                             required:
                             - passwordSecretRef
-                            - usernameSecretRef
                             type: object
+                          addr:
+                            description: |-
+                              Addr is the Redis server address for standalone mode (e.g., "host:port").
+                              Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present
+                              a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig.
+                            type: string
                           dialTimeout:
                             default: 5s
                             description: |-
@@ -312,7 +321,9 @@ spec:
                             pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                             type: string
                           sentinelConfig:
-                            description: SentinelConfig holds Redis Sentinel configuration.
+                            description: |-
+                              SentinelConfig holds Redis Sentinel configuration.
+                              Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr.
                             properties:
                               db:
                                 default: 0
@@ -357,8 +368,7 @@ spec:
                           sentinelTls:
                             description: |-
                               SentinelTLS configures TLS for connections to Sentinel instances.
-                              Presence of this field enables TLS. Omit to use plaintext.
-                              When omitted, sentinel connections use plaintext (no fallback to TLS config).
+                              Only applies when sentinelConfig is set. Presence of this field enables TLS.
                             properties:
                               caCertSecretRef:
                                 description: |-
@@ -416,8 +426,11 @@ spec:
                             type: string
                         required:
                         - aclUserConfig
-                        - sentinelConfig
                         type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of addr (standalone) or sentinelConfig
+                            (Sentinel) must be set
+                          rule: (self.addr.size() > 0) != has(self.sentinelConfig)
                       type:
                         default: memory
                         description: |-
@@ -1299,8 +1312,12 @@ spec:
                                 - name
                                 type: object
                               usernameSecretRef:
-                                description: UsernameSecretRef references a Secret
-                                  containing the Redis ACL username.
+                                description: |-
+                                  UsernameSecretRef references a Secret containing the Redis ACL username.
+                                  When omitted, connections use legacy password-only AUTH. Omit for managed
+                                  Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard
+                                  HA, Azure Cache for Redis). Set for services that support ACL users (e.g. AWS
+                                  ElastiCache non-cluster with Redis 6+ RBAC).
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -1314,8 +1331,13 @@ spec:
                                 type: object
                             required:
                             - passwordSecretRef
-                            - usernameSecretRef
                             type: object
+                          addr:
+                            description: |-
+                              Addr is the Redis server address for standalone mode (e.g., "host:port").
+                              Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present
+                              a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig.
+                            type: string
                           dialTimeout:
                             default: 5s
                             description: |-
@@ -1331,7 +1353,9 @@ spec:
                             pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                             type: string
                           sentinelConfig:
-                            description: SentinelConfig holds Redis Sentinel configuration.
+                            description: |-
+                              SentinelConfig holds Redis Sentinel configuration.
+                              Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr.
                             properties:
                               db:
                                 default: 0
@@ -1376,8 +1400,7 @@ spec:
                           sentinelTls:
                             description: |-
                               SentinelTLS configures TLS for connections to Sentinel instances.
-                              Presence of this field enables TLS. Omit to use plaintext.
-                              When omitted, sentinel connections use plaintext (no fallback to TLS config).
+                              Only applies when sentinelConfig is set. Presence of this field enables TLS.
                             properties:
                               caCertSecretRef:
                                 description: |-
@@ -1435,8 +1458,11 @@ spec:
                             type: string
                         required:
                         - aclUserConfig
-                        - sentinelConfig
                         type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of addr (standalone) or sentinelConfig
+                            (Sentinel) must be set
+                          rule: (self.addr.size() > 0) != has(self.sentinelConfig)
                       type:
                         default: memory
                         description: |-

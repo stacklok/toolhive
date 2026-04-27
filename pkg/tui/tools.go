@@ -6,62 +6,35 @@ package tui
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/pkg/core"
+	thclient "github.com/stacklok/toolhive/pkg/mcp/client"
 )
 
 var errStdioToolsNotAvailable = errors.New("tool listing not available for STDIO servers")
 
-// createMCPClient creates a new MCP SDK client for the given workload.
-// The client is not yet started or initialized; call connectMCPClient next.
-func createMCPClient(workload *core.Workload) (*mcpclient.Client, error) {
-	transportType := workload.ProxyMode
-	if transportType == "" {
-		transportType = string(workload.TransportType)
+// workloadTransport returns the transport string to use for the given workload.
+// It prefers ProxyMode (set for stdio transports) and falls back to TransportType.
+func workloadTransport(w *core.Workload) string {
+	if w.ProxyMode != "" {
+		return w.ProxyMode
 	}
-	switch transportType {
-	case "streamable-http":
-		return mcpclient.NewStreamableHttpClient(workload.URL)
-	case "sse":
-		return mcpclient.NewSSEMCPClient(workload.URL)
-	default:
-		return nil, fmt.Errorf("unsupported transport type %q for TUI client", transportType)
-	}
-}
-
-// connectMCPClient starts the client transport and performs the MCP initialize handshake.
-func connectMCPClient(ctx context.Context, c *mcpclient.Client) error {
-	if err := c.Start(ctx); err != nil {
-		return fmt.Errorf("start MCP client: %w", err)
-	}
-	initReq := mcp.InitializeRequest{}
-	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{
-		Name:    "toolhive-tui",
-		Version: "1.0.0",
-	}
-	if _, err := c.Initialize(ctx, initReq); err != nil {
-		return fmt.Errorf("initialize MCP client: %w", err)
-	}
-	return nil
+	return string(w.TransportType)
 }
 
 // startMCPClientConnect returns a tea.Cmd that creates and connects an MCP
 // client asynchronously, keeping the Update goroutine non-blocking.
 func startMCPClientConnect(ctx context.Context, w *core.Workload) tea.Cmd {
 	name := w.Name
+	serverURL := w.URL
+	transport := workloadTransport(w)
 	return func() tea.Msg {
-		c, err := createMCPClient(w)
+		c, err := thclient.Connect(ctx, serverURL, transport, "toolhive-tui")
 		if err != nil {
-			return mcpClientReadyMsg{workloadName: name, err: err}
-		}
-		if err := connectMCPClient(ctx, c); err != nil {
-			_ = c.Close()
 			return mcpClientReadyMsg{workloadName: name, err: err}
 		}
 		return mcpClientReadyMsg{workloadName: name, client: c}

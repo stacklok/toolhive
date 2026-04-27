@@ -379,7 +379,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "subject_token_type": {
-                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: oauth.TokenTypeAccessToken (default), oauth.TokenTypeIDToken, oauth.TokenTypeJWT.\nIf empty, defaults to oauth.TokenTypeAccessToken.",
+                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.\nIf empty, defaults to oauthproto.TokenTypeAccessToken.",
                         "type": "string"
                     },
                     "token_url": {

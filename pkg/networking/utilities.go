@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
@@ -146,14 +148,12 @@ func ValidateLoopbackAddress(addr string) error {
 	return nil
 }
 
-// IsLocalhost checks if a host is localhost (for development)
+// IsLocalhost checks if a host is a loopback address (for development).
+// The canonical implementation lives in pkg/oauthproto.IsLoopbackHost;
+// this function is a thin wrapper that preserves backward compatibility for
+// all callers in this package and beyond.
 func IsLocalhost(host string) bool {
-	return strings.HasPrefix(host, "localhost:") ||
-		strings.HasPrefix(host, "127.0.0.1:") ||
-		strings.HasPrefix(host, "[::1]:") ||
-		host == "localhost" ||
-		host == "127.0.0.1" ||
-		host == "[::1]"
+	return oauthproto.IsLoopbackHost(host)
 }
 
 // IsLoopbackHost reports whether the Host header value refers to a loopback

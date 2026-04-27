@@ -1,21 +1,7 @@
-// Copyright 2025 Stacklok, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
 
-// Package oauth provides RFC-defined types and constants for OAuth 2.0 and OpenID Connect.
-// This package contains ONLY protocol-level definitions with no business logic.
-// It serves as a shared foundation for both OAuth clients (consumers) and servers (producers).
-package oauth
+package oauthproto
 
 // Well-known endpoint paths as defined by RFC 8414, OpenID Connect Discovery 1.0, and RFC 9728.
 const (
@@ -81,4 +67,11 @@ const (
 const (
 	// GrantTypeTokenExchange is the OAuth 2.0 Token Exchange grant type (RFC 8693).
 	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+)
+
+// HTTP client constants.
+const (
+	// UserAgent is the User-Agent header value sent on all HTTP requests
+	// originating from this package and its callers.
+	UserAgent = "ToolHive/1.0"
 )

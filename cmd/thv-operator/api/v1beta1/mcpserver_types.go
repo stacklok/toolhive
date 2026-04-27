@@ -7,6 +7,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	rlconfig "github.com/stacklok/toolhive/pkg/ratelimit/config"
 )
 
 // Condition types for MCPServer
@@ -505,11 +507,15 @@ type SessionStorageConfig struct {
 // RateLimitConfig defines rate limiting configuration for an MCP server.
 // At least one of shared, perUser, or tools must be configured.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.shared) || has(self.perUser) || (has(self.tools) && size(self.tools) > 0)",message="at least one of shared, perUser, or tools must be configured"
+// +kubebuilder:validation:XValidation:rule="has(self.global) || has(self.shared) || has(self.perUser) || (has(self.tools) && size(self.tools) > 0)",message="at least one of global, shared, perUser, or tools must be configured"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type RateLimitConfig struct {
-	// Shared is a token bucket shared across all users for the entire server.
+	// Global is a token bucket shared across all users for the entire server.
+	// +optional
+	Global *RateLimitBucket `json:"global,omitempty"`
+
+	// Shared is a deprecated alias for Global. Use global instead.
 	// +optional
 	Shared *RateLimitBucket `json:"shared,omitempty"`
 
@@ -547,9 +553,9 @@ type RateLimitBucket struct {
 }
 
 // ToolRateLimitConfig defines rate limits for a specific tool.
-// At least one of shared or perUser must be configured.
+// At least one of global, shared, or perUser must be configured.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.shared) || has(self.perUser)",message="at least one of shared or perUser must be configured"
+// +kubebuilder:validation:XValidation:rule="has(self.global) || has(self.shared) || has(self.perUser)",message="at least one of global, shared, or perUser must be configured"
 //
 //nolint:lll // kubebuilder marker exceeds line length
 type ToolRateLimitConfig struct {
@@ -558,13 +564,51 @@ type ToolRateLimitConfig struct {
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 
-	// Shared token bucket for this specific tool.
+	// Global token bucket for this specific tool.
+	// +optional
+	Global *RateLimitBucket `json:"global,omitempty"`
+
+	// Shared is a deprecated alias for Global. Use global instead.
 	// +optional
 	Shared *RateLimitBucket `json:"shared,omitempty"`
 
 	// PerUser token bucket configuration for this tool.
 	// +optional
 	PerUser *RateLimitBucket `json:"perUser,omitempty"`
+}
+
+// ToInternal converts the Kubernetes API rate limit config to the runtime-neutral representation.
+func (in *RateLimitConfig) ToInternal() *rlconfig.Config {
+	if in == nil {
+		return nil
+	}
+	out := &rlconfig.Config{
+		Global:  rateLimitBucketToInternal(in.Global),
+		Shared:  rateLimitBucketToInternal(in.Shared),
+		PerUser: rateLimitBucketToInternal(in.PerUser),
+	}
+	if len(in.Tools) > 0 {
+		out.Tools = make([]rlconfig.ToolConfig, 0, len(in.Tools))
+		for _, tool := range in.Tools {
+			out.Tools = append(out.Tools, rlconfig.ToolConfig{
+				Name:    tool.Name,
+				Global:  rateLimitBucketToInternal(tool.Global),
+				Shared:  rateLimitBucketToInternal(tool.Shared),
+				PerUser: rateLimitBucketToInternal(tool.PerUser),
+			})
+		}
+	}
+	return out
+}
+
+func rateLimitBucketToInternal(in *RateLimitBucket) *rlconfig.Bucket {
+	if in == nil {
+		return nil
+	}
+	return &rlconfig.Bucket{
+		MaxTokens:    in.MaxTokens,
+		RefillPeriod: in.RefillPeriod,
+	}
 }
 
 // Permission profile types

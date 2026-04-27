@@ -233,6 +233,25 @@ _Appears in:_
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP provider whose access<br />token should be used as the source of JWT claims for Cedar evaluation.<br />When empty, claims from the ToolHive-issued token are used.<br />Must match an upstream provider name configured in the embedded auth server<br />(e.g. "default", "github"). Only relevant when the embedded auth server is active. |  | Optional: \{\} <br /> |
 
 
+#### ratelimit.config.Bucket
+
+
+
+Bucket defines a token bucket configuration with a maximum capacity and a
+refill period.
+
+
+
+_Appears in:_
+- [ratelimit.config.Config](#ratelimitconfigconfig)
+- [ratelimit.config.ToolConfig](#ratelimitconfigtoolconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `maxTokens` _integer_ | MaxTokens is the maximum number of tokens. |  |  |
+| `refillPeriod` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | RefillPeriod is the duration to fully refill the bucket. |  |  |
+
+
 #### vmcp.config.CircuitBreakerConfig
 
 
@@ -638,6 +657,25 @@ All fields use pointers so nil means "don't override" while zero values
 _Appears in:_
 - [vmcp.config.ToolOverride](#vmcpconfigtooloverride)
 
+
+
+#### ratelimit.config.ToolConfig
+
+
+
+ToolConfig defines rate limits for a specific tool.
+
+
+
+_Appears in:_
+- [ratelimit.config.Config](#ratelimitconfigconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the MCP tool name this limit applies to. |  |  |
+| `global` _[ratelimit.config.Bucket](#ratelimitconfigbucket)_ | Global is a token bucket shared across all users for this tool. |  |  |
+| `shared` _[ratelimit.config.Bucket](#ratelimitconfigbucket)_ | Shared is a deprecated alias for Global. |  |  |
+| `perUser` _[ratelimit.config.Bucket](#ratelimitconfigbucket)_ | PerUser is a token bucket applied independently to each authenticated user<br />for this tool. |  |  |
 
 
 #### vmcp.config.ToolConfigRef
@@ -2712,10 +2750,12 @@ At least one of shared, perUser, or tools must be configured.
 
 _Appears in:_
 - [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
+- [api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `shared` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Shared is a token bucket shared across all users for the entire server. |  | Optional: \{\} <br /> |
+| `global` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Global is a token bucket shared across all users for the entire server. |  | Optional: \{\} <br /> |
+| `shared` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Shared is a deprecated alias for Global. Use global instead. |  | Optional: \{\} <br /> |
 | `perUser` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | PerUser is a token bucket applied independently to each authenticated user<br />at the server level. Requires authentication to be enabled.<br />Each unique userID creates Redis keys that expire after 2x refillPeriod.<br />Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys. |  | Optional: \{\} <br /> |
 | `tools` _[api.v1beta1.ToolRateLimitConfig](#apiv1beta1toolratelimitconfig) array_ | Tools defines per-tool rate limit overrides.<br />Each entry applies additional rate limits to calls targeting a specific tool name.<br />A request must pass both the server-level limit and the per-tool limit. |  | Optional: \{\} <br /> |
 
@@ -3130,7 +3170,7 @@ _Appears in:_
 
 
 ToolRateLimitConfig defines rate limits for a specific tool.
-At least one of shared or perUser must be configured.
+At least one of global, shared, or perUser must be configured.
 
 
 
@@ -3140,7 +3180,8 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the MCP tool name this limit applies to. |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `shared` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Shared token bucket for this specific tool. |  | Optional: \{\} <br /> |
+| `global` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Global token bucket for this specific tool. |  | Optional: \{\} <br /> |
+| `shared` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Shared is a deprecated alias for Global. Use global instead. |  | Optional: \{\} <br /> |
 | `perUser` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | PerUser token bucket configuration for this tool. |  | Optional: \{\} <br /> |
 
 
@@ -3439,6 +3480,7 @@ _Appears in:_
 | `replicas` _integer_ | Replicas is the desired number of vMCP pod replicas.<br />VirtualMCPServer creates a single Deployment for the vMCP aggregator process,<br />so there is only one replicas field (unlike MCPServer which has separate<br />Replicas and BackendReplicas for its two Deployments).<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `sessionStorage` _[api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When nil, no session storage is configured. |  | Optional: \{\} <br /> |
 | `imagePullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core) array_ | ImagePullSecrets allows specifying image pull secrets for the vMCP workload.<br />These are applied to both the vMCP Deployment's PodSpec.ImagePullSecrets<br />and to the operator-managed ServiceAccount the vMCP server runs as, so private<br />images are pullable through either path.<br />Merge semantics with PodTemplateSpec:<br />The deployed PodSpec.ImagePullSecrets is the Kubernetes-native strategic-merge<br />union of this field and spec.podTemplateSpec.spec.imagePullSecrets, merged by<br />the patchStrategy:"merge" / patchMergeKey:"name" tags on corev1.PodSpec.<br />  - This field is rendered first as the controller-generated default.<br />  - spec.podTemplateSpec.spec.imagePullSecrets is then strategic-merge-patched<br />    on top, keyed by Name. Distinct names from the two sources are unioned in<br />    the resulting list; entries with the same Name are deduplicated and the<br />    PodTemplateSpec entry wins on overlap (user override).<br />  - Order in the resulting list is not guaranteed and should not be relied on:<br />    strategic merge by name is order-insensitive.<br />  - The operator-managed ServiceAccount's imagePullSecrets list is populated<br />    ONLY from this field. spec.podTemplateSpec.spec.imagePullSecrets does not<br />    reach the ServiceAccount because PodTemplateSpec has no notion of a<br />    ServiceAccount. To make a secret usable via the ServiceAccount path<br />    (e.g. for sidecars or init containers that pull images independently),<br />    list it here rather than under spec.podTemplateSpec.<br />Note on cross-CRD consistency:<br />MCPRegistry currently uses an atomic-replace strategy for its imagePullSecrets<br />(the user-provided value replaces the controller-generated list rather than<br />being merged on top). VirtualMCPServer follows the Kubernetes-native<br />strategic-merge-by-name behavior described above. Aligning the two is tracked<br />as a separate follow-up; until then, manifests that set imagePullSecrets on<br />both CRDs will see different override behavior between them. |  | Optional: \{\} <br /> |
+| `rateLimiting` _[api.v1beta1.RateLimitConfig](#apiv1beta1ratelimitconfig)_ | RateLimiting defines rate limiting configuration for the Virtual MCP server.<br />Requires Redis session storage to be configured for distributed rate limiting. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.VirtualMCPServerStatus

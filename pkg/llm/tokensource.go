@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -191,24 +192,24 @@ func (t *TokenSource) tryRestoreFromCache(ctx context.Context) error {
 		return fmt.Errorf("building oauth2 config for cache restore: %w", err)
 	}
 
-	// Build the raw refresher directly without an inner ReuseTokenSource.
-	// CreateTokenSourceFromCached wraps in ReuseTokenSource, which causes the
-	// preemptive window to loop: the inner source returns the cached real token,
-	// preemptiveTokenSource shifts it back, the outer ReuseTokenSource caches an
-	// already-expired shifted token, and every subsequent Token() call re-enters
-	// the inner chain instead of one refresh per window.
-	// Target stacking: ReuseTokenSource(nil, preemptive{PersistingTokenSource{rawRefresher}})
-	rawToken := &oauth2.Token{
-		RefreshToken: refreshToken,
-		Expiry:       t.cfg.OIDC.CachedTokenExpiry,
-		TokenType:    "Bearer",
-	}
-	var rawRefresher oauth2.TokenSource
-	if t.cfg.OIDC.Audience != "" {
-		rawRefresher = oauth.NewResourceTokenSource(oauth2Cfg, rawToken, t.cfg.OIDC.Audience)
-	} else {
-		rawRefresher = oauth2Cfg.TokenSource(ctx, rawToken)
-	}
+	// Use a non-caching refresher as the innermost source.
+	//
+	// oauth.NewResourceTokenSource and oauth2Cfg.TokenSource both cache the token
+	// internally and only refresh when the real expiry passes. When the outer
+	// ReuseTokenSource enters the preemptive window (30 s before real expiry) it
+	// calls preemptiveTokenSource, which calls the inner source; the inner source
+	// sees the real token as still valid and returns it unchanged;
+	// preemptiveTokenSource shifts the expiry back by 30 s, producing an
+	// already-expired token; the outer ReuseTokenSource then re-enters the chain
+	// on every subsequent call — an infinite non-refreshing loop.
+	//
+	// A non-caching refresher always performs a network round-trip when called, so
+	// the first call inside the preemptive window obtains a fresh token with a
+	// real-future expiry. The outer ReuseTokenSource caches the shifted result and
+	// serves it until the next window — exactly one refresh per window.
+	//
+	// Target stacking: ReuseTokenSource(nil, preemptive{PersistingTokenSource{nonCachingRefresher}})
+	rawRefresher := newNonCachingRefresher(oauth2Cfg, refreshToken, t.cfg.OIDC.Audience)
 
 	// Persist rotated refresh tokens back to the secrets provider so future CLI
 	// invocations can still restore the session if the provider invalidates the
@@ -239,10 +240,9 @@ func (t *TokenSource) performBrowserFlow(ctx context.Context) error {
 		return fmt.Errorf("OAuth flow start failed: %w", err)
 	}
 
-	// Build raw token source from flowCfg fields directly instead of calling
-	// flow.TokenSource(), which returns a ReuseTokenSource and causes the same
-	// double-caching composition issue as CreateTokenSourceFromCached (see
-	// tryRestoreFromCache for a detailed explanation).
+	// Build a non-caching refresher as the innermost source (see tryRestoreFromCache
+	// for a detailed explanation of why caching inner sources cause an infinite loop
+	// inside the preemptive window).
 	// Reuse the already-discovered flowCfg to avoid a second OIDC round-trip.
 	oauth2Cfg := oauth2ConfigFrom(flowCfg)
 	initialToken := &oauth2.Token{
@@ -251,12 +251,7 @@ func (t *TokenSource) performBrowserFlow(ctx context.Context) error {
 		Expiry:       tokenResult.Expiry,
 		TokenType:    tokenResult.TokenType,
 	}
-	var base oauth2.TokenSource
-	if flowCfg.Resource != "" {
-		base = oauth.NewResourceTokenSource(oauth2Cfg, initialToken, flowCfg.Resource)
-	} else {
-		base = oauth2Cfg.TokenSource(ctx, initialToken)
-	}
+	var base oauth2.TokenSource = newNonCachingRefresher(oauth2Cfg, initialToken.RefreshToken, flowCfg.Resource)
 	key := t.refreshTokenKey()
 
 	if t.secretsProvider != nil {
@@ -272,8 +267,9 @@ func (t *TokenSource) performBrowserFlow(ctx context.Context) error {
 		}
 	}
 
-	// Wrap with preemptive refresh so tokens are renewed 30 s before real expiry.
-	t.tokenSource = withPreemptiveRefresh(base)
+	// Pre-seed the outer ReuseTokenSource with the shifted initial token so the
+	// just-obtained access token is served without an immediate network round-trip.
+	t.tokenSource = withPreemptiveRefreshFrom(initialToken, base)
 	return nil
 }
 
@@ -332,7 +328,10 @@ func (t *TokenSource) makeTokenPersister(key string) remote.TokenPersister {
 		t.updateConfigTokenRef(key, expiry)
 		// Invalidate the access-token cache so the next call does not serve a
 		// token minted against the now-rotated refresh token.
-		_ = t.secretsProvider.SetSecret(ctx, t.accessTokenCacheKey(), "")
+		if err := t.secretsProvider.SetSecret(ctx, t.accessTokenCacheKey(), ""); err != nil {
+			slog.Warn("failed to invalidate access-token cache after refresh token rotation",
+				"error", err)
+		}
 		return nil
 	}
 }
@@ -451,7 +450,77 @@ func (p *preemptiveTokenSource) Token() (*oauth2.Token, error) {
 // before they actually expire, then re-wraps with ReuseTokenSource so the refresh
 // is only triggered once per window.
 func withPreemptiveRefresh(src oauth2.TokenSource) oauth2.TokenSource {
-	return oauth2.ReuseTokenSource(nil, &preemptiveTokenSource{inner: src})
+	return withPreemptiveRefreshFrom(nil, src)
+}
+
+// withPreemptiveRefreshFrom is like withPreemptiveRefresh but pre-seeds the outer
+// ReuseTokenSource with a shifted copy of initial (if non-nil and valid), so the
+// caller's already-obtained access token is served without an immediate network call.
+func withPreemptiveRefreshFrom(initial *oauth2.Token, src oauth2.TokenSource) oauth2.TokenSource {
+	var seeded *oauth2.Token
+	if initial != nil && initial.Valid() && !initial.Expiry.IsZero() {
+		shifted := *initial
+		shifted.Expiry = initial.Expiry.Add(-preemptiveRefreshWindow)
+		seeded = &shifted
+	}
+	return oauth2.ReuseTokenSource(seeded, &preemptiveTokenSource{inner: src})
+}
+
+// nonCachingRefresher is an oauth2.TokenSource that always performs a network
+// refresh when Token() is called — it holds no internal token cache. This makes it
+// the correct innermost source for withPreemptiveRefresh: the outer ReuseTokenSource
+// provides caching; the inner source must always refresh when asked so that
+// preemptiveTokenSource triggers exactly one network round-trip per window.
+//
+// It handles both standard OAuth 2.0 refresh (resource == "") and RFC 8707
+// resource-indicator refresh (resource != "") in a single type, eliminating the
+// branching that previously introduced caching inner sources on the resource path.
+type nonCachingRefresher struct {
+	cfg          *oauth2.Config
+	resource     string // RFC 8707 resource indicator; empty for standard OAuth 2.0
+	refreshToken string
+	httpClient   *http.Client
+}
+
+func newNonCachingRefresher(cfg *oauth2.Config, refreshToken, resource string) *nonCachingRefresher {
+	return &nonCachingRefresher{
+		cfg:          cfg,
+		resource:     resource,
+		refreshToken: refreshToken,
+		httpClient:   &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// Token always performs a token-endpoint refresh. It updates the stored refresh
+// token when the IdP rotates it, so PersistingTokenSource above can detect the
+// change and persist it to the secrets provider.
+func (n *nonCachingRefresher) Token() (*oauth2.Token, error) {
+	if n.refreshToken == "" {
+		return nil, fmt.Errorf("no refresh token available")
+	}
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, n.httpClient)
+	opts := []oauth2.AuthCodeOption{
+		oauth2.SetAuthURLParam("grant_type", "refresh_token"),
+		oauth2.SetAuthURLParam("refresh_token", n.refreshToken),
+	}
+	if n.resource != "" {
+		opts = append(opts, oauth2.SetAuthURLParam("resource", n.resource))
+	}
+	// Include scope explicitly — RFC 6749 §6 says servers MUST preserve scopes
+	// when omitted, but not all do.
+	if len(n.cfg.Scopes) > 0 {
+		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(n.cfg.Scopes, " ")))
+	}
+	tok, err := n.cfg.Exchange(ctx, "", opts...)
+	if err != nil {
+		return nil, fmt.Errorf("token refresh failed: %w", err)
+	}
+	if tok.RefreshToken == "" {
+		tok.RefreshToken = n.refreshToken
+	} else {
+		n.refreshToken = tok.RefreshToken
+	}
+	return tok, nil
 }
 
 // ensureOfflineAccess returns scopes with "offline_access" appended if absent.

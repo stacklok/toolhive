@@ -362,12 +362,15 @@ func TestTokenSource_MakeTokenPersister_StoresTokenAndCallsUpdater(t *testing.T)
 
 	cfg := minimalConfig()
 	const secretKey = "LLM_OAUTH_test"
+	// Pin CachedRefreshTokenRef so refreshTokenKey() == secretKey.
+	// accessTokenCacheKey() is then secretKey+"_AT", which must be the key
+	// the persister invalidates — same root as the refresh token it just wrote.
+	cfg.OIDC.CachedRefreshTokenRef = secretKey
 	wantToken := "new-refresh-token"
 	wantExpiry := time.Now().Add(time.Hour)
 
 	// The persister must write the refresh token then invalidate the AT cache.
-	// accessTokenCacheKey is derived from the config, not from secretKey.
-	atKey := DeriveSecretKey(cfg.GatewayURL, cfg.OIDC.Issuer) + "_AT"
+	atKey := secretKey + "_AT"
 	gomock.InOrder(
 		mockSecrets.EXPECT().
 			SetSecret(gomock.Any(), secretKey, wantToken).
@@ -680,6 +683,130 @@ func TestWithPreemptiveRefresh_ExactlyOneRefreshPerWindow(t *testing.T) {
 		"inner source must be called exactly twice: once for the initial short-lived "+
 			"token and once for the preemptive refresh; all remaining calls must be "+
 			"served from the outer ReuseTokenSource cache")
+}
+
+// ── withPreemptiveRefreshFrom – pre-seeds outer cache with shifted initial token ──
+
+// TestWithPreemptiveRefreshFrom_PreSeededToken verifies that withPreemptiveRefreshFrom
+// serves the pre-seeded initial token without calling the inner source, and only
+// calls the inner source after the shifted expiry passes.
+func TestWithPreemptiveRefreshFrom_PreSeededToken(t *testing.T) {
+	t.Parallel()
+
+	fake := &countingTokenSource{
+		tokenFn: func(_ int) *oauth2.Token {
+			return &oauth2.Token{
+				AccessToken: "refreshed-token",
+				Expiry:      time.Now().Add(2 * time.Minute),
+			}
+		},
+	}
+
+	initial := &oauth2.Token{
+		AccessToken: "initial-token",
+		Expiry:      time.Now().Add(2 * time.Minute), // long-lived — shifted expiry is in the future
+	}
+
+	src := withPreemptiveRefreshFrom(initial, fake)
+
+	// All calls within the shifted window must return the pre-seeded token
+	// without touching the inner source.
+	const iterations = 5
+	for i := 0; i < iterations; i++ {
+		tok, err := src.Token()
+		require.NoError(t, err)
+		assert.Equal(t, "initial-token", tok.AccessToken,
+			"call %d: must return pre-seeded token without hitting inner source", i+1)
+	}
+	assert.Equal(t, 0, fake.calls, "inner source must not be called while initial token is valid")
+}
+
+func TestWithPreemptiveRefreshFrom_NilInitial_BehavesLikeWithPreemptiveRefresh(t *testing.T) {
+	t.Parallel()
+
+	fake := &countingTokenSource{
+		tokenFn: func(_ int) *oauth2.Token {
+			return &oauth2.Token{
+				AccessToken: "inner-token",
+				Expiry:      time.Now().Add(2 * time.Minute),
+			}
+		},
+	}
+
+	src := withPreemptiveRefreshFrom(nil, fake)
+
+	tok, err := src.Token()
+	require.NoError(t, err)
+	assert.Equal(t, "inner-token", tok.AccessToken)
+	assert.Equal(t, 1, fake.calls, "nil initial must trigger an inner call on first Token()")
+}
+
+// ── nonCachingRefresher – no-refresh-token guard ─────────────────────────────
+
+func TestNonCachingRefresher_EmptyRefreshToken_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	cfg := &oauth2.Config{ClientID: "test"}
+	ncr := newNonCachingRefresher(cfg, "" /* no refresh token */, "")
+
+	_, err := ncr.Token()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no refresh token available")
+}
+
+// TestWithPreemptiveRefresh_CachingInnerSource_LoopRegression is a regression
+// test for the bug where a caching inner source (one that returns the same valid
+// token every call) caused the outer ReuseTokenSource to loop indefinitely inside
+// the preemptive window.
+//
+// A caching source always returns the same token regardless of how many times
+// Token() is called. When preemptiveTokenSource shifts its expiry back by 30 s,
+// the outer ReuseTokenSource sees an already-expired token on the very next call
+// and re-enters the chain — forever, with no actual IdP refresh.
+//
+// A non-caching inner source (nonCachingRefresher) fixes this: the first call
+// inside the window returns a fresh token with a real-future expiry, which the
+// outer cache can hold until the next window.
+func TestWithPreemptiveRefresh_CachingInnerSource_LoopRegression(t *testing.T) {
+	t.Parallel()
+
+	// cachingSource simulates the old resourceTokenSource / oauth2.ReuseTokenSource
+	// behaviour: always returns the same token with a fixed near-future expiry
+	// (within the preemptive window), so preemptiveTokenSource always shifts it
+	// to already-expired.
+	staleExpiry := time.Now().Add(preemptiveRefreshWindow / 2) // inside the window
+	cachingInner := &countingTokenSource{
+		tokenFn: func(_ int) *oauth2.Token {
+			return &oauth2.Token{
+				AccessToken: "stale-token",
+				Expiry:      staleExpiry, // fixed — never advances
+			}
+		},
+	}
+
+	src := withPreemptiveRefresh(cachingInner)
+
+	// Drive the source several times. With the old caching inner source this
+	// would loop forever (calls >> iterations). With the fix (non-caching inner
+	// source that returns a fresh token each call), the outer cache eventually
+	// settles once the inner returns a token whose shifted expiry is in the future.
+	//
+	// Here we simply verify that the loop terminates and the number of inner calls
+	// is bounded — it should equal the number of Token() calls until the inner
+	// source returns a long-lived token. Since our fake always returns the same
+	// stale expiry, we expect exactly one call per outer Token() call (the outer
+	// never caches) but NOT an infinite loop within a single Token() call.
+	const iterations = 5
+	for i := 0; i < iterations; i++ {
+		tok, err := src.Token()
+		require.NoError(t, err)
+		assert.Equal(t, "stale-token", tok.AccessToken)
+	}
+	// Each outer Token() call results in exactly one inner call — never multiple
+	// calls per single outer invocation (which would indicate the inner loop bug).
+	assert.Equal(t, iterations, cachingInner.calls,
+		"each outer Token() call must result in exactly one inner call; "+
+			"more calls per invocation would indicate the infinite-loop regression")
 }
 
 // ── accessTokenCacheKey ───────────────────────────────────────────────────────

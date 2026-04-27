@@ -244,6 +244,7 @@ func (m Model) renderInspResponse(width, height int) string {
 
 	if ft := m.filteredTools(); sel != nil && len(ft) > 0 && m.insp.toolIdx < len(ft) {
 		tool := ft[m.insp.toolIdx]
+		// Errors ignored: curl preview is best-effort with whatever fields parse.
 		args, _, _ := inspFieldValues(m.insp.fields)
 		curl := buildCurlStr(sel, tool.Name, args)
 		for _, line := range strings.Split(curl, "\n") {

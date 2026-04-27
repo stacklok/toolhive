@@ -17,11 +17,8 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/networking"
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
-
-// UserAgent is the user agent for the ToolHive MCP client
-const UserAgent = "ToolHive/1.0"
 
 // DiscoverOIDCEndpoints discovers OAuth endpoints from an OIDC issuer
 func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (*oauthproto.OIDCDiscoveryDocument, error) {
@@ -76,7 +73,7 @@ func discoverOIDCEndpointsWithClientAndValidation(
 		if err != nil {
 			return nil, fmt.Errorf("build request: %w", err)
 		}
-		req.Header.Set("User-Agent", UserAgent)
+		req.Header.Set("User-Agent", oauthproto.UserAgent)
 		req.Header.Set("Accept", "application/json")
 
 		resp, err := client.Do(req)

@@ -48,13 +48,13 @@ ToolHive implements BOTH discovery mechanisms required by the MCP specification:
 - Accepts the authoritative issuer from well-known endpoints per RFC 8414
 
 #### 4. Dynamic Client Registration (RFC 7591)
-- **Location**: [`pkg/auth/oauth/dynamic_registration.go:82-200`](../pkg/auth/oauth/dynamic_registration.go#L82)
+- **Location**: [`pkg/oauthproto/dcr.go`](../pkg/oauthproto/dcr.go)
 - Automatically registers OAuth clients when no credentials provided
 - Uses PKCE flow with `token_endpoint_auth_method: "none"`
 - Supports both manual client configuration and automatic registration
 
 #### 5. PKCE Support
-- **Location**: [`pkg/auth/oauth/dynamic_registration.go:52`](../pkg/auth/oauth/dynamic_registration.go#L52)
+- **Location**: [`pkg/oauthproto/dcr.go`](../pkg/oauthproto/dcr.go)
 - Enabled by default for enhanced security
 - Required for public clients as per OAuth 2.1
 
@@ -221,7 +221,7 @@ This approach handles cases where servers implement RFC 9728 well-known URI disc
 
 ## Dynamic Client Registration Flow
 
-When no client credentials are provided ([`pkg/auth/oauth/dynamic_registration.go`](../pkg/auth/oauth/dynamic_registration.go)):
+When no client credentials are provided ([`pkg/oauthproto/dcr.go`](../pkg/oauthproto/dcr.go)):
 
 1. **Discover Registration Endpoint**: Via OIDC discovery or resource metadata
 2. **Create Registration Request**:

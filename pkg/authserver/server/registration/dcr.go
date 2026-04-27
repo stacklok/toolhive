@@ -21,7 +21,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // DCR error codes per RFC 7591 Section 3.2.2
@@ -249,7 +249,7 @@ func validateResponseTypes(responseTypes []string) ([]string, *DCRError) {
 // - HTTP is only allowed for loopback addresses (127.0.0.1, [::1], localhost)
 // - Private-use URI schemes (e.g., cursor://, vscode://) are allowed for native apps
 func ValidateRedirectURI(uri string) *DCRError {
-	if err := oauth.ValidateRedirectURI(uri, oauth.RedirectURIPolicyAllowPrivateSchemes); err != nil {
+	if err := oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyAllowPrivateSchemes); err != nil {
 		return &DCRError{
 			Error:            DCRErrorInvalidRedirectURI,
 			ErrorDescription: err.Error(),

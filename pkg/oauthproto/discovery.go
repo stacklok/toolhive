@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package oauth
+package oauthproto
 
 // AuthorizationServerMetadata represents the OAuth 2.0 Authorization Server Metadata
 // per RFC 8414. This is the base structure that OIDC Discovery extends.

@@ -60,6 +60,14 @@ func (m *Model) handleNormalKey(msg tea.KeyMsg) tea.Cmd {
 			_ = m.mcpClient.Close()
 			m.mcpClient = nil
 		}
+		if m.logCtxCancel != nil {
+			m.logCtxCancel()
+			m.logCtxCancel = nil
+		}
+		if m.proxyLogCancel != nil {
+			m.proxyLogCancel()
+			m.proxyLogCancel = nil
+		}
 		m.quitting = true
 		return tea.Quit
 

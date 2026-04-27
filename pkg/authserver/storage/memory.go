@@ -222,7 +222,7 @@ func (s *MemoryStorage) cleanupExpired() {
 
 	var expiredUpstreamTokens []upstreamKey
 	for k, v := range s.upstreamTokens {
-		if now.After(v.expiresAt) {
+		if !v.expiresAt.IsZero() && now.After(v.expiresAt) {
 			expiredUpstreamTokens = append(expiredUpstreamTokens, k)
 		}
 	}
@@ -704,12 +704,16 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 	now := time.Now()
 	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
 	// survives in storage for transparent token refresh by the middleware.
-	var expiresAt time.Time
-	if tokens != nil && !tokens.ExpiresAt.IsZero() {
-		expiresAt = tokens.ExpiresAt.Add(DefaultRefreshTokenTTL)
-	} else {
-		expiresAt = now.Add(DefaultAccessTokenTTL + DefaultRefreshTokenTTL)
-	}
+	// Zero ExpiresAt means the token never expires; no TTL is applied.
+	expiresAt := func() time.Time {
+		if tokens == nil {
+			return now.Add(DefaultAccessTokenTTL + DefaultRefreshTokenTTL)
+		}
+		if !tokens.ExpiresAt.IsZero() {
+			return tokens.ExpiresAt.Add(DefaultRefreshTokenTTL)
+		}
+		return time.Time{} // non-expiring token
+	}()
 
 	// Make a defensive copy to prevent aliasing issues
 	var tokensCopy *UpstreamTokens

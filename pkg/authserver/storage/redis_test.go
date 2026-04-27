@@ -643,10 +643,10 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 		})
 	})
 
-	t.Run("zero ExpiresAt tokens are retrievable (no expiry)", func(t *testing.T) {
-		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			// Store tokens with zero ExpiresAt (no expiry set).
-			// These should be retrievable — Redis TTL handles actual expiration.
+	t.Run("zero ExpiresAt tokens are stored without Redis TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			// Non-expiring tokens (ExpiresAt zero) must be stored without a Redis TTL
+			// so they are never automatically evicted.
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "no-expiry", "provider-a", &UpstreamTokens{
 				AccessToken: "no-expiry-token",
 				ProviderID:  "test-provider",
@@ -658,6 +658,35 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			assert.Equal(t, "no-expiry-token", retrieved.AccessToken)
 			assert.Equal(t, "test-provider", retrieved.ProviderID)
 			assert.True(t, retrieved.ExpiresAt.IsZero())
+
+			// Verify the key has no Redis TTL (miniredis returns 0 for keys without expiry).
+			key := redisUpstreamKey(s.keyPrefix, "no-expiry", "provider-a")
+			assert.Equal(t, time.Duration(0), mr.TTL(key), "non-expiring token must have no Redis TTL")
+		})
+	})
+
+	t.Run("mixed-expiry session: non-expiring write removes index set TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			// First store an expiring token — this sets a TTL on the index set.
+			err := s.StoreUpstreamTokens(ctx, "mixed-session", "provider-expiring", &UpstreamTokens{
+				AccessToken: "expiring-token",
+				ProviderID:  "provider-expiring",
+				ExpiresAt:   time.Now().Add(time.Hour),
+			})
+			require.NoError(t, err)
+
+			// Then store a non-expiring token for the same session.
+			err = s.StoreUpstreamTokens(ctx, "mixed-session", "provider-nonexpiring", &UpstreamTokens{
+				AccessToken: "non-expiring-token",
+				ProviderID:  "provider-nonexpiring",
+				// ExpiresAt intentionally zero
+			})
+			require.NoError(t, err)
+
+			// The index set must now have no TTL (PERSIST removed it).
+			idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "mixed-session")
+			assert.Equal(t, time.Duration(0), mr.TTL(idxKey),
+				"index set TTL must be removed when a non-expiring token is added to the session")
 		})
 	})
 

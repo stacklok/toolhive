@@ -819,6 +819,33 @@ func TestMemoryStorage_CleanupExpired(t *testing.T) {
 		})
 	}
 
+	t.Run("upstream tokens with zero ExpiresAt are never evicted", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// Non-expiring token (ExpiresAt zero) must survive cleanup runs.
+			_ = s.StoreUpstreamTokens(ctx, "never-expiring", "provider-a", &UpstreamTokens{
+				AccessToken: "non-expiring-token",
+				// ExpiresAt intentionally zero
+			})
+			// Expiring token to confirm cleanup still works.
+			_ = s.StoreUpstreamTokens(ctx, "expired", "provider-a", &UpstreamTokens{
+				AccessToken: "expired-token",
+				ExpiresAt:   time.Now().Add(-DefaultRefreshTokenTTL - time.Hour),
+			})
+
+			assert.Equal(t, 2, s.Stats().UpstreamTokens)
+
+			s.cleanupExpired()
+
+			assert.Equal(t, 1, s.Stats().UpstreamTokens, "only the expiring token should be removed")
+
+			tokens, err := s.GetUpstreamTokens(ctx, "never-expiring", "provider-a")
+			require.NoError(t, err)
+			require.NotNil(t, tokens)
+			assert.Equal(t, "non-expiring-token", tokens.AccessToken)
+			assert.True(t, tokens.ExpiresAt.IsZero())
+		})
+	})
+
 	t.Run("cleanup expired invalidated codes", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			request := newMockRequesterWithExpiration("req-1", client, fosite.AuthorizeCode, time.Now().Add(time.Hour))

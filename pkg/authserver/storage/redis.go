@@ -840,6 +840,12 @@ if ttlMs > 0 then
     if currentTTL < ttlMs then
         redis.call('PEXPIRE', KEYS[2], ttlMs)
     end
+else
+    -- ttlMs == 0: this token does not expire. Remove any TTL that a prior
+    -- expiring-token write may have set on the index set (SADD does not
+    -- reset TTL), so the index set is not evicted while this non-expiring
+    -- token still exists. PERSIST is a no-op if the key has no TTL.
+    redis.call('PERSIST', KEYS[2])
 end
 
 local newUserID = ARGV[3]
@@ -887,7 +893,9 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 
 	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
 	// survives in storage for transparent token refresh by the middleware.
-	ttl := DefaultAccessTokenTTL + DefaultRefreshTokenTTL
+	// Zero ExpiresAt means the token never expires; return ttl=0 so the Lua script
+	// stores the key without a Redis TTL.
+	var ttl time.Duration // zero means no Redis TTL (non-expiring token)
 	if !tokens.ExpiresAt.IsZero() {
 		ttl = time.Until(tokens.ExpiresAt) + DefaultRefreshTokenTTL
 		if ttl < 0 {

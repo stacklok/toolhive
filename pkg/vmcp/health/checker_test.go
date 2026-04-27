@@ -15,6 +15,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
 
@@ -230,73 +231,178 @@ func TestHealthChecker_CheckHealth_ErrorCategorization(t *testing.T) {
 func TestCategorizeError(t *testing.T) {
 	t.Parallel()
 
+	// Backends with an outgoing auth strategy configured: a 401/403 is the
+	// expected response to a no-credential probe and must be treated as healthy.
+	targetWithUpstreamInject := &vmcp.BackendTarget{
+		AuthConfig: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUpstreamInject},
+	}
+	targetWithTokenExchange := &vmcp.BackendTarget{
+		AuthConfig: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeTokenExchange},
+	}
+	targetWithHeaderInjection := &vmcp.BackendTarget{
+		AuthConfig: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeHeaderInjection},
+	}
+
+	// Backends without an outgoing auth strategy: a 401/403 indicates operator
+	// misconfiguration and must surface as BackendUnauthenticated.
+	targetNoAuthConfig := &vmcp.BackendTarget{AuthConfig: nil}
+	targetUnauthenticatedStrategy := &vmcp.BackendTarget{
+		AuthConfig: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUnauthenticated},
+	}
+
 	tests := []struct {
 		name           string
+		target         *vmcp.BackendTarget
 		err            error
 		expectedStatus vmcp.BackendHealthStatus
 	}{
 		{
 			name:           "nil error",
+			target:         targetNoAuthConfig,
 			err:            nil,
 			expectedStatus: vmcp.BackendHealthy,
 		},
+
+		// Auth errors + outgoing auth configured -> healthy (probe challenge is expected).
 		{
-			name:           "authentication failed",
+			name:           "auth error with upstream_inject strategy is healthy",
+			target:         targetWithUpstreamInject,
+			err:            vmcp.ErrAuthenticationFailed,
+			expectedStatus: vmcp.BackendHealthy,
+		},
+		{
+			name:           "auth error with token_exchange strategy is healthy",
+			target:         targetWithTokenExchange,
+			err:            vmcp.ErrAuthenticationFailed,
+			expectedStatus: vmcp.BackendHealthy,
+		},
+		{
+			name:           "auth error with header_injection strategy is healthy",
+			target:         targetWithHeaderInjection,
+			err:            vmcp.ErrAuthenticationFailed,
+			expectedStatus: vmcp.BackendHealthy,
+		},
+		{
+			name:           "authz error with upstream_inject strategy is healthy",
+			target:         targetWithUpstreamInject,
+			err:            vmcp.ErrAuthorizationFailed,
+			expectedStatus: vmcp.BackendHealthy,
+		},
+		{
+			name:           "string-based auth error with header_injection strategy is healthy",
+			target:         targetWithHeaderInjection,
+			err:            errors.New("HTTP 401"),
+			expectedStatus: vmcp.BackendHealthy,
+		},
+
+		// Auth errors + no outgoing auth configured -> unauthenticated (misconfig signal).
+		{
+			name:           "auth error with nil AuthConfig is unauthenticated (misconfig)",
+			target:         targetNoAuthConfig,
+			err:            vmcp.ErrAuthenticationFailed,
+			expectedStatus: vmcp.BackendUnauthenticated,
+		},
+		{
+			name:           "auth error with StrategyTypeUnauthenticated is unauthenticated (misconfig)",
+			target:         targetUnauthenticatedStrategy,
+			err:            vmcp.ErrAuthenticationFailed,
+			expectedStatus: vmcp.BackendUnauthenticated,
+		},
+		{
+			name:           "authentication failed (string) with nil AuthConfig",
+			target:         targetNoAuthConfig,
 			err:            errors.New("authentication failed"),
 			expectedStatus: vmcp.BackendUnauthenticated,
 		},
 		{
-			name:           "authentication error",
+			name:           "authentication error (string) with nil AuthConfig",
+			target:         targetNoAuthConfig,
 			err:            errors.New("authentication error: invalid credentials"),
 			expectedStatus: vmcp.BackendUnauthenticated,
 		},
 		{
-			name:           "request unauthorized",
+			name:           "request unauthorized with nil AuthConfig",
+			target:         targetNoAuthConfig,
 			err:            errors.New("request unauthorized"),
 			expectedStatus: vmcp.BackendUnauthenticated,
 		},
 		{
-			name:           "HTTP 401",
+			name:           "HTTP 401 with nil AuthConfig",
+			target:         targetNoAuthConfig,
 			err:            errors.New("HTTP 401"),
 			expectedStatus: vmcp.BackendUnauthenticated,
 		},
 		{
-			name:           "HTTP 403",
+			name:           "HTTP 403 with nil AuthConfig",
+			target:         targetNoAuthConfig,
 			err:            errors.New("HTTP 403"),
 			expectedStatus: vmcp.BackendUnauthenticated,
 		},
 		{
-			name:           "timeout",
+			name:           "nil target with auth error is unauthenticated",
+			target:         nil,
+			err:            vmcp.ErrAuthenticationFailed,
+			expectedStatus: vmcp.BackendUnauthenticated,
+		},
+
+		// Non-auth errors: AuthConfig is irrelevant; classification is unchanged.
+		{
+			name:           "timeout with upstream_inject strategy is still unhealthy",
+			target:         targetWithUpstreamInject,
 			err:            errors.New("request timeout"),
 			expectedStatus: vmcp.BackendUnhealthy,
 		},
 		{
-			name:           "deadline exceeded",
+			name:           "timeout with nil AuthConfig is unhealthy",
+			target:         targetNoAuthConfig,
+			err:            errors.New("request timeout"),
+			expectedStatus: vmcp.BackendUnhealthy,
+		},
+		{
+			name:           "deadline exceeded with nil AuthConfig is unhealthy",
+			target:         targetNoAuthConfig,
 			err:            errors.New("context deadline exceeded"),
 			expectedStatus: vmcp.BackendUnhealthy,
 		},
 		{
-			name:           "connection refused",
+			name:           "connection refused with nil AuthConfig is unhealthy",
+			target:         targetNoAuthConfig,
 			err:            errors.New("connection refused"),
 			expectedStatus: vmcp.BackendUnhealthy,
 		},
 		{
-			name:           "connection reset",
+			name:           "connection refused with header_injection strategy is still unhealthy",
+			target:         targetWithHeaderInjection,
+			err:            errors.New("connection refused"),
+			expectedStatus: vmcp.BackendUnhealthy,
+		},
+		{
+			name:           "connection reset with nil AuthConfig is unhealthy",
+			target:         targetNoAuthConfig,
 			err:            errors.New("connection reset by peer"),
 			expectedStatus: vmcp.BackendUnhealthy,
 		},
 		{
-			name:           "no route to host",
+			name:           "no route to host with nil AuthConfig is unhealthy",
+			target:         targetNoAuthConfig,
 			err:            errors.New("no route to host"),
 			expectedStatus: vmcp.BackendUnhealthy,
 		},
 		{
-			name:           "network unreachable",
+			name:           "network unreachable with nil AuthConfig is unhealthy",
+			target:         targetNoAuthConfig,
 			err:            errors.New("network is unreachable"),
 			expectedStatus: vmcp.BackendUnhealthy,
 		},
 		{
-			name:           "generic error",
+			name:           "generic error with nil AuthConfig is unhealthy",
+			target:         targetNoAuthConfig,
+			err:            errors.New("something went wrong"),
+			expectedStatus: vmcp.BackendUnhealthy,
+		},
+		{
+			name:           "generic error with token_exchange strategy is still unhealthy",
+			target:         targetWithTokenExchange,
 			err:            errors.New("something went wrong"),
 			expectedStatus: vmcp.BackendUnhealthy,
 		},
@@ -306,7 +412,7 @@ func TestCategorizeError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			status := categorizeError(tt.err)
+			status := categorizeError(tt.target, tt.err)
 			assert.Equal(t, tt.expectedStatus, status)
 		})
 	}
@@ -486,11 +592,13 @@ func TestHealthChecker_CheckHealth_ContextCarriesHealthCheckMarker(t *testing.T)
 			"apply outgoing auth to health check probes")
 }
 
-// TestHealthChecker_CheckHealth_AuthErrorsCategorizesAsUnauthenticated verifies that auth
-// errors from health checks are correctly categorised as BackendUnauthenticated, not
-// BackendUnhealthy. This distinguishes a backend that is reachable-but-needs-auth
-// from one that is down, which is important for health check probes that apply
-// outgoing auth credentials (header_injection or token_exchange).
+// TestHealthChecker_CheckHealth_AuthErrorsCategorizesAsUnauthenticated verifies that
+// auth errors from health checks are categorised as BackendUnauthenticated when the
+// backend target has no outgoing auth strategy configured (AuthConfig nil in these
+// cases). This represents a misconfiguration: the backend requires authentication
+// but no strategy was configured on the target. A 401/403 from a backend that *does*
+// have an outgoing auth strategy is treated as BackendHealthy by the checker and
+// is covered in TestCategorizeError.
 func TestHealthChecker_CheckHealth_AuthErrorsCategorizesAsUnauthenticated(t *testing.T) {
 	t.Parallel()
 
@@ -551,6 +659,80 @@ func TestHealthChecker_CheckHealth_AuthErrorsCategorizesAsUnauthenticated(t *tes
 			assert.Error(t, err)
 			assert.Equal(t, vmcp.BackendUnauthenticated, status,
 				"auth failure from a health probe should be BackendUnauthenticated, not BackendUnhealthy")
+		})
+	}
+}
+
+// TestHealthChecker_CheckHealth_AuthErrorWithOutgoingAuthIsHealthy verifies that a
+// 401/403 from a backend that has an outgoing auth strategy configured (e.g.,
+// upstream_inject, token_exchange, header_injection) is treated as BackendHealthy.
+// Health probes deliberately do not carry user credentials, so the backend's auth
+// challenge is the expected response and proves reachability. This is the behavior
+// change introduced by the fix for issue #4920.
+func TestHealthChecker_CheckHealth_AuthErrorWithOutgoingAuthIsHealthy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		authConfig *authtypes.BackendAuthStrategy
+		err        error
+	}{
+		{
+			name:       "upstream_inject + sentinel auth error",
+			authConfig: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUpstreamInject},
+			err:        vmcp.ErrAuthenticationFailed,
+		},
+		{
+			name:       "token_exchange + status code 401",
+			authConfig: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeTokenExchange},
+			err:        fmt.Errorf("backend unavailable: failed to initialize client for backend my-backend: status code 401"),
+		},
+		{
+			name:       "header_injection + HTTP 403",
+			authConfig: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeHeaderInjection},
+			err:        errors.New("HTTP 403 forbidden"),
+		},
+		{
+			name:       "upstream_inject + wrapped sentinel",
+			authConfig: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUpstreamInject},
+			err:        fmt.Errorf("%w: unauthorized (401)", vmcp.ErrAuthenticationFailed),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			t.Cleanup(ctrl.Finish)
+
+			mockClient := mocks.NewMockBackendClient(ctrl)
+			mockClient.EXPECT().
+				ListCapabilities(gomock.Any(), gomock.Any()).
+				Return(nil, tt.err).
+				Times(1)
+
+			checker := NewHealthChecker(mockClient, 5*time.Second, 0)
+			target := &vmcp.BackendTarget{
+				WorkloadID:   "backend-1",
+				WorkloadName: "test-backend",
+				BaseURL:      "http://localhost:8080",
+				AuthConfig:   tt.authConfig,
+			}
+
+			status, err := checker.CheckHealth(t.Context(), target)
+			// When the status is BackendHealthy (expected auth challenge) the
+			// checker returns a nil error so the monitor records it as a
+			// successful check and does not increment failure counters or open
+			// the circuit breaker.
+			assert.NoError(t, err,
+				"auth challenge from an auth-configured backend must be reported "+
+					"as a successful check (nil error) so the monitor records "+
+					"success and the circuit breaker stays closed")
+			assert.Equal(t, vmcp.BackendHealthy, status,
+				"auth failure from a probe against a backend with an outgoing "+
+					"auth strategy configured must be BackendHealthy — the challenge "+
+					"is the expected response to a no-credential probe")
 		})
 	}
 }

@@ -143,7 +143,16 @@ const (
 	// BackendUnknown indicates the backend health status is unknown.
 	BackendUnknown BackendHealthStatus = "unknown"
 
-	// BackendUnauthenticated indicates the backend is not authenticated.
+	// BackendUnauthenticated indicates the backend returned an authentication error
+	// (HTTP 401/403) while the backend target had no outgoing auth strategy
+	// configured (AuthConfig nil or StrategyTypeUnauthenticated). This signals
+	// operator misconfiguration: the backend requires authentication but no
+	// auth strategy was configured on the backend target.
+	//
+	// Note: a 401/403 from a backend with a configured outgoing auth strategy is
+	// treated as BackendHealthy, because health probes deliberately do not carry
+	// user credentials and the backend's challenge proves reachability and a
+	// working auth layer.
 	BackendUnauthenticated BackendHealthStatus = "unauthenticated"
 )
 
@@ -152,7 +161,7 @@ const (
 //   - healthy → ready
 //   - degraded → degraded
 //   - unhealthy → unavailable
-//   - unauthenticated → unauthenticated (backend is reachable but needs per-request user auth)
+//   - unauthenticated → unauthenticated (misconfig: backend requires auth but none configured)
 //   - unknown → unknown
 func (s BackendHealthStatus) ToCRDStatus() string {
 	switch s {

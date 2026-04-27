@@ -151,6 +151,9 @@ func wrapText(text string, maxW int, indent string) []string {
 
 // runesTruncate truncates s to at most n runes, appending "..." if truncated.
 func runesTruncate(s string, n int) string {
+	if n <= 1 {
+		return "…"
+	}
 	r := []rune(s)
 	if len(r) <= n {
 		return s

@@ -2200,37 +2200,58 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	return outgoing, backendsWithAuthConfig, allAuthErrors
 }
 
-// injectSubjectProviderIfNeeded auto-populates SubjectProviderName on a token_exchange
-// strategy when it is empty and an embedded auth server is configured on the VirtualMCPServer.
-// Mirrors injectUpstreamProviderIfNeeded in pkg/runner/middleware.go, which does the same
-// for Cedar's PrimaryUpstreamProvider.
-// Returns strategy unchanged when it is nil, not a token_exchange strategy, already has
-// SubjectProviderName set, or no embedded auth server is configured.
+// injectSubjectProviderIfNeeded auto-populates the upstream provider name on
+// token_exchange and aws_sts strategies when the field is empty and an embedded
+// auth server is configured on the VirtualMCPServer.
+// For token_exchange it sets SubjectProviderName; for aws_sts it sets
+// TokenProviderName. Mirrors injectUpstreamProviderIfNeeded in
+// pkg/runner/middleware.go, which does the same for Cedar's PrimaryUpstreamProvider.
+// Returns strategy unchanged when it is nil, not an applicable strategy type,
+// already has the provider name set, or no embedded auth server is configured.
 func injectSubjectProviderIfNeeded(
 	strategy *authtypes.BackendAuthStrategy,
 	embeddedCfg *mcpv1beta1.EmbeddedAuthServerConfig,
 ) *authtypes.BackendAuthStrategy {
-	if strategy == nil ||
-		strategy.Type != authtypes.StrategyTypeTokenExchange ||
-		strategy.TokenExchange == nil ||
-		strategy.TokenExchange.SubjectProviderName != "" ||
-		embeddedCfg == nil {
+	if strategy == nil || embeddedCfg == nil {
 		return strategy
 	}
 
-	providerName := func() string {
-		if len(embeddedCfg.UpstreamProviders) > 0 {
-			return authserver.ResolveUpstreamName(embeddedCfg.UpstreamProviders[0].Name)
+	switch strategy.Type {
+	case authtypes.StrategyTypeTokenExchange:
+		if strategy.TokenExchange == nil || strategy.TokenExchange.SubjectProviderName != "" {
+			return strategy
 		}
-		return authserver.DefaultUpstreamName
-	}()
+		providerName := resolveFirstUpstreamProvider(embeddedCfg)
+		copied := *strategy
+		teCopied := *strategy.TokenExchange
+		teCopied.SubjectProviderName = providerName
+		copied.TokenExchange = &teCopied
+		return &copied
 
-	// Copy the strategy to avoid mutating the original.
-	copied := *strategy
-	teCopied := *strategy.TokenExchange
-	teCopied.SubjectProviderName = providerName
-	copied.TokenExchange = &teCopied
-	return &copied
+	case authtypes.StrategyTypeAwsSts:
+		if strategy.AwsSts == nil || strategy.AwsSts.TokenProviderName != "" {
+			return strategy
+		}
+		providerName := resolveFirstUpstreamProvider(embeddedCfg)
+		copied := *strategy
+		stsCopied := *strategy.AwsSts
+		stsCopied.TokenProviderName = providerName
+		copied.AwsSts = &stsCopied
+		return &copied
+
+	default:
+		return strategy
+	}
+}
+
+// resolveFirstUpstreamProvider returns the resolved name of the first upstream
+// provider configured on the embedded auth server, or the default name if none
+// are configured.
+func resolveFirstUpstreamProvider(embeddedCfg *mcpv1beta1.EmbeddedAuthServerConfig) string {
+	if len(embeddedCfg.UpstreamProviders) > 0 {
+		return authserver.ResolveUpstreamName(embeddedCfg.UpstreamProviders[0].Name)
+	}
+	return authserver.DefaultUpstreamName
 }
 
 // convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.

@@ -26,7 +26,9 @@ import (
 // defaultURLFieldName is the default URL field name used when no specific mapping exists
 const defaultURLFieldName = "url"
 
-// ClientApp is an enum of supported AI clients (IDEs, editors, and coding tools).
+// ClientApp is an enum of MCP-capable AI clients (IDEs, editors, and coding tools).
+// Note: "xcode" is an LLM-gateway-only client (use "thv llm setup"); it is
+// intentionally excluded from MCP client registration endpoints.
 //
 //nolint:revive // ClientApp is intentionally named for clarity across packages
 type ClientApp string
@@ -86,6 +88,9 @@ const (
 	KimiCli ClientApp = "kimi-cli"
 	// Factory represents the Factory.ai Droid CLI.
 	Factory ClientApp = "factory"
+	// Xcode represents GitHub Copilot for Xcode.
+	// Xcode does not support MCP; it is an LLM-gateway-only entry.
+	Xcode ClientApp = "xcode"
 )
 
 // Extension is extension of the client config file.
@@ -134,6 +139,18 @@ const (
 	PlatformWindows Platform = "windows"
 )
 
+// LLMGatewayKeySpec describes a single JSON key to patch when configuring
+// (or reverting) LLM gateway access for a tool. JSONPointer is an RFC 6901
+// path (e.g. "/apiKeyHelper" or "/env/ANTHROPIC_BASE_URL"). Dots in flat
+// top-level key names (e.g. "/cursor.general.openAIBaseURL") are treated as
+// literals by hujson.Patch.
+// ValueField names which LLMApplyConfig field to write: "GatewayURL",
+// "ProxyBaseURL", "TokenHelperCommand", or "PlaceholderAPIKey" (constant "thv-proxy").
+type LLMGatewayKeySpec struct {
+	JSONPointer string // RFC 6901 path
+	ValueField  string // "GatewayURL" | "ProxyBaseURL" | "TokenHelperCommand" | "PlaceholderAPIKey"
+}
+
 // clientAppConfig represents a configuration path for a supported MCP client.
 type clientAppConfig struct {
 	ClientType                    ClientApp
@@ -162,6 +179,25 @@ type clientAppConfig struct {
 	// (e.g., XDG ~/.config/ on Linux/macOS).
 	// If nil or missing an entry for the current OS, no prefix is added.
 	SkillsPlatformPrefix map[Platform][]string
+	// LLM gateway configuration ─────────────────────────────────────────────
+	// LLMGatewayMode is "direct" (token-helper) or "proxy" (static key via
+	// localhost reverse proxy), or "" when the tool has no LLM gateway support.
+	LLMGatewayMode string
+	// LLMGatewayOnly marks tools that support LLM gateway but not MCP (e.g. Xcode).
+	// Entries with this flag are excluded from the MCP client list.
+	LLMGatewayOnly bool
+	// LLMSettingsFile is the filename of the settings file to patch for LLM
+	// gateway (may differ from SettingsFile used for MCP).
+	LLMSettingsFile string
+	// LLMSettingsRelPath is the path segments from home dir + platform prefix
+	// to the directory containing LLMSettingsFile.
+	LLMSettingsRelPath []string
+	// LLMSettingsPlatformPrefix maps Platform to path segments prepended before
+	// LLMSettingsRelPath (same semantics as PlatformPrefix).
+	LLMSettingsPlatformPrefix map[Platform][]string
+	// LLMGatewayKeys lists the JSON Pointer paths and value-field mappings to
+	// apply when setting up (or reverting) LLM gateway access.
+	LLMGatewayKeys []LLMGatewayKeySpec
 }
 
 // extractServersKeyFromConfig extracts the servers key from MCPServersPathPrefix
@@ -279,6 +315,19 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".copilot", "skills"},
 		SkillsProjectPath: []string{".github", "skills"},
+		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
+		LLMGatewayMode:     "proxy",
+		LLMSettingsFile:    "settings.json",
+		LLMSettingsRelPath: []string{"Code - Insiders", "User"},
+		LLMSettingsPlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
+		},
+		LLMGatewayKeys: []LLMGatewayKeySpec{
+			{JSONPointer: "/github.copilot.advanced.serverUrl", ValueField: "ProxyBaseURL"},
+			{JSONPointer: "/github.copilot.advanced.apiKey", ValueField: "PlaceholderAPIKey"},
+		},
 	},
 	{
 		ClientType:   VSCode,
@@ -308,6 +357,19 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".copilot", "skills"},
 		SkillsProjectPath: []string{".github", "skills"},
+		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
+		LLMGatewayMode:     "proxy",
+		LLMSettingsFile:    "settings.json",
+		LLMSettingsRelPath: []string{"Code", "User"},
+		LLMSettingsPlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
+		},
+		LLMGatewayKeys: []LLMGatewayKeySpec{
+			{JSONPointer: "/github.copilot.advanced.serverUrl", ValueField: "ProxyBaseURL"},
+			{JSONPointer: "/github.copilot.advanced.apiKey", ValueField: "PlaceholderAPIKey"},
+		},
 	},
 	{
 		ClientType:           Cursor,
@@ -332,6 +394,19 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".cursor", "skills"},
 		SkillsProjectPath: []string{".cursor", "skills"},
+		// LLM gateway: patches the editor settings.json (different from the MCP mcp.json)
+		LLMGatewayMode:     "proxy",
+		LLMSettingsFile:    "settings.json",
+		LLMSettingsRelPath: []string{"Cursor", "User"},
+		LLMSettingsPlatformPrefix: map[Platform][]string{
+			PlatformLinux:   {".config"},
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
+		},
+		LLMGatewayKeys: []LLMGatewayKeySpec{
+			{JSONPointer: "/cursor.general.openAIBaseURL", ValueField: "ProxyBaseURL"},
+			{JSONPointer: "/cursor.general.openAIAPIKey", ValueField: "PlaceholderAPIKey"},
+		},
 	},
 	{
 		ClientType:           ClaudeCode,
@@ -354,6 +429,14 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".claude", "skills"},
 		SkillsProjectPath: []string{".claude", "skills"},
+		// LLM gateway: patches ~/.claude/settings.json (different from the MCP .claude.json)
+		LLMGatewayMode:     "direct",
+		LLMSettingsFile:    "settings.json",
+		LLMSettingsRelPath: []string{".claude"},
+		LLMGatewayKeys: []LLMGatewayKeySpec{
+			{JSONPointer: "/apiKeyHelper", ValueField: "TokenHelperCommand"},
+			{JSONPointer: "/env/ANTHROPIC_BASE_URL", ValueField: "GatewayURL"},
+		},
 	},
 	{
 		ClientType:           Windsurf,
@@ -724,6 +807,14 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".agents", "skills"},
 		SkillsProjectPath: []string{".agents", "skills"},
+		// LLM gateway: patches the same settings.json used for MCP
+		LLMGatewayMode:     "direct",
+		LLMSettingsFile:    "settings.json",
+		LLMSettingsRelPath: []string{".gemini"},
+		LLMGatewayKeys: []LLMGatewayKeySpec{
+			{JSONPointer: "/auth/tokenCommand", ValueField: "TokenHelperCommand"},
+			{JSONPointer: "/baseUrl", ValueField: "GatewayURL"},
+		},
 	},
 	{
 		ClientType:   VSCodeServer,
@@ -824,6 +915,21 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsGlobalPath:  []string{".factory", "skills"},
 		SkillsProjectPath: []string{".factory", "skills"},
 	},
+	{
+		// Xcode does not support MCP; it is an LLM-gateway-only entry.
+		ClientType:     Xcode,
+		Description:    "GitHub Copilot for Xcode",
+		LLMGatewayOnly: true,
+		LLMGatewayMode: "proxy",
+		// Full path is macOS-specific; on Linux/Windows this directory will not
+		// exist, so DetectedLLMGatewayClients() naturally returns false there.
+		LLMSettingsFile:    "editorSettings.json",
+		LLMSettingsRelPath: []string{"Library", "Application Support", "GitHub Copilot for Xcode"},
+		LLMGatewayKeys: []LLMGatewayKeySpec{
+			{JSONPointer: "/openAIBaseURL", ValueField: "ProxyBaseURL"},
+			{JSONPointer: "/apiKey", ValueField: "PlaceholderAPIKey"},
+		},
+	},
 }
 
 // GetAllClients returns a slice of all supported MCP client types, sorted alphabetically.
@@ -831,7 +937,9 @@ var supportedClientIntegrations = []clientAppConfig{
 func GetAllClients() []ClientApp {
 	clients := make([]ClientApp, 0, len(supportedClientIntegrations))
 	for _, config := range supportedClientIntegrations {
-		clients = append(clients, config.ClientType)
+		if !config.LLMGatewayOnly {
+			clients = append(clients, config.ClientType)
+		}
 	}
 	// Sort alphabetically
 	sort.Slice(clients, func(i, j int) bool {
@@ -843,7 +951,7 @@ func GetAllClients() []ClientApp {
 // IsValidClient checks if the provided client type is supported.
 func IsValidClient(clientType string) bool {
 	for _, config := range supportedClientIntegrations {
-		if string(config.ClientType) == clientType {
+		if string(config.ClientType) == clientType && !config.LLMGatewayOnly {
 			return true
 		}
 	}
@@ -864,9 +972,13 @@ func GetClientDescription(clientType ClientApp) string {
 // GetClientListFormatted returns a formatted multi-line string listing all supported clients
 // with their descriptions, sorted alphabetically. This is suitable for use in CLI help text.
 func GetClientListFormatted() string {
-	// Create a sorted copy of the configurations
-	configs := make([]clientAppConfig, len(supportedClientIntegrations))
-	copy(configs, supportedClientIntegrations)
+	// Create a sorted copy of MCP-capable configurations (exclude LLM-gateway-only entries).
+	var configs []clientAppConfig
+	for _, cfg := range supportedClientIntegrations {
+		if !cfg.LLMGatewayOnly {
+			configs = append(configs, cfg)
+		}
+	}
 	sort.Slice(configs, func(i, j int) bool {
 		return configs[i].ClientType < configs[j].ClientType
 	})
@@ -983,6 +1095,9 @@ func (cm *ClientManager) CreateClientConfig(clientType ClientApp) (*ConfigFile, 
 	clientCfg := cm.lookupClientAppConfig(clientType)
 	if clientCfg == nil {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedClientType, clientType)
+	}
+	if clientCfg.LLMGatewayOnly {
+		return nil, fmt.Errorf("%w: %s does not support MCP configuration", ErrUnsupportedClientType, clientType)
 	}
 
 	// Build the path to the configuration file

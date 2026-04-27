@@ -245,24 +245,23 @@ When an MCP server is deployed in Kubernetes and served via the ToolHive Registr
 
 ### Automated validation (Go tests)
 
-The registry is automatically validated against the schema during development
-and CI/CD through Go tests. This ensures that any changes to the registry data
-are immediately validated.
+The registry is automatically validated against the upstream schema during
+development and CI/CD through Go tests. This ensures that any changes to the
+registry data are immediately validated.
 
-The validation is implemented in
-[`pkg/registry/schema_validation.go`](../../pkg/registry/schema_validation.go)
-and tested in
+Schema validation is provided by
+[`toolhive-core`](https://github.com/stacklok/toolhive-core)'s
+`registry/types.ValidateUpstreamRegistryBytes` and exercised locally in
 [`pkg/registry/schema_validation_test.go`](../../pkg/registry/schema_validation_test.go).
 
 **Key tests:**
 
-- `TestEmbeddedRegistrySchemaValidation` - Validates the embedded
-  `registry.json` against the legacy schema
-- `TestRegistrySchemaValidation` - Comprehensive test suite with valid and
-  invalid legacy registry examples
-- `TestValidateUpstreamRegistry` - Validates upstream registry format
-- `TestValidatePublisherProvidedExtensions` - Validates publisher-provided
-  extensions structure
+- `TestEmbeddedRegistrySchemaValidation` - Validates the embedded upstream
+  registry against the upstream registry schema
+- `TestValidateEmbeddedRegistryCanLoadData` - Confirms the embedded upstream
+  registry parses into the internal types
+- `TestUpstreamRegistryParsing` - Round-trips upstream registry data through
+  `parseRegistryData`
 
 **Running the validation:**
 

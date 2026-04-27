@@ -226,6 +226,13 @@ func TestRemoteRegistryProvider_ValidateConnectivity(t *testing.T) {
 			errorContains:  "no servers or groups",
 		},
 		{
+			name:           "legacy format surfaces migration hint",
+			responseBody:   `{"version": "1.0.0", "servers": {"x": {"image": "x:latest"}}}`,
+			responseStatus: 200,
+			expectError:    true,
+			errorContains:  "legacy ToolHive format",
+		},
+		{
 			name:           "non-200 status code",
 			responseBody:   "Not Found",
 			responseStatus: 404,

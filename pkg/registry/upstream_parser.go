@@ -11,6 +11,7 @@ import (
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 
 	types "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/registry/legacyhint"
 )
 
 // errLegacyFormat is returned when the input looks like the legacy ToolHive
@@ -19,9 +20,7 @@ import (
 // upstream's "data.servers" path), leaving the caller with an empty registry
 // and no actionable error. The error wording carries the migration step so
 // consumers can surface it without a typed match.
-var errLegacyFormat = errors.New(
-	"registry file appears to be in the legacy ToolHive format; " +
-		"run `thv registry convert --in <path> --in-place` to migrate to the upstream MCP format")
+var errLegacyFormat = errors.New(legacyhint.MigrationMessage)
 
 // parseRegistryData parses raw JSON in the upstream MCP registry format and
 // converts it into the internal types.Registry plus any embedded skills.
@@ -29,7 +28,7 @@ var errLegacyFormat = errors.New(
 // Returns errLegacyFormat if the input looks like the legacy ToolHive registry
 // format.
 func parseRegistryData(data []byte) (*types.Registry, []types.Skill, error) {
-	if !isUpstreamJSON(data) && looksLikeLegacyJSON(data) {
+	if !legacyhint.IsUpstream(data) && legacyhint.Looks(data) {
 		return nil, nil, errLegacyFormat
 	}
 

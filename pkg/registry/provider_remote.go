@@ -15,6 +15,7 @@ import (
 
 	types "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/registry/legacyhint"
 )
 
 // RemoteRegistryProvider provides registry data from a remote HTTP endpoint
@@ -78,6 +79,10 @@ func (p *RemoteRegistryProvider) validateConnectivity() error {
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read registry response: %w", err)
+	}
+
+	if legacyhint.Looks(data) {
+		return fmt.Errorf("registry at %s: %s", p.registryURL, legacyhint.MigrationMessage)
 	}
 
 	var upstream types.UpstreamRegistry

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -207,7 +208,9 @@ func buildLLMTokenSource(cfg *llm.Config, interactive bool) (*llm.TokenSource, e
 // ── setup / teardown ─────────────────────────────────────────────────────────
 
 func newLLMSetupCommand() *cobra.Command {
-	return &cobra.Command{
+	var opts llm.SetOptions
+
+	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Configure all detected AI tools to use the LLM gateway",
 		Long: `Detect installed AI coding tools (Claude Code, Gemini CLI, Cursor, VS Code,
@@ -219,15 +222,39 @@ Token-helper tools (Claude Code, Gemini CLI) are configured to call
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".
 
+Inline flags (--gateway-url, --issuer, --client-id, etc.) are merged into the
+persisted configuration before setup runs, so you can combine "config set" and
+"setup" in a single command.
+
 Run "thv llm teardown" to revert all changes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runLLMSetup(cmd)
+			return runLLMSetup(cmd, opts)
 		},
 	}
+
+	cmd.Flags().StringVar(&opts.GatewayURL, "gateway-url", "", "LLM gateway base URL (must use HTTPS)")
+	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
+	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
+	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
+	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (default 14000)")
+	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (default: ephemeral)")
+
+	return cmd
 }
 
-func runLLMSetup(cmd *cobra.Command) error {
+func runLLMSetup(cmd *cobra.Command, opts llm.SetOptions) error {
+	// If any inline flag was provided, persist it to config before reading.
+	hasInlineFlags := opts.GatewayURL != "" || opts.Issuer != "" || opts.ClientID != "" ||
+		opts.Audience != "" || opts.ProxyPort != 0 || opts.CallbackPort != 0
+	if hasInlineFlags {
+		if err := config.UpdateConfig(func(c *config.Config) error {
+			return c.LLM.SetFields(opts)
+		}); err != nil {
+			return fmt.Errorf("persisting inline flags: %w", err)
+		}
+	}
+
 	provider := config.NewDefaultProvider()
 	llmCfg := provider.GetConfig().LLM
 
@@ -292,6 +319,35 @@ func runLLMSetup(cmd *cobra.Command) error {
 		}
 		return fmt.Errorf("persisting tool configuration: %w", err)
 	}
+
+	// Trigger OIDC browser login so the user is authenticated before using the tools.
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Opening browser for OIDC login…")
+	ts, err := buildLLMTokenSource(&llmCfg, true /* interactive */)
+	if err != nil {
+		return fmt.Errorf("building token source: %w", err)
+	}
+	if _, err := ts.Token(cmd.Context()); err != nil {
+		return fmt.Errorf("OIDC login failed: %w", err)
+	}
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Login successful.")
+
+	// If any proxy-mode tool was configured, start the background proxy and
+	// persist its PID so teardown can stop it.
+	if hasProxyMode(configured) {
+		pid, err := startBackgroundProxy(self)
+		if err != nil {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not start LLM proxy: %v\n", err)
+		} else {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Started LLM proxy (PID %d)\n", pid)
+			if updateErr := config.UpdateConfig(func(c *config.Config) error {
+				c.LLM.Proxy.PID = pid
+				return nil
+			}); updateErr != nil {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not persist proxy PID: %v\n", updateErr)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -389,6 +445,17 @@ func runLLMTeardown(cmd *cobra.Command, args []string, purgeTokens bool) error {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Reverted %s  (%s)\n", tc.Tool, tc.ConfigPath)
 	}
 
+	// Stop the background proxy if one was started by setup.
+	if llmCfg.Proxy.PID > 0 {
+		if proc, err := os.FindProcess(llmCfg.Proxy.PID); err == nil {
+			if err := proc.Signal(os.Interrupt); err != nil {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not stop proxy (PID %d): %v\n", llmCfg.Proxy.PID, err)
+			} else {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Stopped LLM proxy (PID %d)\n", llmCfg.Proxy.PID)
+			}
+		}
+	}
+
 	if purgeTokens {
 		secretsProvider, err := secrets.GetSystemSecretsProvider()
 		if err != nil {
@@ -400,6 +467,7 @@ func runLLMTeardown(cmd *cobra.Command, args []string, purgeTokens bool) error {
 
 	return config.UpdateConfig(func(c *config.Config) error {
 		c.LLM.ConfiguredTools = remaining
+		c.LLM.Proxy.PID = 0
 		return nil
 	})
 }
@@ -475,4 +543,30 @@ Runs non-interactively — will not launch a browser flow.`,
 	}
 
 	return cmd
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+// startBackgroundProxy spawns "thv llm proxy start" as a detached background
+// process and returns its PID. The child outlives the parent process.
+func startBackgroundProxy(self string) (int, error) {
+	//nolint:gosec // self is the path to the current executable, not user input
+	cmd := exec.Command(self, "llm", "proxy", "start")
+	// Redirect output so the child does not inherit the parent terminal.
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("starting LLM proxy: %w", err)
+	}
+	return cmd.Process.Pid, nil
+}
+
+// hasProxyMode reports whether any of the given tool configs uses proxy mode.
+func hasProxyMode(cfgs []llm.ToolConfig) bool {
+	for _, t := range cfgs {
+		if t.Mode == llmtools.ModeProxy {
+			return true
+		}
+	}
+	return false
 }

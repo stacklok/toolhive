@@ -34,6 +34,7 @@ type Config struct {
 // ProxyConfig holds configuration for the localhost reverse proxy.
 type ProxyConfig struct {
 	ListenPort int `yaml:"listen_port,omitempty" json:"listen_port,omitempty"`
+	PID        int `yaml:"pid,omitempty"         json:"pid,omitempty"`
 }
 
 // ToolConfig records a tool that setup has configured, so teardown knows

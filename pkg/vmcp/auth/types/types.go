@@ -155,7 +155,9 @@ type RoleMapping struct {
 	RoleArn string `json:"roleArn" yaml:"roleArn"`
 
 	// Priority determines evaluation order (lower values = higher priority).
-	Priority *int32 `json:"priority,omitempty" yaml:"priority,omitempty"`
+	// Mirrors awssts.RoleMapping.Priority, which is *int because the role mapper
+	// uses math.MaxInt for nil-priority semantics in effectivePriority.
+	Priority *int `json:"priority,omitempty" yaml:"priority,omitempty"`
 }
 
 // AwsStsConfig configures AWS STS authentication with SigV4 request signing.
@@ -185,9 +187,9 @@ type AwsStsConfig struct {
 	// SessionNameClaim is the JWT claim to use for the role session name.
 	SessionNameClaim string `json:"sessionNameClaim,omitempty" yaml:"sessionNameClaim,omitempty"`
 
-	// TokenProviderName selects which upstream provider's token to use as the
+	// SubjectProviderName selects which upstream provider's token to use as the
 	// web identity token for AssumeRoleWithWebIdentity. When set, the token is
 	// looked up from Identity.UpstreamTokens instead of the request's
 	// Authorization header.
-	TokenProviderName string `json:"tokenProviderName,omitempty" yaml:"tokenProviderName,omitempty"`
+	SubjectProviderName string `json:"subjectProviderName,omitempty" yaml:"subjectProviderName,omitempty"`
 }

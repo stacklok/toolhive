@@ -79,7 +79,7 @@ func TestAwsStsConverter(t *testing.T) {
 		assert.Equal(t, "admins", cfg.RoleMappings[0].Claim)
 		assert.Equal(t, "arn:aws:iam::123456789012:role/admin", cfg.RoleMappings[0].RoleArn)
 		require.NotNil(t, cfg.RoleMappings[0].Priority)
-		assert.Equal(t, int32(10), *cfg.RoleMappings[0].Priority)
+		assert.Equal(t, 10, *cfg.RoleMappings[0].Priority)
 		assert.Equal(t, `"devs" in claims["groups"]`, cfg.RoleMappings[1].Matcher)
 		assert.Equal(t, "arn:aws:iam::123456789012:role/dev", cfg.RoleMappings[1].RoleArn)
 	})

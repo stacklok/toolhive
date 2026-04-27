@@ -964,14 +964,14 @@ func TestGenerateUniqueHeaderInjectionEnvVarName(t *testing.T) {
 	}
 }
 
-// tokenExchangeStrategy returns a minimal token_exchange BackendAuthStrategy for tests.
-func awsStsStrategy(tokenProviderName string) *authtypes.BackendAuthStrategy {
+// awsStsStrategy returns a minimal aws_sts BackendAuthStrategy for tests.
+func awsStsStrategy(subjectProviderName string) *authtypes.BackendAuthStrategy {
 	return &authtypes.BackendAuthStrategy{
 		Type: authtypes.StrategyTypeAwsSts,
 		AwsSts: &authtypes.AwsStsConfig{
-			Region:            "us-east-1",
-			FallbackRoleArn:   "arn:aws:iam::123456789012:role/test",
-			TokenProviderName: tokenProviderName,
+			Region:              "us-east-1",
+			FallbackRoleArn:     "arn:aws:iam::123456789012:role/test",
+			SubjectProviderName: subjectProviderName,
 		},
 	}
 }
@@ -1067,7 +1067,7 @@ func TestInjectSubjectProviderIfNeeded(t *testing.T) {
 		},
 		// aws_sts strategy cases
 		{
-			name:                    "aws_sts_populates_token_provider_name",
+			name:                    "aws_sts_populates_subject_provider_name",
 			strategy:                awsStsStrategy(""),
 			embeddedCfg:             embeddedAuthServerCfg("github"),
 			wantSubjectProviderName: "github",
@@ -1101,7 +1101,7 @@ func TestInjectSubjectProviderIfNeeded(t *testing.T) {
 					case result.TokenExchange != nil:
 						assert.Equal(t, tt.wantSubjectProviderName, result.TokenExchange.SubjectProviderName)
 					case result.AwsSts != nil:
-						assert.Equal(t, tt.wantSubjectProviderName, result.AwsSts.TokenProviderName)
+						assert.Equal(t, tt.wantSubjectProviderName, result.AwsSts.SubjectProviderName)
 					}
 				}
 				return
@@ -1119,10 +1119,10 @@ func TestInjectSubjectProviderIfNeeded(t *testing.T) {
 				}
 			case authtypes.StrategyTypeAwsSts:
 				require.NotNil(t, result.AwsSts)
-				assert.Equal(t, tt.wantSubjectProviderName, result.AwsSts.TokenProviderName)
+				assert.Equal(t, tt.wantSubjectProviderName, result.AwsSts.SubjectProviderName)
 				// Verify the original strategy was not mutated.
 				if tt.strategy != nil && tt.strategy.AwsSts != nil {
-					assert.Empty(t, tt.strategy.AwsSts.TokenProviderName,
+					assert.Empty(t, tt.strategy.AwsSts.SubjectProviderName,
 						"original strategy must not be mutated")
 				}
 			}

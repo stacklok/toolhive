@@ -690,7 +690,7 @@ type AWSStsConfig struct {
 	// +optional
 	SessionNameClaim string `json:"sessionNameClaim,omitempty"`
 
-	// TokenProviderName is the name of the upstream provider whose access token
+	// SubjectProviderName is the name of the upstream provider whose access token
 	// is used as the web identity token for STS AssumeRoleWithWebIdentity.
 	// This field is used exclusively by VirtualMCPServer, where there is no
 	// upstream swap middleware to replace the bearer token before the strategy runs.
@@ -702,7 +702,7 @@ type AWSStsConfig struct {
 	// When no embedded auth server is present, the bearer token from the incoming
 	// request's Authorization header is used instead.
 	// +optional
-	TokenProviderName string `json:"tokenProviderName,omitempty"`
+	SubjectProviderName string `json:"subjectProviderName,omitempty"`
 }
 
 // RoleMapping defines a rule for mapping JWT claims to IAM roles.

@@ -234,8 +234,8 @@ const docTemplate = `{
                         "description": "SessionNameClaim is the JWT claim to use for role session name (default: \"sub\").",
                         "type": "string"
                     },
-                    "token_provider_name": {
-                        "description": "TokenProviderName identifies which upstream provider's access token to use\nfor STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer\ntoken from the incoming HTTP request is used.",
+                    "subject_provider_name": {
+                        "description": "SubjectProviderName identifies which upstream provider's access token to use\nfor STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer\ntoken from the incoming HTTP request is used.",
                         "type": "string"
                     }
                 },

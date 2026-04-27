@@ -4,12 +4,14 @@
 package strategies
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -130,17 +132,20 @@ func authenticateWithCached(
 	}
 
 	var bearerToken string
-	if cfg.TokenProviderName != "" {
-		bearerToken = identity.UpstreamTokens[cfg.TokenProviderName] // nil map safe in Go
+	if cfg.SubjectProviderName != "" {
+		bearerToken = identity.UpstreamTokens[cfg.SubjectProviderName] // nil map safe in Go
 		if bearerToken == "" {
-			return fmt.Errorf("provider %q: %w", cfg.TokenProviderName, authtypes.ErrUpstreamTokenNotFound)
+			return fmt.Errorf("provider %q: %w", cfg.SubjectProviderName, authtypes.ErrUpstreamTokenNotFound)
 		}
 	} else {
-		var err error
-		bearerToken, err = auth.ExtractBearerToken(req)
-		if err != nil {
-			return fmt.Errorf("bearer token required for aws_sts: %w", err)
+		// Fall back to the original incoming token captured in the identity.
+		// req is the outgoing backend request being constructed and is not
+		// guaranteed to carry the caller's Authorization header.
+		if identity.Token == "" {
+			return fmt.Errorf("identity has no token")
 		}
+		slog.Debug("aws_sts: SubjectProviderName empty, falling back to identity.Token")
+		bearerToken = identity.Token
 	}
 
 	sessionName, err := resolveSessionName(cfg, identity.Claims)
@@ -268,15 +273,21 @@ func (s *AwsStsStrategy) getOrCreateContext(ctx context.Context, cfg *awssts.Con
 // buildAwsStsCacheKey computes a SHA-256 hash over all fields that differentiate
 // backend configurations: Region, Service, FallbackRoleArn, every RoleMapping's
 // Claim/Matcher/RoleArn/Priority (sorted by RoleArn for stability), RoleClaim,
-// and SessionNameClaim. Using a hash avoids structural ambiguity from colons
-// embedded in ARN strings and ensures configs that share role ARNs but differ in
-// matching logic (Claim, Matcher) produce distinct keys.
+// SessionNameClaim, SubjectProviderName, and the resolved SessionDuration.
+// SessionDuration is included because it is baked into the cached awsStsContext;
+// omitting it would let two backends differing only in session duration share a
+// cache entry and silently use the wrong value. Using a hash avoids structural
+// ambiguity from colons embedded in ARN strings and ensures configs that share
+// role ARNs but differ in matching logic (Claim, Matcher) produce distinct keys.
 func buildAwsStsCacheKey(cfg *awssts.Config) string {
-	// Sort role mappings by RoleArn for a stable ordering.
+	// Sort role mappings by RoleArn for a stable ordering. Use a stable sort so
+	// that mappings sharing a RoleArn but differing in Claim or Matcher keep
+	// their input order — otherwise logically identical configs could hash to
+	// different keys across calls and cause spurious cache misses.
 	mappings := make([]awssts.RoleMapping, len(cfg.RoleMappings))
 	copy(mappings, cfg.RoleMappings)
-	sort.Slice(mappings, func(i, j int) bool {
-		return mappings[i].RoleArn < mappings[j].RoleArn
+	slices.SortStableFunc(mappings, func(a, b awssts.RoleMapping) int {
+		return cmp.Compare(a.RoleArn, b.RoleArn)
 	})
 
 	var sb strings.Builder
@@ -290,7 +301,9 @@ func buildAwsStsCacheKey(cfg *awssts.Config) string {
 	sb.WriteByte(0)
 	sb.WriteString(cfg.SessionNameClaim)
 	sb.WriteByte(0)
-	sb.WriteString(cfg.TokenProviderName)
+	sb.WriteString(cfg.SubjectProviderName)
+	sb.WriteByte(0)
+	fmt.Fprintf(&sb, "%d", cfg.GetSessionDuration())
 	sb.WriteByte(0)
 	for _, rm := range mappings {
 		sb.WriteString(rm.RoleArn)
@@ -315,12 +328,12 @@ func buildAwsStsCacheKey(cfg *awssts.Config) string {
 // awssts implementation package.
 func toAwsStsConfig(in *authtypes.AwsStsConfig) *awssts.Config {
 	cfg := &awssts.Config{
-		Region:            in.Region,
-		Service:           in.Service,
-		FallbackRoleArn:   in.FallbackRoleArn,
-		RoleClaim:         in.RoleClaim,
-		SessionNameClaim:  in.SessionNameClaim,
-		TokenProviderName: in.TokenProviderName,
+		Region:              in.Region,
+		Service:             in.Service,
+		FallbackRoleArn:     in.FallbackRoleArn,
+		RoleClaim:           in.RoleClaim,
+		SessionNameClaim:    in.SessionNameClaim,
+		SubjectProviderName: in.SubjectProviderName,
 	}
 
 	if in.SessionDuration != nil {
@@ -331,13 +344,10 @@ func toAwsStsConfig(in *authtypes.AwsStsConfig) *awssts.Config {
 		cfg.RoleMappings = make([]awssts.RoleMapping, len(in.RoleMappings))
 		for i, rm := range in.RoleMappings {
 			cfg.RoleMappings[i] = awssts.RoleMapping{
-				Claim:   rm.Claim,
-				Matcher: rm.Matcher,
-				RoleArn: rm.RoleArn,
-			}
-			if rm.Priority != nil {
-				p := int(*rm.Priority)
-				cfg.RoleMappings[i].Priority = &p
+				Claim:    rm.Claim,
+				Matcher:  rm.Matcher,
+				RoleArn:  rm.RoleArn,
+				Priority: rm.Priority,
 			}
 		}
 	}

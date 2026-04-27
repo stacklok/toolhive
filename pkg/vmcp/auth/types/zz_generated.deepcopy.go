@@ -104,7 +104,7 @@ func (in *RoleMapping) DeepCopyInto(out *RoleMapping) {
 	*out = *in
 	if in.Priority != nil {
 		in, out := &in.Priority, &out.Priority
-		*out = new(int32)
+		*out = new(int)
 		**out = **in
 	}
 }

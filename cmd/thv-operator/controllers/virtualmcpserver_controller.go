@@ -2079,9 +2079,10 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 // injectSubjectProviderIfNeeded auto-populates the upstream provider name on
 // token_exchange and aws_sts strategies when the field is empty and an embedded
 // auth server is configured on the VirtualMCPServer.
-// For token_exchange it sets SubjectProviderName; for aws_sts it sets
-// TokenProviderName. Mirrors injectUpstreamProviderIfNeeded in
-// pkg/runner/middleware.go, which does the same for Cedar's PrimaryUpstreamProvider.
+// Both strategies use SubjectProviderName for the same concept: which upstream
+// provider's token to pull from Identity.UpstreamTokens. Mirrors
+// injectUpstreamProviderIfNeeded in pkg/runner/middleware.go, which does the
+// same for Cedar's PrimaryUpstreamProvider.
 // Returns strategy unchanged when it is nil, not an applicable strategy type,
 // already has the provider name set, or no embedded auth server is configured.
 func injectSubjectProviderIfNeeded(
@@ -2105,13 +2106,13 @@ func injectSubjectProviderIfNeeded(
 		return &copied
 
 	case authtypes.StrategyTypeAwsSts:
-		if strategy.AwsSts == nil || strategy.AwsSts.TokenProviderName != "" {
+		if strategy.AwsSts == nil || strategy.AwsSts.SubjectProviderName != "" {
 			return strategy
 		}
 		providerName := resolveFirstUpstreamProvider(embeddedCfg)
 		copied := *strategy
 		stsCopied := *strategy.AwsSts
-		stsCopied.TokenProviderName = providerName
+		stsCopied.SubjectProviderName = providerName
 		copied.AwsSts = &stsCopied
 		return &copied
 

@@ -1521,9 +1521,10 @@ spec:
                                           complex matching against JWT claims.
                                         type: string
                                       priority:
-                                        description: Priority determines evaluation
-                                          order (lower values = higher priority).
-                                        format: int32
+                                        description: |-
+                                          Priority determines evaluation order (lower values = higher priority).
+                                          Mirrors awssts.RoleMapping.Priority, which is *int because the role mapper
+                                          uses math.MaxInt for nil-priority semantics in effectivePriority.
                                         type: integer
                                       roleArn:
                                         description: RoleArn is the IAM role ARN to
@@ -1547,9 +1548,9 @@ spec:
                                   description: SessionNameClaim is the JWT claim to
                                     use for the role session name.
                                   type: string
-                                tokenProviderName:
+                                subjectProviderName:
                                   description: |-
-                                    TokenProviderName selects which upstream provider's token to use as the
+                                    SubjectProviderName selects which upstream provider's token to use as the
                                     web identity token for AssumeRoleWithWebIdentity. When set, the token is
                                     looked up from Identity.UpstreamTokens instead of the request's
                                     Authorization header.
@@ -1691,9 +1692,10 @@ spec:
                                         complex matching against JWT claims.
                                       type: string
                                     priority:
-                                      description: Priority determines evaluation
-                                        order (lower values = higher priority).
-                                      format: int32
+                                      description: |-
+                                        Priority determines evaluation order (lower values = higher priority).
+                                        Mirrors awssts.RoleMapping.Priority, which is *int because the role mapper
+                                        uses math.MaxInt for nil-priority semantics in effectivePriority.
                                       type: integer
                                     roleArn:
                                       description: RoleArn is the IAM role ARN to
@@ -1717,9 +1719,9 @@ spec:
                                 description: SessionNameClaim is the JWT claim to
                                   use for the role session name.
                                 type: string
-                              tokenProviderName:
+                              subjectProviderName:
                                 description: |-
-                                  TokenProviderName selects which upstream provider's token to use as the
+                                  SubjectProviderName selects which upstream provider's token to use as the
                                   web identity token for AssumeRoleWithWebIdentity. When set, the token is
                                   looked up from Identity.UpstreamTokens instead of the request's
                                   Authorization header.
@@ -3950,9 +3952,10 @@ spec:
                                           complex matching against JWT claims.
                                         type: string
                                       priority:
-                                        description: Priority determines evaluation
-                                          order (lower values = higher priority).
-                                        format: int32
+                                        description: |-
+                                          Priority determines evaluation order (lower values = higher priority).
+                                          Mirrors awssts.RoleMapping.Priority, which is *int because the role mapper
+                                          uses math.MaxInt for nil-priority semantics in effectivePriority.
                                         type: integer
                                       roleArn:
                                         description: RoleArn is the IAM role ARN to
@@ -3976,9 +3979,9 @@ spec:
                                   description: SessionNameClaim is the JWT claim to
                                     use for the role session name.
                                   type: string
-                                tokenProviderName:
+                                subjectProviderName:
                                   description: |-
-                                    TokenProviderName selects which upstream provider's token to use as the
+                                    SubjectProviderName selects which upstream provider's token to use as the
                                     web identity token for AssumeRoleWithWebIdentity. When set, the token is
                                     looked up from Identity.UpstreamTokens instead of the request's
                                     Authorization header.
@@ -4120,9 +4123,10 @@ spec:
                                         complex matching against JWT claims.
                                       type: string
                                     priority:
-                                      description: Priority determines evaluation
-                                        order (lower values = higher priority).
-                                      format: int32
+                                      description: |-
+                                        Priority determines evaluation order (lower values = higher priority).
+                                        Mirrors awssts.RoleMapping.Priority, which is *int because the role mapper
+                                        uses math.MaxInt for nil-priority semantics in effectivePriority.
                                       type: integer
                                     roleArn:
                                       description: RoleArn is the IAM role ARN to
@@ -4146,9 +4150,9 @@ spec:
                                 description: SessionNameClaim is the JWT claim to
                                   use for the role session name.
                                 type: string
-                              tokenProviderName:
+                              subjectProviderName:
                                 description: |-
-                                  TokenProviderName selects which upstream provider's token to use as the
+                                  SubjectProviderName selects which upstream provider's token to use as the
                                   web identity token for AssumeRoleWithWebIdentity. When set, the token is
                                   looked up from Identity.UpstreamTokens instead of the request's
                                   Authorization header.

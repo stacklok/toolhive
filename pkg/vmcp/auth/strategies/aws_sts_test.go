@@ -144,6 +144,20 @@ func TestAwsStsStrategy_Validate(t *testing.T) {
 			wantErr: true,
 			// ValidateConfig enforces at least one of FallbackRoleArn or RoleMappings
 		},
+		{
+			// Validate builds a roleMapper, an STS exchanger, and a SigV4 signer.
+			// NewExchanger uses aws.AnonymousCredentials{} so it makes no network
+			// calls and runs without AWS credentials in CI.
+			name: "valid region and fallback role succeeds",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeAwsSts,
+				AwsSts: &authtypes.AwsStsConfig{
+					Region:          "us-east-1",
+					FallbackRoleArn: "arn:aws:iam::123456789012:role/test",
+				},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

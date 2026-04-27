@@ -162,9 +162,9 @@ spec:
                       SessionNameClaim is the JWT claim to use for role session name
                       Defaults to "sub" to use the subject claim
                     type: string
-                  tokenProviderName:
+                  subjectProviderName:
                     description: |-
-                      TokenProviderName is the name of the upstream provider whose access token
+                      SubjectProviderName is the name of the upstream provider whose access token
                       is used as the web identity token for STS AssumeRoleWithWebIdentity.
                       This field is used exclusively by VirtualMCPServer, where there is no
                       upstream swap middleware to replace the bearer token before the strategy runs.
@@ -1195,9 +1195,9 @@ spec:
                       SessionNameClaim is the JWT claim to use for role session name
                       Defaults to "sub" to use the subject claim
                     type: string
-                  tokenProviderName:
+                  subjectProviderName:
                     description: |-
-                      TokenProviderName is the name of the upstream provider whose access token
+                      SubjectProviderName is the name of the upstream provider whose access token
                       is used as the web identity token for STS AssumeRoleWithWebIdentity.
                       This field is used exclusively by VirtualMCPServer, where there is no
                       upstream swap middleware to replace the bearer token before the strategy runs.

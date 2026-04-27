@@ -34,24 +34,29 @@ func (*AwsStsConverter) ConvertToStrategy(
 	roleMappings := make([]authtypes.RoleMapping, len(src.RoleMappings))
 	for i, m := range src.RoleMappings {
 		roleMappings[i] = authtypes.RoleMapping{
-			Claim:    m.Claim,
-			Matcher:  m.Matcher,
-			RoleArn:  m.RoleArn,
-			Priority: m.Priority,
+			Claim:   m.Claim,
+			Matcher: m.Matcher,
+			RoleArn: m.RoleArn,
+		}
+		if m.Priority != nil {
+			// CRD uses *int32 (Kubernetes API convention); the runtime type
+			// uses *int to align with awssts.RoleMapping.Priority.
+			p := int(*m.Priority)
+			roleMappings[i].Priority = &p
 		}
 	}
 
 	return &authtypes.BackendAuthStrategy{
 		Type: authtypes.StrategyTypeAwsSts,
 		AwsSts: &authtypes.AwsStsConfig{
-			Region:            src.Region,
-			Service:           src.Service,
-			FallbackRoleArn:   src.FallbackRoleArn,
-			RoleMappings:      roleMappings,
-			RoleClaim:         src.RoleClaim,
-			SessionDuration:   src.SessionDuration,
-			SessionNameClaim:  src.SessionNameClaim,
-			TokenProviderName: src.TokenProviderName,
+			Region:              src.Region,
+			Service:             src.Service,
+			FallbackRoleArn:     src.FallbackRoleArn,
+			RoleMappings:        roleMappings,
+			RoleClaim:           src.RoleClaim,
+			SessionDuration:     src.SessionDuration,
+			SessionNameClaim:    src.SessionNameClaim,
+			SubjectProviderName: src.SubjectProviderName,
 		},
 	}, nil
 }

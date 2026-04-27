@@ -77,7 +77,7 @@ _Appears in:_
 | `roleClaim` _string_ | RoleClaim is the JWT claim to use for role mapping evaluation. |  |  |
 | `sessionDuration` _integer_ | SessionDuration is the duration in seconds for the STS session. |  |  |
 | `sessionNameClaim` _string_ | SessionNameClaim is the JWT claim to use for the role session name. |  |  |
-| `tokenProviderName` _string_ | TokenProviderName selects which upstream provider's token to use as the<br />web identity token for AssumeRoleWithWebIdentity. When set, the token is<br />looked up from Identity.UpstreamTokens instead of the request's<br />Authorization header. |  |  |
+| `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's token to use as the<br />web identity token for AssumeRoleWithWebIdentity. When set, the token is<br />looked up from Identity.UpstreamTokens instead of the request's<br />Authorization header. |  |  |
 
 
 #### auth.types.BackendAuthStrategy
@@ -139,7 +139,7 @@ _Appears in:_
 | `claim` _string_ | Claim is a simple claim value to match against the RoleClaim field. |  |  |
 | `matcher` _string_ | Matcher is a CEL expression for complex matching against JWT claims. |  |  |
 | `roleArn` _string_ | RoleArn is the IAM role ARN to assume when this mapping matches. |  |  |
-| `priority` _integer_ | Priority determines evaluation order (lower values = higher priority). |  |  |
+| `priority` _integer_ | Priority determines evaluation order (lower values = higher priority).<br />Mirrors awssts.RoleMapping.Priority, which is *int because the role mapper<br />uses math.MaxInt for nil-priority semantics in effectivePriority. |  |  |
 
 
 #### auth.types.TokenExchangeConfig
@@ -907,7 +907,7 @@ _Appears in:_
 | `roleClaim` _string_ | RoleClaim is the JWT claim to use for role mapping evaluation<br />Defaults to "groups" to match common OIDC group claims | groups | Optional: \{\} <br /> |
 | `sessionDuration` _integer_ | SessionDuration is the duration in seconds for the STS session<br />Must be between 900 (15 minutes) and 43200 (12 hours)<br />Defaults to 3600 (1 hour) if not specified | 3600 | Maximum: 43200 <br />Minimum: 900 <br />Optional: \{\} <br /> |
 | `sessionNameClaim` _string_ | SessionNameClaim is the JWT claim to use for role session name<br />Defaults to "sub" to use the subject claim | sub | Optional: \{\} <br /> |
-| `tokenProviderName` _string_ | TokenProviderName is the name of the upstream provider whose access token<br />is used as the web identity token for STS AssumeRoleWithWebIdentity.<br />This field is used exclusively by VirtualMCPServer, where there is no<br />upstream swap middleware to replace the bearer token before the strategy runs.<br />When left empty and an embedded authorization server is configured on the<br />VirtualMCPServer, the controller automatically populates this field with<br />the first configured upstream provider name. Set it explicitly to override<br />that default or to select a specific provider when multiple upstreams are<br />configured.<br />When no embedded auth server is present, the bearer token from the incoming<br />request's Authorization header is used instead. |  | Optional: \{\} <br /> |
+| `subjectProviderName` _string_ | SubjectProviderName is the name of the upstream provider whose access token<br />is used as the web identity token for STS AssumeRoleWithWebIdentity.<br />This field is used exclusively by VirtualMCPServer, where there is no<br />upstream swap middleware to replace the bearer token before the strategy runs.<br />When left empty and an embedded authorization server is configured on the<br />VirtualMCPServer, the controller automatically populates this field with<br />the first configured upstream provider name. Set it explicitly to override<br />that default or to select a specific provider when multiple upstreams are<br />configured.<br />When no embedded auth server is present, the bearer token from the incoming<br />request's Authorization header is used instead. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.AuditConfig

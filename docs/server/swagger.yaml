@@ -235,9 +235,9 @@ components:
           description: 'SessionNameClaim is the JWT claim to use for role session
             name (default: "sub").'
           type: string
-        token_provider_name:
+        subject_provider_name:
           description: |-
-            TokenProviderName identifies which upstream provider's access token to use
+            SubjectProviderName identifies which upstream provider's access token to use
             for STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer
             token from the incoming HTTP request is used.
           type: string

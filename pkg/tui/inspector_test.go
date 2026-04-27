@@ -236,9 +236,10 @@ func TestBuildCurlStr(t *testing.T) {
 func TestFormatInspResult(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
-		result   *mcp.CallToolResult
-		expected string
+		name           string
+		result         *mcp.CallToolResult
+		expected       string
+		containsSubstr string // when set, output must contain this substring
 	}{
 		{
 			name:     "nil result",
@@ -271,6 +272,7 @@ func TestFormatInspResult(t *testing.T) {
 					mcp.ImageContent{Type: "image", Data: "base64data", MIMEType: "image/png"},
 				},
 			},
+			containsSubstr: "base64data",
 		},
 		{
 			name: "empty content falls back to full result JSON",
@@ -278,6 +280,7 @@ func TestFormatInspResult(t *testing.T) {
 				Content: []mcp.Content{},
 				IsError: true,
 			},
+			containsSubstr: "true",
 		},
 	}
 	for _, tc := range tests {
@@ -287,8 +290,10 @@ func TestFormatInspResult(t *testing.T) {
 			if tc.expected != "" {
 				assert.Equal(t, tc.expected, got)
 			} else if tc.result != nil {
-				// For non-text and empty-content cases, just verify it returns non-empty valid output
 				require.NotEmpty(t, got)
+				if tc.containsSubstr != "" {
+					assert.Contains(t, got, tc.containsSubstr)
+				}
 			}
 		})
 	}

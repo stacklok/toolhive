@@ -16,11 +16,12 @@ func TestHighlightSubstring(t *testing.T) {
 	bg := lipgloss.Color("#ffff00")
 
 	tests := []struct {
-		name           string
-		line           string
-		query          string
-		expectContains []string
-		expectSame     bool // if true, result should equal line exactly
+		name              string
+		line              string
+		query             string
+		expectContains    []string
+		expectSame        bool // if true, result should equal line exactly
+		expectHighlighted bool // if true, output must differ from input and contain ANSI escapes
 	}{
 		{
 			name:       "empty query returns original",
@@ -35,28 +36,32 @@ func TestHighlightSubstring(t *testing.T) {
 			expectContains: []string{"hello world"},
 		},
 		{
-			name:           "case insensitive match wraps with style",
-			line:           "Hello World",
-			query:          "hello",
-			expectContains: []string{"Hello", "World"},
+			name:              "case insensitive match wraps with style",
+			line:              "Hello World",
+			query:             "hello",
+			expectContains:    []string{"Hello", "World"},
+			expectHighlighted: true,
 		},
 		{
-			name:           "multiple matches all highlighted",
-			line:           "foo bar foo baz foo",
-			query:          "foo",
-			expectContains: []string{"foo", "bar", "baz"},
+			name:              "multiple matches all highlighted",
+			line:              "foo bar foo baz foo",
+			query:             "foo",
+			expectContains:    []string{"foo", "bar", "baz"},
+			expectHighlighted: true,
 		},
 		{
-			name:           "match at end of line",
-			line:           "prefix match",
-			query:          "match",
-			expectContains: []string{"prefix", "match"},
+			name:              "match at end of line",
+			line:              "prefix match",
+			query:             "match",
+			expectContains:    []string{"prefix", "match"},
+			expectHighlighted: true,
 		},
 		{
-			name:           "match at start of line",
-			line:           "start of line",
-			query:          "start",
-			expectContains: []string{"start", "of line"},
+			name:              "match at start of line",
+			line:              "start of line",
+			query:             "start",
+			expectContains:    []string{"start", "of line"},
+			expectHighlighted: true,
 		},
 	}
 	for _, tc := range tests {
@@ -82,6 +87,12 @@ func TestHighlightSubstring(t *testing.T) {
 			}
 			for _, substr := range tc.expectContains {
 				assert.Contains(t, result, substr)
+			}
+			// When highlighting is expected, the output must differ from the
+			// original line and contain ANSI escape sequences.
+			if tc.expectHighlighted {
+				assert.NotEqual(t, tc.line, result, "highlighting should modify the output")
+				assert.Contains(t, result, "\x1b[", "highlighted output must contain ANSI escape sequences")
 			}
 		})
 	}

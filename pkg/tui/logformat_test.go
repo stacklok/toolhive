@@ -71,6 +71,14 @@ func TestLevelStyle(t *testing.T) {
 			t.Parallel()
 			result := levelStyle(level)
 			assert.NotEmpty(t, result, "levelStyle should return non-empty for level %q", level)
+			if level != "" {
+				assert.Contains(t, result, "\x1b[", "non-empty level %q should produce ANSI styled output", level)
+			}
 		})
 	}
+
+	// ERROR and INFO must produce different styled output.
+	errorResult := levelStyle("ERROR")
+	infoResult := levelStyle("INFO")
+	assert.NotEqual(t, errorResult, infoResult, "ERROR and INFO should produce different styled output")
 }

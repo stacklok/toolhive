@@ -19,15 +19,19 @@ func NewGeminiCLIAdapterWithHome(home string) Adapter {
 }
 
 // NewCursorAdapterWithHome creates a cursorAdapter that uses the provided
-// directory as the user home directory instead of os.UserHomeDir.
+// directory as both the user home directory and the Windows %APPDATA% directory,
+// so tests are hermetic on all platforms.
 func NewCursorAdapterWithHome(home string) Adapter {
-	return newCursorAdapter(func() (string, error) { return home, nil })
+	fn := func() (string, error) { return home, nil }
+	return newCursorAdapter(fn, fn)
 }
 
 // NewVSCodeAdapterWithHome creates a vscodeAdapter that uses the provided
-// directory as the user home directory instead of os.UserHomeDir.
+// directory as both the user home directory and the Windows %APPDATA% directory,
+// so tests are hermetic on all platforms.
 func NewVSCodeAdapterWithHome(home string) Adapter {
-	return newVSCodeAdapter(func() (string, error) { return home, nil })
+	fn := func() (string, error) { return home, nil }
+	return newVSCodeAdapter(fn, fn)
 }
 
 // NewXcodeAdapterWithHome creates an xcodeAdapter that uses the provided

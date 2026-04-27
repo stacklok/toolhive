@@ -244,7 +244,7 @@ func runLLMSetup(cmd *cobra.Command) error {
 	applyCfg := llmtools.ApplyConfig{
 		GatewayURL:         llmCfg.GatewayURL,
 		ProxyBaseURL:       proxyBaseURL,
-		TokenHelperCommand: fmt.Sprintf("%q llm token", self),
+		TokenHelperCommand: fmt.Sprintf(`"%s" llm token`, self),
 	}
 
 	detected := llmtools.Default().Detected()
@@ -272,10 +272,27 @@ func runLLMSetup(cmd *cobra.Command) error {
 		return fmt.Errorf("failed to configure any detected tools")
 	}
 
-	return config.UpdateConfig(func(c *config.Config) error {
+	if err := config.UpdateConfig(func(c *config.Config) error {
 		c.LLM.ConfiguredTools = mergeToolConfigs(c.LLM.ConfiguredTools, configured)
 		return nil
-	})
+	}); err != nil {
+		// Roll back every adapter we successfully patched so the tool config
+		// files are not left in a modified state without a persisted record of
+		// what was changed (which would make teardown unable to revert them).
+		reg := llmtools.Default()
+		for _, tc := range configured {
+			a := reg.Get(tc.Tool)
+			if a == nil {
+				continue
+			}
+			if revertErr := a.Revert(tc.ConfigPath); revertErr != nil {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+					"Warning: rollback of %s failed: %v\n", tc.Tool, revertErr)
+			}
+		}
+		return fmt.Errorf("persisting tool configuration: %w", err)
+	}
+	return nil
 }
 
 // isTarget reports whether toolName appears in the targets slice.

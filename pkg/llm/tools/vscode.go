@@ -10,7 +10,7 @@ import (
 )
 
 func init() {
-	Register(newVSCodeAdapter(os.UserHomeDir))
+	Register(newVSCodeAdapter(os.UserHomeDir, windowsAppData))
 }
 
 // vscodeAdapter configures VS Code (GitHub Copilot) to use the LLM gateway
@@ -21,10 +21,11 @@ func init() {
 // VS Code settings.json uses literal dotted key names (not nested maps).
 type vscodeAdapter struct {
 	homeDirFn func() (string, error)
+	appDataFn func() (string, error) // Windows %APPDATA%; unused on other platforms
 }
 
-func newVSCodeAdapter(homeDirFn func() (string, error)) *vscodeAdapter {
-	return &vscodeAdapter{homeDirFn: homeDirFn}
+func newVSCodeAdapter(homeDirFn, appDataFn func() (string, error)) *vscodeAdapter {
+	return &vscodeAdapter{homeDirFn: homeDirFn, appDataFn: appDataFn}
 }
 
 func (*vscodeAdapter) Name() string { return "vscode" }
@@ -63,7 +64,7 @@ func (a *vscodeAdapter) settingsPath() (string, error) {
 		}
 		return filepath.Join(home, "Library", "Application Support", "Code", "User", "settings.json"), nil
 	case "windows":
-		appData, err := windowsAppData()
+		appData, err := a.appDataFn()
 		if err != nil {
 			return "", err
 		}

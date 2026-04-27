@@ -57,3 +57,81 @@ func TestUpstreamRegistryParsing(t *testing.T) {
 		assert.NotEmpty(t, server.Name, "Remote server should have a name")
 	}
 }
+
+// TestParseRegistryData_LegacyFormatDetection verifies that legacy ToolHive
+// registry files are rejected with ErrLegacyFormat instead of silently
+// producing an empty UpstreamRegistry. Without this check, Go's JSON decoder
+// drops the legacy top-level "servers"/"remote_servers"/"groups" fields and
+// the caller ends up with an empty registry and no actionable error.
+func TestParseRegistryData_LegacyFormatDetection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		input      string
+		wantLegacy bool
+	}{
+		{
+			name: "legacy with top-level servers is rejected",
+			input: `{
+				"version": "1.0.0",
+				"servers": {"test": {"image": "test:latest"}}
+			}`,
+			wantLegacy: true,
+		},
+		{
+			name: "legacy with top-level remote_servers is rejected",
+			input: `{
+				"version": "1.0.0",
+				"remote_servers": {"test": {"url": "https://example.com"}}
+			}`,
+			wantLegacy: true,
+		},
+		{
+			name: "legacy with top-level groups is rejected",
+			input: `{
+				"version": "1.0.0",
+				"groups": [{"name": "g", "servers": {}}]
+			}`,
+			wantLegacy: true,
+		},
+		{
+			name: "legacy with $schema header is still detected",
+			input: `{
+				"$schema": "https://example.com/legacy.json",
+				"version": "1.0.0",
+				"servers": {"test": {"image": "test:latest"}}
+			}`,
+			wantLegacy: true,
+		},
+		{
+			name: "upstream format passes through",
+			input: `{
+				"$schema": "https://example.com/schema.json",
+				"version": "1.0.0",
+				"meta": {"last_updated": "2025-01-01T00:00:00Z"},
+				"data": {"servers": []}
+			}`,
+			wantLegacy: false,
+		},
+		{
+			name:       "empty object is not classified as legacy",
+			input:      `{}`,
+			wantLegacy: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := parseRegistryData([]byte(tt.input))
+			if tt.wantLegacy {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrLegacyFormat)
+				assert.Contains(t, err.Error(), "thv registry convert")
+				return
+			}
+			assert.NotErrorIs(t, err, ErrLegacyFormat)
+		})
+	}
+}

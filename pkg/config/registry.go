@@ -169,6 +169,10 @@ func isValidRegistryJSON(client *http.Client, url string) error {
 		return fmt.Errorf("%w: failed to read response body: %v", ErrRegistryValidationFailed, err)
 	}
 
+	if looksLikeLegacyRegistryFormat(data) {
+		return fmt.Errorf("%w: %s", ErrRegistryValidationFailed, legacyFormatMigrationHint)
+	}
+
 	var upstream registrytypes.UpstreamRegistry
 	if err := json.Unmarshal(data, &upstream); err != nil {
 		return fmt.Errorf("%w: invalid upstream JSON format: %v", ErrRegistryValidationFailed, err)
@@ -177,6 +181,33 @@ func isValidRegistryJSON(client *http.Client, url string) error {
 		return fmt.Errorf("%w: upstream registry contains no servers", ErrRegistryValidationFailed)
 	}
 	return nil
+}
+
+// legacyFormatMigrationHint is the user-facing message returned when a legacy
+// ToolHive registry file is detected. Kept as a const so the wording stays
+// identical across the runtime parser, set-registry-file, and set-registry-url
+// code paths.
+const legacyFormatMigrationHint = "registry file appears to be in the legacy ToolHive format; " +
+	"run `thv registry convert --in <path> --in-place` to migrate to the upstream MCP format"
+
+// looksLikeLegacyRegistryFormat returns true when the JSON document has
+// top-level "servers", "remote_servers", or "groups" — the markers of the
+// legacy ToolHive registry layout. Used to short-circuit with a migration hint
+// instead of the misleading "no servers" error that Go's JSON decoder produces
+// when legacy fields are silently dropped during unmarshal into UpstreamRegistry.
+//
+// NOTE: keep in sync with looksLikeLegacyJSON in pkg/registry/convert.go
+// (duplicated to avoid a circular import — pkg/registry imports pkg/config).
+func looksLikeLegacyRegistryFormat(data []byte) bool {
+	var probe struct {
+		Servers       json.RawMessage `json:"servers"`
+		RemoteServers json.RawMessage `json:"remote_servers"`
+		Groups        json.RawMessage `json:"groups"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	return len(probe.Servers) > 0 || len(probe.RemoteServers) > 0 || len(probe.Groups) > 0
 }
 
 // classifyNetworkError wraps network errors with appropriate custom error types
@@ -326,6 +357,10 @@ func validateRegistryFileStructure(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	if looksLikeLegacyRegistryFormat(data) {
+		return errors.New(legacyFormatMigrationHint)
 	}
 
 	var upstream registrytypes.UpstreamRegistry

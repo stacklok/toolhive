@@ -4,9 +4,12 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Test mutates package-level flag state so subtests run sequentially.
@@ -53,4 +56,77 @@ func TestRegistryConvertPreRunE(t *testing.T) {
 			assert.NoError(t, err)
 		})
 	}
+}
+
+func TestWriteInPlace(t *testing.T) {
+	t.Parallel()
+
+	t.Run("writes output and creates .bak when backup enabled", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "registry.json")
+		original := []byte(`{"original":true}`)
+		output := []byte(`{"converted":true}`)
+		require.NoError(t, os.WriteFile(path, original, 0o600))
+
+		require.NoError(t, writeInPlace(path, original, output, true))
+
+		got, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, output, got, "in-place file should hold the converted output")
+
+		bak, err := os.ReadFile(path + ".bak")
+		require.NoError(t, err)
+		assert.Equal(t, original, bak, ".bak should hold the original bytes")
+	})
+
+	t.Run("skips backup when disabled", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "registry.json")
+		require.NoError(t, os.WriteFile(path, []byte(`{"original":true}`), 0o600))
+
+		require.NoError(t, writeInPlace(path, []byte(`{"original":true}`), []byte(`{"converted":true}`), false))
+
+		_, err := os.Stat(path + ".bak")
+		assert.True(t, os.IsNotExist(err), ".bak must not be written when backup is disabled")
+	})
+
+	t.Run("refuses to clobber existing .bak", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "registry.json")
+		bakPath := path + ".bak"
+		previousBackup := []byte(`{"previous":true}`)
+		require.NoError(t, os.WriteFile(path, []byte(`{"original":true}`), 0o600))
+		require.NoError(t, os.WriteFile(bakPath, previousBackup, 0o600))
+
+		err := writeInPlace(path, []byte(`{"original":true}`), []byte(`{"converted":true}`), true)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "already exists")
+
+		// Original input must still hold its old bytes — refusing to back up
+		// must not partially mutate state.
+		got, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, []byte(`{"original":true}`), got)
+
+		// Existing .bak must be preserved.
+		bak, err := os.ReadFile(bakPath)
+		require.NoError(t, err)
+		assert.Equal(t, previousBackup, bak, "pre-existing .bak must be preserved")
+	})
+
+	t.Run("preserves file mode after rename", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "registry.json")
+		require.NoError(t, os.WriteFile(path, []byte(`{"original":true}`), 0o640))
+
+		require.NoError(t, writeInPlace(path, []byte(`{"original":true}`), []byte(`{"converted":true}`), false))
+
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o640), info.Mode().Perm(), "rename must preserve original perms")
+	})
 }

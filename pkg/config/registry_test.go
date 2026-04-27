@@ -264,9 +264,10 @@ func TestValidateRegistryFileStructure_UpstreamFormat(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		content     string
-		expectError bool
+		name           string
+		content        string
+		expectError    bool
+		errMsgContains string
 	}{
 		{
 			name: "valid upstream format with servers",
@@ -294,15 +295,26 @@ func TestValidateRegistryFileStructure_UpstreamFormat(t *testing.T) {
 				"meta": {"last_updated": "2025-01-01T00:00:00Z"},
 				"data": {"servers": []}
 			}`,
-			expectError: true,
+			expectError:    true,
+			errMsgContains: "no servers or groups",
 		},
 		{
-			name: "legacy format is no longer accepted",
+			name: "legacy format with top-level servers returns migration hint",
 			content: `{
 				"version": "1.0.0",
 				"servers": {"test": {"image": "test:latest"}}
 			}`,
-			expectError: true,
+			expectError:    true,
+			errMsgContains: "thv registry convert",
+		},
+		{
+			name: "legacy format with top-level remote_servers returns migration hint",
+			content: `{
+				"version": "1.0.0",
+				"remote_servers": {"test": {"url": "https://example.com"}}
+			}`,
+			expectError:    true,
+			errMsgContains: "thv registry convert",
 		},
 	}
 
@@ -315,7 +327,10 @@ func TestValidateRegistryFileStructure_UpstreamFormat(t *testing.T) {
 
 			err := validateRegistryFileStructure(path)
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
+				if tt.errMsgContains != "" {
+					assert.Contains(t, err.Error(), tt.errMsgContains)
+				}
 			} else {
 				assert.NoError(t, err)
 			}

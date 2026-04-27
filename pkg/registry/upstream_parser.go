@@ -14,7 +14,17 @@ import (
 
 // parseRegistryData parses raw JSON in the upstream MCP registry format and
 // converts it into the internal types.Registry plus any embedded skills.
+//
+// Returns ErrLegacyFormat (wrapped via fmt.Errorf %w) if the input looks like
+// the legacy ToolHive registry format. Without this check Go's JSON decoder
+// would silently produce an empty UpstreamRegistry (legacy top-level fields
+// like "servers" don't match upstream's "data.servers" path), leaving the
+// caller with an empty registry and no actionable error.
 func parseRegistryData(data []byte) (*types.Registry, []types.Skill, error) {
+	if !isUpstreamJSON(data) && looksLikeLegacyJSON(data) {
+		return nil, nil, ErrLegacyFormat
+	}
+
 	var upstream types.UpstreamRegistry
 	if err := json.Unmarshal(data, &upstream); err != nil {
 		return nil, nil, fmt.Errorf("failed to parse registry data: %w", err)

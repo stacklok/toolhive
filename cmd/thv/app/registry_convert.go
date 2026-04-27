@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -93,21 +94,7 @@ func readConvertInput() ([]byte, error) {
 func writeConvertOutput(original, output []byte) error {
 	switch {
 	case convertInPlace:
-		info, err := os.Stat(convertIn)
-		if err != nil {
-			return fmt.Errorf("failed to stat input file %s: %w", convertIn, err)
-		}
-		mode := info.Mode().Perm()
-		if !convertNoBackup {
-			backup := convertIn + ".bak"
-			if err := os.WriteFile(backup, original, mode); err != nil {
-				return fmt.Errorf("failed to write backup %s: %w", backup, err)
-			}
-		}
-		if err := os.WriteFile(convertIn, output, mode); err != nil {
-			return fmt.Errorf("failed to overwrite %s: %w", convertIn, err)
-		}
-		return nil
+		return writeInPlace(convertIn, original, output, !convertNoBackup)
 	case convertOut != "":
 		if err := os.WriteFile(convertOut, output, 0o600); err != nil {
 			return fmt.Errorf("failed to write output file %s: %w", convertOut, err)
@@ -119,4 +106,62 @@ func writeConvertOutput(original, output []byte) error {
 		}
 		return nil
 	}
+}
+
+// writeInPlace overwrites path with output atomically (write a sibling temp
+// file, fsync it, then rename) so a crash mid-write can't corrupt the input.
+// When backup is true, the original bytes are written to <path>.bak first; the
+// helper refuses to clobber an existing backup so a previous good copy is
+// never silently destroyed.
+func writeInPlace(path string, original, output []byte, backup bool) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("failed to stat input file %s: %w", path, err)
+	}
+	mode := info.Mode().Perm()
+
+	if backup {
+		backupPath := path + ".bak"
+		switch _, err := os.Stat(backupPath); {
+		case err == nil:
+			return fmt.Errorf("backup file %s already exists; remove it or pass --no-backup to skip the backup", backupPath)
+		case !errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("failed to check backup path %s: %w", backupPath, err)
+		}
+		if err := os.WriteFile(backupPath, original, mode); err != nil {
+			return fmt.Errorf("failed to write backup %s: %w", backupPath, err)
+		}
+	}
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file in %s: %w", dir, err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+
+	if _, err := tmp.Write(output); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("failed to write temp file %s: %w", tmpPath, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("failed to sync temp file %s: %w", tmpPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to close temp file %s: %w", tmpPath, err)
+	}
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to set permissions on temp file %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to overwrite %s: %w", path, err)
+	}
+	return nil
 }

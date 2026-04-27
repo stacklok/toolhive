@@ -1329,6 +1329,72 @@ func TestIntegration_UpstreamTokenService_RefreshExpiredTokens(t *testing.T) {
 	_ = originalAccessToken // used only to confirm the flow completed
 }
 
+// TestIntegration_UpstreamTokenService_NonExpiringToken verifies that a token with
+// a zero ExpiresAt is treated as non-expiring: GetValidTokens must return the
+// stored access token unchanged and must not attempt a refresh. If a refresh were
+// triggered, mockoidc would return an error because no user is queued — that
+// outcome is the failure signal for this test.
+func TestIntegration_UpstreamTokenService_NonExpiringToken(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "upstream-nonexpiring-test",
+		Challenge:    challenge,
+		Scope:        "openid profile offline_access",
+		ResponseType: "code",
+	})
+
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok)
+	tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+
+	stor := ts.authServer.IDPTokenStorage()
+
+	// Read the tokens stored during the OAuth callback.
+	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, original)
+
+	// Overwrite storage with a copy where ExpiresAt is zero (non-expiring).
+	// No mockoidc user is queued — if a refresh is attempted, the test will fail.
+	nonExpiring := &storage.UpstreamTokens{
+		ProviderID:      original.ProviderID,
+		AccessToken:     original.AccessToken,
+		RefreshToken:    original.RefreshToken,
+		IDToken:         original.IDToken,
+		ExpiresAt:       time.Time{},
+		UserID:          original.UserID,
+		UpstreamSubject: original.UpstreamSubject,
+		ClientID:        original.ClientID,
+	}
+	require.NoError(t, stor.StoreUpstreamTokens(context.Background(), tsid, "default", nonExpiring))
+
+	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
+
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, cred)
+	assert.NotEmpty(t, cred.AccessToken)
+
+	// Confirm the token in storage still has a zero ExpiresAt — no refresh occurred.
+	refreshed, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	assert.True(t, refreshed.ExpiresAt.IsZero(),
+		"non-expiring token must not gain an ExpiresAt after GetValidTokens")
+	assert.Equal(t, original.AccessToken, cred.AccessToken,
+		"access token must be unchanged — no refresh occurred")
+}
+
 // TestIntegration_UpstreamTokenService_SessionNotFound verifies that the service
 // returns ErrSessionNotFound for a non-existent session.
 func TestIntegration_UpstreamTokenService_SessionNotFound(t *testing.T) {

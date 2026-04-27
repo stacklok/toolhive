@@ -204,11 +204,28 @@ func (m *Model) filteredWorkloads() []core.Workload {
 }
 
 // filteredRegistryItems returns registry items matching the current registry filter.
-// When a provider is available it delegates to SearchServers so the TUI uses the
-// same matching semantics (name, description, tags) as `thv search`.
+// When the filter starts with "/" it matches only the short name (the part after
+// the last "/" in the server name), so "/github" finds "io.github.stacklok/github"
+// without matching the "io.github" prefix. Otherwise it delegates to SearchServers
+// for full-text matching across name, description, and tags.
 func (m *Model) filteredRegistryItems() []regtypes.ServerMetadata {
 	if m.registry.filter == "" {
 		return m.registry.items
+	}
+	// "/" prefix: match only the short name (after the last "/").
+	if strings.HasPrefix(m.registry.filter, "/") {
+		q := strings.ToLower(strings.TrimPrefix(m.registry.filter, "/"))
+		var out []regtypes.ServerMetadata
+		for _, item := range m.registry.items {
+			shortName := item.GetName()
+			if idx := strings.LastIndex(shortName, "/"); idx >= 0 {
+				shortName = shortName[idx+1:]
+			}
+			if strings.Contains(strings.ToLower(shortName), q) {
+				out = append(out, item)
+			}
+		}
+		return out
 	}
 	if m.registry.provider != nil {
 		results, err := m.registry.provider.SearchServers(m.registry.filter)

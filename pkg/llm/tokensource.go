@@ -354,6 +354,21 @@ func (t *TokenSource) cacheAccessToken(ctx context.Context, token string, expiry
 	}
 }
 
+// SanitizeTokenError returns a log-safe string for a token-source error.
+// If err wraps *oauth2.RetrieveError, only the error code and description are
+// included — never the raw response body, which may contain bearer material
+// echoed back by the IdP. All other errors are returned as-is via err.Error().
+func SanitizeTokenError(err error) string {
+	var re *oauth2.RetrieveError
+	if errors.As(err, &re) {
+		if re.ErrorDescription != "" {
+			return fmt.Sprintf("oauth2 error %q: %s", re.ErrorCode, re.ErrorDescription)
+		}
+		return fmt.Sprintf("oauth2 error %q", re.ErrorCode)
+	}
+	return err.Error()
+}
+
 // DeriveSecretKey computes the secrets-provider key for an LLM gateway refresh
 // token. The formula is: LLM_OAUTH_<8 hex chars> where the hex is derived from
 // sha256(gatewayURL + "\x00" + issuer)[:4], matching the pattern used by the

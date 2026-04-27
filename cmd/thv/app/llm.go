@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/secrets"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/llm"
+	llmproxy "github.com/stacklok/toolhive/pkg/llm/proxy"
 	pkgsecrets "github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -165,23 +166,10 @@ func runLLMToken(ctx context.Context) error {
 		return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
 	}
 
-	secretsProvider, err := secrets.GetSystemSecretsProvider()
+	ts, err := buildLLMTokenSource(&llmCfg, false /* non-interactive */)
 	if err != nil {
-		return fmt.Errorf("failed to get secrets provider: %w", err)
+		return err
 	}
-	scoped := pkgsecrets.NewScopedProvider(secretsProvider, pkgsecrets.ScopeLLM)
-
-	updater := func(key string, expiry time.Time) {
-		if err := config.UpdateConfig(func(c *config.Config) error {
-			c.LLM.OIDC.CachedRefreshTokenRef = key
-			c.LLM.OIDC.CachedTokenExpiry = expiry
-			return nil
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to persist LLM token reference: %v\n", err)
-		}
-	}
-
-	ts := llm.NewTokenSource(&llmCfg, scoped, false /* non-interactive */, updater)
 	token, err := ts.Token(ctx)
 	if err != nil {
 		return err
@@ -189,6 +177,30 @@ func runLLMToken(ctx context.Context) error {
 
 	fmt.Println(token)
 	return nil
+}
+
+// buildLLMTokenSource constructs the standard LLM token-source pipeline:
+// system secrets provider → ScopeLLM scoped provider → config-persisting updater.
+// This is the single place that wires ScopeLLM and the refresh-token persistence
+// logic; runLLMToken, runLLMProxyForeground, and future callers all use it.
+func buildLLMTokenSource(cfg *llm.Config, interactive bool) (*llm.TokenSource, error) {
+	secretsProvider, err := secrets.GetSystemSecretsProvider()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secrets provider: %w", err)
+	}
+	scoped := pkgsecrets.NewScopedProvider(secretsProvider, pkgsecrets.ScopeLLM)
+
+	updater := func(key string, expiry time.Time) {
+		if updateErr := config.UpdateConfig(func(c *config.Config) error {
+			c.LLM.OIDC.CachedRefreshTokenRef = key
+			c.LLM.OIDC.CachedTokenExpiry = expiry
+			return nil
+		}); updateErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to persist LLM token reference: %v\n", updateErr)
+		}
+	}
+
+	return llm.NewTokenSource(cfg, scoped, interactive, updater), nil
 }
 
 // ── setup / teardown stubs ────────────────────────────────────────────────────
@@ -226,21 +238,52 @@ func newLLMProxyCommand() *cobra.Command {
 		Use:   "proxy",
 		Short: "Manage the LLM gateway localhost proxy",
 	}
-
 	cmd.AddCommand(newLLMProxyStartCommand())
-
 	return cmd
 }
 
 func newLLMProxyStartCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "start",
-		Short: "Start the LLM proxy in the foreground (coming soon)",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return fmt.Errorf("not implemented: coming in a future release")
+		Short: "Start the LLM gateway localhost proxy",
+		Long: `Start a localhost reverse proxy that injects fresh OIDC tokens for AI tools
+that only accept static API keys (e.g. Cursor).
+
+The proxy runs in the foreground and blocks until interrupted (Ctrl+C).
+To run it in the background, use your shell or a process manager:
+
+  thv llm proxy start &`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			provider := config.NewDefaultProvider()
+			llmCfg := provider.GetConfig().LLM
+
+			if !llmCfg.IsConfigured() {
+				return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
+			}
+			if err := llmCfg.Validate(); err != nil {
+				return fmt.Errorf("LLM gateway configuration is invalid: %w", err)
+			}
+
+			llmCfgCopy := llmCfg
+			return runLLMProxyForeground(cmd.Context(), &llmCfgCopy)
 		},
 	}
+}
+
+// runLLMProxyForeground builds a TokenSource and starts the proxy in this process.
+func runLLMProxyForeground(ctx context.Context, llmCfg *llm.Config) error {
+	ts, err := buildLLMTokenSource(llmCfg, true /* interactive: proxy is foreground, browser flow is acceptable */)
+	if err != nil {
+		return err
+	}
+	p, err := llmproxy.New(llmCfg, ts)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("LLM proxy listening on http://%s/v1\n", p.Addr())
+	return p.Start(ctx)
 }
 
 // ── token helper (hidden) ─────────────────────────────────────────────────────

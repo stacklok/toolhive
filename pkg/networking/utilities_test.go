@@ -618,3 +618,29 @@ func TestValidateIssuerURL(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateLoopbackAddress(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		addr    string
+		wantErr bool
+	}{
+		{"127.0.0.1:14000", false},
+		{"[::1]:14000", false},
+		{"0.0.0.0:14000", true},
+		{"192.168.1.1:14000", true},
+		{"10.0.0.1:14000", true},
+		{"notanaddr", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.addr, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateLoopbackAddress(tt.addr)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}

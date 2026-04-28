@@ -1252,6 +1252,10 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity(t *testing.T) {
 		// Synthesized identities expose no display surface.
 		assert.Empty(t, result.Name)
 		assert.Empty(t, result.Email)
+		// Synthetic flag must be set so the callback handler bypasses
+		// UserResolver and avoids persisting a User row that would otherwise
+		// be created fresh on every re-authentication.
+		assert.True(t, result.Synthetic, "synthesized identities must set Synthetic=true")
 
 		assert.Equal(t, int32(0), atomic.LoadInt32(&userinfoHits),
 			"no HTTP request should have been issued to a userinfo endpoint")

@@ -36,6 +36,16 @@ type Identity struct {
 
 	// Email is the user's email address from the upstream IDP (optional).
 	Email string
+
+	// Synthetic is true when Subject was synthesized by the upstream provider
+	// (rather than resolved from a userinfo endpoint or ID token) because the
+	// upstream exposes no real user-identity surface. Synthetic subjects rotate
+	// on every re-authentication, so callers MUST NOT persist them as a stable
+	// per-user key — doing so creates an unbounded `users` table over time.
+	// Use the synthesized Subject as an ephemeral session key only and bypass
+	// the user-resolution layer that would otherwise create a new internal user
+	// record on each re-auth.
+	Synthetic bool
 }
 
 // ErrIdentityResolutionFailed indicates identity could not be determined.

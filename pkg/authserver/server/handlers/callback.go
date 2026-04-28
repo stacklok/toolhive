@@ -105,26 +105,40 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// This was generated in authorize.go and will be reused across all legs of the chain.
 	sessionID := pending.SessionID
 
-	// Determine identity: first leg resolves from upstream, subsequent legs carry from pending
+	// Determine identity: first leg resolves from upstream, subsequent legs carry from pending.
+	//
+	// Synthetic identities (upstreams with no userinfo surface; see
+	// upstream.Identity.Synthetic) are NOT persisted via UserResolver: the
+	// synthesized subject rotates on every re-authentication, which would create
+	// a new internal `users` row each time and grow that table monotonically.
+	// We use the synthesized value directly as an ephemeral session key. The
+	// per-identity LastAuthenticated update is also skipped — there is no
+	// provider_identities row to update for synthetic identities.
 	var subject, userName, userEmail string
 	if pending.ResolvedUserID == "" {
 		// First leg — this is the identity provider
-		user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
-		if err != nil {
-			slog.Error("failed to resolve user", "error", err)
-			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to resolve user"))
-			return
+		if result.Synthetic {
+			subject = result.Subject
+		} else {
+			user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
+			if err != nil {
+				slog.Error("failed to resolve user", "error", err)
+				h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to resolve user"))
+				return
+			}
+			subject = user.ID
+			h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
 		}
-		subject = user.ID
 		userName = result.Name
 		userEmail = result.Email
-		h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
 	} else {
 		// Subsequent leg — use identity carried from first leg
 		subject = pending.ResolvedUserID
 		userName = pending.ResolvedUserName
 		userEmail = pending.ResolvedUserEmail
-		h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
+		if !result.Synthetic {
+			h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
+		}
 	}
 
 	// Convert IDP tokens to storage tokens with binding fields

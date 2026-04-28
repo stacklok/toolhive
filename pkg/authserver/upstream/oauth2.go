@@ -416,11 +416,14 @@ func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, 
 
 	// No userinfo configured: synthesize a deterministic, non-PII subject from
 	// the access token. Stable for the lifetime of the token; rotates when the
-	// user re-authenticates.
+	// user re-authenticates. The Synthetic flag is set so the callback handler
+	// can bypass UserResolver — persisting a synthesized subject as a stable
+	// user key would create a new `users` row on every re-authentication.
 	if p.config.UserInfo == nil {
 		return &Identity{
-			Tokens:  tokens,
-			Subject: synthesizeSubjectFromAccessToken(tokens.AccessToken),
+			Tokens:    tokens,
+			Subject:   synthesizeSubjectFromAccessToken(tokens.AccessToken),
+			Synthetic: true,
 		}, nil
 	}
 

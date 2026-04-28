@@ -27,11 +27,18 @@ import (
 const defaultURLFieldName = "url"
 
 // ClientApp is an enum of MCP-capable AI clients (IDEs, editors, and coding tools).
-// Note: "xcode" is an LLM-gateway-only client (use "thv llm setup"); it is
-// intentionally excluded from MCP client registration endpoints.
+// Only clients that support MCP registration appear here; LLM-gateway-only
+// tools (e.g. Xcode) are represented by the separate LLMClientApp type so
+// that code generators (swag) do not include them in the MCP API enum.
 //
 //nolint:revive // ClientApp is intentionally named for clarity across packages
 type ClientApp string
+
+// LLMClientApp identifies tools that support the LLM gateway but do not
+// support MCP client registration (e.g. GitHub Copilot for Xcode).
+// Keeping this type separate from ClientApp prevents swag from including
+// these tools in the MCP API ClientApp enum.
+type LLMClientApp string
 
 const (
 	// RooCode represents the Roo Code extension for VS Code.
@@ -88,9 +95,14 @@ const (
 	KimiCli ClientApp = "kimi-cli"
 	// Factory represents the Factory.ai Droid CLI.
 	Factory ClientApp = "factory"
+)
+
+const (
 	// Xcode represents GitHub Copilot for Xcode.
-	// Xcode does not support MCP; it is an LLM-gateway-only entry.
-	Xcode ClientApp = "xcode"
+	// Xcode does not support MCP; it is an LLM-gateway-only tool.
+	// It is declared as LLMClientApp (not ClientApp) so that code generators
+	// such as swag do not include "xcode" in the MCP API ClientApp enum.
+	Xcode LLMClientApp = "xcode"
 )
 
 // Extension is extension of the client config file.
@@ -927,7 +939,9 @@ var supportedClientIntegrations = []clientAppConfig{
 	},
 	{
 		// Xcode does not support MCP; it is an LLM-gateway-only entry.
-		ClientType:     Xcode,
+		// Cast LLMClientApp → ClientApp for internal config storage; the type
+		// distinction matters only for swag enum generation (see LLMClientApp).
+		ClientType:     ClientApp(Xcode),
 		Description:    "GitHub Copilot for Xcode",
 		LLMGatewayOnly: true,
 		LLMGatewayMode: "proxy",

@@ -851,8 +851,7 @@ const docTemplate = `{
                     "mistral-vibe",
                     "codex",
                     "kimi-cli",
-                    "factory",
-                    "xcode"
+                    "factory"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -882,8 +881,7 @@ const docTemplate = `{
                     "MistralVibe",
                     "Codex",
                     "KimiCli",
-                    "Factory",
-                    "Xcode"
+                    "Factory"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {

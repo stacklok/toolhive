@@ -86,7 +86,7 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 		},
 		{
 			// ~/Library/Application Support/GitHub Copilot for Xcode/editorSettings.json
-			clientType: Xcode,
+			clientType: ClientApp(Xcode),
 			expectedKeys: []string{
 				"openAIBaseURL", "http://localhost:14000/v1",
 				"apiKey", "thv-proxy",

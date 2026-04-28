@@ -64,9 +64,12 @@ type UpstreamTokens struct {
 	// ExpiresAt is when the access token expires. Zero value means the provider
 	// did not assert an expiry; callers must treat it as non-expiring.
 	ExpiresAt time.Time
-	// SessionExpiresAt is the Fosite session expiry time, set on every write by
-	// the callback handler. Storage backends use it as a fallback storage lifetime
-	// when ExpiresAt is zero (non-expiring upstream token), bounding the row to the
+	// SessionExpiresAt is the Fosite session expiry time. The callback handler
+	// sets it from RefreshTokenLifespan on every initial write; the refresher
+	// carries it forward unchanged on each subsequent refresh, and defensively
+	// re-anchors it on legacy rows where both ExpiresAt and SessionExpiresAt
+	// are zero. Storage backends use it as a fallback storage lifetime when
+	// ExpiresAt is zero (non-expiring upstream token), bounding the row to the
 	// Fosite session. Set unconditionally — including for tokens with their own
 	// ExpiresAt — so the refresh path is safe even if the upstream provider stops
 	// asserting expires_in on a later rotation.

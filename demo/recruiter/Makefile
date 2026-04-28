@@ -190,4 +190,5 @@ status:
 teardown: server-stop
 	@echo "▶  Removing demo data..."
 	@rm -f $(DB_FILE) $(DEMO_BIN) $(SERVER_BIN) $(LOG_FILE) $(CONFIG) $(MCP_CONFIG)
+	@rm -f $(CURDIR)/data/*.md
 	@echo "✓  Teardown complete — safe to run 'make all' again"

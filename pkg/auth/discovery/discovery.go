@@ -53,10 +53,11 @@ type AuthInfo struct {
 
 // AuthServerInfo contains information about a validated authorization server
 type AuthServerInfo struct {
-	Issuer               string
-	AuthorizationURL     string
-	TokenURL             string
-	RegistrationEndpoint string
+	Issuer                            string
+	AuthorizationURL                  string
+	TokenURL                          string
+	RegistrationEndpoint              string
+	ClientIDMetadataDocumentSupported bool
 }
 
 // Config holds configuration for authentication discovery
@@ -539,6 +540,19 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		return nil, fmt.Errorf("OAuth flow config cannot be nil")
 	}
 
+	// Before resolving ports or attempting DCR, check whether the AS advertises CIMD
+	// support. This handles issuer discovery paths (configured issuer, realm-derived)
+	// that return without fetching the AS discovery document, so the CIMD flag would
+	// otherwise never be seen.
+	if shouldDynamicallyRegisterClient(config) {
+		if doc, err := getDiscoveryDocument(ctx, issuer, config); err == nil &&
+			doc != nil && doc.ClientIDMetadataDocumentSupported {
+			config.ClientID = oauthproto.ToolHiveClientMetadataDocumentURL
+			slog.Debug("AS supports CIMD, using metadata URL as client_id",
+				"url", oauthproto.ToolHiveClientMetadataDocumentURL)
+		}
+	}
+
 	// Resolve port availability BEFORE dynamic registration
 	// This ensures we register the OAuth client with the same port we'll actually use
 
@@ -836,10 +850,11 @@ func ValidateAndDiscoverAuthServer(ctx context.Context, potentialIssuer string) 
 		}
 
 		return &AuthServerInfo{
-			Issuer:               doc.Issuer,
-			AuthorizationURL:     doc.AuthorizationEndpoint,
-			TokenURL:             doc.TokenEndpoint,
-			RegistrationEndpoint: doc.RegistrationEndpoint,
+			Issuer:                            doc.Issuer,
+			AuthorizationURL:                  doc.AuthorizationEndpoint,
+			TokenURL:                          doc.TokenEndpoint,
+			RegistrationEndpoint:              doc.RegistrationEndpoint,
+			ClientIDMetadataDocumentSupported: doc.ClientIDMetadataDocumentSupported,
 		}, nil
 	}
 

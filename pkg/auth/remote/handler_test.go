@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
@@ -795,6 +796,89 @@ func TestAuthenticate_BearerTokenPriority(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "my-bearer-token", token.AccessToken)
 	assert.Equal(t, "Bearer", token.TokenType)
+}
+
+// TestBuildOAuthFlowConfig_CIMD tests that buildOAuthFlowConfig sets the CIMD client_id
+// when the authorization server advertises CIMD support and no credentials are configured.
+func TestBuildOAuthFlowConfig_CIMD(t *testing.T) {
+	t.Parallel()
+
+	cimdURL := oauthproto.ToolHiveClientMetadataDocumentURL
+
+	tests := []struct {
+		name            string
+		config          *Config
+		authServerInfo  *discovery.AuthServerInfo
+		wantClientID    string
+		wantNotClientID string
+	}{
+		{
+			name:   "CIMD set when AS supports it and no credentials configured",
+			config: &Config{},
+			authServerInfo: &discovery.AuthServerInfo{
+				AuthorizationURL:                  "https://as.example.com/authorize",
+				TokenURL:                          "https://as.example.com/token",
+				ClientIDMetadataDocumentSupported: true,
+			},
+			wantClientID: cimdURL,
+		},
+		{
+			name: "CIMD not set when ClientID already configured",
+			config: &Config{
+				ClientID: "pre-configured-client-id",
+			},
+			authServerInfo: &discovery.AuthServerInfo{
+				AuthorizationURL:                  "https://as.example.com/authorize",
+				TokenURL:                          "https://as.example.com/token",
+				ClientIDMetadataDocumentSupported: true,
+			},
+			wantClientID: "pre-configured-client-id",
+		},
+		{
+			name: "CIMD not set when ClientSecret already configured",
+			config: &Config{
+				ClientSecret: "some-secret",
+			},
+			authServerInfo: &discovery.AuthServerInfo{
+				AuthorizationURL:                  "https://as.example.com/authorize",
+				TokenURL:                          "https://as.example.com/token",
+				ClientIDMetadataDocumentSupported: true,
+			},
+			wantNotClientID: cimdURL,
+		},
+		{
+			name:   "CIMD not set when AS does not advertise support",
+			config: &Config{},
+			authServerInfo: &discovery.AuthServerInfo{
+				AuthorizationURL:                  "https://as.example.com/authorize",
+				TokenURL:                          "https://as.example.com/token",
+				ClientIDMetadataDocumentSupported: false,
+			},
+			wantNotClientID: cimdURL,
+		},
+		{
+			name:            "CIMD not set when authServerInfo is nil",
+			config:          &Config{},
+			authServerInfo:  nil,
+			wantNotClientID: cimdURL,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			handler := &Handler{config: tt.config}
+			flowConfig := handler.buildOAuthFlowConfig(nil, tt.authServerInfo)
+
+			if tt.wantClientID != "" {
+				assert.Equal(t, tt.wantClientID, flowConfig.ClientID)
+			}
+			if tt.wantNotClientID != "" {
+				assert.NotEqual(t, tt.wantNotClientID, flowConfig.ClientID)
+			}
+		})
+	}
 }
 
 // TestAuthenticate_BearerTokenDiscovery tests that bearer token discovery works correctly

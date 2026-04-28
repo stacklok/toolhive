@@ -11,6 +11,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -131,15 +132,19 @@ func (h *Handler) performOAuthFlow(
 ) (oauth2.TokenSource, error) {
 	slog.Debug("Starting OAuth authentication flow", "issuer", issuer)
 
-	// Create OAuth flow config
 	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo)
+	cimdUsed := flowConfig.ClientID == oauthproto.ToolHiveClientMetadataDocumentURL
 
 	result, err := discovery.PerformOAuthFlow(ctx, issuer, flowConfig)
+	if err != nil && cimdUsed {
+		slog.Warn("CIMD client_id rejected by authorization server, retrying with DCR", "error", err)
+		flowConfig.ClientID = ""
+		result, err = discovery.PerformOAuthFlow(ctx, issuer, flowConfig)
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	// Persist and wrap the token source
 	return h.wrapWithPersistence(result), nil
 }
 
@@ -171,6 +176,17 @@ func (h *Handler) buildOAuthFlowConfig(scopes []string, authServerInfo *discover
 			"registration", authServerInfo.RegistrationEndpoint)
 	}
 
+	// CIMD: if the AS supports CIMD and we have no pre-configured or cached credentials,
+	// use ToolHive's metadata URL as client_id. Setting it here prevents
+	// shouldDynamicallyRegisterClient from firing (it checks ClientID == "").
+	if authServerInfo != nil &&
+		authServerInfo.ClientIDMetadataDocumentSupported &&
+		flowConfig.ClientID == "" &&
+		flowConfig.ClientSecret == "" {
+		flowConfig.ClientID = oauthproto.ToolHiveClientMetadataDocumentURL
+		slog.Debug("Using CIMD client_id", "url", oauthproto.ToolHiveClientMetadataDocumentURL)
+	}
+
 	return flowConfig
 }
 
@@ -193,6 +209,13 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 		} else {
 			slog.Debug("Successfully persisted DCR client credentials for future restarts")
 		}
+	}
+
+	// If CIMD was used (client_id is the metadata URL), persist it separately
+	// so it can be distinguished from a DCR-issued client_id on restart.
+	if oauthproto.IsClientIDMetadataDocumentURL(result.ClientID) {
+		h.config.CachedCIMDClientID = result.ClientID
+		slog.Debug("CIMD client_id used, cached for reference", "url", result.ClientID)
 	}
 
 	// Wrap the token source to persist refreshed tokens

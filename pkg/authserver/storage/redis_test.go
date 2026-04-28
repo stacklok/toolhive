@@ -1012,6 +1012,46 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 		})
 	})
 
+	t.Run("legacy JSON without session_expires_at decodes with zero SessionExpiresAt", func(t *testing.T) {
+		// Pin the wire-shape contract: pre-PR Redis data that has no
+		// "session_expires_at" key must deserialise to SessionExpiresAt.IsZero().
+		// A future DisallowUnknownFields flip or JSON tag rename would break this
+		// without failing any other test in the suite.
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			futureExpiry := time.Now().Add(time.Hour).Unix()
+			legacyJSON := fmt.Sprintf(`{
+				"provider_id": "github",
+				"access_token": "legacy-access",
+				"refresh_token": "legacy-refresh",
+				"id_token": "legacy-id",
+				"expires_at": %d,
+				"user_id": "legacy-user-uuid",
+				"upstream_subject": "github-sub-123",
+				"client_id": "legacy-client"
+			}`, futureExpiry)
+
+			// Inject directly into miniredis, bypassing the Store path, to simulate
+			// a pre-PR row written without "session_expires_at".
+			key := redisUpstreamKey(s.keyPrefix, "legacy-session", "github")
+			require.NoError(t, mr.Set(key, legacyJSON))
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "legacy-session", "github")
+			require.NoError(t, err)
+			require.NotNil(t, retrieved)
+
+			assert.Equal(t, "github", retrieved.ProviderID)
+			assert.Equal(t, "legacy-access", retrieved.AccessToken)
+			assert.Equal(t, "legacy-refresh", retrieved.RefreshToken)
+			assert.Equal(t, "legacy-id", retrieved.IDToken)
+			assert.Equal(t, "legacy-user-uuid", retrieved.UserID)
+			assert.Equal(t, "github-sub-123", retrieved.UpstreamSubject)
+			assert.Equal(t, "legacy-client", retrieved.ClientID)
+			assert.Equal(t, time.Unix(futureExpiry, 0), retrieved.ExpiresAt)
+			assert.True(t, retrieved.SessionExpiresAt.IsZero(),
+				"SessionExpiresAt must be zero when absent from legacy JSON")
+		})
+	})
+
 }
 
 // --- Bulk Migration Tests ---

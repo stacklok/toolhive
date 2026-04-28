@@ -4,12 +4,14 @@
 package authserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1748,6 +1750,7 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC) *t
 	return &testServer{
 		Server:     httpServer,
 		PrivateKey: privateKey,
+		authServer: srv,
 		storage:    srv.IDPTokenStorage(),
 	}
 }
@@ -1784,92 +1787,15 @@ func TestIntegration_MultiUpstreamSequentialChain(t *testing.T) {
 	})
 
 	ts := setupTestServerWithTwoUpstreams(t, m1, m2)
-	client := noRedirectClient()
 
 	verifier := servercrypto.GeneratePKCEVerifier()
 	challenge := servercrypto.ComputePKCEChallenge(verifier)
 	clientState := "multi-upstream-client-state"
 
-	parsedServerURL, err := url.Parse(ts.Server.URL)
-	require.NoError(t, err)
-
-	// === Leg 1: Client -> /authorize -> provider-1 ===
-
-	// Step 1: Start authorization flow on our server
-	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
-		"client_id":             {testClientID},
-		"redirect_uri":          {testRedirectURI},
-		"state":                 {clientState},
-		"code_challenge":        {challenge},
-		"code_challenge_method": {"S256"},
-		"response_type":         {"code"},
-		"scope":                 {"openid profile"},
-	}.Encode()
-
-	resp, err := client.Get(authorizeURL)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, resp.StatusCode, "expected redirect to provider-1")
-	m1Location, err := resp.Location()
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// Step 2: Follow redirect to provider-1's authorization endpoint (mockoidc auto-approves)
-	resp, err = client.Get(m1Location.String())
-	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, resp.StatusCode, "expected redirect from provider-1 to our callback")
-	callbackFromM1, err := resp.Location()
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// Step 3: Rewrite callback URL to use actual test server (mockoidc redirects to localhost)
-	callbackFromM1.Scheme = parsedServerURL.Scheme
-	callbackFromM1.Host = parsedServerURL.Host
-
-	// Step 4: Call our /callback with provider-1's code
-	// This should NOT redirect to the client yet — it should redirect to provider-2
-	resp, err = client.Get(callbackFromM1.String())
-	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, resp.StatusCode,
-		"expected 302 redirect to provider-2 (chain continues), not 303 to client")
-	m2Location, err := resp.Location()
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// === Leg 2: provider-2 ===
-
-	// Step 5: Follow redirect to provider-2's authorization endpoint (mockoidc auto-approves)
-	resp, err = client.Get(m2Location.String())
-	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, resp.StatusCode, "expected redirect from provider-2 to our callback")
-	callbackFromM2, err := resp.Location()
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// Step 6: Rewrite callback URL to use actual test server
-	callbackFromM2.Scheme = parsedServerURL.Scheme
-	callbackFromM2.Host = parsedServerURL.Host
-
-	// Step 7: Call our /callback with provider-2's code
-	// All upstreams are now satisfied, so this should redirect to the client with an auth code (303)
-	resp, err = client.Get(callbackFromM2.String())
-	require.NoError(t, err)
-	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
-		"expected 303 redirect to client with auth code (all upstreams satisfied)")
-	clientLocation, err := resp.Location()
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// === Verify the final redirect to the client ===
-
-	// Verify the original client state was preserved through the entire chain
-	returnedState := clientLocation.Query().Get("state")
-	assert.Equal(t, clientState, returnedState, "client state should be preserved through the multi-upstream chain")
-
-	// Extract authorization code
-	authCode := clientLocation.Query().Get("code")
-	require.NotEmpty(t, authCode, "authorization code should be present in the final redirect")
-
-	// === Exchange code for tokens ===
+	// runChainFlow drives the two-leg chain (authorize → provider-1 callback →
+	// provider-2 callback → 303 to client) and asserts the chain-level invariants:
+	// each leg returns the expected redirect, and client state is preserved end-to-end.
+	authCode := runChainFlow(t, ts.Server.URL, challenge, clientState)
 
 	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
 
@@ -1931,4 +1857,355 @@ func TestIntegration_MultiUpstreamSequentialChain(t *testing.T) {
 		"provider-2 UpstreamSubject should come from m2's queued user")
 	assert.NotEqual(t, tokens1.UpstreamSubject, tokens2.UpstreamSubject,
 		"upstream subjects should differ (different IDPs)")
+}
+
+// ============================================================================
+// Non-Expiring Upstream Token Regression Tests
+// ============================================================================
+
+// captureResponseWriter buffers a handler's HTTP response so a middleware can
+// inspect or rewrite it before flushing to the real ResponseWriter.
+type captureResponseWriter struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func newCaptureResponseWriter() *captureResponseWriter {
+	return &captureResponseWriter{header: http.Header{}, status: http.StatusOK}
+}
+
+func (c *captureResponseWriter) Header() http.Header { return c.header }
+
+func (c *captureResponseWriter) WriteHeader(status int) { c.status = status }
+
+func (c *captureResponseWriter) Write(b []byte) (int, error) { return c.body.Write(b) }
+
+// stripExpiresInMiddleware returns a middleware that, for token-endpoint
+// responses, removes the `expires_in` field from the JSON body. This emulates
+// upstream IDPs that issue non-expiring access tokens (e.g., long-lived PATs)
+// without requiring a fork of mockoidc.
+//
+// Important: this exercises the same wire shape a real provider would emit, so
+// our auth server's `convertOAuth2Token` runs with `oauth2.Token.Expiry ==
+// time.Time{}`. A regression that re-introduces a synthetic expiry there would
+// produce a non-zero `ExpiresAt` in storage and is caught by callers of this
+// helper.
+func stripExpiresInMiddleware(tokenPath string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+			if req.URL.Path != tokenPath {
+				next.ServeHTTP(rw, req)
+				return
+			}
+
+			capture := newCaptureResponseWriter()
+			next.ServeHTTP(capture, req)
+
+			// Only rewrite successful JSON token responses. Errors and
+			// non-JSON bodies are passed through unchanged.
+			body := capture.body.Bytes()
+			contentType := capture.header.Get("Content-Type")
+			if capture.status == http.StatusOK && strings.Contains(contentType, "json") {
+				var payload map[string]interface{}
+				if err := json.Unmarshal(body, &payload); err == nil {
+					delete(payload, "expires_in")
+					if rewritten, err := json.Marshal(payload); err == nil {
+						body = rewritten
+						capture.header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+					}
+				}
+			}
+
+			for k, v := range capture.header {
+				rw.Header()[k] = v
+			}
+			rw.WriteHeader(capture.status)
+			_, _ = rw.Write(body)
+		})
+	}
+}
+
+// startMockOIDCNoExpiresIn starts a mockoidc instance whose token endpoint
+// responses have `expires_in` stripped, so the upstream OAuth2 client parses
+// `Expiry == time.Time{}`. The test still gets a fully working OIDC server
+// for the rest of the flow (authorize, userinfo, JWKS).
+//
+// No default user is queued; callers must call QueueUser themselves so the
+// failure mode for an unintended refresh (mockoidc returning an error because
+// no user is queued) is preserved.
+func startMockOIDCNoExpiresIn(t *testing.T) *mockoidc.MockOIDC {
+	t.Helper()
+
+	m, err := mockoidc.NewServer(nil)
+	require.NoError(t, err)
+
+	require.NoError(t, m.AddMiddleware(stripExpiresInMiddleware(mockoidc.TokenEndpoint)))
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	require.NoError(t, m.Start(ln, nil))
+
+	t.Cleanup(func() {
+		require.NoError(t, m.Shutdown())
+	})
+
+	return m
+}
+
+// TestIntegration_FullFlow_NonExpiringUpstreamToken drives the full HTTP flow
+// (authorize -> callback -> token) against an upstream IDP whose token
+// endpoint omits `expires_in`. It asserts that the upstream tokens reach
+// storage with `ExpiresAt.IsZero()` and that GetValidTokens does not trigger
+// a refresh on a non-expiring token.
+//
+// This pins the end-to-end behavior of `convertOAuth2Token`: a regression
+// that re-introduces a synthetic expiry (e.g., defaulting to time.Hour) would
+// fail the IsZero assertion below. The single queued mockoidc user is
+// consumed during /authorize; if GetValidTokens accidentally triggered a
+// refresh, mockoidc would error because no further user is queued — that
+// outcome is the failure signal.
+func TestIntegration_FullFlow_NonExpiringUpstreamToken(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDCNoExpiresIn(t)
+	m.QueueUser(&mockoidc.MockUser{
+		Subject: "non-expiring-user",
+		Email:   "non-expiring@example.com",
+	})
+
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "non-expiring-full-flow",
+		Challenge:    challenge,
+		Scope:        "openid profile offline_access",
+		ResponseType: "code",
+	})
+
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok)
+	tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+
+	stor := ts.authServer.IDPTokenStorage()
+
+	// The upstream tokens written during /callback must carry a zero ExpiresAt:
+	// the upstream response had no expires_in, so convertOAuth2Token must
+	// preserve the zero value all the way into storage.
+	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, original)
+	require.NotEmpty(t, original.AccessToken)
+	assert.True(t, original.ExpiresAt.IsZero(),
+		"upstream ExpiresAt must be zero for a token response without expires_in (got %v)",
+		original.ExpiresAt)
+
+	// GetValidTokens on a non-expiring token must return the stored access
+	// token unchanged. No refresh user is queued — a refresh attempt would
+	// cause mockoidc to return an error and fail the assertion below.
+	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, cred)
+	assert.Equal(t, original.AccessToken, cred.AccessToken,
+		"non-expiring access token must be returned unchanged (no refresh)")
+
+	// Re-read storage: ExpiresAt must still be zero, confirming no refresh
+	// side effect rewrote the row.
+	after, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	assert.True(t, after.ExpiresAt.IsZero(),
+		"non-expiring token must keep zero ExpiresAt after GetValidTokens (got %v)",
+		after.ExpiresAt)
+	assert.Equal(t, original.AccessToken, after.AccessToken,
+		"access token in storage must be unchanged after GetValidTokens")
+}
+
+// runChainFlow performs the two-leg multi-upstream authorization chain and
+// returns the final authorization code redirected to the client. It mirrors
+// the hand-crafted flow in TestIntegration_MultiUpstreamSequentialChain but
+// is reused by the mixed-expiry orderings test. The PKCE verifier is the
+// caller's responsibility — it's only needed at the final /token exchange.
+func runChainFlow(
+	t *testing.T,
+	serverURL string,
+	challenge string,
+	clientState string,
+) string {
+	t.Helper()
+	client := noRedirectClient()
+
+	parsedServerURL, err := url.Parse(serverURL)
+	require.NoError(t, err)
+
+	// Leg 1: client -> /authorize -> first upstream
+	authorizeURL := serverURL + "/oauth/authorize?" + url.Values{
+		"client_id":             {testClientID},
+		"redirect_uri":          {testRedirectURI},
+		"state":                 {clientState},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"response_type":         {"code"},
+		"scope":                 {"openid profile"},
+	}.Encode()
+
+	resp, err := client.Get(authorizeURL)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	firstUpstreamLocation, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	resp, err = client.Get(firstUpstreamLocation.String())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	firstCallback, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+	firstCallback.Scheme = parsedServerURL.Scheme
+	firstCallback.Host = parsedServerURL.Host
+
+	resp, err = client.Get(firstCallback.String())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusFound, resp.StatusCode,
+		"expected redirect to second upstream, not 303 to client")
+	secondUpstreamLocation, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	// Leg 2: second upstream -> callback -> client
+	resp, err = client.Get(secondUpstreamLocation.String())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	secondCallback, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+	secondCallback.Scheme = parsedServerURL.Scheme
+	secondCallback.Host = parsedServerURL.Host
+
+	resp, err = client.Get(secondCallback.String())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
+		"expected 303 to client after both upstreams satisfied")
+	clientLocation, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	// Client state must be preserved through the entire chain — universal
+	// invariant of the authorization chain, asserted here so every caller benefits.
+	require.Equal(t, clientState, clientLocation.Query().Get("state"),
+		"client state should be preserved through the multi-upstream chain")
+
+	authCode := clientLocation.Query().Get("code")
+	require.NotEmpty(t, authCode)
+	return authCode
+}
+
+// TestIntegration_MultiUpstreamChain_MixedExpiryOrderings exercises the two-leg
+// authorization chain with one upstream returning expires_in and the other
+// omitting it. Both orderings must succeed and both providers' tokens must be
+// retrievable via GetAllValidTokens.
+//
+// This pins the chain handler's per-leg storage write and the
+// convertOAuth2Token zero-Expiry path through the full HTTP flow, in both
+// orderings. It does NOT exercise the Redis Lua TTL inversion fix
+// (commit fec89b040) because the in-process integration harness uses
+// storage.NewMemoryStorage(); the Lua semantics are covered directly by
+// pkg/authserver/storage/redis_test.go via miniredis.
+func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name                 string
+		firstUpstreamExpires bool // true => provider-1 returns expires_in; false => provider-1 omits it
+	}{
+		{name: "non_expiring_then_expiring", firstUpstreamExpires: false},
+		{name: "expiring_then_non_expiring", firstUpstreamExpires: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Build provider-1 and provider-2 mockoidc instances so the
+			// non-expiring one matches tc.firstUpstreamExpires.
+			var m1, m2 *mockoidc.MockOIDC
+			if tc.firstUpstreamExpires {
+				m1 = startMockOIDC(t)
+				m2 = startMockOIDCNoExpiresIn(t)
+			} else {
+				m1 = startMockOIDCNoExpiresIn(t)
+				m2 = startMockOIDC(t)
+			}
+
+			// Each mockoidc consumes one queued user during /authorize.
+			// startMockOIDC queues a default user; startMockOIDCNoExpiresIn
+			// does not, so we queue explicitly. Use distinct emails so the
+			// per-provider UpstreamSubject is observably different.
+			m1.QueueUser(&mockoidc.MockUser{
+				Subject: "user-from-m1-" + tc.name,
+				Email:   "u1-" + tc.name + "@m1.example.com",
+			})
+			m2.QueueUser(&mockoidc.MockUser{
+				Subject: "user-from-m2-" + tc.name,
+				Email:   "u2-" + tc.name + "@m2.example.com",
+			})
+
+			ts := setupTestServerWithTwoUpstreams(t, m1, m2)
+
+			verifier := servercrypto.GeneratePKCEVerifier()
+			challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+			authCode := runChainFlow(t, ts.Server.URL, challenge, "mixed-expiry-"+tc.name)
+			tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+
+			accessToken, ok := tokenData["access_token"].(string)
+			require.True(t, ok)
+			tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+
+			ctx := context.Background()
+			stor := ts.authServer.IDPTokenStorage()
+
+			// Both providers' tokens must be in storage. The non-expiring
+			// one must have a zero ExpiresAt; the expiring one must have a
+			// future ExpiresAt. This pins the per-leg storage write path.
+			tokens1, err := stor.GetUpstreamTokens(ctx, tsid, "provider-1")
+			require.NoError(t, err, "provider-1 tokens must be retrievable")
+			require.NotNil(t, tokens1)
+			tokens2, err := stor.GetUpstreamTokens(ctx, tsid, "provider-2")
+			require.NoError(t, err, "provider-2 tokens must be retrievable")
+			require.NotNil(t, tokens2)
+
+			if tc.firstUpstreamExpires {
+				assert.False(t, tokens1.ExpiresAt.IsZero(),
+					"provider-1 (expiring) must carry a non-zero ExpiresAt")
+				assert.True(t, tokens2.ExpiresAt.IsZero(),
+					"provider-2 (non-expiring) must carry a zero ExpiresAt")
+			} else {
+				assert.True(t, tokens1.ExpiresAt.IsZero(),
+					"provider-1 (non-expiring) must carry a zero ExpiresAt")
+				assert.False(t, tokens2.ExpiresAt.IsZero(),
+					"provider-2 (expiring) must carry a non-zero ExpiresAt")
+			}
+
+			// GetAllValidTokens must return both providers' access tokens.
+			// Before the Lua TTL fix, the non-expiring provider's index could
+			// be evicted prematurely depending on chain ordering, so this
+			// would have returned an empty or incomplete map for one
+			// ordering.
+			svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
+			all, err := svc.GetAllValidTokens(ctx, tsid)
+			require.NoError(t, err)
+			require.Len(t, all, 2, "GetAllValidTokens must return both providers regardless of expiry ordering")
+			assert.NotEmpty(t, all["provider-1"], "provider-1 access token must be present")
+			assert.NotEmpty(t, all["provider-2"], "provider-2 access token must be present")
+		})
+	}
 }

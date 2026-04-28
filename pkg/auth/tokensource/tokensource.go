@@ -92,12 +92,16 @@ type OAuthTokenSource struct {
 
 // New creates an OAuthTokenSource from the given Options.
 // It panics if opts.KeyProvider is nil, as this is a required field.
+// If opts.OIDC.CallbackPort is zero, it defaults to remote.DefaultCallbackPort.
 func New(opts Options) *OAuthTokenSource {
 	if opts.KeyProvider == nil {
 		panic("tokensource.New: Options.KeyProvider must not be nil")
 	}
 	if opts.FallbackErr == nil {
 		opts.FallbackErr = errors.New("authentication required: no cached credentials found; complete an interactive login first")
+	}
+	if opts.OIDC.CallbackPort == 0 {
+		opts.OIDC.CallbackPort = remote.DefaultCallbackPort
 	}
 	return &OAuthTokenSource{opts: opts}
 }
@@ -381,7 +385,7 @@ func (t *OAuthTokenSource) tryAccessTokenCache(ctx context.Context) (string, boo
 		return "", false
 	}
 	idx := strings.LastIndex(raw, "|")
-	if idx < 0 {
+	if idx <= 0 {
 		return "", false
 	}
 	expiry, err := time.Parse(time.RFC3339, raw[idx+1:])

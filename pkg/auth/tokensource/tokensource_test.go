@@ -18,7 +18,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/tokensource"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
@@ -597,5 +596,31 @@ func TestToken_OIDCDiscoveryFails_PropagatesError(t *testing.T) {
 	assert.False(t, errors.Is(err, errTestFallback), "OIDC discovery failure must not collapse to FallbackErr")
 }
 
-// Ensure the package-level oauth helpers exist and are importable.
-var _ = oauth.NewFlow
+// ── performBrowserFlow: OIDC discovery failure in interactive mode ────────────
+
+// When interactive mode is enabled but OIDC discovery fails, Token() must
+// return the discovery error wrapped as "OIDC browser flow failed", not the
+// generic FallbackErr.
+func TestToken_Interactive_OIDCDiscoveryFails_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	// Server that always returns 500 — OIDC well-known endpoints will fail.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	opts := tokensource.Options{
+		OIDC:        tokensource.OIDCParams{Issuer: srv.URL, ClientID: testClientID},
+		Interactive: true,
+		KeyProvider: func() string { return "test-key" },
+		FallbackErr: errTestFallback,
+	}
+	ts := tokensource.New(opts)
+
+	_, err := ts.Token(context.Background())
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, errTestFallback),
+		"browser flow OIDC failure must not collapse to FallbackErr")
+	assert.Contains(t, err.Error(), "OIDC browser flow failed")
+}

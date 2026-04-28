@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokensource"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -42,18 +41,13 @@ func NewTokenSource(
 		return nil, nil
 	}
 
-	callbackPort := cfg.CallbackPort
-	if callbackPort == 0 {
-		callbackPort = remote.DefaultCallbackPort
-	}
-
 	return tokensource.New(tokensource.Options{
 		OIDC: tokensource.OIDCParams{
 			Issuer:       cfg.Issuer,
 			ClientID:     cfg.ClientID,
 			Scopes:       cfg.Scopes,
 			Audience:     cfg.Audience,
-			CallbackPort: callbackPort,
+			CallbackPort: cfg.CallbackPort,
 		},
 		SecretsProvider: secretsProvider,
 		Interactive:     interactive,

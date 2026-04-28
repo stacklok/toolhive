@@ -149,6 +149,56 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 			},
 		},
 		{
+			// Defensive re-anchor for legacy data. Pre-PR Redis rows decode
+			// SessionExpiresAt as zero (the field was not persisted). If such a
+			// row is refreshed and the upstream rotation also drops expires_in,
+			// both bounds are zero — the row would be stored without any TTL,
+			// and the Memory backend would retain it indefinitely. The refresher
+			// must re-anchor SessionExpiresAt to now+RefreshTokenLifespan so the
+			// row carries a storage TTL bound forward.
+			name:      "re-anchors SessionExpiresAt when legacy row and provider both omit expiry",
+			sessionID: "session-legacy",
+			expired: &storage.UpstreamTokens{
+				ProviderID:       "github",
+				AccessToken:      "old-access",
+				RefreshToken:     "old-refresh",
+				IDToken:          "old-id-token",
+				ExpiresAt:        time.Time{}, // legacy row decoded with zero expiry
+				SessionExpiresAt: time.Time{}, // legacy row missing the field entirely
+				UserID:           "user-123",
+				UpstreamSubject:  "upstream-sub-456",
+				ClientID:         "client-abc",
+			},
+			setupProvider: func(_ *testing.T, p *upstreammocks.MockOAuth2Provider) {
+				p.EXPECT().RefreshTokens(gomock.Any(), "old-refresh", "upstream-sub-456").
+					Return(&upstream.Tokens{
+						AccessToken:  "new-access",
+						RefreshToken: "new-refresh",
+						IDToken:      "new-id-token",
+						// ExpiresAt intentionally zero — provider also omitted expires_in.
+					}, nil)
+			},
+			setupStorage: func(_ *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-legacy", "github", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _, _ string, tokens *storage.UpstreamTokens) error {
+						assert.False(t, tokens.SessionExpiresAt.IsZero(),
+							"refresher must re-anchor SessionExpiresAt for legacy zero/zero rows")
+						assert.True(t, tokens.ExpiresAt.IsZero(),
+							"new ExpiresAt should be zero (provider omitted expires_in)")
+						// The re-anchor uses the configured lifespan (24h in this test).
+						assert.WithinDuration(t, time.Now().Add(24*time.Hour), tokens.SessionExpiresAt, time.Minute,
+							"re-anchored SessionExpiresAt should be ~now+RefreshTokenLifespan")
+						return nil
+					})
+			},
+			checkResult: func(t *testing.T, result *storage.UpstreamTokens) {
+				t.Helper()
+				assert.False(t, result.SessionExpiresAt.IsZero(),
+					"returned tokens must also carry the re-anchored SessionExpiresAt")
+				assert.True(t, result.ExpiresAt.IsZero())
+			},
+		},
+		{
 			name:           "nil expired tokens returns error",
 			sessionID:      "session-3",
 			expired:        nil,
@@ -247,8 +297,9 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 			tt.setupStorage(t, mockStorage)
 
 			refresher := &upstreamTokenRefresher{
-				providers: map[string]upstream.OAuth2Provider{"github": mockProvider},
-				storage:   mockStorage,
+				providers:            map[string]upstream.OAuth2Provider{"github": mockProvider},
+				storage:              mockStorage,
+				refreshTokenLifespan: 24 * time.Hour,
 			}
 
 			result, err := refresher.RefreshAndStore(context.Background(), tt.sessionID, tt.expired)

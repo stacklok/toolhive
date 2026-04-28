@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -18,9 +19,16 @@ import (
 // UpstreamTokenStorage (for persisting the refreshed tokens). On each refresh
 // call it dispatches to the correct provider based on the expired token's
 // ProviderID.
+//
+// refreshTokenLifespan is used as the defensive re-anchor value for
+// SessionExpiresAt when the persisted row pre-dates the unconditional callback
+// write (legacy data) and the upstream provider drops expires_in on the
+// refresh response. Without this, both bounds would be zero and the row would
+// be persisted with no TTL — see RefreshAndStore.
 type upstreamTokenRefresher struct {
-	providers map[string]upstream.OAuth2Provider
-	storage   storage.UpstreamTokenStorage
+	providers            map[string]upstream.OAuth2Provider
+	storage              storage.UpstreamTokenStorage
+	refreshTokenLifespan time.Duration
 }
 
 // Compile-time check that upstreamTokenRefresher implements storage.UpstreamTokenRefresher.
@@ -57,6 +65,25 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 		return nil, fmt.Errorf("upstream token refresh failed: %w", err)
 	}
 
+	// Defensive re-anchor of SessionExpiresAt: the post-PR callback write sets
+	// SessionExpiresAt unconditionally so it can be carried forward here as a
+	// storage TTL bound. Pre-PR rows persisted without that field decode as
+	// zero. If such a legacy row is refreshed and the upstream rotation drops
+	// expires_in, both ExpiresAt and SessionExpiresAt would be zero, the row
+	// would be stored without any TTL bound, and the Memory backend would
+	// retain it indefinitely. Re-anchor to now+RefreshTokenLifespan to restore
+	// the invariant. The Redis 30-day per-key TTL also caps the legacy
+	// behavior, but Memory has no such backstop.
+	sessionExpiresAt := expired.SessionExpiresAt
+	if sessionExpiresAt.IsZero() && newTokens.ExpiresAt.IsZero() {
+		sessionExpiresAt = time.Now().Add(r.refreshTokenLifespan)
+		slog.Debug("re-anchored zero SessionExpiresAt on refresh of legacy upstream token row",
+			"session_id", sessionID,
+			"provider_id", expired.ProviderID,
+			"refresh_token_lifespan", r.refreshTokenLifespan,
+		)
+	}
+
 	// Build updated storage tokens preserving binding fields from the original
 	updated := &storage.UpstreamTokens{
 		ProviderID:       expired.ProviderID,
@@ -64,7 +91,7 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 		RefreshToken:     newTokens.RefreshToken,
 		IDToken:          newTokens.IDToken,
 		ExpiresAt:        newTokens.ExpiresAt,
-		SessionExpiresAt: expired.SessionExpiresAt,
+		SessionExpiresAt: sessionExpiresAt,
 		UserID:           expired.UserID,
 		UpstreamSubject:  expired.UpstreamSubject,
 		ClientID:         expired.ClientID,

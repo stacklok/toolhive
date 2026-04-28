@@ -147,8 +147,11 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 					Address:  "redis:6379",
 				})
 				vmcp.Spec.IncomingAuth = &mcpv1beta1.IncomingAuthConfig{
-					Type:          "oidc",
-					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "oidc"},
+					Type: "oidc",
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+						Name:     "oidc",
+						Audience: "test-audience",
+					},
 				}
 				vmcp.Spec.RateLimiting = &mcpv1beta1.RateLimitConfig{
 					PerUser: &mcpv1beta1.RateLimitBucket{

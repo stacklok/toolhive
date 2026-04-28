@@ -434,7 +434,7 @@ func addRateLimitMiddleware(middlewares []types.MiddlewareConfig, config *RunCon
 	params := ratelimit.MiddlewareParams{
 		Namespace:  config.RateLimitNamespace,
 		ServerName: config.Name,
-		Config:     config.RateLimitConfig.ToInternal(),
+		Config:     config.RateLimitConfig,
 		RedisAddr:  redisAddr,
 		RedisDB:    redisDB,
 	}

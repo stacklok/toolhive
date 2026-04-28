@@ -233,25 +233,6 @@ _Appears in:_
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP provider whose access<br />token should be used as the source of JWT claims for Cedar evaluation.<br />When empty, claims from the ToolHive-issued token are used.<br />Must match an upstream provider name configured in the embedded auth server<br />(e.g. "default", "github"). Only relevant when the embedded auth server is active. |  | Optional: \{\} <br /> |
 
 
-#### ratelimit.config.Bucket
-
-
-
-Bucket defines a token bucket configuration with a maximum capacity and a
-refill period.
-
-
-
-_Appears in:_
-- [ratelimit.config.Config](#ratelimitconfigconfig)
-- [ratelimit.config.ToolConfig](#ratelimitconfigtoolconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `maxTokens` _integer_ | MaxTokens is the maximum number of tokens. |  |  |
-| `refillPeriod` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | RefillPeriod is the duration to fully refill the bucket. |  |  |
-
-
 #### vmcp.config.CircuitBreakerConfig
 
 
@@ -657,25 +638,6 @@ All fields use pointers so nil means "don't override" while zero values
 _Appears in:_
 - [vmcp.config.ToolOverride](#vmcpconfigtooloverride)
 
-
-
-#### ratelimit.config.ToolConfig
-
-
-
-ToolConfig defines rate limits for a specific tool.
-
-
-
-_Appears in:_
-- [ratelimit.config.Config](#ratelimitconfigconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is the MCP tool name this limit applies to. |  |  |
-| `global` _[ratelimit.config.Bucket](#ratelimitconfigbucket)_ | Global is a token bucket shared across all users for this tool. |  |  |
-| `shared` _[ratelimit.config.Bucket](#ratelimitconfigbucket)_ | Shared is a deprecated alias for Global. |  |  |
-| `perUser` _[ratelimit.config.Bucket](#ratelimitconfigbucket)_ | PerUser is a token bucket applied independently to each authenticated user<br />for this tool. |  |  |
 
 
 #### vmcp.config.ToolConfigRef

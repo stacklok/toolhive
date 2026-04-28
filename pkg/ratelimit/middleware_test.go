@@ -61,23 +61,11 @@ func withParsedMCPRequest(r *http.Request, method, resourceID string, id any) *h
 	return r.WithContext(ctx)
 }
 
-func withParsedToolCall(r *http.Request, resourceID string, arguments map[string]interface{}, id any) *http.Request {
-	parsed := &mcp.ParsedMCPRequest{
-		Method:     "tools/call",
-		ResourceID: resourceID,
-		Arguments:  arguments,
-		ID:         id,
-		IsRequest:  true,
-	}
-	ctx := context.WithValue(r.Context(), mcp.MCPRequestContextKey, parsed)
-	return r.WithContext(ctx)
-}
-
 func TestRateLimitHandler_ToolCallAllowed(t *testing.T) {
 	t.Parallel()
 
 	limiter := &dummyLimiter{decision: &Decision{Allowed: true}}
-	handler := HTTPMiddleware(limiter)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := rateLimitHandler(limiter)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -94,7 +82,7 @@ func TestRateLimitHandler_ToolCallRejected(t *testing.T) {
 	t.Parallel()
 
 	limiter := &dummyLimiter{decision: &Decision{Allowed: false, RetryAfter: 5 * time.Second}}
-	handler := HTTPMiddleware(limiter)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := rateLimitHandler(limiter)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("next handler should not be called when rate limited")
 	}))
 
@@ -126,7 +114,7 @@ func TestRateLimitHandler_RedisErrorFailOpen(t *testing.T) {
 
 	limiter := &dummyLimiter{err: errors.New("redis connection refused")}
 	nextCalled := false
-	handler := HTTPMiddleware(limiter)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := rateLimitHandler(limiter)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		nextCalled = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -146,7 +134,7 @@ func TestRateLimitHandler_NoParsedMCPRequest_PassesThrough(t *testing.T) {
 
 	limiter := &dummyLimiter{decision: &Decision{Allowed: false}}
 	nextCalled := false
-	handler := HTTPMiddleware(limiter)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := rateLimitHandler(limiter)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		nextCalled = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -166,7 +154,7 @@ func TestRateLimitHandler_NonToolCallPassesThrough(t *testing.T) {
 
 	limiter := &dummyLimiter{decision: &Decision{Allowed: false, RetryAfter: time.Second}}
 	nextCalled := false
-	handler := HTTPMiddleware(limiter)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := rateLimitHandler(limiter)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		nextCalled = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -185,7 +173,7 @@ func TestRateLimitHandler_PassesUserID(t *testing.T) {
 	t.Parallel()
 
 	recorder := &recordingLimiter{}
-	handler := HTTPMiddleware(recorder)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := rateLimitHandler(recorder)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -201,36 +189,11 @@ func TestRateLimitHandler_PassesUserID(t *testing.T) {
 	assert.Equal(t, "alice@example.com", recorder.userID)
 }
 
-func TestRateLimitHandler_OptimizerCallToolUsesInnerToolName(t *testing.T) {
-	t.Parallel()
-
-	recorder := &recordingLimiter{}
-	handler := HTTPMiddleware(recorder)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	req = withParsedToolCall(req, "call_tool", map[string]interface{}{
-		"tool_name": "backend_a_expensive_tool",
-		"parameters": map[string]interface{}{
-			"query": "test",
-		},
-	}, 1)
-	req = withIdentity(req, "alice@example.com")
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "backend_a_expensive_tool", recorder.toolName)
-	assert.Equal(t, "alice@example.com", recorder.userID)
-}
-
 func TestRateLimitHandler_NoIdentityPassesEmptyUserID(t *testing.T) {
 	t.Parallel()
 
 	recorder := &recordingLimiter{}
-	handler := HTTPMiddleware(recorder)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := rateLimitHandler(recorder)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

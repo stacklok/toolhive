@@ -530,12 +530,20 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	var cfg vmcpconfig.Config
 	require.NoError(t, yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &cfg))
 	require.NotNil(t, cfg.RateLimiting, "runtime config must include spec.rateLimiting")
-	require.NotNil(t, cfg.RateLimiting.PerUser)
-	assert.Equal(t, int32(2), cfg.RateLimiting.PerUser.MaxTokens)
-	require.Len(t, cfg.RateLimiting.Tools, 1)
-	assert.Equal(t, "backend_a_echo", cfg.RateLimiting.Tools[0].Name)
-	require.NotNil(t, cfg.RateLimiting.Tools[0].Global)
-	assert.Equal(t, int32(5), cfg.RateLimiting.Tools[0].Global.MaxTokens)
+
+	rateLimiting := cfg.RateLimiting.Get()
+	perUser, ok := rateLimiting["perUser"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 2, perUser["maxTokens"])
+	tools, ok := rateLimiting["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "backend_a_echo", tool["name"])
+	global, ok := tool["global"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 5, global["maxTokens"])
 }
 
 // TestSetAuthConfigConditions tests that auth config conditions reflect the current state

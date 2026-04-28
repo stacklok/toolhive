@@ -7,8 +7,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-
-	rlconfig "github.com/stacklok/toolhive/pkg/ratelimit/config"
 )
 
 // Condition types for MCPServer
@@ -513,18 +511,18 @@ type SessionStorageConfig struct {
 type RateLimitConfig struct {
 	// Global is a token bucket shared across all users for the entire server.
 	// +optional
-	Global *RateLimitBucket `json:"global,omitempty"`
+	Global *RateLimitBucket `json:"global,omitempty" yaml:"global,omitempty"`
 
 	// Shared is a deprecated alias for Global. Use global instead.
 	// +optional
-	Shared *RateLimitBucket `json:"shared,omitempty"`
+	Shared *RateLimitBucket `json:"shared,omitempty" yaml:"shared,omitempty"`
 
 	// PerUser is a token bucket applied independently to each authenticated user
 	// at the server level. Requires authentication to be enabled.
 	// Each unique userID creates Redis keys that expire after 2x refillPeriod.
 	// Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys.
 	// +optional
-	PerUser *RateLimitBucket `json:"perUser,omitempty"`
+	PerUser *RateLimitBucket `json:"perUser,omitempty" yaml:"perUser,omitempty"`
 
 	// Tools defines per-tool rate limit overrides.
 	// Each entry applies additional rate limits to calls targeting a specific tool name.
@@ -532,7 +530,7 @@ type RateLimitConfig struct {
 	// +listType=map
 	// +listMapKey=name
 	// +optional
-	Tools []ToolRateLimitConfig `json:"tools,omitempty"`
+	Tools []ToolRateLimitConfig `json:"tools,omitempty" yaml:"tools,omitempty"`
 }
 
 // RateLimitBucket defines a token bucket configuration with a maximum capacity
@@ -543,13 +541,13 @@ type RateLimitBucket struct {
 	// instantaneously before the bucket is depleted.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Minimum=1
-	MaxTokens int32 `json:"maxTokens"`
+	MaxTokens int32 `json:"maxTokens" yaml:"maxTokens"`
 
 	// RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
 	// The effective refill rate is maxTokens / refillPeriod tokens per second.
 	// Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
 	// +kubebuilder:validation:Required
-	RefillPeriod metav1.Duration `json:"refillPeriod"`
+	RefillPeriod metav1.Duration `json:"refillPeriod" yaml:"refillPeriod"`
 }
 
 // ToolRateLimitConfig defines rate limits for a specific tool.
@@ -562,53 +560,19 @@ type ToolRateLimitConfig struct {
 	// Name is the MCP tool name this limit applies to.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
+	Name string `json:"name" yaml:"name"`
 
 	// Global token bucket for this specific tool.
 	// +optional
-	Global *RateLimitBucket `json:"global,omitempty"`
+	Global *RateLimitBucket `json:"global,omitempty" yaml:"global,omitempty"`
 
 	// Shared is a deprecated alias for Global. Use global instead.
 	// +optional
-	Shared *RateLimitBucket `json:"shared,omitempty"`
+	Shared *RateLimitBucket `json:"shared,omitempty" yaml:"shared,omitempty"`
 
 	// PerUser token bucket configuration for this tool.
 	// +optional
-	PerUser *RateLimitBucket `json:"perUser,omitempty"`
-}
-
-// ToInternal converts the Kubernetes API rate limit config to the runtime-neutral representation.
-func (in *RateLimitConfig) ToInternal() *rlconfig.Config {
-	if in == nil {
-		return nil
-	}
-	out := &rlconfig.Config{
-		Global:  rateLimitBucketToInternal(in.Global),
-		Shared:  rateLimitBucketToInternal(in.Shared),
-		PerUser: rateLimitBucketToInternal(in.PerUser),
-	}
-	if len(in.Tools) > 0 {
-		out.Tools = make([]rlconfig.ToolConfig, 0, len(in.Tools))
-		for _, tool := range in.Tools {
-			out.Tools = append(out.Tools, rlconfig.ToolConfig{
-				Name:    tool.Name,
-				Global:  rateLimitBucketToInternal(tool.Global),
-				Shared:  rateLimitBucketToInternal(tool.Shared),
-				PerUser: rateLimitBucketToInternal(tool.PerUser),
-			})
-		}
-	}
-	return out
-}
-
-func rateLimitBucketToInternal(in *RateLimitBucket) *rlconfig.Bucket {
-	if in == nil {
-		return nil
-	}
-	return &rlconfig.Bucket{
-		MaxTokens:    in.MaxTokens,
-		RefillPeriod: in.RefillPeriod,
-	}
+	PerUser *RateLimitBucket `json:"perUser,omitempty" yaml:"perUser,omitempty"`
 }
 
 // Permission profile types

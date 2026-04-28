@@ -89,41 +89,36 @@ mcp-config:
 	@echo "✓  MCP config written to $(MCP_CONFIG)"
 
 # ── agent sessions (Phase 3-7) ────────────────────────────────────────────────
+# Each session prints the prompt to use, then waits for you to run it in
+# Claude Code (claude --mcp-config .demo.mcp.json) and press Enter to continue.
+
+define print-prompt
+	@echo ""
+	@echo "═══════════════════════════════════════════════════════════════"
+	@echo "  $(1)"
+	@echo "  MCP config: $(MCP_CONFIG)"
+	@echo "═══════════════════════════════════════════════════════════════"
+	@echo ""
+	@cat $(2)
+	@echo ""
+	@echo "───────────────────────────────────────────────────────────────"
+	@read -p "  ↑ Use this prompt in Claude Code, then press Enter to continue... " _
+endef
 
 session-recruiter-alice: mcp-config
-	@echo ""
-	@echo "═══════════════════════════════════════════════════════════════"
-	@echo "  Phase 3 · Recruiter Session — Alice Chen phone screen"
-	@echo "═══════════════════════════════════════════════════════════════"
-	claude --print --mcp-config $(MCP_CONFIG) -p "$$(cat $(CURDIR)/prompts/recruiter-alice.txt)"
+	$(call print-prompt,Phase 3 · Recruiter Session — Alice Chen phone screen,$(CURDIR)/prompts/recruiter-alice.txt)
 
 session-hiring-manager: mcp-config
-	@echo ""
-	@echo "═══════════════════════════════════════════════════════════════"
-	@echo "  Phase 4 · Hiring Manager — cold memory search"
-	@echo "═══════════════════════════════════════════════════════════════"
-	claude --print --mcp-config $(MCP_CONFIG) -p "$$(cat $(CURDIR)/prompts/hiring-manager.txt)"
+	$(call print-prompt,Phase 4 · Hiring Manager — cold memory search,$(CURDIR)/prompts/hiring-manager.txt)
 
 session-recruiter-bob: mcp-config
-	@echo ""
-	@echo "═══════════════════════════════════════════════════════════════"
-	@echo "  Phase 5 · Recruiter Session — Bob Martinez + procedural lesson"
-	@echo "═══════════════════════════════════════════════════════════════"
-	claude --print --mcp-config $(MCP_CONFIG) -p "$$(cat $(CURDIR)/prompts/recruiter-bob.txt)"
+	$(call print-prompt,Phase 5 · Recruiter Session — Bob Martinez + procedural lesson,$(CURDIR)/prompts/recruiter-bob.txt)
 
 session-recruiter-charlie: mcp-config
-	@echo ""
-	@echo "═══════════════════════════════════════════════════════════════"
-	@echo "  Phase 6 · Recruiter Session — Charlie Kim (HIRE)"
-	@echo "═══════════════════════════════════════════════════════════════"
-	claude --print --mcp-config $(MCP_CONFIG) -p "$$(cat $(CURDIR)/prompts/recruiter-charlie.txt)"
+	$(call print-prompt,Phase 6 · Recruiter Session — Charlie Kim (HIRE),$(CURDIR)/prompts/recruiter-charlie.txt)
 
 session-crystallize: mcp-config
-	@echo ""
-	@echo "═══════════════════════════════════════════════════════════════"
-	@echo "  Phase 7 · Crystallize — phone-screen pattern → Skill"
-	@echo "═══════════════════════════════════════════════════════════════"
-	claude --print --mcp-config $(MCP_CONFIG) -p "$$(cat $(CURDIR)/prompts/crystallize.txt)"
+	$(call print-prompt,Phase 7 · Crystallize — phone-screen pattern → Skill,$(CURDIR)/prompts/crystallize.txt)
 
 # ── build: compile both binaries ─────────────────────────────────────────────
 build: $(SERVER_BIN) $(DEMO_BIN)

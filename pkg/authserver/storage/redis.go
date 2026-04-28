@@ -845,6 +845,16 @@ end
 --   * If ALL members are expiring, the index TTL must be at least the longest
 --     member TTL.
 --
+-- Known trade-off: an in-place rewrite of the same (sessionID, providerName)
+-- slot from non-expiring to expiring leaves the index PERSIST'd, even though
+-- the rewritten member was the sole persistence anchor. Detecting this would
+-- require tracking per-member TTL state in the index, which adds complexity.
+-- We accept the trade-off because DeleteUpstreamTokens and session GC clean
+-- the index up anyway. This behaviour is pinned by the test
+-- "same provider rewrite from non-expiring to expiring keeps PERSIST'd until
+-- rewrite" in redis_test.go — a future maintainer who tightens the rule will
+-- see that test fail and can find the rationale here.
+--
 -- We discriminate two cases that look identical AFTER SADD (both have PTTL == -1):
 --   1. A fresh set our SADD just created. We own the TTL decision unconditionally.
 --   2. An existing set previously PERSIST'd by a non-expiring member. Must stay

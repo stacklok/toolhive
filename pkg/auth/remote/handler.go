@@ -133,15 +133,27 @@ func (h *Handler) performOAuthFlow(
 ) (oauth2.TokenSource, error) {
 	slog.Debug("Starting OAuth authentication flow", "issuer", issuer)
 
+	// Client registration priority (MCP spec: stored credentials → CIMD → DCR):
+	// Priority 1: Pre-configured credentials — set by buildOAuthFlowConfig from h.config.ClientID/ClientSecret.
+	// Priority 2: CIMD — AS advertises support and no credentials are set; use metadata URL as client_id.
+	// Priority 3: DCR — PerformOAuthFlow handles this when ClientID is still empty after the above.
 	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo)
-	cimdUsed := flowConfig.ClientID == oauthproto.ToolHiveClientMetadataDocumentURL
+	if authServerInfo != nil &&
+		authServerInfo.ClientIDMetadataDocumentSupported &&
+		flowConfig.ClientID == "" &&
+		flowConfig.ClientSecret == "" {
+		flowConfig.ClientID = oauthproto.ToolHiveClientMetadataDocumentURL
+		slog.Debug("Using CIMD client_id", "url", oauthproto.ToolHiveClientMetadataDocumentURL)
+	}
 
 	result, err := discovery.PerformOAuthFlow(ctx, issuer, flowConfig)
-	if err != nil && cimdUsed && isCIMDRejectionError(err) {
-		slog.Warn("CIMD client_id rejected by AS, retrying with DCR", "issuer", issuer, "error", err)
-		flowConfig.ClientID = ""
-		flowConfig.SkipCIMD = true // prevent the pre-check from re-applying the CIMD URL
-		result, err = discovery.PerformOAuthFlow(ctx, issuer, flowConfig)
+	if err != nil {
+		// If we used CIMD and it was rejected, we need to retry with DCR.
+		if flowConfig.ClientID == oauthproto.ToolHiveClientMetadataDocumentURL && isCIMDRejectionError(err) {
+			slog.Warn("CIMD client_id rejected by AS, retrying with DCR", "issuer", issuer, "error", err)
+			flowConfig.ClientID = ""
+			result, err = discovery.PerformOAuthFlow(ctx, issuer, flowConfig)
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -176,17 +188,6 @@ func (h *Handler) buildOAuthFlowConfig(scopes []string, authServerInfo *discover
 			"authorize", authServerInfo.AuthorizationURL,
 			"token", authServerInfo.TokenURL,
 			"registration", authServerInfo.RegistrationEndpoint)
-	}
-
-	// CIMD: if the AS supports CIMD and we have no pre-configured or cached credentials,
-	// use ToolHive's metadata URL as client_id. Setting it here prevents
-	// shouldDynamicallyRegisterClient from firing (it checks ClientID == "").
-	if authServerInfo != nil &&
-		authServerInfo.ClientIDMetadataDocumentSupported &&
-		flowConfig.ClientID == "" &&
-		flowConfig.ClientSecret == "" {
-		flowConfig.ClientID = oauthproto.ToolHiveClientMetadataDocumentURL
-		slog.Debug("Using CIMD client_id", "url", oauthproto.ToolHiveClientMetadataDocumentURL)
 	}
 
 	return flowConfig
@@ -342,18 +343,23 @@ func (h *Handler) discoverIssuerAndScopes(
 	authInfo *discovery.AuthInfo,
 	remoteURL string,
 ) (string, []string, *discovery.AuthServerInfo, error) {
-	// Priority 1: Use configured issuer if available
+	// Priority 1: Use configured issuer if available. Fetch discovery to populate
+	// AuthServerInfo (including ClientIDMetadataDocumentSupported) even when the
+	// issuer is pre-configured, so CIMD detection works on this path.
 	if h.config.Issuer != "" {
 		slog.Debug("Using configured issuer", "issuer", h.config.Issuer)
-		return h.config.Issuer, h.config.Scopes, nil, nil
+		authServerInfo, _ := discovery.ValidateAndDiscoverAuthServer(ctx, h.config.Issuer)
+		return h.config.Issuer, h.config.Scopes, authServerInfo, nil
 	}
 
-	// Priority 2: Try to derive from realm (RFC 8414)
+	// Priority 2: Try to derive from realm (RFC 8414). Fetch discovery for the
+	// same reason as Priority 1 — the realm path skips resource metadata discovery.
 	if authInfo.Realm != "" {
 		derivedIssuer := discovery.DeriveIssuerFromRealm(authInfo.Realm)
 		if derivedIssuer != "" {
 			slog.Debug("Derived issuer from realm", "issuer", derivedIssuer)
-			return derivedIssuer, h.config.Scopes, nil, nil
+			authServerInfo, _ := discovery.ValidateAndDiscoverAuthServer(ctx, derivedIssuer)
+			return derivedIssuer, h.config.Scopes, authServerInfo, nil
 		}
 	}
 

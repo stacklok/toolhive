@@ -540,7 +540,10 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		return nil, fmt.Errorf("OAuth flow config cannot be nil")
 	}
 
-	// validate the callback port, for CIMD/pre-registered clients config.CallbackPort should be available.
+	// Resolve port availability before registration. DCR clients allow port fallback
+	// because the actual port is registered after selection. Pre-registered and CIMD
+	// clients require the configured port to be available as-is — it is already
+	// published in their IdP application or metadata document redirect URI.
 	if shouldDynamicallyRegisterClient(config) {
 		// For dynamic registration, we can allow fallback to alternative ports
 		// since we can register the client with the actual port we'll use
@@ -554,9 +557,9 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		}
 		config.CallbackPort = port
 	} else {
-		// For pre-registered clients, use strict port checking
-		// The user likely configured this port in their IdP/app
-		// For CIMD, the port is configured in the CIMD metadata document.
+		// For pre-registered clients and CIMD, use strict port checking.
+		// The port is either configured in the IdP app or baked into the
+		// redirect URI in the hosted metadata document.
 		if !networking.IsAvailable(config.CallbackPort) {
 			return nil, fmt.Errorf(
 				"specified auth callback port %d is not available - please choose a different port or ensure it's not in use",

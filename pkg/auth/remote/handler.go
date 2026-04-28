@@ -490,9 +490,9 @@ func (h *Handler) tryDiscoverFromWellKnown(
 }
 
 // isCIMDRejectionError returns true if err indicates the AS rejected the CIMD
-// client_id at the authorization request stage. Per RFC-0071, only
-// invalid_client and unauthorized_client trigger a DCR retry; invalid_request
-// and token-exchange errors must surface as real failures.
+// client_id. Only the RFC 6749 error codes invalid_client and unauthorized_client
+// trigger a DCR retry; all other errors — including invalid_request and
+// token-exchange failures — surface as-is.
 func isCIMDRejectionError(err error) bool {
 	if err == nil {
 		return false

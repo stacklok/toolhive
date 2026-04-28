@@ -863,6 +863,50 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 		})
 	})
 
+	t.Run("deeply stale ExpiresAt branch clamps TTL to one second", func(t *testing.T) {
+		// Regression guard for the clamp introduced in marshalUpstreamTokensWithTTL.
+		// Pre-fix, a token whose access expiry + DefaultRefreshTokenTTL had both
+		// elapsed was stored with a full 30-day grace (DefaultRefreshTokenTTL),
+		// retaining stale tokens far longer than necessary.  The fix clamps to
+		// time.Second so deeply-stale rows evict promptly.  Cold-path callers
+		// (refresher races, admin rewrites, legacy-row migrations) must observe
+		// the 1-second lifetime — not the old 30-day grace — so this test pins
+		// the behavior and will fail loudly if the clamp is reverted.
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			stalePast := time.Now().Add(-(DefaultRefreshTokenTTL + time.Hour))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "stale-expires-session", "provider-a", &UpstreamTokens{
+				AccessToken: "stale-token",
+				ProviderID:  "provider-a",
+				ExpiresAt:   stalePast,
+			}))
+
+			key := redisUpstreamKey(s.keyPrefix, "stale-expires-session", "provider-a")
+			assert.LessOrEqual(t, mr.TTL(key), 2*time.Second,
+				"deeply-stale ExpiresAt token must be stored with a 1s TTL, not the full DefaultRefreshTokenTTL grace")
+		})
+	})
+
+	t.Run("deeply stale SessionExpiresAt branch clamps TTL to one second", func(t *testing.T) {
+		// Mirror of the previous subtest for the SessionExpiresAt branch.
+		// When ExpiresAt is zero but SessionExpiresAt + DefaultRefreshTokenTTL
+		// have both elapsed, the same clamp must apply so that session-bound
+		// non-expiring tokens (e.g. GitHub PATs) don't linger for 30 days after
+		// the session itself has long expired.
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			stalePast := time.Now().Add(-(DefaultRefreshTokenTTL + time.Hour))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "stale-session-expires-session", "github", &UpstreamTokens{
+				AccessToken:      "stale-pat",
+				ProviderID:       "github",
+				SessionExpiresAt: stalePast,
+				// ExpiresAt intentionally zero — exercises the SessionExpiresAt branch
+			}))
+
+			key := redisUpstreamKey(s.keyPrefix, "stale-session-expires-session", "github")
+			assert.LessOrEqual(t, mr.TTL(key), 2*time.Second,
+				"deeply-stale SessionExpiresAt token must be stored with a 1s TTL, not the full DefaultRefreshTokenTTL grace")
+		})
+	})
+
 	t.Run("nil tokens is valid", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-id", "provider-a", nil))

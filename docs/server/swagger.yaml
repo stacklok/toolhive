@@ -702,9 +702,10 @@ components:
     github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig:
       description: |-
         UserInfo contains configuration for fetching user information.
-        Optional: when nil, the upstream provider synthesizes a stable subject
-        from the access token instead of calling a userinfo endpoint. See
-        BaseOAuth2Provider.ExchangeCodeForIdentity for the synthesis rule.
+        Optional: when nil, the upstream OAuth2 provider derives a deterministic
+        subject by SHA-256-hashing the access token (with a "tk-" prefix) instead
+        of calling a userinfo endpoint. OIDC providers always derive Subject from
+        the ID token and are unaffected.
       properties:
         additional_headers:
           additionalProperties:

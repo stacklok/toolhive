@@ -97,8 +97,8 @@ Example:
 	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
 	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
 	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
-	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (default 14000)")
-	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (default: ephemeral)")
+	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
+	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
 
 	return cmd
 }
@@ -141,15 +141,7 @@ func newConfigResetCommand() *cobra.Command {
 tokens from the secrets provider.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Delete cached tokens from the secrets provider first.
-			provider, err := secrets.GetSystemSecretsProvider()
-			if err != nil {
-				// Non-fatal: log and continue so the config is still cleared.
-				fmt.Fprintf(os.Stderr, "Warning: could not get secrets provider: %v\n", err)
-			} else if err := llm.DeleteCachedTokens(cmd.Context(), provider); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not remove cached LLM tokens: %v\n", err)
-			}
-
+			purgeCachedTokens(cmd.Context(), cmd.ErrOrStderr())
 			return config.UpdateConfig(func(c *config.Config) error {
 				c.LLM = llm.Config{}
 				return nil
@@ -209,7 +201,9 @@ func buildLLMTokenSource(cfg *llm.Config, interactive bool) (*llm.TokenSource, e
 // ── setup / teardown ─────────────────────────────────────────────────────────
 
 func newLLMSetupCommand() *cobra.Command {
-	return &cobra.Command{
+	var opts llm.SetOptions
+
+	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Configure all detected AI tools to use the LLM gateway",
 		Long: `Detect installed AI coding tools (Claude Code, Gemini CLI, Cursor, VS Code,
@@ -221,6 +215,10 @@ Token-helper tools (Claude Code, Gemini CLI) are configured to call
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".
 
+Inline flags (--gateway-url, --issuer, --client-id, etc.) are applied for this
+run and persisted to config only after login and tool patching succeed. This
+lets you combine "config set" and "setup" into a single command.
+
 Run "thv llm teardown" to revert all changes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -228,13 +226,49 @@ Run "thv llm teardown" to revert all changes.`,
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
 			}
-			return runLLMSetup(cmd.OutOrStdout(), cmd.ErrOrStderr(), cm, config.NewDefaultProvider())
+			return runLLMSetup(
+				cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
+				cm, config.NewDefaultProvider(), oidcLogin, opts,
+			)
 		},
 	}
+
+	cmd.Flags().StringVar(&opts.GatewayURL, "gateway-url", "", "LLM gateway base URL (must use HTTPS)")
+	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
+	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
+	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
+	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
+	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
+
+	return cmd
 }
 
-func runLLMSetup(out, errOut io.Writer, cm *client.ClientManager, provider config.Provider) error {
+// loginFunc is the function used to perform OIDC login during setup. It is a
+// parameter so that tests can inject a no-op without touching the keyring.
+type loginFunc func(ctx context.Context, cfg *llm.Config) error
+
+func oidcLogin(ctx context.Context, cfg *llm.Config) error {
+	ts, err := buildLLMTokenSource(cfg, true /* interactive */)
+	if err != nil {
+		return fmt.Errorf("building token source: %w", err)
+	}
+	_, err = ts.Token(ctx)
+	return err
+}
+
+func runLLMSetup(
+	ctx context.Context, out, errOut io.Writer,
+	cm *client.ClientManager, provider config.Provider, login loginFunc,
+	inlineOpts llm.SetOptions,
+) error {
 	llmCfg := provider.GetConfig().LLM
+
+	// Apply inline flags in-memory so login and tool detection use the merged
+	// config without touching disk. Persistence happens below, only after login
+	// and tool patching succeed, so a failed login leaves no persisted state.
+	if err := llmCfg.SetFields(inlineOpts); err != nil {
+		return fmt.Errorf("invalid inline flag values: %w", err)
+	}
 
 	if !llmCfg.IsConfigured() {
 		return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
@@ -247,12 +281,18 @@ func runLLMSetup(out, errOut io.Writer, cm *client.ClientManager, provider confi
 	// Reject paths that contain shell metacharacters: the token-helper command
 	// is written verbatim into long-lived tool config files and re-executed by
 	// the shell inside Claude Code / Gemini CLI.  A path with '"', '\', ';',
-	// newline, or carriage-return would silently produce a broken command.
+	// newline, or carriage-return would silently produce a broken or exploitable
+	// command.
+	//
+	// Note: backslashes are Windows path separators, so this check effectively
+	// makes "thv llm setup" unsupported on Windows — consistent with the rest
+	// of the LLM gateway feature (token-helper tools use POSIX-style shells).
 	const shellUnsafe = `"\;` + "\n\r"
 	if strings.ContainsAny(self, shellUnsafe) {
 		return fmt.Errorf(
 			"executable path %q contains shell-unsafe characters; "+
-				"move thv to a path without quotes, backslashes, or semicolons", self)
+				"move thv to a path without quotes, backslashes, or semicolons "+
+				"(Windows paths are not supported by thv llm setup)", self)
 	}
 
 	proxyBaseURL := fmt.Sprintf("http://localhost:%d/v1", llmCfg.EffectiveProxyPort())
@@ -262,11 +302,20 @@ func runLLMSetup(out, errOut io.Writer, cm *client.ClientManager, provider confi
 		TokenHelperCommand: fmt.Sprintf(`"%s" llm token`, self),
 	}
 
+	// Detect tools before login so we skip the interactive browser flow when
+	// there is nothing to configure. Login still runs before any files are
+	// patched, preserving the guarantee that a failed login leaves no state.
 	detected := cm.DetectedLLMGatewayClients()
 	if len(detected) == 0 {
 		_, _ = fmt.Fprintln(out, "No supported AI tools detected.")
 		return nil
 	}
+
+	_, _ = fmt.Fprintln(out, "Ensuring you are logged in to the LLM gateway…")
+	if err := login(ctx, &llmCfg); err != nil {
+		return fmt.Errorf("OIDC login failed: %s", llm.SanitizeTokenError(err))
+	}
+	_, _ = fmt.Fprintln(out, "Login successful.")
 
 	var configured []llm.ToolConfig
 	for _, clientType := range detected {
@@ -289,6 +338,12 @@ func runLLMSetup(out, errOut io.Writer, cm *client.ClientManager, provider confi
 	}
 
 	if err := provider.UpdateConfig(func(c *config.Config) error {
+		// SetFields applies inline opts to the on-disk config (preserving any
+		// concurrent writes to unrelated fields) and merges ConfiguredTools
+		// atomically in a single write.
+		if err := c.LLM.SetFields(inlineOpts); err != nil {
+			return fmt.Errorf("persisting inline flags: %w", err)
+		}
 		c.LLM.ConfiguredTools = mergeToolConfigs(c.LLM.ConfiguredTools, configured)
 		return nil
 	}); err != nil {
@@ -303,6 +358,11 @@ func runLLMSetup(out, errOut io.Writer, cm *client.ClientManager, provider confi
 		}
 		return fmt.Errorf("persisting tool configuration: %w", err)
 	}
+
+	if hasProxyMode(configured) {
+		_, _ = fmt.Fprintln(out, "One or more tools use proxy mode. Start the proxy with: thv llm proxy start")
+	}
+
 	return nil
 }
 
@@ -351,7 +411,7 @@ Use --purge-tokens to also remove cached OIDC tokens from the secrets provider.`
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
 			}
-			return runLLMTeardown(cmd.OutOrStdout(), cmd.ErrOrStderr(), cm, args, purgeTokens, config.NewDefaultProvider())
+			return runLLMTeardown(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cm, args, purgeTokens, config.NewDefaultProvider())
 		},
 	}
 
@@ -361,6 +421,7 @@ Use --purge-tokens to also remove cached OIDC tokens from the secrets provider.`
 }
 
 func runLLMTeardown(
+	ctx context.Context,
 	out, errOut io.Writer,
 	cm *client.ClientManager,
 	args []string,
@@ -401,10 +462,15 @@ func runLLMTeardown(
 		}
 	}
 
-	// Persist the updated tool list before mutating any tool config files.
-	// If this fails, nothing on disk has changed and the caller can retry.
+	// Persist the updated tool list (and clear token metadata if purging) in a
+	// single write before mutating any tool config files. If this fails,
+	// nothing on disk has changed and the caller can retry.
 	if err := provider.UpdateConfig(func(c *config.Config) error {
 		c.LLM.ConfiguredTools = remaining
+		if purgeTokens {
+			c.LLM.OIDC.CachedRefreshTokenRef = ""
+			c.LLM.OIDC.CachedTokenExpiry = time.Time{}
+		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("persisting tool configuration: %w", err)
@@ -421,15 +487,25 @@ func runLLMTeardown(
 	}
 
 	if purgeTokens {
-		secretsProvider, err := secrets.GetSystemSecretsProvider()
-		if err != nil {
-			_, _ = fmt.Fprintf(errOut, "Warning: could not get secrets provider: %v\n", err)
-		} else if err := llm.DeleteCachedTokens(context.Background(), secretsProvider); err != nil {
-			_, _ = fmt.Fprintf(errOut, "Warning: could not remove cached LLM tokens: %v\n", err)
-		}
+		// Delete secrets after config refs are cleared so there is no window
+		// where secrets are gone but the config still points at them.
+		purgeCachedTokens(ctx, errOut)
 	}
 
 	return nil
+}
+
+// purgeCachedTokens deletes all cached OIDC tokens from the system secrets
+// provider. Errors are logged as warnings rather than returned.
+func purgeCachedTokens(ctx context.Context, errOut io.Writer) {
+	secretsProvider, err := secrets.GetSystemSecretsProvider()
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: could not get secrets provider: %v\n", err)
+		return
+	}
+	if err := llm.DeleteCachedTokens(ctx, secretsProvider); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: could not remove cached LLM tokens: %v\n", err)
+	}
 }
 
 // ── proxy subcommand group ────────────────────────────────────────────────────
@@ -503,4 +579,16 @@ Runs non-interactively — will not launch a browser flow.`,
 	}
 
 	return cmd
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+// hasProxyMode reports whether any of the given tool configs uses proxy mode.
+func hasProxyMode(cfgs []llm.ToolConfig) bool {
+	for _, t := range cfgs {
+		if t.Mode == "proxy" {
+			return true
+		}
+	}
+	return false
 }

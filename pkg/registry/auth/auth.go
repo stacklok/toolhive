@@ -6,10 +6,12 @@ package auth
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
+	"log/slog"
+	"time"
 
+	"github.com/stacklok/toolhive/pkg/auth/remote"
+	"github.com/stacklok/toolhive/pkg/auth/tokensource"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -40,18 +42,49 @@ func NewTokenSource(
 		return nil, nil
 	}
 
-	return &oauthTokenSource{
-		oauthCfg:        cfg,
-		registryURL:     registryURL,
-		secretsProvider: secretsProvider,
-		interactive:     interactive,
-	}, nil
+	callbackPort := cfg.CallbackPort
+	if callbackPort == 0 {
+		callbackPort = remote.DefaultCallbackPort
+	}
+
+	return tokensource.New(tokensource.Options{
+		OIDC: tokensource.OIDCParams{
+			Issuer:       cfg.Issuer,
+			ClientID:     cfg.ClientID,
+			Scopes:       cfg.Scopes,
+			Audience:     cfg.Audience,
+			CallbackPort: callbackPort,
+		},
+		SecretsProvider: secretsProvider,
+		Interactive:     interactive,
+		KeyProvider: func() string {
+			if cfg.CachedRefreshTokenRef != "" {
+				return cfg.CachedRefreshTokenRef
+			}
+			return DeriveSecretKey(registryURL, cfg.Issuer)
+		},
+		ConfigPersister: updateRegistryTokenRef,
+		FallbackErr:     ErrRegistryAuthRequired,
+	}), nil
 }
 
 // DeriveSecretKey computes the secret key for storing a registry's refresh token.
 // The key follows the formula: REGISTRY_OAUTH_<8 hex chars>
 // where the hex is derived from sha256(registryURL + "\x00" + issuer)[:4].
 func DeriveSecretKey(registryURL, issuer string) string {
-	h := sha256.Sum256([]byte(registryURL + "\x00" + issuer))
-	return "REGISTRY_OAUTH_" + hex.EncodeToString(h[:4])
+	return tokensource.DeriveSecretKey("REGISTRY_OAUTH_", registryURL, issuer)
+}
+
+// updateRegistryTokenRef persists the refresh token key and expiry into the
+// global config under RegistryAuth.OAuth.
+func updateRegistryTokenRef(key string, expiry time.Time) {
+	if err := config.UpdateConfig(func(c *config.Config) error {
+		if c.RegistryAuth.OAuth != nil {
+			c.RegistryAuth.OAuth.CachedRefreshTokenRef = key
+			c.RegistryAuth.OAuth.CachedTokenExpiry = expiry
+		}
+		return nil
+	}); err != nil {
+		slog.Warn("failed to update registry config with token reference", "error", err)
+	}
 }

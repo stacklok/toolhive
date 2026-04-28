@@ -6,50 +6,11 @@ MCPRegistry is a Kubernetes Custom Resource that manages MCP (Model Context Prot
 
 ## Quick Start
 
-Create a basic registry from a ConfigMap:
+The simplest MCPRegistry uses a Kubernetes source, which discovers servers
+directly from `MCPServer` resources in the namespace and needs no extra
+volumes:
 
 ```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: my-registry-data
-  namespace: toolhive-system
-data:
-  registry.json: |
-    {
-      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive-core/main/registry/types/data/upstream-registry.schema.json",
-      "version": "1.0.0",
-      "meta": {
-        "last_updated": "2025-01-14T00:00:00Z"
-      },
-      "data": {
-        "servers": [
-          {
-            "name": "io.github.github/github",
-            "description": "GitHub API integration",
-            "version": "1.0.0",
-            "packages": [
-              {
-                "registryType": "oci",
-                "identifier": "ghcr.io/github/github-mcp-server:latest",
-                "transport": { "type": "stdio" }
-              }
-            ],
-            "_meta": {
-              "io.modelcontextprotocol.registry/publisher-provided": {
-                "io.github.github": {
-                  "ghcr.io/github/github-mcp-server:latest": {
-                    "tier": "Official",
-                    "tags": ["github", "api", "production"]
-                  }
-                }
-              }
-            }
-          }
-        ]
-      }
-    }
----
 apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
@@ -57,15 +18,20 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "My MCP Registry"
-  sources:
-    - name: configmap-source
-      configMapRef:
-        name: my-registry-data
-        key: registry.json
-  registries:
-    - name: default
-      sources:
-        - configmap-source
+  configYAML: |
+    sources:
+      - name: k8s
+        kubernetes: {}
+    registries:
+      - name: default
+        sources: ["k8s"]
+    database:
+      host: postgres
+      port: 5432
+      user: db_app
+      database: registry
+    auth:
+      mode: anonymous
 ```
 
 Apply with:
@@ -73,30 +39,69 @@ Apply with:
 kubectl apply -f my-registry.yaml
 ```
 
+For ConfigMap, Git, and API source variants, see [Data Sources](#data-sources)
+and the [examples directory](../../examples/operator/mcp-registries/).
+
+## Spec Reference
+
+The `MCPRegistry` CRD exposes a small, decoupled spec — most configuration
+lives inside `configYAML`:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `configYAML` | string | yes | Complete registry server `config.yaml` content. Passed through verbatim; the operator does not parse, validate, or transform it. |
+| `volumes` | array of `Volume` | no | Standard Kubernetes volumes appended to the registry-api pod. Use these to project ConfigMaps and Secrets that `configYAML` references by file path. |
+| `volumeMounts` | array of `VolumeMount` | no | Standard volume mounts on the registry-api container. Mount paths must match the file paths referenced in `configYAML`. |
+| `pgpassSecretRef` | `SecretKeySelector` | no | Reference to a Secret containing a pgpass file. The operator wires up the init container, emptyDir, and `chmod 0600` automatically. See [PostgreSQL Authentication](#postgresql-authentication). |
+| `displayName` | string | no | Human-readable name. |
+| `podTemplateSpec` | object | no | Pod template overrides for the registry-api pod (resources, affinity, etc.). |
+
+**Security note**: `configYAML` is stored in a ConfigMap, not a Secret. Do
+not inline credentials (passwords, tokens, client secrets). Reference
+credentials via file paths and mount the actual Secrets through `volumes`
+and `volumeMounts`.
+
+### configYAML structure
+
+The registry server's `config.yaml` is documented in the
+[ToolHive Registry Server](https://github.com/stacklok/toolhive-registry-server)
+project. The four top-level keys ToolHive uses are:
+
+- `sources` — where registry data comes from (Kubernetes, file, Git, API).
+- `registries` — named views that aggregate one or more sources.
+- `database` — PostgreSQL connection settings.
+- `auth` — authentication mode for the registry API.
+
+Files referenced from `sources` (registry data, Git credentials, TLS
+material) must be made available through the CRD's `volumes` and
+`volumeMounts` fields.
+
 ## Sync Operations
 
 ### Automatic Sync
 
-Configure automatic synchronization with interval-based policies per registry:
+Configure automatic synchronization with `syncPolicy` on each source inside `configYAML`:
 
 ```yaml
 spec:
-  sources:
-    - name: default
-      configMapRef:
-        name: registry-data
-        key: registry.json
-      syncPolicy:
-        interval: "1h"  # Sync every hour
-  registries:
-    - name: default
-      sources:
-        - default
+  configYAML: |
+    sources:
+      - name: default
+        kubernetes: {}
+        syncPolicy:
+          interval: 1h  # Sync every hour
+    registries:
+      - name: default
+        sources: ["default"]
+    database: { host: postgres, port: 5432, user: db_app, database: registry }
+    auth: { mode: anonymous }
 ```
 
 Supported intervals:
 - `30s`, `5m`, `1h`, `24h`
 - Any valid Go duration format
+
+Omit `syncPolicy` on a source to disable automatic sync (manual-only).
 
 ### Manual Sync
 
@@ -128,54 +133,117 @@ Status phases:
 
 ## Data Sources
 
-### ConfigMap Source
+All sources are declared inside `configYAML.sources`. Each source has a
+unique `name` and exactly one of: `kubernetes`, `file`, `git`, or `api`.
 
-Store registry data in Kubernetes ConfigMaps:
+### Kubernetes Source
+
+Discovers servers from `MCPServer` resources in the namespace. No volumes
+required — the registry server reads from the Kubernetes API directly.
 
 ```yaml
 spec:
-  sources:
-    - name: default
-      configMapRef:
-        name: registry-data
-        key: registry.json  # required
-  registries:
-    - name: default
-      sources:
-        - default
+  configYAML: |
+    sources:
+      - name: k8s
+        kubernetes: {}
+    registries:
+      - name: default
+        sources: ["k8s"]
+    database: { host: postgres, port: 5432, user: db_app, database: registry }
+    auth: { mode: anonymous }
 ```
+
+### ConfigMap (File) Source
+
+Project a ConfigMap into the registry-api pod with `volumes`/`volumeMounts`
+and reference it as a `file:` source. The path in `configYAML` must match
+the `mountPath`.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prod-registry
+  namespace: toolhive-system
+data:
+  registry.json: |
+    { "$schema": "https://raw.githubusercontent.com/stacklok/toolhive-core/main/registry/types/data/upstream-registry.schema.json",
+      "version": "1.0.0",
+      "meta": { "last_updated": "2025-01-14T00:00:00Z" },
+      "data": { "servers": [ /* upstream server entries */ ] } }
+---
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPRegistry
+metadata:
+  name: configmap-registry
+  namespace: toolhive-system
+spec:
+  configYAML: |
+    sources:
+      - name: production
+        file:
+          path: /config/registry/production/registry.json
+        syncPolicy:
+          interval: 1h
+    registries:
+      - name: default
+        sources: ["production"]
+    database: { host: postgres, port: 5432, user: db_app, database: registry }
+    auth: { mode: anonymous }
+  volumes:
+    - name: registry-data-production
+      configMap:
+        name: prod-registry
+        items:
+          - key: registry.json
+            path: registry.json
+  volumeMounts:
+    - name: registry-data-production
+      mountPath: /config/registry/production
+      readOnly: true
+```
+
+For a complete working example, see
+[`mcpregistry-configyaml-configmap.yaml`](../../examples/operator/mcp-registries/mcpregistry-configyaml-configmap.yaml).
 
 ### Git Source
 
-Synchronize from Git repositories:
+Sync registry data from a Git repository. The repository URL, branch, and
+path live inside `configYAML`:
 
 ```yaml
 spec:
-  sources:
-    - name: default
-      git:
-        repository: "https://github.com/org/mcp-registry"
-        branch: "main"
-        path: "registry.json"  # optional, defaults to "registry.json"
-  registries:
-    - name: default
-      sources:
-        - default
+  configYAML: |
+    sources:
+      - name: company-repo
+        git:
+          repository: https://github.com/company/mcp-registry
+          branch: main
+          path: registry.json   # optional, defaults to "registry.json"
+        syncPolicy:
+          interval: 1h
+    registries:
+      - name: default
+        sources: ["company-repo"]
+    database: { host: postgres, port: 5432, user: db_app, database: registry }
+    auth: { mode: anonymous }
 ```
 
 Supported repository URL formats:
-- `https://github.com/org/repo` - HTTPS (recommended)
-- `git@github.com:org/repo.git` - SSH
-- `ssh://git@example.com/repo.git` - SSH with explicit protocol
-- `git://example.com/repo.git` - Git protocol
-- `file:///path/to/local/repo` - Local filesystem (for testing)
+- `https://github.com/org/repo` — HTTPS (recommended)
+- `git@github.com:org/repo.git` — SSH
+- `ssh://git@example.com/repo.git` — SSH with explicit protocol
+- `git://example.com/repo.git` — Git protocol
+- `file:///path/to/local/repo` — Local filesystem (for testing)
 
 #### Private Repository Authentication
 
-For private Git repositories, you can configure authentication using HTTP Basic Auth:
+For private repositories, mount the credential as a file via
+`volumes`/`volumeMounts` and reference it with `auth.passwordFile` in
+`configYAML`:
 
 ```yaml
-# First, create a Secret containing your Git credentials
 apiVersion: v1
 kind: Secret
 metadata:
@@ -183,7 +251,7 @@ metadata:
   namespace: toolhive-system
 type: Opaque
 stringData:
-  password: "ghp_your_github_token_here"  # GitHub PAT, GitLab token, etc.
+  token: "ghp_your_personal_access_token_here"
 ---
 apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
@@ -191,93 +259,130 @@ metadata:
   name: private-registry
   namespace: toolhive-system
 spec:
-  displayName: "Private MCP Registry"
-  sources:
-    - name: default
-      git:
-        repository: "https://github.com/org/private-mcp-registry"
-        branch: "main"
-        path: "registry.json"
-        auth:
-          username: "git"  # Use "git" for GitHub PATs
-          passwordSecretRef:
-            name: git-credentials
-            key: password
-      syncPolicy:
-        interval: "1h"
-  registries:
-    - name: default
-      sources:
-        - default
+  configYAML: |
+    sources:
+      - name: private-repo
+        git:
+          repository: https://github.com/org/private-mcp-registry
+          branch: main
+          path: registry.json
+          auth:
+            username: git   # see notes below
+            passwordFile: /secrets/git-credentials/token
+        syncPolicy:
+          interval: 1h
+    registries:
+      - name: default
+        sources: ["private-repo"]
+    database: { host: postgres, port: 5432, user: db_app, database: registry }
+    auth: { mode: anonymous }
+  volumes:
+    - name: git-auth-credentials
+      secret:
+        secretName: git-credentials
+        items:
+          - key: token
+            path: token
+  volumeMounts:
+    - name: git-auth-credentials
+      mountPath: /secrets/git-credentials
+      readOnly: true
 ```
 
 **Authentication notes:**
-- For **GitHub Personal Access Tokens (PATs)**: Use `username: "git"` with the PAT as the password
-- For **GitLab tokens**: Use `username: "oauth2"` with the token as the password
-- For **Bitbucket app passwords**: Use your Bitbucket username with the app password
+- **GitHub Personal Access Tokens (PATs)**: use `username: "git"` and put the PAT in the credential file
+- **GitLab tokens**: use `username: "oauth2"`
+- **Bitbucket app passwords**: use your Bitbucket username
 - The Secret must exist in the same namespace as the MCPRegistry
-- The password file is securely mounted at `/secrets/{secretName}/{key}` in the registry-api pod, where `{key}` is the value specified in `passwordSecretRef.key`
+- The `passwordFile` path in `configYAML` must match `volumeMounts[].mountPath` plus the projected file name
+
+For a complete working example, see
+[`mcpregistry-configyaml-git-auth.yaml`](../../examples/operator/mcp-registries/mcpregistry-configyaml-git-auth.yaml).
 
 ### API Source
 
-Synchronize from HTTP/HTTPS API endpoints compatible with 
-[Model Context Protocol Registry API](https://github.com/modelcontextprotocol/registry/blob/main/docs/reference/api/generic-registry-api.md):
+Sync from another registry server speaking the upstream
+[MCP registry API](https://github.com/modelcontextprotocol/registry/blob/main/docs/reference/api/generic-registry-api.md):
 
 ```yaml
 spec:
-  sources:
-    - name: default
-      api:
-        endpoint: "https://registry.example.com"
-  registries:
-    - name: default
-      sources:
-        - default
+  configYAML: |
+    sources:
+      - name: upstream
+        api:
+          endpoint: http://upstream-registry.default.svc.cluster.local:8080
+        syncPolicy:
+          interval: 30m
+    registries:
+      - name: default
+        sources: ["upstream"]
+    database: { host: postgres, port: 5432, user: db_app, database: registry }
+    auth: { mode: anonymous }
 ```
 
-The API source fetches servers from an endpoint speaking the upstream MCP registry API:
-
-- Endpoint responds to `/v0/info` with registry metadata
+The API source:
+- Probes `/v0/info` for registry metadata
 - Fetches servers from `/v0/servers`
 - Fetches server details from `/v0/servers/{name}`
-- Server entries use the upstream MCP server schema, with ToolHive-specific metadata carried through publisher-provided extensions
-
-Example configurations:
-
-**Internal ToolHive Registry API:**
-```yaml
-spec:
-  sources:
-    - name: internal-api
-      api:
-        endpoint: "http://my-registry-api.default.svc.cluster.local:8080"
-      syncPolicy:
-        interval: "30m"
-  registries:
-    - name: default
-      sources:
-        - internal-api
-```
-
-**External Registry API:**
-```yaml
-spec:
-  sources:
-    - name: upstream
-      api:
-        endpoint: "https://registry.modelcontextprotocol.io/"
-      syncPolicy:
-        interval: "1h"
-  registries:
-    - name: default
-      sources:
-        - upstream
-```
+- Expects entries using the upstream MCP server schema, with ToolHive-specific metadata carried through publisher-provided extensions
 
 **Notes:**
 - API endpoints are validated at sync time
 - HTTPS is recommended for production use
-- Authentication support planned for future release
+- Authentication support is planned for a future release
+
+For a complete working example, see
+[`mcpregistry-configyaml-api.yaml`](../../examples/operator/mcp-registries/mcpregistry-configyaml-api.yaml).
+
+### PostgreSQL Authentication
+
+The registry server connects to PostgreSQL using a pgpass file. Because
+libpq requires `chmod 0600` and Kubernetes Secret volumes mount files as
+root-owned (unreadable by the non-root registry container), the operator
+exposes a dedicated `pgpassSecretRef` field that wires up an init
+container, emptyDir, and `chmod` automatically:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-registry-pgpass
+  namespace: toolhive-system
+type: Opaque
+stringData:
+  .pgpass: |
+    postgres:5432:registry:db_app:myapppassword
+    postgres:5432:registry:db_migrator:mymigrationpassword
+---
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPRegistry
+metadata:
+  name: pgpass-registry
+  namespace: toolhive-system
+spec:
+  configYAML: |
+    sources:
+      - name: k8s
+        kubernetes: {}
+    registries:
+      - name: default
+        sources: ["k8s"]
+    database:
+      host: postgres
+      port: 5432
+      user: db_app
+      migrationUser: db_migrator
+      database: registry
+      sslMode: require
+    auth: { mode: anonymous }
+  pgpassSecretRef:
+    name: my-registry-pgpass
+    key: .pgpass
+```
+
+The operator handles the init container, emptyDir, `chmod 0600`, and the
+`PGPASSFILE` environment variable invisibly. See
+[`mcpregistry-configyaml-pgpass.yaml`](../../examples/operator/mcp-registries/mcpregistry-configyaml-pgpass.yaml).
 
 ### Registry Format
 
@@ -296,34 +401,41 @@ can be migrated with `thv registry convert --in <file> --in-place`.
 
 ## Filtering
 
-Each registry configuration can define its own filtering rules:
+Each source can define its own `filter` block inside `configYAML`. Filters
+are applied per-source, so different sources in the same MCPRegistry can
+have different rules:
 
 ```yaml
 spec:
-  sources:
-    - name: production
-      configMapRef:
-        name: registry-data
-        key: registry.json
-      filter:
-        names:
-          include:
-            - "prod-*"
-          exclude:
-            - "*-legacy"
-        tags:
-          include:
-            - "production"
-          exclude:
-            - "experimental"
-            - "deprecated"
-  registries:
-    - name: default
-      sources:
-        - production
+  configYAML: |
+    sources:
+      - name: production
+        file:
+          path: /config/registry/production/registry.json
+        filter:
+          names:
+            include: ["prod-*"]
+            exclude: ["*-legacy"]
+          tags:
+            include: ["production"]
+            exclude: ["experimental", "deprecated"]
+    registries:
+      - name: default
+        sources: ["production"]
+    database: { host: postgres, port: 5432, user: db_app, database: registry }
+    auth: { mode: anonymous }
+  volumes:
+    - name: registry-data-production
+      configMap:
+        name: prod-registry
+        items:
+          - key: registry.json
+            path: registry.json
+  volumeMounts:
+    - name: registry-data-production
+      mountPath: /config/registry/production
+      readOnly: true
 ```
-
-Filtering is applied per-source, allowing different filtering rules for different data sources in the same MCPRegistry.
 
 ## Registry API Service
 
@@ -418,7 +530,11 @@ status:
 
 ### Secret Management
 
-Git authentication credentials are stored securely in Kubernetes Secrets:
+Credentials referenced from `configYAML` (Git tokens, OAuth client
+secrets, TLS keys, pgpass files) must come from Kubernetes Secrets that
+you mount via the CRD's `volumes`/`volumeMounts` fields. Do **not** inline
+credentials in `configYAML` itself — the operator stores `configYAML` in
+a ConfigMap, not a Secret.
 
 ```yaml
 apiVersion: v1
@@ -428,7 +544,7 @@ metadata:
   namespace: toolhive-system
 type: Opaque
 stringData:
-  password: "ghp_your_token_here"
+  token: "ghp_your_token_here"
 ```
 
 **Best practices for Git credentials:**
@@ -502,129 +618,58 @@ kubectl logs -n toolhive-system deployment/toolhive-operator | grep "my-registry
 
 ## Examples
 
-### Production Registry
-```yaml
-apiVersion: toolhive.stacklok.dev/v1beta1
-kind: MCPRegistry
-metadata:
-  name: production-registry
-spec:
-  displayName: "Production MCP Servers"
-  sources:
-    - name: prod-source
-      configMapRef:
-        name: prod-registry-data
-        key: registry.json
-      syncPolicy:
-        interval: "1h"
-  registries:
-    - name: default
-      sources:
-        - prod-source
-```
+Complete, runnable examples live in
+[`examples/operator/mcp-registries/`](../../examples/operator/mcp-registries/):
 
-### Development Registry
-```yaml
-apiVersion: toolhive.stacklok.dev/v1beta1
-kind: MCPRegistry
-metadata:
-  name: dev-registry
-spec:
-  displayName: "Development MCP Servers"
-  sources:
-    - name: dev-source
-      git:
-        repository: "https://github.com/org/dev-mcp-registry"
-        branch: "develop"
-        path: "registry.json"
-  # No sync policy = manual sync only
-  registries:
-    - name: default
-      sources:
-        - dev-source
-```
+| File | What it demonstrates |
+|------|----------------------|
+| [`mcpregistry-configyaml-minimal.yaml`](../../examples/operator/mcp-registries/mcpregistry-configyaml-minimal.yaml) | Smallest possible MCPRegistry, using a Kubernetes source |
+| [`mcpregistry-configyaml-configmap.yaml`](../../examples/operator/mcp-registries/mcpregistry-configyaml-configmap.yaml) | ConfigMap-backed registry data via a `file:` source plus volume/volumeMount |
+| [`mcpregistry-configyaml-git-auth.yaml`](../../examples/operator/mcp-registries/mcpregistry-configyaml-git-auth.yaml) | Private Git repository with credentials mounted from a Secret |
+| [`mcpregistry-configyaml-api.yaml`](../../examples/operator/mcp-registries/mcpregistry-configyaml-api.yaml) | API source pulling from another upstream registry server |
+| [`mcpregistry-configyaml-oauth.yaml`](../../examples/operator/mcp-registries/mcpregistry-configyaml-oauth.yaml) | OAuth-protected registry API |
+| [`mcpregistry-configyaml-pgpass.yaml`](../../examples/operator/mcp-registries/mcpregistry-configyaml-pgpass.yaml) | PostgreSQL `.pgpass` plumbing via `pgpassSecretRef` |
 
-### Private Git Repository Registry
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: private-repo-token
-  namespace: toolhive-system
-type: Opaque
-stringData:
-  token: "<github token>"
----
-apiVersion: toolhive.stacklok.dev/v1beta1
-kind: MCPRegistry
-metadata:
-  name: private-registry
-  namespace: toolhive-system
-spec:
-  displayName: "Private Organization Registry"
-  sources:
-    - name: private-source
-      git:
-        repository: "https://github.com/myorg/private-mcp-servers"
-        branch: "main"
-        path: "registry.json"
-        auth:
-          username: "git"
-          passwordSecretRef:
-            name: private-repo-token
-            key: token
-      syncPolicy:
-        interval: "30m"
-  registries:
-    - name: default
-      sources:
-        - private-source
-```
+### Multiple sources
 
-### Multiple Sources
-
-You can configure multiple data sources in a single MCPRegistry and aggregate them into registry views:
+Aggregate several sources into a single registry view by listing them in
+`configYAML.registries[].sources`:
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1beta1
-kind: MCPRegistry
-metadata:
-  name: multi-source-registry
 spec:
-  displayName: "Multi-Source Registry"
-  sources:
-    - name: production
-      git:
-        repository: "https://github.com/org/prod-registry"
-        branch: "main"
-        path: "registry.json"
-      syncPolicy:
-        interval: "1h"
-      filter:
-        tags:
-          include:
-            - "production"
-    - name: development
-      configMapRef:
-        name: dev-registry-data
-        key: registry.json
-      filter:
-        tags:
-          include:
-            - "development"
-  registries:
-    - name: default
-      sources:
-        - production
-        - development
+  configYAML: |
+    sources:
+      - name: production
+        git:
+          repository: https://github.com/org/prod-registry
+          branch: main
+          path: registry.json
+        syncPolicy:
+          interval: 1h
+        filter:
+          tags:
+            include: ["production"]
+      - name: development
+        file:
+          path: /config/registry/development/registry.json
+        filter:
+          tags:
+            include: ["development"]
+    registries:
+      - name: default
+        sources: ["production", "development"]
+    database: { host: postgres, port: 5432, user: db_app, database: registry }
+    auth: { mode: anonymous }
+  # ... volumes/volumeMounts for the development ConfigMap omitted for brevity
 ```
 
-Each source must have a unique `name` within the MCPRegistry. Registry views reference sources by name.
+Each source must have a unique `name` within the MCPRegistry. Registry
+views reference sources by name.
 
 ## See Also
 
 - [MCPServer Documentation](README.md#usage)
 - [Operator Installation](../../docs/kind/deploying-toolhive-operator.md)
 - [Registry Examples](../../examples/operator/mcp-registries/)
-- [Private Git Registry Example](../../examples/operator/mcp-registries/mcpregistry-git-private.yaml)
+- [Private Git Registry Example](../../examples/operator/mcp-registries/mcpregistry-configyaml-git-auth.yaml)
 - [Registry Schema](../../docs/registry/schema.md)

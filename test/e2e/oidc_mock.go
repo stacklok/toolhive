@@ -214,6 +214,7 @@ func (m *OIDCMockServer) handleDiscovery(w http.ResponseWriter, _ *http.Request)
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"scopes_supported":                      []string{"openid", "profile", "email"},
+		"client_id_metadata_document_supported": true,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

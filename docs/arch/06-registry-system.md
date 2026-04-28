@@ -505,7 +505,7 @@ For complete registry server documentation, see:
 
 - [Registry Server Guides](https://docs.stacklok.com/toolhive/guides-registry/) - Configuration, authentication, deployment
 - [Registry API Reference](https://docs.stacklok.com/toolhive/reference/registry-api) - API endpoint documentation
-- [ToolHive Registry Schema](https://docs.stacklok.com/toolhive/reference/registry-schema-toolhive) - Registry format reference
+- [Upstream Registry Schema](https://docs.stacklok.com/toolhive/reference/registry-schema-upstream) - Registry format reference
 
 
 ## MCPRegistry CRD (Kubernetes)
@@ -538,7 +538,6 @@ spec:
   configYAML: |
     sources:
       - name: company-repo
-        format: toolhive
         git:
           repository: https://github.com/company/mcp-registry
           branch: main
@@ -569,7 +568,6 @@ and Kubernetes.
 configYAML: |
   sources:
     - name: my-source
-      format: toolhive
       git:
         repository: https://github.com/example/registry
         branch: main
@@ -604,7 +602,6 @@ spec:
   configYAML: |
     sources:
       - name: private-repo
-        format: toolhive
         git:
           repository: https://github.com/org/private-registry
           branch: main
@@ -653,7 +650,6 @@ spec:
   configYAML: |
     sources:
       - name: production
-        format: toolhive
         file:
           path: /config/registry/production/registry.json
         syncPolicy:
@@ -697,7 +693,6 @@ Sync intervals are configured per-source inside `configYAML`:
 configYAML: |
   sources:
     - name: my-source
-      format: toolhive
       git:
         repository: https://github.com/example/registry
         branch: main
@@ -870,12 +865,12 @@ thv run weather-server --image-verification enabled
 
 ## Upstream MCP Registry Format
 
-ToolHive supports the upstream [MCP registry format](https://github.com/modelcontextprotocol/registry) alongside the legacy ToolHive format.
+ToolHive consumes registries in the upstream [MCP registry format](https://github.com/modelcontextprotocol/registry). The legacy ToolHive-native format is no longer accepted; existing files can be migrated with `thv registry convert --in <file> --in-place`.
 
 **Key features:**
-1. **Dual format support**: Both ToolHive-native and upstream MCP formats
+1. **Standardized schema**: Upstream MCP server format from the modelcontextprotocol/registry project
 2. **Publisher-provided extensions**: ToolHive-specific metadata via `_meta["io.modelcontextprotocol.registry/publisher-provided"]`
-3. **Backward compatibility**: Legacy format continues to work
+3. **Lossless migration**: Every legacy ToolHive field maps to a publisher-provided extension on the corresponding upstream server entry
 
 ### Publisher-Provided Extensions
 
@@ -912,11 +907,11 @@ ToolHive uses the `io.modelcontextprotocol.registry/publisher-provided` extensio
 ```
 
 For the complete schema definition, see:
-- **Schema file**: `pkg/registry/data/publisher-provided.schema.json`
+- **Schemas**: published in [`stacklok/toolhive-core`](https://github.com/stacklok/toolhive-core) under `registry/types/data/`
 - **Documentation**: `docs/registry/schema.md`
 - **Validation**: `pkg/registry/schema_validation.go`
 
-**Implementation**: `pkg/registry/` (supports both formats)
+**Implementation**: `pkg/registry/`
 
 ## Registry Operations
 
@@ -966,8 +961,7 @@ kubectl annotate mcpregistry company-registry toolhive.stacklok.dev/sync-trigger
 ### External Documentation
 - [ToolHive User Documentation](https://docs.stacklok.com/toolhive/) - User-facing guides
 - [Registry Server Documentation](https://docs.stacklok.com/toolhive/guides-registry/) - Enterprise registry server
-- [ToolHive Registry Schema](https://docs.stacklok.com/toolhive/reference/registry-schema-toolhive) - Registry format reference
-- [Upstream Registry Schema](https://docs.stacklok.com/toolhive/reference/registry-schema-upstream) - MCP standard format
+- [Upstream Registry Schema](https://docs.stacklok.com/toolhive/reference/registry-schema-upstream) - MCP standard format used by ToolHive
 - [Registry API Reference](https://docs.stacklok.com/toolhive/reference/registry-api) - API specification
 
 ### Related Repositories

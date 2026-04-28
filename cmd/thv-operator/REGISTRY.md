@@ -17,19 +17,36 @@ metadata:
 data:
   registry.json: |
     {
-      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive-core/main/registry/types/data/upstream-registry.schema.json",
       "version": "1.0.0",
-      "last_updated": "2025-01-14T00:00:00Z",
-      "servers": {
-        "github": {
-          "description": "GitHub API integration",
-          "tier": "Official",
-          "status": "Active",
-          "transport": "stdio",
-          "tools": ["create_issue", "search_repositories"],
-          "image": "ghcr.io/github/github-mcp-server:latest",
-          "tags": ["github", "api", "production"]
-        }
+      "meta": {
+        "last_updated": "2025-01-14T00:00:00Z"
+      },
+      "data": {
+        "servers": [
+          {
+            "name": "io.github.github/github",
+            "description": "GitHub API integration",
+            "version": "1.0.0",
+            "packages": [
+              {
+                "registryType": "oci",
+                "identifier": "ghcr.io/github/github-mcp-server:latest",
+                "transport": { "type": "stdio" }
+              }
+            ],
+            "_meta": {
+              "io.modelcontextprotocol.registry/publisher-provided": {
+                "io.github.github": {
+                  "ghcr.io/github/github-mcp-server:latest": {
+                    "tier": "Official",
+                    "tags": ["github", "api", "production"]
+                  }
+                }
+              }
+            }
+          }
+        ]
       }
     }
 ---
@@ -66,7 +83,6 @@ Configure automatic synchronization with interval-based policies per registry:
 spec:
   sources:
     - name: default
-      format: toolhive
       configMapRef:
         name: registry-data
         key: registry.json
@@ -120,7 +136,6 @@ Store registry data in Kubernetes ConfigMaps:
 spec:
   sources:
     - name: default
-      format: toolhive  # or "upstream"
       configMapRef:
         name: registry-data
         key: registry.json  # required
@@ -138,7 +153,6 @@ Synchronize from Git repositories:
 spec:
   sources:
     - name: default
-      format: toolhive
       git:
         repository: "https://github.com/org/mcp-registry"
         branch: "main"
@@ -180,7 +194,6 @@ spec:
   displayName: "Private MCP Registry"
   sources:
     - name: default
-      format: toolhive
       git:
         repository: "https://github.com/org/private-mcp-registry"
         branch: "main"
@@ -214,7 +227,6 @@ Synchronize from HTTP/HTTPS API endpoints compatible with
 spec:
   sources:
     - name: default
-      format: toolhive
       api:
         endpoint: "https://registry.example.com"
   registries:
@@ -223,19 +235,12 @@ spec:
         - default
 ```
 
-The API source automatically detects the registry format by probing the endpoint:
+The API source fetches servers from an endpoint speaking the upstream MCP registry API:
 
-**ToolHive Registry API** (Supported):
 - Endpoint responds to `/v0/info` with registry metadata
 - Fetches servers from `/v0/servers`
 - Fetches server details from `/v0/servers/{name}`
-- No pagination - returns all servers in single response
-- Data already in ToolHive format (no conversion needed)
-
-**Upstream MCP Registry API** (Future, once the data format will stabilize):
-- Endpoint responds to `/openapi.yaml` with OpenAPI specification
-- Will support cursor-based pagination via `/v0/servers?cursor=...`
-- Will convert upstream format to ToolHive format automatically
+- Server entries use the upstream MCP server schema, with ToolHive-specific metadata carried through publisher-provided extensions
 
 Example configurations:
 
@@ -244,7 +249,6 @@ Example configurations:
 spec:
   sources:
     - name: internal-api
-      format: toolhive
       api:
         endpoint: "http://my-registry-api.default.svc.cluster.local:8080"
       syncPolicy:
@@ -260,7 +264,6 @@ spec:
 spec:
   sources:
     - name: upstream
-      format: toolhive
       api:
         endpoint: "https://registry.modelcontextprotocol.io/"
       syncPolicy:
@@ -273,22 +276,23 @@ spec:
 
 **Notes:**
 - API endpoints are validated at sync time
-- Format detection is automatic (ToolHive vs Upstream)
 - HTTPS is recommended for production use
 - Authentication support planned for future release
 
-### Registry Formats
+### Registry Format
 
-**ToolHive Format** (default):
-- Native ToolHive registry schema
-- Supports all ToolHive features
-- See [registry schema](../../pkg/registry/data/toolhive-legacy-registry.schema.json)
+ToolHive registries use the upstream MCP server format published in
+[`stacklok/toolhive-core`](https://github.com/stacklok/toolhive-core)
+under `registry/types/data/`:
 
-**Upstream Format**:
-- Standard MCP registry format
-- Compatible with community registries
-- Automatically converted to ToolHive format
-- **Note**: Not supported until the upstream schema is more stable
+- `upstream-registry.schema.json` validates the registry envelope and
+  references the official MCP server schema.
+- `publisher-provided.schema.json` defines the ToolHive-specific metadata
+  carried under `_meta["io.modelcontextprotocol.registry/publisher-provided"]`
+  (tier, tools, permissions, OAuth/OIDC config, etc.).
+
+The legacy ToolHive-native format is no longer accepted. Existing files
+can be migrated with `thv registry convert --in <file> --in-place`.
 
 ## Filtering
 
@@ -298,7 +302,6 @@ Each registry configuration can define its own filtering rules:
 spec:
   sources:
     - name: production
-      format: toolhive
       configMapRef:
         name: registry-data
         key: registry.json
@@ -509,7 +512,6 @@ spec:
   displayName: "Production MCP Servers"
   sources:
     - name: prod-source
-      format: toolhive
       configMapRef:
         name: prod-registry-data
         key: registry.json
@@ -531,7 +533,6 @@ spec:
   displayName: "Development MCP Servers"
   sources:
     - name: dev-source
-      format: toolhive
       git:
         repository: "https://github.com/org/dev-mcp-registry"
         branch: "develop"
@@ -563,7 +564,6 @@ spec:
   displayName: "Private Organization Registry"
   sources:
     - name: private-source
-      format: toolhive
       git:
         repository: "https://github.com/myorg/private-mcp-servers"
         branch: "main"
@@ -594,7 +594,6 @@ spec:
   displayName: "Multi-Source Registry"
   sources:
     - name: production
-      format: toolhive
       git:
         repository: "https://github.com/org/prod-registry"
         branch: "main"
@@ -606,7 +605,6 @@ spec:
           include:
             - "production"
     - name: development
-      format: toolhive
       configMapRef:
         name: dev-registry-data
         key: registry.json
@@ -629,4 +627,4 @@ Each source must have a unique `name` within the MCPRegistry. Registry views ref
 - [Operator Installation](../../docs/kind/deploying-toolhive-operator.md)
 - [Registry Examples](../../examples/operator/mcp-registries/)
 - [Private Git Registry Example](../../examples/operator/mcp-registries/mcpregistry-git-private.yaml)
-- [Registry Schema](../../pkg/registry/data/toolhive-legacy-registry.schema.json)
+- [Registry Schema](../../docs/registry/schema.md)

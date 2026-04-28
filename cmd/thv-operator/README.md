@@ -282,7 +282,6 @@ spec:
   configYAML: |
     sources:
       - name: my-source
-        format: toolhive
         file:
           path: /config/registry/my-source/registry.json
         syncPolicy:

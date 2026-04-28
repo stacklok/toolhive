@@ -23,7 +23,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1207,20 +1206,15 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity(t *testing.T) {
 	// This is the path that lets OAuth2 upstreams without a userinfo surface
 	// (e.g., MCP authorization servers per the MCP authorization spec) reach a
 	// usable Identity.
+	//
+	// Empty Name/Email plus the prefix-tagged Subject are the signals that the
+	// synthesis branch was taken — the userinfo path populates Name/Email from
+	// the response and would never produce a "tk-…" subject.
 	t.Run("synthesizes identity when UserInfo is nil", func(t *testing.T) {
 		t.Parallel()
 
 		mock := newMockOAuth2Server()
 		t.Cleanup(mock.Close)
-
-		// Tripwire: any HTTP request to a userinfo endpoint when UserInfo is
-		// nil is a regression. The provider should not contact one.
-		var userinfoHits int32
-		userInfoTripwire := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			atomic.AddInt32(&userinfoHits, 1)
-			w.WriteHeader(http.StatusInternalServerError)
-		}))
-		t.Cleanup(userInfoTripwire.Close)
 
 		config := &OAuth2Config{
 			CommonOAuthConfig: CommonOAuthConfig{
@@ -1256,9 +1250,6 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity(t *testing.T) {
 		// UserResolver and avoids persisting a User row that would otherwise
 		// be created fresh on every re-authentication.
 		assert.True(t, result.Synthetic, "synthesized identities must set Synthetic=true")
-
-		assert.Equal(t, int32(0), atomic.LoadInt32(&userinfoHits),
-			"no HTTP request should have been issued to a userinfo endpoint")
 	})
 }
 

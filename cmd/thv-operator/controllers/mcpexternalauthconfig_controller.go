@@ -109,6 +109,17 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		ObservedGeneration: externalAuthConfig.Generation,
 	})
 
+	// Set or clear the IdentitySynthesized advisory based on whether any
+	// OAuth2 upstream lacks a userInfo block. The advisory tells operators
+	// that the embedded auth server is running in synthesis mode for those
+	// upstreams (non-PII subject derived from the access token, no Name/Email
+	// claims) so a misconfiguration that drops userInfo silently doesn't go
+	// unnoticed. Both True→False and False→True transitions count as a
+	// condition change so the existing Status().Update path picks them up.
+	if r.applyIdentitySynthesizedCondition(externalAuthConfig) {
+		conditionChanged = true
+	}
+
 	// Calculate the hash of the current configuration
 	configHash := r.calculateConfigHash(externalAuthConfig.Spec)
 
@@ -134,6 +145,48 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 // calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities
 func (*MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1beta1.MCPExternalAuthConfigSpec) string {
 	return ctrlutil.CalculateConfigHash(spec)
+}
+
+// applyIdentitySynthesizedCondition sets ConditionTypeIdentitySynthesized to
+// True when one or more OAuth2 upstreams have nil userInfo (the embedded auth
+// server will synthesize their subjects from the access token), and to False
+// when every upstream has a userInfo configured. Returns true if the
+// condition was added/changed so the caller can include it in the next
+// status write.
+//
+// For non-embeddedAuthServer types or a missing embeddedAuthServer block,
+// the synthesis-mode question is moot — the condition is removed entirely
+// rather than left lingering at False.
+func (*MCPExternalAuthConfigReconciler) applyIdentitySynthesizedCondition(
+	cfg *mcpv1beta1.MCPExternalAuthConfig,
+) bool {
+	if cfg.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer || cfg.Spec.EmbeddedAuthServer == nil {
+		return meta.RemoveStatusCondition(&cfg.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized)
+	}
+
+	syntheticUpstreams := cfg.Spec.EmbeddedAuthServer.SyntheticIdentityUpstreams()
+	if len(syntheticUpstreams) == 0 {
+		return meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeIdentitySynthesized,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonIdentitySynthesizedInactive,
+			Message:            "All OAuth2 upstreams have userInfo configured; user identity is resolved from the upstream",
+			ObservedGeneration: cfg.Generation,
+		})
+	}
+
+	return meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
+		Type:   mcpv1beta1.ConditionTypeIdentitySynthesized,
+		Status: metav1.ConditionTrue,
+		Reason: mcpv1beta1.ConditionReasonIdentitySynthesizedActive,
+		Message: fmt.Sprintf(
+			"OAuth2 upstream(s) %v have no userInfo configured; the embedded auth server will "+
+				"synthesize a non-PII subject from the access token (no Name/Email claims). "+
+				"If a userInfo endpoint exists for these upstreams, configure it to resolve real identity.",
+			syntheticUpstreams,
+		),
+		ObservedGeneration: cfg.Generation,
+	})
 }
 
 // handleConfigHashChange handles the logic when the config hash changes

@@ -390,8 +390,9 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 			return false
 		}
 	} else {
-		// Remove stale condition if AuthServerConfig was previously set then removed.
+		// Remove stale conditions if AuthServerConfig was previously set then removed.
 		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthServerConfigValidated, []string{})
+		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeIdentitySynthesized, []string{})
 	}
 
 	// Validate that authz policies have an upstream IDP available to source
@@ -501,6 +502,34 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		metav1.ConditionTrue,
 	)
 	statusManager.SetObservedGeneration(vmcp.Generation)
+
+	// Advisory: surface synthesis-mode upstreams (OAuth2 with no userInfo) so
+	// operators see the regression in `kubectl describe` rather than only in
+	// proxyrunner logs. Mirrors the same condition emitted by
+	// MCPExternalAuthConfigReconciler so behavior is consistent regardless of
+	// whether the upstream is declared inline on a VirtualMCPServer or by
+	// reference to an MCPExternalAuthConfig.
+	syntheticUpstreams := cfg.SyntheticIdentityUpstreams()
+	if len(syntheticUpstreams) > 0 {
+		statusManager.SetCondition(
+			mcpv1beta1.ConditionTypeIdentitySynthesized,
+			mcpv1beta1.ConditionReasonIdentitySynthesizedActive,
+			fmt.Sprintf(
+				"OAuth2 upstream(s) %v have no userInfo configured; the embedded auth server will "+
+					"synthesize a non-PII subject from the access token (no Name/Email claims). "+
+					"If a userInfo endpoint exists for these upstreams, configure it to resolve real identity.",
+				syntheticUpstreams,
+			),
+			metav1.ConditionTrue,
+		)
+	} else {
+		statusManager.SetCondition(
+			mcpv1beta1.ConditionTypeIdentitySynthesized,
+			mcpv1beta1.ConditionReasonIdentitySynthesizedInactive,
+			"All OAuth2 upstreams have userInfo configured; user identity is resolved from the upstream",
+			metav1.ConditionFalse,
+		)
+	}
 
 	return nil
 }

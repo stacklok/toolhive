@@ -597,3 +597,94 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 		})
 	}
 }
+
+func TestEmbeddedAuthServerConfig_SyntheticIdentityUpstreams(t *testing.T) {
+	t.Parallel()
+
+	oidc := &UpstreamProviderConfig{
+		Name:       "okta",
+		Type:       UpstreamProviderTypeOIDC,
+		OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://okta.example.com", ClientID: "id"},
+	}
+	oauth2WithUserInfo := UpstreamProviderConfig{
+		Name: "with-userinfo",
+		Type: UpstreamProviderTypeOAuth2,
+		OAuth2Config: &OAuth2UpstreamConfig{
+			AuthorizationEndpoint: "https://idp/authorize",
+			TokenEndpoint:         "https://idp/token",
+			ClientID:              "client",
+			UserInfo:              &UserInfoConfig{EndpointURL: "https://idp/userinfo"},
+		},
+	}
+	oauth2NoUserInfo := UpstreamProviderConfig{
+		Name: "no-userinfo",
+		Type: UpstreamProviderTypeOAuth2,
+		OAuth2Config: &OAuth2UpstreamConfig{
+			AuthorizationEndpoint: "https://idp/authorize",
+			TokenEndpoint:         "https://idp/token",
+			ClientID:              "client",
+		},
+	}
+	oauth2NoUserInfo2 := UpstreamProviderConfig{
+		Name: "another-no-userinfo",
+		Type: UpstreamProviderTypeOAuth2,
+		OAuth2Config: &OAuth2UpstreamConfig{
+			AuthorizationEndpoint: "https://idp/authorize",
+			TokenEndpoint:         "https://idp/token",
+			ClientID:              "client",
+		},
+	}
+
+	tests := []struct {
+		name string
+		cfg  *EmbeddedAuthServerConfig
+		want []string
+	}{
+		{
+			name: "nil config returns nil",
+			cfg:  nil,
+			want: nil,
+		},
+		{
+			name: "empty upstreams returns nil",
+			cfg:  &EmbeddedAuthServerConfig{},
+			want: nil,
+		},
+		{
+			name: "OIDC-only is not synthesis-mode",
+			cfg:  &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{*oidc}},
+			want: nil,
+		},
+		{
+			name: "OAuth2 with userInfo is not synthesis-mode",
+			cfg:  &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{oauth2WithUserInfo}},
+			want: nil,
+		},
+		{
+			name: "single OAuth2 without userInfo is synthesis-mode",
+			cfg:  &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{oauth2NoUserInfo}},
+			want: []string{"no-userinfo"},
+		},
+		{
+			name: "multiple OAuth2 without userInfo returned in sorted order",
+			cfg: &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{
+				oauth2NoUserInfo, oauth2NoUserInfo2,
+			}},
+			want: []string{"another-no-userinfo", "no-userinfo"},
+		},
+		{
+			name: "mixed: only OAuth2-without-userInfo are returned",
+			cfg: &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{
+				*oidc, oauth2WithUserInfo, oauth2NoUserInfo,
+			}},
+			want: []string{"no-userinfo"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.cfg.SyntheticIdentityUpstreams())
+		})
+	}
+}

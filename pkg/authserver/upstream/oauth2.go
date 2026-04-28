@@ -333,6 +333,14 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 		"token_endpoint", config.TokenEndpoint,
 	)
 
+	if config.UserInfo == nil {
+		slog.Info("oauth2 upstream has no userinfo configured; using synthesis mode " +
+			"(synthesized non-PII subject from access token; no Name/Email claims). " +
+			"This is intended for upstreams with no userinfo surface. If a userinfo " +
+			"endpoint exists for this upstream, configure it to resolve real user identity.",
+		)
+	}
+
 	return p, nil
 }
 

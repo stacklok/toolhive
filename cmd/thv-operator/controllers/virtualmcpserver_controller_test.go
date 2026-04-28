@@ -3772,3 +3772,87 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_ClearsStaleWarning(t *te
 			"stale AuthzUpstreamSelectionWarning condition should have been removed")
 	}
 }
+
+// TestVirtualMCPServerValidateAuthServerConfig_IdentitySynthesizedCondition
+// asserts the advisory IdentitySynthesized condition is set with the expected
+// status/reason/message based on the upstream-providers shape — parity with
+// the same condition emitted by MCPExternalAuthConfigReconciler.
+func TestVirtualMCPServerValidateAuthServerConfig_IdentitySynthesizedCondition(t *testing.T) {
+	t.Parallel()
+
+	oauth2Upstream := func(name string, withUserInfo bool) mcpv1beta1.UpstreamProviderConfig {
+		cfg := &mcpv1beta1.OAuth2UpstreamConfig{
+			AuthorizationEndpoint: "https://idp.example.com/authorize",
+			TokenEndpoint:         "https://idp.example.com/token",
+			ClientID:              "client",
+		}
+		if withUserInfo {
+			cfg.UserInfo = &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"}
+		}
+		return mcpv1beta1.UpstreamProviderConfig{
+			Name:         name,
+			Type:         mcpv1beta1.UpstreamProviderTypeOAuth2,
+			OAuth2Config: cfg,
+		}
+	}
+
+	tests := []struct {
+		name           string
+		upstreams      []mcpv1beta1.UpstreamProviderConfig
+		wantStatus     metav1.ConditionStatus
+		wantReason     string
+		wantNamesInMsg []string
+	}{
+		{
+			name:       "all OAuth2 upstreams have userInfo: condition False",
+			upstreams:  []mcpv1beta1.UpstreamProviderConfig{oauth2Upstream("primary", true)},
+			wantStatus: metav1.ConditionFalse,
+			wantReason: mcpv1beta1.ConditionReasonIdentitySynthesizedInactive,
+		},
+		{
+			name: "one OAuth2 upstream missing userInfo: condition True with name in message",
+			upstreams: []mcpv1beta1.UpstreamProviderConfig{
+				oauth2Upstream("primary", true),
+				oauth2Upstream("atlassian", false),
+			},
+			wantStatus:     metav1.ConditionTrue,
+			wantReason:     mcpv1beta1.ConditionReasonIdentitySynthesizedActive,
+			wantNamesInMsg: []string{"atlassian"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := &mcpv1beta1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testVmcpName,
+					Namespace:  "default",
+					Generation: 1,
+				},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					AuthServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+						Issuer:            "https://authserver.example.com",
+						UpstreamProviders: tt.upstreams,
+					},
+				},
+			}
+
+			r := &VirtualMCPServerReconciler{}
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+			require.NoError(t, r.validateAuthServerConfig(vmcp, statusManager))
+			statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+			cond := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized)
+			require.NotNil(t, cond, "IdentitySynthesized condition should be set on a valid AuthServerConfig")
+			assert.Equal(t, tt.wantStatus, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			for _, name := range tt.wantNamesInMsg {
+				assert.Contains(t, cond.Message, name,
+					"upstream %q should be named in the condition message", name)
+			}
+		})
+	}
+}

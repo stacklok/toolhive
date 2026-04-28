@@ -27,11 +27,18 @@ import (
 const defaultURLFieldName = "url"
 
 // ClientApp is an enum of MCP-capable AI clients (IDEs, editors, and coding tools).
-// Note: "xcode" is an LLM-gateway-only client (use "thv llm setup"); it is
-// intentionally excluded from MCP client registration endpoints.
+// Only clients that support MCP registration appear here; LLM-gateway-only
+// tools (e.g. Xcode) are represented by the separate LLMClientApp type so
+// that code generators (swag) do not include them in the MCP API enum.
 //
 //nolint:revive // ClientApp is intentionally named for clarity across packages
 type ClientApp string
+
+// LLMClientApp identifies tools that support the LLM gateway but do not
+// support MCP client registration (e.g. GitHub Copilot for Xcode).
+// Keeping this type separate from ClientApp prevents swag from including
+// these tools in the MCP API ClientApp enum.
+type LLMClientApp string
 
 const (
 	// RooCode represents the Roo Code extension for VS Code.
@@ -88,9 +95,14 @@ const (
 	KimiCli ClientApp = "kimi-cli"
 	// Factory represents the Factory.ai Droid CLI.
 	Factory ClientApp = "factory"
+)
+
+const (
 	// Xcode represents GitHub Copilot for Xcode.
-	// Xcode does not support MCP; it is an LLM-gateway-only entry.
-	Xcode ClientApp = "xcode"
+	// Xcode does not support MCP; it is an LLM-gateway-only tool.
+	// It is declared as LLMClientApp (not ClientApp) so that code generators
+	// such as swag do not include "xcode" in the MCP API ClientApp enum.
+	Xcode LLMClientApp = "xcode"
 )
 
 // Extension is extension of the client config file.
@@ -183,6 +195,11 @@ type clientAppConfig struct {
 	// LLMGatewayMode is "direct" (token-helper) or "proxy" (static key via
 	// localhost reverse proxy), or "" when the tool has no LLM gateway support.
 	LLMGatewayMode string
+	// LLMBinaryName is the executable name looked up via exec.LookPath to
+	// confirm the tool is actually installed (not just a leftover config
+	// directory). Leave empty for tools that are not on $PATH (e.g. macOS
+	// GUI apps).
+	LLMBinaryName string
 	// LLMGatewayOnly marks tools that support LLM gateway but not MCP (e.g. Xcode).
 	// Entries with this flag are excluded from the MCP client list.
 	LLMGatewayOnly bool
@@ -317,6 +334,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".github", "skills"},
 		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
 		LLMGatewayMode:     "proxy",
+		LLMBinaryName:      "code",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Code - Insiders", "User"},
 		LLMSettingsPlatformPrefix: map[Platform][]string{
@@ -359,6 +377,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".github", "skills"},
 		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
 		LLMGatewayMode:     "proxy",
+		LLMBinaryName:      "code",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Code", "User"},
 		LLMSettingsPlatformPrefix: map[Platform][]string{
@@ -396,6 +415,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".cursor", "skills"},
 		// LLM gateway: patches the editor settings.json (different from the MCP mcp.json)
 		LLMGatewayMode:     "proxy",
+		LLMBinaryName:      "cursor",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Cursor", "User"},
 		LLMSettingsPlatformPrefix: map[Platform][]string{
@@ -431,6 +451,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".claude", "skills"},
 		// LLM gateway: patches ~/.claude/settings.json (different from the MCP .claude.json)
 		LLMGatewayMode:     "direct",
+		LLMBinaryName:      "claude",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{".claude"},
 		LLMGatewayKeys: []LLMGatewayKeySpec{
@@ -809,6 +830,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".agents", "skills"},
 		// LLM gateway: patches the same settings.json used for MCP
 		LLMGatewayMode:     "direct",
+		LLMBinaryName:      "gemini",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{".gemini"},
 		LLMGatewayKeys: []LLMGatewayKeySpec{
@@ -917,7 +939,9 @@ var supportedClientIntegrations = []clientAppConfig{
 	},
 	{
 		// Xcode does not support MCP; it is an LLM-gateway-only entry.
-		ClientType:     Xcode,
+		// Cast LLMClientApp → ClientApp for internal config storage; the type
+		// distinction matters only for swag enum generation (see LLMClientApp).
+		ClientType:     ClientApp(Xcode),
 		Description:    "GitHub Copilot for Xcode",
 		LLMGatewayOnly: true,
 		LLMGatewayMode: "proxy",

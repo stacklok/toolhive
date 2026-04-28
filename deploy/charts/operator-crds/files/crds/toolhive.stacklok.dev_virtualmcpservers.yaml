@@ -1484,6 +1484,77 @@ spec:
                             This struct provides type-safe configuration for different authentication strategies
                             using HeaderInjection or TokenExchange fields based on the Type field.
                           properties:
+                            awsSts:
+                              description: |-
+                                AwsSts contains configuration for AWS STS auth strategy.
+                                Used when Type = "aws_sts".
+                              properties:
+                                fallbackRoleArn:
+                                  description: FallbackRoleArn is the IAM role ARN
+                                    to assume when no role mappings match.
+                                  type: string
+                                region:
+                                  description: Region is the AWS region for the STS
+                                    endpoint and service.
+                                  type: string
+                                roleClaim:
+                                  description: RoleClaim is the JWT claim to use for
+                                    role mapping evaluation.
+                                  type: string
+                                roleMappings:
+                                  description: RoleMappings defines claim-based role
+                                    selection rules.
+                                  items:
+                                    description: |-
+                                      RoleMapping defines a rule for mapping JWT claims to IAM roles.
+                                      Mappings are evaluated in priority order (lower number = higher priority).
+                                    properties:
+                                      claim:
+                                        description: Claim is a simple claim value
+                                          to match against the RoleClaim field.
+                                        type: string
+                                      matcher:
+                                        description: Matcher is a CEL expression for
+                                          complex matching against JWT claims.
+                                        type: string
+                                      priority:
+                                        description: |-
+                                          Priority determines evaluation order (lower values = higher priority).
+                                          Mirrors awssts.RoleMapping.Priority, which is *int because the role mapper
+                                          uses math.MaxInt for nil-priority semantics in effectivePriority.
+                                        type: integer
+                                      roleArn:
+                                        description: RoleArn is the IAM role ARN to
+                                          assume when this mapping matches.
+                                        type: string
+                                    required:
+                                    - roleArn
+                                    type: object
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                service:
+                                  description: Service is the AWS service name for
+                                    SigV4 signing.
+                                  type: string
+                                sessionDuration:
+                                  description: SessionDuration is the duration in
+                                    seconds for the STS session.
+                                  format: int32
+                                  type: integer
+                                sessionNameClaim:
+                                  description: SessionNameClaim is the JWT claim to
+                                    use for the role session name.
+                                  type: string
+                                subjectProviderName:
+                                  description: |-
+                                    SubjectProviderName selects which upstream provider's token to use as the
+                                    web identity token for AssumeRoleWithWebIdentity. When set, the token is
+                                    looked up from Identity.UpstreamTokens instead of the request's
+                                    Authorization header.
+                                  type: string
+                              required:
+                              - region
+                              type: object
                             headerInjection:
                               description: |-
                                 HeaderInjection contains configuration for header injection auth strategy.
@@ -1559,7 +1630,8 @@ spec:
                               type: object
                             type:
                               description: 'Type is the auth strategy: "unauthenticated",
-                                "header_injection", "token_exchange", "upstream_inject"'
+                                "header_injection", "token_exchange", "upstream_inject",
+                                "aws_sts"'
                               type: string
                             upstreamInject:
                               description: |-
@@ -1583,6 +1655,77 @@ spec:
                         description: Default is the default auth strategy for backends
                           without explicit config.
                         properties:
+                          awsSts:
+                            description: |-
+                              AwsSts contains configuration for AWS STS auth strategy.
+                              Used when Type = "aws_sts".
+                            properties:
+                              fallbackRoleArn:
+                                description: FallbackRoleArn is the IAM role ARN to
+                                  assume when no role mappings match.
+                                type: string
+                              region:
+                                description: Region is the AWS region for the STS
+                                  endpoint and service.
+                                type: string
+                              roleClaim:
+                                description: RoleClaim is the JWT claim to use for
+                                  role mapping evaluation.
+                                type: string
+                              roleMappings:
+                                description: RoleMappings defines claim-based role
+                                  selection rules.
+                                items:
+                                  description: |-
+                                    RoleMapping defines a rule for mapping JWT claims to IAM roles.
+                                    Mappings are evaluated in priority order (lower number = higher priority).
+                                  properties:
+                                    claim:
+                                      description: Claim is a simple claim value to
+                                        match against the RoleClaim field.
+                                      type: string
+                                    matcher:
+                                      description: Matcher is a CEL expression for
+                                        complex matching against JWT claims.
+                                      type: string
+                                    priority:
+                                      description: |-
+                                        Priority determines evaluation order (lower values = higher priority).
+                                        Mirrors awssts.RoleMapping.Priority, which is *int because the role mapper
+                                        uses math.MaxInt for nil-priority semantics in effectivePriority.
+                                      type: integer
+                                    roleArn:
+                                      description: RoleArn is the IAM role ARN to
+                                        assume when this mapping matches.
+                                      type: string
+                                  required:
+                                  - roleArn
+                                  type: object
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              service:
+                                description: Service is the AWS service name for SigV4
+                                  signing.
+                                type: string
+                              sessionDuration:
+                                description: SessionDuration is the duration in seconds
+                                  for the STS session.
+                                format: int32
+                                type: integer
+                              sessionNameClaim:
+                                description: SessionNameClaim is the JWT claim to
+                                  use for the role session name.
+                                type: string
+                              subjectProviderName:
+                                description: |-
+                                  SubjectProviderName selects which upstream provider's token to use as the
+                                  web identity token for AssumeRoleWithWebIdentity. When set, the token is
+                                  looked up from Identity.UpstreamTokens instead of the request's
+                                  Authorization header.
+                                type: string
+                            required:
+                            - region
+                            type: object
                           headerInjection:
                             description: |-
                               HeaderInjection contains configuration for header injection auth strategy.
@@ -1658,7 +1801,8 @@ spec:
                             type: object
                           type:
                             description: 'Type is the auth strategy: "unauthenticated",
-                              "header_injection", "token_exchange", "upstream_inject"'
+                              "header_injection", "token_exchange", "upstream_inject",
+                              "aws_sts"'
                             type: string
                           upstreamInject:
                             description: |-
@@ -3771,6 +3915,77 @@ spec:
                             This struct provides type-safe configuration for different authentication strategies
                             using HeaderInjection or TokenExchange fields based on the Type field.
                           properties:
+                            awsSts:
+                              description: |-
+                                AwsSts contains configuration for AWS STS auth strategy.
+                                Used when Type = "aws_sts".
+                              properties:
+                                fallbackRoleArn:
+                                  description: FallbackRoleArn is the IAM role ARN
+                                    to assume when no role mappings match.
+                                  type: string
+                                region:
+                                  description: Region is the AWS region for the STS
+                                    endpoint and service.
+                                  type: string
+                                roleClaim:
+                                  description: RoleClaim is the JWT claim to use for
+                                    role mapping evaluation.
+                                  type: string
+                                roleMappings:
+                                  description: RoleMappings defines claim-based role
+                                    selection rules.
+                                  items:
+                                    description: |-
+                                      RoleMapping defines a rule for mapping JWT claims to IAM roles.
+                                      Mappings are evaluated in priority order (lower number = higher priority).
+                                    properties:
+                                      claim:
+                                        description: Claim is a simple claim value
+                                          to match against the RoleClaim field.
+                                        type: string
+                                      matcher:
+                                        description: Matcher is a CEL expression for
+                                          complex matching against JWT claims.
+                                        type: string
+                                      priority:
+                                        description: |-
+                                          Priority determines evaluation order (lower values = higher priority).
+                                          Mirrors awssts.RoleMapping.Priority, which is *int because the role mapper
+                                          uses math.MaxInt for nil-priority semantics in effectivePriority.
+                                        type: integer
+                                      roleArn:
+                                        description: RoleArn is the IAM role ARN to
+                                          assume when this mapping matches.
+                                        type: string
+                                    required:
+                                    - roleArn
+                                    type: object
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                service:
+                                  description: Service is the AWS service name for
+                                    SigV4 signing.
+                                  type: string
+                                sessionDuration:
+                                  description: SessionDuration is the duration in
+                                    seconds for the STS session.
+                                  format: int32
+                                  type: integer
+                                sessionNameClaim:
+                                  description: SessionNameClaim is the JWT claim to
+                                    use for the role session name.
+                                  type: string
+                                subjectProviderName:
+                                  description: |-
+                                    SubjectProviderName selects which upstream provider's token to use as the
+                                    web identity token for AssumeRoleWithWebIdentity. When set, the token is
+                                    looked up from Identity.UpstreamTokens instead of the request's
+                                    Authorization header.
+                                  type: string
+                              required:
+                              - region
+                              type: object
                             headerInjection:
                               description: |-
                                 HeaderInjection contains configuration for header injection auth strategy.
@@ -3846,7 +4061,8 @@ spec:
                               type: object
                             type:
                               description: 'Type is the auth strategy: "unauthenticated",
-                                "header_injection", "token_exchange", "upstream_inject"'
+                                "header_injection", "token_exchange", "upstream_inject",
+                                "aws_sts"'
                               type: string
                             upstreamInject:
                               description: |-
@@ -3870,6 +4086,77 @@ spec:
                         description: Default is the default auth strategy for backends
                           without explicit config.
                         properties:
+                          awsSts:
+                            description: |-
+                              AwsSts contains configuration for AWS STS auth strategy.
+                              Used when Type = "aws_sts".
+                            properties:
+                              fallbackRoleArn:
+                                description: FallbackRoleArn is the IAM role ARN to
+                                  assume when no role mappings match.
+                                type: string
+                              region:
+                                description: Region is the AWS region for the STS
+                                  endpoint and service.
+                                type: string
+                              roleClaim:
+                                description: RoleClaim is the JWT claim to use for
+                                  role mapping evaluation.
+                                type: string
+                              roleMappings:
+                                description: RoleMappings defines claim-based role
+                                  selection rules.
+                                items:
+                                  description: |-
+                                    RoleMapping defines a rule for mapping JWT claims to IAM roles.
+                                    Mappings are evaluated in priority order (lower number = higher priority).
+                                  properties:
+                                    claim:
+                                      description: Claim is a simple claim value to
+                                        match against the RoleClaim field.
+                                      type: string
+                                    matcher:
+                                      description: Matcher is a CEL expression for
+                                        complex matching against JWT claims.
+                                      type: string
+                                    priority:
+                                      description: |-
+                                        Priority determines evaluation order (lower values = higher priority).
+                                        Mirrors awssts.RoleMapping.Priority, which is *int because the role mapper
+                                        uses math.MaxInt for nil-priority semantics in effectivePriority.
+                                      type: integer
+                                    roleArn:
+                                      description: RoleArn is the IAM role ARN to
+                                        assume when this mapping matches.
+                                      type: string
+                                  required:
+                                  - roleArn
+                                  type: object
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              service:
+                                description: Service is the AWS service name for SigV4
+                                  signing.
+                                type: string
+                              sessionDuration:
+                                description: SessionDuration is the duration in seconds
+                                  for the STS session.
+                                format: int32
+                                type: integer
+                              sessionNameClaim:
+                                description: SessionNameClaim is the JWT claim to
+                                  use for the role session name.
+                                type: string
+                              subjectProviderName:
+                                description: |-
+                                  SubjectProviderName selects which upstream provider's token to use as the
+                                  web identity token for AssumeRoleWithWebIdentity. When set, the token is
+                                  looked up from Identity.UpstreamTokens instead of the request's
+                                  Authorization header.
+                                type: string
+                            required:
+                            - region
+                            type: object
                           headerInjection:
                             description: |-
                               HeaderInjection contains configuration for header injection auth strategy.
@@ -3945,7 +4232,8 @@ spec:
                             type: object
                           type:
                             description: 'Type is the auth strategy: "unauthenticated",
-                              "header_injection", "token_exchange", "upstream_inject"'
+                              "header_injection", "token_exchange", "upstream_inject",
+                              "aws_sts"'
                             type: string
                           upstreamInject:
                             description: |-

@@ -528,8 +528,6 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				// TOML files are created empty and initialized on first use
 				// Just verify the file exists and is readable
 				assert.NotNil(t, content, "TOML config should be readable")
-			case Xcode:
-				// Xcode is LLM-gateway-only and has no MCP config file
 			}
 		}
 	})
@@ -568,8 +566,6 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				MistralVibe, Codex, KimiCli, Factory:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
-			case Xcode:
-				// Xcode is LLM-gateway-only and has no MCP config file
 			}
 		}
 	})
@@ -1320,6 +1316,34 @@ func TestGetAllClients(t *testing.T) {
 
 	for _, expected := range expectedClients {
 		assert.True(t, clientMap[expected], "Expected client %s to be in the list", expected)
+	}
+
+	// LLM-gateway-only tools must not appear in the MCP client list.
+	assert.NotContains(t, clients, ClientApp(Xcode),
+		"Xcode is LLM-gateway-only and must not appear in the MCP ClientApp enum")
+}
+
+// TestLLMGatewayOnlyExcludedFromClientListAndValidation verifies that every
+// supportedClientIntegrations entry marked LLMGatewayOnly is excluded from
+// GetAllClients and rejected by IsValidClient.
+func TestLLMGatewayOnlyExcludedFromClientListAndValidation(t *testing.T) {
+	t.Parallel()
+
+	allClients := GetAllClients()
+	clientSet := make(map[ClientApp]bool, len(allClients))
+	for _, c := range allClients {
+		clientSet[c] = true
+	}
+
+	for _, cfg := range supportedClientIntegrations {
+		if !cfg.LLMGatewayOnly {
+			continue
+		}
+		assert.False(t, clientSet[cfg.ClientType],
+			"LLM-gateway-only tool %q must not appear in GetAllClients(); "+
+				"declare it as LLMClientApp, not ClientApp", cfg.ClientType)
+		assert.False(t, IsValidClient(string(cfg.ClientType)),
+			"LLM-gateway-only tool %q must not be accepted by IsValidClient()", cfg.ClientType)
 	}
 }
 

@@ -40,6 +40,18 @@ func (s *service) Build(ctx context.Context, opts skills.BuildOptions) (*skills.
 	}
 	result, err := s.packager.Package(ctx, opts.Path, ociskills.DefaultPackageOptions())
 	if err != nil {
+		// User-input failures (missing SKILL.md, bad frontmatter, symlinks,
+		// size/count limits, unreadable directory) are surfaced as 400 with
+		// the packager's message intact. Anything else is a real 500.
+		switch {
+		case errors.Is(err, ociskills.ErrSkillMDMissing),
+			errors.Is(err, ociskills.ErrInvalidFrontmatter),
+			errors.Is(err, ociskills.ErrInvalidSkillDir),
+			errors.Is(err, ociskills.ErrInvalidSkillFile),
+			errors.Is(err, ociskills.ErrTooManyFiles),
+			errors.Is(err, ociskills.ErrSkillTooLarge):
+			return nil, httperr.WithCode(err, http.StatusBadRequest)
+		}
 		return nil, fmt.Errorf("packaging skill: %w", err)
 	}
 

@@ -449,7 +449,7 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, co
 
 	slog.Debug("authorization code exchange successful",
 		"has_refresh_token", tokens.RefreshToken != "",
-		"expires_at", tokens.ExpiresAt,
+		"expires_at", expiresAtLogValue(tokens.ExpiresAt),
 	)
 
 	return tokens, nil
@@ -489,7 +489,7 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 
 	slog.Debug("token refresh successful",
 		"has_new_refresh_token", tokens.RefreshToken != "",
-		"expires_at", tokens.ExpiresAt,
+		"expires_at", expiresAtLogValue(tokens.ExpiresAt),
 	)
 
 	return tokens, nil

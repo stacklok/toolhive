@@ -144,6 +144,14 @@ func (l *YAMLLoader) processBackendAuthStrategy(name string, strategy *authtypes
 	case authtypes.StrategyTypeUnauthenticated:
 		// No validation needed
 
+	case authtypes.StrategyTypeAwsSts:
+		if strategy.AwsSts == nil {
+			return fmt.Errorf("backend %s: aws_sts configuration is required", name)
+		}
+		if strategy.AwsSts.Region == "" {
+			return fmt.Errorf("backend %s: aws_sts requires region field", name)
+		}
+
 	default:
 		// Unknown strategy type - let validation handle it
 	}

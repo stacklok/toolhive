@@ -26,15 +26,16 @@ import (
 
 // NewOutgoingAuthRegistry creates an OutgoingAuthRegistry with all available strategies.
 //
-// All strategies are registered upfront since they're cheap and mostly stateless
-// (except token_exchange which has internal caching). This simplifies the factory
-// and eliminates the need for on-demand strategy registration based on configuration.
+// All strategies are registered upfront. Most are stateless; token_exchange and
+// aws_sts maintain an internal per-config cache initialized on first use. This
+// simplifies the factory and eliminates on-demand strategy registration.
 //
 // Registered Strategies:
 //   - "unauthenticated": Default fallback for backends without auth
 //   - "header_injection": Custom HTTP header injection
 //   - "token_exchange": RFC-8693 OAuth 2.0 token exchange
 //   - "upstream_inject": Per-upstream token injection from stored credentials
+//   - "aws_sts": AWS STS AssumeRoleWithWebIdentity + SigV4 request signing
 //
 // Parameters:
 //   - ctx: Context for any initialization that requires it
@@ -49,7 +50,7 @@ func NewOutgoingAuthRegistry(
 ) (auth.OutgoingAuthRegistry, error) {
 	registry := auth.NewDefaultOutgoingAuthRegistry()
 
-	// Always register all strategies - they're cheap and stateless
+	// Register all strategies upfront.
 	if err := registry.RegisterStrategy(
 		authtypes.StrategyTypeUnauthenticated,
 		strategies.NewUnauthenticatedStrategy(),
@@ -71,6 +72,12 @@ func NewOutgoingAuthRegistry(
 	if err := registry.RegisterStrategy(
 		authtypes.StrategyTypeUpstreamInject,
 		strategies.NewUpstreamInjectStrategy(),
+	); err != nil {
+		return nil, err
+	}
+	if err := registry.RegisterStrategy(
+		authtypes.StrategyTypeAwsSts,
+		strategies.NewAwsStsStrategy(),
 	); err != nil {
 		return nil, err
 	}

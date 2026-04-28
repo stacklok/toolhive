@@ -228,6 +228,7 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		authtypes.StrategyTypeHeaderInjection,
 		authtypes.StrategyTypeTokenExchange,
 		authtypes.StrategyTypeUpstreamInject,
+		authtypes.StrategyTypeAwsSts,
 	}
 	if !slices.Contains(validTypes, strategy.Type) {
 		return fmt.Errorf("type must be one of: %s", strings.Join(validTypes, ", "))
@@ -262,6 +263,14 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		}
 		// Note: empty ProviderName is allowed here; ValidateAuthServerIntegration
 		// handles provider name resolution including the empty→"default" mapping.
+
+	case authtypes.StrategyTypeAwsSts:
+		if strategy.AwsSts == nil {
+			return fmt.Errorf("aws_sts requires AwsSts configuration")
+		}
+		if strategy.AwsSts.Region == "" {
+			return fmt.Errorf("aws_sts requires region field")
+		}
 	}
 
 	return nil

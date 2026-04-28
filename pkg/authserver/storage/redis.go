@@ -836,20 +836,42 @@ else
     redis.call('SET', KEYS[1], ARGV[1])
 end
 
--- Add the per-provider key to the session index set
+-- Maintain the session index set's TTL.
+--
+-- Invariant: the index set must outlive every per-provider key it points to.
+--   * If ANY member is non-expiring (ttlMs == 0), the index set must also be
+--     persistent. Otherwise the index evicts and we lose the ability to find
+--     (and clean up) the per-provider key, leaking it forever.
+--   * If ALL members are expiring, the index TTL must be at least the longest
+--     member TTL.
+--
+-- We discriminate two cases that look identical AFTER SADD (both have PTTL == -1):
+--   1. A fresh set our SADD just created. We own the TTL decision unconditionally.
+--   2. An existing set previously PERSIST'd by a non-expiring member. Must stay
+--      persistent — applying a TTL here is the bug this script must avoid.
+--
+-- The trick: read EXISTS BEFORE SADD. SADD creates the set as a side-effect,
+-- so post-SADD any "no TTL" state is ambiguous; pre-SADD it is not.
+local idxExisted = redis.call('EXISTS', KEYS[2])
 redis.call('SADD', KEYS[2], KEYS[1])
--- Keep the index set alive at least as long as the token
-if ttlMs > 0 then
-    local currentTTL = redis.call('PTTL', KEYS[2])
-    if currentTTL < ttlMs then
+
+if ttlMs == 0 then
+    -- This member never expires. Make the index persistent (no-op if already so).
+    redis.call('PERSIST', KEYS[2])
+elseif idxExisted == 0 then
+    -- Fresh set; our SADD created it. Apply our TTL.
+    redis.call('PEXPIRE', KEYS[2], ttlMs)
+else
+    -- Existing set; its TTL summarises prior members.
+    local idxTTL = redis.call('PTTL', KEYS[2])
+    if idxTTL == -1 then
+        -- A previous non-expiring write PERSIST'd it. Leave it alone —
+        -- applying a TTL here is the bug we are fixing.
+    elseif idxTTL < ttlMs then
+        -- Existing TTL is shorter than this member's. Extend.
         redis.call('PEXPIRE', KEYS[2], ttlMs)
     end
-else
-    -- ttlMs == 0: this token does not expire. Remove any TTL that a prior
-    -- expiring-token write may have set on the index set (SADD does not
-    -- reset TTL), so the index set is not evicted while this non-expiring
-    -- token still exists. PERSIST is a no-op if the key has no TTL.
-    redis.call('PERSIST', KEYS[2])
+    -- else: idxTTL >= ttlMs, index already outlives this member.
 end
 
 local newUserID = ARGV[3]

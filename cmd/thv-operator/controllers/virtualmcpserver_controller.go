@@ -503,12 +503,10 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 	)
 	statusManager.SetObservedGeneration(vmcp.Generation)
 
-	// Advisory: surface synthesis-mode upstreams (OAuth2 with no userInfo) so
-	// operators see the regression in `kubectl describe` rather than only in
-	// proxyrunner logs. Mirrors the same condition emitted by
-	// MCPExternalAuthConfigReconciler so behavior is consistent regardless of
-	// whether the upstream is declared inline on a VirtualMCPServer or by
-	// reference to an MCPExternalAuthConfig.
+	// Advisory: surface synthesis-mode upstreams (OAuth2 with no userInfo) on
+	// the VMCP status so the regression is visible in `kubectl describe`.
+	// Parity with MCPExternalAuthConfigReconciler — same condition regardless
+	// of whether the upstream is declared inline or via an MCPExternalAuthConfig.
 	syntheticUpstreams := cfg.SyntheticIdentityUpstreams()
 	if len(syntheticUpstreams) > 0 {
 		statusManager.SetCondition(

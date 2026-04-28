@@ -334,11 +334,11 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 	)
 
 	if config.UserInfo == nil {
+		// Surface synthesis mode at construction so operators see it once
+		// per provider rather than only inferring from missing claims later.
 		slog.Info("oauth2 upstream has no userinfo configured; using synthesis mode " +
-			"(synthesized non-PII subject from access token; no Name/Email claims). " +
-			"This is intended for upstreams with no userinfo surface. If a userinfo " +
-			"endpoint exists for this upstream, configure it to resolve real user identity.",
-		)
+			"(non-PII subject from access token, no Name/Email). Configure " +
+			"userInfo if a real identity endpoint exists.")
 	}
 
 	return p, nil
@@ -410,23 +410,19 @@ func (p *BaseOAuth2Provider) buildAuthorizationURL(
 
 // ExchangeCodeForIdentity exchanges an authorization code for tokens and resolves
 // the user's identity in a single atomic operation.
-// For pure OAuth2 providers, identity is resolved via the UserInfo endpoint when
-// configured. When UserInfo is nil — typically because the upstream authorization
-// server exposes no userinfo surface (e.g., MCP authorization servers per the MCP
-// authorization spec) — the subject is synthesized from a hash of the access token
-// via synthesizeSubjectFromAccessToken. Name and Email remain empty in that mode.
-// The nonce parameter is ignored for pure OAuth2 providers (no ID token validation).
+// For pure OAuth2 providers, identity is resolved via UserInfo when configured;
+// otherwise Subject is synthesized via synthesizeSubjectFromAccessToken and
+// Name/Email are left empty. The nonce parameter is ignored (no ID token).
 func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, codeVerifier, _ string) (*Identity, error) {
 	tokens, err := p.exchangeCodeForTokens(ctx, code, codeVerifier)
 	if err != nil {
 		return nil, err
 	}
 
-	// No userinfo configured: synthesize a deterministic, non-PII subject from
-	// the access token. Stable for the lifetime of the token; rotates when the
-	// user re-authenticates. The Synthetic flag is set so the callback handler
-	// can bypass UserResolver — persisting a synthesized subject as a stable
-	// user key would create a new `users` row on every re-authentication.
+	// No userinfo: synthesize a non-PII subject from the access token.
+	// Synthetic=true tells the callback handler to bypass UserResolver — the
+	// synthesized subject rotates per access token, so persisting it would
+	// create a new `users` row on every re-authentication.
 	if p.config.UserInfo == nil {
 		return &Identity{
 			Tokens:    tokens,
@@ -452,52 +448,37 @@ func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, 
 }
 
 // synthesizedSubjectPrefix tags subjects produced by
-// synthesizeSubjectFromAccessToken so they are visually distinguishable from
-// real upstream-provided subjects in logs, audit records, and JWTs.
-//
-// The prefix is part of the externally observable contract of the embedded
-// auth server — downstream consumers (audit pipelines, the proxy runner's
-// per-request logging, debug tooling, status conditions) need to recognize
-// synthesized subjects without hardcoding the literal. Use the exported
-// IsSynthesizedSubject predicate rather than this constant.
+// synthesizeSubjectFromAccessToken. The prefix is part of the package's
+// externally observable contract; downstream code should recognize
+// synthesized subjects via the exported IsSynthesizedSubject predicate
+// rather than this constant.
 const synthesizedSubjectPrefix = "tk-"
 
-// IsSynthesizedSubject reports whether the given subject was produced by the
-// synthesis-mode fallback (synthesizeSubjectFromAccessToken) rather than
-// resolved from a userinfo endpoint or an ID token. Use this from any code
-// path that needs to behave differently for synthesized subjects (audit
-// emission, telemetry, downstream user-resolution decisions, debug log
-// formatting). Recognizing synthesis-mode subjects through this predicate
-// is the supported alternative to inspecting the wire format directly,
-// keeping the package free to change the prefix in a future revision.
+// IsSynthesizedSubject reports whether subject was produced by the
+// synthesis-mode fallback (vs. resolved from a userinfo endpoint or ID
+// token). Use this for code paths that only see the bare subject string —
+// e.g., JWT claim consumers, audit pipelines, status conditions. Callers
+// holding an *Identity should prefer Identity.Synthetic, which is set at
+// the same source of truth.
 //
-// The predicate is purely structural — it only checks the prefix that
-// synthesizeSubjectFromAccessToken applies. It does not validate the digest,
-// does not contact the upstream, and does not look up the originating
-// Identity. Production callers that have an *Identity in scope SHOULD
-// prefer the Identity.Synthetic field, which is set by ExchangeCodeForIdentity
-// at the same source of truth; this predicate is the late-binding
-// alternative for code paths that only see the bare subject string (e.g.,
-// JWT claim consumers).
+// Purely structural — checks the prefix only, does not validate the digest.
 func IsSynthesizedSubject(subject string) bool {
 	return strings.HasPrefix(subject, synthesizedSubjectPrefix)
 }
 
-// synthesizeSubjectFromAccessToken returns a stable, opaque, non-secret
-// identifier derived from an opaque access token, for OAuth2 upstreams that
-// expose no userinfo endpoint.
+// synthesizeSubjectFromAccessToken returns a stable, opaque identifier
+// derived from an access token, for OAuth2 upstreams with no userinfo
+// endpoint. Output: synthesizedSubjectPrefix + lowercase hex of the first
+// 16 bytes of SHA-256(accessToken) — 35 chars total, e.g.
+// "tk-89abcdef0123456789abcdef01234567".
 //
-// The output is the synthesizedSubjectPrefix concatenated with the lowercase
-// hex of the first 16 bytes of the SHA-256 digest of the access token (35
-// characters total, e.g. "tk-89abcdef0123456789abcdef01234567"). It is
-// deterministic for a given token. The output is non-PII assuming the
-// upstream issues opaque (non-JWT) bearer tokens; the digest itself reveals
-// nothing about the input beyond what an attacker who already has a candidate
-// token could confirm by re-hashing. 16 bytes (128 bits) is sufficient
-// collision resistance for a session-key role.
+// The output is non-PII assuming the upstream issues opaque (non-JWT)
+// bearer tokens; the digest reveals nothing about the input beyond what an
+// attacker holding a candidate token could confirm by re-hashing. 16 bytes
+// is sufficient collision resistance for a session-key role.
 //
-// This is only used for OAuth2 upstreams whose UserInfo is nil. OIDC providers
-// always have an ID token-derived subject and never reach this path.
+// Only reached when OAuth2Config.UserInfo is nil. OIDC providers always
+// have an ID-token-derived subject.
 func synthesizeSubjectFromAccessToken(accessToken string) string {
 	sum := sha256.Sum256([]byte(accessToken))
 	return synthesizedSubjectPrefix + hex.EncodeToString(sum[:16])

@@ -176,23 +176,15 @@ func TestCallbackHandler_Success(t *testing.T) {
 	assert.GreaterOrEqual(t, storState.idpTokenCount, 1)
 }
 
-// TestCallbackHandler_SyntheticIdentity_BypassesUserResolver verifies that
-// when the upstream returns an Identity with Synthetic=true (the case for
-// OAuth2 upstreams configured without a userinfo endpoint), the callback
-// handler does NOT touch the user-resolution layer:
-//
-//   - No row is created in the `users` table.
-//   - No row is created in the `provider_identities` table.
-//
-// This guards against unbounded growth of those tables, which would happen
-// if synthesized subjects (which rotate per access token) were treated as
-// stable per-user keys via UserResolver.ResolveUser.
+// TestCallbackHandler_SyntheticIdentity_BypassesUserResolver verifies that an
+// Identity with Synthetic=true never reaches UserResolver — no `users` row,
+// no `provider_identities` row. Guards against unbounded growth of those
+// tables under per-token-rotating synthesized subjects.
 func TestCallbackHandler_SyntheticIdentity_BypassesUserResolver(t *testing.T) {
 	t.Parallel()
 	handler, storState, mockUpstream := handlerTestSetup(t)
 
-	// Mark the upstream's exchange result as synthetic and use a synthesized-
-	// shaped subject value so the test mirrors the production flow.
+	// Synthesized-shaped subject + Synthetic=true mirrors production.
 	mockUpstream.exchangeResult.Subject = "tk-deadbeefdeadbeefdeadbeefdeadbeef"
 	mockUpstream.exchangeResult.Synthetic = true
 
@@ -212,8 +204,6 @@ func TestCallbackHandler_SyntheticIdentity_BypassesUserResolver(t *testing.T) {
 	}
 	storState.pendingAuths[internalState] = pending
 
-	// Snapshot user/identity counts before the callback so we can assert
-	// the bypass left them unchanged.
 	usersBefore := len(storState.users)
 	identitiesBefore := len(storState.providerIdentities)
 
@@ -222,26 +212,22 @@ func TestCallbackHandler_SyntheticIdentity_BypassesUserResolver(t *testing.T) {
 
 	handler.CallbackHandler(rec, req)
 
-	// Auth flow itself must succeed end-to-end.
+	// Auth flow succeeds end-to-end.
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	location := rec.Header().Get("Location")
 	assert.Contains(t, location, testAuthRedirectURI)
 	assert.Contains(t, location, "code=")
 	assert.NotContains(t, location, "error=")
 
-	// IDP tokens are still stored — synthesis only bypasses user resolution,
-	// not the upstream-token storage that the proxy needs for forwarding.
+	// IDP tokens still persist — synthesis bypasses user resolution only.
 	assert.GreaterOrEqual(t, storState.idpTokenCount, 1,
 		"synthetic identity must still persist upstream tokens")
 
-	// The bypass: NO user row, NO provider_identity row.
-	assert.Equal(t, usersBefore, len(storState.users),
-		"synthetic identity must not create a users row")
-	assert.Equal(t, identitiesBefore, len(storState.providerIdentities),
-		"synthetic identity must not create a provider_identities row")
+	// The bypass: no user row, no provider_identity row.
+	assert.Equal(t, usersBefore, len(storState.users))
+	assert.Equal(t, identitiesBefore, len(storState.providerIdentities))
 
-	// And the stored upstream-token binding carries the synthesized subject
-	// directly as UserID — no UUID indirection.
+	// Stored UserID is the synthesized subject directly (no UUID indirection).
 	require.NotEmpty(t, storState.upstreamTokens, "upstream tokens should have been stored")
 	for _, tok := range storState.upstreamTokens {
 		assert.Equal(t, "tk-deadbeefdeadbeefdeadbeefdeadbeef", tok.UserID,

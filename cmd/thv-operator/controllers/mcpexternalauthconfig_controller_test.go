@@ -1222,21 +1222,10 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_mcpRemoteProxy
 	assert.NotContains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPRemoteProxy", Name: "proxy-no-ref"})
 }
 
-// TestMCPExternalAuthConfigReconciler_IdentitySynthesizedCondition asserts the
-// advisory ConditionTypeIdentitySynthesized is correctly set, transitioned, and
-// cleared as a function of the embeddedAuthServer.upstreamProviders shape.
-//
-// The condition is the operator-visible signal that the embedded auth server
-// is running in synthesis mode for one or more OAuth2 upstreams (no userInfo
-// configured → subject synthesized from access token, no Name/Email claims).
-// It must:
-//   - be True with reason OAuth2UpstreamWithoutUserInfo and a message naming
-//     the offending upstream(s) when at least one OAuth2 upstream lacks
-//     userInfo;
-//   - be False with reason AllUpstreamsHaveUserInfo when every OAuth2 upstream
-//     has userInfo;
-//   - be absent for non-embeddedAuthServer types where the question doesn't
-//     apply.
+// TestMCPExternalAuthConfigReconciler_IdentitySynthesizedCondition asserts
+// the advisory IdentitySynthesized condition tracks the upstreamProviders
+// shape: True+name(s) when any OAuth2 upstream lacks userInfo, False when
+// all have userInfo, absent for non-embeddedAuthServer types.
 func TestMCPExternalAuthConfigReconciler_IdentitySynthesizedCondition(t *testing.T) {
 	t.Parallel()
 

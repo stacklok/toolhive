@@ -1201,15 +1201,10 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity(t *testing.T) {
 		assert.Contains(t, err.Error(), "authorization code is required")
 	})
 
-	// When UserInfo is unconfigured, ExchangeCodeForIdentity must synthesize an
-	// Identity from the access token rather than calling any userinfo endpoint.
-	// This is the path that lets OAuth2 upstreams without a userinfo surface
-	// (e.g., MCP authorization servers per the MCP authorization spec) reach a
-	// usable Identity.
-	//
-	// Empty Name/Email plus the prefix-tagged Subject are the signals that the
-	// synthesis branch was taken — the userinfo path populates Name/Email from
-	// the response and would never produce a "tk-…" subject.
+	// When UserInfo is nil, ExchangeCodeForIdentity must synthesize Subject
+	// from the access token. The prefix-tagged Subject + empty Name/Email
+	// are the observable signals that the synthesis branch ran — the
+	// userinfo path populates Name/Email and would never emit a "tk-…" sub.
 	t.Run("synthesizes identity when UserInfo is nil", func(t *testing.T) {
 		t.Parallel()
 
@@ -1246,9 +1241,7 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity(t *testing.T) {
 		// Synthesized identities expose no display surface.
 		assert.Empty(t, result.Name)
 		assert.Empty(t, result.Email)
-		// Synthetic flag must be set so the callback handler bypasses
-		// UserResolver and avoids persisting a User row that would otherwise
-		// be created fresh on every re-authentication.
+		// Synthetic=true is what tells the callback handler to bypass UserResolver.
 		assert.True(t, result.Synthetic, "synthesized identities must set Synthetic=true")
 	})
 }
@@ -1286,13 +1279,10 @@ func TestSynthesizeSubjectFromAccessToken(t *testing.T) {
 
 	t.Run("empty token still produces a stable subject", func(t *testing.T) {
 		t.Parallel()
-		// Defensive: caller should never pass empty, but if it does, the
-		// function must not panic, must remain deterministic, AND must
-		// honor the documented output shape (prefix + 32 hex chars).
-		// Asserting only that two calls return the same value would hold
-		// for any pure function — including a regression that short-
-		// circuits empty input to "" or to a non-prefixed value. The
-		// shape assertions are what actually pin the contract.
+		// Caller shouldn't pass empty; if it does, must not panic and must
+		// honor the documented shape (prefix + 32 hex chars). The shape
+		// assertions catch a regression that short-circuits empty input to
+		// "" — the determinism check alone would not.
 		got1 := synthesizeSubjectFromAccessToken("")
 		got2 := synthesizeSubjectFromAccessToken("")
 		assert.Equal(t, got1, got2)
@@ -1309,17 +1299,13 @@ func TestIsSynthesizedSubject(t *testing.T) {
 		subject string
 		want    bool
 	}{
-		// Round-trip: any output of synthesizeSubjectFromAccessToken must be
-		// recognized. This is the primary contract — IsSynthesizedSubject and
-		// synthesizeSubjectFromAccessToken must agree on what the prefix is.
+		// Round-trip: predicate must recognize anything the synthesizer emits.
 		{
 			name:    "round-trip on synthesized subject",
 			subject: synthesizeSubjectFromAccessToken("any-opaque-token"),
 			want:    true,
 		},
-		// Real upstream subjects (UUIDs, integer IDs, opaque strings) must NOT
-		// be classified as synthesized. These are the false-positive cases the
-		// predicate guards against.
+		// Real upstream subjects (UUIDs, integer IDs) must not classify as synthesized.
 		{
 			name:    "uuid-shaped subject is not synthesized",
 			subject: "11012b90-98d0-4594-916e-54db832ebe8f",
@@ -1340,18 +1326,13 @@ func TestIsSynthesizedSubject(t *testing.T) {
 			subject: "",
 			want:    false,
 		},
-		// Defensive: a subject that contains "tk-" but does not start with it
-		// is not synthesized. The predicate is a HasPrefix check, not a
-		// substring search.
+		// HasPrefix, not substring search.
 		{
 			name:    "tk- in middle of subject is not synthesized",
 			subject: "user-tk-abc",
 			want:    false,
 		},
-		// The predicate is purely structural. A subject with the prefix but
-		// the wrong digest length still classifies as synthesized — that's by
-		// design (the predicate is a fast guard, not a full validator). If
-		// callers need stricter validation they can re-derive and compare.
+		// Predicate is a fast prefix guard, not a digest validator.
 		{
 			name:    "prefix-only string is treated as synthesized",
 			subject: "tk-",

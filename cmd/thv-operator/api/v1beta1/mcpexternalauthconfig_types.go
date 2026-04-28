@@ -366,12 +366,10 @@ type OAuth2UpstreamConfig struct {
 	TokenEndpoint string `json:"tokenEndpoint"`
 
 	// UserInfo contains configuration for fetching user information from the upstream provider.
-	// When omitted, the embedded auth server cannot resolve a real user identity for this
-	// upstream and instead synthesizes a stable subject from the access token. This is the
-	// correct shape for upstreams that expose no userinfo surface (e.g., MCP authorization
-	// servers per the MCP authorization spec, or any pure OAuth 2.0 server without a
-	// userinfo or introspection endpoint). In that mode, downstream JWTs receive a
-	// non-PII synthesized subject and no display name or email.
+	// When omitted, the embedded auth server runs in synthesis mode for this
+	// upstream: a non-PII subject derived from the access token, no Name/Email.
+	// Use this shape for upstreams with no userinfo surface (e.g., MCP
+	// authorization servers per the MCP spec).
 	// +optional
 	UserInfo *UserInfoConfig `json:"userInfo,omitempty"`
 
@@ -763,29 +761,23 @@ type UpstreamInjectSpec struct {
 // Condition types specific to MCPExternalAuthConfig and the inline embedded
 // auth server config it shares with VirtualMCPServer.
 const (
-	// ConditionTypeIdentitySynthesized is an advisory condition set to True
-	// when the embedded auth server is configured with at least one OAuth2
-	// upstream that has no userInfo endpoint. In that case
-	// ExchangeCodeForIdentity synthesizes a non-PII subject from a hash of the
-	// access token and skips both the userinfo HTTP call and the internal
-	// user-record persistence path. The condition surfaces on resources that
-	// own the upstream declaration (MCPExternalAuthConfigStatus,
-	// VirtualMCPServerStatus) so an operator who unintentionally drops the
-	// userInfo block — by typo, stale CRD bundle, or copy-paste — can see the
-	// regression in `kubectl describe` rather than only in proxyrunner logs.
+	// ConditionTypeIdentitySynthesized is an advisory set to True when at
+	// least one OAuth2 upstream has no userInfo endpoint configured (the
+	// embedded auth server synthesizes its subject from the access token,
+	// no Name/Email claims). Surfaces on resources that own the upstream
+	// declaration so a missing userInfo block is visible in
+	// `kubectl describe` instead of only in proxyrunner logs.
 	ConditionTypeIdentitySynthesized = "IdentitySynthesized"
 )
 
 // Condition reasons for ConditionTypeIdentitySynthesized.
 const (
-	// ConditionReasonIdentitySynthesizedActive is set when one or more OAuth2
-	// upstreams have nil userInfo and the synthesis path is therefore active.
-	// The condition message names the affected upstream(s).
+	// ConditionReasonIdentitySynthesizedActive: one or more OAuth2 upstreams
+	// have nil userInfo. The condition message names the affected upstream(s).
 	ConditionReasonIdentitySynthesizedActive = "OAuth2UpstreamWithoutUserInfo"
 
-	// ConditionReasonIdentitySynthesizedInactive is set when every upstream
-	// has a userInfo configured, i.e. real identity is being resolved. Used
-	// to transition the advisory back to False after a fix.
+	// ConditionReasonIdentitySynthesizedInactive: every upstream has userInfo;
+	// real identity is being resolved.
 	ConditionReasonIdentitySynthesizedInactive = "AllUpstreamsHaveUserInfo"
 )
 
@@ -980,15 +972,11 @@ func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]stri
 	return nil
 }
 
-// SyntheticIdentityUpstreams returns the names of OAuth2 upstream providers
-// that will run in synthesis mode (no userInfo configured), sorted lexically
-// for deterministic condition messages. Returns an empty slice when c is nil
-// or every OAuth2 upstream has a userInfo block. OIDC upstreams are skipped
-// because they always have an ID-token-derived subject.
-//
-// This is the source of truth used by reconcilers to decide whether to set
-// the ConditionTypeIdentitySynthesized advisory condition on their owning
-// resource's status.
+// SyntheticIdentityUpstreams returns the names of OAuth2 upstreams running
+// in synthesis mode (no userInfo configured), sorted lexically for
+// deterministic condition messages. OIDC upstreams are skipped — they always
+// have an ID-token-derived subject. Source of truth for the
+// ConditionTypeIdentitySynthesized advisory.
 func (c *EmbeddedAuthServerConfig) SyntheticIdentityUpstreams() []string {
 	if c == nil {
 		return nil

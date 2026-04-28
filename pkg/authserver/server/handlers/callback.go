@@ -105,15 +105,12 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// This was generated in authorize.go and will be reused across all legs of the chain.
 	sessionID := pending.SessionID
 
-	// Determine identity: first leg resolves from upstream, subsequent legs carry from pending.
-	//
-	// Synthetic identities (upstreams with no userinfo surface; see
-	// upstream.Identity.Synthetic) are NOT persisted via UserResolver: the
-	// synthesized subject rotates on every re-authentication, which would create
-	// a new internal `users` row each time and grow that table monotonically.
-	// We use the synthesized value directly as an ephemeral session key. The
-	// per-identity LastAuthenticated update is also skipped — there is no
-	// provider_identities row to update for synthetic identities.
+	// Determine identity: first leg resolves from upstream, subsequent legs
+	// carry from pending. Synthetic identities (see upstream.Identity.Synthetic)
+	// bypass UserResolver — the synthesized subject rotates per re-auth and
+	// would otherwise grow `users` monotonically. We use the synthesized value
+	// directly as an ephemeral session key and skip the LastAuthenticated
+	// update (no provider_identities row to bump).
 	var subject, userName, userEmail string
 	if pending.ResolvedUserID == "" {
 		// First leg — this is the identity provider

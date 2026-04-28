@@ -109,13 +109,9 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		ObservedGeneration: externalAuthConfig.Generation,
 	})
 
-	// Set or clear the IdentitySynthesized advisory based on whether any
-	// OAuth2 upstream lacks a userInfo block. The advisory tells operators
-	// that the embedded auth server is running in synthesis mode for those
-	// upstreams (non-PII subject derived from the access token, no Name/Email
-	// claims) so a misconfiguration that drops userInfo silently doesn't go
-	// unnoticed. Both True→False and False→True transitions count as a
-	// condition change so the existing Status().Update path picks them up.
+	// Set or clear the IdentitySynthesized advisory. Either-direction
+	// transitions count as a condition change so the existing Status().Update
+	// path picks them up.
 	if r.applyIdentitySynthesizedCondition(externalAuthConfig) {
 		conditionChanged = true
 	}
@@ -147,16 +143,11 @@ func (*MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1beta1.MCPE
 	return ctrlutil.CalculateConfigHash(spec)
 }
 
-// applyIdentitySynthesizedCondition sets ConditionTypeIdentitySynthesized to
-// True when one or more OAuth2 upstreams have nil userInfo (the embedded auth
-// server will synthesize their subjects from the access token), and to False
-// when every upstream has a userInfo configured. Returns true if the
-// condition was added/changed so the caller can include it in the next
-// status write.
-//
-// For non-embeddedAuthServer types or a missing embeddedAuthServer block,
-// the synthesis-mode question is moot — the condition is removed entirely
-// rather than left lingering at False.
+// applyIdentitySynthesizedCondition sets ConditionTypeIdentitySynthesized
+// True when any OAuth2 upstream has nil userInfo, False when every upstream
+// has userInfo configured, and removes it for non-embeddedAuthServer types
+// where the question is moot. Returns true if the in-memory condition list
+// changed so the caller can fold this into the next status write.
 func (*MCPExternalAuthConfigReconciler) applyIdentitySynthesizedCondition(
 	cfg *mcpv1beta1.MCPExternalAuthConfig,
 ) bool {

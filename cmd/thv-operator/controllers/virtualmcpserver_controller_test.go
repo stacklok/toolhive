@@ -3774,9 +3774,8 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_ClearsStaleWarning(t *te
 }
 
 // TestVirtualMCPServerValidateAuthServerConfig_IdentitySynthesizedCondition
-// asserts the advisory IdentitySynthesized condition is set with the expected
-// status/reason/message based on the upstream-providers shape — parity with
-// the same condition emitted by MCPExternalAuthConfigReconciler.
+// is the parity test: same condition shape as MCPExternalAuthConfig emits
+// for the same upstreamProviders, on a VirtualMCPServer's inline AuthServerConfig.
 func TestVirtualMCPServerValidateAuthServerConfig_IdentitySynthesizedCondition(t *testing.T) {
 	t.Parallel()
 

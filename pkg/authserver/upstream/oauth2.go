@@ -18,6 +18,8 @@ package upstream
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -400,12 +402,26 @@ func (p *BaseOAuth2Provider) buildAuthorizationURL(
 
 // ExchangeCodeForIdentity exchanges an authorization code for tokens and resolves
 // the user's identity in a single atomic operation.
-// For pure OAuth2 providers, identity is resolved via the UserInfo endpoint.
+// For pure OAuth2 providers, identity is resolved via the UserInfo endpoint when
+// configured. When UserInfo is nil — typically because the upstream authorization
+// server exposes no userinfo surface (e.g., MCP authorization servers per the MCP
+// authorization spec) — the subject is synthesized from a hash of the access token
+// via synthesizeSubjectFromAccessToken. Name and Email remain empty in that mode.
 // The nonce parameter is ignored for pure OAuth2 providers (no ID token validation).
 func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, codeVerifier, _ string) (*Identity, error) {
 	tokens, err := p.exchangeCodeForTokens(ctx, code, codeVerifier)
 	if err != nil {
 		return nil, err
+	}
+
+	// No userinfo configured: synthesize a deterministic, non-PII subject from
+	// the access token. Stable for the lifetime of the token; rotates when the
+	// user re-authenticates.
+	if p.config.UserInfo == nil {
+		return &Identity{
+			Tokens:  tokens,
+			Subject: synthesizeSubjectFromAccessToken(tokens.AccessToken),
+		}, nil
 	}
 
 	userInfo, err := p.fetchUserInfo(ctx, tokens.AccessToken)
@@ -422,6 +438,29 @@ func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, 
 		Name:    userInfo.Name,
 		Email:   userInfo.Email,
 	}, nil
+}
+
+// synthesizedSubjectPrefix tags subjects produced by
+// synthesizeSubjectFromAccessToken so they are visually distinguishable from
+// real upstream-provided subjects in logs, audit records, and JWTs.
+const synthesizedSubjectPrefix = "tk-"
+
+// synthesizeSubjectFromAccessToken returns a stable, opaque, non-secret
+// identifier derived from an opaque access token, for OAuth2 upstreams that
+// expose no userinfo endpoint.
+//
+// The output is the synthesizedSubjectPrefix concatenated with the lowercase
+// hex of the first 16 bytes of the SHA-256 digest of the access token (35
+// characters total, e.g. "tk-89abcdef0123456789abcdef01234567"). It is
+// deterministic for a given token, contains no PII, and reveals nothing about
+// the token contents — SHA-256 is preimage-resistant, and 16 bytes (128 bits)
+// is sufficient collision resistance for a session-key role.
+//
+// This is only used for OAuth2 upstreams whose UserInfo is nil. OIDC providers
+// always have an ID token-derived subject and never reach this path.
+func synthesizeSubjectFromAccessToken(accessToken string) string {
+	sum := sha256.Sum256([]byte(accessToken))
+	return synthesizedSubjectPrefix + hex.EncodeToString(sum[:16])
 }
 
 // exchangeCodeForTokens exchanges an authorization code for tokens with the upstream IDP.

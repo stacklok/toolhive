@@ -365,9 +365,14 @@ type OAuth2UpstreamConfig struct {
 	TokenEndpoint string `json:"tokenEndpoint"`
 
 	// UserInfo contains configuration for fetching user information from the upstream provider.
-	// Required for OAuth2 providers to resolve user identity.
-	// +kubebuilder:validation:Required
-	UserInfo *UserInfoConfig `json:"userInfo"`
+	// When omitted, the embedded auth server cannot resolve a real user identity for this
+	// upstream and instead synthesizes a stable subject from the access token. This is the
+	// correct shape for upstreams that expose no userinfo surface (e.g., MCP authorization
+	// servers per the MCP authorization spec, or any pure OAuth 2.0 server without a
+	// userinfo or introspection endpoint). In that mode, downstream JWTs receive a
+	// non-PII synthesized subject and no display name or email.
+	// +optional
+	UserInfo *UserInfoConfig `json:"userInfo,omitempty"`
 
 	// ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
 	// +kubebuilder:validation:Required

@@ -228,8 +228,11 @@ type OAuth2UpstreamRunConfig struct {
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 
-	// UserInfo contains configuration for fetching user information (required for OAuth2).
-	UserInfo *UserInfoRunConfig `json:"userinfo" yaml:"userinfo"`
+	// UserInfo contains configuration for fetching user information.
+	// Optional: when nil, the upstream provider synthesizes a stable subject
+	// from the access token instead of calling a userinfo endpoint. See
+	// BaseOAuth2Provider.ExchangeCodeForIdentity for the synthesis rule.
+	UserInfo *UserInfoRunConfig `json:"userinfo,omitempty" yaml:"userinfo,omitempty"`
 
 	// TokenResponseMapping configures custom field extraction from non-standard token responses.
 	// When set, the token exchange bypasses golang.org/x/oauth2 and extracts fields using

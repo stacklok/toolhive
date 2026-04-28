@@ -700,8 +700,11 @@ components:
           uniqueItems: false
       type: object
     github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig:
-      description: UserInfo contains configuration for fetching user information (required
-        for OAuth2).
+      description: |-
+        UserInfo contains configuration for fetching user information.
+        Optional: when nil, the upstream provider synthesizes a stable subject
+        from the access token instead of calling a userinfo endpoint. See
+        BaseOAuth2Provider.ExchangeCodeForIdentity for the synthesis rule.
       properties:
         additional_headers:
           additionalProperties:

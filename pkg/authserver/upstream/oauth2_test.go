@@ -16,11 +16,14 @@ package upstream
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1197,6 +1200,103 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity(t *testing.T) {
 		_, err = provider.ExchangeCodeForIdentity(ctx, "", "", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "authorization code is required")
+	})
+
+	// When UserInfo is unconfigured, ExchangeCodeForIdentity must synthesize an
+	// Identity from the access token rather than calling any userinfo endpoint.
+	// This is the path that lets OAuth2 upstreams without a userinfo surface
+	// (e.g., MCP authorization servers per the MCP authorization spec) reach a
+	// usable Identity.
+	t.Run("synthesizes identity when UserInfo is nil", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
+
+		// Tripwire: any HTTP request to a userinfo endpoint when UserInfo is
+		// nil is a regression. The provider should not contact one.
+		var userinfoHits int32
+		userInfoTripwire := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			atomic.AddInt32(&userinfoHits, 1)
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		t.Cleanup(userInfoTripwire.Close)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+			// UserInfo intentionally nil.
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+
+		require.NotNil(t, result)
+		assert.NotEmpty(t, result.Tokens.AccessToken)
+		// Subject is the prefix-tagged hash of the access token.
+		assert.True(t, strings.HasPrefix(result.Subject, synthesizedSubjectPrefix),
+			"synthesized subject must carry the %q prefix; got %q",
+			synthesizedSubjectPrefix, result.Subject)
+		assert.Equal(t,
+			synthesizeSubjectFromAccessToken(result.Tokens.AccessToken),
+			result.Subject,
+			"subject must be deterministic given the same access token")
+		// Synthesized identities expose no display surface.
+		assert.Empty(t, result.Name)
+		assert.Empty(t, result.Email)
+
+		assert.Equal(t, int32(0), atomic.LoadInt32(&userinfoHits),
+			"no HTTP request should have been issued to a userinfo endpoint")
+	})
+}
+
+func TestSynthesizeSubjectFromAccessToken(t *testing.T) {
+	t.Parallel()
+
+	t.Run("is deterministic for a given token", func(t *testing.T) {
+		t.Parallel()
+		token := "atlassian-mcp-style-opaque-token-93c"
+		assert.Equal(t,
+			synthesizeSubjectFromAccessToken(token),
+			synthesizeSubjectFromAccessToken(token),
+		)
+	})
+
+	t.Run("differs for different tokens", func(t *testing.T) {
+		t.Parallel()
+		assert.NotEqual(t,
+			synthesizeSubjectFromAccessToken("token-a"),
+			synthesizeSubjectFromAccessToken("token-b"),
+		)
+	})
+
+	t.Run("output shape: prefix + 32 hex chars", func(t *testing.T) {
+		t.Parallel()
+		got := synthesizeSubjectFromAccessToken("any-input")
+		assert.True(t, strings.HasPrefix(got, synthesizedSubjectPrefix))
+		hexPart := strings.TrimPrefix(got, synthesizedSubjectPrefix)
+		assert.Len(t, hexPart, 32, "first 16 bytes of SHA-256 in hex is 32 chars")
+		// Must be valid hex.
+		_, err := hex.DecodeString(hexPart)
+		assert.NoError(t, err)
+	})
+
+	t.Run("empty token still produces a stable subject", func(t *testing.T) {
+		t.Parallel()
+		// Defensive: caller should never pass empty, but if it does, the
+		// function must not panic and must remain deterministic.
+		assert.Equal(t,
+			synthesizeSubjectFromAccessToken(""),
+			synthesizeSubjectFromAccessToken(""),
+		)
 	})
 }
 

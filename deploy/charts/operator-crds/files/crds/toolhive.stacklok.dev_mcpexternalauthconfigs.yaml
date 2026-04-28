@@ -581,7 +581,12 @@ spec:
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.
-                                Required for OAuth2 providers to resolve user identity.
+                                When omitted, the embedded auth server cannot resolve a real user identity for this
+                                upstream and instead synthesizes a stable subject from the access token. This is the
+                                correct shape for upstreams that expose no userinfo surface (e.g., MCP authorization
+                                servers per the MCP authorization spec, or any pure OAuth 2.0 server without a
+                                userinfo or introspection endpoint). In that mode, downstream JWTs receive a
+                                non-PII synthesized subject and no display name or email.
                               properties:
                                 additionalHeaders:
                                   additionalProperties:
@@ -643,7 +648,6 @@ spec:
                           - authorizationEndpoint
                           - clientId
                           - tokenEndpoint
-                          - userInfo
                           type: object
                         oidcConfig:
                           description: |-
@@ -1614,7 +1618,12 @@ spec:
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.
-                                Required for OAuth2 providers to resolve user identity.
+                                When omitted, the embedded auth server cannot resolve a real user identity for this
+                                upstream and instead synthesizes a stable subject from the access token. This is the
+                                correct shape for upstreams that expose no userinfo surface (e.g., MCP authorization
+                                servers per the MCP authorization spec, or any pure OAuth 2.0 server without a
+                                userinfo or introspection endpoint). In that mode, downstream JWTs receive a
+                                non-PII synthesized subject and no display name or email.
                               properties:
                                 additionalHeaders:
                                   additionalProperties:
@@ -1676,7 +1685,6 @@ spec:
                           - authorizationEndpoint
                           - clientId
                           - tokenEndpoint
-                          - userInfo
                           type: object
                         oidcConfig:
                           description: |-

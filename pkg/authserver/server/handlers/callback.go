@@ -128,21 +128,19 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Convert IDP tokens to storage tokens with binding fields.
-	// SessionExpiresAt is only set for non-expiring upstream tokens (zero ExpiresAt).
-	// It bounds the storage lifetime to the Fosite session so tokens are evicted when
-	// the session is no longer live. For tokens with a provider-asserted ExpiresAt, the
-	// storage TTL is derived directly from that expiry and SessionExpiresAt is unused.
-	var sessionExpiresAt time.Time
-	if idpTokens.ExpiresAt.IsZero() {
-		sessionExpiresAt = time.Now().Add(h.config.RefreshTokenLifespan)
-	}
+	// SessionExpiresAt is set unconditionally as the Fosite session bound. Storage
+	// backends use it as a fallback storage lifetime when ExpiresAt is zero (a
+	// non-expiring upstream token). Setting it on every write — even when ExpiresAt
+	// is non-zero — protects the refresh path: if the upstream provider stops
+	// asserting expires_in on a later refresh, the carried-forward SessionExpiresAt
+	// still bounds the storage lifetime instead of leaving the row indefinitely.
 	storageTokens := &storage.UpstreamTokens{
 		ProviderID:       providerID,
 		AccessToken:      idpTokens.AccessToken,
 		RefreshToken:     idpTokens.RefreshToken,
 		IDToken:          idpTokens.IDToken,
 		ExpiresAt:        idpTokens.ExpiresAt,
-		SessionExpiresAt: sessionExpiresAt,
+		SessionExpiresAt: time.Now().Add(h.config.RefreshTokenLifespan),
 		ClientID:         pending.ClientID,
 		UserID:           subject,         // Internal ToolHive user ID
 		UpstreamSubject:  providerSubject, // Upstream IDP's subject claim

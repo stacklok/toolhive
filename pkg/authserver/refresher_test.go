@@ -23,16 +23,18 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 	t.Parallel()
 
 	newExpiry := time.Now().Add(1 * time.Hour)
+	sessionBound := time.Now().Add(7 * 24 * time.Hour)
 
 	baseExpired := &storage.UpstreamTokens{
-		ProviderID:      "github",
-		AccessToken:     "old-access",
-		RefreshToken:    "old-refresh",
-		IDToken:         "old-id-token",
-		ExpiresAt:       time.Now().Add(-1 * time.Hour),
-		UserID:          "user-123",
-		UpstreamSubject: "upstream-sub-456",
-		ClientID:        "client-abc",
+		ProviderID:       "github",
+		AccessToken:      "old-access",
+		RefreshToken:     "old-refresh",
+		IDToken:          "old-id-token",
+		ExpiresAt:        time.Now().Add(-1 * time.Hour),
+		SessionExpiresAt: sessionBound,
+		UserID:           "user-123",
+		UpstreamSubject:  "upstream-sub-456",
+		ClientID:         "client-abc",
 	}
 
 	tests := []struct {
@@ -111,6 +113,39 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 				t.Helper()
 				assert.Equal(t, "new-access", result.AccessToken)
 				assert.Equal(t, "old-refresh", result.RefreshToken)
+			},
+		},
+		{
+			// Regression for the refresh-path bound. SessionExpiresAt must be carried
+			// forward unchanged so a refresh that returns a token with zero ExpiresAt
+			// (provider stops asserting expires_in) still has a storage TTL bound.
+			// Without this, the row would be stored with no TTL and leak indefinitely.
+			name:      "preserves SessionExpiresAt when provider omits expires_in",
+			sessionID: "session-bound",
+			expired:   baseExpired,
+			setupProvider: func(_ *testing.T, p *upstreammocks.MockOAuth2Provider) {
+				p.EXPECT().RefreshTokens(gomock.Any(), "old-refresh", "upstream-sub-456").
+					Return(&upstream.Tokens{
+						AccessToken:  "new-access",
+						RefreshToken: "new-refresh",
+						// ExpiresAt intentionally zero — provider omitted expires_in.
+					}, nil)
+			},
+			setupStorage: func(_ *testing.T, s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().StoreUpstreamTokens(gomock.Any(), "session-bound", "github", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _, _ string, tokens *storage.UpstreamTokens) error {
+						assert.Equal(t, sessionBound, tokens.SessionExpiresAt,
+							"refresher must carry SessionExpiresAt forward unchanged")
+						assert.True(t, tokens.ExpiresAt.IsZero(),
+							"new ExpiresAt should be zero (provider omitted expires_in)")
+						return nil
+					})
+			},
+			checkResult: func(t *testing.T, result *storage.UpstreamTokens) {
+				t.Helper()
+				assert.Equal(t, sessionBound, result.SessionExpiresAt,
+					"returned tokens must also carry SessionExpiresAt forward")
+				assert.True(t, result.ExpiresAt.IsZero())
 			},
 		},
 		{

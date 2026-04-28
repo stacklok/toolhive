@@ -1772,7 +1772,7 @@ func TestConvertBackendsToStaticBackends_SkipsInvalidBackends(t *testing.T) {
 		// "no-transport-backend" intentionally missing
 	}
 
-	result := convertBackendsToStaticBackends(ctx, backends, transportMap, nil)
+	result := convertBackendsToStaticBackends(ctx, backends, transportMap, nil, nil)
 
 	// Should only include the valid backend
 	assert.Len(t, result, 1, "should only include backends with URL and transport")
@@ -2291,7 +2291,7 @@ func TestConvertBackendsToStaticBackends_WithCABundlePathMap(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := convertBackendsToStaticBackends(t.Context(), tt.backends, tt.transportMap, tt.caBundlePathMap)
+			result := convertBackendsToStaticBackends(t.Context(), tt.backends, tt.transportMap, tt.caBundlePathMap, nil)
 			assert.Len(t, result, tt.expectedCount)
 
 			if tt.validateBackends != nil {
@@ -2448,6 +2448,197 @@ func TestBuildCABundlePathMap(t *testing.T) {
 			result, err := r.buildCABundlePathMap(t.Context(), "default", tt.typedWorkloads)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expectedMap, result)
+		})
+	}
+}
+
+// TestBuildHeaderForwardMap tests that the header forward map is built correctly
+// from MCPServerEntry workloads, and that Secret values never appear in the
+// resulting identifiers — only env-var identifiers.
+func TestBuildHeaderForwardMap(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		entries        []mcpv1beta1.MCPServerEntry
+		typedWorkloads []workloads.TypedWorkload
+		expectedMap    map[string]*vmcp.HeaderForwardConfig
+	}{
+		{
+			name: "no MCPServerEntry workloads yields empty map",
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "server1", Type: workloads.WorkloadTypeMCPServer},
+			},
+			expectedMap: map[string]*vmcp.HeaderForwardConfig{},
+		},
+		{
+			name: "entry without headerForward is omitted",
+			entries: []mcpv1beta1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-plain", Namespace: "default"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+					},
+				},
+			},
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "entry-plain", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedMap: map[string]*vmcp.HeaderForwardConfig{},
+		},
+		{
+			name: "plaintext headers copied verbatim",
+			entries: []mcpv1beta1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "gh-copilot", Namespace: "default"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						RemoteURL: "https://api.githubcopilot.com/mcp/",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+						HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+							AddPlaintextHeaders: map[string]string{
+								"X-MCP-Toolsets": "projects,issues",
+							},
+						},
+					},
+				},
+			},
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "gh-copilot", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedMap: map[string]*vmcp.HeaderForwardConfig{
+				"gh-copilot": {
+					AddPlaintextHeaders: map[string]string{
+						"X-MCP-Toolsets": "projects,issues",
+					},
+				},
+			},
+		},
+		{
+			name: "secret refs stored as identifiers scoped by entry name",
+			entries: []mcpv1beta1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-sec", Namespace: "default"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						RemoteURL: "https://mcp.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+						HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+							AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+								{
+									HeaderName: "X-API-Key",
+									ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+										Name: "prod-api-key-secret",
+										Key:  "do-not-leak",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "entry-sec", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedMap: map[string]*vmcp.HeaderForwardConfig{
+				"entry-sec": {
+					AddHeadersFromSecret: map[string]string{
+						"X-API-Key": "HEADER_FORWARD_X_API_KEY_ENTRY_SEC",
+					},
+				},
+			},
+		},
+		{
+			name: "two entries with same header name produce distinct identifiers",
+			entries: []mcpv1beta1.MCPServerEntry{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-a", Namespace: "default"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						RemoteURL: "https://a.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+						HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+							AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+								{
+									HeaderName:     "X-API-Key",
+									ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "sec-a", Key: "v"},
+								},
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "entry-b", Namespace: "default"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						RemoteURL: "https://b.example.com",
+						Transport: "streamable-http",
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+						HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+							AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+								{
+									HeaderName:     "X-API-Key",
+									ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "sec-b", Key: "v"},
+								},
+							},
+						},
+					},
+				},
+			},
+			typedWorkloads: []workloads.TypedWorkload{
+				{Name: "entry-a", Type: workloads.WorkloadTypeMCPServerEntry},
+				{Name: "entry-b", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectedMap: map[string]*vmcp.HeaderForwardConfig{
+				"entry-a": {
+					AddHeadersFromSecret: map[string]string{
+						"X-API-Key": "HEADER_FORWARD_X_API_KEY_ENTRY_A",
+					},
+				},
+				"entry-b": {
+					AddHeadersFromSecret: map[string]string{
+						"X-API-Key": "HEADER_FORWARD_X_API_KEY_ENTRY_B",
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
+
+			objs := make([]client.Object, 0, len(tt.entries))
+			for i := range tt.entries {
+				objs = append(objs, &tt.entries[i])
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objs...).
+				Build()
+
+			r := &VirtualMCPServerReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			result, err := r.buildHeaderForwardMap(t.Context(), "default", tt.typedWorkloads)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedMap, result)
+
+			// Defense-in-depth: no secret values should ever leak into the returned map.
+			for backendName, hf := range result {
+				for header, ident := range hf.AddHeadersFromSecret {
+					assert.NotContains(t, ident, "do-not-leak",
+						"backend %q header %q leaked Secret key into identifier", backendName, header)
+				}
+			}
 		})
 	}
 }

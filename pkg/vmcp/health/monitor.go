@@ -427,13 +427,19 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 		return
 	}
 
-	// Create BackendTarget from Backend
+	// Create BackendTarget from Backend. Carry CA bundle and header-forward config
+	// so health checks hit the backend with the same TLS trust and header injection
+	// as list/call requests — otherwise a healthy-to-the-monitor backend could fail
+	// for real traffic (or vice versa).
 	target := &vmcp.BackendTarget{
 		WorkloadID:    backend.ID,
 		WorkloadName:  backend.Name,
 		BaseURL:       backend.BaseURL,
 		TransportType: backend.TransportType,
+		CABundlePath:  backend.CABundlePath,
+		CABundleData:  backend.CABundleData,
 		AuthConfig:    backend.AuthConfig,
+		HeaderForward: backend.HeaderForward,
 		HealthStatus:  vmcp.BackendUnknown, // Status is determined by the health check
 		Metadata:      backend.Metadata,
 	}

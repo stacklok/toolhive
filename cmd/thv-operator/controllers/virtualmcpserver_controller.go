@@ -2258,12 +2258,19 @@ func resolveFirstUpstreamProvider(embeddedCfg *mcpv1beta1.EmbeddedAuthServerConf
 // convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.
 // Preserves metadata and uses transport types from workload Specs.
 // Logs warnings when backends are skipped due to missing URL or transport information.
-// caBundlePathMap maps backend names to their CA bundle mount paths (populated for MCPServerEntry backends).
+//
+// caBundlePathMap maps backend names to their CA bundle mount paths (populated for
+// MCPServerEntry backends with caBundleRef).
+// headerForwardMap maps backend names to per-backend HeaderForwardConfig (populated
+// for MCPServerEntry backends with headerForward). Plaintext values are embedded
+// as-is; secret-backed headers carry only env-var identifiers that the vMCP runtime
+// resolves via secrets.EnvironmentProvider (TOOLHIVE_SECRET_<ident>).
 func convertBackendsToStaticBackends(
 	ctx context.Context,
 	backends []vmcptypes.Backend,
 	transportMap map[string]string,
 	caBundlePathMap map[string]string,
+	headerForwardMap map[string]*vmcptypes.HeaderForwardConfig,
 ) []vmcpconfig.StaticBackendConfig {
 	logger := log.FromContext(ctx)
 	static := make([]vmcpconfig.StaticBackendConfig, 0, len(backends))
@@ -2290,6 +2297,10 @@ func convertBackendsToStaticBackends(
 
 		if caBundlePath, ok := caBundlePathMap[backend.Name]; ok {
 			cfg.CABundlePath = caBundlePath
+		}
+
+		if hf, ok := headerForwardMap[backend.Name]; ok && hf != nil {
+			cfg.HeaderForward = hf
 		}
 
 		static = append(static, cfg)

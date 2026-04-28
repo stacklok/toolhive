@@ -882,6 +882,30 @@ spec:
                             Only valid when Type is "entry". The operator mounts CA bundles at
                             /etc/toolhive/ca-bundles/<name>/ca.crt.
                           type: string
+                        headerForward:
+                          description: |-
+                            HeaderForward configures per-backend HTTP headers to inject on outbound requests
+                            to this backend. Only valid when Type is "entry". Populated by the operator from
+                            MCPServerEntry.spec.headerForward; secret values are never stored here, only
+                            identifiers that resolve to TOOLHIVE_SECRET_<ident> env vars in the vMCP pod.
+                          properties:
+                            addHeadersFromSecret:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AddHeadersFromSecret maps canonical HTTP header name to secret identifier.
+                                The vMCP runtime resolves each identifier via secrets.EnvironmentProvider,
+                                which reads TOOLHIVE_SECRET_<identifier> from the pod environment.
+                              type: object
+                            addPlaintextHeaders:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AddPlaintextHeaders is a map of canonical HTTP header name to literal value.
+                                WARNING: values are stored in plaintext in the vMCP ConfigMap.
+                                Use AddHeadersFromSecret for sensitive data like API keys or tokens.
+                              type: object
+                          type: object
                         metadata:
                           additionalProperties:
                             type: string
@@ -3313,6 +3337,30 @@ spec:
                             Only valid when Type is "entry". The operator mounts CA bundles at
                             /etc/toolhive/ca-bundles/<name>/ca.crt.
                           type: string
+                        headerForward:
+                          description: |-
+                            HeaderForward configures per-backend HTTP headers to inject on outbound requests
+                            to this backend. Only valid when Type is "entry". Populated by the operator from
+                            MCPServerEntry.spec.headerForward; secret values are never stored here, only
+                            identifiers that resolve to TOOLHIVE_SECRET_<ident> env vars in the vMCP pod.
+                          properties:
+                            addHeadersFromSecret:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AddHeadersFromSecret maps canonical HTTP header name to secret identifier.
+                                The vMCP runtime resolves each identifier via secrets.EnvironmentProvider,
+                                which reads TOOLHIVE_SECRET_<identifier> from the pod environment.
+                              type: object
+                            addPlaintextHeaders:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AddPlaintextHeaders is a map of canonical HTTP header name to literal value.
+                                WARNING: values are stored in plaintext in the vMCP ConfigMap.
+                                Use AddHeadersFromSecret for sensitive data like API keys or tokens.
+                              type: object
+                          type: object
                         metadata:
                           additionalProperties:
                             type: string

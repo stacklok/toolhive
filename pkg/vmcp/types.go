@@ -15,6 +15,30 @@ import (
 // This file contains shared domain types used across multiple vmcp subpackages.
 // Following DDD principles, these are core domain concepts that cross bounded contexts.
 
+// HeaderForwardConfig configures HTTP headers injected into outbound requests
+// from the vMCP runtime to a static backend. AddPlaintextHeaders carries literal
+// values; AddHeadersFromSecret maps header names to secret identifiers resolved
+// via secrets.EnvironmentProvider at request time (env var TOOLHIVE_SECRET_<identifier>).
+//
+// Secret values MUST NOT appear in this struct — only identifiers. The operator
+// injects actual Secret values into the vMCP pod as env vars via
+// valueFrom.secretKeyRef at Deployment rendering time.
+// +gendoc
+// +kubebuilder:object:generate=true
+type HeaderForwardConfig struct {
+	// AddPlaintextHeaders is a map of canonical HTTP header name to literal value.
+	// WARNING: values are stored in plaintext in the vMCP ConfigMap.
+	// Use AddHeadersFromSecret for sensitive data like API keys or tokens.
+	// +optional
+	AddPlaintextHeaders map[string]string `json:"addPlaintextHeaders,omitempty" yaml:"addPlaintextHeaders,omitempty"`
+
+	// AddHeadersFromSecret maps canonical HTTP header name to secret identifier.
+	// The vMCP runtime resolves each identifier via secrets.EnvironmentProvider,
+	// which reads TOOLHIVE_SECRET_<identifier> from the pod environment.
+	// +optional
+	AddHeadersFromSecret map[string]string `json:"addHeadersFromSecret,omitempty" yaml:"addHeadersFromSecret,omitempty"`
+}
+
 // BackendTarget identifies a specific backend workload and provides
 // the information needed to forward requests to it.
 type BackendTarget struct {
@@ -77,6 +101,11 @@ type BackendTarget struct {
 
 	// HealthStatus indicates the current health of the backend.
 	HealthStatus BackendHealthStatus
+
+	// HeaderForward carries per-backend HTTP header injection configuration
+	// applied by the vMCP client to every outbound request targeting this backend
+	// (list, call, health-check). Nil when no headers are configured.
+	HeaderForward *HeaderForwardConfig
 
 	// Metadata stores additional backend-specific information.
 	Metadata map[string]string
@@ -327,6 +356,11 @@ type Backend struct {
 	// debugging and status reporting.
 	// +optional
 	AuthConfigRef string
+
+	// HeaderForward carries per-backend HTTP header injection configuration.
+	// Only populated for entry-type backends whose MCPServerEntry declares
+	// spec.headerForward. Nil when the entry has no header forwarding configured.
+	HeaderForward *HeaderForwardConfig
 
 	// Metadata stores additional backend information.
 	Metadata map[string]string

@@ -7,6 +7,7 @@
 - [toolhive.stacklok.dev/telemetry](#toolhivestacklokdevtelemetry)
 - [toolhive.stacklok.dev/v1alpha1](#toolhivestacklokdevv1alpha1)
 - [toolhive.stacklok.dev/v1beta1](#toolhivestacklokdevv1beta1)
+- [toolhive.stacklok.dev/vmcp](#toolhivestacklokdevvmcp)
 
 
 ## toolhive.stacklok.dev/audit
@@ -587,6 +588,7 @@ _Appears in:_
 | `transport` _string_ | Transport is the MCP transport protocol: "sse" or "streamable-http"<br />Only network transports supported by vMCP client are allowed. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
 | `type` _string_ | Type is the backend workload type: "entry" for MCPServerEntry backends, or empty<br />for container/proxy backends. Entry backends connect directly to remote MCP servers. |  | Enum: [entry ] <br />Optional: \{\} <br /> |
 | `caBundlePath` _string_ | CABundlePath is the file path to a custom CA certificate bundle for TLS verification.<br />Only valid when Type is "entry". The operator mounts CA bundles at<br />/etc/toolhive/ca-bundles/<name>/ca.crt. |  | Optional: \{\} <br /> |
+| `headerForward` _[pkg.vmcp.HeaderForwardConfig](#pkgvmcpheaderforwardconfig)_ | HeaderForward configures per-backend HTTP headers to inject on outbound requests<br />to this backend. Only valid when Type is "entry". Populated by the operator from<br />MCPServerEntry.spec.headerForward; secret values are never stored here, only<br />identifiers that resolve to TOOLHIVE_SECRET_<ident> env vars in the vMCP pod. |  | Optional: \{\} <br /> |
 | `metadata` _object (keys:string, values:string)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  | Optional: \{\} <br /> |
 
 
@@ -3500,5 +3502,89 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `kind` _string_ | Kind is the type of workload resource |  | Enum: [MCPServer VirtualMCPServer MCPRemoteProxy] <br />Required: \{\} <br /> |
 | `name` _string_ | Name is the name of the workload resource |  | MinLength: 1 <br />Required: \{\} <br /> |
+
+
+
+## toolhive.stacklok.dev/vmcp
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#### pkg.vmcp.HeaderForwardConfig
+
+
+
+HeaderForwardConfig configures HTTP headers injected into outbound requests
+from the vMCP runtime to a static backend. AddPlaintextHeaders carries literal
+values; AddHeadersFromSecret maps header names to secret identifiers resolved
+via secrets.EnvironmentProvider at request time (env var TOOLHIVE_SECRET_<identifier>).
+
+Secret values MUST NOT appear in this struct — only identifiers. The operator
+injects actual Secret values into the vMCP pod as env vars via
+valueFrom.secretKeyRef at Deployment rendering time.
+
+
+
+_Appears in:_
+- [vmcp.config.StaticBackendConfig](#vmcpconfigstaticbackendconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `addPlaintextHeaders` _object (keys:string, values:string)_ | AddPlaintextHeaders is a map of canonical HTTP header name to literal value.<br />WARNING: values are stored in plaintext in the vMCP ConfigMap.<br />Use AddHeadersFromSecret for sensitive data like API keys or tokens. |  | Optional: \{\} <br /> |
+| `addHeadersFromSecret` _object (keys:string, values:string)_ | AddHeadersFromSecret maps canonical HTTP header name to secret identifier.<br />The vMCP runtime resolves each identifier via secrets.EnvironmentProvider,<br />which reads TOOLHIVE_SECRET_<identifier> from the pod environment. |  | Optional: \{\} <br /> |
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

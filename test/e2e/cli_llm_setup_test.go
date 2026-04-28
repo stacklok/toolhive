@@ -4,6 +4,7 @@
 package e2e_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/llm"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -49,12 +51,38 @@ func runSetupWithOIDCCompletion(
 		}
 	}
 
-	// Wait for the authorization request to hit the OIDC server and complete it.
-	authReq, err := oidcServer.WaitForAuthRequest(30 * time.Second)
-	if err != nil {
-		drainWithInterrupt()
-		return "", "", fmt.Errorf("waiting for OIDC auth request: %w", err)
+	// Race the command exit against the OIDC auth request so that an early
+	// failure (e.g., misconfigured gateway) returns immediately rather than
+	// blocking for the full 30s WaitForAuthRequest timeout. A cancellable
+	// context ensures the auth goroutine exits promptly when the command
+	// finishes before the auth request arrives.
+	authCtx, cancelAuth := context.WithCancel(context.Background())
+	defer cancelAuth()
+
+	type authResult struct {
+		req *e2e.AuthRequest
+		err error
 	}
+	authCh := make(chan authResult, 1)
+	go func() {
+		req, err := oidcServer.WaitForAuthRequest(authCtx, 30*time.Second)
+		authCh <- authResult{req, err}
+	}()
+
+	var authReq *e2e.AuthRequest
+	select {
+	case r := <-done:
+		// Command exited before the OIDC auth request arrived — it failed early.
+		// cancelAuth() will be called by defer, unblocking the auth goroutine.
+		return r.stdout, r.stderr, fmt.Errorf("setup exited before OIDC auth request (err: %w)", r.err)
+	case ar := <-authCh:
+		if ar.err != nil {
+			drainWithInterrupt()
+			return "", "", fmt.Errorf("waiting for OIDC auth request: %w", ar.err)
+		}
+		authReq = ar.req
+	}
+
 	if err := oidcServer.CompleteAuthRequest(authReq); err != nil {
 		drainWithInterrupt()
 		return "", "", fmt.Errorf("completing OIDC auth request: %w", err)
@@ -80,6 +108,28 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 		thvConfig = e2e.NewTestConfig()
 		tempDir = GinkgoT().TempDir()
 
+		// Install a fake browser so OIDC login completes in headless/CI
+		// environments where no real browser is available. The script GETs
+		// the auth URL (without following the 302 redirect) so the mock OIDC
+		// server receives the /auth request and populates authRequestChan;
+		// CompleteAuthRequest then drives the callback hit.
+		//
+		// Platform note: CI runs on ubuntu-8cores-32gb (Linux only; no Windows
+		// support). curl ships on every GitHub-hosted Ubuntu runner; wget is
+		// tried as a fallback for minimal images.
+		binDir := filepath.Join(tempDir, "bin")
+		Expect(os.MkdirAll(binDir, 0750)).To(Succeed())
+		fakeBrowser := []byte(
+			"#!/bin/sh\n" +
+				// curl: -sf = silent + fail-on-HTTP-error; no -L so 302 is not followed.
+				// wget: --max-redirect=0 prevents following the 302 to the callback URL,
+				//       which would race with CompleteAuthRequest and make the test flaky.
+				"curl -sf \"$1\" >/dev/null 2>&1 || wget -q --max-redirect=0 \"$1\" -O /dev/null 2>&1 || true\n",
+		)
+		for _, name := range []string{"open", "xdg-open"} {
+			Expect(os.WriteFile(filepath.Join(binDir, name), fakeBrowser, 0750)).To(Succeed())
+		}
+
 		// Isolated environment: XDG_CONFIG_HOME and HOME point to tempDir so
 		// these tests never touch the user's real config.yaml or secrets store.
 		thvCmd = func(args ...string) *e2e.THVCommand {
@@ -87,10 +137,16 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 				WithEnv(
 					"XDG_CONFIG_HOME="+tempDir,
 					"HOME="+tempDir,
+					"PATH="+binDir+":"+os.Getenv("PATH"),
 				)
 		}
 
-		// Use environment secrets provider to avoid touching the system keychain.
+		// Use the environment secrets provider to avoid touching the system
+		// keychain. This provider is read-only (CanWrite=false), so OIDC login
+		// will succeed (tokens are obtained) but the refresh token cannot be
+		// persisted between invocations. Tests that specifically need a persisted
+		// CachedRefreshTokenRef (e.g. --purge-tokens) inject the value directly
+		// into config.yaml instead.
 		By("Configuring environment secrets provider")
 		thvCmd("secret", "provider", "environment").ExpectSuccess()
 
@@ -220,11 +276,11 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 	// ── Test 3 ────────────────────────────────────────────────────────────────
 
 	Describe("thv llm teardown <tool-name>", func() {
-		It("targets a single tool and leaves others configured", func() {
-			// We only have one real detectable tool in the test environment (claude-code
-			// via ~/.claude). This test verifies the targeted teardown path by tearing
-			// down by the tool name that was configured in setup and confirming that
-			// a subsequent teardown of an unknown tool returns an error.
+		It("tears down a named tool and rejects an unknown tool name", func() {
+			// The test environment only has one detectable tool (claude-code via
+			// ~/.claude), so we cannot verify that other tools remain configured
+			// after a targeted teardown. Instead this test covers the targeted
+			// teardown path itself and confirms that an unknown tool name is rejected.
 			claudeDir := filepath.Join(tempDir, ".claude")
 			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
 
@@ -295,20 +351,35 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 			Expect(err).ToNot(HaveOccurred(),
 				"setup should succeed; stdout=%q stderr=%q", stdout, stderr)
 
+			By("Injecting a fake CachedRefreshTokenRef into config to verify purge clears it")
+			// The environment secrets provider is read-only, so the OIDC login flow
+			// cannot persist a refresh token ref. We write one directly into
+			// config.yaml so the subsequent --purge-tokens assertion is meaningful.
+			configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+			configData, readErr := os.ReadFile(configPath)
+			Expect(readErr).ToNot(HaveOccurred())
+
+			var rawCfg map[string]any
+			Expect(yaml.Unmarshal(configData, &rawCfg)).To(Succeed())
+			llmSection, ok := rawCfg["llm"].(map[string]any)
+			Expect(ok).To(BeTrue(), "config.yaml should have an llm: section")
+			oidcSection, ok := llmSection["oidc"].(map[string]any)
+			Expect(ok).To(BeTrue(), "config.yaml llm section should have an oidc: key")
+			oidcSection["cached_refresh_token_ref"] = "fake-ref-for-purge-test"
+
+			patched, marshalErr := yaml.Marshal(rawCfg)
+			Expect(marshalErr).ToNot(HaveOccurred())
+			Expect(os.WriteFile(configPath, patched, 0600)).To(Succeed())
+
 			By("Running teardown with --purge-tokens")
 			thvCmd("llm", "teardown", "--purge-tokens").ExpectSuccess()
 
-			By("Verifying config is cleared (ConfiguredTools empty)")
+			By("Verifying config is cleared (ConfiguredTools empty and token ref removed)")
 			showOut, _ := thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
 			var cfg llm.Config
 			Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
 			Expect(cfg.ConfiguredTools).To(BeEmpty(),
 				"ConfiguredTools should be empty after teardown --purge-tokens")
-
-			By("Verifying the CachedRefreshTokenRef is cleared (purge-tokens removes token ref)")
-			// The environment provider cannot delete secrets, so the token ref is
-			// removed only from config (not the env var). We verify at least that
-			// ConfiguredTools is clean, which is the primary teardown contract.
 			Expect(cfg.OIDC.CachedRefreshTokenRef).To(BeEmpty(),
 				"cached token reference should be cleared after purge")
 		})

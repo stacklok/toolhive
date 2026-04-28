@@ -454,7 +454,34 @@ func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, 
 // synthesizedSubjectPrefix tags subjects produced by
 // synthesizeSubjectFromAccessToken so they are visually distinguishable from
 // real upstream-provided subjects in logs, audit records, and JWTs.
+//
+// The prefix is part of the externally observable contract of the embedded
+// auth server — downstream consumers (audit pipelines, the proxy runner's
+// per-request logging, debug tooling, status conditions) need to recognize
+// synthesized subjects without hardcoding the literal. Use the exported
+// IsSynthesizedSubject predicate rather than this constant.
 const synthesizedSubjectPrefix = "tk-"
+
+// IsSynthesizedSubject reports whether the given subject was produced by the
+// synthesis-mode fallback (synthesizeSubjectFromAccessToken) rather than
+// resolved from a userinfo endpoint or an ID token. Use this from any code
+// path that needs to behave differently for synthesized subjects (audit
+// emission, telemetry, downstream user-resolution decisions, debug log
+// formatting). Recognizing synthesis-mode subjects through this predicate
+// is the supported alternative to inspecting the wire format directly,
+// keeping the package free to change the prefix in a future revision.
+//
+// The predicate is purely structural — it only checks the prefix that
+// synthesizeSubjectFromAccessToken applies. It does not validate the digest,
+// does not contact the upstream, and does not look up the originating
+// Identity. Production callers that have an *Identity in scope SHOULD
+// prefer the Identity.Synthetic field, which is set by ExchangeCodeForIdentity
+// at the same source of truth; this predicate is the late-binding
+// alternative for code paths that only see the bare subject string (e.g.,
+// JWT claim consumers).
+func IsSynthesizedSubject(subject string) bool {
+	return strings.HasPrefix(subject, synthesizedSubjectPrefix)
+}
 
 // synthesizeSubjectFromAccessToken returns a stable, opaque, non-secret
 // identifier derived from an opaque access token, for OAuth2 upstreams that
@@ -463,9 +490,11 @@ const synthesizedSubjectPrefix = "tk-"
 // The output is the synthesizedSubjectPrefix concatenated with the lowercase
 // hex of the first 16 bytes of the SHA-256 digest of the access token (35
 // characters total, e.g. "tk-89abcdef0123456789abcdef01234567"). It is
-// deterministic for a given token, contains no PII, and reveals nothing about
-// the token contents — SHA-256 is preimage-resistant, and 16 bytes (128 bits)
-// is sufficient collision resistance for a session-key role.
+// deterministic for a given token. The output is non-PII assuming the
+// upstream issues opaque (non-JWT) bearer tokens; the digest itself reveals
+// nothing about the input beyond what an attacker who already has a candidate
+// token could confirm by re-hashing. 16 bytes (128 bits) is sufficient
+// collision resistance for a session-key role.
 //
 // This is only used for OAuth2 upstreams whose UserInfo is nil. OIDC providers
 // always have an ID token-derived subject and never reach this path.

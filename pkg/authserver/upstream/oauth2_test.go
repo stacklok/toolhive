@@ -1287,12 +1287,84 @@ func TestSynthesizeSubjectFromAccessToken(t *testing.T) {
 	t.Run("empty token still produces a stable subject", func(t *testing.T) {
 		t.Parallel()
 		// Defensive: caller should never pass empty, but if it does, the
-		// function must not panic and must remain deterministic.
-		assert.Equal(t,
-			synthesizeSubjectFromAccessToken(""),
-			synthesizeSubjectFromAccessToken(""),
-		)
+		// function must not panic, must remain deterministic, AND must
+		// honor the documented output shape (prefix + 32 hex chars).
+		// Asserting only that two calls return the same value would hold
+		// for any pure function — including a regression that short-
+		// circuits empty input to "" or to a non-prefixed value. The
+		// shape assertions are what actually pin the contract.
+		got1 := synthesizeSubjectFromAccessToken("")
+		got2 := synthesizeSubjectFromAccessToken("")
+		assert.Equal(t, got1, got2)
+		assert.True(t, strings.HasPrefix(got1, synthesizedSubjectPrefix))
+		assert.Len(t, strings.TrimPrefix(got1, synthesizedSubjectPrefix), 32)
 	})
+}
+
+func TestIsSynthesizedSubject(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		subject string
+		want    bool
+	}{
+		// Round-trip: any output of synthesizeSubjectFromAccessToken must be
+		// recognized. This is the primary contract — IsSynthesizedSubject and
+		// synthesizeSubjectFromAccessToken must agree on what the prefix is.
+		{
+			name:    "round-trip on synthesized subject",
+			subject: synthesizeSubjectFromAccessToken("any-opaque-token"),
+			want:    true,
+		},
+		// Real upstream subjects (UUIDs, integer IDs, opaque strings) must NOT
+		// be classified as synthesized. These are the false-positive cases the
+		// predicate guards against.
+		{
+			name:    "uuid-shaped subject is not synthesized",
+			subject: "11012b90-98d0-4594-916e-54db832ebe8f",
+			want:    false,
+		},
+		{
+			name:    "integer-shaped subject is not synthesized",
+			subject: "1234567890",
+			want:    false,
+		},
+		{
+			name:    "atlassian-shaped account_id is not synthesized",
+			subject: "5e1234567890abcdef123456",
+			want:    false,
+		},
+		{
+			name:    "empty string is not synthesized",
+			subject: "",
+			want:    false,
+		},
+		// Defensive: a subject that contains "tk-" but does not start with it
+		// is not synthesized. The predicate is a HasPrefix check, not a
+		// substring search.
+		{
+			name:    "tk- in middle of subject is not synthesized",
+			subject: "user-tk-abc",
+			want:    false,
+		},
+		// The predicate is purely structural. A subject with the prefix but
+		// the wrong digest length still classifies as synthesized — that's by
+		// design (the predicate is a fast guard, not a full validator). If
+		// callers need stricter validation they can re-derive and compare.
+		{
+			name:    "prefix-only string is treated as synthesized",
+			subject: "tk-",
+			want:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, IsSynthesizedSubject(tc.subject))
+		})
+	}
 }
 
 func TestBaseOAuth2Provider_fetchUserInfo(t *testing.T) {

@@ -195,6 +195,11 @@ type clientAppConfig struct {
 	// LLMGatewayMode is "direct" (token-helper) or "proxy" (static key via
 	// localhost reverse proxy), or "" when the tool has no LLM gateway support.
 	LLMGatewayMode string
+	// LLMBinaryName is the executable name looked up via exec.LookPath to
+	// confirm the tool is actually installed (not just a leftover config
+	// directory). Leave empty for tools that are not on $PATH (e.g. macOS
+	// GUI apps).
+	LLMBinaryName string
 	// LLMGatewayOnly marks tools that support LLM gateway but not MCP (e.g. Xcode).
 	// Entries with this flag are excluded from the MCP client list.
 	LLMGatewayOnly bool
@@ -329,6 +334,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".github", "skills"},
 		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
 		LLMGatewayMode:     "proxy",
+		LLMBinaryName:      "code",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Code - Insiders", "User"},
 		LLMSettingsPlatformPrefix: map[Platform][]string{
@@ -371,6 +377,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".github", "skills"},
 		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
 		LLMGatewayMode:     "proxy",
+		LLMBinaryName:      "code",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Code", "User"},
 		LLMSettingsPlatformPrefix: map[Platform][]string{
@@ -408,6 +415,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".cursor", "skills"},
 		// LLM gateway: patches the editor settings.json (different from the MCP mcp.json)
 		LLMGatewayMode:     "proxy",
+		LLMBinaryName:      "cursor",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Cursor", "User"},
 		LLMSettingsPlatformPrefix: map[Platform][]string{
@@ -443,6 +451,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".claude", "skills"},
 		// LLM gateway: patches ~/.claude/settings.json (different from the MCP .claude.json)
 		LLMGatewayMode:     "direct",
+		LLMBinaryName:      "claude",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{".claude"},
 		LLMGatewayKeys: []LLMGatewayKeySpec{
@@ -821,6 +830,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".agents", "skills"},
 		// LLM gateway: patches the same settings.json used for MCP
 		LLMGatewayMode:     "direct",
+		LLMBinaryName:      "gemini",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{".gemini"},
 		LLMGatewayKeys: []LLMGatewayKeySpec{

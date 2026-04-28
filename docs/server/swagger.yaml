@@ -837,6 +837,7 @@ components:
       - codex
       - kimi-cli
       - factory
+      - xcode
       type: string
       x-enum-varnames:
       - RooCode
@@ -866,6 +867,7 @@ components:
       - Codex
       - KimiCli
       - Factory
+      - Xcode
     github_com_stacklok_toolhive_pkg_client.ClientAppStatus:
       properties:
         client_type:

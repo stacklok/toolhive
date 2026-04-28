@@ -82,7 +82,7 @@ type ClientAppStatus struct {
 // configuration directory (or settings file when no relative path is defined).
 func (cm *ClientManager) IsClientInstalled(clientType ClientApp) bool {
 	cfg := cm.lookupClientAppConfig(clientType)
-	if cfg == nil {
+	if cfg == nil || cfg.LLMGatewayOnly {
 		return false
 	}
 	var pathToCheck string
@@ -122,6 +122,9 @@ func (cm *ClientManager) GetClientStatus(ctx context.Context) ([]ClientAppStatus
 	}
 
 	for _, cfg := range cm.clientIntegrations {
+		if cfg.LLMGatewayOnly {
+			continue
+		}
 		status := ClientAppStatus{
 			ClientType:     cfg.ClientType,
 			Installed:      cm.IsClientInstalled(cfg.ClientType),

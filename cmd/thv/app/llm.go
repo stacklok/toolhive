@@ -281,12 +281,18 @@ func runLLMSetup(
 	// Reject paths that contain shell metacharacters: the token-helper command
 	// is written verbatim into long-lived tool config files and re-executed by
 	// the shell inside Claude Code / Gemini CLI.  A path with '"', '\', ';',
-	// newline, or carriage-return would silently produce a broken command.
+	// newline, or carriage-return would silently produce a broken or exploitable
+	// command.
+	//
+	// Note: backslashes are Windows path separators, so this check effectively
+	// makes "thv llm setup" unsupported on Windows — consistent with the rest
+	// of the LLM gateway feature (token-helper tools use POSIX-style shells).
 	const shellUnsafe = `"\;` + "\n\r"
 	if strings.ContainsAny(self, shellUnsafe) {
 		return fmt.Errorf(
 			"executable path %q contains shell-unsafe characters; "+
-				"move thv to a path without quotes, backslashes, or semicolons", self)
+				"move thv to a path without quotes, backslashes, or semicolons "+
+				"(Windows paths are not supported by thv llm setup)", self)
 	}
 
 	proxyBaseURL := fmt.Sprintf("http://localhost:%d/v1", llmCfg.EffectiveProxyPort())
@@ -296,19 +302,20 @@ func runLLMSetup(
 		TokenHelperCommand: fmt.Sprintf(`"%s" llm token`, self),
 	}
 
-	// Run OIDC login first so that a failed login leaves no tool config files
-	// or persisted state modified.
-	_, _ = fmt.Fprintln(out, "Ensuring you are logged in to the LLM gateway…")
-	if err := login(ctx, &llmCfg); err != nil {
-		return fmt.Errorf("OIDC login failed: %s", llm.SanitizeTokenError(err))
-	}
-	_, _ = fmt.Fprintln(out, "Login successful.")
-
+	// Detect tools before login so we skip the interactive browser flow when
+	// there is nothing to configure. Login still runs before any files are
+	// patched, preserving the guarantee that a failed login leaves no state.
 	detected := cm.DetectedLLMGatewayClients()
 	if len(detected) == 0 {
 		_, _ = fmt.Fprintln(out, "No supported AI tools detected.")
 		return nil
 	}
+
+	_, _ = fmt.Fprintln(out, "Ensuring you are logged in to the LLM gateway…")
+	if err := login(ctx, &llmCfg); err != nil {
+		return fmt.Errorf("OIDC login failed: %s", llm.SanitizeTokenError(err))
+	}
+	_, _ = fmt.Fprintln(out, "Login successful.")
 
 	var configured []llm.ToolConfig
 	for _, clientType := range detected {

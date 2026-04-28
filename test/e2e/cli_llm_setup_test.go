@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -72,9 +73,12 @@ func runSetupWithOIDCCompletion(
 	var authReq *e2e.AuthRequest
 	select {
 	case r := <-done:
-		// Command exited before the OIDC auth request arrived — it failed early.
+		// Command exited before the OIDC auth request arrived.
 		// cancelAuth() will be called by defer, unblocking the auth goroutine.
-		return r.stdout, r.stderr, fmt.Errorf("setup exited before OIDC auth request (err: %w)", r.err)
+		if r.err != nil {
+			return r.stdout, r.stderr, fmt.Errorf("setup exited before OIDC auth request: %w", r.err)
+		}
+		return r.stdout, r.stderr, fmt.Errorf("setup exited cleanly before OIDC auth request (unexpected success without browser flow)")
 	case ar := <-authCh:
 		if ar.err != nil {
 			drainWithInterrupt()
@@ -93,6 +97,13 @@ func runSetupWithOIDCCompletion(
 }
 
 var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e"), func() {
+	// The fake-browser script uses POSIX /bin/sh and stubs open/xdg-open.
+	// github.com/pkg/browser uses different mechanisms on Windows and would
+	// not pick up these stubs, causing tests to hang. CI runs Linux only.
+	if runtime.GOOS == "windows" {
+		Skip("fake-browser stub is POSIX-only; skipping on Windows")
+	}
+
 	var (
 		thvConfig    *e2e.TestConfig
 		tempDir      string

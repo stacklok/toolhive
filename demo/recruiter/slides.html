@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ToolHive Memory — Agentic Shared Memory</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/night.css">
+<style>
+  :root {
+    --cyan:   #00d4ff;
+    --green:  #48bb78;
+    --yellow: #f6e05e;
+    --purple: #9f7aea;
+    --gray:   #718096;
+    --dim:    #2d3748;
+  }
+
+  .reveal { font-family: 'Segoe UI', system-ui, sans-serif; }
+
+  /* headings */
+  .reveal h1 { color: var(--cyan); font-size: 1.9em; margin-bottom: .3em; }
+  .reveal h2 { color: var(--cyan); font-size: 1.4em; margin-bottom: .4em; }
+  .reveal h3 { color: #e2e8f0; font-size: 1.1em; }
+  .reveal p, .reveal li { color: #cbd5e0; font-size: .88em; }
+
+  /* tag pill */
+  .tag {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 9999px;
+    font-size: .68em;
+    font-weight: 600;
+    letter-spacing: .04em;
+    margin-right: 4px;
+  }
+  .tag-cyan   { background: rgba(0,212,255,.15); color: var(--cyan);   border: 1px solid var(--cyan); }
+  .tag-green  { background: rgba(72,187,120,.15); color: var(--green);  border: 1px solid var(--green); }
+  .tag-yellow { background: rgba(246,224,94,.15); color: var(--yellow); border: 1px solid var(--yellow); }
+  .tag-purple { background: rgba(159,122,234,.15); color: var(--purple); border: 1px solid var(--purple); }
+  .tag-gray   { background: rgba(113,128,150,.15); color: #a0aec0;      border: 1px solid var(--gray); }
+
+  /* memory type cards */
+  .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
+  .card {
+    background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.1);
+    border-radius: 10px;
+    padding: 16px 18px;
+    text-align: left;
+  }
+  .card .icon { font-size: 1.5em; }
+  .card .title { font-size: .85em; font-weight: 700; margin: 6px 0 4px; }
+  .card .desc  { font-size: .72em; color: #718096; line-height: 1.4; }
+
+  /* phase list */
+  .phase-list { list-style: none; padding: 0; margin: 0; }
+  .phase-list li {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 8px 0; border-bottom: 1px solid var(--dim);
+    font-size: .8em;
+  }
+  .phase-list li:last-child { border-bottom: none; }
+  .phase-num {
+    min-width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: .75em; font-weight: 700;
+    background: var(--dim); color: var(--cyan);
+    border: 1px solid var(--cyan);
+  }
+  .phase-text strong { color: #e2e8f0; }
+  .phase-text span   { color: #718096; font-size: .92em; }
+
+  /* two-col layout */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+
+  /* highlight box */
+  .callout {
+    background: rgba(0,212,255,.07);
+    border-left: 3px solid var(--cyan);
+    border-radius: 0 8px 8px 0;
+    padding: 10px 16px;
+    margin: 10px 0;
+    font-size: .8em;
+    color: #e2e8f0;
+  }
+  .callout.green  { background: rgba(72,187,120,.07); border-color: var(--green); }
+  .callout.yellow { background: rgba(246,224,94,.07);  border-color: var(--yellow); }
+  .callout.purple { background: rgba(159,122,234,.07); border-color: var(--purple); }
+
+  /* scenario header strip */
+  .scenario-header {
+    background: rgba(0,212,255,.08);
+    border: 1px solid rgba(0,212,255,.2);
+    border-radius: 8px;
+    padding: 8px 16px;
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 14px;
+  }
+  .scenario-header .phase-badge {
+    font-size: .7em; font-weight: 700; color: var(--cyan);
+    background: rgba(0,212,255,.15); border-radius: 6px;
+    padding: 3px 8px; white-space: nowrap;
+  }
+  .scenario-header .phase-title { font-size: .85em; color: #e2e8f0; }
+
+  svg text { font-family: 'Segoe UI', system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 1 — Title
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <h1 style="font-size:2.2em; margin-bottom:.15em;">ToolHive Memory</h1>
+  <p style="font-size:1.1em; color:var(--cyan); margin-bottom:1.2em;">Agentic Shared Memory for Teams</p>
+  <p style="color:#718096; font-size:.8em;">
+    A persistent, queryable memory layer that any Claude Code session<br>
+    can read and write through a standard MCP interface.
+  </p>
+  <div style="margin-top:2em; font-size:.7em; color:#4a5568;">
+    <span class="tag tag-cyan">MCP</span>
+    <span class="tag tag-green">SQLite + sqlite-vec</span>
+    <span class="tag tag-purple">Ollama embeddings</span>
+    <span class="tag tag-gray">Go</span>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 2 — The Problem
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <h2>The Problem</h2>
+  <p style="color:#718096; margin-bottom:1em;">Every agent session starts with no memory of what came before.</p>
+
+  <!-- SVG: isolated sessions -->
+  <svg viewBox="0 0 720 260" width="100%" style="max-width:680px;">
+    <defs>
+      <marker id="arr-gray" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#4a5568"/>
+      </marker>
+    </defs>
+    <!-- Session boxes -->
+    <rect x="20"  y="80" width="160" height="60" rx="8" fill="#1a202c" stroke="#4a5568" stroke-width="1.5"/>
+    <text x="100" y="106" fill="#718096" font-size="11" text-anchor="middle">Claude Code</text>
+    <text x="100" y="122" fill="#a0aec0" font-size="12" font-weight="600" text-anchor="middle">Session A</text>
+
+    <rect x="20"  y="180" width="160" height="60" rx="8" fill="#1a202c" stroke="#4a5568" stroke-width="1.5"/>
+    <text x="100" y="206" fill="#718096" font-size="11" text-anchor="middle">Claude Code</text>
+    <text x="100" y="222" fill="#a0aec0" font-size="12" font-weight="600" text-anchor="middle">Session B</text>
+
+    <!-- Big X in center -->
+    <circle cx="360" cy="160" r="48" fill="#2d1f1f" stroke="#742a2a" stroke-width="1.5"/>
+    <line x1="338" y1="138" x2="382" y2="182" stroke="#fc8181" stroke-width="3" stroke-linecap="round"/>
+    <line x1="382" y1="138" x2="338" y2="182" stroke="#fc8181" stroke-width="3" stroke-linecap="round"/>
+
+    <!-- Dashed lines to X -->
+    <line x1="180" y1="110" x2="316" y2="148" stroke="#4a5568" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arr-gray)"/>
+    <line x1="180" y1="210" x2="316" y2="172" stroke="#4a5568" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arr-gray)"/>
+
+    <!-- Right side: lost knowledge -->
+    <rect x="458" y="100" width="240" height="50" rx="6" fill="#1a202c" stroke="#742a2a" stroke-width="1"/>
+    <text x="578" y="120" fill="#fc8181" font-size="11" text-anchor="middle">❌  Knowledge from Session A</text>
+    <text x="578" y="137" fill="#718096" font-size="10" text-anchor="middle">invisible to Session B</text>
+
+    <rect x="458" y="165" width="240" height="50" rx="6" fill="#1a202c" stroke="#742a2a" stroke-width="1"/>
+    <text x="578" y="185" fill="#fc8181" font-size="11" text-anchor="middle">❌  Decisions made twice</text>
+    <text x="578" y="202" fill="#718096" font-size="10" text-anchor="middle">no shared context, no continuity</text>
+
+    <!-- No-share label -->
+    <text x="360" y="224" fill="#fc8181" font-size="10" text-anchor="middle">no shared state</text>
+  </svg>
+
+  <div class="callout" style="margin-top:.6em;">
+    A recruiter learns a visa policy the hard way. The next recruiter repeats the mistake. The hiring manager has no idea where the pipeline stands.
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 3 — Architecture
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <h2>Architecture</h2>
+  <p style="color:#718096; margin-bottom:.8em;">A shared MCP server any agent session can talk to.</p>
+
+  <svg viewBox="0 0 720 300" width="100%" style="max-width:700px;">
+    <defs>
+      <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#00d4ff"/>
+      </marker>
+      <marker id="arr-green" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#48bb78"/>
+      </marker>
+    </defs>
+
+    <!-- Sessions on left -->
+    <rect x="10"  y="30"  width="150" height="46" rx="8" fill="#1a202c" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="85"  y="50"  fill="#718096" font-size="10" text-anchor="middle">Claude Code</text>
+    <text x="85"  y="66"  fill="#00d4ff" font-size="12" font-weight="600" text-anchor="middle">Recruiter A</text>
+
+    <rect x="10"  y="127" width="150" height="46" rx="8" fill="#1a202c" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="85"  y="147" fill="#718096" font-size="10" text-anchor="middle">Claude Code</text>
+    <text x="85"  y="163" fill="#00d4ff" font-size="12" font-weight="600" text-anchor="middle">Hiring Manager</text>
+
+    <rect x="10"  y="224" width="150" height="46" rx="8" fill="#1a202c" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="85"  y="244" fill="#718096" font-size="10" text-anchor="middle">Claude Code</text>
+    <text x="85"  y="260" fill="#00d4ff" font-size="12" font-weight="600" text-anchor="middle">Recruiter B</text>
+
+    <!-- Arrows to Memory Server -->
+    <line x1="162" y1="53"  x2="272" y2="130" stroke="#00d4ff" stroke-width="1.5" marker-end="url(#arr-cyan)"/>
+    <line x1="162" y1="150" x2="272" y2="150" stroke="#00d4ff" stroke-width="1.5" marker-end="url(#arr-cyan)"/>
+    <line x1="162" y1="247" x2="272" y2="170" stroke="#00d4ff" stroke-width="1.5" marker-end="url(#arr-cyan)"/>
+    <text x="212" y="105" fill="#718096" font-size="9" text-anchor="middle">HTTP / MCP</text>
+
+    <!-- Memory Server -->
+    <rect x="278" y="98" width="180" height="104" rx="10" fill="#0d1f2d" stroke="#00d4ff" stroke-width="2"/>
+    <text x="368" y="120" fill="#00d4ff" font-size="11" font-weight="700" text-anchor="middle">Memory Server</text>
+    <line x1="298" y1="128" x2="438" y2="128" stroke="#1a3a4a" stroke-width="1"/>
+    <text x="368" y="144" fill="#718096" font-size="9.5" text-anchor="middle">memory_remember</text>
+    <text x="368" y="158" fill="#718096" font-size="9.5" text-anchor="middle">memory_search</text>
+    <text x="368" y="172" fill="#718096" font-size="9.5" text-anchor="middle">memory_crystallize</text>
+    <text x="368" y="186" fill="#718096" font-size="9.5" text-anchor="middle">+ resources / list</text>
+
+    <!-- Arrows to backends -->
+    <line x1="458" y1="125" x2="540" y2="80"  stroke="#48bb78" stroke-width="1.5" marker-end="url(#arr-green)"/>
+    <line x1="458" y1="150" x2="540" y2="150" stroke="#48bb78" stroke-width="1.5" marker-end="url(#arr-green)"/>
+    <line x1="458" y1="175" x2="540" y2="220" stroke="#48bb78" stroke-width="1.5" marker-end="url(#arr-green)"/>
+
+    <!-- Backends on right -->
+    <rect x="546" y="46"  width="158" height="46" rx="8" fill="#1a202c" stroke="#48bb78" stroke-width="1.5"/>
+    <text x="625" y="65"  fill="#718096" font-size="10" text-anchor="middle">SQLite + sqlite-vec</text>
+    <text x="625" y="81"  fill="#48bb78" font-size="11" font-weight="600" text-anchor="middle">Storage + Vectors</text>
+
+    <rect x="546" y="127" width="158" height="46" rx="8" fill="#1a202c" stroke="#9f7aea" stroke-width="1.5"/>
+    <text x="625" y="146" fill="#718096" font-size="10" text-anchor="middle">goose migrations</text>
+    <text x="625" y="162" fill="#9f7aea" font-size="11" font-weight="600" text-anchor="middle">Schema Manager</text>
+
+    <rect x="546" y="208" width="158" height="46" rx="8" fill="#1a202c" stroke="#f6e05e" stroke-width="1.5"/>
+    <text x="625" y="227" fill="#718096" font-size="10" text-anchor="middle">nomic-embed-text</text>
+    <text x="625" y="243" fill="#f6e05e" font-size="11" font-weight="600" text-anchor="middle">Ollama Embedder</text>
+  </svg>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 4 — Memory Types
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <h2>Memory Types</h2>
+  <p style="color:#718096; margin-bottom:.8em;">Four types cover everything from reference docs to learned processes.</p>
+
+  <div class="card-grid">
+    <div class="card" style="border-color:rgba(0,212,255,.3);">
+      <div class="icon">📄</div>
+      <div class="title" style="color:var(--cyan);">Resource</div>
+      <div class="desc">Read-only reference documents uploaded via REST API. Agents discover them through MCP <em>resources/list</em> or <em>memory_search</em>. Never modified by agents.</div>
+      <div style="margin-top:8px;"><span class="tag tag-cyan">source: resource</span></div>
+    </div>
+    <div class="card" style="border-color:rgba(72,187,120,.3);">
+      <div class="icon">🧠</div>
+      <div class="title" style="color:var(--green);">Semantic</div>
+      <div class="desc">Aggregated facts and domain knowledge — things that are durably true. Conflict detection prevents silent contradictions on write.</div>
+      <div style="margin-top:8px;"><span class="tag tag-green">author: human | agent</span></div>
+    </div>
+    <div class="card" style="border-color:rgba(246,224,94,.3);">
+      <div class="icon">📅</div>
+      <div class="title" style="color:var(--yellow);">Episodic</div>
+      <div class="desc">Time-indexed event records — things that <em>happened</em>. Phone screens, decisions, observations. Queryable by time range and tags.</div>
+      <div style="margin-top:8px;"><span class="tag tag-yellow">e.g. "Alice Chen screened 2024-03-10"</span></div>
+    </div>
+    <div class="card" style="border-color:rgba(159,122,234,.3);">
+      <div class="icon">🔧</div>
+      <div class="title" style="color:var(--purple);">Procedural</div>
+      <div class="desc">Learned behaviors and processes — how to do things. Emerges from episodic patterns. Can be <em>crystallized</em> into a versioned Skill runbook.</div>
+      <div style="margin-top:8px;"><span class="tag tag-purple">crystallizable → Skill</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 5 — Memory Lifecycle
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <h2>Memory Lifecycle</h2>
+  <p style="color:#718096; margin-bottom:.8em;">Memory is managed — not just stored.</p>
+
+  <svg viewBox="0 0 720 200" width="100%" style="max-width:700px;">
+    <defs>
+      <marker id="arr-lc" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#4a5568"/>
+      </marker>
+      <marker id="arr-crystal" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#9f7aea"/>
+      </marker>
+    </defs>
+
+    <!-- Nodes -->
+    <!-- Remember -->
+    <rect x="10"  y="70" width="110" height="52" rx="8" fill="#1a202c" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="65"  y="92"  fill="#00d4ff" font-size="11" font-weight="700" text-anchor="middle">Remember</text>
+    <text x="65"  y="108" fill="#718096" font-size="9" text-anchor="middle">embed + conflict check</text>
+
+    <!-- Search -->
+    <rect x="160" y="70" width="110" height="52" rx="8" fill="#1a202c" stroke="#48bb78" stroke-width="1.5"/>
+    <text x="215" y="92"  fill="#48bb78" font-size="11" font-weight="700" text-anchor="middle">Search</text>
+    <text x="215" y="108" fill="#718096" font-size="9" text-anchor="middle">vector + trust-weighted</text>
+
+    <!-- Flag / Update -->
+    <rect x="310" y="70" width="110" height="52" rx="8" fill="#1a202c" stroke="#f6e05e" stroke-width="1.5"/>
+    <text x="365" y="92"  fill="#f6e05e" font-size="11" font-weight="700" text-anchor="middle">Flag / Update</text>
+    <text x="365" y="108" fill="#718096" font-size="9" text-anchor="middle">correct or mark stale</text>
+
+    <!-- Consolidate -->
+    <rect x="460" y="70" width="110" height="52" rx="8" fill="#1a202c" stroke="#ed8936" stroke-width="1.5"/>
+    <text x="515" y="92"  fill="#ed8936" font-size="11" font-weight="700" text-anchor="middle">Consolidate</text>
+    <text x="515" y="108" fill="#718096" font-size="9" text-anchor="middle">merge related entries</text>
+
+    <!-- Crystallize -->
+    <rect x="610" y="70" width="100" height="52" rx="8" fill="#1a202c" stroke="#9f7aea" stroke-width="2"/>
+    <text x="660" y="92"  fill="#9f7aea" font-size="11" font-weight="700" text-anchor="middle">Crystallize</text>
+    <text x="660" y="108" fill="#718096" font-size="9" text-anchor="middle">→ Skill runbook</text>
+
+    <!-- Arrows -->
+    <line x1="120" y1="96" x2="157" y2="96" stroke="#4a5568" stroke-width="1.5" marker-end="url(#arr-lc)"/>
+    <line x1="270" y1="96" x2="307" y2="96" stroke="#4a5568" stroke-width="1.5" marker-end="url(#arr-lc)"/>
+    <line x1="420" y1="96" x2="457" y2="96" stroke="#4a5568" stroke-width="1.5" marker-end="url(#arr-lc)"/>
+    <line x1="570" y1="96" x2="607" y2="96" stroke="#9f7aea" stroke-width="1.5" marker-end="url(#arr-crystal)"/>
+
+    <!-- Trust/staleness note -->
+    <rect x="130" y="158" width="460" height="30" rx="6" fill="rgba(0,212,255,.05)" stroke="rgba(0,212,255,.2)" stroke-width="1"/>
+    <text x="360" y="178" fill="#718096" font-size="10" text-anchor="middle">
+      Background job every 24h: recomputes trust &amp; staleness scores, expires TTL'd entries, surfaces consolidation candidates
+    </text>
+  </svg>
+
+  <div class="two-col" style="margin-top:.6em;">
+    <div class="callout">
+      <strong>Trust score</strong> — author weight × age decay × correction penalty × flag penalty
+    </div>
+    <div class="callout">
+      <strong>Conflict detection</strong> — cosine similarity &gt; 0.85 on write returns conflicts; agent decides
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 6 — Skills Integration
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <h2>From Memory to Skill</h2>
+  <p style="color:#718096; margin-bottom:.8em;">Fluid procedural knowledge crystallizes into versioned, distributable runbooks.</p>
+
+  <svg viewBox="0 0 680 180" width="100%" style="max-width:660px;">
+    <defs>
+      <marker id="arr-sk" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#9f7aea"/>
+      </marker>
+      <marker id="arr-sk2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#48bb78"/>
+      </marker>
+    </defs>
+
+    <!-- Procedural memories -->
+    <rect x="10"  y="30"  width="155" height="36" rx="6" fill="#1a202c" stroke="#9f7aea" stroke-width="1.5"/>
+    <text x="87"  y="53"  fill="#9f7aea" font-size="11" font-weight="600" text-anchor="middle">🔧 Procedural memories</text>
+
+    <rect x="10"  y="80"  width="155" height="36" rx="6" fill="#1a202c" stroke="#9f7aea" stroke-width="1.5"/>
+    <text x="87"  y="103" fill="#9f7aea" font-size="11" font-weight="600" text-anchor="middle">🔧 Procedural memories</text>
+
+    <rect x="10"  y="130" width="155" height="36" rx="6" fill="#1a202c" stroke="#9f7aea" stroke-width="1.5"/>
+    <text x="87"  y="153" fill="#9f7aea" font-size="11" font-weight="600" text-anchor="middle">🔧 Procedural memories</text>
+
+    <!-- Crystallize -->
+    <line x1="166" y1="48"  x2="254" y2="88"  stroke="#9f7aea" stroke-width="1.5" marker-end="url(#arr-sk)"/>
+    <line x1="166" y1="98"  x2="254" y2="98"  stroke="#9f7aea" stroke-width="1.5" marker-end="url(#arr-sk)"/>
+    <line x1="166" y1="148" x2="254" y2="108" stroke="#9f7aea" stroke-width="1.5" marker-end="url(#arr-sk)"/>
+
+    <rect x="260" y="68" width="140" height="60" rx="8" fill="#0d1f2d" stroke="#9f7aea" stroke-width="2"/>
+    <text x="330" y="93"  fill="#9f7aea" font-size="11" font-weight="700" text-anchor="middle">memory_crystallize</text>
+    <text x="330" y="110" fill="#718096" font-size="9.5" text-anchor="middle">drafts SKILL.md scaffold</text>
+    <text x="330" y="123" fill="#718096" font-size="9.5" text-anchor="middle">human authors + pushes</text>
+
+    <!-- Arrow to Skill OCI -->
+    <line x1="402" y1="98" x2="484" y2="98" stroke="#48bb78" stroke-width="2" marker-end="url(#arr-sk2)"/>
+
+    <!-- Skill -->
+    <rect x="490" y="68" width="180" height="60" rx="8" fill="#1a202c" stroke="#48bb78" stroke-width="2"/>
+    <text x="580" y="90"  fill="#48bb78" font-size="11" font-weight="700" text-anchor="middle">Skill (OCI artifact)</text>
+    <text x="580" y="107" fill="#718096" font-size="9.5" text-anchor="middle">versioned · immutable</text>
+    <text x="580" y="120" fill="#718096" font-size="9.5" text-anchor="middle">distributable across teams</text>
+
+    <!-- crystallized_into label on originals -->
+    <text x="87" y="180" fill="#4a5568" font-size="9" text-anchor="middle">archived with crystallized_into pointer</text>
+  </svg>
+
+  <div class="callout purple" style="margin-top:.5em;">
+    Procedural memories and Skills are the same knowledge at different stages — fluid and evolving in memory, crystallized and versioned as a Skill.
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 7 — Demo Title
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <div style="margin-bottom:.6em;">
+    <span class="tag tag-cyan" style="font-size:.85em;">Live Demo</span>
+  </div>
+  <h1 style="font-size:2em; margin-bottom:.2em;">The Recruiter</h1>
+  <p style="font-size:1em; color:#a0aec0; margin-bottom:1.4em;">Hiring a Senior Go Engineer at Stacklok</p>
+
+  <div class="two-col" style="max-width:620px; margin:0 auto;">
+    <div style="text-align:left;">
+      <p style="font-size:.8em; color:#718096; margin-bottom:.4em;">Cast</p>
+      <div style="font-size:.82em; line-height:2;">
+        👩 <strong>Recruiter</strong> — runs phone screens<br>
+        🧑‍💼 <strong>Hiring Manager</strong> — checks pipeline cold<br>
+        🖥️ <strong>Memory Server</strong> — shared between all sessions
+      </div>
+    </div>
+    <div style="text-align:left;">
+      <p style="font-size:.8em; color:#718096; margin-bottom:.4em;">What we'll see</p>
+      <div style="font-size:.82em; line-height:2;">
+        ✅ Cross-session knowledge sharing<br>
+        ✅ Policy recalled without being told<br>
+        ✅ Process learned from failure<br>
+        ✅ Runbook born from experience
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 8 — Demo Overview (all phases)
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <h2>Scenario Overview</h2>
+  <ul class="phase-list">
+    <li>
+      <div class="phase-num">1</div>
+      <div class="phase-text">
+        <strong>Resource</strong> &nbsp;<span class="tag tag-cyan">resource</span><br>
+        <span>Upload job description as a read-only MCP Resource — agents can discover it via memory_search</span>
+      </div>
+    </li>
+    <li>
+      <div class="phase-num">2</div>
+      <div class="phase-text">
+        <strong>Semantic Memory</strong> &nbsp;<span class="tag tag-green">semantic</span><br>
+        <span>Prime 3 company-wide facts: no visa sponsorship, salary band $100–150K, remote US async culture</span>
+      </div>
+    </li>
+    <li>
+      <div class="phase-num">3</div>
+      <div class="phase-text">
+        <strong>Recruiter — Alice Chen</strong> &nbsp;<span class="tag tag-yellow">episodic</span><br>
+        <span>Strong candidate, needs H1-B. Agent searches policy, finds the blocker, logs the outcome</span>
+      </div>
+    </li>
+    <li>
+      <div class="phase-num">4</div>
+      <div class="phase-text">
+        <strong>Hiring Manager — cold search</strong> &nbsp;<span class="tag tag-green">semantic</span> <span class="tag tag-yellow">episodic</span><br>
+        <span>Joins cold. Searches pipeline, comp, JD — gets a full picture from memory alone</span>
+      </div>
+    </li>
+    <li>
+      <div class="phase-num">5</div>
+      <div class="phase-text">
+        <strong>Recruiter — Bob Martinez</strong> &nbsp;<span class="tag tag-yellow">episodic</span> <span class="tag tag-purple">procedural</span><br>
+        <span>Bob archived. Recruiter notices a pattern → writes a procedural memory for next screens</span>
+      </div>
+    </li>
+    <li>
+      <div class="phase-num">6</div>
+      <div class="phase-text">
+        <strong>Recruiter — Charlie Kim</strong> &nbsp;<span class="tag tag-purple">procedural</span> <span class="tag tag-yellow">episodic</span><br>
+        <span>Retrieves the checklist before the screen. Applies it. Charlie advances to the full loop.</span>
+      </div>
+    </li>
+    <li>
+      <div class="phase-num">7</div>
+      <div class="phase-text">
+        <strong>Crystallize → Skill</strong> &nbsp;<span class="tag tag-purple">procedural</span><br>
+        <span>One week of screens → crystallize → phone-screen runbook the whole team can reuse</span>
+      </div>
+    </li>
+  </ul>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 9 — Phase 1-2: Setup
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <div class="scenario-header">
+    <div class="phase-badge">Phases 1 – 2</div>
+    <div class="phase-title">Setup — prime the memory server</div>
+  </div>
+
+  <div class="two-col">
+    <div>
+      <p style="font-size:.8em; color:#718096; margin-bottom:.5em;">Phase 1 · Resource</p>
+      <div class="callout" style="font-size:.78em;">
+        <code style="color:var(--cyan);">POST /api/resources</code><br><br>
+        Job description uploaded as a <strong>read-only MCP Resource</strong>.<br>
+        Agents discover it via <code>memory_search</code> or <code>resources/list</code>.<br>
+        Cannot be modified or deleted by any agent.
+      </div>
+    </div>
+    <div>
+      <p style="font-size:.8em; color:#718096; margin-bottom:.5em;">Phase 2 · Semantic Memory</p>
+      <div class="callout green" style="font-size:.78em; margin-bottom:6px;">
+        🧠 &nbsp;Company does not sponsor US work visas for any engineering role
+      </div>
+      <div class="callout green" style="font-size:.78em; margin-bottom:6px;">
+        🧠 &nbsp;Senior Go Engineer base: $100K–$150K + equity
+      </div>
+      <div class="callout green" style="font-size:.78em;">
+        🧠 &nbsp;Engineering team fully remote, US timezone, async-first
+      </div>
+    </div>
+  </div>
+  <p style="font-size:.74em; color:#4a5568; margin-top:.8em;">Written once by the setup script — recalled by any agent session at any time.</p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 10 — Phase 3: Alice
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <div class="scenario-header">
+    <div class="phase-badge">Phase 3</div>
+    <div class="phase-title">Recruiter Session — Alice Chen phone screen</div>
+  </div>
+
+  <div class="two-col">
+    <div>
+      <p style="font-size:.78em; color:#718096; margin-bottom:.4em;">The recruiter says</p>
+      <div style="background:#1a202c; border-radius:8px; padding:12px 14px; font-size:.78em; color:#a0aec0; font-style:italic; line-height:1.6; border:1px solid #2d3748;">
+        "She mentioned she's on OPT and would need an H1-B transfer. Before I move her forward, I want to make sure that's not a blocker. Can you check if we have any policy on that?"
+      </div>
+    </div>
+    <div>
+      <p style="font-size:.78em; color:#718096; margin-bottom:.4em;">What the agent does</p>
+      <div style="font-size:.78em; line-height:1.8;">
+        <div style="color:#48bb78;">→ <code>memory_search("visa sponsorship policy")</code></div>
+        <div style="color:#718096; padding-left:16px; margin-bottom:6px;">Finds: "Company does not sponsor US work visas"</div>
+        <div style="color:#f6e05e;">→ <code>memory_remember</code> (episodic)</div>
+        <div style="color:#718096; padding-left:16px;">Alice Chen — OPT, needs H1-B → archived</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout yellow" style="margin-top:.8em; font-size:.8em;">
+    The agent found a policy it was never told about in this session — it came from shared memory written in Phase 2.
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 11 — Phase 4: Hiring Manager
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <div class="scenario-header">
+    <div class="phase-badge">Phase 4</div>
+    <div class="phase-title">Hiring Manager — cold search</div>
+  </div>
+
+  <p style="font-size:.8em; color:#718096; margin-bottom:.6em; font-style:italic;">
+    "I haven't been in the loop on recruiting — can you catch me up? I'd like to know who's been screened, where they stand, the approved comp range, and a reminder of what we're hiring for."
+  </p>
+
+  <div class="card-grid">
+    <div class="card" style="border-color:rgba(72,187,120,.3);">
+      <div class="title" style="color:var(--green); font-size:.78em;">memory_search("candidates screened")</div>
+      <div class="desc">Finds Alice Chen → archived (visa). Pipeline: 1 of 1 archived.</div>
+    </div>
+    <div class="card" style="border-color:rgba(72,187,120,.3);">
+      <div class="title" style="color:var(--green); font-size:.78em;">memory_search("visa sponsorship")</div>
+      <div class="desc">Confirms no-sponsorship policy. Explains why Alice was archived.</div>
+    </div>
+    <div class="card" style="border-color:rgba(72,187,120,.3);">
+      <div class="title" style="color:var(--green); font-size:.78em;">memory_search("salary compensation")</div>
+      <div class="desc">$100K–$150K base + equity. Approved band retrieved.</div>
+    </div>
+    <div class="card" style="border-color:rgba(0,212,255,.3);">
+      <div class="title" style="color:var(--cyan); font-size:.78em;">memory_search("job description")</div>
+      <div class="desc">Retrieves the JD Resource. Full role requirements surfaced.</div>
+    </div>
+  </div>
+  <p style="font-size:.72em; color:#4a5568; margin-top:.6em;">The hiring manager never spoke to the recruiter. The memory server was the handoff.</p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 12 — Phase 5: Bob + Procedural
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <div class="scenario-header">
+    <div class="phase-badge">Phase 5</div>
+    <div class="phase-title">Recruiter Session — Bob Martinez + a lesson learned</div>
+  </div>
+
+  <div class="two-col">
+    <div>
+      <div style="font-size:.78em; color:#a0aec0; font-style:italic; background:#1a202c; padding:12px; border-radius:8px; border:1px solid #2d3748; line-height:1.6;">
+        "…this is the second screen in a row where something obvious knocked the candidate out early. I feel like we could save everyone time if we checked those things right at the start of each call. Worth noting that pattern somewhere."
+      </div>
+    </div>
+    <div>
+      <div class="callout purple" style="font-size:.78em;">
+        <strong>🔧 Procedural memory written</strong><br><br>
+        "Phone screen gate: (1) confirm work-auth in first 5 min, (2) ask candidate to explain Raft — weak answers correlate strongly with underperformance."
+      </div>
+    </div>
+  </div>
+
+  <div class="callout yellow" style="margin-top:.8em; font-size:.8em;">
+    The recruiter didn't say "write a procedural memory." The agent recognized it as a reusable process and chose the right memory type.
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 13 — Phase 6: Charlie
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <div class="scenario-header">
+    <div class="phase-badge">Phase 6</div>
+    <div class="phase-title">Recruiter Session — Charlie Kim</div>
+  </div>
+
+  <div class="two-col">
+    <div>
+      <p style="font-size:.78em; color:#718096; margin-bottom:.4em;"><em>Before the screen</em></p>
+      <div style="font-size:.78em; color:#a0aec0; font-style:italic; background:#1a202c; padding:12px; border-radius:8px; border:1px solid #2d3748; line-height:1.6;">
+        "About to jump on a screen with Charlie Kim. Do we have anything on how to run these calls?"
+      </div>
+      <div style="margin-top:10px; font-size:.78em; color:#48bb78;">
+        → <code>memory_search("phone screen process")</code><br>
+        <span style="color:#718096; padding-left:16px;">Retrieves the checklist from Phase 5</span>
+      </div>
+    </div>
+    <div>
+      <p style="font-size:.78em; color:#718096; margin-bottom:.4em;"><em>After the screen</em></p>
+      <div class="callout green" style="font-size:.77em; margin-bottom:6px;">
+        ✅ US citizen — work-auth clear (first question)
+      </div>
+      <div class="callout green" style="font-size:.77em; margin-bottom:6px;">
+        ✅ $140K ask — within the $100–150K band
+      </div>
+      <div class="callout green" style="font-size:.77em;">
+        ✅ Explained Raft + leader election edge cases unprompted
+      </div>
+      <p style="font-size:.75em; color:#48bb78; margin-top:.6em; font-weight:600;">→ Advancing to interview loop</p>
+    </div>
+  </div>
+
+  <div class="callout" style="margin-top:.6em; font-size:.78em;">
+    The checklist was written by a <em>different agent session</em>. This session retrieved and applied it.
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 14 — Phase 7: Crystallize
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <div class="scenario-header">
+    <div class="phase-badge">Phase 7</div>
+    <div class="phase-title">Crystallize — phone-screen pattern → reusable Skill</div>
+  </div>
+
+  <div style="font-size:.78em; color:#a0aec0; font-style:italic; background:#1a202c; padding:10px 14px; border-radius:8px; border:1px solid #2d3748; margin-bottom:.8em;">
+    "We've wrapped the first week of screens. I want to turn what we learned into something the whole recruiting team can reuse — a proper runbook for future phone screens."
+  </div>
+
+  <div class="two-col">
+    <div style="font-size:.78em; color:#a0aec0;">
+      <div style="color:#9f7aea; margin-bottom:4px;">Agent retrieves</div>
+      <div style="color:#718096; line-height:1.8;">
+        → <code>memory_list(type=procedural)</code><br>
+        → <code>memory_search("phone screen patterns")</code><br>
+        → <code>memory_crystallize([ids…])</code>
+      </div>
+    </div>
+    <div>
+      <div class="callout purple" style="font-size:.76em; line-height:1.6;">
+        <strong>Output: SKILL.md scaffold</strong><br>
+        Knockout gates · Technical depth probe<br>
+        Decision rubric · Post-call logging template<br><br>
+        Human authors it → <code>thv skills push</code> → OCI artifact.<br>
+        Procedural memories archived with <code>crystallized_into</code> pointer.
+      </div>
+    </div>
+  </div>
+
+  <p style="font-size:.72em; color:#4a5568; margin-top:.6em;">One week of lived experience → a versioned, distributable runbook any recruiter can follow.</p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SLIDE 15 — Summary
+     ══════════════════════════════════════════════════════════════ -->
+<section>
+  <h2>What We Just Saw</h2>
+
+  <ul class="phase-list" style="margin-top:.4em;">
+    <li>
+      <div class="phase-num" style="background:rgba(0,212,255,.1);">📄</div>
+      <div class="phase-text">
+        <strong>Resources</strong> — reference docs agents discover through MCP; never modified by agents
+      </div>
+    </li>
+    <li>
+      <div class="phase-num" style="background:rgba(72,187,120,.1);">🧠</div>
+      <div class="phase-text">
+        <strong>Semantic memory</strong> — company-wide facts written once, recalled by any session
+      </div>
+    </li>
+    <li>
+      <div class="phase-num" style="background:rgba(246,224,94,.1);">📅</div>
+      <div class="phase-text">
+        <strong>Episodic memory</strong> — time-indexed events building a shared pipeline log
+      </div>
+    </li>
+    <li>
+      <div class="phase-num" style="background:rgba(159,122,234,.1);">🔧</div>
+      <div class="phase-text">
+        <strong>Procedural memory</strong> — process knowledge that emerged from failure, retrieved by a different session
+      </div>
+    </li>
+    <li>
+      <div class="phase-num" style="background:rgba(159,122,234,.1);">✨</div>
+      <div class="phase-text">
+        <strong>Crystallization</strong> — lived experience promoted into a versioned Skill runbook the whole team can use
+      </div>
+    </li>
+  </ul>
+
+  <div class="callout" style="margin-top:.8em; font-size:.82em; text-align:center;">
+    Any Claude Code session. One MCP config file. Shared memory across the whole team.
+  </div>
+</section>
+
+</div><!-- .slides -->
+</div><!-- .reveal -->
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    controls: true,
+    progress: true,
+    slideNumber: true,
+    transition: 'slide',
+    transitionSpeed: 'fast',
+    backgroundTransition: 'none',
+    width: 1100,
+    height: 680,
+    margin: 0.06,
+  });
+</script>
+</body>
+</html>

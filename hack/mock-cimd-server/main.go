@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -108,12 +109,13 @@ func runAS() {
 		// Safe: redirect_uri is validated to be localhost above.
 		go func() {
 			time.Sleep(300 * time.Millisecond)
-			resp, err := http.Get(callbackURL) //nolint:noctx
+			resp, err := http.Get(callbackURL) //nolint:noctx,gosec // G107: URL validated to localhost above
 			if err != nil {
 				slog.Error("Failed to auto-complete callback", "err", err)
 				return
 			}
-			defer resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 			slog.Info("✅ Auto-completed OAuth callback", "status", resp.StatusCode)
 		}()
 
@@ -135,7 +137,7 @@ func runAS() {
 	})
 
 	// DCR endpoint — logs a warning if reached (CIMD should prevent this)
-	mux.HandleFunc("/oauth/register", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/oauth/register", func(w http.ResponseWriter, _ *http.Request) {
 		slog.Warn("⚠️  DCR called — CIMD was NOT used or was rejected")
 		resp := map[string]any{
 			"client_id":     "dcr-fallback-" + randomString(8),
@@ -174,7 +176,11 @@ func runMCPServer() {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		slog.Info("✅ Authenticated MCP request received", "auth", auth[:min(len(auth), 30)]+"...")
+		truncLen := 30
+		if len(auth) < truncLen {
+			truncLen = len(auth)
+		}
+		slog.Info("✅ Authenticated MCP request received", "auth", auth[:truncLen]+"...")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","result":{"protocolVersion":"2025-11-05","capabilities":{}},"id":1}`))
 	})
@@ -201,11 +207,4 @@ func randomString(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)[:n]
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

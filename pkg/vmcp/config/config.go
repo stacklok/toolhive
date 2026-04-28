@@ -15,7 +15,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
-	rlconfig "github.com/stacklok/toolhive/pkg/ratelimit/config"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -181,7 +180,7 @@ type Config struct {
 	// This remains YAML-only so it can be written to the runtime config ConfigMap
 	// without exposing spec.config.rateLimiting in the Kubernetes API.
 	// +optional
-	RateLimiting *rlconfig.Config `json:"-" yaml:"rateLimiting,omitempty"`
+	RateLimiting *thvjson.Map `json:"-" yaml:"rateLimiting,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.

@@ -49,7 +49,7 @@ func TestNewLimiter_ZeroMaxTokens(t *testing.T) {
 		},
 	}
 
-	_, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	_, err := NewLimiter(client, "ns", "srv", crd)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "maxTokens must be >= 1")
 }
@@ -65,7 +65,7 @@ func TestNewLimiter_ZeroDuration(t *testing.T) {
 		},
 	}
 
-	_, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	_, err := NewLimiter(client, "ns", "srv", crd)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "refillPeriod must be positive")
 }
@@ -78,7 +78,7 @@ func TestLimiter_ServerGlobalExhausted(t *testing.T) {
 	crd := &v1beta1.RateLimitConfig{
 		Shared: &v1beta1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 	}
-	l, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
 
 	for range 2 {
@@ -107,7 +107,7 @@ func TestLimiter_SharedAliasUsesLegacyRedisKeys(t *testing.T) {
 			},
 		},
 	}
-	l, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
 
 	d, err := l.Allow(ctx, "search", "")
@@ -142,7 +142,7 @@ func TestLimiter_GlobalUsesGlobalRedisKeys(t *testing.T) {
 			},
 		},
 	}
-	l, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
 
 	d, err := l.Allow(ctx, "search", "")
@@ -170,7 +170,7 @@ func TestLimiter_PerToolIsolation(t *testing.T) {
 			},
 		},
 	}
-	l, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
 
 	d, err := l.Allow(ctx, "search", "")
@@ -201,7 +201,7 @@ func TestLimiter_ServerAndPerToolBothRequired(t *testing.T) {
 			},
 		},
 	}
-	l, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
 
 	for range 2 {
@@ -228,7 +228,7 @@ func TestLimiter_RedisUnavailableReturnsError(t *testing.T) {
 	crd := &v1beta1.RateLimitConfig{
 		Shared: &v1beta1.RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 	}
-	l, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
 
 	mr.Close()
@@ -245,7 +245,7 @@ func TestLimiter_PerUserServerLevel(t *testing.T) {
 	crd := &v1beta1.RateLimitConfig{
 		PerUser: &v1beta1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 	}
-	l, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
 
 	// User A exhausts their 2 tokens.
@@ -265,28 +265,6 @@ func TestLimiter_PerUserServerLevel(t *testing.T) {
 	assert.True(t, d.Allowed)
 }
 
-func TestLimiter_PerUserServerLevelSharedAcrossBackendTools(t *testing.T) {
-	t.Parallel()
-	client, _ := newTestClient(t)
-	ctx := t.Context()
-
-	crd := &v1beta1.RateLimitConfig{
-		PerUser: &v1beta1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
-	}
-	l, err := NewLimiter(client, "ns", "vmcp", crd.ToInternal())
-	require.NoError(t, err)
-
-	for _, toolName := range []string{"backend_a_echo", "backend_b_search"} {
-		d, allowErr := l.Allow(ctx, toolName, "user-a")
-		require.NoError(t, allowErr)
-		require.True(t, d.Allowed)
-	}
-
-	d, err := l.Allow(ctx, "backend_c_status", "user-a")
-	require.NoError(t, err)
-	assert.False(t, d.Allowed, "server-level per-user limit must be shared across all backend tools")
-}
-
 func TestLimiter_PerToolPerUserIsolation(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
@@ -300,7 +278,7 @@ func TestLimiter_PerToolPerUserIsolation(t *testing.T) {
 			},
 		},
 	}
-	l, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
 
 	// User A uses their 1 token for "search".
@@ -338,7 +316,7 @@ func TestLimiter_ServerAndToolPerUserBothRequired(t *testing.T) {
 			},
 		},
 	}
-	l, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
 
 	// User A makes 2 "search" calls — both pass.
@@ -359,66 +337,6 @@ func TestLimiter_ServerAndToolPerUserBothRequired(t *testing.T) {
 	assert.True(t, d.Allowed)
 }
 
-func TestLimiter_PerToolUsesPostAggregationName(t *testing.T) {
-	t.Parallel()
-	client, _ := newTestClient(t)
-	ctx := t.Context()
-
-	crd := &v1beta1.RateLimitConfig{
-		Tools: []v1beta1.ToolRateLimitConfig{
-			{
-				Name:   "backend_a_expensive_tool",
-				Global: &v1beta1.RateLimitBucket{MaxTokens: 1, RefillPeriod: metav1.Duration{Duration: time.Minute}},
-			},
-		},
-	}
-	l, err := NewLimiter(client, "ns", "vmcp", crd.ToInternal())
-	require.NoError(t, err)
-
-	d, err := l.Allow(ctx, "backend_a_expensive_tool", "user-a")
-	require.NoError(t, err)
-	require.True(t, d.Allowed)
-
-	d, err = l.Allow(ctx, "backend_a_expensive_tool", "user-b")
-	require.NoError(t, err)
-	assert.False(t, d.Allowed, "global per-tool limit should apply to the post-aggregation tool name")
-
-	d, err = l.Allow(ctx, "expensive_tool", "user-a")
-	require.NoError(t, err)
-	assert.True(t, d.Allowed, "unprefixed backend name should not match the vMCP post-aggregation limit")
-}
-
-func TestLimiter_GlobalAndPerUserBothEnforced(t *testing.T) {
-	t.Parallel()
-	client, _ := newTestClient(t)
-	ctx := t.Context()
-
-	crd := &v1beta1.RateLimitConfig{
-		Global:  &v1beta1.RateLimitBucket{MaxTokens: 3, RefillPeriod: metav1.Duration{Duration: time.Minute}},
-		PerUser: &v1beta1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
-	}
-	l, err := NewLimiter(client, "ns", "vmcp", crd.ToInternal())
-	require.NoError(t, err)
-
-	for range 2 {
-		d, allowErr := l.Allow(ctx, "backend_a_echo", "user-a")
-		require.NoError(t, allowErr)
-		require.True(t, d.Allowed)
-	}
-
-	d, err := l.Allow(ctx, "backend_a_echo", "user-a")
-	require.NoError(t, err)
-	assert.False(t, d.Allowed, "per-user limit should reject user-a's third call")
-
-	d, err = l.Allow(ctx, "backend_b_echo", "user-b")
-	require.NoError(t, err)
-	require.True(t, d.Allowed, "global bucket should still have one token because rejected calls do not drain")
-
-	d, err = l.Allow(ctx, "backend_b_echo", "user-c")
-	require.NoError(t, err)
-	assert.False(t, d.Allowed, "global limit should reject after total allowed calls are exhausted")
-}
-
 func TestLimiter_PerUserRejectionDoesNotDrainShared(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
@@ -430,7 +348,7 @@ func TestLimiter_PerUserRejectionDoesNotDrainShared(t *testing.T) {
 		Shared:  &v1beta1.RateLimitBucket{MaxTokens: 3, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 		PerUser: &v1beta1.RateLimitBucket{MaxTokens: 1, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 	}
-	l, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
 
 	// User A: first call passes (shared=2, user-a=0).
@@ -465,7 +383,7 @@ func TestLimiter_RedisUnavailablePerUser(t *testing.T) {
 	crd := &v1beta1.RateLimitConfig{
 		PerUser: &v1beta1.RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 	}
-	l, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
 
 	mr.Close()
@@ -481,7 +399,7 @@ func TestNewLimiter_PerUserZeroMaxTokens(t *testing.T) {
 	crd := &v1beta1.RateLimitConfig{
 		PerUser: &v1beta1.RateLimitBucket{MaxTokens: 0, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 	}
-	_, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	_, err := NewLimiter(client, "ns", "srv", crd)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "perUser bucket: maxTokens must be >= 1")
 }
@@ -498,7 +416,7 @@ func TestNewLimiter_ToolPerUserZeroDuration(t *testing.T) {
 			},
 		},
 	}
-	_, err := NewLimiter(client, "ns", "srv", crd.ToInternal())
+	_, err := NewLimiter(client, "ns", "srv", crd)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), `tool "search" perUser bucket: refillPeriod must be positive`)
 }

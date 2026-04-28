@@ -14,7 +14,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	rlconfig "github.com/stacklok/toolhive/pkg/ratelimit/config"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/ratelimit/internal/bucket"
 )
 
@@ -39,7 +39,7 @@ type Decision struct {
 // NewLimiter constructs a Limiter from CRD configuration.
 // Returns a no-op limiter (always allows) when crd is nil.
 // namespace and name identify the MCP server for Redis key derivation.
-func NewLimiter(client redis.Cmdable, namespace, name string, crd *rlconfig.Config) (Limiter, error) {
+func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1beta1.RateLimitConfig) (Limiter, error) {
 	if crd == nil {
 		return noopLimiter{}, nil
 	}
@@ -88,7 +88,7 @@ func NewLimiter(client redis.Cmdable, namespace, name string, crd *rlconfig.Conf
 	return l, nil
 }
 
-func serverGlobalBucket(crd *rlconfig.Config) (*rlconfig.Bucket, string) {
+func serverGlobalBucket(crd *v1beta1.RateLimitConfig) (*v1beta1.RateLimitBucket, string) {
 	if crd.Global != nil {
 		return crd.Global, "global"
 	}
@@ -98,7 +98,7 @@ func serverGlobalBucket(crd *rlconfig.Config) (*rlconfig.Bucket, string) {
 	return nil, ""
 }
 
-func toolGlobalBucket(tool *rlconfig.ToolConfig) (*rlconfig.Bucket, string) {
+func toolGlobalBucket(tool *v1beta1.ToolRateLimitConfig) (*v1beta1.RateLimitBucket, string) {
 	if tool.Global != nil {
 		return tool.Global, "global"
 	}
@@ -197,7 +197,7 @@ func (noopLimiter) Allow(context.Context, string, string) (*Decision, error) {
 }
 
 // validateBucketCRD checks that a CRD bucket spec has valid parameters.
-func validateBucketCRD(b *rlconfig.Bucket) (int32, time.Duration, error) {
+func validateBucketCRD(b *v1beta1.RateLimitBucket) (int32, time.Duration, error) {
 	if b.MaxTokens < 1 {
 		return 0, 0, fmt.Errorf("maxTokens must be >= 1, got %d", b.MaxTokens)
 	}
@@ -209,7 +209,7 @@ func validateBucketCRD(b *rlconfig.Bucket) (int32, time.Duration, error) {
 }
 
 // newBucket validates a CRD bucket spec and creates a TokenBucket.
-func newBucket(namespace, serverName, suffix string, b *rlconfig.Bucket) (*bucket.TokenBucket, error) {
+func newBucket(namespace, serverName, suffix string, b *v1beta1.RateLimitBucket) (*bucket.TokenBucket, error) {
 	maxTokens, refillPeriod, err := validateBucketCRD(b)
 	if err != nil {
 		return nil, err
@@ -219,7 +219,7 @@ func newBucket(namespace, serverName, suffix string, b *rlconfig.Bucket) (*bucke
 
 // newBucketSpec validates a CRD bucket spec and creates a deferred bucketSpec
 // for per-user buckets that are materialized at Allow() time.
-func newBucketSpec(namespace, serverName string, b *rlconfig.Bucket) (bucketSpec, error) {
+func newBucketSpec(namespace, serverName string, b *v1beta1.RateLimitBucket) (bucketSpec, error) {
 	maxTokens, refillPeriod, err := validateBucketCRD(b)
 	if err != nil {
 		return bucketSpec{}, err

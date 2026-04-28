@@ -127,10 +127,65 @@ func TestConverter_RateLimitingFromTopLevelSpec(t *testing.T) {
 	cfg, _, err := converter.Convert(context.Background(), vmcp, nil)
 	require.NoError(t, err)
 	require.NotNil(t, cfg.RateLimiting)
-	require.NotNil(t, cfg.RateLimiting.Global)
-	assert.Equal(t, int32(10), cfg.RateLimiting.Global.MaxTokens)
-	require.Len(t, cfg.RateLimiting.Tools, 1)
-	assert.Equal(t, "backend_a_echo", cfg.RateLimiting.Tools[0].Name)
+
+	rateLimiting := cfg.RateLimiting.Get()
+	global, ok := rateLimiting["global"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 10, global["maxTokens"])
+	tools, ok := rateLimiting["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "backend_a_echo", tool["name"])
+}
+
+func TestConverter_RateLimitingPreservesSharedAliasAndCopiesInput(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef:     &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
+			RateLimiting: &mcpv1beta1.RateLimitConfig{
+				Shared: &mcpv1beta1.RateLimitBucket{
+					MaxTokens:    10,
+					RefillPeriod: metav1.Duration{Duration: time.Minute},
+				},
+				Tools: []mcpv1beta1.ToolRateLimitConfig{
+					{
+						Name: "backend_a_echo",
+						Shared: &mcpv1beta1.RateLimitBucket{
+							MaxTokens:    1,
+							RefillPeriod: metav1.Duration{Duration: time.Second},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	converter := newTestConverter(t, newNoOpMockResolver(t))
+	cfg, _, err := converter.Convert(context.Background(), vmcp, nil)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.RateLimiting)
+
+	vmcp.Spec.RateLimiting.Shared.MaxTokens = 99
+	vmcp.Spec.RateLimiting.Tools[0].Shared.MaxTokens = 88
+
+	rateLimiting := cfg.RateLimiting.Get()
+	shared, ok := rateLimiting["shared"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 10, shared["maxTokens"])
+	tools, ok := rateLimiting["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	toolShared, ok := tool["shared"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 1, toolShared["maxTokens"])
 }
 
 func TestConverter_OIDCResolution(t *testing.T) {

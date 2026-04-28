@@ -10,6 +10,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -460,9 +461,30 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 		backend.Spec.Image = images.YardstickServerImage
 		Expect(k8sClient.Update(ctx, backend)).To(Succeed())
 
+		By("Waiting for backend StatefulSet template to use the fixed image")
+		Eventually(func() error {
+			sts := &appsv1.StatefulSet{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      backend2Name,
+				Namespace: testNamespace,
+			}, sts); err != nil {
+				return err
+			}
+			for _, container := range sts.Spec.Template.Spec.Containers {
+				if container.Name == "mcp" {
+					if container.Image != images.YardstickServerImage {
+						return fmt.Errorf("statefulset still has image %q", container.Image)
+					}
+					return nil
+				}
+			}
+			return fmt.Errorf("mcp container not found in statefulset template")
+		}, timeout, pollingInterval).Should(Succeed())
+
 		By("Deleting stuck pods to force recreation with fixed image")
 		// Pods in ImagePullBackOff don't automatically recreate when image is fixed
-		// Delete them to force the statefulset to create new pods with the correct image
+		// Delete them after the statefulset template is updated, otherwise the old template
+		// can immediately recreate the pod with the broken image again.
 		podList := &corev1.PodList{}
 		Expect(k8sClient.List(ctx, podList,
 			client.InNamespace(testNamespace),

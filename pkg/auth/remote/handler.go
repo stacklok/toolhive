@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"golang.org/x/oauth2"
 
@@ -136,9 +137,10 @@ func (h *Handler) performOAuthFlow(
 	cimdUsed := flowConfig.ClientID == oauthproto.ToolHiveClientMetadataDocumentURL
 
 	result, err := discovery.PerformOAuthFlow(ctx, issuer, flowConfig)
-	if err != nil && cimdUsed {
-		slog.Warn("CIMD client_id rejected by authorization server, retrying with DCR", "error", err)
+	if err != nil && cimdUsed && isCIMDRejectionError(err) {
+		slog.Warn("CIMD client_id rejected by AS, retrying with DCR", "issuer", issuer, "error", err)
 		flowConfig.ClientID = ""
+		flowConfig.SkipCIMD = true // prevent the pre-check from re-applying the CIMD URL
 		result, err = discovery.PerformOAuthFlow(ctx, issuer, flowConfig)
 	}
 	if err != nil {
@@ -479,4 +481,16 @@ func (h *Handler) tryDiscoverFromWellKnown(
 	}
 
 	return authServerInfo.Issuer, scopes, authServerInfo, nil
+}
+
+// isCIMDRejectionError returns true if err indicates the AS rejected the CIMD
+// client_id at the authorization request stage. Per RFC-0071, only
+// invalid_client and unauthorized_client trigger a DCR retry; invalid_request
+// and token-exchange errors must surface as real failures.
+func isCIMDRejectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "invalid_client") || strings.Contains(msg, "unauthorized_client")
 }

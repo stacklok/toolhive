@@ -6,6 +6,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -796,6 +797,61 @@ func TestAuthenticate_BearerTokenPriority(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "my-bearer-token", token.AccessToken)
 	assert.Equal(t, "Bearer", token.TokenType)
+}
+
+// TestIsCIMDRejectionError covers the isCIMDRejectionError helper used in the CIMD retry
+// path. See TestBuildOAuthFlowConfig_CIMD for the config-level CIMD behavioral tests.
+func TestIsCIMDRejectionError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error returns false",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "invalid_client triggers retry",
+			err:  fmt.Errorf("oauth2: cannot fetch token: 400 Bad Request\nResponse: {\"error\":\"invalid_client\"}"),
+			want: true,
+		},
+		{
+			name: "unauthorized_client triggers retry",
+			err:  fmt.Errorf("oauth2: cannot fetch token: 401 Unauthorized\nResponse: {\"error\":\"unauthorized_client\"}"),
+			want: true,
+		},
+		{
+			name: "invalid_request does not trigger retry",
+			err:  fmt.Errorf("oauth2: cannot fetch token: 400 Bad Request\nResponse: {\"error\":\"invalid_request\"}"),
+			want: false,
+		},
+		{
+			name: "network error does not trigger retry",
+			err:  fmt.Errorf("dial tcp: connection refused"),
+			want: false,
+		},
+		{
+			name: "timeout error does not trigger retry",
+			err:  fmt.Errorf("OAuth flow timed out after 5m0s - user did not complete authentication"),
+			want: false,
+		},
+		{
+			name: "access_denied does not trigger retry",
+			err:  fmt.Errorf("oauth2: cannot fetch token: 403 Forbidden\nResponse: {\"error\":\"access_denied\"}"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isCIMDRejectionError(tt.err))
+		})
+	}
 }
 
 // TestBuildOAuthFlowConfig_CIMD tests that buildOAuthFlowConfig sets the CIMD client_id

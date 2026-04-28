@@ -511,6 +511,9 @@ type OAuthFlowConfig struct {
 	Resource             string // RFC 8707 resource indicator (optional)
 	OAuthParams          map[string]string
 	ScopeParamName       string // Override scope query parameter name (e.g., "user_scope" for Slack)
+	// SkipCIMD disables the CIMD pre-check, forcing the DCR path. Set on retry
+	// after a CIMD client_id has been rejected by the authorization server.
+	SkipCIMD bool
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -532,6 +535,37 @@ func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
 	return config.ClientID == "" && config.ClientSecret == ""
 }
 
+// applyDiscoveryPreCheck fetches the AS discovery document once before the DCR
+// gate. It caches the discovered endpoints on config so handleDynamicRegistration
+// short-circuits instead of fetching a second time, and applies the CIMD URL as
+// client_id when the AS advertises client_id_metadata_document_supported.
+func applyDiscoveryPreCheck(ctx context.Context, issuer string, config *OAuthFlowConfig) {
+	doc, err := getDiscoveryDocument(ctx, issuer, config)
+	if err != nil {
+		slog.Warn("CIMD pre-check: AS discovery fetch failed, falling back to DCR path",
+			"issuer", issuer, "error", err)
+		return
+	}
+	if doc == nil {
+		return
+	}
+	// Cache endpoints to prevent a second fetch on the DCR path.
+	if doc.RegistrationEndpoint != "" && config.RegistrationEndpoint == "" {
+		config.RegistrationEndpoint = doc.RegistrationEndpoint
+	}
+	if doc.AuthorizationEndpoint != "" && config.AuthorizeURL == "" {
+		config.AuthorizeURL = doc.AuthorizationEndpoint
+	}
+	if doc.TokenEndpoint != "" && config.TokenURL == "" {
+		config.TokenURL = doc.TokenEndpoint
+	}
+	if doc.ClientIDMetadataDocumentSupported {
+		config.ClientID = oauthproto.ToolHiveClientMetadataDocumentURL
+		slog.Debug("AS supports CIMD, using metadata URL as client_id",
+			"url", oauthproto.ToolHiveClientMetadataDocumentURL)
+	}
+}
+
 // PerformOAuthFlow performs an OAuth authentication flow with the given configuration
 func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfig) (*OAuthFlowResult, error) {
 	slog.Debug("Starting OAuth authentication flow", "issuer", issuer)
@@ -540,17 +574,9 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		return nil, fmt.Errorf("OAuth flow config cannot be nil")
 	}
 
-	// Before resolving ports or attempting DCR, check whether the AS advertises CIMD
-	// support. This handles issuer discovery paths (configured issuer, realm-derived)
-	// that return without fetching the AS discovery document, so the CIMD flag would
-	// otherwise never be seen.
-	if shouldDynamicallyRegisterClient(config) {
-		if doc, err := getDiscoveryDocument(ctx, issuer, config); err == nil &&
-			doc != nil && doc.ClientIDMetadataDocumentSupported {
-			config.ClientID = oauthproto.ToolHiveClientMetadataDocumentURL
-			slog.Debug("AS supports CIMD, using metadata URL as client_id",
-				"url", oauthproto.ToolHiveClientMetadataDocumentURL)
-		}
+	// Before resolving ports or attempting DCR, run the CIMD pre-check. See applyDiscoveryPreCheck.
+	if shouldDynamicallyRegisterClient(config) && !config.SkipCIMD {
+		applyDiscoveryPreCheck(ctx, issuer, config)
 	}
 
 	// Resolve port availability BEFORE dynamic registration

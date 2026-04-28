@@ -17,6 +17,8 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
@@ -292,9 +294,7 @@ func (v *MultiIssuerTokenValidator) discoverJWKSURL(ctx context.Context, issuerU
 		return "", fmt.Errorf("failed to read discovery response: %w", err)
 	}
 
-	var doc struct {
-		JWKSURI string `json:"jwks_uri"`
-	}
+	var doc oauthproto.OIDCDiscoveryDocument
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return "", fmt.Errorf("failed to parse discovery document: %w", err)
 	}

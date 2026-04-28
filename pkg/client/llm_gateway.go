@@ -177,7 +177,12 @@ func (cm *ClientManager) LLMGatewayModeFor(clientType ClientApp) string {
 }
 
 // DetectedLLMGatewayClients returns the subset of LLM-gateway-capable clients
-// whose settings directory exists on this machine.
+// that are installed on this machine. A client is considered installed when:
+//  1. Its settings directory exists on disk.
+//  2. If LLMBinaryName is set, the binary is also present on $PATH.
+//
+// The binary check prevents false positives from leftover config directories
+// (e.g. ~/.claude or ~/.gemini) that remain after a tool is uninstalled.
 func (cm *ClientManager) DetectedLLMGatewayClients() []ClientApp {
 	var result []ClientApp
 	for i := range cm.clientIntegrations {
@@ -186,9 +191,15 @@ func (cm *ClientManager) DetectedLLMGatewayClients() []ClientApp {
 			continue
 		}
 		path := cm.buildLLMSettingsPath(cfg)
-		if _, err := os.Stat(filepath.Dir(path)); err == nil {
-			result = append(result, cfg.ClientType)
+		if _, err := os.Stat(filepath.Dir(path)); err != nil {
+			continue
 		}
+		if cfg.LLMBinaryName != "" {
+			if _, err := cm.lookPath(cfg.LLMBinaryName); err != nil {
+				continue
+			}
+		}
+		result = append(result, cfg.ClientType)
 	}
 	return result
 }

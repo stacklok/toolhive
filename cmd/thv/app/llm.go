@@ -308,7 +308,11 @@ func runLLMTeardown(
 			_, _ = fmt.Fprintf(errOut, "Warning: could not get secrets provider: %v\n", err)
 		}
 	}
-	return llm.Teardown(ctx, out, errOut, &clientManagerAdapter{cm}, args, purgeTokens, &configUpdaterAdapter{provider}, sp)
+	var targetTool string
+	if len(args) == 1 {
+		targetTool = args[0]
+	}
+	return llm.Teardown(ctx, out, errOut, &clientManagerAdapter{cm}, targetTool, purgeTokens, &configUpdaterAdapter{provider}, sp)
 }
 
 // ── CLI adapters ──────────────────────────────────────────────────────────────
@@ -325,13 +329,11 @@ func (a *clientManagerAdapter) DetectedLLMGatewayClients() []string {
 	return result
 }
 
-func (a *clientManagerAdapter) ConfigureLLMGateway(
-	clientType, gatewayURL, proxyBaseURL, tokenHelperCommand string,
-) (string, error) {
+func (a *clientManagerAdapter) ConfigureLLMGateway(clientType string, cfg llm.ToolApplyConfig) (string, error) {
 	return a.cm.ConfigureLLMGateway(client.ClientApp(clientType), client.LLMApplyConfig{
-		GatewayURL:         gatewayURL,
-		ProxyBaseURL:       proxyBaseURL,
-		TokenHelperCommand: tokenHelperCommand,
+		GatewayURL:         cfg.GatewayURL,
+		ProxyBaseURL:       cfg.ProxyBaseURL,
+		TokenHelperCommand: cfg.TokenHelperCommand,
 	})
 }
 

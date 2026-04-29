@@ -18,13 +18,22 @@ import (
 // parameter so that tests can inject a no-op without touching the keyring.
 type LoginFunc func(ctx context.Context, cfg *Config) error
 
+// ToolApplyConfig carries the values needed to configure a single tool's LLM
+// gateway settings. Using a struct prevents positional-argument mistakes when
+// the caller has multiple similar string values in scope.
+type ToolApplyConfig struct {
+	GatewayURL         string // direct-mode: URL of the upstream LLM gateway
+	ProxyBaseURL       string // proxy-mode: URL of the localhost reverse proxy
+	TokenHelperCommand string // direct-mode: shell command that prints a fresh token
+}
+
 // GatewayManager is the subset of client.ClientManager used by Setup and
 // Teardown. Defined here so pkg/llm does not import pkg/client.
 type GatewayManager interface {
 	// DetectedLLMGatewayClients returns tool names for all installed LLM-gateway-capable tools.
 	DetectedLLMGatewayClients() []string
 	// ConfigureLLMGateway patches the tool's config file and returns the config path.
-	ConfigureLLMGateway(clientType, gatewayURL, proxyBaseURL, tokenHelperCommand string) (string, error)
+	ConfigureLLMGateway(clientType string, cfg ToolApplyConfig) (string, error)
 	// LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
 	LLMGatewayModeFor(clientType string) string
 	// RevertLLMGateway removes the LLM gateway settings from the tool's config file.
@@ -70,17 +79,19 @@ func Setup(
 	// Reject paths that contain shell metacharacters: the token-helper command
 	// is written verbatim into long-lived tool config files and re-executed by
 	// the shell inside Claude Code / Gemini CLI.  A path with '"', '\', ';',
-	// newline, or carriage-return would silently produce a broken or exploitable
-	// command.
+	// '$', '`', newline, or carriage-return would silently produce a broken or
+	// exploitable command.  '$' and '`' are included because they trigger
+	// variable and command substitution even inside double-quoted strings.
 	//
 	// Note: backslashes are Windows path separators, so this check effectively
 	// makes "thv llm setup" unsupported on Windows — consistent with the rest
 	// of the LLM gateway feature (token-helper tools use POSIX-style shells).
-	const shellUnsafe = `"\;` + "\n\r"
+	const shellUnsafe = `"\;$` + "`\n\r"
 	if strings.ContainsAny(self, shellUnsafe) {
 		return fmt.Errorf(
 			"executable path %q contains shell-unsafe characters; "+
-				"move thv to a path without quotes, backslashes, or semicolons "+
+				"move thv to a path without quotes, backslashes, semicolons, "+
+				"dollar signs, or backticks "+
 				"(Windows paths are not supported by thv llm setup)", self)
 	}
 
@@ -104,7 +115,11 @@ func Setup(
 
 	var configured []ToolConfig
 	for _, clientType := range detected {
-		configPath, err := gm.ConfigureLLMGateway(clientType, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand)
+		configPath, err := gm.ConfigureLLMGateway(clientType, ToolApplyConfig{
+			GatewayURL:         llmCfg.GatewayURL,
+			ProxyBaseURL:       proxyBaseURL,
+			TokenHelperCommand: tokenHelperCommand,
+		})
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Warning: failed to configure %s: %v\n", clientType, err)
 			continue
@@ -153,13 +168,17 @@ func Setup(
 
 // Teardown removes LLM gateway configuration from all (or one) configured tools.
 //
+// targetTool selects which tool to revert; pass an empty string to revert all
+// configured tools. An error is returned when targetTool is non-empty but not
+// found in the configured tool list.
+//
 // If secretsProvider is non-nil and purgeTokens is true, cached OIDC tokens
 // are deleted after the config update succeeds.
 func Teardown(
 	ctx context.Context,
 	out, errOut io.Writer,
 	gm GatewayManager,
-	args []string,
+	targetTool string,
 	purgeTokens bool,
 	provider ConfigUpdater,
 	secretsProvider pkgsecrets.Provider,
@@ -167,15 +186,15 @@ func Teardown(
 	llmCfg := provider.GetLLMConfig()
 
 	var targets []ToolConfig
-	if len(args) == 1 {
+	if targetTool != "" {
 		for _, tc := range llmCfg.ConfiguredTools {
-			if tc.Tool == args[0] {
+			if tc.Tool == targetTool {
 				targets = append(targets, tc)
 				break
 			}
 		}
 		if len(targets) == 0 {
-			return fmt.Errorf("tool %q is not configured", args[0])
+			return fmt.Errorf("tool %q is not configured", targetTool)
 		}
 	} else {
 		targets = llmCfg.ConfiguredTools
@@ -262,6 +281,7 @@ func mergeToolConfigs(existing, incoming []ToolConfig) []ToolConfig {
 		if i, ok := index[tc.Tool]; ok {
 			result[i] = tc
 		} else {
+			index[tc.Tool] = len(result)
 			result = append(result, tc)
 		}
 	}

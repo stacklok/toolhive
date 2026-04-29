@@ -117,13 +117,21 @@ rules:
   verbs:
   - get
   - list
-  - patch
+  - update
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
   - '*/status'
+  - embeddingservers/finalizers
+  - mcpexternalauthconfigs/finalizers
+  - mcpgroups/finalizers
+  - mcpoidcconfigs/finalizers
+  - mcpregistries/finalizers
+  - mcpservers/finalizers
+  - mcptelemetryconfigs/finalizers
+  - mcptoolconfigs/finalizers
   verbs:
-  - patch
+  - update
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
@@ -144,19 +152,6 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - toolhive.stacklok.dev
-  resources:
-  - embeddingservers/finalizers
-  - mcpexternalauthconfigs/finalizers
-  - mcpgroups/finalizers
-  - mcpoidcconfigs/finalizers
-  - mcpregistries/finalizers
-  - mcpservers/finalizers
-  - mcptelemetryconfigs/finalizers
-  - mcptoolconfigs/finalizers
-  verbs:
-  - update
 - apiGroups:
   - toolhive.stacklok.dev
   resources:

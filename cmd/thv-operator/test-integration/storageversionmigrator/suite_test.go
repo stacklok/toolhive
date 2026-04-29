@@ -19,7 +19,6 @@ package storageversionmigrator
 import (
 	"context"
 	"testing"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -80,6 +79,5 @@ var _ = BeforeSuite(func() {
 var _ = AfterSuite(func() {
 	By("tearing down envtest")
 	cancel()
-	time.Sleep(100 * time.Millisecond)
 	Expect(testEnv.Stop()).NotTo(HaveOccurred())
 })

@@ -14,10 +14,12 @@ For each opted-in CRD:
 
 1. Reads `spec.versions` to find the entry with `storage: true`.
 2. If `status.storedVersions` already equals `[<currentStorageVersion>]` and only one version is served, nothing to do.
-3. Otherwise, lists every Custom Resource of that kind and issues a metadata-only Server-Side Apply against the `/status` subresource with field manager `thv-storage-version-migrator`. This forces the API server to re-encode each object at the current storage version without triggering admission webhooks (SSA on `/status` typically bypasses webhooks registered on the main resource, and the empty apply owns no fields so it doesn't fight other controllers).
+3. Otherwise, lists every Custom Resource of that kind and, for each one, does a `Get` followed by an `Update` that mutates the `toolhive.stacklok.dev/storage-version-migrated-at` annotation to the current RFC3339Nano timestamp. The annotation toggle is required because the apiserver elides no-op writes — an `Update` whose bytes are equal to what is already in etcd does not bump `resourceVersion` and does not re-encode. With the annotation toggle the diff is real, so the apiserver writes the object back to etcd at the current storage version. This matches the upstream `kube-storage-version-migrator`'s mechanism.
 4. Once every object has been re-stored, patches `CRD.status.storedVersions` to `[<currentStorageVersion>]` using an optimistic-lock merge — so concurrent API-server writes cause a clean retry rather than a silent overwrite.
 
-CRDs without a `/status` subresource fall back to main-resource SSA.
+### Webhook interaction
+
+The migrator's writes go through the **main resource** Update path, so any validating or mutating admission webhooks registered on the kind will see them. Webhooks that need to ignore migration-only writes should branch on the presence of the `toolhive.stacklok.dev/storage-version-migrated-at` annotation in the diff (e.g. allow the write if that annotation is the only change). An earlier design issued a metadata-only Server-Side Apply against `/status` to bypass webhooks, but the apiserver short-circuits empty SSAs without writing etcd, so that approach was incorrect. See PR #5011 review for the empirical evidence.
 
 ## The opt-in label
 

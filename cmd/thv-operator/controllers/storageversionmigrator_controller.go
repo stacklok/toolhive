@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
@@ -40,12 +42,6 @@ const AutoMigrateValue = "true"
 // filter in addition to the opt-in label).
 const ToolhiveGroup = "toolhive.stacklok.dev"
 
-// StorageVersionMigratorFieldManager is the Server-Side Apply field manager
-// name used for all re-store writes. It is part of the public contract for
-// the controller — do not change it across releases, as SSA ownership is
-// permanent.
-const StorageVersionMigratorFieldManager = "thv-storage-version-migrator"
-
 // EventReasonMigrationSucceeded and EventReasonMigrationFailed are the event
 // reasons emitted on the owning CRD when a migration completes or fails.
 const (
@@ -56,21 +52,47 @@ const (
 const (
 	defaultMigrationCacheTTL = 1 * time.Hour
 	defaultListPageSize      = 500
+	defaultCacheGCInterval   = 10 * time.Minute
 )
+
+// errMigrationRetriedDueToConflicts is returned by restoreCRs when at least one
+// CR re-store hit a typed Conflict (and no other errors occurred). The caller
+// must NOT trim CRD.status.storedVersions in this case: the post-conflict state
+// of the affected object is unverified, so reasoning about whether the storage
+// re-encode actually happened is unsafe. The next reconcile retries cleanly.
+var errMigrationRetriedDueToConflicts = errors.New(
+	"storage version migration retried due to concurrent writes; storedVersions left unchanged")
+
+// The wildcard CR RBAC below is intentional. The set of opted-in CRDs isn't
+// known at codegen time — it's a per-CRD runtime label decision — so the
+// kubebuilder marker can't enumerate kinds. The runtime gate is the
+// isManagedCRD check inside Reconcile, which requires both the toolhive
+// API group AND the opt-in label. Wildcard RBAC plus isManagedCRD form the
+// defence in depth: RBAC bounds the controller to a single API group, and
+// the label gate further restricts it to opted-in CRDs.
 
 //+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 //+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions/status,verbs=update;patch
-//+kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=*,verbs=get;list;patch
-//+kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=*/status,verbs=patch
+//+kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=*,verbs=get;list;update
+//+kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=*/status,verbs=update
 
 // StorageVersionMigratorReconciler reconciles CustomResourceDefinition objects
 // in the toolhive.stacklok.dev group that carry the opt-in
 // AutoMigrateLabel=AutoMigrateValue. For each such CRD it re-stores every CR
-// at the current storage version by issuing a metadata-only Server-Side Apply
-// against the /status subresource (to avoid admission webhooks), then patches
+// at the current storage version by doing a Get + Update on the live object
+// while toggling the MigrationTimestampAnnotation to force a real content
+// diff. The annotation toggle is required because the apiserver elides no-op
+// writes (an Update with bytes equal to what's already stored does not bump
+// resourceVersion and does not re-encode) — without a real diff the migration
+// would be a hollow operation. After all CRs have been re-stored it patches
 // CRD.status.storedVersions down to [<currentStorageVersion>] so a future
 // release can drop deprecated versions from spec.versions without orphaning
 // etcd objects.
+//
+// Webhook interaction: the Update goes through the main resource, so
+// validating/mutating admission webhooks on the kind DO see this write.
+// Webhooks that need to ignore migration-only writes should branch on the
+// presence of MigrationTimestampAnnotation in the diff.
 //
 // Enabled by default. Opt out operator-wide via
 // operator.features.storageVersionMigrator (ENABLE_STORAGE_VERSION_MIGRATOR=false)
@@ -78,12 +100,15 @@ const (
 // Per-kind escape hatch: remove the label from the CRD (emergency only — will
 // be re-applied by GitOps / helm upgrade).
 type StorageVersionMigratorReconciler struct {
-	client.Client                      // cached reads for CRs (unused in this reconciler, kept for kubebuilder convention)
-	APIReader     client.Reader        // live reads for CRDs (bypasses informer)
-	Scheme        *runtime.Scheme      // kubebuilder reconciler convention
-	Recorder      record.EventRecorder // MigrationSucceeded / MigrationFailed events on the CRD
-	PageSize      int64                // overrideable for tests; defaults to defaultListPageSize
-	cache         *migrationCache
+	// used for CR Update writes and the CRD /status storedVersions patch;
+	// reads go through APIReader to bypass the informer cache.
+	client.Client
+	APIReader       client.Reader        // live reads for CRDs and CR list pages (bypasses informer)
+	Scheme          *runtime.Scheme      // kubebuilder reconciler convention
+	Recorder        record.EventRecorder // MigrationSucceeded / MigrationFailed events on the CRD
+	PageSize        int64                // overrideable for tests; defaults to defaultListPageSize
+	CacheGCInterval time.Duration        // overrideable for tests; defaults to defaultCacheGCInterval
+	cache           *migrationCache
 }
 
 // Reconcile runs for each opted-in toolhive.stacklok.dev CRD event. See the
@@ -151,6 +176,11 @@ func (r *StorageVersionMigratorReconciler) Reconcile(ctx context.Context, req ct
 // group. The filter is evaluated twice — once on informer events here, and again
 // inside Reconcile after the live APIReader read — because label removals can
 // briefly race the informer.
+//
+// It also registers a Runnable that periodically sweeps expired entries from
+// the migration cache so deleted CRs (whose UIDs never recur in subsequent
+// list pages and therefore never trigger lazy eviction in has()) don't grow
+// the map without bound on long-running operators with high CR churn.
 func (r *StorageVersionMigratorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.ensureInitialized()
 
@@ -159,7 +189,7 @@ func (r *StorageVersionMigratorReconciler) SetupWithManager(mgr ctrl.Manager) er
 		return fmt.Errorf("parse label selector: %w", err)
 	}
 
-	return ctrl.NewControllerManagedBy(mgr).
+	if err := ctrl.NewControllerManagedBy(mgr).
 		Named("storageversionmigrator").
 		For(
 			&apiextensionsv1.CustomResourceDefinition{},
@@ -172,7 +202,24 @@ func (r *StorageVersionMigratorReconciler) SetupWithManager(mgr ctrl.Manager) er
 				predicate.ResourceVersionChangedPredicate{},
 			),
 		).
-		Complete(r)
+		Complete(r); err != nil {
+		return err
+	}
+
+	// Periodic cache GC. Registered after Complete so the controller is fully
+	// wired when the runnable starts.
+	return mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		ticker := time.NewTicker(r.CacheGCInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				r.cache.gc()
+			}
+		}
+	}))
 }
 
 // ------------------------------------------------------------------
@@ -183,18 +230,27 @@ func (r *StorageVersionMigratorReconciler) ensureInitialized() {
 	if r.PageSize == 0 {
 		r.PageSize = defaultListPageSize
 	}
+	if r.CacheGCInterval == 0 {
+		r.CacheGCInterval = defaultCacheGCInterval
+	}
 	if r.cache == nil {
 		r.cache = newMigrationCache(defaultMigrationCacheTTL)
 	}
 }
 
 // restoreCRs lists all CRs of the CRD's served kind (served version = storageVersion)
-// and issues a metadata-only Server-Side Apply against /status for each one,
-// forcing the API server to re-encode the object at the current storage version.
+// and issues a main-resource Update on each one, forcing the apiserver to
+// re-encode the object at the current storage version.
 //
-// Swallowed per-CR errors: IsNotFound (object deleted between list and patch)
-// and IsConflict (object updated elsewhere — storage is already fresh).
-// All other errors are aggregated and returned.
+// Per-CR error handling:
+//   - IsNotFound: silently skipped (object deleted between list and update —
+//     it can't be at the old storage version anymore).
+//   - IsConflict: silently skipped at the per-CR level, but a function-level
+//     counter is incremented. After the loop, if any conflicts occurred and no
+//     other errors did, errMigrationRetriedDueToConflicts is returned so the
+//     caller leaves storedVersions untouched (the post-conflict state of the
+//     conflicting object is unverified).
+//   - All other errors are aggregated and returned.
 func (r *StorageVersionMigratorReconciler) restoreCRs(
 	ctx context.Context,
 	crd *apiextensionsv1.CustomResourceDefinition,
@@ -207,12 +263,11 @@ func (r *StorageVersionMigratorReconciler) restoreCRs(
 		Kind:    crd.Spec.Names.Kind,
 	}
 
-	hasStatusSubresource := crdHasStatusSubresource(crd, storageVersion)
-
 	listGVK := gvk
 	listGVK.Kind = crd.Spec.Names.ListKind
 
 	var errs []error
+	conflicts := 0
 	var continueToken string
 	for {
 		list := &unstructured.UnstructuredList{}
@@ -234,17 +289,23 @@ func (r *StorageVersionMigratorReconciler) restoreCRs(
 			if r.cache.has(crd.Name, u.GetUID(), u.GetResourceVersion()) {
 				return nil
 			}
-			if err := r.restoreOne(ctx, gvk, u, hasStatusSubresource); err != nil {
-				if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
-					logger.V(1).Info("skip CR — deleted or updated elsewhere",
+			restored, err := r.restoreOne(ctx, gvk, u)
+			if err != nil {
+				switch {
+				case apierrors.IsNotFound(err):
+					logger.V(1).Info("skip CR — deleted",
 						"object", client.ObjectKeyFromObject(u), "err", err)
-					return nil
+				case apierrors.IsConflict(err):
+					conflicts++
+					logger.V(1).Info("skip CR — concurrent write conflict",
+						"object", client.ObjectKeyFromObject(u), "err", err)
+				default:
+					errs = append(errs, fmt.Errorf("re-store %s/%s: %w",
+						u.GetNamespace(), u.GetName(), err))
 				}
-				errs = append(errs, fmt.Errorf("re-store %s/%s: %w",
-					u.GetNamespace(), u.GetName(), err))
 				return nil
 			}
-			r.cache.add(crd.Name, u.GetUID(), u.GetResourceVersion())
+			r.cache.add(crd.Name, restored.GetUID(), restored.GetResourceVersion())
 			return nil
 		}); err != nil {
 			errs = append(errs, err)
@@ -256,36 +317,56 @@ func (r *StorageVersionMigratorReconciler) restoreCRs(
 		}
 	}
 
+	if len(errs) == 0 && conflicts > 0 {
+		return errMigrationRetriedDueToConflicts
+	}
 	return kerrors.NewAggregate(errs)
 }
 
-// restoreOne issues a metadata-only SSA for a single CR. Prefers the /status
-// subresource (to bypass validating/mutating webhooks), falls back to the main
-// resource if the CRD has no status subresource.
+// MigrationTimestampAnnotation is set on each CR by the migrator to force a
+// real content diff on Update. The apiserver's storage layer elides no-op
+// writes (an Update with bytes equal to what's already in etcd does not
+// re-encode and does not bump resourceVersion), so a Get + Update on the live
+// object is not enough on its own — there must be at least one byte of
+// difference. Mutating this annotation guarantees the apiserver re-writes the
+// object, which is exactly the storage-version re-encode we need. The value
+// is the RFC3339Nano timestamp of the most recent successful migration.
+//
+// This matches the upstream kube-storage-version-migrator's approach (which
+// also uses an annotation toggle) and is part of the public contract: do not
+// remove or rename this constant across releases without a migration plan.
+const MigrationTimestampAnnotation = "toolhive.stacklok.dev/storage-version-migrated-at"
+
+// restoreOne issues a Get + Update on the live CR, mutating the migration
+// timestamp annotation to force a real content diff so the apiserver actually
+// re-encodes the object at the current storage version. The Update goes
+// through the main resource (not /status), so any validating/mutating
+// admission webhooks on the kind WILL see this write. CRDs that need to avoid
+// webhook side effects from this controller should configure their webhooks
+// to ignore writes that change only this annotation. Returns the live object
+// after the update so the caller can record its post-update resourceVersion
+// in the cache.
 func (r *StorageVersionMigratorReconciler) restoreOne(
 	ctx context.Context,
 	gvk schema.GroupVersionKind,
 	original *unstructured.Unstructured,
-	hasStatusSubresource bool,
-) error {
-	patch := &unstructured.Unstructured{}
-	patch.SetGroupVersionKind(gvk)
-	patch.SetName(original.GetName())
-	patch.SetNamespace(original.GetNamespace())
-	patch.SetUID(original.GetUID())                         // UID mismatch → typed conflict on races
-	patch.SetResourceVersion(original.GetResourceVersion()) // RV mismatch → typed conflict on races
-
-	applyConfig := client.ApplyConfigurationFromUnstructured(patch)
-	if hasStatusSubresource {
-		return r.Client.Status().Apply(ctx, applyConfig,
-			client.FieldOwner(StorageVersionMigratorFieldManager),
-			client.ForceOwnership,
-		)
+) (*unstructured.Unstructured, error) {
+	live := &unstructured.Unstructured{}
+	live.SetGroupVersionKind(gvk)
+	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(original), live); err != nil {
+		// IsNotFound is propagated to the caller, which handles it.
+		return nil, err
 	}
-	return r.Apply(ctx, applyConfig,
-		client.FieldOwner(StorageVersionMigratorFieldManager),
-		client.ForceOwnership,
-	)
+	annotations := live.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations[MigrationTimestampAnnotation] = time.Now().UTC().Format(time.RFC3339Nano)
+	live.SetAnnotations(annotations)
+	if err := r.Update(ctx, live); err != nil {
+		return nil, err
+	}
+	return live, nil
 }
 
 // patchStoredVersions overwrites CRD.status.storedVersions to exactly
@@ -327,41 +408,17 @@ func findStorageVersion(crd *apiextensionsv1.CustomResourceDefinition) (string, 
 	return "", false
 }
 
-// isMigrationNeeded returns true if status.storedVersions contains any entry
-// other than the current storage version. If storedVersions equals exactly
-// [storageVersion] AND only one version is served, no work is needed — this
-// second condition avoids spurious reconciles once a deprecated version has
-// been fully removed from spec.versions.
+// isMigrationNeeded returns true iff status.storedVersions is anything other
+// than exactly [storageVersion]. The set of served versions does not affect
+// this check — under spec.conversion.strategy=None with identical schemas,
+// normal writers cannot reintroduce stale versions to storedVersions, so a
+// defensive re-scan based on servedCount has no scenario to defend against.
 func isMigrationNeeded(
 	crd *apiextensionsv1.CustomResourceDefinition,
 	storageVersion string,
 ) bool {
 	stored := crd.Status.StoredVersions
-	if len(stored) != 1 || stored[0] != storageVersion {
-		return true
-	}
-	servedCount := 0
-	for _, v := range crd.Spec.Versions {
-		if v.Served {
-			servedCount++
-		}
-	}
-	return servedCount > 1
-}
-
-// crdHasStatusSubresource returns true if the CRD's version declares a status
-// subresource. Missing → fall back to main-resource SSA.
-func crdHasStatusSubresource(
-	crd *apiextensionsv1.CustomResourceDefinition,
-	version string,
-) bool {
-	for _, v := range crd.Spec.Versions {
-		if v.Name != version {
-			continue
-		}
-		return v.Subresources != nil && v.Subresources.Status != nil
-	}
-	return false
+	return len(stored) != 1 || stored[0] != storageVersion
 }
 
 // ------------------------------------------------------------------
@@ -371,7 +428,12 @@ func crdHasStatusSubresource(
 // migrationCache records successfully-migrated (UID, resourceVersion) pairs
 // so subsequent reconciles within the TTL window skip already-fresh objects.
 // It is a correctness optimization only — a cache miss simply issues a
-// redundant (but harmless) SSA.
+// redundant (but harmless) Update.
+//
+// Eviction: lazy on lookup in has(), plus a periodic sweep via gc() driven
+// from a manager.Runnable registered in SetupWithManager. The periodic sweep
+// is required because lookups never recur for deleted CRs, so without it
+// their entries would persist forever.
 type migrationCache struct {
 	mu      sync.Mutex
 	entries map[string]cacheEntry
@@ -414,6 +476,20 @@ func (c *migrationCache) add(crdName string, uid apitypes.UID, resourceVersion s
 	c.entries[key] = cacheEntry{
 		resourceVersion: resourceVersion,
 		expiresAt:       c.now().Add(c.ttl),
+	}
+}
+
+// gc evicts every expired entry from the cache. Called from a periodic
+// manager.Runnable so entries for deleted CRs (whose UIDs never recur in
+// subsequent list pages) don't accumulate without bound.
+func (c *migrationCache) gc() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	for k, e := range c.entries {
+		if now.After(e.expiresAt) {
+			delete(c.entries, k)
+		}
 	}
 }
 

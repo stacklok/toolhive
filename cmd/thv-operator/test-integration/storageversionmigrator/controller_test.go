@@ -172,22 +172,18 @@ func createCRs(gvk schema.GroupVersionKind, basename string, count int) []*unstr
 	return out
 }
 
-// Note on "did the SSA actually fire" verification:
+// Note on "did the re-store actually fire" verification:
 //
-// Metadata-only SSA with no owned fields is deliberately observable-noop — the
-// point is to force the apiserver to re-encode the etcd bytes at the current
-// storage version, which is not visible from outside the apiserver. The SSA
-// does not create a managedFields entry (since no fields are managed), and the
-// object's resourceVersion does not always bump for a true no-op apply.
+// The controller now does a Get + Update on /status (or the main resource as a
+// fallback). An unconditional Update always writes the object back to etcd, so
+// the object's resourceVersion bumps on every successful re-store — that's the
+// observable proof a re-encode happened. The HappyPath test snapshots each
+// CR's resourceVersion before reconcile and asserts it has increased after
+// reconcile completes.
 //
-// So the contract we assert in envtest is the *outcome*: reconcile succeeds
-// without error, and CRD.status.storedVersions converges to [storageVersion].
-// If the SSA were skipped or silently failing, patchStoredVersions would fire
-// against un-re-stored objects and the test would still pass — but in
-// production the apiserver guards storage-version changes exactly this way, so
-// the end-to-end behaviour is covered by the Kubernetes apiserver's own
-// correctness. The pagination test additionally verifies the continue-token
-// loop via a list-call counter.
+// The pagination test additionally verifies the continue-token loop via a
+// list-call counter, and the partial-failure test asserts storedVersions is
+// not trimmed when any CR re-store fails.
 
 // newReconciler constructs a StorageVersionMigratorReconciler for a single
 // test. Every test has its own instance so the migration cache doesn't leak
@@ -272,17 +268,34 @@ var _ = Describe("StorageVersionMigrator", func() {
 				schema.GroupVersionKind{Group: spec.Group, Version: "v1beta1", Kind: spec.Kind},
 				"obj-"+suf, 3,
 			)
+
+			// Snapshot pre-reconcile resourceVersions. The controller does
+			// Get + Update on each CR, so a successful re-store must bump RV.
+			// Asserting the bump is the empirical proof the re-encode happened
+			// (an empty SSA would not have bumped RV — that was the bug).
+			preRVs := make(map[string]string, len(crs))
+			for _, cr := range crs {
+				live := &unstructured.Unstructured{}
+				live.SetGroupVersionKind(cr.GroupVersionKind())
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cr), live)).To(Succeed())
+				preRVs[cr.GetName()] = live.GetResourceVersion()
+			}
+
 			setStoredVersions(spec.Name, []string{"v1alpha1", "v1beta1"})
 
 			_, err := reconcile(newReconciler(), spec.Name)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1beta1"}))
 
-			// Verify every CR still exists (migrator does not delete).
+			// Verify every CR still exists AND its RV bumped, proving the
+			// /status Update actually wrote to etcd.
 			for _, cr := range crs {
 				live := &unstructured.Unstructured{}
 				live.SetGroupVersionKind(cr.GroupVersionKind())
 				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cr), live)).To(Succeed())
+				Expect(live.GetResourceVersion()).NotTo(Equal(preRVs[cr.GetName()]),
+					"CR %s/%s resourceVersion did not bump — re-store did not write to etcd",
+					cr.GetNamespace(), cr.GetName())
 			}
 		})
 
@@ -451,9 +464,14 @@ var _ = Describe("StorageVersionMigrator", func() {
 			setStoredVersions(spec.Name, []string{"v1alpha1", "v1beta1"})
 
 			failureTarget := client.ObjectKeyFromObject(crs[0])
-			failing := &failingApplyClient{
+			failing := &failingUpdateClient{
 				Client: k8sClient,
-				fail:   func(key client.ObjectKey) bool { return key == failureTarget },
+				errFn: func(key client.ObjectKey) error {
+					if key == failureTarget {
+						return fmt.Errorf("injected update failure for %s", key)
+					}
+					return nil
+				},
 			}
 			r := &controllers.StorageVersionMigratorReconciler{
 				Client:    failing,
@@ -470,6 +488,70 @@ var _ = Describe("StorageVersionMigrator", func() {
 			// removal would orphan the un-migrated object in etcd.
 			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1alpha1", "v1beta1"}))
 		})
+
+		It("leaves storedVersions untouched when a CR re-store hits a Conflict, then trims on retry", func() {
+			suf := uniqueSuffix()
+			spec := crdSpec{
+				Name:              "conflicts" + suf + "." + toolhiveGroup,
+				Group:             toolhiveGroup,
+				Kind:              "Conflict" + suf,
+				ListKind:          "Conflict" + suf + "List",
+				Plural:            "conflicts" + suf,
+				Singular:          "conflict" + suf,
+				Labelled:          true,
+				HasStatusOnStored: true,
+				Versions: []versionSpec{
+					{Name: "v1alpha1", Served: true, Storage: false},
+					{Name: "v1beta1", Served: true, Storage: true},
+				},
+			}
+			installCRD(spec)
+			DeferCleanup(func() { deleteCRD(spec.Name) })
+
+			crs := createCRs(
+				schema.GroupVersionKind{Group: spec.Group, Version: "v1beta1", Kind: spec.Kind},
+				"obj-"+suf, 2,
+			)
+			setStoredVersions(spec.Name, []string{"v1alpha1", "v1beta1"})
+
+			conflictTarget := client.ObjectKeyFromObject(crs[0])
+			injectConflict := true
+			gr := schema.GroupResource{Group: spec.Group, Resource: spec.Plural}
+			conflicting := &failingUpdateClient{
+				Client: k8sClient,
+				errFn: func(key client.ObjectKey) error {
+					if injectConflict && key == conflictTarget {
+						return apierrors.NewConflict(gr, key.Name,
+							fmt.Errorf("injected conflict"))
+					}
+					return nil
+				},
+			}
+			r := &controllers.StorageVersionMigratorReconciler{
+				Client:    conflicting,
+				APIReader: k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  &noopRecorder{},
+			}
+
+			// First pass: conflict swallowed at the per-CR level, but the
+			// function-level conflict counter trips errMigrationRetriedDueToConflicts
+			// so storedVersions is left untouched.
+			_, err := reconcile(r, spec.Name)
+			Expect(err).To(HaveOccurred(),
+				"reconcile must return an error when a Conflict was swallowed")
+			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1alpha1", "v1beta1"}),
+				"storedVersions must not be trimmed on a pass with any swallowed Conflict")
+
+			// Drop the injection and retry. The cache may have absorbed the
+			// non-conflicting CR's RV from the first pass — that's fine, the
+			// conflicting one was never recorded in the cache so it'll be
+			// re-attempted, succeed, and let the storedVersions patch fire.
+			injectConflict = false
+			_, err = reconcile(r, spec.Name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1beta1"}))
+		})
 	})
 })
 
@@ -477,53 +559,54 @@ var _ = Describe("StorageVersionMigrator", func() {
 // Test doubles
 // ------------------------------------------------------------------
 
-// failingApplyClient wraps a real client.Client and fails Apply (and
-// Status().Apply()) for specific object keys. Used to simulate non-retriable
-// SSA errors in the partial-failure test.
-type failingApplyClient struct {
+// failingUpdateClient wraps a real client.Client and intercepts Update (and
+// Status().Update) for specific object keys. The controller's restoreOne goes
+// through Update — so this wrapper is how we inject failures and conflicts.
+//
+// errFn returns the error to inject for a given key, or nil to let the call
+// pass through to the wrapped client. Returning a non-nil error short-circuits
+// the call so the underlying object is not modified.
+type failingUpdateClient struct {
 	client.Client
-	fail func(key client.ObjectKey) bool
+	errFn func(key client.ObjectKey) error
 }
 
-func (f *failingApplyClient) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
-	if key, ok := keyFromApplyConfig(obj); ok && f.fail(key) {
-		return fmt.Errorf("injected SSA failure for %s", key)
+func (f *failingUpdateClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if err := f.errFn(client.ObjectKeyFromObject(obj)); err != nil {
+		return err
 	}
-	return f.Client.Apply(ctx, obj, opts...)
+	return f.Client.Update(ctx, obj, opts...)
 }
 
-func (f *failingApplyClient) Status() client.SubResourceWriter {
-	return &failingApplyStatus{
-		SubResourceWriter: f.Client.Status(),
-		fail:              f.fail,
+func (f *failingUpdateClient) Status() client.SubResourceWriter {
+	return &failingUpdateStatus{
+		inner: f.Client.Status(),
+		errFn: f.errFn,
 	}
 }
 
-type failingApplyStatus struct {
-	client.SubResourceWriter
-	fail func(key client.ObjectKey) bool
+type failingUpdateStatus struct {
+	inner client.SubResourceWriter
+	errFn func(key client.ObjectKey) error
 }
 
-func (s *failingApplyStatus) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
-	if key, ok := keyFromApplyConfig(obj); ok && s.fail(key) {
-		return fmt.Errorf("injected status SSA failure for %s", key)
-	}
-	return s.SubResourceWriter.Apply(ctx, obj, opts...)
+func (s *failingUpdateStatus) Create(ctx context.Context, obj client.Object, sub client.Object, opts ...client.SubResourceCreateOption) error {
+	return s.inner.Create(ctx, obj, sub, opts...)
 }
 
-// keyFromApplyConfig peeks inside the opaque runtime.ApplyConfiguration that
-// client.ApplyConfigurationFromUnstructured returns. The concrete type embeds
-// *unstructured.Unstructured, so we recover the object key via the
-// GetName/GetNamespace interface without depending on the unexported wrapper.
-func keyFromApplyConfig(obj runtime.ApplyConfiguration) (client.ObjectKey, bool) {
-	type nameNamespace interface {
-		GetName() string
-		GetNamespace() string
+func (s *failingUpdateStatus) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	if err := s.errFn(client.ObjectKeyFromObject(obj)); err != nil {
+		return err
 	}
-	if nn, ok := obj.(nameNamespace); ok {
-		return client.ObjectKey{Name: nn.GetName(), Namespace: nn.GetNamespace()}, true
-	}
-	return client.ObjectKey{}, false
+	return s.inner.Update(ctx, obj, opts...)
+}
+
+func (s *failingUpdateStatus) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+	return s.inner.Patch(ctx, obj, patch, opts...)
+}
+
+func (s *failingUpdateStatus) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+	return s.inner.Apply(ctx, obj, opts...)
 }
 
 // noopRecorder is a minimal EventRecorder for direct-Reconcile tests.

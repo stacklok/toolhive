@@ -127,16 +127,23 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
 	}
 
-	// Convert IDP tokens to storage tokens with binding fields
+	// Convert IDP tokens to storage tokens with binding fields.
+	// SessionExpiresAt is set unconditionally as the Fosite session bound. Storage
+	// backends use it as a fallback storage lifetime when ExpiresAt is zero (a
+	// non-expiring upstream token). Setting it on every write — even when ExpiresAt
+	// is non-zero — protects the refresh path: if the upstream provider stops
+	// asserting expires_in on a later refresh, the carried-forward SessionExpiresAt
+	// still bounds the storage lifetime instead of leaving the row indefinitely.
 	storageTokens := &storage.UpstreamTokens{
-		ProviderID:      providerID,
-		AccessToken:     idpTokens.AccessToken,
-		RefreshToken:    idpTokens.RefreshToken,
-		IDToken:         idpTokens.IDToken,
-		ExpiresAt:       idpTokens.ExpiresAt,
-		ClientID:        pending.ClientID,
-		UserID:          subject,         // Internal ToolHive user ID
-		UpstreamSubject: providerSubject, // Upstream IDP's subject claim
+		ProviderID:       providerID,
+		AccessToken:      idpTokens.AccessToken,
+		RefreshToken:     idpTokens.RefreshToken,
+		IDToken:          idpTokens.IDToken,
+		ExpiresAt:        idpTokens.ExpiresAt,
+		SessionExpiresAt: time.Now().Add(h.config.RefreshTokenLifespan),
+		ClientID:         pending.ClientID,
+		UserID:           subject,         // Internal ToolHive user ID
+		UpstreamSubject:  providerSubject, // Upstream IDP's subject claim
 	}
 
 	if err := h.storage.StoreUpstreamTokens(ctx, sessionID, providerID, storageTokens); err != nil {

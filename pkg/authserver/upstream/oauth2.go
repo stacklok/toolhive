@@ -90,9 +90,6 @@ type OAuth2Provider interface {
 	RefreshTokens(ctx context.Context, refreshToken, expectedSubject string) (*Tokens, error)
 }
 
-// defaultTokenExpiration is the default token lifetime when expires_in is not specified.
-const defaultTokenExpiration = time.Hour
-
 // CommonOAuthConfig contains fields shared by all OAuth provider types.
 // This provides compile-time type safety by separating OIDC and OAuth2 configuration.
 type CommonOAuthConfig struct {
@@ -220,13 +217,6 @@ func convertOAuth2Token(token *oauth2.Token) (*Tokens, error) {
 		return nil, fmt.Errorf("unexpected token_type: expected \"Bearer\", got %q", token.TokenType)
 	}
 
-	// Calculate expiration time
-	expiresAt := token.Expiry
-	if expiresAt.IsZero() {
-		// Default to 1 hour if not specified
-		expiresAt = time.Now().Add(defaultTokenExpiration)
-	}
-
 	// Extract ID token from extras (OIDC providers include it here)
 	var idToken string
 	if idTokenVal := token.Extra("id_token"); idTokenVal != nil {
@@ -239,7 +229,7 @@ func convertOAuth2Token(token *oauth2.Token) (*Tokens, error) {
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
 		IDToken:      idToken,
-		ExpiresAt:    expiresAt,
+		ExpiresAt:    token.Expiry,
 	}, nil
 }
 
@@ -457,9 +447,9 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, co
 		return nil, err
 	}
 
-	slog.Info("authorization code exchange successful",
+	slog.Debug("authorization code exchange successful",
 		"has_refresh_token", tokens.RefreshToken != "",
-		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
+		"expires_at", expiresAtLogValue(tokens.ExpiresAt),
 	)
 
 	return tokens, nil
@@ -497,9 +487,9 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 		return nil, err
 	}
 
-	slog.Info("token refresh successful",
+	slog.Debug("token refresh successful",
 		"has_new_refresh_token", tokens.RefreshToken != "",
-		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
+		"expires_at", expiresAtLogValue(tokens.ExpiresAt),
 	)
 
 	return tokens, nil

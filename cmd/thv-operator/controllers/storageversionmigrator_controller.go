@@ -79,20 +79,20 @@ var errMigrationRetriedDueToConflicts = errors.New(
 // StorageVersionMigratorReconciler reconciles CustomResourceDefinition objects
 // in the toolhive.stacklok.dev group that carry the opt-in
 // AutoMigrateLabel=AutoMigrateValue. For each such CRD it re-stores every CR
-// at the current storage version by doing a Get + Update on the live object
-// while toggling the MigrationTimestampAnnotation to force a real content
-// diff. The annotation toggle is required because the apiserver elides no-op
-// writes (an Update with bytes equal to what's already stored does not bump
-// resourceVersion and does not re-encode) — without a real diff the migration
-// would be a hollow operation. After all CRs have been re-stored it patches
+// at the current storage version by doing a Get + Update on the live object.
+// The Update is a full PUT of the unmodified object; the apiserver re-encodes
+// the request body at the current storage version, then compares the
+// resulting bytes to what's in etcd. When the CR was originally stored at a
+// different version (the actual migration scenario) the bytes carry a
+// different apiVersion stamp than etcd's record, the comparison fails, and
+// the write proceeds — re-encoding the object at the current storage
+// version. When the CR is already at the current storage version, the bytes
+// match and the apiserver harmlessly elides the write — there was nothing to
+// migrate. After all CRs have been processed it patches
 // CRD.status.storedVersions down to [<currentStorageVersion>] so a future
 // release can drop deprecated versions from spec.versions without orphaning
-// etcd objects.
-//
-// Webhook interaction: the Update goes through the main resource, so
-// validating/mutating admission webhooks on the kind DO see this write.
-// Webhooks that need to ignore migration-only writes should branch on the
-// presence of MigrationTimestampAnnotation in the diff.
+// etcd objects. See https://github.com/kubernetes-sigs/kube-storage-version-migrator/issues/65
+// for the upstream maintainers' explanation of this mechanism.
 //
 // Enabled by default. Opt out operator-wide via
 // operator.features.storageVersionMigrator (ENABLE_STORAGE_VERSION_MIGRATOR=false)
@@ -323,29 +323,18 @@ func (r *StorageVersionMigratorReconciler) restoreCRs(
 	return kerrors.NewAggregate(errs)
 }
 
-// MigrationTimestampAnnotation is set on each CR by the migrator to force a
-// real content diff on Update. The apiserver's storage layer elides no-op
-// writes (an Update with bytes equal to what's already in etcd does not
-// re-encode and does not bump resourceVersion), so a Get + Update on the live
-// object is not enough on its own — there must be at least one byte of
-// difference. Mutating this annotation guarantees the apiserver re-writes the
-// object, which is exactly the storage-version re-encode we need. The value
-// is the RFC3339Nano timestamp of the most recent successful migration.
-//
-// This matches the upstream kube-storage-version-migrator's approach (which
-// also uses an annotation toggle) and is part of the public contract: do not
-// remove or rename this constant across releases without a migration plan.
-const MigrationTimestampAnnotation = "toolhive.stacklok.dev/storage-version-migrated-at"
-
-// restoreOne issues a Get + Update on the live CR, mutating the migration
-// timestamp annotation to force a real content diff so the apiserver actually
-// re-encodes the object at the current storage version. The Update goes
-// through the main resource (not /status), so any validating/mutating
-// admission webhooks on the kind WILL see this write. CRDs that need to avoid
-// webhook side effects from this controller should configure their webhooks
-// to ignore writes that change only this annotation. Returns the live object
-// after the update so the caller can record its post-update resourceVersion
-// in the cache.
+// restoreOne issues a plain Get + Update on the live CR. The apiserver
+// re-encodes the request body at the current storage version and compares
+// it to etcd's record; when the CR was originally stored at a different
+// apiVersion the bytes differ, the write proceeds, and etcd is re-encoded
+// at the current storage version. When the CR is already at the current
+// storage version the bytes match and the apiserver harmlessly elides the
+// write — there was nothing to migrate. The Update goes through the main
+// resource, so validating/mutating admission webhooks on the kind see this
+// request as part of normal admission flow; only requests that actually
+// persist produce downstream state changes. Returns the live object after
+// the update so the caller can record its post-update resourceVersion in
+// the cache.
 func (r *StorageVersionMigratorReconciler) restoreOne(
 	ctx context.Context,
 	gvk schema.GroupVersionKind,
@@ -357,12 +346,6 @@ func (r *StorageVersionMigratorReconciler) restoreOne(
 		// IsNotFound is propagated to the caller, which handles it.
 		return nil, err
 	}
-	annotations := live.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
-	annotations[MigrationTimestampAnnotation] = time.Now().UTC().Format(time.RFC3339Nano)
-	live.SetAnnotations(annotations)
 	if err := r.Update(ctx, live); err != nil {
 		return nil, err
 	}

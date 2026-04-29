@@ -14,12 +14,12 @@ For each opted-in CRD:
 
 1. Reads `spec.versions` to find the entry with `storage: true`.
 2. If `status.storedVersions` already equals `[<currentStorageVersion>]` and only one version is served, nothing to do.
-3. Otherwise, lists every Custom Resource of that kind and, for each one, does a `Get` followed by an `Update` that mutates the `toolhive.stacklok.dev/storage-version-migrated-at` annotation to the current RFC3339Nano timestamp. The annotation toggle is required because the apiserver elides no-op writes — an `Update` whose bytes are equal to what is already in etcd does not bump `resourceVersion` and does not re-encode. With the annotation toggle the diff is real, so the apiserver writes the object back to etcd at the current storage version. This matches the upstream `kube-storage-version-migrator`'s mechanism.
-4. Once every object has been re-stored, patches `CRD.status.storedVersions` to `[<currentStorageVersion>]` using an optimistic-lock merge — so concurrent API-server writes cause a clean retry rather than a silent overwrite.
+3. Otherwise, lists every Custom Resource of that kind and, for each one, does a plain `Get` followed by an `Update` of the unmodified live object. The apiserver re-encodes the request body at the current storage version and compares it to what is in etcd. When the CR was originally stored at a different `apiVersion` (the actual migration scenario) the bytes carry a different stamp than etcd's record, the comparison fails, and the write proceeds — re-encoding the object at the current storage version. When the CR is already at the current storage version, the bytes match and the apiserver harmlessly elides the write — there was nothing to migrate. This matches the upstream `kube-storage-version-migrator`'s mechanism, confirmed at [kubernetes-sigs/kube-storage-version-migrator#65](https://github.com/kubernetes-sigs/kube-storage-version-migrator/issues/65).
+4. Once every object has been processed, patches `CRD.status.storedVersions` to `[<currentStorageVersion>]` using an optimistic-lock merge — so concurrent API-server writes cause a clean retry rather than a silent overwrite.
 
 ### Webhook interaction
 
-The migrator's writes go through the **main resource** Update path, so any validating or mutating admission webhooks registered on the kind will see them. Webhooks that need to ignore migration-only writes should branch on the presence of the `toolhive.stacklok.dev/storage-version-migrated-at` annotation in the diff (e.g. allow the write if that annotation is the only change). An earlier design issued a metadata-only Server-Side Apply against `/status` to bypass webhooks, but the apiserver short-circuits empty SSAs without writing etcd, so that approach was incorrect. See PR #5011 review for the empirical evidence.
+The migrator's writes go through the **main resource** Update path, so any validating or mutating admission webhooks registered on the kind see each request as part of normal admission flow. However, only requests that the apiserver actually persists produce downstream state changes a webhook would meaningfully react to — webhook load is bounded by "objects actually being migrated" (CRs whose etcd bytes carry an older `apiVersion` stamp), not "every reconcile pass × every CR".
 
 ## The opt-in label
 
@@ -106,11 +106,11 @@ The controller requires (generated from kubebuilder markers, applied by the oper
 
 - `customresourcedefinitions.apiextensions.k8s.io`: `get`, `list`, `watch`
 - `customresourcedefinitions/status.apiextensions.k8s.io`: `update`, `patch`
-- `*.toolhive.stacklok.dev`: `get`, `list`, `patch`
-- `*/status.toolhive.stacklok.dev`: `patch`
+- `*.toolhive.stacklok.dev`: `get`, `list`, `update`
+- `*/status.toolhive.stacklok.dev`: `update`
 
 ## Related
 
 - Issue: [stacklok/toolhive#4969](https://github.com/stacklok/toolhive/issues/4969)
 - Kubernetes CRD versioning: [official docs](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definition-versioning/)
-- Reference implementation: [kubernetes-sigs/cluster-api `crdmigrator`](https://github.com/kubernetes-sigs/cluster-api/tree/main/controllers/crdmigrator)
+- Reference implementation: [kubernetes-sigs/kube-storage-version-migrator](https://github.com/kubernetes-sigs/kube-storage-version-migrator) (the upstream SIG API Machinery tool — our controller uses the same Get+Update mechanism, scoped to ToolHive CRDs and triggered automatically rather than via per-migration `StorageVersionMigration` resources)

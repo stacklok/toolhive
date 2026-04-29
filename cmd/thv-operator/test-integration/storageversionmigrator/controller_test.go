@@ -174,12 +174,15 @@ func createCRs(gvk schema.GroupVersionKind, basename string, count int) []*unstr
 
 // Note on "did the re-store actually fire" verification:
 //
-// The controller now does a Get + Update on /status (or the main resource as a
-// fallback). An unconditional Update always writes the object back to etcd, so
-// the object's resourceVersion bumps on every successful re-store — that's the
-// observable proof a re-encode happened. The HappyPath test snapshots each
-// CR's resourceVersion before reconcile and asserts it has increased after
-// reconcile completes.
+// The controller does a plain Get + Update on each CR. When the CR is already
+// at the current storage version the apiserver freshly re-encodes the request
+// body, sees it matches etcd byte-for-byte, and elides the write — that's
+// correct behaviour, not a controller bug, and it means the per-CR RV does
+// not bump for an already-clean CR. The dedicated cross-version test
+// ("re-encodes CRs that are stored at a prior storage version") proves the
+// migration mechanism actually works for objects stored at older versions:
+// it stores a CR at v1alpha1, flips storage to v1beta1, and asserts the CR's
+// RV bumps after reconcile.
 //
 // The pagination test additionally verifies the continue-token loop via a
 // list-call counter, and the partial-failure test asserts storedVersions is
@@ -245,7 +248,7 @@ var _ = Describe("StorageVersionMigrator", func() {
 			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1beta1"}))
 		})
 
-		It("migrates storedVersions from [v1alpha1,v1beta1] to [v1beta1] and re-stores all CRs", func() {
+		It("migrates storedVersions from [v1alpha1,v1beta1] to [v1beta1]", func() {
 			suf := uniqueSuffix()
 			spec := crdSpec{
 				Name:              "happies" + suf + "." + toolhiveGroup,
@@ -264,39 +267,147 @@ var _ = Describe("StorageVersionMigrator", func() {
 			installCRD(spec)
 			DeferCleanup(func() { deleteCRD(spec.Name) })
 
-			crs := createCRs(
+			// The CRs created here are already stored at v1beta1 (the
+			// current storage version), so the apiserver will elide each
+			// per-CR Update — its freshly-encoded body matches etcd
+			// byte-for-byte. That's correct apiserver behaviour, not a
+			// controller bug, so this test does NOT assert per-CR
+			// resourceVersion bumps. The cross-version test below proves
+			// the migration mechanism actually re-encodes objects that were
+			// stored at an older apiVersion.
+			createCRs(
 				schema.GroupVersionKind{Group: spec.Group, Version: "v1beta1", Kind: spec.Kind},
 				"obj-"+suf, 3,
 			)
-
-			// Snapshot pre-reconcile resourceVersions. The controller does
-			// Get + Update on each CR, so a successful re-store must bump RV.
-			// Asserting the bump is the empirical proof the re-encode happened
-			// (an empty SSA would not have bumped RV — that was the bug).
-			preRVs := make(map[string]string, len(crs))
-			for _, cr := range crs {
-				live := &unstructured.Unstructured{}
-				live.SetGroupVersionKind(cr.GroupVersionKind())
-				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cr), live)).To(Succeed())
-				preRVs[cr.GetName()] = live.GetResourceVersion()
-			}
 
 			setStoredVersions(spec.Name, []string{"v1alpha1", "v1beta1"})
 
 			_, err := reconcile(newReconciler(), spec.Name)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1beta1"}))
+		})
 
-			// Verify every CR still exists AND its RV bumped, proving the
-			// /status Update actually wrote to etcd.
-			for _, cr := range crs {
-				live := &unstructured.Unstructured{}
-				live.SetGroupVersionKind(cr.GroupVersionKind())
-				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cr), live)).To(Succeed())
-				Expect(live.GetResourceVersion()).NotTo(Equal(preRVs[cr.GetName()]),
-					"CR %s/%s resourceVersion did not bump — re-store did not write to etcd",
-					cr.GetNamespace(), cr.GetName())
+		// Load-bearing proof of the migration mechanism: a CR stored at
+		// v1alpha1, after the storage version has flipped to v1beta1, must
+		// have its resourceVersion bumped by reconcile — that's the
+		// observable evidence the apiserver actually re-encoded the etcd
+		// document. See the upstream confirmation at
+		// https://github.com/kubernetes-sigs/kube-storage-version-migrator/issues/65.
+		It("re-encodes CRs that are stored at a prior storage version", func() {
+			suf := uniqueSuffix()
+			crdName := "crossvers" + suf + "." + toolhiveGroup
+			kind := "CrossVer" + suf
+			plural := "crossvers" + suf
+
+			versionSchema := func() *apiextensionsv1.CustomResourceValidation {
+				return &apiextensionsv1.CustomResourceValidation{
+					OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+						Type: "object",
+						Properties: map[string]apiextensionsv1.JSONSchemaProps{
+							"spec":   {Type: "object", XPreserveUnknownFields: ptrBool(true)},
+							"status": {Type: "object", XPreserveUnknownFields: ptrBool(true)},
+						},
+					},
+				}
 			}
+
+			// Step 1: install CRD with v1alpha1 as the storage version so
+			// CRs created next are written to etcd as v1alpha1 bytes.
+			crd := &apiextensionsv1.CustomResourceDefinition{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   crdName,
+					Labels: map[string]string{migrateLabel: migrateValue},
+				},
+				Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+					Group: toolhiveGroup,
+					Names: apiextensionsv1.CustomResourceDefinitionNames{
+						Kind:     kind,
+						ListKind: kind + "List",
+						Plural:   plural,
+						Singular: "crossver" + suf,
+					},
+					Scope: apiextensionsv1.NamespaceScoped,
+					Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+						{Name: "v1alpha1", Served: true, Storage: true, Schema: versionSchema()},
+						{Name: "v1beta1", Served: true, Storage: false, Schema: versionSchema()},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, crd)).To(Succeed())
+			DeferCleanup(func() { deleteCRD(crdName) })
+
+			Eventually(func() bool {
+				live := &apiextensionsv1.CustomResourceDefinition{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: crdName}, live); err != nil {
+					return false
+				}
+				for _, c := range live.Status.Conditions {
+					if c.Type == apiextensionsv1.Established && c.Status == apiextensionsv1.ConditionTrue {
+						return true
+					}
+				}
+				return false
+			}, time.Second*10, time.Millisecond*200).Should(BeTrue())
+
+			// Step 2: create one CR — etcd writes apiVersion: v1alpha1 bytes.
+			cr := createCRs(
+				schema.GroupVersionKind{Group: toolhiveGroup, Version: "v1alpha1", Kind: kind},
+				"obj-"+suf, 1,
+			)[0]
+
+			// Step 3: flip storage to v1beta1.
+			Eventually(func() error {
+				live := &apiextensionsv1.CustomResourceDefinition{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: crdName}, live); err != nil {
+					return err
+				}
+				orig := live.DeepCopy()
+				for i := range live.Spec.Versions {
+					live.Spec.Versions[i].Storage = (live.Spec.Versions[i].Name == "v1beta1")
+				}
+				return k8sClient.Patch(ctx, live, client.MergeFrom(orig))
+			}, time.Second*10, time.Millisecond*200).Should(Succeed())
+
+			// Confirm the storage flip settled before proceeding.
+			Eventually(func() bool {
+				live := &apiextensionsv1.CustomResourceDefinition{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: crdName}, live); err != nil {
+					return false
+				}
+				for _, v := range live.Spec.Versions {
+					if v.Name == "v1beta1" && v.Storage {
+						return true
+					}
+				}
+				return false
+			}, time.Second*10, time.Millisecond*200).Should(BeTrue())
+
+			// Step 4: storedVersions reflects the historical v1alpha1 entry.
+			setStoredVersions(crdName, []string{"v1alpha1", "v1beta1"})
+
+			// Step 5: snapshot RV before reconcile.
+			preLive := &unstructured.Unstructured{}
+			preLive.SetGroupVersionKind(schema.GroupVersionKind{
+				Group: toolhiveGroup, Version: "v1beta1", Kind: kind,
+			})
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cr), preLive)).To(Succeed())
+			preRV := preLive.GetResourceVersion()
+
+			// Step 6: reconcile.
+			_, err := reconcile(newReconciler(), crdName)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Step 7: storedVersions trimmed.
+			Expect(getStoredVersions(crdName)).To(Equal([]string{"v1beta1"}))
+
+			// Step 8: empirical proof — RV bumped because the cross-version
+			// Update actually wrote etcd.
+			postLive := &unstructured.Unstructured{}
+			postLive.SetGroupVersionKind(preLive.GroupVersionKind())
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cr), postLive)).To(Succeed())
+			Expect(postLive.GetResourceVersion()).NotTo(Equal(preRV),
+				"CR %s/%s resourceVersion did not bump (pre=%s post=%s) — cross-version re-store did not write to etcd",
+				cr.GetNamespace(), cr.GetName(), preRV, postLive.GetResourceVersion())
 		})
 
 		It("skips CRDs in foreign API groups", func() {
@@ -351,42 +462,6 @@ var _ = Describe("StorageVersionMigrator", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1alpha1", "v1beta1"}),
 				"storedVersions must be untouched for unlabelled CRDs")
-		})
-
-		It("falls back to main-resource SSA when the storage version has no /status subresource", func() {
-			suf := uniqueSuffix()
-			spec := crdSpec{
-				Name:              "nostatus" + suf + "." + toolhiveGroup,
-				Group:             toolhiveGroup,
-				Kind:              "NoStatus" + suf,
-				ListKind:          "NoStatus" + suf + "List",
-				Plural:            "nostatus" + suf,
-				Singular:          "nostatus" + suf,
-				Labelled:          true,
-				HasStatusOnStored: false,
-				Versions: []versionSpec{
-					{Name: "v1alpha1", Served: true, Storage: false},
-					{Name: "v1beta1", Served: true, Storage: true},
-				},
-			}
-			installCRD(spec)
-			DeferCleanup(func() { deleteCRD(spec.Name) })
-
-			cr := createCRs(
-				schema.GroupVersionKind{Group: spec.Group, Version: "v1beta1", Kind: spec.Kind},
-				"obj-"+suf, 1,
-			)[0]
-			setStoredVersions(spec.Name, []string{"v1alpha1", "v1beta1"})
-
-			_, err := reconcile(newReconciler(), spec.Name)
-			Expect(err).NotTo(HaveOccurred(),
-				"reconcile must succeed via main-resource SSA when no /status subresource exists")
-			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1beta1"}))
-
-			// CR still exists (migrator doesn't delete).
-			live := &unstructured.Unstructured{}
-			live.SetGroupVersionKind(cr.GroupVersionKind())
-			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cr), live)).To(Succeed())
 		})
 
 		It("handles pagination across multiple list pages", func() {

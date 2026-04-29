@@ -127,6 +127,20 @@
   }
 
   svg text { font-family: 'Segoe UI', system-ui, sans-serif; }
+
+  /* Allow individual slides to scroll when content exceeds the slide height.
+     Reveal sets height:auto on sections; the JS below pins them to the
+     configured height so overflow-y:auto actually triggers. */
+  .reveal .slides > section {
+    box-sizing: border-box;
+    overflow-y: auto;
+    /* custom scrollbar — subtle, dark-themed */
+    scrollbar-width: thin;
+    scrollbar-color: #4a5568 transparent;
+  }
+  .reveal .slides > section::-webkit-scrollbar { width: 5px; }
+  .reveal .slides > section::-webkit-scrollbar-track { background: transparent; }
+  .reveal .slides > section::-webkit-scrollbar-thumb { background: #4a5568; border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -855,6 +869,16 @@
     height: 750,
     margin: 0.04,
     center: false,
+  });
+
+  // Pin each slide to the configured height so overflow-y:auto triggers.
+  // Reveal sets height:auto on <section> elements; without a fixed height the
+  // overflow property has nothing to overflow against and clipping wins.
+  Reveal.on('ready', () => {
+    const h = Reveal.getConfig().height;
+    document.querySelectorAll('.reveal .slides > section').forEach(el => {
+      el.style.height = h + 'px';
+    });
   });
 </script>
 </body>

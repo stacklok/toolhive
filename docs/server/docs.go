@@ -688,7 +688,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig": {
-                "description": "UserInfo contains configuration for fetching user information (required for OAuth2).",
+                "description": "UserInfo contains configuration for fetching user information.\nOptional: when nil, the upstream OAuth2 provider derives a deterministic\nsubject by SHA-256-hashing the access token (with a \"tk-\" prefix) instead\nof calling a userinfo endpoint. OIDC providers always derive Subject from\nthe ID token and are unaffected.",
                 "properties": {
                     "additional_headers": {
                         "additionalProperties": {

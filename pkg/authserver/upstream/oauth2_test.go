@@ -16,11 +16,13 @@ package upstream
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -1197,6 +1199,179 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "authorization code is required")
 	})
+
+	// When UserInfo is nil, ExchangeCodeForIdentity must synthesize Subject
+	// from the access token. The prefix-tagged Subject + empty Name/Email
+	// are the observable signals that the synthesis branch ran — the
+	// userinfo path populates Name/Email and would never emit a "tk-…" sub.
+	t.Run("synthesizes identity when UserInfo is nil", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+			// UserInfo intentionally nil.
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+
+		require.NotNil(t, result)
+		assert.NotEmpty(t, result.Tokens.AccessToken)
+		// Subject is the prefix-tagged hash of the access token.
+		assert.True(t, strings.HasPrefix(result.Subject, synthesizedSubjectPrefix),
+			"synthesized subject must carry the %q prefix; got %q",
+			synthesizedSubjectPrefix, result.Subject)
+		assert.Equal(t,
+			synthesizeSubjectFromAccessToken(result.Tokens.AccessToken),
+			result.Subject,
+			"subject must be deterministic given the same access token")
+		// Synthesized identities expose no display surface.
+		assert.Empty(t, result.Name)
+		assert.Empty(t, result.Email)
+		// Synthetic=true is what tells the callback handler to bypass UserResolver.
+		assert.True(t, result.Synthetic, "synthesized identities must set Synthetic=true")
+	})
+}
+
+func TestSynthesizeSubjectFromAccessToken(t *testing.T) {
+	t.Parallel()
+
+	t.Run("is deterministic for a given token", func(t *testing.T) {
+		t.Parallel()
+		token := "atlassian-mcp-style-opaque-token-93c"
+		assert.Equal(t,
+			synthesizeSubjectFromAccessToken(token),
+			synthesizeSubjectFromAccessToken(token),
+		)
+	})
+
+	t.Run("differs for different tokens", func(t *testing.T) {
+		t.Parallel()
+		assert.NotEqual(t,
+			synthesizeSubjectFromAccessToken("token-a"),
+			synthesizeSubjectFromAccessToken("token-b"),
+		)
+	})
+
+	t.Run("output shape: prefix + 32 hex chars", func(t *testing.T) {
+		t.Parallel()
+		got := synthesizeSubjectFromAccessToken("any-input")
+		assert.True(t, strings.HasPrefix(got, synthesizedSubjectPrefix))
+		hexPart := strings.TrimPrefix(got, synthesizedSubjectPrefix)
+		assert.Len(t, hexPart, 32, "first 16 bytes of SHA-256 in hex is 32 chars")
+		// Must be valid hex.
+		_, err := hex.DecodeString(hexPart)
+		assert.NoError(t, err)
+	})
+
+}
+
+// TestSynthesizeIdentity exercises the synthesis-mode helper directly,
+// including the empty-access-token guard. The synthesizer itself is a pure
+// hash and would happily emit the well-known sha256("") constant for "" —
+// synthesizeIdentity is the layer that refuses to do so, preventing distinct
+// sessions from collapsing onto a single (UserID, ProviderID) storage bucket.
+func TestSynthesizeIdentity(t *testing.T) {
+	t.Parallel()
+
+	t.Run("rejects empty access token", func(t *testing.T) {
+		t.Parallel()
+		// Defense-in-depth: convertOAuth2Token already catches empty
+		// AccessToken at exchange time, so this guard is unreachable
+		// through the public API today. The test asserts the invariant
+		// regardless, so a future code path that bypasses
+		// convertOAuth2Token cannot silently synthesize the constant
+		// sha256("") subject.
+		got, err := synthesizeIdentity(&Tokens{AccessToken: ""})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrIdentityResolutionFailed)
+		assert.Nil(t, got)
+	})
+
+	t.Run("synthesizes for non-empty access token", func(t *testing.T) {
+		t.Parallel()
+		tokens := &Tokens{AccessToken: "atlassian-mcp-style-opaque-token"}
+		got, err := synthesizeIdentity(tokens)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.True(t, got.Synthetic, "synthesized identities must set Synthetic=true")
+		assert.Equal(t,
+			synthesizeSubjectFromAccessToken(tokens.AccessToken),
+			got.Subject,
+			"subject must be deterministic given the same access token")
+		assert.Empty(t, got.Name)
+		assert.Empty(t, got.Email)
+		assert.Same(t, tokens, got.Tokens, "tokens reference is preserved")
+	})
+}
+
+func TestIsSynthesizedSubject(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		subject string
+		want    bool
+	}{
+		// Round-trip: predicate must recognize anything the synthesizer emits.
+		{
+			name:    "round-trip on synthesized subject",
+			subject: synthesizeSubjectFromAccessToken("any-opaque-token"),
+			want:    true,
+		},
+		// Real upstream subjects (UUIDs, integer IDs) must not classify as synthesized.
+		{
+			name:    "uuid-shaped subject is not synthesized",
+			subject: "11012b90-98d0-4594-916e-54db832ebe8f",
+			want:    false,
+		},
+		{
+			name:    "integer-shaped subject is not synthesized",
+			subject: "1234567890",
+			want:    false,
+		},
+		{
+			name:    "atlassian-shaped account_id is not synthesized",
+			subject: "5e1234567890abcdef123456",
+			want:    false,
+		},
+		{
+			name:    "empty string is not synthesized",
+			subject: "",
+			want:    false,
+		},
+		// HasPrefix, not substring search.
+		{
+			name:    "tk- in middle of subject is not synthesized",
+			subject: "user-tk-abc",
+			want:    false,
+		},
+		// Predicate is a fast prefix guard, not a digest validator.
+		{
+			name:    "prefix-only string is treated as synthesized",
+			subject: "tk-",
+			want:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, IsSynthesizedSubject(tc.subject))
+		})
+	}
 }
 
 func TestBaseOAuth2Provider_fetchUserInfo(t *testing.T) {

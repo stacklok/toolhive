@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -255,6 +256,77 @@ func TestResolveDCRCredentials_InitialAccessTokenAsBearer(t *testing.T) {
 	_, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer iat-secret-value", gotAuthHeader)
+}
+
+// TestResolveDCRCredentials_DoesNotForwardBearerOnRedirect pins the
+// security property that an upstream cannot use a 30x redirect from the
+// registration endpoint to coerce the resolver into re-issuing the
+// registration request — and the attached RFC 7591 initial access token —
+// against a different origin. The resolver must refuse the redirect; the
+// foreign origin must observe zero traffic.
+func TestResolveDCRCredentials_DoesNotForwardBearerOnRedirect(t *testing.T) {
+	t.Parallel()
+
+	// Foreign origin: a separate httptest server that records every request
+	// it receives. After the test we assert it received exactly zero
+	// requests, which proves the bearer token never crossed origins.
+	var foreignHits int32
+	var foreignAuthHeaders []string
+	var foreignMu sync.Mutex
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		foreignMu.Lock()
+		atomic.AddInt32(&foreignHits, 1)
+		foreignAuthHeaders = append(foreignAuthHeaders, r.Header.Get("Authorization"))
+		foreignMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(foreign.Close)
+
+	// Upstream: serves discovery normally, but its /register handler 302s
+	// to the foreign origin. A non-defended client would re-issue the
+	// registration request (with the Authorization header) against
+	// foreign.URL/stolen.
+	mux := http.NewServeMux()
+	var upstream *httptest.Server
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(oauthproto.AuthorizationServerMetadata{
+			Issuer:                upstream.URL,
+			AuthorizationEndpoint: upstream.URL + "/authorize",
+			TokenEndpoint:         upstream.URL + "/token",
+			JWKSURI:               upstream.URL + "/jwks",
+			RegistrationEndpoint:  upstream.URL + "/register",
+		})
+	})
+	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, foreign.URL+"/stolen", http.StatusFound)
+	})
+	upstream = httptest.NewServer(mux)
+	t.Cleanup(upstream.Close)
+
+	tokenPath := filepath.Join(t.TempDir(), "iat")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("iat-secret-value\n"), 0o600))
+
+	cache := NewInMemoryDCRCredentialStore()
+	issuer := upstream.URL
+	rc := &authserver.OAuth2UpstreamRunConfig{
+		Scopes: []string{"openid"},
+		DCRConfig: &authserver.DCRUpstreamConfig{
+			DiscoveryURL:           issuer + "/.well-known/oauth-authorization-server",
+			InitialAccessTokenFile: tokenPath,
+		},
+	}
+
+	_, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	require.Error(t, err, "registration must fail when the upstream returns a redirect")
+	assert.ErrorIs(t, err, errDCRRedirectRefused,
+		"the resolver must refuse to follow registration-endpoint redirects")
+
+	foreignMu.Lock()
+	defer foreignMu.Unlock()
+	assert.EqualValues(t, 0, atomic.LoadInt32(&foreignHits),
+		"foreign origin must receive zero requests; got %v Authorization headers: %v",
+		atomic.LoadInt32(&foreignHits), foreignAuthHeaders)
 }
 
 func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {

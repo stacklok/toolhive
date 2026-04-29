@@ -659,6 +659,7 @@ func TestFetchAuthorizationServerMetadataFromURL_AllowsLoopbackHTTP(t *testing.T
 	require.NotNil(t, metadata)
 	assert.Equal(t, issuer, metadata.Issuer)
 }
+
 // TestFetchAuthorizationServerMetadata_DedupesPathInsertionAndBare locks in
 // the documented behavior that, for a tenant-less issuer, the path-insertion
 // (1) and bare RFC 8414 (3) URLs collapse to the same request, so only two

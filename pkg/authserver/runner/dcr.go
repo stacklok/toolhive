@@ -621,6 +621,12 @@ func selectTokenEndpointAuthMethod(serverSupported []string) (string, error) {
 // Authorization: Bearer {token} to each outgoing request. Used to supply the
 // RFC 7591 initial access token to oauthproto.RegisterClientDynamically
 // without leaking the abstraction up into that package.
+//
+// The wrapping http.Client (see newDCRHTTPClient) refuses to follow HTTP
+// redirects via CheckRedirect, so this transport is only ever invoked for
+// the original registration request — never for a redirected request whose
+// URL the upstream chose. That is what prevents this token from being
+// forwarded to a foreign origin.
 type bearerTokenTransport struct {
 	token string
 	next  http.RoundTripper
@@ -635,23 +641,37 @@ func (t *bearerTokenTransport) RoundTrip(req *http.Request) (*http.Response, err
 	return t.next.RoundTrip(cp)
 }
 
+// errDCRRedirectRefused is returned when a DCR registration endpoint
+// responds with a 30x. Net/http surfaces it via *url.Error so callers
+// observe a clear failure mode instead of a confusing JSON decode error.
+var errDCRRedirectRefused = errors.New(
+	"dcr: registration endpoint returned a redirect; refusing to follow " +
+		"to avoid forwarding the RFC 7591 initial access token to a foreign origin")
+
 // newDCRHTTPClient returns the http.Client to pass to
-// oauthproto.RegisterClientDynamically. When initialAccessToken is non-empty
-// the client wraps the canonical DCR client's transport with a
-// bearerTokenTransport; otherwise it returns nil so oauthproto builds its
-// own default client.
+// oauthproto.RegisterClientDynamically. The client always blocks HTTP
+// redirects so that an upstream cannot use a 30x to coerce us into
+// re-issuing the registration request (and any attached
+// Authorization: Bearer header) against a different origin. RFC 7591 §3
+// does not require redirect support, so refusing them is safe.
+//
+// When initialAccessToken is non-empty the client also wraps the canonical
+// DCR client's transport with a bearerTokenTransport that injects the
+// Authorization header. The combination of the bearer transport plus the
+// redirect block is what prevents the token-leak class of bug.
 //
 // The timeout policy is sourced from oauthproto.NewDefaultDCRClient so
-// future tightening of those bounds propagates automatically into the
-// initial-access-token code path.
+// future tightening of those bounds propagates automatically.
 func newDCRHTTPClient(initialAccessToken string) *http.Client {
-	if initialAccessToken == "" {
-		// Letting oauthproto supply its default client keeps timeout /
-		// transport tuning in one place.
-		return nil
+	client := oauthproto.NewDefaultDCRClient()
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return errDCRRedirectRefused
 	}
 
-	client := oauthproto.NewDefaultDCRClient()
+	if initialAccessToken == "" {
+		return client
+	}
+
 	next := client.Transport
 	if next == nil {
 		next = http.DefaultTransport

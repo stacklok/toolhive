@@ -447,7 +447,9 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 			}
 			flusher.Flush()
 		case <-keepAliveTicker.C:
-			// Send SSE comment as keep-alive
+			// Refresh session TTL while the SSE socket is open so the cleanup
+			// goroutine does not evict clients that haven't sent a POST recently.
+			p.sessionManager.Get(clientID)
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
 				slog.Debug("failed to write keep-alive", "error", err)
 				return

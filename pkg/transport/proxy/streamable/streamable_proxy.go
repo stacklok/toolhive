@@ -318,7 +318,7 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Notifications or client responses are accepted and forwarded (202)
-	if p.handleNotificationOrClientResponse(w, msg) {
+	if p.handleNotificationOrClientResponse(w, r.Header.Get("Mcp-Session-Id"), msg) {
 		return
 	}
 
@@ -641,17 +641,14 @@ func (p *HTTPProxy) ensureSession(id string) error {
 	return p.sessionManager.AddWithID(id)
 }
 
-// resolveSessionForBatch resolves or creates an ephemeral session for batch POSTs.
+// resolveSessionForBatch resolves the session for batch POSTs.
 // Writes appropriate HTTP errors and returns an error when handling should stop.
+// An absent session header is allowed (returns "", nil) so that notification-only
+// batches can still return 202 without requiring a session.
 func (p *HTTPProxy) resolveSessionForBatch(w http.ResponseWriter, r *http.Request) (string, error) {
 	sessID := r.Header.Get("Mcp-Session-Id")
 	if sessID == "" {
-		sessID = uuid.New().String()
-		if err := p.ensureSession(sessID); err != nil {
-			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create session: %v", err))
-			return "", err
-		}
-		return sessID, nil
+		return "", nil
 	}
 	if _, ok := p.sessionManager.Get(sessID); !ok {
 		session.WriteNotFound(w, nil)
@@ -661,8 +658,9 @@ func (p *HTTPProxy) resolveSessionForBatch(w http.ResponseWriter, r *http.Reques
 }
 
 // resolveSessionForRequest resolves session rules for a single JSON-RPC request.
-// On initialize, assigns session if missing and returns setSessionHeader=true.
-// For other methods, allows optional session by creating ephemeral (no header set).
+// On initialize, assigns a new session ID if none is provided and returns setSessionHeader=true.
+// For other methods, allows sessionless requests (sessID="") for in-process routing;
+// a provided but unknown session ID returns 404.
 // Writes HTTP errors on failure and returns error to stop handling.
 func (p *HTTPProxy) resolveSessionForRequest(
 	w http.ResponseWriter,
@@ -684,17 +682,13 @@ func (p *HTTPProxy) resolveSessionForRequest(
 		return sessID, setSessionHeader, nil
 	}
 
-	// Non-initialize path: sessions are optional; create ephemeral if missing
+	// Non-initialize requests without a session ID are allowed in sessionless mode
+	// (no session object created, composite key uses empty sessID for in-process routing).
 	if sessID == "" {
-		sessID = uuid.New().String()
-		if err := p.ensureSession(sessID); err != nil {
-			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create session: %v", err))
-			return "", false, err
-		}
-		return sessID, false, nil
+		return "", false, nil
 	}
 
-	// If session is provided, ensure it exists
+	// Session ID provided but not found: reject with 404.
 	if _, ok := p.sessionManager.Get(sessID); !ok {
 		session.WriteNotFound(w, req.ID.Raw())
 		return "", false, fmt.Errorf("session not found")
@@ -730,8 +724,12 @@ func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message,
 	return msg, true
 }
 
-func (p *HTTPProxy) handleNotificationOrClientResponse(w http.ResponseWriter, msg jsonrpc2.Message) bool {
+func (p *HTTPProxy) handleNotificationOrClientResponse(w http.ResponseWriter, sessID string, msg jsonrpc2.Message) bool {
 	if isNotification(msg) || (func() bool { _, ok := msg.(*jsonrpc2.Response); return ok })() {
+		// Refresh TTL so a client sending only notifications doesn't get evicted.
+		if sessID != "" {
+			p.sessionManager.Get(sessID)
+		}
 		if err := p.SendMessageToDestination(msg); err != nil {
 			slog.Error("failed to send message to destination", "error", err)
 		}

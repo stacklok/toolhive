@@ -268,8 +268,13 @@ type UpstreamTokenStorage interface {
 
 	// GetLatestUpstreamTokensForUser returns the most recently stored upstream tokens
 	// for (userID, providerID) across any session. The "latest" winner is determined
-	// by ExpiresAt descending — both backends use the same tie-breaker so the
-	// carry-forward decision is consistent regardless of deployment shape.
+	// by treating non-expiring rows (zero ExpiresAt — providers like Slack and GitHub
+	// OAuth Apps that genuinely never expire) as the strongest candidate, falling
+	// back to ExpiresAt descending among finite-expiry rows. This aligns with the
+	// rest of the package treating zero ExpiresAt as "alive forever" (see IsExpired,
+	// cleanupExpired, marshalUpstreamTokensWithTTL). Both backends use the same
+	// rule so the carry-forward decision is consistent regardless of deployment
+	// shape.
 	//
 	// This is a secondary lookup that intentionally bypasses the primary
 	// (sessionID, providerName) key. It is used by the OAuth callback to preserve a

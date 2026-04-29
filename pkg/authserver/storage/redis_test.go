@@ -1990,8 +1990,10 @@ func TestRedisStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 		})
 	})
 
-	t.Run("zero_expires_at_loses_to_nonzero", func(t *testing.T) {
+	t.Run("zero_expires_at_wins_over_nonzero", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Zero ExpiresAt is the no-expiry sentinel for providers like Slack and
+			// GitHub OAuth Apps. Treated as "alive forever" — beats any finite expiry.
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-zero", "prov-X", &UpstreamTokens{
 				ProviderID:   "prov-X",
 				UserID:       "user-A",
@@ -2007,7 +2009,7 @@ func TestRedisStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 
 			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
 			require.NoError(t, err)
-			assert.Equal(t, "rt-nonzero", got.RefreshToken)
+			assert.Equal(t, "rt-zero", got.RefreshToken)
 		})
 	})
 

@@ -732,9 +732,10 @@ func TestMemoryStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 		})
 	})
 
-	t.Run("zero_expires_at_loses_to_nonzero", func(t *testing.T) {
+	t.Run("zero_expires_at_wins_over_nonzero", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-			// Row with zero ExpiresAt — StoreUpstreamTokens assigns a default storage TTL.
+			// Row with zero ExpiresAt — providers like Slack and GitHub OAuth Apps
+			// genuinely never expire; treated as "alive forever" by IsExpired.
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-zero", "prov-X", &UpstreamTokens{
 				ProviderID:   "prov-X",
 				UserID:       "user-A",
@@ -751,7 +752,31 @@ func TestMemoryStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 
 			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
 			require.NoError(t, err)
-			assert.Equal(t, "rt-nonzero", got.RefreshToken)
+			assert.Equal(t, "rt-zero", got.RefreshToken)
+		})
+	})
+
+	t.Run("two_zero_expires_at_rows", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// Both rows have zero ExpiresAt. Go's map iteration is randomized so
+			// we only assert that one of the two is returned.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-zero-1", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-zero-1",
+				ExpiresAt:    time.Time{},
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-zero-2", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-zero-2",
+				ExpiresAt:    time.Time{},
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Contains(t, []string{"rt-zero-1", "rt-zero-2"}, got.RefreshToken)
 		})
 	})
 

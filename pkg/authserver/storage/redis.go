@@ -1184,10 +1184,11 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 			continue
 		}
 
-		// Pick the row with the highest ExpiresAt. Zero ExpiresAt (the no-expiry
-		// sentinel) is represented as 0 — the smallest int64 — so it loses to any
-		// real timestamp unless it is the only candidate.
-		if winner == nil || stored.ExpiresAt > winner.ExpiresAt {
+		// Tie-breaker: prefer non-expiring rows (ExpiresAt == 0, the no-expiry
+		// sentinel for providers like Slack and GitHub OAuth Apps). Among finite
+		// expiries, the latest wins. This aligns with the rest of the package
+		// treating zero ExpiresAt as "alive forever".
+		if winner == nil || compareExpiryInt64(stored.ExpiresAt, winner.ExpiresAt) > 0 {
 			winner = stored
 		}
 	}
@@ -1197,6 +1198,25 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 	}
 
 	return winner.toUpstreamTokens(), nil
+}
+
+// compareExpiryInt64 is the int64 (Unix-epoch) variant of compareExpiry. Zero
+// (no-expiry sentinel) ranks latest; among finite epochs, the larger ranks
+// latest. Returns -1/0/+1.
+func compareExpiryInt64(a, b int64) int {
+	switch {
+	case a == 0 && b == 0:
+		return 0
+	case a == 0:
+		return 1
+	case b == 0:
+		return -1
+	case a > b:
+		return 1
+	case a < b:
+		return -1
+	}
+	return 0
 }
 
 // parseUserUpstreamEntry parses one raw Redis value from the user-upstream index

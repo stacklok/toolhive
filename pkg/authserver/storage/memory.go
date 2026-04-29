@@ -838,6 +838,23 @@ func (s *MemoryStorage) DeleteUpstreamTokens(_ context.Context, sessionID string
 	return nil
 }
 
+// compareExpiry orders ExpiresAt values for the GetLatestUpstreamTokensForUser
+// tie-breaker. Non-expiring rows (zero ExpiresAt — "alive forever") rank latest;
+// among finite expiries, later ranks latest. Mirrors time.Compare but with the
+// zero sentinel reinterpreted. Returns -1/0/+1.
+func compareExpiry(a, b time.Time) int {
+	aZero, bZero := a.IsZero(), b.IsZero()
+	switch {
+	case aZero && bZero:
+		return 0
+	case aZero:
+		return 1
+	case bZero:
+		return -1
+	}
+	return a.Compare(b)
+}
+
 // GetLatestUpstreamTokensForUser implements UpstreamTokenStorage.
 //
 // Expired tokens (past ExpiresAt) are returned so callers can use the refresh
@@ -859,7 +876,7 @@ func (s *MemoryStorage) GetLatestUpstreamTokensForUser(_ context.Context, userID
 		if entry.value == nil || entry.value.UserID != userID || entry.value.ProviderID != providerID {
 			continue
 		}
-		if winner == nil || entry.value.ExpiresAt.After(winner.ExpiresAt) {
+		if winner == nil || compareExpiry(entry.value.ExpiresAt, winner.ExpiresAt) > 0 {
 			winner = entry.value
 		}
 	}

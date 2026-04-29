@@ -37,12 +37,15 @@ const (
 	// Used to detect changes without comparing full rendered templates (which include K8s-defaulted fields).
 	podTemplateSpecHashAnnotation = "toolhive.stacklok.io/podtemplatespec-hash"
 
-	// imagePullRefsHashAnnotation tracks the SHA256 hash of vmcp.Spec.ImagePullSecrets.
-	// Mirrors the podTemplateSpecHashAnnotation pattern to detect drift on the explicit
-	// CRD field without re-running strategic-merge logic during reconciliation.
-	// Combined with podTemplateSpecHashAnnotation (which covers any imagePullSecrets the
-	// user added under spec.podTemplateSpec.spec.imagePullSecrets), this is sufficient
-	// to detect every input that influences the deployed PodSpec.ImagePullSecrets.
+	// imagePullRefsHashAnnotation tracks the SHA256 hash of the desired
+	// imagePullSecrets list — chart-level defaults merged with
+	// vmcp.Spec.ImagePullSecrets — used by buildDeploymentMetadataForVmcp.
+	// Mirrors the podTemplateSpecHashAnnotation pattern to detect drift on
+	// these inputs without re-running strategic-merge logic during
+	// reconciliation. Combined with podTemplateSpecHashAnnotation (which
+	// covers any imagePullSecrets the user added under
+	// spec.podTemplateSpec.spec.imagePullSecrets), this is sufficient to
+	// detect every input that influences the deployed PodSpec.ImagePullSecrets.
 	imagePullRefsHashAnnotation = "toolhive.stacklok.io/imagepullsecrets-hash"
 
 	// Log level configuration
@@ -202,7 +205,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: int64Ptr(vmcpTerminationGracePeriodSeconds),
 					ServiceAccountName:            serviceAccountName,
-					ImagePullSecrets:              vmcp.Spec.ImagePullSecrets,
+					ImagePullSecrets:              r.imagePullSecretsForVMCP(vmcp),
 					Containers: []corev1.Container{{
 						Image:           getVmcpImage(),
 						ImagePullPolicy: corev1.PullIfNotPresent,
@@ -687,7 +690,7 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 }
 
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations
-func (*VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
+func (r *VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 	baseLabels map[string]string,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (map[string]string, map[string]string) {
@@ -704,12 +707,14 @@ func (*VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 		}
 	}
 
-	// Store hash of vmcp.Spec.ImagePullSecrets so deploymentNeedsUpdate can detect
-	// drift on this field. Without this annotation, edits to spec.imagePullSecrets
-	// on an existing CR would not propagate to the running Deployment because the
-	// drift checks compare individual fields and never look at PodSpec.ImagePullSecrets
-	// directly (the live value is the strategic-merge union with PodTemplateSpec).
-	if hash, err := imagePullSecretsHash(vmcp.Spec.ImagePullSecrets); err == nil && hash != "" {
+	// Store hash of the desired imagePullSecrets list — chart-level defaults
+	// merged with vmcp.Spec.ImagePullSecrets — so deploymentNeedsUpdate can
+	// detect drift on this field. Without this annotation, edits to either
+	// the chart default or spec.imagePullSecrets on an existing CR would not
+	// propagate to the running Deployment because the drift checks compare
+	// individual fields and never look at PodSpec.ImagePullSecrets directly
+	// (the live value is the strategic-merge union with PodTemplateSpec).
+	if hash, err := imagePullSecretsHash(r.imagePullSecretsForVMCP(vmcp)); err == nil && hash != "" {
 		deploymentAnnotations[imagePullRefsHashAnnotation] = hash
 	}
 

@@ -25,6 +25,15 @@ operator:
 
   # -- List of image pull secrets to use
   imagePullSecrets: []
+
+  # -- List of image pull secrets that the operator applies as defaults to every
+  # workload it spawns (proxy runners, vMCP servers, registry API, etc.).
+  # Per-CR `imagePullSecrets` take precedence on name collisions; chart-level
+  # entries are appended additively. Each entry is a string (the Secret name);
+  # the operator parses these once at startup from the
+  # THV_DEFAULT_IMAGE_PULL_SECRETS environment variable. The Secrets must exist
+  # in the namespace where each workload is created.
+  defaultImagePullSecrets: []
   # -- Container image for the operator
   image: ghcr.io/stacklok/toolhive/operator:v0.25.0
   # -- Image pull policy for the operator container

@@ -52,8 +52,6 @@ components:
         RateLimitConfig contains the CRD rate limiting configuration.
         When set, rate limiting middleware is added to the proxy middleware chain.
       properties:
-        global:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket'
         perUser:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket'
         shared:
@@ -73,8 +71,6 @@ components:
       type: object
     github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.ToolRateLimitConfig:
       properties:
-        global:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket'
         name:
           description: |-
             Name is the MCP tool name this limit applies to.

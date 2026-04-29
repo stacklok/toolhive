@@ -76,13 +76,6 @@ func TestRateLimitConfigJSONRoundtrip(t *testing.T) {
 		wantJSON string
 	}{
 		{
-			name: "global only",
-			input: RateLimitConfig{
-				Global: &RateLimitBucket{MaxTokens: 100, RefillPeriod: metav1.Duration{Duration: time.Minute}},
-			},
-			wantJSON: `{"global":{"maxTokens":100,"refillPeriod":"1m0s"}}`,
-		},
-		{
 			name: "shared only",
 			input: RateLimitConfig{
 				Shared: &RateLimitBucket{MaxTokens: 100, RefillPeriod: metav1.Duration{Duration: time.Minute}},
@@ -134,7 +127,7 @@ func TestVirtualMCPServerSpecRateLimitingJSONRoundtrip(t *testing.T) {
 			Address:  "redis.default.svc.cluster.local:6379",
 		},
 		RateLimiting: &RateLimitConfig{
-			Global: &RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+			Shared: &RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 			PerUser: &RateLimitBucket{
 				MaxTokens:    2,
 				RefillPeriod: metav1.Duration{Duration: time.Minute},
@@ -142,7 +135,7 @@ func TestVirtualMCPServerSpecRateLimitingJSONRoundtrip(t *testing.T) {
 			Tools: []ToolRateLimitConfig{
 				{
 					Name: "backend_a_echo",
-					Global: &RateLimitBucket{
+					Shared: &RateLimitBucket{
 						MaxTokens:    5,
 						RefillPeriod: metav1.Duration{Duration: 30 * time.Second},
 					},
@@ -155,7 +148,7 @@ func TestVirtualMCPServerSpecRateLimitingJSONRoundtrip(t *testing.T) {
 	require.NoError(t, err)
 	out := string(b)
 	assert.Contains(t, out, `"rateLimiting"`)
-	assert.Contains(t, out, `"global"`)
+	assert.Contains(t, out, `"shared"`)
 	assert.Contains(t, out, `"perUser"`)
 	assert.Contains(t, out, `"backend_a_echo"`)
 	assert.NotContains(t, out, `"config":{"rateLimiting"`)

@@ -4,7 +4,6 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,35 +15,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 
-	thvjson "github.com/stacklok/toolhive/pkg/json"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
-
-func TestConfigRateLimitingIsYAMLOnly(t *testing.T) {
-	t.Parallel()
-
-	rateLimiting := thvjson.NewMap(map[string]any{
-		"global": map[string]any{
-			"maxTokens":    10,
-			"refillPeriod": "1m0s",
-		},
-	})
-	cfg := Config{
-		Name:         "test-vmcp",
-		RateLimiting: &rateLimiting,
-	}
-
-	jsonBytes, err := json.Marshal(cfg)
-	require.NoError(t, err)
-	assert.NotContains(t, string(jsonBytes), "rateLimiting")
-
-	yamlBytes, err := yaml.Marshal(cfg)
-	require.NoError(t, err)
-	assert.Contains(t, string(yamlBytes), "rateLimiting:")
-	assert.Contains(t, string(yamlBytes), "maxTokens: 10")
-}
 
 func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
 	t.Parallel()

@@ -113,7 +113,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 			It("should reject rate limiting without redis session storage", func() {
 				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-rl-no-redis", nil)
 				vmcp.Spec.RateLimiting = &mcpv1beta1.RateLimitConfig{
-					Global: &mcpv1beta1.RateLimitBucket{
+					Shared: &mcpv1beta1.RateLimitBucket{
 						MaxTokens:    1,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},

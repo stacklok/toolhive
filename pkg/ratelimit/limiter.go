@@ -46,10 +46,10 @@ func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1beta1.RateL
 
 	l := &limiter{client: client}
 
-	if global, suffix := serverGlobalBucket(crd); global != nil {
-		b, err := newBucket(namespace, name, suffix, global)
+	if crd.Shared != nil {
+		b, err := newBucket(namespace, name, "shared", crd.Shared)
 		if err != nil {
-			return nil, fmt.Errorf("%s bucket: %w", suffix, err)
+			return nil, fmt.Errorf("shared bucket: %w", err)
 		}
 		l.serverBucket = b
 	}
@@ -63,10 +63,10 @@ func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1beta1.RateL
 	}
 
 	for _, t := range crd.Tools {
-		if global, suffix := toolGlobalBucket(&t); global != nil {
-			b, err := newBucket(namespace, name, suffix+":tool:"+t.Name, global)
+		if t.Shared != nil {
+			b, err := newBucket(namespace, name, "shared:tool:"+t.Name, t.Shared)
 			if err != nil {
-				return nil, fmt.Errorf("tool %q %s bucket: %w", t.Name, suffix, err)
+				return nil, fmt.Errorf("tool %q shared bucket: %w", t.Name, err)
 			}
 			if l.toolBuckets == nil {
 				l.toolBuckets = make(map[string]*bucket.TokenBucket)
@@ -86,26 +86,6 @@ func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1beta1.RateL
 	}
 
 	return l, nil
-}
-
-func serverGlobalBucket(crd *v1beta1.RateLimitConfig) (*v1beta1.RateLimitBucket, string) {
-	if crd.Global != nil {
-		return crd.Global, "global"
-	}
-	if crd.Shared != nil {
-		return crd.Shared, "shared"
-	}
-	return nil, ""
-}
-
-func toolGlobalBucket(tool *v1beta1.ToolRateLimitConfig) (*v1beta1.RateLimitBucket, string) {
-	if tool.Global != nil {
-		return tool.Global, "global"
-	}
-	if tool.Shared != nil {
-		return tool.Shared, "shared"
-	}
-	return nil, ""
 }
 
 // bucketSpec holds deferred bucket parameters for per-user buckets that are

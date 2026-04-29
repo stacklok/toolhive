@@ -27,12 +27,13 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, registry)
 
-		// Verify all three strategies are registered
+		// Verify all strategies are registered
 		strategyTypes := []string{
 			authtypes.StrategyTypeUnauthenticated,
 			authtypes.StrategyTypeHeaderInjection,
 			authtypes.StrategyTypeTokenExchange,
 			authtypes.StrategyTypeUpstreamInject,
+			authtypes.StrategyTypeAwsSts,
 		}
 
 		for _, strategyType := range strategyTypes {
@@ -164,6 +165,7 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 			{authtypes.StrategyTypeHeaderInjection, "header_injection"},
 			{authtypes.StrategyTypeTokenExchange, "token_exchange"},
 			{authtypes.StrategyTypeUpstreamInject, "upstream_inject"},
+			{authtypes.StrategyTypeAwsSts, "aws_sts"},
 		}
 
 		for _, tc := range testCases {

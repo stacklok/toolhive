@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -97,8 +96,8 @@ Example:
 	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
 	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
 	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
-	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (default 14000)")
-	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (default: ephemeral)")
+	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
+	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
 
 	return cmd
 }
@@ -141,15 +140,11 @@ func newConfigResetCommand() *cobra.Command {
 tokens from the secrets provider.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Delete cached tokens from the secrets provider first.
-			provider, err := secrets.GetSystemSecretsProvider()
-			if err != nil {
-				// Non-fatal: log and continue so the config is still cleared.
-				fmt.Fprintf(os.Stderr, "Warning: could not get secrets provider: %v\n", err)
-			} else if err := llm.DeleteCachedTokens(cmd.Context(), provider); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not remove cached LLM tokens: %v\n", err)
+			if sp, err := secrets.GetSystemSecretsProvider(); err == nil {
+				llm.PurgeTokens(cmd.Context(), cmd.ErrOrStderr(), sp)
+			} else {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not get secrets provider: %v\n", err)
 			}
-
 			return config.UpdateConfig(func(c *config.Config) error {
 				c.LLM = llm.Config{}
 				return nil
@@ -209,7 +204,9 @@ func buildLLMTokenSource(cfg *llm.Config, interactive bool) (*llm.TokenSource, e
 // ── setup / teardown ─────────────────────────────────────────────────────────
 
 func newLLMSetupCommand() *cobra.Command {
-	return &cobra.Command{
+	var opts llm.SetOptions
+
+	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Configure all detected AI tools to use the LLM gateway",
 		Long: `Detect installed AI coding tools (Claude Code, Gemini CLI, Cursor, VS Code,
@@ -221,6 +218,10 @@ Token-helper tools (Claude Code, Gemini CLI) are configured to call
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".
 
+Inline flags (--gateway-url, --issuer, --client-id, etc.) are applied for this
+run and persisted to config only after login and tool patching succeed. This
+lets you combine "config set" and "setup" into a single command.
+
 Run "thv llm teardown" to revert all changes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -228,111 +229,40 @@ Run "thv llm teardown" to revert all changes.`,
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
 			}
-			return runLLMSetup(cmd.OutOrStdout(), cmd.ErrOrStderr(), cm, config.NewDefaultProvider())
+			return runLLMSetup(
+				cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
+				cm, config.NewDefaultProvider(), oidcLogin, opts,
+			)
 		},
 	}
+
+	cmd.Flags().StringVar(&opts.GatewayURL, "gateway-url", "", "LLM gateway base URL (must use HTTPS)")
+	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
+	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
+	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
+	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
+	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
+
+	return cmd
 }
 
-func runLLMSetup(out, errOut io.Writer, cm *client.ClientManager, provider config.Provider) error {
-	llmCfg := provider.GetConfig().LLM
-
-	if !llmCfg.IsConfigured() {
-		return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
-	}
-
-	self, err := os.Executable()
+func oidcLogin(ctx context.Context, cfg *llm.Config) error {
+	ts, err := buildLLMTokenSource(cfg, true /* interactive */)
 	if err != nil {
-		return fmt.Errorf("resolving thv executable path: %w", err)
+		return fmt.Errorf("building token source: %w", err)
 	}
-	// Reject paths that contain shell metacharacters: the token-helper command
-	// is written verbatim into long-lived tool config files and re-executed by
-	// the shell inside Claude Code / Gemini CLI.  A path with '"', '\', ';',
-	// newline, or carriage-return would silently produce a broken command.
-	const shellUnsafe = `"\;` + "\n\r"
-	if strings.ContainsAny(self, shellUnsafe) {
-		return fmt.Errorf(
-			"executable path %q contains shell-unsafe characters; "+
-				"move thv to a path without quotes, backslashes, or semicolons", self)
-	}
-
-	proxyBaseURL := fmt.Sprintf("http://localhost:%d/v1", llmCfg.EffectiveProxyPort())
-	applyCfg := client.LLMApplyConfig{
-		GatewayURL:         llmCfg.GatewayURL,
-		ProxyBaseURL:       proxyBaseURL,
-		TokenHelperCommand: fmt.Sprintf(`"%s" llm token`, self),
-	}
-
-	detected := cm.DetectedLLMGatewayClients()
-	if len(detected) == 0 {
-		_, _ = fmt.Fprintln(out, "No supported AI tools detected.")
-		return nil
-	}
-
-	var configured []llm.ToolConfig
-	for _, clientType := range detected {
-		configPath, err := cm.ConfigureLLMGateway(clientType, applyCfg)
-		if err != nil {
-			_, _ = fmt.Fprintf(errOut, "Warning: failed to configure %s: %v\n", clientType, err)
-			continue
-		}
-		mode := cm.LLMGatewayModeFor(clientType)
-		configured = append(configured, llm.ToolConfig{
-			Tool:       string(clientType),
-			Mode:       mode,
-			ConfigPath: configPath,
-		})
-		_, _ = fmt.Fprintf(out, "Configured %s (%s mode)  →  %s\n", clientType, mode, configPath)
-	}
-
-	if len(configured) == 0 {
-		return fmt.Errorf("failed to configure any detected tools")
-	}
-
-	if err := provider.UpdateConfig(func(c *config.Config) error {
-		c.LLM.ConfiguredTools = mergeToolConfigs(c.LLM.ConfiguredTools, configured)
-		return nil
-	}); err != nil {
-		// Roll back every tool we successfully patched so the tool config files
-		// are not left in a modified state without a persisted record of what
-		// was changed (which would make teardown unable to revert them).
-		for _, tc := range configured {
-			if revertErr := cm.RevertLLMGateway(client.ClientApp(tc.Tool), tc.ConfigPath); revertErr != nil {
-				_, _ = fmt.Fprintf(errOut,
-					"Warning: rollback of %s failed: %v\n", tc.Tool, revertErr)
-			}
-		}
-		return fmt.Errorf("persisting tool configuration: %w", err)
-	}
-	return nil
+	_, err = ts.Token(ctx)
+	return err
 }
 
-// isTarget reports whether toolName appears in the targets slice.
-func isTarget(targets []llm.ToolConfig, toolName string) bool {
-	for _, t := range targets {
-		if t.Tool == toolName {
-			return true
-		}
-	}
-	return false
-}
-
-// mergeToolConfigs merges newly configured tools into the existing list,
-// replacing any entry with the same tool name.
-func mergeToolConfigs(existing, incoming []llm.ToolConfig) []llm.ToolConfig {
-	index := make(map[string]int, len(existing))
-	result := make([]llm.ToolConfig, len(existing))
-	copy(result, existing)
-	for i, tc := range result {
-		index[tc.Tool] = i
-	}
-	for _, tc := range incoming {
-		if i, ok := index[tc.Tool]; ok {
-			result[i] = tc
-		} else {
-			result = append(result, tc)
-		}
-	}
-	return result
+// runLLMSetup is a thin CLI wrapper: it adapts concrete CLI types to the
+// interfaces expected by llm.Setup and delegates all orchestration there.
+func runLLMSetup(
+	ctx context.Context, out, errOut io.Writer,
+	cm *client.ClientManager, provider config.Provider, login llm.LoginFunc,
+	inlineOpts llm.SetOptions,
+) error {
+	return llm.Setup(ctx, out, errOut, &clientManagerAdapter{cm}, &configUpdaterAdapter{provider}, login, inlineOpts)
 }
 
 func newLLMTeardownCommand() *cobra.Command {
@@ -351,7 +281,7 @@ Use --purge-tokens to also remove cached OIDC tokens from the secrets provider.`
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
 			}
-			return runLLMTeardown(cmd.OutOrStdout(), cmd.ErrOrStderr(), cm, args, purgeTokens, config.NewDefaultProvider())
+			return runLLMTeardown(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cm, args, purgeTokens, config.NewDefaultProvider())
 		},
 	}
 
@@ -360,76 +290,72 @@ Use --purge-tokens to also remove cached OIDC tokens from the secrets provider.`
 	return cmd
 }
 
+// runLLMTeardown is a thin CLI wrapper: it adapts concrete CLI types to the
+// interfaces expected by llm.Teardown and delegates all orchestration there.
 func runLLMTeardown(
+	ctx context.Context,
 	out, errOut io.Writer,
 	cm *client.ClientManager,
 	args []string,
 	purgeTokens bool,
 	provider config.Provider,
 ) error {
-	llmCfg := provider.GetConfig().LLM
-
-	var targets []llm.ToolConfig
-	if len(args) == 1 {
-		for _, tc := range llmCfg.ConfiguredTools {
-			if tc.Tool == args[0] {
-				targets = append(targets, tc)
-				break
-			}
-		}
-		if len(targets) == 0 {
-			return fmt.Errorf("tool %q is not configured", args[0])
-		}
-	} else {
-		targets = llmCfg.ConfiguredTools
-	}
-
-	if len(targets) == 0 {
-		_, _ = fmt.Fprintln(out, "No tools are currently configured.")
-		return nil
-	}
-
-	// Separate tools into those to revert and those to keep, without touching
-	// any files yet. We persist the new config first so that if UpdateConfig
-	// fails, the tool files are left intact and the state stays consistent.
-	var toRevert, remaining []llm.ToolConfig
-	for _, tc := range llmCfg.ConfiguredTools {
-		if isTarget(targets, tc.Tool) {
-			toRevert = append(toRevert, tc)
-		} else {
-			remaining = append(remaining, tc)
-		}
-	}
-
-	// Persist the updated tool list before mutating any tool config files.
-	// If this fails, nothing on disk has changed and the caller can retry.
-	if err := provider.UpdateConfig(func(c *config.Config) error {
-		c.LLM.ConfiguredTools = remaining
-		return nil
-	}); err != nil {
-		return fmt.Errorf("persisting tool configuration: %w", err)
-	}
-
-	// Revert tool config files best-effort; warn on failure but do not undo
-	// the config update above (the user can re-run setup+teardown to reconcile).
-	for _, tc := range toRevert {
-		if err := cm.RevertLLMGateway(client.ClientApp(tc.Tool), tc.ConfigPath); err != nil {
-			_, _ = fmt.Fprintf(errOut, "Warning: failed to revert %s: %v\n", tc.Tool, err)
-			continue
-		}
-		_, _ = fmt.Fprintf(out, "Reverted %s  (%s)\n", tc.Tool, tc.ConfigPath)
-	}
-
+	var sp pkgsecrets.Provider
 	if purgeTokens {
-		secretsProvider, err := secrets.GetSystemSecretsProvider()
+		var err error
+		sp, err = secrets.GetSystemSecretsProvider()
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Warning: could not get secrets provider: %v\n", err)
-		} else if err := llm.DeleteCachedTokens(context.Background(), secretsProvider); err != nil {
-			_, _ = fmt.Fprintf(errOut, "Warning: could not remove cached LLM tokens: %v\n", err)
 		}
 	}
+	var targetTool string
+	if len(args) == 1 {
+		targetTool = args[0]
+	}
+	return llm.Teardown(ctx, out, errOut, &clientManagerAdapter{cm}, targetTool, purgeTokens, &configUpdaterAdapter{provider}, sp)
+}
 
-	return nil
+// ── CLI adapters ──────────────────────────────────────────────────────────────
+
+// clientManagerAdapter adapts *client.ClientManager to llm.GatewayManager.
+type clientManagerAdapter struct{ cm *client.ClientManager }
+
+func (a *clientManagerAdapter) DetectedLLMGatewayClients() []string {
+	apps := a.cm.DetectedLLMGatewayClients()
+	result := make([]string, len(apps))
+	for i, app := range apps {
+		result[i] = string(app)
+	}
+	return result
+}
+
+func (a *clientManagerAdapter) ConfigureLLMGateway(clientType string, cfg llm.ToolApplyConfig) (string, error) {
+	return a.cm.ConfigureLLMGateway(client.ClientApp(clientType), client.LLMApplyConfig{
+		GatewayURL:         cfg.GatewayURL,
+		ProxyBaseURL:       cfg.ProxyBaseURL,
+		TokenHelperCommand: cfg.TokenHelperCommand,
+	})
+}
+
+func (a *clientManagerAdapter) LLMGatewayModeFor(clientType string) string {
+	return a.cm.LLMGatewayModeFor(client.ClientApp(clientType))
+}
+
+func (a *clientManagerAdapter) RevertLLMGateway(clientType, configPath string) error {
+	return a.cm.RevertLLMGateway(client.ClientApp(clientType), configPath)
+}
+
+// configUpdaterAdapter adapts config.Provider to llm.ConfigUpdater.
+type configUpdaterAdapter struct{ p config.Provider }
+
+func (a *configUpdaterAdapter) GetLLMConfig() llm.Config {
+	return a.p.GetConfig().LLM
+}
+
+func (a *configUpdaterAdapter) UpdateLLMConfig(fn func(*llm.Config) error) error {
+	return a.p.UpdateConfig(func(c *config.Config) error {
+		return fn(&c.LLM)
+	})
 }
 
 // ── proxy subcommand group ────────────────────────────────────────────────────

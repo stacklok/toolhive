@@ -233,6 +233,10 @@ const docTemplate = `{
                     "session_name_claim": {
                         "description": "SessionNameClaim is the JWT claim to use for role session name (default: \"sub\").",
                         "type": "string"
+                    },
+                    "subject_provider_name": {
+                        "description": "SubjectProviderName identifies which upstream provider's access token to use\nfor STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer\ntoken from the incoming HTTP request is used.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -269,6 +273,10 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "bearer_token_file": {
+                        "type": "string"
+                    },
+                    "cached_cimd_client_id": {
+                        "description": "CachedCIMDClientID stores the CIMD metadata URL used as client_id when CIMD\nauthentication was used. Kept separate from CachedClientID (which holds\nDCR-issued IDs) so the two can have independent lifecycles — DCR credential\nrotation clears CachedClientID without touching the stable CIMD URL.\nRead by resolveClientCredentials to send the correct client_id on token refresh.",
                         "type": "string"
                     },
                     "cached_client_id": {
@@ -851,8 +859,7 @@ const docTemplate = `{
                     "mistral-vibe",
                     "codex",
                     "kimi-cli",
-                    "factory",
-                    "xcode"
+                    "factory"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -882,8 +889,7 @@ const docTemplate = `{
                     "MistralVibe",
                     "Codex",
                     "KimiCli",
-                    "Factory",
-                    "Xcode"
+                    "Factory"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {

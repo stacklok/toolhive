@@ -396,7 +396,7 @@ func (r *EmbeddingServerReconciler) validateAndUpdatePodTemplateStatus(
 
 // statefulSetForEmbedding creates a StatefulSet for the embedding server
 func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
-	_ context.Context,
+	ctx context.Context,
 	embedding *mcpv1beta1.EmbeddingServer,
 ) *appsv1.StatefulSet {
 	replicas := embedding.GetReplicas()
@@ -406,7 +406,7 @@ func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
 	container := r.buildEmbeddingContainer(embedding)
 
 	// Build pod template
-	podTemplate := r.buildPodTemplate(embedding, labels, container)
+	podTemplate := r.buildPodTemplate(labels, container)
 
 	// Apply statefulset overrides
 	stsAnnotations, stsLabels := r.applyStatefulSetOverrides(embedding, &podTemplate)
@@ -437,6 +437,13 @@ func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
 	if embedding.IsModelCacheEnabled() {
 		statefulSet.Spec.VolumeClaimTemplates = r.buildVolumeClaimTemplates(embedding)
 	}
+
+	// Apply user-provided PodTemplateSpec customizations via strategic merge patch.
+	// This must happen after the controller-generated template is fully populated so
+	// that user fields override controller defaults rather than the other way around.
+	// The merge is soft-fail: invalid input is logged and the StatefulSet is built
+	// from controller defaults. See applyPodTemplateSpecToStatefulSet's godoc.
+	r.applyPodTemplateSpecToStatefulSet(ctx, embedding, statefulSet)
 
 	if err := ctrl.SetControllerReference(embedding, statefulSet, r.Scheme); err != nil {
 		return nil
@@ -634,13 +641,16 @@ func (*EmbeddingServerReconciler) applyResourceRequirements(embedding *mcpv1beta
 	}
 }
 
-// buildPodTemplate builds the pod template for the statefulset
-func (r *EmbeddingServerReconciler) buildPodTemplate(
-	embedding *mcpv1beta1.EmbeddingServer,
+// buildPodTemplate builds the pod template for the statefulset.
+// User-provided PodTemplateSpec customizations are applied later in
+// statefulSetForEmbedding via strategic merge patch.
+func (*EmbeddingServerReconciler) buildPodTemplate(
 	labels map[string]string,
 	container corev1.Container,
 ) corev1.PodTemplateSpec {
-	podTemplate := corev1.PodTemplateSpec{
+	// Note: Volumes for model cache are managed by StatefulSet volumeClaimTemplates
+	// and will be automatically mounted with the name "model-cache"
+	return corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: labels,
 		},
@@ -648,73 +658,67 @@ func (r *EmbeddingServerReconciler) buildPodTemplate(
 			Containers: []corev1.Container{container},
 		},
 	}
-
-	// Note: Volumes for model cache are managed by StatefulSet volumeClaimTemplates
-	// and will be automatically mounted with the name "model-cache"
-
-	// Merge with user-provided PodTemplateSpec if specified
-	r.mergePodTemplateSpec(embedding, &podTemplate)
-
-	return podTemplate
 }
 
-// mergePodTemplateSpec merges user-provided PodTemplateSpec customizations
-func (r *EmbeddingServerReconciler) mergePodTemplateSpec(
+// applyPodTemplateSpecToStatefulSet applies user-provided PodTemplateSpec customizations
+// to the StatefulSet's pod template using strategic merge patch. This preserves every
+// user-supplied PodSpec field (imagePullSecrets, additional volumes, priorityClassName,
+// topologySpreadConstraints, init containers, sidecars, etc.) while keeping controller
+// defaults for fields the user did not set.
+//
+// The merge itself is delegated to ctrlutil.ApplyPodTemplateSpecPatch — which is
+// policy-neutral. Invalid user input is treated here as a soft failure: the merge is
+// skipped and the StatefulSet is built from controller defaults. The user-facing signal
+// lives on the EmbeddingServer status (set by validateAndUpdatePodTemplateStatus):
+// Phase=Failed and ConditionPodTemplateValid=False. This mirrors the pre-existing
+// tolerant behavior — refusing to create the StatefulSet would leave the resource stuck
+// with no pod and no observable controller-side state, while the validation condition
+// already tells the user exactly why their input was rejected. The vMCP controller
+// makes the opposite choice (hard-fail) for the same helper; both are documented on
+// ApplyPodTemplateSpecPatch's godoc.
+//
+// The function does not return an error: every failure mode is converted to a log line
+// plus controller-default fallback at this call site.
+func (*EmbeddingServerReconciler) applyPodTemplateSpecToStatefulSet(
+	ctx context.Context,
 	embedding *mcpv1beta1.EmbeddingServer,
-	podTemplate *corev1.PodTemplateSpec,
+	statefulSet *appsv1.StatefulSet,
 ) {
-	if embedding.Spec.PodTemplateSpec == nil {
+	if embedding.Spec.PodTemplateSpec == nil || len(embedding.Spec.PodTemplateSpec.Raw) == 0 {
 		return
 	}
 
-	builder, err := ctrlutil.NewPodTemplateSpecBuilder(embedding.Spec.PodTemplateSpec, embeddingContainerName)
+	logger := log.FromContext(ctx)
+
+	// Validate the user-provided PodTemplateSpec is well-formed.
+	// We don't check builder.Build() == nil for "empty" customizations: that helper
+	// only enumerates a subset of PodSpec fields and would skip the patch for
+	// fields like runtimeClassName or topologySpreadConstraints. Strategic merge
+	// patch is a no-op for `{}` anyway, so always running it is safe.
+	if _, err := ctrlutil.NewPodTemplateSpecBuilder(embedding.Spec.PodTemplateSpec, embeddingContainerName); err != nil {
+		logger.Info("Skipping PodTemplateSpec merge: input is invalid; StatefulSet will use controller defaults",
+			"error", err.Error(),
+			"embeddingserver", embedding.Name,
+			"namespace", embedding.Namespace)
+		return
+	}
+
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(statefulSet.Spec.Template, embedding.Spec.PodTemplateSpec.Raw)
 	if err != nil {
+		// Soft failure: log and fall back to controller defaults. See function
+		// godoc above for the rationale and the contrast with the vMCP caller.
+		logger.Info("Skipping PodTemplateSpec merge: strategic merge patch failed; StatefulSet will use controller defaults",
+			"error", err.Error(),
+			"embeddingserver", embedding.Name,
+			"namespace", embedding.Namespace)
 		return
 	}
 
-	userTemplate := builder.Build()
-	if userTemplate == nil {
-		return
-	}
+	statefulSet.Spec.Template = merged
 
-	// Merge user customizations into base pod template
-	if userTemplate.Spec.NodeSelector != nil {
-		podTemplate.Spec.NodeSelector = userTemplate.Spec.NodeSelector
-	}
-	if userTemplate.Spec.Affinity != nil {
-		podTemplate.Spec.Affinity = userTemplate.Spec.Affinity
-	}
-	if len(userTemplate.Spec.Tolerations) > 0 {
-		podTemplate.Spec.Tolerations = userTemplate.Spec.Tolerations
-	}
-	if userTemplate.Spec.SecurityContext != nil {
-		podTemplate.Spec.SecurityContext = userTemplate.Spec.SecurityContext
-	}
-	if userTemplate.Spec.ServiceAccountName != "" {
-		podTemplate.Spec.ServiceAccountName = userTemplate.Spec.ServiceAccountName
-	}
-
-	// Merge container-level customizations
-	r.mergeContainerSecurityContext(podTemplate, userTemplate)
-}
-
-// mergeContainerSecurityContext merges container-level security context
-func (*EmbeddingServerReconciler) mergeContainerSecurityContext(
-	podTemplate *corev1.PodTemplateSpec,
-	userTemplate *corev1.PodTemplateSpec,
-) {
-	for i := range podTemplate.Spec.Containers {
-		if podTemplate.Spec.Containers[i].Name != embeddingContainerName {
-			continue
-		}
-		for _, userContainer := range userTemplate.Spec.Containers {
-			if userContainer.Name == embeddingContainerName && userContainer.SecurityContext != nil {
-				podTemplate.Spec.Containers[i].SecurityContext = userContainer.SecurityContext
-				break
-			}
-		}
-		break
-	}
+	logger.V(1).Info("Applied PodTemplateSpec customizations to StatefulSet",
+		"embeddingserver", embedding.Name,
+		"namespace", embedding.Namespace)
 }
 
 // applyStatefulSetOverrides applies statefulset-level overrides and returns annotations and labels

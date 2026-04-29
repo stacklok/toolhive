@@ -109,6 +109,41 @@ type MCPRegistrySpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
+
+	// ImagePullSecrets allows specifying image pull secrets for the registry API workload.
+	// These are applied to both the registry-api Deployment's PodSpec.ImagePullSecrets
+	// and to the operator-managed ServiceAccount the registry API runs as, so private
+	// images are pullable through either path.
+	//
+	// Use this field for new manifests.
+	//
+	// Important: this is the ONLY way to attach image-pull credentials to the
+	// operator-managed ServiceAccount. The legacy
+	// spec.podTemplateSpec.spec.imagePullSecrets path populates the Deployment's pod
+	// spec ONLY — it does NOT touch the ServiceAccount. On managed Kubernetes
+	// platforms that rely on ServiceAccount-level credential injection (for example
+	// GKE Workload Identity, OpenShift's per-SA dockercfg secrets, EKS IRSA), using
+	// only the legacy PodTemplateSpec path can fail to pull private images even when
+	// the secret exists in the namespace. Always set spec.imagePullSecrets when
+	// SA-level credentials matter.
+	//
+	// Precedence with PodTemplateSpec:
+	//   - This field is applied first as the controller-generated default.
+	//   - Values set under spec.podTemplateSpec.spec.imagePullSecrets are user overrides
+	//     and win on overlap. If the user supplies imagePullSecrets via PodTemplateSpec,
+	//     those replace the default list on the Deployment (the list is treated atomically).
+	//   - The ServiceAccount is always populated from this field — PodTemplateSpec does not
+	//     affect the ServiceAccount.
+	//
+	// An omitted field and an explicitly empty list are equivalent: both leave the
+	// ServiceAccount's existing ImagePullSecrets unchanged. This preserves
+	// platform-managed pull secrets (for example OpenShift's per-SA dockercfg
+	// entries) when overlays or patches emit an empty list. Truly clearing the
+	// ServiceAccount's pull secrets requires recreating the resource.
+	//
+	// +listType=atomic
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
 
 // MCPRegistryStatus defines the observed state of MCPRegistry

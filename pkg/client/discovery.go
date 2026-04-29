@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 
@@ -22,6 +23,7 @@ type ClientManager struct {
 	groupManager       groups.Manager
 	clientIntegrations []clientAppConfig
 	configProvider     config.Provider
+	lookPath           func(string) (string, error)
 }
 
 // NewClientManager creates a new ClientManager with default dependencies
@@ -42,6 +44,7 @@ func NewClientManager() (*ClientManager, error) {
 		groupManager:       groupManager,
 		clientIntegrations: supportedClientIntegrations,
 		configProvider:     config.NewDefaultProvider(),
+		lookPath:           exec.LookPath,
 	}, nil
 }
 
@@ -57,6 +60,7 @@ func NewTestClientManager(
 		groupManager:       groupManager,
 		clientIntegrations: clientIntegrations,
 		configProvider:     configProvider,
+		lookPath:           exec.LookPath,
 	}
 }
 

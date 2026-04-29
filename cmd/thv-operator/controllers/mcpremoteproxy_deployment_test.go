@@ -880,6 +880,104 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testin
 	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
 }
 
+func TestMCPRemoteProxyDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		specSecrets       []corev1.LocalObjectReference // set on proxy.Spec.ResourceOverrides
+		deploymentSecrets []corev1.LocalObjectReference // overrides deployment after build
+		expectNeedsUpdate bool
+	}{
+		{
+			name:              "both empty - no update",
+			specSecrets:       nil,
+			deploymentSecrets: nil,
+			expectNeedsUpdate: false,
+		},
+		{
+			name:              "spec has secrets, deployment has nil - needs update",
+			specSecrets:       []corev1.LocalObjectReference{{Name: "regsec"}},
+			deploymentSecrets: nil,
+			expectNeedsUpdate: true,
+		},
+		{
+			name:              "spec cleared, deployment has stale - needs update",
+			specSecrets:       nil,
+			deploymentSecrets: []corev1.LocalObjectReference{{Name: "old-regsec"}},
+			expectNeedsUpdate: true,
+		},
+		{
+			name:              "match - no update",
+			specSecrets:       []corev1.LocalObjectReference{{Name: "regsec"}},
+			deploymentSecrets: []corev1.LocalObjectReference{{Name: "regsec"}},
+			expectNeedsUpdate: false,
+		},
+		{
+			name:              "spec nil vs deployment empty slice - no update",
+			specSecrets:       nil,
+			deploymentSecrets: []corev1.LocalObjectReference{},
+			expectNeedsUpdate: false,
+		},
+		{
+			name:              "spec empty slice vs deployment empty slice - no update",
+			specSecrets:       []corev1.LocalObjectReference{},
+			deploymentSecrets: []corev1.LocalObjectReference{},
+			expectNeedsUpdate: false,
+		},
+		{
+			name:              "reorder triggers update",
+			specSecrets:       []corev1.LocalObjectReference{{Name: "a"}, {Name: "b"}},
+			deploymentSecrets: []corev1.LocalObjectReference{{Name: "b"}, {Name: "a"}},
+			expectNeedsUpdate: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := createRunConfigTestScheme()
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+			proxy := &mcpv1beta1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ProxyPort: 8080,
+				},
+			}
+			if tt.specSecrets != nil {
+				proxy.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
+					ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+						ImagePullSecrets: tt.specSecrets,
+					},
+				}
+			}
+
+			reconciler := &MCPRemoteProxyReconciler{
+				Client:           fakeClient,
+				Scheme:           scheme,
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+			require.NotNil(t, deployment)
+
+			// Simulate the "stored" state by overwriting ImagePullSecrets only.
+			// The freshly built deployment is otherwise fully aligned with the proxy spec,
+			// so any detected drift is caused solely by this field.
+			deployment.Spec.Template.Spec.ImagePullSecrets = tt.deploymentSecrets
+
+			needsUpdate := reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum")
+			assert.Equal(t, tt.expectNeedsUpdate, needsUpdate, "ImagePullSecrets drift detection mismatch")
+		})
+	}
+}
+
 // TestBuildEnvVarsForProxy tests environment variable building
 func TestBuildEnvVarsForProxy(t *testing.T) {
 	t.Parallel()

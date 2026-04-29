@@ -15,6 +15,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1087,12 +1088,22 @@ func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, prox
 	// Ensure Role with minimal permissions for remote proxies
 	// Remote proxies only need ConfigMap and Secret read access (no StatefulSet/Pod management)
 	_, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
-		Name:      proxyRunnerNameForRBAC,
-		Namespace: proxy.Namespace,
-		Rules:     remoteProxyRBACRules,
-		Owner:     proxy,
+		Name:             proxyRunnerNameForRBAC,
+		Namespace:        proxy.Namespace,
+		Rules:            remoteProxyRBACRules,
+		Owner:            proxy,
+		ImagePullSecrets: imagePullSecretsForRemoteProxy(proxy),
 	})
 	return err
+}
+
+// imagePullSecretsForRemoteProxy returns the image pull secrets configured via
+// spec.resourceOverrides.proxyDeployment.imagePullSecrets, or nil if unset.
+func imagePullSecretsForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) []corev1.LocalObjectReference {
+	if proxy.Spec.ResourceOverrides == nil || proxy.Spec.ResourceOverrides.ProxyDeployment == nil {
+		return nil
+	}
+	return proxy.Spec.ResourceOverrides.ProxyDeployment.ImagePullSecrets
 }
 
 // updateMCPRemoteProxyStatus updates the status of the MCPRemoteProxy
@@ -1244,6 +1255,10 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	if r.podSpecNeedsUpdate(deployment, proxy) {
+		return true
+	}
+
 	return false
 }
 
@@ -1371,6 +1386,20 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 	}
 
 	return false
+}
+
+// podSpecNeedsUpdate checks if pod-level fields (not container fields) have drifted.
+//
+// Currently compares ImagePullSecrets sourced from spec.resourceOverrides.proxyDeployment.
+// Uses equality.Semantic.DeepEqual so nil and empty slices are treated as equal,
+// which matches Kubernetes' own serialization semantics.
+func (*MCPRemoteProxyReconciler) podSpecNeedsUpdate(
+	deployment *appsv1.Deployment,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) bool {
+	expected := imagePullSecretsForRemoteProxy(proxy)
+	current := deployment.Spec.Template.Spec.ImagePullSecrets
+	return !equality.Semantic.DeepEqual(current, expected)
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated

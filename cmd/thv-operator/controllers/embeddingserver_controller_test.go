@@ -801,3 +801,382 @@ func TestUpdateEmbeddingServerStatus(t *testing.T) {
 		})
 	}
 }
+
+// TestEmbeddingServer_PodTemplateSpec_PreservesUserFields is a regression test for
+// https://github.com/stacklok/toolhive/issues/5100. The previous merge implementation
+// only copied an enumerated subset of PodSpec fields (NodeSelector, Affinity,
+// Tolerations, SecurityContext, ServiceAccountName, and the embedding container's
+// SecurityContext) and silently dropped everything else the user provided —
+// including imagePullSecrets, additional volumes, priorityClassName,
+// topologySpreadConstraints, runtimeClassName, init containers, and sidecars.
+//
+// This test reconciles an EmbeddingServer with a variety of previously-dropped
+// fields set on spec.podTemplateSpec.spec and asserts that they appear on the
+// resulting StatefulSet's Pod template.
+func TestEmbeddingServer_PodTemplateSpec_PreservesUserFields(t *testing.T) {
+	t.Parallel()
+
+	runtimeClassName := "kata"
+
+	tests := []struct {
+		name string
+		// userPTS is the user-provided pod template spec.
+		userPTS *corev1.PodTemplateSpec
+		// assertPodSpec runs after reconciliation against the resulting pod spec.
+		assertPodSpec func(t *testing.T, podSpec corev1.PodSpec)
+	}{
+		{
+			name: "imagePullSecrets are preserved",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					ImagePullSecrets: []corev1.LocalObjectReference{
+						{Name: "my-registry-creds"},
+						{Name: "second-registry"},
+					},
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				assert.ElementsMatch(t,
+					[]corev1.LocalObjectReference{
+						{Name: "my-registry-creds"},
+						{Name: "second-registry"},
+					},
+					podSpec.ImagePullSecrets,
+				)
+			},
+		},
+		{
+			name: "priorityClassName is preserved",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					PriorityClassName: "high-priority",
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				assert.Equal(t, "high-priority", podSpec.PriorityClassName)
+			},
+		},
+		{
+			name: "additional volumes are preserved alongside controller volumes",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{
+						{
+							Name: "extra-config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "extra-cm"},
+								},
+							},
+						},
+					},
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				var found bool
+				for _, v := range podSpec.Volumes {
+					if v.Name == "extra-config" {
+						found = true
+						require.NotNil(t, v.ConfigMap)
+						assert.Equal(t, "extra-cm", v.ConfigMap.Name)
+					}
+				}
+				assert.True(t, found, "user-provided volume should be present")
+			},
+		},
+		{
+			name: "runtimeClassName is preserved",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					RuntimeClassName: &runtimeClassName,
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				require.NotNil(t, podSpec.RuntimeClassName)
+				assert.Equal(t, "kata", *podSpec.RuntimeClassName)
+			},
+		},
+		{
+			name: "topologySpreadConstraints are preserved",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					TopologySpreadConstraints: []corev1.TopologySpreadConstraint{
+						{
+							MaxSkew:           1,
+							TopologyKey:       "topology.kubernetes.io/zone",
+							WhenUnsatisfiable: corev1.DoNotSchedule,
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{"app": "embedding"},
+							},
+						},
+					},
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				require.Len(t, podSpec.TopologySpreadConstraints, 1)
+				assert.Equal(t, int32(1), podSpec.TopologySpreadConstraints[0].MaxSkew)
+				assert.Equal(t, "topology.kubernetes.io/zone", podSpec.TopologySpreadConstraints[0].TopologyKey)
+			},
+		},
+		{
+			name: "sidecar container is preserved while embedding container keeps controller defaults",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "log-shipper",
+							Image: "fluentd:latest",
+						},
+					},
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				var hasEmbedding, hasSidecar bool
+				for _, c := range podSpec.Containers {
+					switch c.Name {
+					case embeddingContainerName:
+						hasEmbedding = true
+						assert.Equal(t, "test-image:latest", c.Image,
+							"controller-generated embedding container must keep its image")
+					case "log-shipper":
+						hasSidecar = true
+						assert.Equal(t, "fluentd:latest", c.Image)
+					}
+				}
+				assert.True(t, hasEmbedding, "embedding container should still be present")
+				assert.True(t, hasSidecar, "user-provided sidecar should be present")
+			},
+		},
+		{
+			// Strategic merge patch merges container arrays by name. A user-supplied
+			// container called `embedding` is a separate code path from a sidecar with a
+			// different name: env and volumeMounts get merged *into* the controller's
+			// container rather than appended as a new entry. This test pins that path so
+			// future changes can't silently break it.
+			name: "extra env vars and volumeMounts on the embedding container are merged in by name",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: embeddingContainerName,
+							Env: []corev1.EnvVar{
+								{Name: "EXTRA_ENV", Value: "user-set"},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "extra-config", MountPath: "/etc/extra"},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "extra-config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "extra-cm"},
+								},
+							},
+						},
+					},
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				require.Len(t, podSpec.Containers, 1, "no new container should have been appended")
+				c := podSpec.Containers[0]
+				assert.Equal(t, embeddingContainerName, c.Name)
+				assert.Equal(t, "test-image:latest", c.Image,
+					"controller-set image must survive the by-name merge")
+
+				// User env var was merged in.
+				var foundEnv bool
+				for _, e := range c.Env {
+					if e.Name == "EXTRA_ENV" {
+						foundEnv = true
+						assert.Equal(t, "user-set", e.Value)
+					}
+				}
+				assert.True(t, foundEnv, "user-provided env var should be present on embedding container")
+
+				// User volumeMount was merged in.
+				var foundMount bool
+				for _, m := range c.VolumeMounts {
+					if m.Name == "extra-config" {
+						foundMount = true
+						assert.Equal(t, "/etc/extra", m.MountPath)
+					}
+				}
+				assert.True(t, foundMount, "user-provided volumeMount should be present on embedding container")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			embedding := createTestEmbeddingServer("test", testNamespaceDefault, "test-image:latest", "test-model")
+			embedding.Spec.PodTemplateSpec = podTemplateSpecToRawExtension(t, tt.userPTS)
+
+			scheme := createEmbeddingServerTestScheme()
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(embedding).
+				WithStatusSubresource(embedding).
+				Build()
+
+			reconciler := &EmbeddingServerReconciler{
+				Client:           fakeClient,
+				Scheme:           scheme,
+				Recorder:         events.NewFakeRecorder(10),
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			ctx := t.Context()
+			req := ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      embedding.Name,
+					Namespace: embedding.Namespace,
+				},
+			}
+
+			_, err := reconciler.Reconcile(ctx, req)
+			require.NoError(t, err)
+
+			sts := &appsv1.StatefulSet{}
+			err = fakeClient.Get(ctx, types.NamespacedName{
+				Name:      embedding.Name,
+				Namespace: embedding.Namespace,
+			}, sts)
+			require.NoError(t, err, "StatefulSet should be created")
+
+			tt.assertPodSpec(t, sts.Spec.Template.Spec)
+		})
+	}
+}
+
+// TestEmbeddingServer_PodTemplateSpec_SoftFailFallback verifies that when the
+// user-provided PodTemplateSpec passes validation (its JSON unmarshals into
+// corev1.PodTemplateSpec) but causes StrategicMergePatch to fail, the
+// reconciler does not surface an error — it logs and falls back to a
+// StatefulSet built entirely from controller defaults. This is the
+// EmbeddingServer caller's documented "soft-fail" policy on the otherwise
+// policy-neutral ctrlutil.ApplyPodTemplateSpecPatch helper.
+//
+// The payload below uses an unknown `$patch` directive nested inside a
+// container. Strategic merge patch rejects unknown directives at apply time,
+// while json.Unmarshal silently drops the unknown field when targeting
+// corev1.Container — so the validation pass accepts it and only the merge
+// fails.
+func TestEmbeddingServer_PodTemplateSpec_SoftFailFallback(t *testing.T) {
+	t.Parallel()
+
+	embedding := createTestEmbeddingServer("test", testNamespaceDefault, "test-image:latest", "test-model")
+	embedding.Spec.PodTemplateSpec = &runtime.RawExtension{
+		Raw: []byte(`{"spec":{"containers":[{"name":"embedding","$patch":"invalid"}]}}`),
+	}
+
+	scheme := createEmbeddingServerTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(embedding).
+		WithStatusSubresource(embedding).
+		Build()
+
+	reconciler := &EmbeddingServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		Recorder:         events.NewFakeRecorder(10),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	ctx := t.Context()
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      embedding.Name,
+			Namespace: embedding.Namespace,
+		},
+	}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err, "soft-fail: reconcile must not surface a strategic-merge-patch error")
+
+	sts := &appsv1.StatefulSet{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      embedding.Name,
+		Namespace: embedding.Namespace,
+	}, sts)
+	require.NoError(t, err, "StatefulSet should be created with controller defaults")
+
+	// Controller defaults must survive: a single embedding container with the
+	// configured image, our health probes, and the http port.
+	require.Len(t, sts.Spec.Template.Spec.Containers, 1)
+	c := sts.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, embeddingContainerName, c.Name)
+	assert.Equal(t, "test-image:latest", c.Image)
+	require.NotNil(t, c.LivenessProbe, "controller-generated liveness probe should be present")
+	require.NotNil(t, c.ReadinessProbe, "controller-generated readiness probe should be present")
+	require.Len(t, c.Ports, 1)
+	assert.Equal(t, "http", c.Ports[0].Name)
+}
+
+// TestEmbeddingServer_PodTemplateSpec_EmptyObjectIsNoOp verifies that a
+// PodTemplateSpec of `{}` is treated as a no-op: the StatefulSet is built
+// entirely from controller defaults, with nothing clobbered. This guards
+// against the regression where strategic merge patch on `{}` would replace
+// controller-generated arrays with empty slices.
+func TestEmbeddingServer_PodTemplateSpec_EmptyObjectIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	embedding := createTestEmbeddingServer("test", testNamespaceDefault, "test-image:latest", "test-model")
+	embedding.Spec.PodTemplateSpec = &runtime.RawExtension{Raw: []byte(`{}`)}
+
+	scheme := createEmbeddingServerTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(embedding).
+		WithStatusSubresource(embedding).
+		Build()
+
+	reconciler := &EmbeddingServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		Recorder:         events.NewFakeRecorder(10),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	ctx := t.Context()
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      embedding.Name,
+			Namespace: embedding.Namespace,
+		},
+	}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	sts := &appsv1.StatefulSet{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      embedding.Name,
+		Namespace: embedding.Namespace,
+	}, sts)
+	require.NoError(t, err, "StatefulSet should be created")
+
+	// Every controller-generated field must survive an empty patch.
+	require.Len(t, sts.Spec.Template.Spec.Containers, 1)
+	c := sts.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, embeddingContainerName, c.Name)
+	assert.Equal(t, "test-image:latest", c.Image)
+	require.NotNil(t, c.LivenessProbe)
+	require.NotNil(t, c.ReadinessProbe)
+	require.Len(t, c.Ports, 1)
+	assert.Equal(t, "http", c.Ports[0].Name)
+	assert.Contains(t, c.Args, "--model-id")
+	assert.Contains(t, c.Args, "test-model")
+}

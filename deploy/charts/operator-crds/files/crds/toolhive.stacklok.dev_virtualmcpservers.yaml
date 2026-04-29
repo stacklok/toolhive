@@ -1978,6 +1978,40 @@ spec:
                 required:
                 - name
                 type: object
+              imagePullSecrets:
+                description: |-
+                  ImagePullSecrets allows specifying image pull secrets for the vMCP workload.
+                  These are applied to both the vMCP Deployment's PodSpec.ImagePullSecrets
+                  and to the operator-managed ServiceAccount the vMCP server runs as, so private
+                  images are pullable through either path.
+
+                  Precedence with PodTemplateSpec:
+                    - This field is applied first as the controller-generated default.
+                    - Values set under spec.podTemplateSpec.spec.imagePullSecrets are user
+                      overrides and merged on top using Kubernetes strategic merge patch
+                      (patchStrategy:"merge", patchMergeKey:"name"). Distinct secret names
+                      from the explicit field and PodTemplateSpec are unioned; if the same
+                      name appears in both, the PodTemplateSpec entry wins on overlap.
+                    - The ServiceAccount is always populated from this field — PodTemplateSpec
+                      does not affect the ServiceAccount.
+                items:
+                  description: |-
+                    LocalObjectReference contains enough information to let you locate the
+                    referenced object inside the same namespace.
+                  properties:
+                    name:
+                      default: ""
+                      description: |-
+                        Name of the referent.
+                        This field is effectively required, but due to backwards compatibility is
+                        allowed to be empty. Instances of this type with an empty value here are
+                        almost certainly wrong.
+                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                      type: string
+                  type: object
+                  x-kubernetes-map-type: atomic
+                type: array
+                x-kubernetes-list-type: atomic
               incomingAuth:
                 description: |-
                   IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
@@ -4409,6 +4443,40 @@ spec:
                 required:
                 - name
                 type: object
+              imagePullSecrets:
+                description: |-
+                  ImagePullSecrets allows specifying image pull secrets for the vMCP workload.
+                  These are applied to both the vMCP Deployment's PodSpec.ImagePullSecrets
+                  and to the operator-managed ServiceAccount the vMCP server runs as, so private
+                  images are pullable through either path.
+
+                  Precedence with PodTemplateSpec:
+                    - This field is applied first as the controller-generated default.
+                    - Values set under spec.podTemplateSpec.spec.imagePullSecrets are user
+                      overrides and merged on top using Kubernetes strategic merge patch
+                      (patchStrategy:"merge", patchMergeKey:"name"). Distinct secret names
+                      from the explicit field and PodTemplateSpec are unioned; if the same
+                      name appears in both, the PodTemplateSpec entry wins on overlap.
+                    - The ServiceAccount is always populated from this field — PodTemplateSpec
+                      does not affect the ServiceAccount.
+                items:
+                  description: |-
+                    LocalObjectReference contains enough information to let you locate the
+                    referenced object inside the same namespace.
+                  properties:
+                    name:
+                      default: ""
+                      description: |-
+                        Name of the referent.
+                        This field is effectively required, but due to backwards compatibility is
+                        allowed to be empty. Instances of this type with an empty value here are
+                        almost certainly wrong.
+                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                      type: string
+                  type: object
+                  x-kubernetes-map-type: atomic
+                type: array
+                x-kubernetes-list-type: atomic
               incomingAuth:
                 description: |-
                   IncomingAuth configures authentication for clients connecting to the Virtual MCP server.

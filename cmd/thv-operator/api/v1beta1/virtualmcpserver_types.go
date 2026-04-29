@@ -6,6 +6,7 @@ package v1beta1
 import (
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -107,6 +108,25 @@ type VirtualMCPServerSpec struct {
 	// When nil, no session storage is configured.
 	// +optional
 	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty"`
+
+	// ImagePullSecrets allows specifying image pull secrets for the vMCP workload.
+	// These are applied to both the vMCP Deployment's PodSpec.ImagePullSecrets
+	// and to the operator-managed ServiceAccount the vMCP server runs as, so private
+	// images are pullable through either path.
+	//
+	// Precedence with PodTemplateSpec:
+	//   - This field is applied first as the controller-generated default.
+	//   - Values set under spec.podTemplateSpec.spec.imagePullSecrets are user
+	//     overrides and merged on top using Kubernetes strategic merge patch
+	//     (patchStrategy:"merge", patchMergeKey:"name"). Distinct secret names
+	//     from the explicit field and PodTemplateSpec are unioned; if the same
+	//     name appears in both, the PodTemplateSpec entry wins on overlap.
+	//   - The ServiceAccount is always populated from this field — PodTemplateSpec
+	//     does not affect the ServiceAccount.
+	//
+	// +listType=atomic
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
 
 // EmbeddingServerRef references an existing EmbeddingServer resource by name.

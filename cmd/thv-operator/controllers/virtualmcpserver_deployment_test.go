@@ -868,3 +868,106 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 		})
 	}
 }
+
+// TestDeploymentForVirtualMCPServer_ImagePullSecrets verifies that
+// spec.imagePullSecrets propagates to the Deployment's PodSpec.ImagePullSecrets,
+// and that user-provided spec.podTemplateSpec.spec.imagePullSecrets are merged
+// on top via strategic merge patch.
+func TestDeploymentForVirtualMCPServer_ImagePullSecrets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		spec     mcpv1beta1.VirtualMCPServerSpec
+		expected []corev1.LocalObjectReference
+	}{
+		{
+			name: "explicit field propagates to deployment",
+			spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+				ImagePullSecrets: []corev1.LocalObjectReference{
+					{Name: "vmcp-creds"},
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "vmcp-creds"}},
+		},
+		{
+			name: "no field, no podtemplatespec yields empty",
+			spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			},
+			expected: nil,
+		},
+		{
+			name: "podtemplatespec entry wins on overlap by name (strategic merge)",
+			spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+				ImagePullSecrets: []corev1.LocalObjectReference{
+					{Name: "shared-creds"},
+					{Name: "explicit-only"},
+				},
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"shared-creds"},{"name":"podtemplate-only"}]}}`),
+				},
+			},
+			// Strategic merge with patchMergeKey=name: same names dedup (PodTemplateSpec wins),
+			// distinct names are unioned.
+			expected: []corev1.LocalObjectReference{
+				{Name: "shared-creds"},
+				{Name: "explicit-only"},
+				{Name: "podtemplate-only"},
+			},
+		},
+		{
+			name: "podtemplatespec without imagePullSecrets preserves explicit field",
+			spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+				ImagePullSecrets: []corev1.LocalObjectReference{
+					{Name: "explicit-creds"},
+				},
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"nodeSelector":{"disktype":"ssd"}}}`),
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "explicit-creds"}},
+		},
+		{
+			name: "podtemplatespec only (legacy behavior preserved)",
+			spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"legacy-creds"}]}}`),
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "legacy-creds"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
+
+			vmcp := &mcpv1beta1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: tt.spec,
+			}
+
+			r := &VirtualMCPServerReconciler{
+				Scheme:           scheme,
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			deployment := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+			require.NotNil(t, deployment)
+
+			assert.ElementsMatch(t, tt.expected, deployment.Spec.Template.Spec.ImagePullSecrets)
+		})
+	}
+}

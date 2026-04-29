@@ -971,10 +971,11 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 
 	// Ensure Role with appropriate permissions based on mode
 	_, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
-		Name:      serviceAccountName,
-		Namespace: vmcp.Namespace,
-		Rules:     rules,
-		Owner:     vmcp,
+		Name:             serviceAccountName,
+		Namespace:        vmcp.Namespace,
+		Rules:            rules,
+		Owner:            vmcp,
+		ImagePullSecrets: vmcp.Spec.ImagePullSecrets,
 	})
 	return err
 }

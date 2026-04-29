@@ -195,6 +195,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: int64Ptr(vmcpTerminationGracePeriodSeconds),
 					ServiceAccountName:            serviceAccountName,
+					ImagePullSecrets:              vmcp.Spec.ImagePullSecrets,
 					Containers: []corev1.Container{{
 						Image:           getVmcpImage(),
 						ImagePullPolicy: corev1.PullIfNotPresent,

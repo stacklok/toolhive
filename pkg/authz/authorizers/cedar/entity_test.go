@@ -16,7 +16,7 @@ import (
 func TestCreatePrincipalEntity_Parents(t *testing.T) {
 	t.Parallel()
 
-	factory := NewEntityFactory()
+	factory := NewEntityFactory("")
 
 	groupUID := cedar.NewEntityUID(EntityTypeTHVGroup, cedar.String("engineering"))
 	roleUID := cedar.NewEntityUID("THVRole", cedar.String("admin"))
@@ -83,7 +83,7 @@ func TestCreatePrincipalEntity_Parents(t *testing.T) {
 func TestCreatePrincipalEntity_NoGroupEntities(t *testing.T) {
 	t.Parallel()
 
-	factory := NewEntityFactory()
+	factory := NewEntityFactory("")
 
 	// Pass a THVGroup parent UID — the function must NOT return extra entities.
 	groupUID := cedar.NewEntityUID(EntityTypeTHVGroup, cedar.String("engineering"))
@@ -100,7 +100,7 @@ func TestCreatePrincipalEntity_NoGroupEntities(t *testing.T) {
 func TestCreateResourceEntity_Parents(t *testing.T) {
 	t.Parallel()
 
-	factory := NewEntityFactory()
+	factory := NewEntityFactory("")
 
 	mcpUID := cedar.NewEntityUID("MCP", cedar.String("server-a"))
 	orgUID := cedar.NewEntityUID("Org", cedar.String("stacklok"))
@@ -169,7 +169,7 @@ func TestCreateResourceEntity_Parents(t *testing.T) {
 func TestCreateResourceEntity_NamePreservation(t *testing.T) {
 	t.Parallel()
 
-	factory := NewEntityFactory()
+	factory := NewEntityFactory("")
 
 	tests := []struct {
 		name       string
@@ -231,7 +231,7 @@ func TestCreateResourceEntity_NamePreservation(t *testing.T) {
 func TestCreateEntitiesForRequest_GroupsAsParents(t *testing.T) {
 	t.Parallel()
 
-	factory := NewEntityFactory()
+	factory := NewEntityFactory("")
 
 	tests := []struct {
 		name            string
@@ -295,6 +295,45 @@ func TestCreateEntitiesForRequest_GroupsAsParents(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCreateEntitiesForRequest_CustomGroupEntityType verifies that a factory
+// built with a custom groupEntityType produces parent UIDs with that type rather
+// than the default "THVGroup", and that no entity of the custom type is inserted
+// into the entity map (mirroring the THVGroup invariant).
+func TestCreateEntitiesForRequest_CustomGroupEntityType(t *testing.T) {
+	t.Parallel()
+
+	factory := NewEntityFactory(cedar.EntityType("OrgRole"))
+
+	entities, err := factory.CreateEntitiesForRequest(
+		"Client::user1",
+		"Action::call_tool",
+		"Tool::weather",
+		map[string]interface{}{"sub": "user1"},
+		map[string]interface{}{"name": "weather"},
+		[]string{"engineering"},
+		"",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, entities)
+
+	// Entity map must contain only principal + action + resource — no OrgRole entries.
+	assert.Len(t, entities, 3)
+	for uid := range entities {
+		assert.NotEqual(t, cedar.EntityType("OrgRole"), uid.Type,
+			"OrgRole entity should not be inserted into the entity map")
+	}
+
+	// Principal's Parents set must contain OrgRole::"engineering".
+	principalUID := cedar.NewEntityUID("Client", cedar.String("user1"))
+	principalEntity, found := entities[principalUID]
+	require.True(t, found, "principal entity not found in map")
+	require.Equal(t, 1, principalEntity.Parents.Len())
+
+	wantParent := cedar.NewEntityUID(cedar.EntityType("OrgRole"), cedar.String("engineering"))
+	assert.True(t, principalEntity.Parents.Contains(wantParent),
+		"expected OrgRole::\"engineering\" in principal.Parents")
 }
 
 // TestCreateCedarEntities tests the createCedarEntities function.
@@ -385,7 +424,7 @@ func TestCreateCedarEntities(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			// Create entity factory
-			factory := NewEntityFactory()
+			factory := NewEntityFactory("")
 
 			// Create Cedar entities (no groups for these test cases)
 			entities, err := factory.CreateEntitiesForRequest(tc.principal, tc.action, tc.resource, tc.claimsMap, tc.attributes, nil, "")
@@ -471,7 +510,7 @@ func TestCreateCedarEntities(t *testing.T) {
 func TestCreateEntitiesForRequest_MCPParent(t *testing.T) {
 	t.Parallel()
 
-	factory := NewEntityFactory()
+	factory := NewEntityFactory("")
 
 	tests := []struct {
 		name            string

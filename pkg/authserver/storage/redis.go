@@ -1124,11 +1124,109 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 	return nil
 }
 
-// GetLatestUpstreamTokensForUser always returns ErrNotFound in this stub. The full
-// implementation lands in the follow-on step; see the interface declaration in
-// types.go for the contract.
-func (*RedisStorage) GetLatestUpstreamTokensForUser(_ context.Context, _, _ string) (*UpstreamTokens, error) {
-	return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+// GetLatestUpstreamTokensForUser returns the upstream token row for (userID, providerID)
+// with the highest ExpiresAt across all sessions.
+//
+// Expired tokens (past ExpiresAt) are returned so callers can use the refresh
+// token; filtering by access-token expiry is the caller's responsibility.
+// See the interface declaration in types.go for the full contract.
+func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userID, providerID string) (*UpstreamTokens, error) {
+	if userID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("user ID cannot be empty")
+	}
+	if providerID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("provider ID cannot be empty")
+	}
+
+	setKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, userID)
+
+	members, err := s.client.SMembers(ctx, setKey).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return nil, fmt.Errorf("failed to get user upstream index: %w", err)
+	}
+	if len(members) == 0 {
+		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+	}
+
+	values, err := s.client.MGet(ctx, members...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get upstream tokens: %w", err)
+	}
+
+	var (
+		winner       *storedUpstreamTokens
+		winnerTokens *UpstreamTokens
+	)
+	for i, val := range values {
+		stored, ok := parseUserUpstreamEntry(val, providerID, members[i])
+		if !ok {
+			continue
+		}
+
+		// Pick the row with the highest ExpiresAt. Zero ExpiresAt (the no-expiry
+		// sentinel) is represented as 0 — the smallest int64 — so it loses to any
+		// real timestamp unless it is the only candidate.
+		if winner == nil || stored.ExpiresAt > winner.ExpiresAt {
+			winner = stored
+
+			var expiresAt time.Time
+			if stored.ExpiresAt != 0 {
+				expiresAt = time.Unix(stored.ExpiresAt, 0)
+			}
+			winnerTokens = &UpstreamTokens{
+				ProviderID:      stored.ProviderID,
+				AccessToken:     stored.AccessToken,
+				RefreshToken:    stored.RefreshToken,
+				IDToken:         stored.IDToken,
+				ExpiresAt:       expiresAt,
+				UserID:          stored.UserID,
+				UpstreamSubject: stored.UpstreamSubject,
+				ClientID:        stored.ClientID,
+			}
+		}
+	}
+
+	if winnerTokens == nil {
+		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+	}
+
+	return winnerTokens, nil
+}
+
+// parseUserUpstreamEntry parses one raw Redis value from the user-upstream index
+// and returns the decoded storedUpstreamTokens together with a match flag.
+// It returns (nil, false) for nil values, type mismatches, deletion tombstones,
+// JSON decode errors, and rows whose ProviderID does not match providerID.
+// keyName is used only for warning log messages.
+func parseUserUpstreamEntry(val any, providerID, keyName string) (*storedUpstreamTokens, bool) {
+	if val == nil {
+		// Dangling set member: the per-provider key has been TTL-evicted.
+		// Skip it; the next write will clean up the index entry (best-effort).
+		return nil, false
+	}
+
+	data, ok := val.(string)
+	if !ok {
+		slog.Warn("skipping upstream token entry: unexpected type", "key", keyName)
+		return nil, false
+	}
+
+	if data == nullMarker {
+		// Deletion tombstone — treat as absent.
+		return nil, false
+	}
+
+	var stored storedUpstreamTokens
+	if unmarshalErr := json.Unmarshal([]byte(data), &stored); unmarshalErr != nil {
+		slog.Warn("skipping corrupt upstream token entry", "key", keyName, "error", unmarshalErr)
+		return nil, false
+	}
+
+	if stored.ProviderID != providerID {
+		return nil, false
+	}
+
+	return &stored, true
 }
 
 // getUpstreamTokensFromKey retrieves and deserializes upstream tokens from a specific Redis key.

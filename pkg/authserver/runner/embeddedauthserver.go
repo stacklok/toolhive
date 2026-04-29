@@ -366,12 +366,20 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 }
 
 // buildPureOAuth2Config builds an upstream.OAuth2Config for a pure OAuth2 provider.
+//
+// Run-config-specific invariants (e.g. ClientID/DCRConfig mutual exclusion) are
+// enforced here via OAuth2UpstreamRunConfig.Validate before secrets are
+// resolved, since the downstream upstream.OAuth2Config validator only sees the
+// flattened runtime shape and cannot observe DCR fields.
 func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Config, error) {
 	if rc.OAuth2Config == nil {
 		return nil, fmt.Errorf("oauth2_config required for OAuth2 provider")
 	}
 
 	oauth2 := rc.OAuth2Config
+	if err := oauth2.Validate(); err != nil {
+		return nil, err
+	}
 	clientSecret, err := resolveSecret(oauth2.ClientSecretFile, oauth2.ClientSecretEnvVar)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve OAuth2 client secret: %w", err)

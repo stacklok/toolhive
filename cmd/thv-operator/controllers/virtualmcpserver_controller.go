@@ -1394,6 +1394,10 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	if r.imagePullSecretsNeedsUpdate(ctx, deployment, vmcp) {
+		return true
+	}
+
 	// Check if spec.replicas has changed. Only compare when spec.replicas is non-nil;
 	// nil means hands-off mode (HPA or external controller manages replicas) and the live count is authoritative.
 	if vmcp.Spec.Replicas != nil {
@@ -1540,6 +1544,36 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 		return true
 	}
 	return deployment.Annotations[podTemplateSpecHashAnnotation] != expectedHash
+}
+
+// imagePullSecretsNeedsUpdate detects drift on vmcp.Spec.ImagePullSecrets by comparing a
+// hash of the desired list against the value stored in imagePullRefsHashAnnotation.
+// We cannot compare deployment.Spec.Template.Spec.ImagePullSecrets directly because the
+// live list is the strategic-merge union with anything the user supplied under
+// spec.podTemplateSpec.spec.imagePullSecrets, so a direct equality check would either
+// flag spurious drift or miss real changes depending on PodTemplateSpec content.
+// PodTemplateSpec drift is covered separately by podTemplateSpecNeedsUpdate.
+func (*VirtualMCPServerReconciler) imagePullSecretsNeedsUpdate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) bool {
+	if deployment == nil || vmcp == nil {
+		return true
+	}
+
+	expectedHash, err := imagePullSecretsHash(vmcp.Spec.ImagePullSecrets)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to hash imagePullSecrets, assuming update needed")
+		return true
+	}
+	// An empty desired list means the annotation should be absent; an absent annotation
+	// with an empty desired list is the steady state and must not trigger an update.
+	_, present := deployment.Annotations[imagePullRefsHashAnnotation]
+	if expectedHash == "" {
+		return present
+	}
+	return deployment.Annotations[imagePullRefsHashAnnotation] != expectedHash
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated

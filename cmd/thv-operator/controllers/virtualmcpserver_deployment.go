@@ -38,6 +38,14 @@ const (
 	// Used to detect changes without comparing full rendered templates (which include K8s-defaulted fields).
 	podTemplateSpecHashAnnotation = "toolhive.stacklok.io/podtemplatespec-hash"
 
+	// imagePullRefsHashAnnotation tracks the SHA256 hash of vmcp.Spec.ImagePullSecrets.
+	// Mirrors the podTemplateSpecHashAnnotation pattern to detect drift on the explicit
+	// CRD field without re-running strategic-merge logic during reconciliation.
+	// Combined with podTemplateSpecHashAnnotation (which covers any imagePullSecrets the
+	// user added under spec.podTemplateSpec.spec.imagePullSecrets), this is sufficient
+	// to detect every input that influences the deployed PodSpec.ImagePullSecrets.
+	imagePullRefsHashAnnotation = "toolhive.stacklok.io/imagepullsecrets-hash"
+
 	// Log level configuration
 	logLevelDebug = "debug" // Debug log level value
 
@@ -697,9 +705,39 @@ func (*VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 		}
 	}
 
+	// Store hash of vmcp.Spec.ImagePullSecrets so deploymentNeedsUpdate can detect
+	// drift on this field. Without this annotation, edits to spec.imagePullSecrets
+	// on an existing CR would not propagate to the running Deployment because the
+	// drift checks compare individual fields and never look at PodSpec.ImagePullSecrets
+	// directly (the live value is the strategic-merge union with PodTemplateSpec).
+	if hash, err := imagePullSecretsHash(vmcp.Spec.ImagePullSecrets); err == nil && hash != "" {
+		deploymentAnnotations[imagePullRefsHashAnnotation] = hash
+	}
+
 	// TODO: Add support for ResourceOverrides if needed in the future
 
 	return deploymentLabels, deploymentAnnotations
+}
+
+// imagePullSecretsHash returns a deterministic SHA256 hash of the given LocalObjectReference list.
+// The list is normalized by sorting on Name before hashing so that semantically equal slices
+// (same set of secret names, possibly in different order) produce the same hash. Returns an
+// empty string with no error when the list is empty so callers can skip writing the annotation.
+func imagePullSecretsHash(secrets []corev1.LocalObjectReference) (string, error) {
+	if len(secrets) == 0 {
+		return "", nil
+	}
+	normalized := make([]corev1.LocalObjectReference, len(secrets))
+	copy(normalized, secrets)
+	sort.Slice(normalized, func(i, j int) bool {
+		return normalized[i].Name < normalized[j].Name
+	})
+	canonical, err := json.Marshal(normalized)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal imagePullSecrets for hashing: %w", err)
+	}
+	h := sha256.Sum256(canonical)
+	return hex.EncodeToString(h[:]), nil
 }
 
 // buildPodTemplateMetadata builds pod template labels and annotations for vmcp

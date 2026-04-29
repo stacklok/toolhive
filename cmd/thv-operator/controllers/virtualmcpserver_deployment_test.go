@@ -971,3 +971,153 @@ func TestDeploymentForVirtualMCPServer_ImagePullSecrets(t *testing.T) {
 		})
 	}
 }
+
+// TestDeploymentForVirtualMCPServer_ImagePullSecrets_UpdatePath verifies that edits
+// to spec.imagePullSecrets on an existing CR are detected by deploymentNeedsUpdate
+// and propagated through to the live Deployment. Regression test for the gap where
+// the drift-detection chain compared individual container fields but never the
+// PodSpec.ImagePullSecrets list, leaving the running pod with stale credentials.
+func TestDeploymentForVirtualMCPServer_ImagePullSecrets_UpdatePath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                   string
+		initial                []corev1.LocalObjectReference
+		updated                []corev1.LocalObjectReference
+		podTemplateRaw         []byte
+		expectedDeployedSecret []corev1.LocalObjectReference
+	}{
+		{
+			name:                   "pure add",
+			initial:                nil,
+			updated:                []corev1.LocalObjectReference{{Name: "secret-a"}},
+			expectedDeployedSecret: []corev1.LocalObjectReference{{Name: "secret-a"}},
+		},
+		{
+			name:                   "pure remove",
+			initial:                []corev1.LocalObjectReference{{Name: "secret-a"}},
+			updated:                nil,
+			expectedDeployedSecret: nil,
+		},
+		{
+			name:                   "replace",
+			initial:                []corev1.LocalObjectReference{{Name: "secret-a"}},
+			updated:                []corev1.LocalObjectReference{{Name: "secret-b"}},
+			expectedDeployedSecret: []corev1.LocalObjectReference{{Name: "secret-b"}},
+		},
+		{
+			name:                   "extend",
+			initial:                []corev1.LocalObjectReference{{Name: "secret-a"}},
+			updated:                []corev1.LocalObjectReference{{Name: "secret-a"}, {Name: "secret-b"}},
+			expectedDeployedSecret: []corev1.LocalObjectReference{{Name: "secret-a"}, {Name: "secret-b"}},
+		},
+		{
+			name:           "replace combined with podtemplatespec union",
+			initial:        []corev1.LocalObjectReference{{Name: "explicit-a"}},
+			updated:        []corev1.LocalObjectReference{{Name: "explicit-b"}},
+			podTemplateRaw: []byte(`{"spec":{"imagePullSecrets":[{"name":"podtemplate-c"}]}}`),
+			// Strategic merge unions distinct names; explicit-b is the new explicit field
+			// and podtemplate-c comes from PodTemplateSpec.
+			expectedDeployedSecret: []corev1.LocalObjectReference{{Name: "explicit-b"}, {Name: "podtemplate-c"}},
+		},
+		{
+			name:    "reorder is a no-op (no spurious update)",
+			initial: []corev1.LocalObjectReference{{Name: "secret-a"}, {Name: "secret-b"}},
+			updated: []corev1.LocalObjectReference{{Name: "secret-b"}, {Name: "secret-a"}},
+			// Same set of names, just reordered. The hash normalizes order so the
+			// drift check should NOT trigger an update.
+			expectedDeployedSecret: nil, // sentinel: see assertion below
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
+
+			r := &VirtualMCPServerReconciler{
+				Scheme:           scheme,
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			vmcp := &mcpv1beta1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:         &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+					ImagePullSecrets: tt.initial,
+				},
+			}
+			if tt.podTemplateRaw != nil {
+				vmcp.Spec.PodTemplateSpec = &runtime.RawExtension{Raw: tt.podTemplateRaw}
+			}
+
+			// Step 1: build the initial Deployment, simulating the create path.
+			initialDep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+			require.NotNil(t, initialDep)
+
+			// Step 2: mutate the spec, then assert drift detection.
+			vmcp.Spec.ImagePullSecrets = tt.updated
+
+			needsUpdate := r.imagePullSecretsNeedsUpdate(t.Context(), initialDep, vmcp)
+			if tt.name == "reorder is a no-op (no spurious update)" {
+				assert.False(t, needsUpdate, "reordering same names must not trigger drift")
+				return
+			}
+			assert.True(t, needsUpdate, "imagePullSecrets edit must be detected as drift")
+
+			// Also assert the parent deploymentNeedsUpdate flags the change. Stub
+			// out env/checksum so the rest of the chain doesn't trigger drift on
+			// other axes for unrelated reasons.
+			parentNeedsUpdate := r.deploymentNeedsUpdate(
+				t.Context(), initialDep, vmcp, "test-checksum", nil, []workloads.TypedWorkload{},
+			)
+			assert.True(t, parentNeedsUpdate, "deploymentNeedsUpdate must propagate imagePullSecrets drift")
+
+			// Step 3: rebuild the Deployment with the updated spec and assert the
+			// live PodSpec.ImagePullSecrets reflects the new value.
+			updatedDep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+			require.NotNil(t, updatedDep)
+			assert.ElementsMatch(t, tt.expectedDeployedSecret, updatedDep.Spec.Template.Spec.ImagePullSecrets)
+
+			// Step 4: a second drift check against the freshly-built Deployment must
+			// return false — once the new annotation is on the Deployment, we are
+			// in steady state and must not loop.
+			settled := r.imagePullSecretsNeedsUpdate(t.Context(), updatedDep, vmcp)
+			assert.False(t, settled, "drift check must settle once Deployment is rebuilt")
+		})
+	}
+}
+
+// TestImagePullSecretsHash verifies the hash helper normalizes order, treats an
+// empty list as the sentinel "" hash, and produces stable hashes across calls.
+func TestImagePullSecretsHash(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty list returns empty hash", func(t *testing.T) {
+		t.Parallel()
+		hash, err := imagePullSecretsHash(nil)
+		require.NoError(t, err)
+		assert.Empty(t, hash)
+	})
+
+	t.Run("order-insensitive", func(t *testing.T) {
+		t.Parallel()
+		a, err := imagePullSecretsHash([]corev1.LocalObjectReference{{Name: "x"}, {Name: "y"}})
+		require.NoError(t, err)
+		b, err := imagePullSecretsHash([]corev1.LocalObjectReference{{Name: "y"}, {Name: "x"}})
+		require.NoError(t, err)
+		assert.Equal(t, a, b, "reordering must not change the hash")
+	})
+
+	t.Run("different sets produce different hashes", func(t *testing.T) {
+		t.Parallel()
+		a, err := imagePullSecretsHash([]corev1.LocalObjectReference{{Name: "x"}})
+		require.NoError(t, err)
+		b, err := imagePullSecretsHash([]corev1.LocalObjectReference{{Name: "y"}})
+		require.NoError(t, err)
+		assert.NotEqual(t, a, b)
+	})
+}

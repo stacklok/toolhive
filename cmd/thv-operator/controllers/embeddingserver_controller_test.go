@@ -801,3 +801,200 @@ func TestUpdateEmbeddingServerStatus(t *testing.T) {
 		})
 	}
 }
+
+// TestEmbeddingServer_PodTemplateSpec_PreservesUserFields is a regression test for
+// https://github.com/stacklok/toolhive/issues/5100. The previous merge implementation
+// only copied an enumerated subset of PodSpec fields (NodeSelector, Affinity,
+// Tolerations, SecurityContext, ServiceAccountName, and the embedding container's
+// SecurityContext) and silently dropped everything else the user provided —
+// including imagePullSecrets, additional volumes, priorityClassName,
+// topologySpreadConstraints, runtimeClassName, init containers, and sidecars.
+//
+// This test reconciles an EmbeddingServer with a variety of previously-dropped
+// fields set on spec.podTemplateSpec.spec and asserts that they appear on the
+// resulting StatefulSet's Pod template.
+func TestEmbeddingServer_PodTemplateSpec_PreservesUserFields(t *testing.T) {
+	t.Parallel()
+
+	runtimeClassName := "kata"
+
+	tests := []struct {
+		name string
+		// userPTS is the user-provided pod template spec.
+		userPTS *corev1.PodTemplateSpec
+		// assertPodSpec runs after reconciliation against the resulting pod spec.
+		assertPodSpec func(t *testing.T, podSpec corev1.PodSpec)
+	}{
+		{
+			name: "imagePullSecrets are preserved",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					ImagePullSecrets: []corev1.LocalObjectReference{
+						{Name: "my-registry-creds"},
+						{Name: "second-registry"},
+					},
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				assert.ElementsMatch(t,
+					[]corev1.LocalObjectReference{
+						{Name: "my-registry-creds"},
+						{Name: "second-registry"},
+					},
+					podSpec.ImagePullSecrets,
+				)
+			},
+		},
+		{
+			name: "priorityClassName is preserved",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					PriorityClassName: "high-priority",
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				assert.Equal(t, "high-priority", podSpec.PriorityClassName)
+			},
+		},
+		{
+			name: "additional volumes are preserved alongside controller volumes",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{
+						{
+							Name: "extra-config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "extra-cm"},
+								},
+							},
+						},
+					},
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				var found bool
+				for _, v := range podSpec.Volumes {
+					if v.Name == "extra-config" {
+						found = true
+						require.NotNil(t, v.ConfigMap)
+						assert.Equal(t, "extra-cm", v.ConfigMap.Name)
+					}
+				}
+				assert.True(t, found, "user-provided volume should be present")
+			},
+		},
+		{
+			name: "runtimeClassName is preserved",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					RuntimeClassName: &runtimeClassName,
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				require.NotNil(t, podSpec.RuntimeClassName)
+				assert.Equal(t, "kata", *podSpec.RuntimeClassName)
+			},
+		},
+		{
+			name: "topologySpreadConstraints are preserved",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					TopologySpreadConstraints: []corev1.TopologySpreadConstraint{
+						{
+							MaxSkew:           1,
+							TopologyKey:       "topology.kubernetes.io/zone",
+							WhenUnsatisfiable: corev1.DoNotSchedule,
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{"app": "embedding"},
+							},
+						},
+					},
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				require.Len(t, podSpec.TopologySpreadConstraints, 1)
+				assert.Equal(t, int32(1), podSpec.TopologySpreadConstraints[0].MaxSkew)
+				assert.Equal(t, "topology.kubernetes.io/zone", podSpec.TopologySpreadConstraints[0].TopologyKey)
+			},
+		},
+		{
+			name: "sidecar container is preserved while embedding container keeps controller defaults",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "log-shipper",
+							Image: "fluentd:latest",
+						},
+					},
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				var hasEmbedding, hasSidecar bool
+				for _, c := range podSpec.Containers {
+					switch c.Name {
+					case embeddingContainerName:
+						hasEmbedding = true
+						assert.Equal(t, "test-image:latest", c.Image,
+							"controller-generated embedding container must keep its image")
+					case "log-shipper":
+						hasSidecar = true
+						assert.Equal(t, "fluentd:latest", c.Image)
+					}
+				}
+				assert.True(t, hasEmbedding, "embedding container should still be present")
+				assert.True(t, hasSidecar, "user-provided sidecar should be present")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			embedding := createTestEmbeddingServer("test", testNamespaceDefault, "test-image:latest", "test-model")
+			embedding.Spec.PodTemplateSpec = podTemplateSpecToRawExtension(t, tt.userPTS)
+
+			scheme := createEmbeddingServerTestScheme()
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(embedding).
+				WithStatusSubresource(embedding).
+				Build()
+
+			reconciler := &EmbeddingServerReconciler{
+				Client:           fakeClient,
+				Scheme:           scheme,
+				Recorder:         events.NewFakeRecorder(10),
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			ctx := t.Context()
+			req := ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      embedding.Name,
+					Namespace: embedding.Namespace,
+				},
+			}
+
+			_, err := reconciler.Reconcile(ctx, req)
+			require.NoError(t, err)
+
+			sts := &appsv1.StatefulSet{}
+			err = fakeClient.Get(ctx, types.NamespacedName{
+				Name:      embedding.Name,
+				Namespace: embedding.Namespace,
+			}, sts)
+			require.NoError(t, err, "StatefulSet should be created")
+
+			tt.assertPodSpec(t, sts.Spec.Template.Spec)
+		})
+	}
+}

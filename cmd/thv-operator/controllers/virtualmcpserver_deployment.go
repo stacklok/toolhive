@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -21,7 +20,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -926,6 +924,11 @@ func (r *VirtualMCPServerReconciler) validateSecretKeyRef(
 // - User-provided fields override controller-generated defaults
 // - Arrays are merged based on strategic merge patch rules (e.g., containers merged by name)
 // - The "vmcp" container is preserved from the controller-generated spec
+//
+// Hard-fail policy: any patch failure (marshal, patch apply, unmarshal) is returned as
+// an error that blocks Deployment creation. This is the opposite of the EmbeddingServer
+// caller's soft-fail choice. ApplyPodTemplateSpecPatch is policy-neutral; the choice is
+// at this call site by design.
 func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
@@ -949,29 +952,12 @@ func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 		return nil
 	}
 
-	// Use the raw user JSON directly for strategic merge patch.
-	// This avoids the nil-slice-becomes-empty-array problem that occurs when
-	// we parse JSON into Go structs and re-marshal - Go's json.Marshal converts
-	// nil slices to [], which strategic merge patch interprets as "replace with empty".
-	// By using the raw JSON, we preserve exactly what the user specified.
-	userJSON := vmcp.Spec.PodTemplateSpec.Raw
-
-	originalJSON, err := json.Marshal(deployment.Spec.Template)
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(deployment.Spec.Template, vmcp.Spec.PodTemplateSpec.Raw)
 	if err != nil {
-		return fmt.Errorf("failed to marshal original PodTemplateSpec: %w", err)
+		return err
 	}
 
-	patchedJSON, err := strategicpatch.StrategicMergePatch(originalJSON, userJSON, corev1.PodTemplateSpec{})
-	if err != nil {
-		return fmt.Errorf("failed to apply strategic merge patch: %w", err)
-	}
-
-	var patchedPodTemplateSpec corev1.PodTemplateSpec
-	if err := json.Unmarshal(patchedJSON, &patchedPodTemplateSpec); err != nil {
-		return fmt.Errorf("failed to unmarshal patched PodTemplateSpec: %w", err)
-	}
-
-	deployment.Spec.Template = patchedPodTemplateSpec
+	deployment.Spec.Template = merged
 
 	ctxLogger.V(1).Info("Applied PodTemplateSpec customizations to deployment",
 		"virtualmcpserver", vmcp.Name,

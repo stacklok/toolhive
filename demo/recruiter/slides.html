@@ -19,8 +19,8 @@
 
   .reveal { font-family: 'Segoe UI', system-ui, sans-serif; }
 
-  .reveal h1 { color: var(--cyan); font-size: 1.85em; margin-bottom: .25em; }
-  .reveal h2 { color: var(--cyan); font-size: 1.3em;  margin-bottom: .35em; }
+  .reveal h1 { color: var(--cyan); font-size: 1.85em; margin-bottom: .2em; }
+  .reveal h2 { color: var(--cyan); font-size: 1.25em; margin-bottom: .25em; }
   .reveal p, .reveal li { color: #cbd5e0; font-size: .86em; }
 
   .tag {
@@ -73,9 +73,9 @@
   /* phase list */
   .phase-list { list-style: none; padding: 0; margin: 0; }
   .phase-list li {
-    display: flex; align-items: flex-start; gap: 11px;
-    padding: 6px 0; border-bottom: 1px solid var(--dim);
-    font-size: .78em;
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 5px 0; border-bottom: 1px solid var(--dim);
+    font-size: .77em;
   }
   .phase-list li:last-child { border-bottom: none; }
   .phase-num {
@@ -109,13 +109,13 @@
     background: rgba(255,255,255,.04);
     border: 1px solid rgba(255,255,255,.1);
     border-radius: 8px;
-    padding: 12px 14px;
-    font-size: .74em;
-    line-height: 1.5;
+    padding: 9px 12px;
+    font-size: .73em;
+    line-height: 1.45;
   }
-  .ref-card .ref-title { color: #e2e8f0; font-weight: 600; margin-bottom: 3px; }
-  .ref-card .ref-venue { color: var(--cyan); font-size: .88em; }
-  .ref-card .ref-note  { color: #718096; font-size: .88em; margin-top: 4px; }
+  .ref-card .ref-title { color: #e2e8f0; font-weight: 600; margin-bottom: 2px; }
+  .ref-card .ref-venue { color: var(--cyan); font-size: .87em; }
+  .ref-card .ref-note  { color: #718096; font-size: .87em; margin-top: 3px; }
 
   /* section divider styling */
   .divider-slide { text-align: center; }
@@ -204,32 +204,32 @@
 <!-- ══════════════════════════════════════ 3 · What Research Says ══ -->
 <section>
   <h2>What the Research Tells Us</h2>
-  <p style="color:#718096; margin-bottom:.7em;">Three bodies of work converge on the same failure modes.</p>
+  <p style="color:#718096; margin-bottom:.6em;">Three bodies of work converge on the same failure modes.</p>
 
-  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:.8em;">
+  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:.7em;">
     <div class="ref-card">
       <div class="ref-title">A Survey on the Memory Mechanism of LLM-based Agents</div>
-      <div class="ref-venue">arXiv 2603.07670</div>
-      <div class="ref-note">Most systems neglect the <em>manage</em> phase — consolidation, conflict resolution, and staleness tracking. Silent contradictions are the most common failure mode.</div>
+      <div class="ref-venue">arXiv 2603.07670 · 2025</div>
+      <div class="ref-note">Most systems neglect the <em>manage</em> phase — consolidation, conflict resolution, staleness. Silent contradictions are the most common failure mode.</div>
     </div>
     <div class="ref-card">
       <div class="ref-title">LinkedIn Cognitive Memory Agent (CMA)</div>
-      <div class="ref-venue">LinkedIn Engineering Blog</div>
-      <div class="ref-note">Hierarchical memory with episodic + semantic + procedural types. Trust-weighted retrieval and per-application tenant isolation in production at LinkedIn scale.</div>
+      <div class="ref-venue">LinkedIn Engineering Blog · 2024</div>
+      <div class="ref-note">Hierarchical episodic + semantic + procedural memory at LinkedIn scale. Trust-weighted retrieval and per-application tenant isolation in production.</div>
     </div>
     <div class="ref-card">
       <div class="ref-title">Practical Guide to LLM Memory Systems</div>
-      <div class="ref-venue">Towards Data Science</div>
-      <div class="ref-note">Trust differentiation between human-authored and agent-authored memories is widely neglected. Staleness is the second leading cause of retrieval degradation.</div>
+      <div class="ref-venue">Towards Data Science · 2024</div>
+      <div class="ref-note">Trust differentiation between human and agent memory is widely neglected. Staleness is the second leading cause of retrieval degradation.</div>
     </div>
   </div>
 
   <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-    <div class="callout orange">
-      <strong>Key insight #1</strong> — Memory isn't just storage. Write, retrieval, <em>and management</em> all need first-class design.
+    <div class="callout orange" style="font-size:.76em;">
+      <strong>Key insight #1</strong> — Memory isn't just storage. Write, retrieval, <em>and management</em> (consolidation, conflict, staleness) all need first-class design.
     </div>
-    <div class="callout orange">
-      <strong>Key insight #2</strong> — Human-authored memories must outrank agent-authored ones. Agents can be wrong; humans correct.
+    <div class="callout orange" style="font-size:.76em;">
+      <strong>Key insight #2</strong> — Human-authored memories must outrank agent-authored ones. Trust differentiation is the most neglected dimension in practice.
     </div>
   </div>
 </section>
@@ -237,50 +237,59 @@
 <!-- ══════════════════════════════════════ 4 · Our Approach ══ -->
 <section>
   <h2>Our Approach vs. the Literature</h2>
-  <p style="color:#718096; margin-bottom:.6em;">Where we are ahead, and where we deliberately differ.</p>
 
-  <div style="font-size:.78em; width:100%;">
+  <div style="font-size:.76em; width:100%; margin-top:.3em;">
     <table style="width:100%; border-collapse:collapse; color:#cbd5e0;">
       <thead>
-        <tr style="border-bottom:1px solid #2d3748;">
-          <th style="text-align:left; padding:6px 8px; color:#718096; font-weight:600; width:26%;">Dimension</th>
-          <th style="text-align:left; padding:6px 8px; color:#718096; font-weight:600; width:37%;">LinkedIn CMA</th>
-          <th style="text-align:left; padding:6px 8px; color:var(--cyan); font-weight:600;">ToolHive Memory</th>
+        <tr style="border-bottom:1px solid #2d3748; background:rgba(255,255,255,.03);">
+          <th style="text-align:left; padding:5px 10px; color:#718096; font-weight:600; width:24%;">Dimension</th>
+          <th style="text-align:left; padding:5px 10px; color:#718096; font-weight:600; width:36%;">LinkedIn CMA</th>
+          <th style="text-align:left; padding:5px 10px; color:var(--cyan); font-weight:600;">ToolHive Memory</th>
         </tr>
       </thead>
       <tbody>
         <tr style="border-bottom:1px solid #1a202c;">
-          <td style="padding:5px 8px; color:#a0aec0;">Conflict detection</td>
-          <td style="padding:5px 8px; color:#718096;">On roadmap</td>
-          <td style="padding:5px 8px; color:var(--green);">✅ Built — cosine sim &gt; 0.85 on write</td>
+          <td style="padding:4px 10px; color:#a0aec0;">Conflict detection</td>
+          <td style="padding:4px 10px; color:#718096;">On roadmap</td>
+          <td style="padding:4px 10px; color:var(--green);">✅ Built — cosine sim &gt; 0.85 on write</td>
         </tr>
         <tr style="border-bottom:1px solid #1a202c;">
-          <td style="padding:5px 8px; color:#a0aec0;">Trust / staleness</td>
-          <td style="padding:5px 8px; color:#718096;">Time-based, on roadmap</td>
-          <td style="padding:5px 8px; color:var(--green);">✅ Built — formula + 24h background job</td>
+          <td style="padding:4px 10px; color:#a0aec0;">Trust / staleness</td>
+          <td style="padding:4px 10px; color:#718096;">Time-based, on roadmap</td>
+          <td style="padding:4px 10px; color:var(--green);">✅ Built — formula + 24 h background job</td>
         </tr>
         <tr style="border-bottom:1px solid #1a202c;">
-          <td style="padding:5px 8px; color:#a0aec0;">User control</td>
-          <td style="padding:5px 8px; color:#718096;">Planned</td>
-          <td style="padding:5px 8px; color:var(--green);">✅ list, update, flag, forget</td>
+          <td style="padding:4px 10px; color:#a0aec0;">User control</td>
+          <td style="padding:4px 10px; color:#718096;">Planned</td>
+          <td style="padding:4px 10px; color:var(--green);">✅ list · update · flag · forget</td>
         </tr>
         <tr style="border-bottom:1px solid #1a202c;">
-          <td style="padding:5px 8px; color:#a0aec0;">Memory types</td>
-          <td style="padding:5px 8px; color:#718096;">Episodic + Semantic + Procedural</td>
-          <td style="padding:5px 8px; color:#e2e8f0;">Semantic + Episodic + Procedural + Resource</td>
+          <td style="padding:4px 10px; color:#a0aec0;">Memory types</td>
+          <td style="padding:4px 10px; color:#718096;">Episodic + Semantic + Procedural</td>
+          <td style="padding:4px 10px; color:#e2e8f0;">+ Resource (read-only reference docs)</td>
         </tr>
         <tr style="border-bottom:1px solid #1a202c;">
-          <td style="padding:5px 8px; color:#a0aec0;">Retrieval</td>
-          <td style="padding:5px 8px; color:#718096;">LLM-orchestrated multi-step</td>
-          <td style="padding:5px 8px; color:#e2e8f0;">Single-pass vector — agent IS the orchestrator</td>
+          <td style="padding:4px 10px; color:#a0aec0;">Retrieval</td>
+          <td style="padding:4px 10px; color:#718096;">LLM-orchestrated multi-step</td>
+          <td style="padding:4px 10px; color:#e2e8f0;">Single-pass vector — agent is the orchestrator</td>
+        </tr>
+        <tr style="border-bottom:1px solid #1a202c;">
+          <td style="padding:4px 10px; color:#a0aec0;">Crystallization</td>
+          <td style="padding:4px 10px; color:#718096;">Not described</td>
+          <td style="padding:4px 10px; color:var(--purple);">✅ Procedural → versioned Skill (OCI)</td>
         </tr>
         <tr>
-          <td style="padding:5px 8px; color:#a0aec0;">Crystallization</td>
-          <td style="padding:5px 8px; color:#718096;">Not described</td>
-          <td style="padding:5px 8px; color:var(--purple);">✅ Procedural → versioned Skill (OCI)</td>
+          <td style="padding:4px 10px; color:#a0aec0;">Tenant isolation</td>
+          <td style="padding:4px 10px; color:var(--green);">Per-application storage isolation</td>
+          <td style="padding:4px 10px; color:#718096;">Auth at proxy level — storage isolation on roadmap</td>
         </tr>
       </tbody>
     </table>
+  </div>
+
+  <div class="callout" style="font-size:.73em; margin-top:.6em;">
+    We are <strong style="color:var(--green);">ahead</strong> on conflict detection, trust scoring, and user control.
+    LinkedIn is ahead on hierarchical aggregation and tenant isolation — both planned for a later phase.
   </div>
 </section>
 
@@ -810,21 +819,21 @@
 <!-- ══════════════════════════════════════ 18 · References ══ -->
 <section>
   <h2>References</h2>
-  <div style="display:grid; grid-template-columns:1fr; gap:12px; max-width:640px; margin:0 auto;">
-    <div class="ref-card">
+  <div style="display:grid; grid-template-columns:1fr; gap:9px; max-width:680px; margin:.4em auto 0;">
+    <div class="ref-card" style="padding:10px 14px;">
       <div class="ref-title">A Survey on the Memory Mechanism of LLM-based Agents</div>
       <div class="ref-venue">arXiv:2603.07670 · 2025</div>
-      <div class="ref-note">Taxonomy of memory types (sensory, short-term, long-term), memory operations lifecycle (acquire, manage, utilize), and analysis of failure modes. The "manage" phase — consolidation, conflict resolution, staleness — is the most neglected in practice.</div>
+      <div class="ref-note">Taxonomy of memory types and operations lifecycle (acquire, manage, utilize). The "manage" phase — consolidation, conflict resolution, staleness — is the most neglected in practice. Informed our lifecycle design and the 24 h background job.</div>
     </div>
     <div class="ref-card">
       <div class="ref-title">The LinkedIn Generative AI Application Tech Stack: Personalization with Cognitive Memory Agent</div>
       <div class="ref-venue">LinkedIn Engineering Blog · 2024</div>
-      <div class="ref-note">Production deployment of hierarchical episodic + aggregated semantic + procedural memory at LinkedIn scale. Trust-weighted retrieval, per-application isolation. Informed our comparison table and the decision to prioritise conflict detection and user control.</div>
+      <div class="ref-note">Production deployment of hierarchical episodic + aggregated semantic + procedural memory at LinkedIn scale. Trust-weighted retrieval and per-application isolation. Informed our comparison table and the prioritisation of conflict detection and user control.</div>
     </div>
-    <div class="ref-card">
+    <div class="ref-card" style="padding:10px 14px;">
       <div class="ref-title">A Practical Guide to Implementing Memory in LLM Applications</div>
       <div class="ref-venue">Towards Data Science · 2024</div>
-      <div class="ref-note">Practitioner analysis of memory degradation causes: staleness and trust neglect are the top two. Recommends human-authored memory to outrank agent-authored, and explicit staleness scoring — both implemented here.</div>
+      <div class="ref-note">Practitioner analysis of memory degradation: staleness and trust neglect are the top two causes. Recommends human-authored memory outranking agent-authored, and explicit staleness scoring — both implemented here.</div>
     </div>
   </div>
 </section>
@@ -843,8 +852,8 @@
     transitionSpeed: 'fast',
     backgroundTransition: 'none',
     width: 1100,
-    height: 680,
-    margin: 0.05,
+    height: 750,
+    margin: 0.04,
     center: false,
   });
 </script>

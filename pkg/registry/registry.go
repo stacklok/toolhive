@@ -10,7 +10,7 @@ package registry
 //
 // Implementations must be safe for concurrent use by multiple goroutines.
 //
-// Get returns ErrEntryNotFound when no entry has the requested name.
+// Get returns ErrEntryNotFound when no entry matches the (kind, name) pair.
 // Search and List with an empty query return every entry the registry has,
 // after applying Filter.
 type Registry interface {
@@ -18,9 +18,12 @@ type Registry interface {
 	// flag and in error messages. Stable across the registry's lifetime.
 	Name() string
 
-	// Get returns the entry with the given name, or ErrEntryNotFound if no
-	// entry matches.
-	Get(name string) (*Entry, error)
+	// Get returns the entry with the given kind and name, or
+	// ErrEntryNotFound if no entry matches. Both arguments are required —
+	// servers and skills can share a fully-qualified name (e.g. an MCP
+	// server and an associated skill in the same publisher namespace), so
+	// the kind is part of the lookup key.
+	Get(kind Kind, name string) (*Entry, error)
 
 	// List returns every entry, optionally filtered.
 	List(filter Filter) ([]*Entry, error)

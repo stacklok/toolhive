@@ -69,14 +69,31 @@ func TestNewStore(t *testing.T) {
 		assert.Contains(t, err.Error(), "entries[0]")
 	})
 
-	t.Run("rejects duplicate names", func(t *testing.T) {
+	t.Run("rejects duplicate names within same kind", func(t *testing.T) {
 		t.Parallel()
 		_, err := NewStore("local", []*Entry{
 			serverEntry("weather", "", ""),
 			serverEntry("weather", "", ""),
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "duplicate entry name")
+		assert.Contains(t, err.Error(), "duplicate")
+	})
+
+	t.Run("allows same name across different kinds", func(t *testing.T) {
+		t.Parallel()
+		s, err := NewStore("local", []*Entry{
+			serverEntry("io.github.user/semgrep", "", ""),
+			skillEntry("io.github.user/semgrep", "", ""),
+		})
+		require.NoError(t, err)
+
+		got, err := s.Get(KindServer, "io.github.user/semgrep")
+		require.NoError(t, err)
+		assert.Equal(t, KindServer, got.Kind)
+
+		got, err = s.Get(KindSkill, "io.github.user/semgrep")
+		require.NoError(t, err)
+		assert.Equal(t, KindSkill, got.Kind)
 	})
 
 	t.Run("accepts empty entry list", func(t *testing.T) {
@@ -99,15 +116,22 @@ func TestStore_Get(t *testing.T) {
 
 	t.Run("returns existing entry", func(t *testing.T) {
 		t.Parallel()
-		e, err := s.Get("weather")
+		e, err := s.Get(KindServer, "weather")
 		require.NoError(t, err)
 		assert.Equal(t, "weather", e.Name)
 		assert.Equal(t, KindServer, e.Kind)
 	})
 
-	t.Run("returns ErrEntryNotFound for missing", func(t *testing.T) {
+	t.Run("returns ErrEntryNotFound for missing name", func(t *testing.T) {
 		t.Parallel()
-		_, err := s.Get("missing")
+		_, err := s.Get(KindServer, "missing")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrEntryNotFound))
+	})
+
+	t.Run("returns ErrEntryNotFound for wrong kind", func(t *testing.T) {
+		t.Parallel()
+		_, err := s.Get(KindSkill, "weather")
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, ErrEntryNotFound))
 	})

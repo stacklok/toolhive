@@ -1266,6 +1266,11 @@ components:
             type: string
           type: array
           uniqueItems: false
+        session_ttl:
+          description: |-
+            SessionTTL is the inactivity timeout for proxy sessions.
+            Zero uses the transport default (2h). Negative values are rejected by the builder.
+          type: integer
         stateless:
           description: |-
             Stateless indicates the server only supports POST (no SSE/GET).

@@ -78,6 +78,14 @@ type TransparentProxy struct {
 	// Sessions for tracking state
 	sessionManager *session.Manager
 
+	// sessionTTL is the resolved inactivity timeout for the session manager.
+	// Defaults to session.DefaultSessionTTL; overridable via WithSessionTTL.
+	sessionTTL time.Duration
+
+	// sessionStorage is the optional custom storage backend for the session manager.
+	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
+	sessionStorage session.Storage
+
 	// If mcp server has been initialized (atomic access)
 	isServerInitialized atomic.Bool
 
@@ -290,14 +298,18 @@ func WithSessionStorage(storage session.Storage) Option {
 		if storage == nil {
 			return
 		}
-		if p.sessionManager != nil {
-			_ = p.sessionManager.Stop()
+		p.sessionStorage = storage
+	}
+}
+
+// WithSessionTTL overrides the session inactivity timeout used by this proxy.
+// Zero or negative values are ignored so the constructor's default is preserved.
+func WithSessionTTL(ttl time.Duration) Option {
+	return func(p *TransparentProxy) {
+		if ttl <= 0 {
+			return
 		}
-		p.sessionManager = session.NewManagerWithStorage(
-			session.DefaultSessionTTL,
-			func(id string) session.Session { return session.NewProxySession(id) },
-			storage,
-		)
+		p.sessionTTL = ttl
 	}
 }
 
@@ -426,7 +438,7 @@ func NewTransparentProxyWithOptions(
 		prometheusHandler:           prometheusHandler,
 		authInfoHandler:             authInfoHandler,
 		prefixHandlers:              prefixHandlers,
-		sessionManager:              session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
+		sessionTTL:                  session.DefaultSessionTTL,
 		isRemote:                    isRemote,
 		transportType:               transportType,
 		onHealthCheckFailed:         onHealthCheckFailed,
@@ -443,6 +455,14 @@ func NewTransparentProxyWithOptions(
 	// Apply options
 	for _, opt := range options {
 		opt(proxy)
+	}
+
+	// Construct the session manager once, after options have resolved sessionTTL and sessionStorage.
+	proxyFactory := func(id string) session.Session { return session.NewProxySession(id) }
+	if proxy.sessionStorage != nil {
+		proxy.sessionManager = session.NewManagerWithStorage(proxy.sessionTTL, proxyFactory, proxy.sessionStorage)
+	} else {
+		proxy.sessionManager = session.NewManager(proxy.sessionTTL, proxyFactory)
 	}
 
 	// Create appropriate response processor based on transport type

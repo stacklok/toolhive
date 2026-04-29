@@ -56,6 +56,14 @@ type HTTPProxy struct {
 	// Session manager for streamable HTTP sessions
 	sessionManager *session.Manager
 
+	// sessionTTL is the resolved inactivity timeout for the session manager.
+	// Defaults to session.DefaultSessionTTL; overridable via WithSessionTTL.
+	sessionTTL time.Duration
+
+	// sessionStorage is the optional custom storage backend for the session manager.
+	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
+	sessionStorage session.Storage
+
 	// Waiters keyed by JSON-encoded request ID -> one-shot channel for response delivery
 	waiters sync.Map // map[string]chan jsonrpc2.Message
 	// Map of compositeKey(sessID|idKey) -> original client JSON-RPC ID to restore before replying
@@ -78,11 +86,18 @@ func WithSessionStorage(storage session.Storage) Option {
 		if storage == nil {
 			return
 		}
-		if p.sessionManager != nil {
-			_ = p.sessionManager.Stop()
+		p.sessionStorage = storage
+	}
+}
+
+// WithSessionTTL overrides the session inactivity timeout used by this proxy.
+// Zero or negative values are ignored so the constructor's default is preserved.
+func WithSessionTTL(ttl time.Duration) Option {
+	return func(p *HTTPProxy) {
+		if ttl <= 0 {
+			return
 		}
-		sFactory := func(id string) session.Session { return session.NewStreamableSession(id) }
-		p.sessionManager = session.NewManagerWithStorage(session.DefaultSessionTTL, sFactory, storage)
+		p.sessionTTL = ttl
 	}
 }
 
@@ -106,11 +121,18 @@ func NewHTTPProxy(
 		middlewares:       middlewares,
 		messageCh:         make(chan jsonrpc2.Message, 100),
 		responseCh:        make(chan jsonrpc2.Message, 100),
-		sessionManager:    session.NewManager(session.DefaultSessionTTL, sFactory),
+		sessionTTL:        session.DefaultSessionTTL,
 	}
 
 	for _, opt := range opts {
 		opt(proxy)
+	}
+
+	// Construct the session manager once, after options have resolved sessionTTL and sessionStorage.
+	if proxy.sessionStorage != nil {
+		proxy.sessionManager = session.NewManagerWithStorage(proxy.sessionTTL, sFactory, proxy.sessionStorage)
+	} else {
+		proxy.sessionManager = session.NewManager(proxy.sessionTTL, sFactory)
 	}
 
 	// Create health checker without MCP pinger

@@ -42,6 +42,7 @@ thv vmcp serve [flags]
       --optimizer                Enable FTS5 keyword optimizer (Tier 1): exposes find_tool and call_tool instead of all backend tools
       --optimizer-embedding      Enable managed TEI semantic optimizer (Tier 2); implies --optimizer
       --port int                 Port to listen on (default 4483)
+      --session-ttl duration     Session inactivity timeout (e.g., 30m, 2h); zero uses the default (30m)
 ```
 
 ### Options inherited from parent commands

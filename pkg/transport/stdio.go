@@ -63,6 +63,7 @@ type StdioTransport struct {
 	prometheusHandler http.Handler
 	trustProxyHeaders bool
 	sessionStorage    session.Storage
+	sessionTTL        time.Duration
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -142,6 +143,12 @@ func (t *StdioTransport) SetSessionStorage(storage session.Storage) {
 	t.sessionStorage = storage
 }
 
+// SetSessionTTL configures the inactivity timeout for sessions managed by the
+// underlying proxy. Zero is valid and means "use the proxy's default".
+func (t *StdioTransport) SetSessionTTL(ttl time.Duration) {
+	t.sessionTTL = ttl
+}
+
 // Mode returns the transport mode.
 func (*StdioTransport) Mode() types.TransportType {
 	return types.TransportTypeStdio
@@ -192,6 +199,9 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	switch t.proxyMode {
 	case types.ProxyModeStreamableHTTP:
 		var streamableOpts []streamable.Option
+		if t.sessionTTL > 0 {
+			streamableOpts = append(streamableOpts, streamable.WithSessionTTL(t.sessionTTL))
+		}
 		if t.sessionStorage != nil {
 			streamableOpts = append(streamableOpts, streamable.WithSessionStorage(t.sessionStorage))
 		}
@@ -202,6 +212,9 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		slog.Debug("streamable HTTP proxy started, processing messages")
 	case types.ProxyModeSSE:
 		var sseOpts []httpsse.Option
+		if t.sessionTTL > 0 {
+			sseOpts = append(sseOpts, httpsse.WithSessionTTL(t.sessionTTL))
+		}
 		if t.sessionStorage != nil {
 			sseOpts = append(sseOpts, httpsse.WithSessionStorage(t.sessionStorage))
 		}

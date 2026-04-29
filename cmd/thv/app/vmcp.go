@@ -5,6 +5,7 @@ package app
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -39,6 +40,7 @@ func newVMCPServeCommand() *cobra.Command {
 		enableEmbedding bool
 		embeddingModel  string
 		embeddingImage  string
+		sessionTTL      time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -64,6 +66,7 @@ configuration file is needed for the common case of aggregating a local group.`,
 				EnableEmbedding: enableEmbedding,
 				EmbeddingModel:  embeddingModel,
 				EmbeddingImage:  embeddingImage,
+				SessionTTL:      sessionTTL,
 			})
 		},
 	}
@@ -80,6 +83,8 @@ configuration file is needed for the common case of aggregating a local group.`,
 	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "Host address to bind to")
 	cmd.Flags().IntVar(&port, "port", 4483, "Port to listen on")
 	cmd.Flags().BoolVar(&enableAudit, "enable-audit", false, "Enable audit logging with default configuration")
+	cmd.Flags().DurationVar(&sessionTTL, "session-ttl", 0,
+		"Session inactivity timeout (e.g., 30m, 2h); zero uses the default (30m)")
 	return cmd
 }
 

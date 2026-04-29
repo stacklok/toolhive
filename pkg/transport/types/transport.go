@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"golang.org/x/exp/jsonrpc2"
 	"golang.org/x/oauth2"
@@ -276,6 +277,11 @@ type Config struct {
 	// Used for Redis-backed session sharing across replicas.
 	// When nil, transports use their default in-memory LocalStorage.
 	SessionStorage session.Storage
+
+	// SessionTTL is the inactivity timeout for sessions managed by this proxy.
+	// Sessions idle for longer than this duration are cleaned up by the session
+	// manager's background worker. Zero uses session.DefaultSessionTTL.
+	SessionTTL time.Duration
 }
 
 // ProxyMode represents the proxy mode for stdio transport.

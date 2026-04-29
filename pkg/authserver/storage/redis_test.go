@@ -2061,4 +2061,29 @@ func TestRedisStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 			assert.Equal(t, "rt-real", got.RefreshToken)
 		})
 	})
+
+	t.Run("returns_all_fields_round_trip", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Truncate to second precision: Redis stores time as int64 unix seconds.
+			now := time.Now().Truncate(time.Second)
+			fixture := UpstreamTokens{
+				ProviderID:       "prov-X",
+				AccessToken:      "access-tok",
+				RefreshToken:     "refresh-tok",
+				IDToken:          "id-tok",
+				ExpiresAt:        now.Add(time.Hour),
+				SessionExpiresAt: now.Add(2 * time.Hour),
+				UserID:           "user-A",
+				UpstreamSubject:  "sub-upstream",
+				ClientID:         "client-1",
+			}
+
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-rt", "prov-X", &fixture))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			require.Equal(t, fixture, *got)
+		})
+	})
 }

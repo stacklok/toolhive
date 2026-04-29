@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
 )
@@ -798,6 +799,12 @@ func TestAuthenticate_BearerTokenPriority(t *testing.T) {
 	assert.Equal(t, "Bearer", token.TokenType)
 }
 
+// retrieveErr constructs an *oauth2.RetrieveError with the given error code,
+// matching what golang.org/x/oauth2 returns for token endpoint errors.
+func retrieveErr(code string) *oauth2.RetrieveError {
+	return &oauth2.RetrieveError{ErrorCode: code}
+}
+
 // TestIsCIMDRejectionError covers the isCIMDRejectionError helper used in the CIMD retry path.
 func TestIsCIMDRejectionError(t *testing.T) {
 	t.Parallel()
@@ -814,17 +821,22 @@ func TestIsCIMDRejectionError(t *testing.T) {
 		},
 		{
 			name: "invalid_client triggers retry",
-			err:  fmt.Errorf("oauth2: cannot fetch token: 400 Bad Request\nResponse: {\"error\":\"invalid_client\"}"),
+			err:  retrieveErr("invalid_client"),
 			want: true,
 		},
 		{
 			name: "unauthorized_client triggers retry",
-			err:  fmt.Errorf("oauth2: cannot fetch token: 401 Unauthorized\nResponse: {\"error\":\"unauthorized_client\"}"),
+			err:  retrieveErr("unauthorized_client"),
 			want: true,
 		},
 		{
 			name: "invalid_request does not trigger retry",
-			err:  fmt.Errorf("oauth2: cannot fetch token: 400 Bad Request\nResponse: {\"error\":\"invalid_request\"}"),
+			err:  retrieveErr("invalid_request"),
+			want: false,
+		},
+		{
+			name: "access_denied does not trigger retry",
+			err:  retrieveErr("access_denied"),
 			want: false,
 		},
 		{
@@ -835,11 +847,6 @@ func TestIsCIMDRejectionError(t *testing.T) {
 		{
 			name: "timeout error does not trigger retry",
 			err:  fmt.Errorf("OAuth flow timed out after 5m0s - user did not complete authentication"),
-			want: false,
-		},
-		{
-			name: "access_denied does not trigger retry",
-			err:  fmt.Errorf("oauth2: cannot fetch token: 403 Forbidden\nResponse: {\"error\":\"access_denied\"}"),
 			want: false,
 		},
 	}

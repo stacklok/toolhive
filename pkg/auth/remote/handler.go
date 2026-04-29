@@ -5,9 +5,9 @@ package remote
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"golang.org/x/oauth2"
 
@@ -138,10 +138,7 @@ func (h *Handler) performOAuthFlow(
 	// Priority 2: CIMD — AS advertises support and no credentials are set; use metadata URL as client_id.
 	// Priority 3: DCR — PerformOAuthFlow handles this when ClientID is still empty after the above.
 	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo)
-	if authServerInfo != nil &&
-		authServerInfo.ClientIDMetadataDocumentSupported &&
-		flowConfig.ClientID == "" &&
-		flowConfig.ClientSecret == "" {
+	if shouldUseCIMD(authServerInfo, flowConfig) {
 		flowConfig.ClientID = oauthproto.ToolHiveClientMetadataDocumentURL
 		slog.Debug("Using CIMD client_id", "url", oauthproto.ToolHiveClientMetadataDocumentURL)
 	}
@@ -206,7 +203,9 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 
 	// Persist DCR client credentials if available (for servers that use Dynamic Client Registration)
 	// Only persist if client_id exists - client_secret may be empty for PKCE flows
-	if h.clientCredentialsPersister != nil && result.ClientID != "" {
+	// CIMD client IDs (HTTPS URLs) are stable constants and are stored separately below.
+	if h.clientCredentialsPersister != nil && result.ClientID != "" &&
+		!oauthproto.IsClientIDMetadataDocumentURL(result.ClientID) {
 		if err := h.clientCredentialsPersister(result.ClientID, result.ClientSecret); err != nil {
 			slog.Warn("Failed to persist DCR client credentials", "error", err)
 		} else {
@@ -214,11 +213,11 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 		}
 	}
 
-	// If CIMD was used (client_id is the metadata URL), persist it separately
-	// so it can be distinguished from a DCR-issued client_id on restart.
+	// Persist the CIMD metadata URL separately so it can be used as client_id
+	// on token refresh without conflating it with DCR-issued credentials.
 	if oauthproto.IsClientIDMetadataDocumentURL(result.ClientID) {
 		h.config.CachedCIMDClientID = result.ClientID
-		slog.Debug("CIMD client_id used, cached for reference", "url", result.ClientID)
+		slog.Debug("Persisted CIMD client_id for future restarts", "url", result.ClientID)
 	}
 
 	// Wrap the token source to persist refreshed tokens
@@ -236,6 +235,15 @@ func (h *Handler) resolveClientCredentials(ctx context.Context) (clientID, clien
 	// First try to use statically configured credentials
 	clientID = h.config.ClientID
 	clientSecret = h.config.ClientSecret
+
+	// If CIMD was used in a prior session, use the cached metadata URL as client_id.
+	// CIMD clients have no secret (token_endpoint_auth_method=none).
+	// Checked before DCR so that DCR credential rotation does not change which
+	// client_id is sent on token refresh.
+	if h.config.HasCachedCIMDClientID() {
+		slog.Debug("Using cached CIMD client_id", "url", h.config.CachedCIMDClientID)
+		return h.config.CachedCIMDClientID, ""
+	}
 
 	// If we have cached DCR client credentials, use those instead
 	if h.config.HasCachedClientCredentials() {
@@ -489,6 +497,16 @@ func (h *Handler) tryDiscoverFromWellKnown(
 	return authServerInfo.Issuer, scopes, authServerInfo, nil
 }
 
+// shouldUseCIMD reports whether the CIMD client_id should be presented to the AS.
+// The AS must advertise CIMD support and no pre-configured credentials may be set.
+// Mirrors shouldDynamicallyRegisterClient in pkg/auth/discovery for consistency.
+func shouldUseCIMD(authServerInfo *discovery.AuthServerInfo, flowConfig *discovery.OAuthFlowConfig) bool {
+	if authServerInfo == nil || !authServerInfo.ClientIDMetadataDocumentSupported {
+		return false
+	}
+	return flowConfig.ClientID == "" && flowConfig.ClientSecret == ""
+}
+
 // isCIMDRejectionError returns true if err indicates the AS rejected the CIMD
 // client_id. Only the RFC 6749 error codes invalid_client and unauthorized_client
 // trigger a DCR retry; all other errors — including invalid_request and
@@ -497,6 +515,13 @@ func isCIMDRejectionError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "invalid_client") || strings.Contains(msg, "unauthorized_client")
+	var rerr *oauth2.RetrieveError
+	if !errors.As(err, &rerr) {
+		return false
+	}
+	switch rerr.ErrorCode {
+	case "invalid_client", "unauthorized_client":
+		return true
+	}
+	return false
 }

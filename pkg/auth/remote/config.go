@@ -72,11 +72,11 @@ type Config struct {
 	// Stored as a secret reference since it's sensitive.
 	CachedRegTokenRef string `json:"cached_reg_token_ref,omitempty" yaml:"cached_reg_token_ref,omitempty"`
 
-	// CachedCIMDClientID stores the CIMD URL used as client_id when CIMD was used
-	// for authentication. Non-sensitive — it is a public URL. Written on successful
-	// CIMD flows to distinguish from DCR-issued IDs. The reader that uses this to
-	// skip re-detection on restart is deferred to a follow-up; see issue #2728.
-	// Note: any HTTPS-shaped client_id is cached here (per IsClientIDMetadataDocumentURL).
+	// CachedCIMDClientID stores the CIMD metadata URL used as client_id when CIMD
+	// authentication was used. Kept separate from CachedClientID (which holds
+	// DCR-issued IDs) so the two can have independent lifecycles — DCR credential
+	// rotation clears CachedClientID without touching the stable CIMD URL.
+	// Read by resolveClientCredentials to send the correct client_id on token refresh.
 	CachedCIMDClientID string `json:"cached_cimd_client_id,omitempty" yaml:"cached_cimd_client_id,omitempty"`
 }
 
@@ -177,12 +177,13 @@ func (c *Config) HasCachedCIMDClientID() bool {
 }
 
 // ClearCachedClientCredentials removes any cached DCR client credential references from the config.
+// It does not clear CachedCIMDClientID — the CIMD URL is a stable constant that does not
+// need to be rotated alongside DCR secrets.
 func (c *Config) ClearCachedClientCredentials() {
 	c.CachedClientID = ""
 	c.CachedClientSecretRef = ""
 	c.CachedSecretExpiry = time.Time{}
 	c.CachedRegTokenRef = ""
-	c.CachedCIMDClientID = ""
 }
 
 // DefaultResourceIndicator derives the resource indicator (RFC 8707) from the remote server URL.

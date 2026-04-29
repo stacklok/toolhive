@@ -268,6 +268,10 @@
                     "bearer_token_file": {
                         "type": "string"
                     },
+                    "cached_cimd_client_id": {
+                        "description": "CachedCIMDClientID stores the CIMD metadata URL used as client_id when CIMD\nauthentication was used. Kept separate from CachedClientID (which holds\nDCR-issued IDs) so the two can have independent lifecycles — DCR credential\nrotation clears CachedClientID without touching the stable CIMD URL.\nRead by resolveClientCredentials to send the correct client_id on token refresh.",
+                        "type": "string"
+                    },
                     "cached_client_id": {
                         "description": "Cached DCR client credentials for persistence across restarts.\nThese are obtained during Dynamic Client Registration and needed to refresh tokens.\nClientID is stored as plain text since it's public information.",
                         "type": "string"

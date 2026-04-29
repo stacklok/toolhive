@@ -280,6 +280,14 @@ components:
           type: string
         bearer_token_file:
           type: string
+        cached_cimd_client_id:
+          description: |-
+            CachedCIMDClientID stores the CIMD metadata URL used as client_id when CIMD
+            authentication was used. Kept separate from CachedClientID (which holds
+            DCR-issued IDs) so the two can have independent lifecycles — DCR credential
+            rotation clears CachedClientID without touching the stable CIMD URL.
+            Read by resolveClientCredentials to send the correct client_id on token refresh.
+          type: string
         cached_client_id:
           description: |-
             Cached DCR client credentials for persistence across restarts.

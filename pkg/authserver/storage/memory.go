@@ -846,11 +846,46 @@ func (s *MemoryStorage) DeleteUpstreamTokens(_ context.Context, sessionID string
 	return nil
 }
 
-// GetLatestUpstreamTokensForUser always returns ErrNotFound in this stub. The full
-// implementation lands in the follow-on step; see the interface declaration in
-// types.go for the contract.
-func (*MemoryStorage) GetLatestUpstreamTokensForUser(_ context.Context, _, _ string) (*UpstreamTokens, error) {
-	return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+// GetLatestUpstreamTokensForUser implements UpstreamTokenStorage.
+//
+// Expired tokens (past ExpiresAt) are returned so callers can use the refresh
+// token; filtering by access-token expiry is the caller's responsibility.
+// See the interface declaration in types.go for the full contract.
+func (s *MemoryStorage) GetLatestUpstreamTokensForUser(_ context.Context, userID, providerID string) (*UpstreamTokens, error) {
+	if userID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("user ID cannot be empty")
+	}
+	if providerID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("provider ID cannot be empty")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var winner *UpstreamTokens
+	for _, entry := range s.upstreamTokens {
+		if entry.value == nil || entry.value.UserID != userID || entry.value.ProviderID != providerID {
+			continue
+		}
+		if winner == nil || entry.value.ExpiresAt.After(winner.ExpiresAt) {
+			winner = entry.value
+		}
+	}
+
+	if winner == nil {
+		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+	}
+
+	return &UpstreamTokens{
+		ProviderID:      winner.ProviderID,
+		AccessToken:     winner.AccessToken,
+		RefreshToken:    winner.RefreshToken,
+		IDToken:         winner.IDToken,
+		ExpiresAt:       winner.ExpiresAt,
+		UserID:          winner.UserID,
+		UpstreamSubject: winner.UpstreamSubject,
+		ClientID:        winner.ClientID,
+	}, nil
 }
 
 // -----------------------

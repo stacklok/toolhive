@@ -34,6 +34,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
@@ -103,6 +104,10 @@ type VirtualMCPServerReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
+	// operator chart that are merged with vmcp.Spec.ImagePullSecrets when
+	// constructing workloads. The zero value is a usable empty Defaults.
+	ImagePullSecretsDefaults imagepullsecrets.Defaults
 }
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch;create;update;patch;delete
@@ -975,9 +980,25 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 		Namespace:        vmcp.Namespace,
 		Rules:            rules,
 		Owner:            vmcp,
-		ImagePullSecrets: vmcp.Spec.ImagePullSecrets,
+		ImagePullSecrets: r.imagePullSecretsForVMCP(vmcp),
 	})
 	return err
+}
+
+// imagePullSecretsForVMCP returns the image pull secrets the operator will set
+// on the workload's PodSpec and ServiceAccount: the merge of cluster-wide
+// chart defaults (from r.ImagePullSecretsDefaults) with vmcp.Spec.ImagePullSecrets.
+// CR-level entries win on name collisions; chart-level entries are appended
+// additively. Returns nil when both inputs are empty.
+//
+// Note: the live Deployment.Spec.Template.Spec.ImagePullSecrets is the
+// strategic-merge union of this list with anything the user supplied under
+// spec.podTemplateSpec.spec.imagePullSecrets — see imagePullSecretsNeedsUpdate
+// for how drift is detected without comparing the live field directly.
+func (r *VirtualMCPServerReconciler) imagePullSecretsForVMCP(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) []corev1.LocalObjectReference {
+	return r.ImagePullSecretsDefaults.Merge(vmcp.Spec.ImagePullSecrets)
 }
 
 // ensureHMACSecret ensures the HMAC secret exists for session token binding.
@@ -1546,14 +1567,17 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	return deployment.Annotations[podTemplateSpecHashAnnotation] != expectedHash
 }
 
-// imagePullSecretsNeedsUpdate detects drift on vmcp.Spec.ImagePullSecrets by comparing a
-// hash of the desired list against the value stored in imagePullRefsHashAnnotation.
-// We cannot compare deployment.Spec.Template.Spec.ImagePullSecrets directly because the
-// live list is the strategic-merge union with anything the user supplied under
-// spec.podTemplateSpec.spec.imagePullSecrets, so a direct equality check would either
-// flag spurious drift or miss real changes depending on PodTemplateSpec content.
-// PodTemplateSpec drift is covered separately by podTemplateSpecNeedsUpdate.
-func (*VirtualMCPServerReconciler) imagePullSecretsNeedsUpdate(
+// imagePullSecretsNeedsUpdate detects drift on the desired imagePullSecrets
+// list (chart-level defaults merged with vmcp.Spec.ImagePullSecrets) by
+// comparing a hash of the desired list against the value stored in
+// imagePullRefsHashAnnotation. We cannot compare
+// deployment.Spec.Template.Spec.ImagePullSecrets directly because the live
+// list is the strategic-merge union with anything the user supplied under
+// spec.podTemplateSpec.spec.imagePullSecrets, so a direct equality check
+// would either flag spurious drift or miss real changes depending on
+// PodTemplateSpec content. PodTemplateSpec drift is covered separately by
+// podTemplateSpecNeedsUpdate.
+func (r *VirtualMCPServerReconciler) imagePullSecretsNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1beta1.VirtualMCPServer,
@@ -1562,7 +1586,7 @@ func (*VirtualMCPServerReconciler) imagePullSecretsNeedsUpdate(
 		return true
 	}
 
-	expectedHash, err := imagePullSecretsHash(vmcp.Spec.ImagePullSecrets)
+	expectedHash, err := imagePullSecretsHash(r.imagePullSecretsForVMCP(vmcp))
 	if err != nil {
 		log.FromContext(ctx).Error(err, "Failed to hash imagePullSecrets, assuming update needed")
 		return true

@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 )
 
 func TestNewManager(t *testing.T) {
@@ -46,7 +47,7 @@ func TestNewManager(t *testing.T) {
 			scheme := runtime.NewScheme()
 
 			// Create manager
-			manager := NewManager(nil, scheme)
+			manager := NewManager(nil, scheme, imagepullsecrets.Defaults{})
 
 			// Verify manager is created
 			assert.NotNil(t, manager)
@@ -88,7 +89,7 @@ func TestReconcileAPIService(t *testing.T) {
 		}
 
 		// Create manager
-		manager := NewManager(fakeClient, scheme)
+		manager := NewManager(fakeClient, scheme, imagepullsecrets.Defaults{})
 		// Execute
 		result := manager.ReconcileAPIService(context.Background(), mcpRegistry)
 
@@ -159,7 +160,7 @@ func TestReconcileAPIService(t *testing.T) {
 		}
 
 		// Create manager
-		manager := NewManager(fakeClient, scheme)
+		manager := NewManager(fakeClient, scheme, imagepullsecrets.Defaults{})
 		// Execute
 		result := manager.ReconcileAPIService(context.Background(), mcpRegistry)
 

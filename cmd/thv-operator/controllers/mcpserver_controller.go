@@ -35,6 +35,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
@@ -48,6 +49,10 @@ type MCPServerReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
+	// operator chart that are merged with the per-CR imagePullSecrets when
+	// constructing workloads. The zero value is a usable empty Defaults.
+	ImagePullSecretsDefaults imagepullsecrets.Defaults
 }
 
 // defaultRBACRules are the default RBAC rules that the
@@ -893,12 +898,7 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	proxyRunnerNameForRBAC := ctrlutil.ProxyRunnerServiceAccountName(mcpServer.Name)
 
-	// Extract ImagePullSecrets from ResourceOverrides if present
-	var imagePullSecrets []corev1.LocalObjectReference
-	if mcpServer.Spec.ResourceOverrides != nil &&
-		mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
-		imagePullSecrets = mcpServer.Spec.ResourceOverrides.ProxyDeployment.ImagePullSecrets
-	}
+	imagePullSecrets := r.imagePullSecretsForMCPServer(mcpServer)
 
 	// Ensure RBAC resources for proxy runner
 	if _, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
@@ -927,6 +927,28 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 	}
 	_, err := rbacClient.UpsertServiceAccountWithOwnerReference(ctx, mcpServerSA, mcpServer)
 	return err
+}
+
+// imagePullSecretsForMCPServer returns the image pull secrets the operator
+// will set on the proxy runner Deployment, the proxy runner ServiceAccount,
+// and the auto-created MCP server ServiceAccount. The list is the merge of
+// cluster-wide chart defaults (from r.ImagePullSecretsDefaults) with the
+// per-CR list from spec.resourceOverrides.proxyDeployment.imagePullSecrets.
+// CR-level entries win on name collisions; chart-level entries are appended
+// additively. Returns nil when both inputs are empty.
+//
+// All sites that read or compare ImagePullSecrets — including
+// deploymentNeedsUpdate's drift check — must call this helper so the desired
+// list is computed identically and reconciliation reaches a fixed point.
+func (r *MCPServerReconciler) imagePullSecretsForMCPServer(
+	mcpServer *mcpv1beta1.MCPServer,
+) []corev1.LocalObjectReference {
+	var crLevel []corev1.LocalObjectReference
+	if mcpServer.Spec.ResourceOverrides != nil &&
+		mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
+		crLevel = mcpServer.Spec.ResourceOverrides.ProxyDeployment.ImagePullSecrets
+	}
+	return r.ImagePullSecretsDefaults.Merge(crLevel)
 }
 
 // deploymentForMCPServer returns a MCPServer Deployment object
@@ -1219,11 +1241,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	env = ctrlutil.EnsureRequiredEnvVars(ctx, env)
 
-	// Extract ImagePullSecrets from ResourceOverrides if present
-	var imagePullSecrets []corev1.LocalObjectReference
-	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
-		imagePullSecrets = m.Spec.ResourceOverrides.ProxyDeployment.ImagePullSecrets
-	}
+	imagePullSecrets := r.imagePullSecretsForMCPServer(m)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1724,13 +1742,12 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		}
 
 		// Check if image pull secrets have changed.
-		// Sourced from spec.resourceOverrides.proxyDeployment.imagePullSecrets.
-		// Uses equality.Semantic.DeepEqual so nil and empty slices are treated as equal.
-		var expectedPullSecrets []corev1.LocalObjectReference
-		if mcpServer.Spec.ResourceOverrides != nil &&
-			mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
-			expectedPullSecrets = mcpServer.Spec.ResourceOverrides.ProxyDeployment.ImagePullSecrets
-		}
+		// Must mirror the construction site (deploymentForMCPServer) which sets
+		// the merge of chart-level defaults with the per-CR list. Comparing
+		// against the CR-only field would flag perpetual drift whenever any
+		// chart default is configured. Uses equality.Semantic.DeepEqual so
+		// nil and empty slices are treated as equal.
+		expectedPullSecrets := r.imagePullSecretsForMCPServer(mcpServer)
 		if !equality.Semantic.DeepEqual(deployment.Spec.Template.Spec.ImagePullSecrets, expectedPullSecrets) {
 			return true
 		}

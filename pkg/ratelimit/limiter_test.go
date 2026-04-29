@@ -70,7 +70,7 @@ func TestNewLimiter_ZeroDuration(t *testing.T) {
 	assert.Contains(t, err.Error(), "refillPeriod must be positive")
 }
 
-func TestLimiter_ServerGlobalExhausted(t *testing.T) {
+func TestLimiter_ServerSharedExhausted(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
 	ctx := t.Context()
@@ -93,7 +93,7 @@ func TestLimiter_ServerGlobalExhausted(t *testing.T) {
 	assert.Greater(t, d.RetryAfter, time.Duration(0))
 }
 
-func TestLimiter_SharedAliasUsesLegacyRedisKeys(t *testing.T) {
+func TestLimiter_SharedUsesRedisKeys(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
 	ctx := t.Context()
@@ -114,45 +114,10 @@ func TestLimiter_SharedAliasUsesLegacyRedisKeys(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, d.Allowed)
 
-	legacyServerKey := "thv:rl:{ns:srv}:shared"
-	legacyToolKey := "thv:rl:{ns:srv}:shared:tool:search"
-	newServerKey := "thv:rl:{ns:srv}:global"
-	newToolKey := "thv:rl:{ns:srv}:global:tool:search"
+	serverKey := "thv:rl:{ns:srv}:shared"
+	toolKey := "thv:rl:{ns:srv}:shared:tool:search"
 
-	exists, err := client.Exists(ctx, legacyServerKey, legacyToolKey).Result()
-	require.NoError(t, err)
-	assert.Equal(t, int64(2), exists)
-
-	exists, err = client.Exists(ctx, newServerKey, newToolKey).Result()
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), exists)
-}
-
-func TestLimiter_GlobalUsesGlobalRedisKeys(t *testing.T) {
-	t.Parallel()
-	client, _ := newTestClient(t)
-	ctx := t.Context()
-
-	crd := &v1beta1.RateLimitConfig{
-		Global: &v1beta1.RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
-		Tools: []v1beta1.ToolRateLimitConfig{
-			{
-				Name:   "search",
-				Global: &v1beta1.RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
-			},
-		},
-	}
-	l, err := NewLimiter(client, "ns", "srv", crd)
-	require.NoError(t, err)
-
-	d, err := l.Allow(ctx, "search", "")
-	require.NoError(t, err)
-	require.True(t, d.Allowed)
-
-	exists, err := client.Exists(ctx,
-		"thv:rl:{ns:srv}:global",
-		"thv:rl:{ns:srv}:global:tool:search",
-	).Result()
+	exists, err := client.Exists(ctx, serverKey, toolKey).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), exists)
 }

@@ -6,7 +6,6 @@ package vmcpconfig
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -20,7 +19,6 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
 	"github.com/stacklok/toolhive/pkg/authserver"
-	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -142,13 +140,6 @@ func (c *Converter) Convert(
 	}
 
 	config.SessionStorage = convertSessionStorage(vmcp)
-	if vmcp.Spec.RateLimiting != nil {
-		rateLimiting, err := convertRateLimiting(vmcp.Spec.RateLimiting)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to convert rate limiting: %w", err)
-		}
-		config.RateLimiting = rateLimiting
-	}
 
 	// Apply operational defaults (fills missing values)
 	config.EnsureOperationalDefaults()
@@ -164,22 +155,6 @@ func (c *Converter) Convert(
 	}
 
 	return config, authServerRC, nil
-}
-
-func convertRateLimiting(rateLimiting *mcpv1beta1.RateLimitConfig) (*thvjson.Map, error) {
-	if rateLimiting == nil {
-		return nil, nil
-	}
-	raw, err := json.Marshal(rateLimiting)
-	if err != nil {
-		return nil, err
-	}
-	var value map[string]any
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, err
-	}
-	converted := thvjson.NewMap(value)
-	return &converted, nil
 }
 
 // convertIncomingAuth converts IncomingAuthConfig from CRD to vmcp config.

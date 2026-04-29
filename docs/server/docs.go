@@ -60,9 +60,6 @@ const docTemplate = `{
             "github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitConfig": {
                 "description": "RateLimitConfig contains the CRD rate limiting configuration.\nWhen set, rate limiting middleware is added to the proxy middleware chain.",
                 "properties": {
-                    "global": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket"
-                    },
                     "perUser": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket"
                     },
@@ -82,9 +79,6 @@ const docTemplate = `{
             },
             "github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.ToolRateLimitConfig": {
                 "properties": {
-                    "global": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket"
-                    },
                     "name": {
                         "description": "Name is the MCP tool name this limit applies to.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1",
                         "type": "string"

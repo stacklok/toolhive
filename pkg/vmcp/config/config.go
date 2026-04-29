@@ -173,14 +173,6 @@ type Config struct {
 	// the THV_SESSION_REDIS_PASSWORD environment variable.
 	// +optional
 	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty" yaml:"sessionStorage,omitempty"`
-
-	// RateLimiting configures request rate limits for tools/call.
-	// Kubernetes users should set VirtualMCPServer.spec.rateLimiting; the operator
-	// copies that top-level field here for the vMCP runtime.
-	// This remains YAML-only so it can be written to the runtime config ConfigMap
-	// without exposing spec.config.rateLimiting in the Kubernetes API.
-	// +optional
-	RateLimiting *thvjson.Map `json:"-" yaml:"rateLimiting,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.

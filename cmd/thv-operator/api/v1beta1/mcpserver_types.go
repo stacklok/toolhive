@@ -505,15 +505,11 @@ type SessionStorageConfig struct {
 // RateLimitConfig defines rate limiting configuration for an MCP server.
 // At least one of shared, perUser, or tools must be configured.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.global) || has(self.shared) || has(self.perUser) || (has(self.tools) && size(self.tools) > 0)",message="at least one of global, shared, perUser, or tools must be configured"
+// +kubebuilder:validation:XValidation:rule="has(self.shared) || has(self.perUser) || (has(self.tools) && size(self.tools) > 0)",message="at least one of shared, perUser, or tools must be configured"
 //
-//nolint:lll // CEL validation rules exceed line length limit
+//nolint:lll // kubebuilder marker exceeds line length
 type RateLimitConfig struct {
-	// Global is a token bucket shared across all users for the entire server.
-	// +optional
-	Global *RateLimitBucket `json:"global,omitempty" yaml:"global,omitempty"`
-
-	// Shared is a deprecated alias for Global. Use global instead.
+	// Shared is a token bucket shared across all users for the entire server.
 	// +optional
 	Shared *RateLimitBucket `json:"shared,omitempty" yaml:"shared,omitempty"`
 
@@ -534,7 +530,7 @@ type RateLimitConfig struct {
 }
 
 // RateLimitBucket defines a token bucket configuration with a maximum capacity
-// and a refill period. Used by both shared (global) and per-user rate limits.
+// and a refill period. Used by both shared and per-user rate limits.
 type RateLimitBucket struct {
 	// MaxTokens is the maximum number of tokens (bucket capacity).
 	// This is also the burst size: the maximum number of requests that can be served
@@ -551,9 +547,9 @@ type RateLimitBucket struct {
 }
 
 // ToolRateLimitConfig defines rate limits for a specific tool.
-// At least one of global, shared, or perUser must be configured.
+// At least one of shared or perUser must be configured.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.global) || has(self.shared) || has(self.perUser)",message="at least one of global, shared, or perUser must be configured"
+// +kubebuilder:validation:XValidation:rule="has(self.shared) || has(self.perUser)",message="at least one of shared or perUser must be configured"
 //
 //nolint:lll // kubebuilder marker exceeds line length
 type ToolRateLimitConfig struct {
@@ -562,11 +558,7 @@ type ToolRateLimitConfig struct {
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name" yaml:"name"`
 
-	// Global token bucket for this specific tool.
-	// +optional
-	Global *RateLimitBucket `json:"global,omitempty" yaml:"global,omitempty"`
-
-	// Shared is a deprecated alias for Global. Use global instead.
+	// Shared token bucket for this specific tool.
 	// +optional
 	Shared *RateLimitBucket `json:"shared,omitempty" yaml:"shared,omitempty"`
 

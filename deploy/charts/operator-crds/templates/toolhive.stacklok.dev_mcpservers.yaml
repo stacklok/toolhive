@@ -323,28 +323,6 @@ spec:
                   RateLimiting defines rate limiting configuration for the MCP server.
                   Requires Redis session storage to be configured for distributed rate limiting.
                 properties:
-                  global:
-                    description: Global is a token bucket shared across all users
-                      for the entire server.
-                    properties:
-                      maxTokens:
-                        description: |-
-                          MaxTokens is the maximum number of tokens (bucket capacity).
-                          This is also the burst size: the maximum number of requests that can be served
-                          instantaneously before the bucket is depleted.
-                        format: int32
-                        minimum: 1
-                        type: integer
-                      refillPeriod:
-                        description: |-
-                          RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
-                          The effective refill rate is maxTokens / refillPeriod tokens per second.
-                          Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
-                        type: string
-                    required:
-                    - maxTokens
-                    - refillPeriod
-                    type: object
                   perUser:
                     description: |-
                       PerUser is a token bucket applied independently to each authenticated user
@@ -371,8 +349,8 @@ spec:
                     - refillPeriod
                     type: object
                   shared:
-                    description: Shared is a deprecated alias for Global. Use global
-                      instead.
+                    description: Shared is a token bucket shared across all users
+                      for the entire server.
                     properties:
                       maxTokens:
                         description: |-
@@ -400,29 +378,8 @@ spec:
                     items:
                       description: |-
                         ToolRateLimitConfig defines rate limits for a specific tool.
-                        At least one of global, shared, or perUser must be configured.
+                        At least one of shared or perUser must be configured.
                       properties:
-                        global:
-                          description: Global token bucket for this specific tool.
-                          properties:
-                            maxTokens:
-                              description: |-
-                                MaxTokens is the maximum number of tokens (bucket capacity).
-                                This is also the burst size: the maximum number of requests that can be served
-                                instantaneously before the bucket is depleted.
-                              format: int32
-                              minimum: 1
-                              type: integer
-                            refillPeriod:
-                              description: |-
-                                RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
-                                The effective refill rate is maxTokens / refillPeriod tokens per second.
-                                Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
-                              type: string
-                          required:
-                          - maxTokens
-                          - refillPeriod
-                          type: object
                         name:
                           description: Name is the MCP tool name this limit applies
                             to.
@@ -451,8 +408,7 @@ spec:
                           - refillPeriod
                           type: object
                         shared:
-                          description: Shared is a deprecated alias for Global. Use
-                            global instead.
+                          description: Shared token bucket for this specific tool.
                           properties:
                             maxTokens:
                               description: |-
@@ -476,19 +432,17 @@ spec:
                       - name
                       type: object
                       x-kubernetes-validations:
-                      - message: at least one of global, shared, or perUser must be
-                          configured
-                        rule: has(self.global) || has(self.shared) || has(self.perUser)
+                      - message: at least one of shared or perUser must be configured
+                        rule: has(self.shared) || has(self.perUser)
                     type: array
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
                 type: object
                 x-kubernetes-validations:
-                - message: at least one of global, shared, perUser, or tools must
-                    be configured
-                  rule: has(self.global) || has(self.shared) || has(self.perUser)
-                    || (has(self.tools) && size(self.tools) > 0)
+                - message: at least one of shared, perUser, or tools must be configured
+                  rule: has(self.shared) || has(self.perUser) || (has(self.tools)
+                    && size(self.tools) > 0)
               replicas:
                 description: |-
                   Replicas is the desired number of proxy runner (thv run) pod replicas.
@@ -1218,28 +1172,6 @@ spec:
                   RateLimiting defines rate limiting configuration for the MCP server.
                   Requires Redis session storage to be configured for distributed rate limiting.
                 properties:
-                  global:
-                    description: Global is a token bucket shared across all users
-                      for the entire server.
-                    properties:
-                      maxTokens:
-                        description: |-
-                          MaxTokens is the maximum number of tokens (bucket capacity).
-                          This is also the burst size: the maximum number of requests that can be served
-                          instantaneously before the bucket is depleted.
-                        format: int32
-                        minimum: 1
-                        type: integer
-                      refillPeriod:
-                        description: |-
-                          RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
-                          The effective refill rate is maxTokens / refillPeriod tokens per second.
-                          Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
-                        type: string
-                    required:
-                    - maxTokens
-                    - refillPeriod
-                    type: object
                   perUser:
                     description: |-
                       PerUser is a token bucket applied independently to each authenticated user
@@ -1266,8 +1198,8 @@ spec:
                     - refillPeriod
                     type: object
                   shared:
-                    description: Shared is a deprecated alias for Global. Use global
-                      instead.
+                    description: Shared is a token bucket shared across all users
+                      for the entire server.
                     properties:
                       maxTokens:
                         description: |-
@@ -1295,29 +1227,8 @@ spec:
                     items:
                       description: |-
                         ToolRateLimitConfig defines rate limits for a specific tool.
-                        At least one of global, shared, or perUser must be configured.
+                        At least one of shared or perUser must be configured.
                       properties:
-                        global:
-                          description: Global token bucket for this specific tool.
-                          properties:
-                            maxTokens:
-                              description: |-
-                                MaxTokens is the maximum number of tokens (bucket capacity).
-                                This is also the burst size: the maximum number of requests that can be served
-                                instantaneously before the bucket is depleted.
-                              format: int32
-                              minimum: 1
-                              type: integer
-                            refillPeriod:
-                              description: |-
-                                RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
-                                The effective refill rate is maxTokens / refillPeriod tokens per second.
-                                Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
-                              type: string
-                          required:
-                          - maxTokens
-                          - refillPeriod
-                          type: object
                         name:
                           description: Name is the MCP tool name this limit applies
                             to.
@@ -1346,8 +1257,7 @@ spec:
                           - refillPeriod
                           type: object
                         shared:
-                          description: Shared is a deprecated alias for Global. Use
-                            global instead.
+                          description: Shared token bucket for this specific tool.
                           properties:
                             maxTokens:
                               description: |-
@@ -1371,19 +1281,17 @@ spec:
                       - name
                       type: object
                       x-kubernetes-validations:
-                      - message: at least one of global, shared, or perUser must be
-                          configured
-                        rule: has(self.global) || has(self.shared) || has(self.perUser)
+                      - message: at least one of shared or perUser must be configured
+                        rule: has(self.shared) || has(self.perUser)
                     type: array
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
                 type: object
                 x-kubernetes-validations:
-                - message: at least one of global, shared, perUser, or tools must
-                    be configured
-                  rule: has(self.global) || has(self.shared) || has(self.perUser)
-                    || (has(self.tools) && size(self.tools) > 0)
+                - message: at least one of shared, perUser, or tools must be configured
+                  rule: has(self.shared) || has(self.perUser) || (has(self.tools)
+                    && size(self.tools) > 0)
               replicas:
                 description: |-
                   Replicas is the desired number of proxy runner (thv run) pod replicas.

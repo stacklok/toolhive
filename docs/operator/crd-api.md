@@ -2687,7 +2687,7 @@ _Appears in:_
 
 
 RateLimitBucket defines a token bucket configuration with a maximum capacity
-and a refill period. Used by both shared (global) and per-user rate limits.
+and a refill period. Used by both shared and per-user rate limits.
 
 
 
@@ -2716,8 +2716,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `global` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Global is a token bucket shared across all users for the entire server. |  | Optional: \{\} <br /> |
-| `shared` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Shared is a deprecated alias for Global. Use global instead. |  | Optional: \{\} <br /> |
+| `shared` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Shared is a token bucket shared across all users for the entire server. |  | Optional: \{\} <br /> |
 | `perUser` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | PerUser is a token bucket applied independently to each authenticated user<br />at the server level. Requires authentication to be enabled.<br />Each unique userID creates Redis keys that expire after 2x refillPeriod.<br />Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys. |  | Optional: \{\} <br /> |
 | `tools` _[api.v1beta1.ToolRateLimitConfig](#apiv1beta1toolratelimitconfig) array_ | Tools defines per-tool rate limit overrides.<br />Each entry applies additional rate limits to calls targeting a specific tool name.<br />A request must pass both the server-level limit and the per-tool limit. |  | Optional: \{\} <br /> |
 
@@ -3132,7 +3131,7 @@ _Appears in:_
 
 
 ToolRateLimitConfig defines rate limits for a specific tool.
-At least one of global, shared, or perUser must be configured.
+At least one of shared or perUser must be configured.
 
 
 
@@ -3142,8 +3141,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the MCP tool name this limit applies to. |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `global` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Global token bucket for this specific tool. |  | Optional: \{\} <br /> |
-| `shared` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Shared is a deprecated alias for Global. Use global instead. |  | Optional: \{\} <br /> |
+| `shared` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Shared token bucket for this specific tool. |  | Optional: \{\} <br /> |
 | `perUser` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | PerUser token bucket configuration for this tool. |  | Optional: \{\} <br /> |
 
 

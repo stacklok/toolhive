@@ -750,6 +750,14 @@ func buildUpstreamRunConfig(
 				return nil, err
 			}
 			config.OAuth2Config = oauth2
+			if provider.OAuth2Config.IdentityFromToken != nil {
+				ift := provider.OAuth2Config.IdentityFromToken
+				config.OAuth2Config.IdentityFromToken = &authserver.IdentityFromTokenRunConfig{
+					SubjectPath: ift.SubjectPath,
+					NamePath:    ift.NamePath,
+					EmailPath:   ift.EmailPath,
+				}
+			}
 		}
 	}
 

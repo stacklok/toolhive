@@ -569,6 +569,14 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 		}
 	}
 
+	if oauth2.IdentityFromToken != nil {
+		cfg.IdentityFromToken = &upstream.IdentityFromTokenConfig{
+			SubjectPath: oauth2.IdentityFromToken.SubjectPath,
+			NamePath:    oauth2.IdentityFromToken.NamePath,
+			EmailPath:   oauth2.IdentityFromToken.EmailPath,
+		}
+	}
+
 	return cfg, nil
 }
 

@@ -1423,6 +1423,121 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 					"DCRConfig should remain nil when only ClientID is set")
 			},
 		},
+		{
+			name:        "OAuth2 upstream with identityFromToken all fields set",
+			resourceURL: defaultResourceURL,
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "snowflake",
+						Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://account.snowflakecomputing.com/oauth/authorize",
+							TokenEndpoint:         "https://account.snowflakecomputing.com/oauth/token-request",
+							ClientID:              "sf-client-id",
+							IdentityFromToken: &mcpv1beta1.IdentityFromTokenConfig{
+								SubjectPath: "username",
+								NamePath:    "display_name",
+								EmailPath:   "email",
+							},
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OAuth2Config)
+				require.NotNil(t, upstream.OAuth2Config.IdentityFromToken)
+				assert.Equal(t, "username", upstream.OAuth2Config.IdentityFromToken.SubjectPath)
+				assert.Equal(t, "display_name", upstream.OAuth2Config.IdentityFromToken.NamePath)
+				assert.Equal(t, "email", upstream.OAuth2Config.IdentityFromToken.EmailPath)
+			},
+		},
+		{
+			name:        "OAuth2 upstream with identityFromToken only subjectPath set",
+			resourceURL: defaultResourceURL,
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "slack",
+						Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://slack.com/oauth/v2/authorize",
+							TokenEndpoint:         "https://slack.com/api/oauth.v2.access",
+							ClientID:              "slack-client-id",
+							IdentityFromToken: &mcpv1beta1.IdentityFromTokenConfig{
+								SubjectPath: "authed_user.id",
+							},
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OAuth2Config)
+				require.NotNil(t, upstream.OAuth2Config.IdentityFromToken)
+				assert.Equal(t, "authed_user.id", upstream.OAuth2Config.IdentityFromToken.SubjectPath)
+				assert.Empty(t, upstream.OAuth2Config.IdentityFromToken.NamePath)
+				assert.Empty(t, upstream.OAuth2Config.IdentityFromToken.EmailPath)
+			},
+		},
+		{
+			name:        "OAuth2 upstream with no identityFromToken produces nil",
+			resourceURL: defaultResourceURL,
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "github-no-ift",
+						Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+							TokenEndpoint:         "https://github.com/login/oauth/access_token",
+							UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://api.github.com/user"},
+							ClientID:              "client-id",
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OAuth2Config)
+				assert.Nil(t, upstream.OAuth2Config.IdentityFromToken,
+					"IdentityFromToken must be nil when not configured")
+			},
+		},
 	}
 
 	for _, tt := range tests {

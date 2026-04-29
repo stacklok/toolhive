@@ -11,6 +11,10 @@ import (
 // ErrServerNotFound indicates a server was not found in the registry.
 var ErrServerNotFound = errors.New("server not found")
 
+// ErrEntryNotFound indicates a registry has no entry with the requested
+// name. Used by the new Registry / Store types.
+var ErrEntryNotFound = errors.New("entry not found")
+
 // UnavailableError indicates the upstream registry is unreachable
 // or returned an unexpected (non-auth) error such as 404, timeout, or
 // connection refused. API handlers translate this into HTTP 503.

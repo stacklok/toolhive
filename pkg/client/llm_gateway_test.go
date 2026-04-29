@@ -507,6 +507,36 @@ func TestDetectedLLMGatewayClients_NeitherDirNorBinary(t *testing.T) {
 	assert.Empty(t, cm.DetectedLLMGatewayClients())
 }
 
+// TestRealClientConfigs_LLMBinaryNames asserts the expected binary name for
+// every LLM-gateway-capable entry in supportedClientIntegrations. This is a
+// regression guard: a silent typo (e.g. "code" instead of "code-insiders")
+// causes detection to fail on machines that only have the Insiders build.
+func TestRealClientConfigs_LLMBinaryNames(t *testing.T) {
+	t.Parallel()
+
+	want := map[ClientApp]string{
+		VSCodeInsider: "code-insiders",
+		VSCode:        "code",
+		Cursor:        "cursor",
+		ClaudeCode:    "claude",
+		GeminiCli:     "gemini",
+		// Tools without a binary check (dir-only detection) are omitted.
+	}
+
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+
+	for clientType, wantBinary := range want {
+		t.Run(string(clientType), func(t *testing.T) {
+			t.Parallel()
+			cfg := cm.lookupClientAppConfig(clientType)
+			require.NotNil(t, cfg, "missing entry in supportedClientIntegrations for %s", clientType)
+			assert.Equal(t, wantBinary, cfg.LLMBinaryName,
+				"wrong LLMBinaryName for %s: detection will fail on machines that only have the expected binary", clientType)
+		})
+	}
+}
+
 // countSubstring counts non-overlapping occurrences of substr in s.
 func countSubstring(s, substr string) int {
 	count := 0

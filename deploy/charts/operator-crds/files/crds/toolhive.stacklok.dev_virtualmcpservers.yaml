@@ -1978,6 +1978,56 @@ spec:
                 required:
                 - name
                 type: object
+              imagePullSecrets:
+                description: |-
+                  ImagePullSecrets allows specifying image pull secrets for the vMCP workload.
+                  These are applied to both the vMCP Deployment's PodSpec.ImagePullSecrets
+                  and to the operator-managed ServiceAccount the vMCP server runs as, so private
+                  images are pullable through either path.
+
+                  Merge semantics with PodTemplateSpec:
+                  The deployed PodSpec.ImagePullSecrets is the Kubernetes-native strategic-merge
+                  union of this field and spec.podTemplateSpec.spec.imagePullSecrets, merged by
+                  the patchStrategy:"merge" / patchMergeKey:"name" tags on corev1.PodSpec.
+                    - This field is rendered first as the controller-generated default.
+                    - spec.podTemplateSpec.spec.imagePullSecrets is then strategic-merge-patched
+                      on top, keyed by Name. Distinct names from the two sources are unioned in
+                      the resulting list; entries with the same Name are deduplicated and the
+                      PodTemplateSpec entry wins on overlap (user override).
+                    - Order in the resulting list is not guaranteed and should not be relied on:
+                      strategic merge by name is order-insensitive.
+                    - The operator-managed ServiceAccount's imagePullSecrets list is populated
+                      ONLY from this field. spec.podTemplateSpec.spec.imagePullSecrets does not
+                      reach the ServiceAccount because PodTemplateSpec has no notion of a
+                      ServiceAccount. To make a secret usable via the ServiceAccount path
+                      (e.g. for sidecars or init containers that pull images independently),
+                      list it here rather than under spec.podTemplateSpec.
+
+                  Note on cross-CRD consistency:
+                  MCPRegistry currently uses an atomic-replace strategy for its imagePullSecrets
+                  (the user-provided value replaces the controller-generated list rather than
+                  being merged on top). VirtualMCPServer follows the Kubernetes-native
+                  strategic-merge-by-name behavior described above. Aligning the two is tracked
+                  as a separate follow-up; until then, manifests that set imagePullSecrets on
+                  both CRDs will see different override behavior between them.
+                items:
+                  description: |-
+                    LocalObjectReference contains enough information to let you locate the
+                    referenced object inside the same namespace.
+                  properties:
+                    name:
+                      default: ""
+                      description: |-
+                        Name of the referent.
+                        This field is effectively required, but due to backwards compatibility is
+                        allowed to be empty. Instances of this type with an empty value here are
+                        almost certainly wrong.
+                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                      type: string
+                  type: object
+                  x-kubernetes-map-type: atomic
+                type: array
+                x-kubernetes-list-type: atomic
               incomingAuth:
                 description: |-
                   IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
@@ -4409,6 +4459,56 @@ spec:
                 required:
                 - name
                 type: object
+              imagePullSecrets:
+                description: |-
+                  ImagePullSecrets allows specifying image pull secrets for the vMCP workload.
+                  These are applied to both the vMCP Deployment's PodSpec.ImagePullSecrets
+                  and to the operator-managed ServiceAccount the vMCP server runs as, so private
+                  images are pullable through either path.
+
+                  Merge semantics with PodTemplateSpec:
+                  The deployed PodSpec.ImagePullSecrets is the Kubernetes-native strategic-merge
+                  union of this field and spec.podTemplateSpec.spec.imagePullSecrets, merged by
+                  the patchStrategy:"merge" / patchMergeKey:"name" tags on corev1.PodSpec.
+                    - This field is rendered first as the controller-generated default.
+                    - spec.podTemplateSpec.spec.imagePullSecrets is then strategic-merge-patched
+                      on top, keyed by Name. Distinct names from the two sources are unioned in
+                      the resulting list; entries with the same Name are deduplicated and the
+                      PodTemplateSpec entry wins on overlap (user override).
+                    - Order in the resulting list is not guaranteed and should not be relied on:
+                      strategic merge by name is order-insensitive.
+                    - The operator-managed ServiceAccount's imagePullSecrets list is populated
+                      ONLY from this field. spec.podTemplateSpec.spec.imagePullSecrets does not
+                      reach the ServiceAccount because PodTemplateSpec has no notion of a
+                      ServiceAccount. To make a secret usable via the ServiceAccount path
+                      (e.g. for sidecars or init containers that pull images independently),
+                      list it here rather than under spec.podTemplateSpec.
+
+                  Note on cross-CRD consistency:
+                  MCPRegistry currently uses an atomic-replace strategy for its imagePullSecrets
+                  (the user-provided value replaces the controller-generated list rather than
+                  being merged on top). VirtualMCPServer follows the Kubernetes-native
+                  strategic-merge-by-name behavior described above. Aligning the two is tracked
+                  as a separate follow-up; until then, manifests that set imagePullSecrets on
+                  both CRDs will see different override behavior between them.
+                items:
+                  description: |-
+                    LocalObjectReference contains enough information to let you locate the
+                    referenced object inside the same namespace.
+                  properties:
+                    name:
+                      default: ""
+                      description: |-
+                        Name of the referent.
+                        This field is effectively required, but due to backwards compatibility is
+                        allowed to be empty. Instances of this type with an empty value here are
+                        almost certainly wrong.
+                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                      type: string
+                  type: object
+                  x-kubernetes-map-type: atomic
+                type: array
+                x-kubernetes-list-type: atomic
               incomingAuth:
                 description: |-
                   IncomingAuth configures authentication for clients connecting to the Virtual MCP server.

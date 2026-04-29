@@ -347,6 +347,32 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 				},
 			},
 		},
+
+		// IdentityFromToken subject_path requirement.
+		{
+			name: "IdentityFromToken with empty SubjectPath rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:          "c",
+				IdentityFromToken: &IdentityFromTokenRunConfig{},
+			},
+			wantErr: true,
+			errMsg:  "identity_from_token.subject_path must not be empty",
+		},
+		{
+			name: "IdentityFromToken with non-empty SubjectPath is valid",
+			config: OAuth2UpstreamRunConfig{
+				ClientID: "c",
+				IdentityFromToken: &IdentityFromTokenRunConfig{
+					SubjectPath: "username",
+				},
+			},
+		},
+		{
+			name: "nil IdentityFromToken is valid",
+			config: OAuth2UpstreamRunConfig{
+				ClientID: "c",
+			},
+		},
 	}
 
 	for _, tt := range tests {

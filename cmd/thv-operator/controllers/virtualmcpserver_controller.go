@@ -383,6 +383,15 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 
 	// Validate inline AuthServerConfig (when specified).
 	if vmcp.Spec.AuthServerConfig != nil {
+		// Surface the IdentitySynthesized advisory upfront, before validation.
+		// The advisory is a pure function of the upstream provider field shape
+		// (which OAuth2 upstreams have nil userInfo) and is independent of
+		// issuer URL validity or other validation concerns. Running it before
+		// validateAuthServerConfig keeps the condition consistent with the
+		// current spec on every reconcile — including paths that early-return
+		// from validation — so a broken edit cannot leave a stale True with
+		// an upstream name the new spec no longer mentions.
+		r.applyAuthServerIdentitySynthesizedCondition(vmcp, statusManager)
 		if err := r.validateAuthServerConfig(vmcp, statusManager); err != nil {
 			if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
 				ctxLogger.Error(applyErr, "Failed to apply status updates after AuthServerConfig validation error")
@@ -503,10 +512,23 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 	)
 	statusManager.SetObservedGeneration(vmcp.Generation)
 
-	// Advisory: surface synthesis-mode upstreams (OAuth2 with no userInfo) on
-	// the VMCP status so the regression is visible in `kubectl describe`.
-	// Parity with MCPExternalAuthConfigReconciler — same condition regardless
-	// of whether the upstream is declared inline or via an MCPExternalAuthConfig.
+	return nil
+}
+
+// applyAuthServerIdentitySynthesizedCondition surfaces the IdentitySynthesized
+// advisory derived from the inline AuthServerConfig's upstream provider field
+// shape. Pure function of spec — does not depend on validation results — so
+// callers can run it before the validation guards and the advisory will track
+// the current spec on both pass and fail paths. Parity with
+// MCPExternalAuthConfigReconciler.applyIdentitySynthesizedCondition.
+func (*VirtualMCPServerReconciler) applyAuthServerIdentitySynthesizedCondition(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) {
+	cfg := vmcp.Spec.AuthServerConfig
+	if cfg == nil {
+		return
+	}
 	syntheticUpstreams := cfg.SyntheticIdentityUpstreams()
 	if len(syntheticUpstreams) > 0 {
 		statusManager.SetCondition(
@@ -520,16 +542,14 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 			),
 			metav1.ConditionTrue,
 		)
-	} else {
-		statusManager.SetCondition(
-			mcpv1beta1.ConditionTypeIdentitySynthesized,
-			mcpv1beta1.ConditionReasonIdentitySynthesizedInactive,
-			"All OAuth2 upstreams have userInfo configured; user identity is resolved from the upstream",
-			metav1.ConditionFalse,
-		)
+		return
 	}
-
-	return nil
+	statusManager.SetCondition(
+		mcpv1beta1.ConditionTypeIdentitySynthesized,
+		mcpv1beta1.ConditionReasonIdentitySynthesizedInactive,
+		"All OAuth2 upstreams have userInfo configured; user identity is resolved from the upstream",
+		metav1.ConditionFalse,
+	)
 }
 
 // validateAuthzUpstreamAvailable ensures that when authorization policies are

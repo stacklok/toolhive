@@ -336,9 +336,11 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 	if config.UserInfo == nil {
 		// Surface synthesis mode at construction so operators see it once
 		// per provider rather than only inferring from missing claims later.
-		slog.Info("oauth2 upstream has no userinfo configured; using synthesis mode " +
-			"(non-PII subject from access token, no Name/Email). Configure " +
-			"userInfo if a real identity endpoint exists.")
+		slog.Warn("oauth2 upstream has no userinfo configured; using synthesis mode "+
+			"(non-PII subject from access token, no Name/Email). Configure "+
+			"userInfo if a real identity endpoint exists.",
+			"authorization_endpoint", config.AuthorizationEndpoint,
+		)
 	}
 
 	return p, nil
@@ -411,7 +413,8 @@ func (p *BaseOAuth2Provider) buildAuthorizationURL(
 // ExchangeCodeForIdentity exchanges an authorization code for tokens and resolves
 // the user's identity in a single atomic operation.
 // For pure OAuth2 providers, identity is resolved via UserInfo when configured;
-// otherwise Subject is synthesized via synthesizeSubjectFromAccessToken and
+// otherwise Subject is synthesized via synthesizeIdentity (which rejects empty
+// access tokens to prevent the well-known sha256("") subject collision) and
 // Name/Email are left empty. The nonce parameter is ignored (no ID token).
 func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, codeVerifier, _ string) (*Identity, error) {
 	tokens, err := p.exchangeCodeForTokens(ctx, code, codeVerifier)
@@ -424,11 +427,7 @@ func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, 
 	// synthesized subject rotates per access token, so persisting it would
 	// create a new `users` row on every re-authentication.
 	if p.config.UserInfo == nil {
-		return &Identity{
-			Tokens:    tokens,
-			Subject:   synthesizeSubjectFromAccessToken(tokens.AccessToken),
-			Synthetic: true,
-		}, nil
+		return synthesizeIdentity(tokens)
 	}
 
 	userInfo, err := p.fetchUserInfo(ctx, tokens.AccessToken)
@@ -478,10 +477,34 @@ func IsSynthesizedSubject(subject string) bool {
 // is sufficient collision resistance for a session-key role.
 //
 // Only reached when OAuth2Config.UserInfo is nil. OIDC providers always
-// have an ID-token-derived subject.
+// have an ID-token-derived subject. Callers must reject empty access
+// tokens — sha256("") is a well-known constant, and synthesizing a
+// subject from it would collapse distinct sessions onto a single
+// storage bucket. synthesizeIdentity enforces this invariant.
 func synthesizeSubjectFromAccessToken(accessToken string) string {
 	sum := sha256.Sum256([]byte(accessToken))
 	return synthesizedSubjectPrefix + hex.EncodeToString(sum[:16])
+}
+
+// synthesizeIdentity builds a synthesized Identity for an OAuth2 upstream
+// with no userinfo endpoint. Returns ErrIdentityResolutionFailed when the
+// access token is empty: sha256("") is the well-known constant
+// e3b0c44298fc1c14…, so synthesizing a subject from an empty token would
+// collapse every affected session onto a single (UserID, ProviderID)
+// storage bucket — a cross-tenant state-mixing hazard. Defense-in-depth:
+// convertOAuth2Token already rejects empty AccessToken at exchange time,
+// so this guard is unreachable today through ExchangeCodeForIdentity. It
+// exists so a future code path (e.g., a custom token-response mapping
+// that drops the field) cannot bypass the invariant.
+func synthesizeIdentity(tokens *Tokens) (*Identity, error) {
+	if tokens.AccessToken == "" {
+		return nil, fmt.Errorf("%w: empty access token, cannot synthesize subject", ErrIdentityResolutionFailed)
+	}
+	return &Identity{
+		Tokens:    tokens,
+		Subject:   synthesizeSubjectFromAccessToken(tokens.AccessToken),
+		Synthetic: true,
+	}, nil
 }
 
 // exchangeCodeForTokens exchanges an authorization code for tokens with the upstream IDP.

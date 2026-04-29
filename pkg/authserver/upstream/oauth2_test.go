@@ -1277,17 +1277,44 @@ func TestSynthesizeSubjectFromAccessToken(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	t.Run("empty token still produces a stable subject", func(t *testing.T) {
+}
+
+// TestSynthesizeIdentity exercises the synthesis-mode helper directly,
+// including the empty-access-token guard. The synthesizer itself is a pure
+// hash and would happily emit the well-known sha256("") constant for "" —
+// synthesizeIdentity is the layer that refuses to do so, preventing distinct
+// sessions from collapsing onto a single (UserID, ProviderID) storage bucket.
+func TestSynthesizeIdentity(t *testing.T) {
+	t.Parallel()
+
+	t.Run("rejects empty access token", func(t *testing.T) {
 		t.Parallel()
-		// Caller shouldn't pass empty; if it does, must not panic and must
-		// honor the documented shape (prefix + 32 hex chars). The shape
-		// assertions catch a regression that short-circuits empty input to
-		// "" — the determinism check alone would not.
-		got1 := synthesizeSubjectFromAccessToken("")
-		got2 := synthesizeSubjectFromAccessToken("")
-		assert.Equal(t, got1, got2)
-		assert.True(t, strings.HasPrefix(got1, synthesizedSubjectPrefix))
-		assert.Len(t, strings.TrimPrefix(got1, synthesizedSubjectPrefix), 32)
+		// Defense-in-depth: convertOAuth2Token already catches empty
+		// AccessToken at exchange time, so this guard is unreachable
+		// through the public API today. The test asserts the invariant
+		// regardless, so a future code path that bypasses
+		// convertOAuth2Token cannot silently synthesize the constant
+		// sha256("") subject.
+		got, err := synthesizeIdentity(&Tokens{AccessToken: ""})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrIdentityResolutionFailed)
+		assert.Nil(t, got)
+	})
+
+	t.Run("synthesizes for non-empty access token", func(t *testing.T) {
+		t.Parallel()
+		tokens := &Tokens{AccessToken: "atlassian-mcp-style-opaque-token"}
+		got, err := synthesizeIdentity(tokens)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.True(t, got.Synthetic, "synthesized identities must set Synthetic=true")
+		assert.Equal(t,
+			synthesizeSubjectFromAccessToken(tokens.AccessToken),
+			got.Subject,
+			"subject must be deterministic given the same access token")
+		assert.Empty(t, got.Name)
+		assert.Empty(t, got.Email)
+		assert.Same(t, tokens, got.Tokens, "tokens reference is preserved")
 	})
 }
 

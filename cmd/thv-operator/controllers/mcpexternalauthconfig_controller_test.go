@@ -1365,6 +1365,104 @@ func TestMCPExternalAuthConfigReconciler_IdentitySynthesizedCondition(t *testing
 	}
 }
 
+// TestMCPExternalAuthConfigReconciler_IdentitySynthesizedTransitionsOnValidationFailure
+// pins the contract that the IdentitySynthesized advisory is recomputed from
+// the current spec on every reconcile, including the validation-failure path.
+// Without this, breaking a previously-valid spec would leave a stale
+// IdentitySynthesized=True dangling alongside Valid=False — naming an
+// upstream that the broken spec no longer mentions.
+func TestMCPExternalAuthConfigReconciler_IdentitySynthesizedTransitionsOnValidationFailure(t *testing.T) {
+	t.Parallel()
+
+	signing := []mcpv1beta1.SecretKeyRef{{Name: "signing-key", Key: "private.pem"}}
+	syntheticUpstream := mcpv1beta1.UpstreamProviderConfig{
+		Name: "atlassian",
+		Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+		OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
+			AuthorizationEndpoint: "https://idp.example.com/authorize",
+			TokenEndpoint:         "https://idp.example.com/token",
+			ClientID:              "client",
+			// UserInfo intentionally nil — synthesizes identity.
+		},
+	}
+
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "transition-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:               "https://auth.example.com",
+				SigningKeySecretRefs: signing,
+				UpstreamProviders:    []mcpv1beta1.UpstreamProviderConfig{syntheticUpstream},
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cfg).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
+		Build()
+
+	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}}
+
+	// First reconcile adds the finalizer; the requeued reconcile runs the body.
+	result, err := r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	if result.RequeueAfter > 0 {
+		_, err = r.Reconcile(t.Context(), req)
+		require.NoError(t, err)
+	}
+
+	var initial mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &initial))
+
+	cond := findCondition(initial.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized)
+	require.NotNil(t, cond, "synthesizing upstream should produce IdentitySynthesized condition")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonIdentitySynthesizedActive, cond.Reason)
+	assert.Contains(t, cond.Message, "atlassian", "initial message must name the synthesizing upstream")
+
+	validCond := findCondition(initial.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, validCond)
+	assert.Equal(t, metav1.ConditionTrue, validCond.Status)
+
+	// Mutate the spec to break validation: empty UpstreamProviders fails
+	// validateEmbeddedAuthServer ("at least one upstream provider is
+	// required") AND removes the synthesizing upstream that the prior
+	// IdentitySynthesized=True message names.
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &initial))
+	initial.Spec.EmbeddedAuthServer.UpstreamProviders = nil
+	require.NoError(t, fakeClient.Update(t.Context(), &initial))
+
+	_, err = r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+
+	var after mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &after))
+
+	validCond = findCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, validCond)
+	assert.Equal(t, metav1.ConditionFalse, validCond.Status, "validation must fail on empty upstream list")
+	assert.Equal(t, "ValidationFailed", validCond.Reason)
+
+	cond = findCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized)
+	require.NotNil(t, cond, "advisory must be recomputed on the validation-failure path, not left stale")
+	assert.Equal(t, metav1.ConditionFalse, cond.Status,
+		"empty upstream list has no synthesizing providers; advisory must flip to False")
+	assert.Equal(t, mcpv1beta1.ConditionReasonIdentitySynthesizedInactive, cond.Reason)
+	assert.NotContains(t, cond.Message, "atlassian",
+		"stale message naming the now-removed upstream must not survive the broken edit")
+}
+
 // findCondition returns a pointer to the named condition, or nil when absent.
 func findCondition(conditions []metav1.Condition, t string) *metav1.Condition {
 	for i := range conditions {

@@ -83,10 +83,21 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{RequeueAfter: externalAuthConfigRequeueDelay}, nil
 	}
 
+	// Compute the IdentitySynthesized advisory upfront, before validation.
+	// The advisory is a pure function of the upstream provider field shape
+	// (specifically, which OAuth2 upstreams have nil userInfo) and does not
+	// depend on issuer URL validity or other Validate() concerns. Computing
+	// it before validation ensures the advisory tracks the current spec on
+	// every reconcile — including the validation-failure path — so a broken
+	// edit cannot leave a stale True/upstream-name dangling.
+	syntheticChanged := r.applyIdentitySynthesizedCondition(externalAuthConfig)
+
 	// Validate spec configuration early
 	if err := externalAuthConfig.Validate(); err != nil {
 		logger.Error(err, "MCPExternalAuthConfig spec validation failed")
-		// Update status with validation error
+		// Update status with validation error. The synthesis condition mutated
+		// above is part of the same in-memory Conditions slice and will land
+		// in this same write.
 		meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeValid,
 			Status:             metav1.ConditionFalse,
@@ -108,11 +119,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		Message:            "Spec validation passed",
 		ObservedGeneration: externalAuthConfig.Generation,
 	})
-
-	// Set or clear the IdentitySynthesized advisory. Either-direction
-	// transitions count as a condition change so the existing Status().Update
-	// path picks them up.
-	if r.applyIdentitySynthesizedCondition(externalAuthConfig) {
+	if syntheticChanged {
 		conditionChanged = true
 	}
 

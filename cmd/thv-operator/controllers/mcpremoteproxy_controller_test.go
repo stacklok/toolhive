@@ -1108,6 +1108,68 @@ func TestMCPRemoteProxyEnsureRBACResources_CustomServiceAccount(t *testing.T) {
 	assert.Error(t, err, "RoleBinding should not be created when custom ServiceAccount is provided")
 }
 
+// TestMCPRemoteProxyEnsureRBACResources_ImagePullSecrets verifies that
+// spec.resourceOverrides.proxyDeployment.imagePullSecrets propagates to both
+// the proxy-runner Deployment and ServiceAccount (regression for #5099).
+func TestMCPRemoteProxyEnsureRBACResources_ImagePullSecrets(t *testing.T) {
+	t.Parallel()
+
+	proxy := &mcpv1beta1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pull-secrets-proxy",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
+			RemoteURL: "https://mcp.example.com",
+			ProxyPort: 8080,
+			ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+				ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+					ImagePullSecrets: []corev1.LocalObjectReference{
+						{Name: "my-registry-secret"},
+					},
+				},
+			},
+		},
+	}
+
+	scheme := createRunConfigTestScheme()
+	_ = rbacv1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(proxy).
+		Build()
+
+	reconciler := &MCPRemoteProxyReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	err := reconciler.ensureRBACResources(t.Context(), proxy)
+	require.NoError(t, err)
+
+	expectedSecrets := []corev1.LocalObjectReference{
+		{Name: "my-registry-secret"},
+	}
+
+	// ServiceAccount must carry the image pull secrets so kubelet can pull
+	// images using the SA's token reference.
+	sa := &corev1.ServiceAccount{}
+	err = fakeClient.Get(t.Context(), types.NamespacedName{
+		Name:      proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name),
+		Namespace: proxy.Namespace,
+	}, sa)
+	require.NoError(t, err)
+	assert.Equal(t, expectedSecrets, sa.ImagePullSecrets)
+
+	// Deployment pod spec must also carry them so the pod-level setting is
+	// applied even when the SA reference is overridden.
+	dep := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+	require.NotNil(t, dep)
+	assert.Equal(t, expectedSecrets, dep.Spec.Template.Spec.ImagePullSecrets)
+}
+
 // TestUpdateMCPRemoteProxyStatus tests status update logic
 func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 	t.Parallel()

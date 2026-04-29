@@ -746,6 +746,24 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 	return nil
 }
 
+// cloneUpstreamTokens returns a field-by-field copy of t, or nil if t is nil.
+func cloneUpstreamTokens(t *UpstreamTokens) *UpstreamTokens {
+	if t == nil {
+		return nil
+	}
+	return &UpstreamTokens{
+		ProviderID:       t.ProviderID,
+		AccessToken:      t.AccessToken,
+		RefreshToken:     t.RefreshToken,
+		IDToken:          t.IDToken,
+		ExpiresAt:        t.ExpiresAt,
+		SessionExpiresAt: t.SessionExpiresAt,
+		UserID:           t.UserID,
+		UpstreamSubject:  t.UpstreamSubject,
+		ClientID:         t.ClientID,
+	}
+}
+
 // GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
 // Returns a defensive copy to prevent aliasing issues.
 func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, providerName string) (*UpstreamTokens, error) {
@@ -766,20 +784,9 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, provider
 	}
 
 	// Return a defensive copy to prevent aliasing issues
-	tokens := entry.value
-	if tokens == nil {
+	result := cloneUpstreamTokens(entry.value)
+	if result == nil {
 		return nil, nil
-	}
-	result := &UpstreamTokens{
-		ProviderID:       tokens.ProviderID,
-		AccessToken:      tokens.AccessToken,
-		RefreshToken:     tokens.RefreshToken,
-		IDToken:          tokens.IDToken,
-		ExpiresAt:        tokens.ExpiresAt,
-		SessionExpiresAt: tokens.SessionExpiresAt,
-		UserID:           tokens.UserID,
-		UpstreamSubject:  tokens.UpstreamSubject,
-		ClientID:         tokens.ClientID,
 	}
 
 	// Check the token's own ExpiresAt (access token expiry), not the entry's expiresAt
@@ -806,23 +813,8 @@ func (s *MemoryStorage) GetAllUpstreamTokens(_ context.Context, sessionID string
 		if key.sessionID != sessionID {
 			continue
 		}
-		tokens := entry.value
-		if tokens == nil {
-			result[key.providerName] = nil
-			continue
-		}
-		// Defensive copy
-		result[key.providerName] = &UpstreamTokens{
-			ProviderID:       tokens.ProviderID,
-			AccessToken:      tokens.AccessToken,
-			RefreshToken:     tokens.RefreshToken,
-			IDToken:          tokens.IDToken,
-			ExpiresAt:        tokens.ExpiresAt,
-			SessionExpiresAt: tokens.SessionExpiresAt,
-			UserID:           tokens.UserID,
-			UpstreamSubject:  tokens.UpstreamSubject,
-			ClientID:         tokens.ClientID,
-		}
+		// Defensive copy (cloneUpstreamTokens handles nil)
+		result[key.providerName] = cloneUpstreamTokens(entry.value)
 	}
 
 	return result, nil
@@ -876,17 +868,7 @@ func (s *MemoryStorage) GetLatestUpstreamTokensForUser(_ context.Context, userID
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
 	}
 
-	return &UpstreamTokens{
-		ProviderID:       winner.ProviderID,
-		AccessToken:      winner.AccessToken,
-		RefreshToken:     winner.RefreshToken,
-		IDToken:          winner.IDToken,
-		ExpiresAt:        winner.ExpiresAt,
-		SessionExpiresAt: winner.SessionExpiresAt,
-		UserID:           winner.UserID,
-		UpstreamSubject:  winner.UpstreamSubject,
-		ClientID:         winner.ClientID,
-	}, nil
+	return cloneUpstreamTokens(winner), nil
 }
 
 // -----------------------

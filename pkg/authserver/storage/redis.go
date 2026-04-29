@@ -808,6 +808,30 @@ type storedUpstreamTokens struct {
 	ClientID         string `json:"client_id"`
 }
 
+// toUpstreamTokens converts the stored int64 epoch fields to time.Time and returns
+// the populated UpstreamTokens. Zero epoch values are preserved as zero time.Time.
+func (s *storedUpstreamTokens) toUpstreamTokens() *UpstreamTokens {
+	var expiresAt time.Time
+	if s.ExpiresAt != 0 {
+		expiresAt = time.Unix(s.ExpiresAt, 0)
+	}
+	var sessionExpiresAt time.Time
+	if s.SessionExpiresAt != 0 {
+		sessionExpiresAt = time.Unix(s.SessionExpiresAt, 0)
+	}
+	return &UpstreamTokens{
+		ProviderID:       s.ProviderID,
+		AccessToken:      s.AccessToken,
+		RefreshToken:     s.RefreshToken,
+		IDToken:          s.IDToken,
+		ExpiresAt:        expiresAt,
+		SessionExpiresAt: sessionExpiresAt,
+		UserID:           s.UserID,
+		UpstreamSubject:  s.UpstreamSubject,
+		ClientID:         s.ClientID,
+	}
+}
+
 // storeUpstreamTokensScript atomically reads the existing UserID, writes new token
 // data, updates the session index set, and updates user reverse-index sets.
 // This prevents a race condition where concurrent writes for the same session
@@ -1153,10 +1177,7 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 		return nil, fmt.Errorf("failed to get upstream tokens: %w", err)
 	}
 
-	var (
-		winner       *storedUpstreamTokens
-		winnerTokens *UpstreamTokens
-	)
+	var winner *storedUpstreamTokens
 	for i, val := range values {
 		stored, ok := parseUserUpstreamEntry(val, providerID, members[i])
 		if !ok {
@@ -1168,34 +1189,14 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 		// real timestamp unless it is the only candidate.
 		if winner == nil || stored.ExpiresAt > winner.ExpiresAt {
 			winner = stored
-
-			var expiresAt time.Time
-			if stored.ExpiresAt != 0 {
-				expiresAt = time.Unix(stored.ExpiresAt, 0)
-			}
-			var sessionExpiresAt time.Time
-			if stored.SessionExpiresAt != 0 {
-				sessionExpiresAt = time.Unix(stored.SessionExpiresAt, 0)
-			}
-			winnerTokens = &UpstreamTokens{
-				ProviderID:       stored.ProviderID,
-				AccessToken:      stored.AccessToken,
-				RefreshToken:     stored.RefreshToken,
-				IDToken:          stored.IDToken,
-				ExpiresAt:        expiresAt,
-				SessionExpiresAt: sessionExpiresAt,
-				UserID:           stored.UserID,
-				UpstreamSubject:  stored.UpstreamSubject,
-				ClientID:         stored.ClientID,
-			}
 		}
 	}
 
-	if winnerTokens == nil {
+	if winner == nil {
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
 	}
 
-	return winnerTokens, nil
+	return winner.toUpstreamTokens(), nil
 }
 
 // parseUserUpstreamEntry parses one raw Redis value from the user-upstream index
@@ -1259,36 +1260,13 @@ func unmarshalUpstreamTokens(data []byte) (*UpstreamTokens, error) {
 		return nil, fmt.Errorf("failed to unmarshal upstream tokens: %w", err)
 	}
 
-	// Convert stored ExpiresAt back to time.Time.
-	// stored.ExpiresAt == 0 is a sentinel meaning "no expiry" — the write path
-	// stores 0 for zero time. Skip the expiry check in this case since Redis TTL
-	// handles the actual expiration.
-	var expiresAt time.Time
-	var expired bool
-	if stored.ExpiresAt != 0 {
-		expiresAt = time.Unix(stored.ExpiresAt, 0)
-		expired = time.Now().After(expiresAt)
-	}
+	tokens := stored.toUpstreamTokens()
 
-	var sessionExpiresAt time.Time
-	if stored.SessionExpiresAt != 0 {
-		sessionExpiresAt = time.Unix(stored.SessionExpiresAt, 0)
-	}
-
-	tokens := &UpstreamTokens{
-		ProviderID:       stored.ProviderID,
-		AccessToken:      stored.AccessToken,
-		RefreshToken:     stored.RefreshToken,
-		IDToken:          stored.IDToken,
-		ExpiresAt:        expiresAt,
-		SessionExpiresAt: sessionExpiresAt,
-		UserID:           stored.UserID,
-		UpstreamSubject:  stored.UpstreamSubject,
-		ClientID:         stored.ClientID,
-	}
-
-	// Return tokens along with ErrExpired so callers can use the refresh token
-	if expired {
+	// tokens.ExpiresAt is zero when the stored epoch was 0 (the write path stores
+	// 0 for zero time.Time, which toUpstreamTokens leaves as the zero time). Skip
+	// the expiry check in that case since Redis TTL handles the actual expiration.
+	// Return tokens along with ErrExpired so callers can use the refresh token.
+	if !tokens.ExpiresAt.IsZero() && time.Now().After(tokens.ExpiresAt) {
 		return tokens, ErrExpired
 	}
 

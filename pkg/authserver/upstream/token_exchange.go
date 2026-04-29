@@ -7,28 +7,44 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/tidwall/gjson"
 )
 
 // tokenResponseRewriter is an http.RoundTripper that normalizes non-standard
-// OAuth token responses before the golang.org/x/oauth2 library parses them.
+// OAuth token responses before the golang.org/x/oauth2 library parses them,
+// and optionally extracts user identity claims from the raw response body.
 //
 // Some providers (e.g., GovSlack) nest token fields under non-standard paths
 // like "authed_user.access_token" instead of the top-level "access_token".
 // This RoundTripper intercepts the response, extracts fields using gjson
 // dot-notation paths, and rewrites the response body with standard top-level
 // field names so the oauth2 library can parse them normally.
+//
+// When identityCfg is set, identity extraction runs on the RAW pre-rewrite
+// body before any field relocation occurs. The extracted identity is stored
+// in extractedIdentity and consumed by the caller after Exchange returns.
+// If extraction fails, extractionErr holds the cause so callers can surface
+// operator-actionable diagnostics (path names, type descriptions) without
+// re-reading the response body.
 type tokenResponseRewriter struct {
-	base     http.RoundTripper
-	mapping  *TokenResponseMapping
-	tokenURL string
+	base              http.RoundTripper
+	mapping           *TokenResponseMapping
+	identityCfg       *IdentityFromTokenConfig
+	tokenURL          string
+	extractedIdentity *partialIdentity
+	extractionErr     error
 }
 
 // RoundTrip intercepts HTTP responses from the token endpoint and rewrites
 // the JSON body to place mapped fields at the top level. Non-token-endpoint
 // requests (e.g., userInfo) pass through unchanged.
+//
+// When identityCfg is set, identity is extracted from the raw response body
+// BEFORE the rewrite step so that identity paths are resolved against the
+// original provider response, not the normalized form.
 func (t *tokenResponseRewriter) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
@@ -51,7 +67,31 @@ func (t *tokenResponseRewriter) RoundTrip(req *http.Request) (*http.Response, er
 		return nil, err
 	}
 
-	rewritten := rewriteTokenResponse(body, t.mapping)
+	// Extract from the raw body before rewriteTokenResponse runs. The rewrite
+	// never touches identity-shaped fields today, but extracting first makes
+	// the ordering invariant independent of that assumption.
+	if t.identityCfg != nil {
+		result, extractErr := extractIdentityFromTokenResponse(body, t.identityCfg)
+		if extractErr != nil {
+			// WARN so an operator misconfiguration (e.g., wrong subjectPath) is
+			// visible without enabling DEBUG. The error is safe to log: it
+			// contains operator-supplied paths and type descriptions, never
+			// any portion of the response body.
+			slog.Warn("identity extraction from token response failed", "error", extractErr)
+			t.extractionErr = extractErr
+		} else {
+			t.extractedIdentity = &result
+		}
+	}
+
+	// Only run the field-rewrite step when a mapping is configured.
+	// When mapping is nil (e.g. only identityCfg is set), pass the body through unchanged.
+	var rewritten []byte
+	if t.mapping != nil {
+		rewritten = rewriteTokenResponse(body, t.mapping)
+	} else {
+		rewritten = body
+	}
 
 	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
 	resp.ContentLength = int64(len(rewritten))
@@ -107,12 +147,20 @@ func rewriteTokenResponse(body []byte, mapping *TokenResponseMapping) []byte {
 	return rewritten
 }
 
-// wrapHTTPClientWithMapping wraps an HTTP client's transport with a
-// tokenResponseRewriter when a TokenResponseMapping is configured.
-// Returns the original client unchanged if mapping is nil.
-func wrapHTTPClientWithMapping(client *http.Client, mapping *TokenResponseMapping, tokenURL string) *http.Client {
-	if mapping == nil {
-		return client
+// wrapHTTPClientForTokenExchange wraps an HTTP client's transport with a
+// tokenResponseRewriter when either a TokenResponseMapping or an
+// IdentityFromTokenConfig is configured (or both). Returns the original client
+// and nil rewriter when both are nil, so the standard oauth2 library path is
+// used. The returned rewriter (when non-nil) can be read after Exchange returns
+// to retrieve any identity extracted during the token round-trip.
+func wrapHTTPClientForTokenExchange(
+	client *http.Client,
+	mapping *TokenResponseMapping,
+	identityCfg *IdentityFromTokenConfig,
+	tokenURL string,
+) (*http.Client, *tokenResponseRewriter) {
+	if mapping == nil && identityCfg == nil {
+		return client, nil
 	}
 
 	base := client.Transport
@@ -120,14 +168,17 @@ func wrapHTTPClientWithMapping(client *http.Client, mapping *TokenResponseMappin
 		base = http.DefaultTransport
 	}
 
+	rewriter := &tokenResponseRewriter{
+		base:        base,
+		mapping:     mapping,
+		identityCfg: identityCfg,
+		tokenURL:    tokenURL,
+	}
+
 	// Create a shallow copy to avoid mutating the original client
 	wrapped := *client
-	wrapped.Transport = &tokenResponseRewriter{
-		base:     base,
-		mapping:  mapping,
-		tokenURL: tokenURL,
-	}
-	return &wrapped
+	wrapped.Transport = rewriter
+	return &wrapped, rewriter
 }
 
 // pathOrDefault returns the path if non-empty, otherwise returns the default.

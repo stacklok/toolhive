@@ -30,7 +30,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"time"
 
 	"golang.org/x/oauth2"
 
@@ -539,6 +538,16 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, co
 }
 
 // RefreshTokens refreshes the upstream IDP tokens.
+//
+// Sends `scope` explicitly. RFC 6749 §6 makes the param optional and says the
+// AS SHOULD preserve original scopes on omission, but some ASes (notably
+// Entra ID v1) silently narrow refreshed tokens to the user's default consent
+// set when `scope` is omitted, dropping custom resource scopes.
+//
+// Uses oauth2.Config.Exchange with SetAuthURLParam overrides (mirroring the
+// pattern in pkg/auth/oauth/non_caching_refresher.go) because the standard
+// library's TokenSource refresh path doesn't expose a way to inject scope.
+// The empty code= side-effect is tolerated — ASes dispatch on grant_type first.
 func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ string) (*Tokens, error) {
 	if refreshToken == "" {
 		return nil, errors.New("refresh token is required")
@@ -546,21 +555,22 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 
 	slog.Info("refreshing tokens",
 		"token_endpoint", p.config.TokenEndpoint,
+		"scope_count", len(p.oauth2Config.Scopes),
 	)
 
 	// Wrap HTTP client with token response rewriter if mapping is configured.
 	httpClient := wrapHTTPClientWithMapping(p.httpClient, p.config.TokenResponseMapping, p.config.TokenEndpoint)
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
-	// Create an expired token with the refresh token to trigger refresh
-	expiredToken := &oauth2.Token{
-		RefreshToken: refreshToken,
-		Expiry:       time.Now().Add(-time.Hour), // Expired token forces refresh
+	opts := []oauth2.AuthCodeOption{
+		oauth2.SetAuthURLParam("grant_type", "refresh_token"),
+		oauth2.SetAuthURLParam("refresh_token", refreshToken),
+	}
+	if len(p.oauth2Config.Scopes) > 0 {
+		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(p.oauth2Config.Scopes, " ")))
 	}
 
-	// Use TokenSource to get a new token via refresh
-	tokenSource := p.oauth2Config.TokenSource(ctx, expiredToken)
-	token, err := tokenSource.Token()
+	token, err := p.oauth2Config.Exchange(ctx, "", opts...)
 	if err != nil {
 		return nil, formatOAuth2Error(err, "token request failed")
 	}
@@ -569,9 +579,15 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 	if err != nil {
 		return nil, err
 	}
+	// AS may not issue a new refresh token (RFC 6749 §6); preserve the old one.
+	if tokens.RefreshToken == "" {
+		tokens.RefreshToken = refreshToken
+	}
 
 	slog.Debug("token refresh successful",
-		"has_new_refresh_token", tokens.RefreshToken != "",
+		// Read from token (pre-§6-fallback) so the log accurately reflects
+		// whether the AS rotated the refresh token vs the fallback kicking in.
+		"has_new_refresh_token", token.RefreshToken != "",
 		"expires_at", expiresAtLogValue(tokens.ExpiresAt),
 	)
 

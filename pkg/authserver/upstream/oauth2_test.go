@@ -813,6 +813,102 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "token request failed")
 	})
+
+	t.Run("refresh request includes configured scopes", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
+
+		var receivedParams url.Values
+		mock.tokenHandler = func(w http.ResponseWriter, r *http.Request) {
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			receivedParams = r.PostForm
+
+			w.Header().Set("Content-Type", "application/json")
+			resp := testTokenResponse{
+				AccessToken:  "refreshed-access-token",
+				TokenType:    "Bearer",
+				RefreshToken: "new-refresh-token",
+				ExpiresIn:    3600,
+			}
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		}
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+				Scopes: []string{
+					"openid",
+					"profile",
+					"api://example.com/custom:scope",
+				},
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.RefreshTokens(ctx, "old-refresh-token", "")
+		require.NoError(t, err)
+
+		// Scope must be sent on refresh; some ASes drop custom scopes otherwise.
+		sentScopes := strings.Fields(receivedParams.Get("scope"))
+		assert.ElementsMatch(t,
+			[]string{"openid", "profile", "api://example.com/custom:scope"},
+			sentScopes,
+			"refresh request must include the configured scope set verbatim",
+		)
+	})
+
+	t.Run("refresh preserves existing refresh_token when AS does not issue a new one", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
+
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			// Response omits refresh_token (allowed by RFC 6749 §6).
+			resp := testTokenResponse{
+				AccessToken: "refreshed-access-token",
+				TokenType:   "Bearer",
+				ExpiresIn:   3600,
+			}
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		}
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		tokens, err := provider.RefreshTokens(ctx, "still-valid-refresh-token", "")
+		require.NoError(t, err)
+
+		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
+		assert.Equal(t, "still-valid-refresh-token", tokens.RefreshToken,
+			"original refresh token must be preserved when response omits one")
+	})
 }
 
 func TestBaseOAuth2Provider_WithOAuth2HTTPClient(t *testing.T) {

@@ -953,6 +953,67 @@ func TestEmbeddingServer_PodTemplateSpec_PreservesUserFields(t *testing.T) {
 				assert.True(t, hasSidecar, "user-provided sidecar should be present")
 			},
 		},
+		{
+			// Strategic merge patch merges container arrays by name. A user-supplied
+			// container called `embedding` is a separate code path from a sidecar with a
+			// different name: env and volumeMounts get merged *into* the controller's
+			// container rather than appended as a new entry. This test pins that path so
+			// future changes can't silently break it.
+			name: "extra env vars and volumeMounts on the embedding container are merged in by name",
+			userPTS: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: embeddingContainerName,
+							Env: []corev1.EnvVar{
+								{Name: "EXTRA_ENV", Value: "user-set"},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "extra-config", MountPath: "/etc/extra"},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "extra-config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "extra-cm"},
+								},
+							},
+						},
+					},
+				},
+			},
+			assertPodSpec: func(t *testing.T, podSpec corev1.PodSpec) {
+				t.Helper()
+				require.Len(t, podSpec.Containers, 1, "no new container should have been appended")
+				c := podSpec.Containers[0]
+				assert.Equal(t, embeddingContainerName, c.Name)
+				assert.Equal(t, "test-image:latest", c.Image,
+					"controller-set image must survive the by-name merge")
+
+				// User env var was merged in.
+				var foundEnv bool
+				for _, e := range c.Env {
+					if e.Name == "EXTRA_ENV" {
+						foundEnv = true
+						assert.Equal(t, "user-set", e.Value)
+					}
+				}
+				assert.True(t, foundEnv, "user-provided env var should be present on embedding container")
+
+				// User volumeMount was merged in.
+				var foundMount bool
+				for _, m := range c.VolumeMounts {
+					if m.Name == "extra-config" {
+						foundMount = true
+						assert.Equal(t, "/etc/extra", m.MountPath)
+					}
+				}
+				assert.True(t, foundMount, "user-provided volumeMount should be present on embedding container")
+			},
+		},
 	}
 
 	for _, tt := range tests {

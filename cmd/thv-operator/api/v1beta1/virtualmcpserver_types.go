@@ -114,15 +114,31 @@ type VirtualMCPServerSpec struct {
 	// and to the operator-managed ServiceAccount the vMCP server runs as, so private
 	// images are pullable through either path.
 	//
-	// Precedence with PodTemplateSpec:
-	//   - This field is applied first as the controller-generated default.
-	//   - Values set under spec.podTemplateSpec.spec.imagePullSecrets are user
-	//     overrides and merged on top using Kubernetes strategic merge patch
-	//     (patchStrategy:"merge", patchMergeKey:"name"). Distinct secret names
-	//     from the explicit field and PodTemplateSpec are unioned; if the same
-	//     name appears in both, the PodTemplateSpec entry wins on overlap.
-	//   - The ServiceAccount is always populated from this field — PodTemplateSpec
-	//     does not affect the ServiceAccount.
+	// Merge semantics with PodTemplateSpec:
+	// The deployed PodSpec.ImagePullSecrets is the Kubernetes-native strategic-merge
+	// union of this field and spec.podTemplateSpec.spec.imagePullSecrets, merged by
+	// the patchStrategy:"merge" / patchMergeKey:"name" tags on corev1.PodSpec.
+	//   - This field is rendered first as the controller-generated default.
+	//   - spec.podTemplateSpec.spec.imagePullSecrets is then strategic-merge-patched
+	//     on top, keyed by Name. Distinct names from the two sources are unioned in
+	//     the resulting list; entries with the same Name are deduplicated and the
+	//     PodTemplateSpec entry wins on overlap (user override).
+	//   - Order in the resulting list is not guaranteed and should not be relied on:
+	//     strategic merge by name is order-insensitive.
+	//   - The operator-managed ServiceAccount's imagePullSecrets list is populated
+	//     ONLY from this field. spec.podTemplateSpec.spec.imagePullSecrets does not
+	//     reach the ServiceAccount because PodTemplateSpec has no notion of a
+	//     ServiceAccount. To make a secret usable via the ServiceAccount path
+	//     (e.g. for sidecars or init containers that pull images independently),
+	//     list it here rather than under spec.podTemplateSpec.
+	//
+	// Note on cross-CRD consistency:
+	// MCPRegistry currently uses an atomic-replace strategy for its imagePullSecrets
+	// (the user-provided value replaces the controller-generated list rather than
+	// being merged on top). VirtualMCPServer follows the Kubernetes-native
+	// strategic-merge-by-name behavior described above. Aligning the two is tracked
+	// as a separate follow-up; until then, manifests that set imagePullSecrets on
+	// both CRDs will see different override behavior between them.
 	//
 	// +listType=atomic
 	// +optional

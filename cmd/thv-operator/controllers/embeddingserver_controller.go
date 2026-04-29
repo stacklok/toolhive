@@ -674,6 +674,14 @@ func (*EmbeddingServerReconciler) buildPodTemplate(
 // PodTemplateSpec). This avoids Go's `json.Marshal` turning nil slices into `[]`, which
 // strategic merge patch interprets as "replace with empty" and would clobber controller
 // defaults.
+//
+// Invalid user input is treated as a soft failure: the merge is skipped and the
+// StatefulSet is built from controller defaults. The user-facing signal lives on the
+// EmbeddingServer status (set by validateAndUpdatePodTemplateStatus): Phase=Failed
+// and ConditionPodTemplateValid=False. This mirrors the pre-existing tolerant
+// behavior — refusing to create the StatefulSet would leave the resource stuck with
+// no pod and no observable controller-side state, while the validation condition
+// already tells the user exactly why their input was rejected.
 func (*EmbeddingServerReconciler) applyPodTemplateSpecToStatefulSet(
 	ctx context.Context,
 	embedding *mcpv1beta1.EmbeddingServer,
@@ -683,13 +691,19 @@ func (*EmbeddingServerReconciler) applyPodTemplateSpecToStatefulSet(
 		return nil
 	}
 
-	// Validate the user-provided PodTemplateSpec is well-formed JSON.
+	logger := log.FromContext(ctx)
+
+	// Validate the user-provided PodTemplateSpec is well-formed.
 	// We don't check builder.Build() == nil for "empty" customizations: that helper
 	// only enumerates a subset of PodSpec fields and would skip the patch for
 	// fields like runtimeClassName or topologySpreadConstraints. Strategic merge
 	// patch is a no-op for `{}` anyway, so always running it is safe.
 	if _, err := ctrlutil.NewPodTemplateSpecBuilder(embedding.Spec.PodTemplateSpec, embeddingContainerName); err != nil {
-		return fmt.Errorf("failed to build PodTemplateSpec: %w", err)
+		logger.Info("Skipping PodTemplateSpec merge: input is invalid; StatefulSet will use controller defaults",
+			"error", err.Error(),
+			"embeddingserver", embedding.Name,
+			"namespace", embedding.Namespace)
+		return nil
 	}
 
 	userJSON := embedding.Spec.PodTemplateSpec.Raw
@@ -701,17 +715,25 @@ func (*EmbeddingServerReconciler) applyPodTemplateSpecToStatefulSet(
 
 	patchedJSON, err := strategicpatch.StrategicMergePatch(originalJSON, userJSON, corev1.PodTemplateSpec{})
 	if err != nil {
-		return fmt.Errorf("failed to apply strategic merge patch: %w", err)
+		logger.Info("Skipping PodTemplateSpec merge: strategic merge patch failed; StatefulSet will use controller defaults",
+			"error", err.Error(),
+			"embeddingserver", embedding.Name,
+			"namespace", embedding.Namespace)
+		return nil
 	}
 
 	var patchedPodTemplateSpec corev1.PodTemplateSpec
 	if err := json.Unmarshal(patchedJSON, &patchedPodTemplateSpec); err != nil {
-		return fmt.Errorf("failed to unmarshal patched PodTemplateSpec: %w", err)
+		logger.Info("Skipping PodTemplateSpec merge: patched output failed to unmarshal; StatefulSet will use controller defaults",
+			"error", err.Error(),
+			"embeddingserver", embedding.Name,
+			"namespace", embedding.Namespace)
+		return nil
 	}
 
 	statefulSet.Spec.Template = patchedPodTemplateSpec
 
-	log.FromContext(ctx).V(1).Info("Applied PodTemplateSpec customizations to StatefulSet",
+	logger.V(1).Info("Applied PodTemplateSpec customizations to StatefulSet",
 		"embeddingserver", embedding.Name,
 		"namespace", embedding.Namespace)
 

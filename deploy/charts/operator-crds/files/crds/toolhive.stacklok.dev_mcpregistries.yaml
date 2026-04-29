@@ -107,6 +107,12 @@ spec:
                       those replace the default list on the Deployment (the list is treated atomically).
                     - The ServiceAccount is always populated from this field — PodTemplateSpec does not
                       affect the ServiceAccount.
+
+                  An omitted field and an explicitly empty list are equivalent: both leave the
+                  ServiceAccount's existing ImagePullSecrets unchanged. This preserves
+                  platform-managed pull secrets (for example OpenShift's per-SA dockercfg
+                  entries) when overlays or patches emit an empty list. Truly clearing the
+                  ServiceAccount's pull secrets requires recreating the resource.
                 items:
                   description: |-
                     LocalObjectReference contains enough information to let you locate the
@@ -387,6 +393,12 @@ spec:
                       those replace the default list on the Deployment (the list is treated atomically).
                     - The ServiceAccount is always populated from this field — PodTemplateSpec does not
                       affect the ServiceAccount.
+
+                  An omitted field and an explicitly empty list are equivalent: both leave the
+                  ServiceAccount's existing ImagePullSecrets unchanged. This preserves
+                  platform-managed pull secrets (for example OpenShift's per-SA dockercfg
+                  entries) when overlays or patches emit an empty list. Truly clearing the
+                  ServiceAccount's pull secrets requires recreating the resource.
                 items:
                   description: |-
                     LocalObjectReference contains enough information to let you locate the

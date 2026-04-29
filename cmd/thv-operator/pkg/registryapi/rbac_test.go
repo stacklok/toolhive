@@ -256,3 +256,47 @@ func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 	}
 	assert.Equal(t, expected, sa.ImagePullSecrets)
 }
+
+// TestEnsureRBACResources_EmptyImagePullSecretsPreservesSAPullSecrets verifies that an
+// explicit empty list (spec.imagePullSecrets: []) does not wipe pre-existing
+// ServiceAccount-level ImagePullSecrets such as OpenShift's auto-managed dockercfg
+// entries. Empty slice and omitted field must behave identically.
+func TestEnsureRBACResources_EmptyImagePullSecretsPreservesSAPullSecrets(t *testing.T) {
+	t.Parallel()
+
+	mcpRegistry := createTestMCPRegistry()
+	mcpRegistry.Spec.ImagePullSecrets = []corev1.LocalObjectReference{} // explicit empty
+
+	resourceName := mcpRegistry.Name + "-registry-api"
+
+	// Pre-populate a ServiceAccount with platform-managed pull secrets
+	// (simulating OpenShift's openshift-controller-manager).
+	preexistingSA := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      resourceName,
+			Namespace: mcpRegistry.Namespace,
+		},
+		ImagePullSecrets: []corev1.LocalObjectReference{
+			{Name: resourceName + "-dockercfg-platform"},
+		},
+	}
+
+	scheme := createTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(mcpRegistry, preexistingSA).
+		Build()
+	m := &manager{client: c, scheme: scheme}
+
+	require.NoError(t, m.ensureRBACResources(t.Context(), mcpRegistry))
+
+	sa := &corev1.ServiceAccount{}
+	require.NoError(t, c.Get(t.Context(), types.NamespacedName{
+		Name:      resourceName,
+		Namespace: mcpRegistry.Namespace,
+	}, sa))
+
+	// The platform-managed pull secret must still be present.
+	require.Len(t, sa.ImagePullSecrets, 1, "platform-managed pull secret should be preserved")
+	assert.Equal(t, resourceName+"-dockercfg-platform", sa.ImagePullSecrets[0].Name)
+}

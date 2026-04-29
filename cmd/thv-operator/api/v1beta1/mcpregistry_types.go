@@ -135,6 +135,12 @@ type MCPRegistrySpec struct {
 	//   - The ServiceAccount is always populated from this field — PodTemplateSpec does not
 	//     affect the ServiceAccount.
 	//
+	// An omitted field and an explicitly empty list are equivalent: both leave the
+	// ServiceAccount's existing ImagePullSecrets unchanged. This preserves
+	// platform-managed pull secrets (for example OpenShift's per-SA dockercfg
+	// entries) when overlays or patches emit an empty list. Truly clearing the
+	// ServiceAccount's pull secrets requires recreating the resource.
+	//
 	// +listType=atomic
 	// +optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`

@@ -5,6 +5,9 @@ package runner
 
 import (
 	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -214,7 +217,84 @@ func TestScopesHash_NoCollisionFromBoundaryJoin(t *testing.T) {
 	assert.NotEqual(t, h1, h2)
 }
 
-func TestDCRStaleAgeThreshold_Is90Days(t *testing.T) {
+// TestInMemoryDCRCredentialStore_ConcurrentAccess fans out N goroutines
+// performing alternating Put / Get against overlapping and disjoint keys,
+// exercising the sync.RWMutex guard advertised in the DCRCredentialStore
+// interface doc. With go test -race this catches any future change that
+// drops the lock or introduces a data race in the map access.
+//
+// The test is bounded by a fail-fast deadline per .claude/rules/testing.md
+// "Concurrent Tests: Always Add Timeouts to Blocking Barriers" — a
+// regression that deadlocks would otherwise hang until the global Go test
+// timeout.
+func TestInMemoryDCRCredentialStore_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, 90*24*time.Hour, dcrStaleAgeThreshold)
+
+	store := NewInMemoryDCRCredentialStore()
+
+	const (
+		workers      = 16
+		opsPerWorker = 200
+	)
+
+	// Two key spaces: overlapping (every worker writes the same keys, so the
+	// lock must serialise their writes) and disjoint (each worker has its own
+	// key space, so reads never see another worker's writes).
+	overlappingKey := func(i int) DCRKey {
+		return DCRKey{
+			Issuer:      "https://idp.example.com",
+			RedirectURI: "https://thv.example.com/oauth/callback",
+			ScopesHash:  fmt.Sprintf("overlap-%d", i%4),
+		}
+	}
+	disjointKey := func(worker, i int) DCRKey {
+		return DCRKey{
+			Issuer:      fmt.Sprintf("https://idp-%d.example.com", worker),
+			RedirectURI: "https://thv.example.com/oauth/callback",
+			ScopesHash:  fmt.Sprintf("disjoint-%d", i),
+		}
+	}
+
+	var errCount int32
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func(worker int) {
+			defer wg.Done()
+			ctx := context.Background()
+			for i := 0; i < opsPerWorker; i++ {
+				resolution := &DCRResolution{
+					ClientID:  fmt.Sprintf("worker-%d-op-%d", worker, i),
+					CreatedAt: time.Now(),
+				}
+				if i%2 == 0 {
+					if err := store.Put(ctx, overlappingKey(i), resolution); err != nil {
+						atomic.AddInt32(&errCount, 1)
+					}
+					if _, _, err := store.Get(ctx, overlappingKey(i)); err != nil {
+						atomic.AddInt32(&errCount, 1)
+					}
+				} else {
+					if err := store.Put(ctx, disjointKey(worker, i), resolution); err != nil {
+						atomic.AddInt32(&errCount, 1)
+					}
+					if _, _, err := store.Get(ctx, disjointKey(worker, i)); err != nil {
+						atomic.AddInt32(&errCount, 1)
+					}
+				}
+			}
+		}(w)
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for concurrent store operations to finish; possible deadlock")
+	}
+
+	assert.Zero(t, atomic.LoadInt32(&errCount),
+		"no Get/Put should have errored under concurrent access")
 }

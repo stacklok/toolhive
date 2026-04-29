@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -502,10 +503,10 @@ func TestFetchAuthorizationServerMetadataFromURL(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(_ http.ResponseWriter, _ *http.Request) {
 		// Tripwire — must not be contacted when caller pins an exact URL.
-		wellKnownHits++
+		atomic.AddInt32(&wellKnownHits, 1)
 	})
 	mux.HandleFunc("/tenants/acme/metadata", func(w http.ResponseWriter, _ *http.Request) {
-		customHits++
+		atomic.AddInt32(&customHits, 1)
 		md := AuthorizationServerMetadata{
 			Issuer:                issuer,
 			AuthorizationEndpoint: issuer + "/authorize",
@@ -530,8 +531,10 @@ func TestFetchAuthorizationServerMetadataFromURL(t *testing.T) {
 	require.NotNil(t, metadata)
 	assert.Equal(t, issuer, metadata.Issuer)
 	assert.Equal(t, issuer+"/register", metadata.RegistrationEndpoint)
-	assert.EqualValues(t, 1, customHits, "caller-supplied discovery URL must be fetched exactly once")
-	assert.EqualValues(t, 0, wellKnownHits, "well-known fallback must not be contacted")
+	assert.EqualValues(t, 1, atomic.LoadInt32(&customHits),
+		"caller-supplied discovery URL must be fetched exactly once")
+	assert.EqualValues(t, 0, atomic.LoadInt32(&wellKnownHits),
+		"well-known fallback must not be contacted")
 }
 
 func TestFetchAuthorizationServerMetadataFromURL_IssuerMismatchRejected(t *testing.T) {

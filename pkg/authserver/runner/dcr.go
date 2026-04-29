@@ -17,10 +17,26 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
+
+// dcrFlight coalesces concurrent resolveDCRCredentials calls that share the
+// same DCRKey. Two goroutines hitting the resolver for the same upstream and
+// scope set will both miss the cache, so without coalescing they would both
+// call RegisterClientDynamically and the loser's registration would become
+// orphaned at the upstream IdP — an operator-visible cleanup task and
+// possibly a transient startup failure if the upstream rate-limits
+// concurrent registrations. Followers wait for the leader's result and
+// observe the same DCRResolution.
+//
+// Package-level rather than per-store because the deduplication concern is
+// the resolver's, not the cache's: a future Redis-backed store would still
+// want this in-process gate so a single replica does not double-register.
+var dcrFlight singleflight.Group
 
 // defaultUpstreamRedirectPath is the redirect path derived from the issuer
 // origin when the caller's run-config does not supply an explicit RedirectURI.
@@ -101,28 +117,31 @@ func needsDCR(rc *authserver.OAuth2UpstreamRunConfig) bool {
 // copy-before-mutate rule in .claude/rules/go-style.md); applyResolution does
 // not clone rc internally.
 //
-// ClientID is always overwritten by the resolved value; callers must pass a
-// copy whose ClientID is empty. resolveDCRCredentials enforces this via its
-// precondition check in validateResolveInputs — a stray pre-seeded ClientID
-// would be silently clobbered by this function otherwise.
+// All three fields (ClientID, AuthorizationEndpoint, TokenEndpoint) are
+// written only when rc leaves them empty — explicit caller configuration
+// always wins. resolveDCRCredentials enforces ClientID == "" up front via
+// validateResolveInputs, so the conditional write here is defence-in-depth
+// against future call sites that bypass the resolver and invoke
+// applyResolution directly: an unconditional overwrite would silently
+// clobber a pre-provisioned ClientID with no error.
 //
-// The authorization and token endpoints are written only when rc does not
-// already specify them, so explicit caller configuration always wins.
+// Note: the resolved ClientSecret is NOT copied onto rc because
+// OAuth2UpstreamRunConfig models secrets as file-or-env references, not
+// inline values. Callers that need the resolved secret must read it from
+// the DCRResolution directly.
 func applyResolution(rc *authserver.OAuth2UpstreamRunConfig, res *DCRResolution) {
 	if rc == nil || res == nil {
 		return
 	}
-	rc.ClientID = res.ClientID
+	if rc.ClientID == "" {
+		rc.ClientID = res.ClientID
+	}
 	if rc.AuthorizationEndpoint == "" {
 		rc.AuthorizationEndpoint = res.AuthorizationEndpoint
 	}
 	if rc.TokenEndpoint == "" {
 		rc.TokenEndpoint = res.TokenEndpoint
 	}
-	// Note: the resolved ClientSecret is NOT copied onto rc because
-	// OAuth2UpstreamRunConfig models secrets as file-or-env references, not
-	// inline values. Callers that need the resolved secret must read it from
-	// the DCRResolution directly.
 }
 
 // scopesHash returns the SHA-256 hex digest of the canonical scope set.
@@ -189,6 +208,42 @@ func resolveDCRCredentials(
 	}
 
 	// Cache lookup short-circuits before any network I/O.
+	if cached, hit, err := lookupCachedResolution(ctx, cache, key, issuer, redirectURI); err != nil {
+		return nil, err
+	} else if hit {
+		return cached, nil
+	}
+
+	// Coalesce concurrent registrations for the same DCRKey — see dcrFlight
+	// doc comment. The leader runs the registerOnce closure; followers
+	// receive the leader's *DCRResolution result. The flight key embeds the
+	// DCRKey fields with a separator that cannot appear in any of them
+	// (newline is not valid in OAuth scope tokens, URLs, or hex digests).
+	flightKey := key.Issuer + "\n" + key.RedirectURI + "\n" + key.ScopesHash
+	resolutionAny, err, _ := dcrFlight.Do(flightKey, func() (any, error) {
+		return registerAndCache(ctx, rc, issuer, redirectURI, scopes, key, cache)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resolutionAny.(*DCRResolution), nil
+}
+
+// registerAndCache is the leader-only body of resolveDCRCredentials wrapped
+// by the singleflight. It rechecks the cache before any network I/O so
+// followers that arrive after the leader's Put returns immediately see the
+// fresh entry on a subsequent call. Endpoint resolution, registration, and
+// the durable Put live here.
+func registerAndCache(
+	ctx context.Context,
+	rc *authserver.OAuth2UpstreamRunConfig,
+	issuer, redirectURI string,
+	scopes []string,
+	key DCRKey,
+	cache DCRCredentialStore,
+) (*DCRResolution, error) {
+	// Recheck cache: another flight that just finished may have populated
+	// it between our initial lookup and our singleflight entry.
 	if cached, hit, err := lookupCachedResolution(ctx, cache, key, issuer, redirectURI); err != nil {
 		return nil, err
 	} else if hit {
@@ -429,6 +484,11 @@ func resolveDCREndpoints(
 	cfg *authserver.DCRUpstreamConfig,
 ) (*dcrEndpoints, error) {
 	if cfg.RegistrationEndpoint != "" {
+		// Validate locally so a non-HTTPS or malformed URL fails before
+		// performRegistration constructs a bearer-token transport for it.
+		if err := validateUpstreamEndpointURL(cfg.RegistrationEndpoint, "registration_endpoint"); err != nil {
+			return nil, fmt.Errorf("dcr: %w", err)
+		}
 		return &dcrEndpoints{
 			registrationEndpoint: cfg.RegistrationEndpoint,
 		}, nil
@@ -501,13 +561,30 @@ func deriveExpectedIssuerFromDiscoveryURL(discoveryURL string) (string, error) {
 // endpointsFromMetadata converts a FetchAuthorizationServerMetadata* result
 // into a dcrEndpoints bundle. Handles the ErrRegistrationEndpointMissing
 // sentinel by synthesising {origin}/register.
+//
+// authorization_endpoint and token_endpoint are validated for HTTPS / well-
+// formedness before being copied into the bundle. A self-consistent metadata
+// document — possible if TLS to the metadata host is compromised, or if the
+// upstream is misconfigured — could otherwise plant http:// URLs that flow
+// through to the authorization-code and token-exchange call paths.
 func endpointsFromMetadata(
 	metadata *oauthproto.AuthorizationServerMetadata,
 	fetchErr error,
 	issuer string,
 ) (*dcrEndpoints, error) {
-	switch {
-	case errors.Is(fetchErr, oauthproto.ErrRegistrationEndpointMissing):
+	if fetchErr != nil && !errors.Is(fetchErr, oauthproto.ErrRegistrationEndpointMissing) {
+		return nil, fmt.Errorf("discover authorization server metadata: %w", fetchErr)
+	}
+
+	if err := validateUpstreamEndpointURL(metadata.AuthorizationEndpoint, "authorization_endpoint"); err != nil {
+		return nil, fmt.Errorf("dcr: discovered %w", err)
+	}
+	if err := validateUpstreamEndpointURL(metadata.TokenEndpoint, "token_endpoint"); err != nil {
+		return nil, fmt.Errorf("dcr: discovered %w", err)
+	}
+
+	registrationEndpoint := metadata.RegistrationEndpoint
+	if errors.Is(fetchErr, oauthproto.ErrRegistrationEndpointMissing) {
 		// Metadata is otherwise valid — synthesise the registration
 		// endpoint from the issuer origin. FetchAuthorizationServerMetadata*
 		// deliberately returns ErrRegistrationEndpointMissing alongside a
@@ -516,28 +593,26 @@ func endpointsFromMetadata(
 		if err != nil {
 			return nil, fmt.Errorf("synthesise registration endpoint: %w", err)
 		}
-		return &dcrEndpoints{
-			authorizationEndpoint:             metadata.AuthorizationEndpoint,
-			tokenEndpoint:                     metadata.TokenEndpoint,
-			registrationEndpoint:              synth,
-			tokenEndpointAuthMethodsSupported: metadata.TokenEndpointAuthMethodsSupported,
-			scopesSupported:                   metadata.ScopesSupported,
-		}, nil
-	case fetchErr != nil:
-		return nil, fmt.Errorf("discover authorization server metadata: %w", fetchErr)
+		registrationEndpoint = synth
 	}
 
 	return &dcrEndpoints{
 		authorizationEndpoint:             metadata.AuthorizationEndpoint,
 		tokenEndpoint:                     metadata.TokenEndpoint,
-		registrationEndpoint:              metadata.RegistrationEndpoint,
+		registrationEndpoint:              registrationEndpoint,
 		tokenEndpointAuthMethodsSupported: metadata.TokenEndpointAuthMethodsSupported,
 		scopesSupported:                   metadata.ScopesSupported,
 	}, nil
 }
 
-// synthesiseRegistrationEndpoint builds {origin}/register from the issuer,
-// used when discovery succeeds but omits registration_endpoint.
+// synthesiseRegistrationEndpoint builds {issuer}/register, used when
+// discovery succeeds but omits registration_endpoint.
+//
+// The issuer's path is preserved so multi-tenant upstreams that ship DCR
+// without advertising it (e.g. https://idp.example.com/tenants/acme) keep
+// their tenant prefix in the synthesised URL. Stripping the path would land
+// the registration request at a global /register that does not match the
+// tenant-aware token/authorize URLs already accepted from metadata.
 func synthesiseRegistrationEndpoint(issuer string) (string, error) {
 	u, err := url.Parse(issuer)
 	if err != nil {
@@ -546,14 +621,24 @@ func synthesiseRegistrationEndpoint(issuer string) (string, error) {
 	if u.Scheme == "" || u.Host == "" {
 		return "", fmt.Errorf("issuer missing scheme or host: %q", issuer)
 	}
-	origin := &url.URL{Scheme: u.Scheme, Host: u.Host, Path: "/register"}
-	return origin.String(), nil
+	synth := &url.URL{
+		Scheme: u.Scheme,
+		Host:   u.Host,
+		Path:   strings.TrimRight(u.Path, "/") + "/register",
+	}
+	return synth.String(), nil
 }
 
 // resolveUpstreamRedirectURI returns the redirect URI to present to the
 // upstream. The caller-supplied value wins; otherwise a default is derived
-// from the issuer + /oauth/callback. HTTPS is required except for loopback
-// hosts (development).
+// from {issuer}/oauth/callback. HTTPS is required except for loopback hosts
+// (development).
+//
+// The issuer's path is preserved when defaulting: an issuer with a tenant
+// prefix produces a redirect URI under that prefix, not at the host root.
+// url.URL.ResolveReference would replace the path entirely because
+// defaultUpstreamRedirectPath starts with "/", so we explicitly concatenate
+// instead.
 func resolveUpstreamRedirectURI(configured, issuer string) (string, error) {
 	if configured != "" {
 		u, err := url.Parse(configured)
@@ -570,11 +655,11 @@ func resolveUpstreamRedirectURI(configured, issuer string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid issuer %q: %w", issuer, err)
 	}
-	ref, err := url.Parse(defaultUpstreamRedirectPath)
-	if err != nil {
-		return "", fmt.Errorf("parse default redirect path: %w", err)
+	resolved := &url.URL{
+		Scheme: issuerURL.Scheme,
+		Host:   issuerURL.Host,
+		Path:   strings.TrimRight(issuerURL.Path, "/") + defaultUpstreamRedirectPath,
 	}
-	resolved := issuerURL.ResolveReference(ref)
 	if err := validateRedirectURL(resolved); err != nil {
 		return "", err
 	}
@@ -589,6 +674,38 @@ func validateRedirectURL(u *url.URL) error {
 	}
 	if u.Scheme != "https" && !networking.IsLocalhost(u.Host) {
 		return fmt.Errorf("redirect uri must use https (got %q) unless host is loopback", u.Scheme)
+	}
+	return nil
+}
+
+// validateUpstreamEndpointURL enforces well-formedness and the
+// HTTPS-except-loopback rule for an upstream-supplied OAuth endpoint URL.
+//
+// Used at every point where an endpoint URL enters the resolver from outside
+// — operator-configured RegistrationEndpoint, or authorization_endpoint /
+// token_endpoint copied out of an upstream's metadata document. The
+// downstream oauthproto.validateRegistrationEndpoint enforces HTTPS for the
+// registration URL too, but only after a bearer-token transport has already
+// been constructed, so a local fail-fast check keeps the
+// "no bearer-token transport for a non-HTTPS endpoint" invariant local.
+//
+// label is included in the error message ("registration_endpoint",
+// "authorization_endpoint", "token_endpoint", …) so failures can be tied
+// back to the specific field without an additional wrapper.
+func validateUpstreamEndpointURL(rawURL, label string) error {
+	if rawURL == "" {
+		return fmt.Errorf("%s is required", label)
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("%s %q is not a valid URL: %w", label, rawURL, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("%s %q missing scheme or host", label, rawURL)
+	}
+	if u.Scheme != "https" && !networking.IsLocalhost(u.Host) {
+		return fmt.Errorf("%s %q must use https unless host is loopback (got scheme %q)",
+			label, rawURL, u.Scheme)
 	}
 	return nil
 }

@@ -13,7 +13,11 @@ import (
 // considered stale and logged as such by higher-level wiring. The store itself
 // does not expire or evict entries — RFC 7591 client registrations are
 // long-lived and are only purged by explicit RFC 7592 deregistration. This
-// threshold is consumed by Step 2g observability logs.
+// threshold is consumed by Step 2g observability logs introduced in the next
+// PR in the DCR stack (sub-issue C, #5039); 5042 only defines the constant
+// so the consumer can land without a cross-PR cycle.
+//
+//nolint:unused // consumed by lookupCachedResolution in #5039
 const dcrStaleAgeThreshold = 90 * 24 * time.Hour
 
 // DCRKey is the canonical lookup key for a DCR resolution. The tuple is
@@ -53,6 +57,26 @@ type DCRCredentialStore interface {
 // NewInMemoryDCRCredentialStore returns a thread-safe in-memory
 // DCRCredentialStore. Entries are retained for the process lifetime; there is
 // no TTL and no background cleanup goroutine.
+//
+// What this enables: serialises Get/Put against a single in-process map so
+// concurrent callers within one authserver process see a consistent view of
+// the cache without redundant RFC 7591 registrations.
+//
+// What this does NOT solve:
+//   - Cross-replica sharing: each replica holds its own independent map, so a
+//     registration performed on replica A is not visible to replica B. In a
+//     multi-replica deployment every replica will register its own DCR client
+//     against the upstream on first boot. Phase 3 introduces a Redis-backed
+//     store that addresses this.
+//   - Durability across restarts: process exit drops every entry; the next
+//     boot re-registers. Operators relying on stable client_ids must use a
+//     persistent backend.
+//   - Cross-process write coordination: two processes (or replicas) calling
+//     Put for the same DCRKey concurrently will both succeed against their
+//     local maps; whichever registration the upstream accepts last wins on
+//     that side, the loser becomes orphaned. The
+//     resolveDCRCredentials-level singleflight in dcr.go only deduplicates
+//     within one process.
 func NewInMemoryDCRCredentialStore() DCRCredentialStore {
 	return &inMemoryDCRCredentialStore{
 		entries: make(map[DCRKey]*DCRResolution),

@@ -266,6 +266,17 @@ type OAuth2UpstreamRunConfig struct {
 // points at RFC 8414 / OIDC Discovery metadata from which the registration
 // endpoint is resolved; RegistrationEndpoint is used directly when the upstream
 // does not publish discovery metadata.
+//
+// Trust assumption: DiscoveryURL and RegistrationEndpoint are operator-supplied
+// URLs validated only for HTTPS-or-loopback. The DCR resolver will issue
+// outbound HTTP requests — possibly carrying the RFC 7591 initial access token
+// as a bearer header — to whatever address those URLs resolve to. There is
+// currently no allowlist or RFC1918 / link-local / cloud-metadata-service
+// guard, because the operator role is fully trusted today. If the trust
+// boundary ever changes (e.g. a multi-tenant operator deployment, or a less-
+// privileged role gains write access to this struct via a CRD or YAML
+// surface), this field becomes a confused-deputy SSRF vector. Hardening is
+// tracked in https://github.com/stacklok/toolhive/issues/5135.
 type DCRUpstreamConfig struct {
 	// DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
 	// fetch at runtime. The resolver issues a single GET against this URL
@@ -293,7 +304,6 @@ type DCRUpstreamConfig struct {
 	// method falls back to the resolver's default (client_secret_basic).
 	//
 	// Mutually exclusive with DiscoveryURL.
-	//nolint:lll // field tags require full JSON+YAML names
 	RegistrationEndpoint string `json:"registration_endpoint,omitempty" yaml:"registration_endpoint,omitempty"`
 
 	// InitialAccessTokenFile is the path to a file containing the RFC 7591

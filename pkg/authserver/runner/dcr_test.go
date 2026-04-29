@@ -6,6 +6,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -511,7 +513,7 @@ func TestNeedsDCR(t *testing.T) {
 		{name: "client_id without dcr", rc: &authserver.OAuth2UpstreamRunConfig{
 			ClientID: "x",
 		}, expected: false},
-		{name: "client_id with dcr (invalid but returns false)", rc: &authserver.OAuth2UpstreamRunConfig{
+		{name: "client_id wins over dcr_config (defensive AND semantic)", rc: &authserver.OAuth2UpstreamRunConfig{
 			ClientID:  "x",
 			DCRConfig: &authserver.DCRUpstreamConfig{},
 		}, expected: false},
@@ -877,4 +879,338 @@ func TestDeriveExpectedIssuerFromDiscoveryURL(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+// TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers pins the
+// behaviour that N concurrent callers for the same DCRKey result in exactly
+// one RegisterClientDynamically call against the upstream — preventing the
+// orphaned-registration class of bug raised in PR #5042 review.
+func TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers(t *testing.T) {
+	t.Parallel()
+
+	// gate blocks the registration handler until the test releases it,
+	// guaranteeing all goroutines pile up at the singleflight before any
+	// has a chance to finish and populate the cache.
+	gate := make(chan struct{})
+
+	var registrationCalls int32
+	server := newDCRTestServer(t, dcrTestHandlerConfig{
+		observeRegistration: func(_ *http.Request, _ []byte) {
+			<-gate
+			atomic.AddInt32(&registrationCalls, 1)
+		},
+	})
+
+	cache := NewInMemoryDCRCredentialStore()
+	issuer := server.URL
+	rc := &authserver.OAuth2UpstreamRunConfig{
+		Scopes: []string{"openid", "profile"},
+		DCRConfig: &authserver.DCRUpstreamConfig{
+			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
+		},
+	}
+
+	const N = 8
+	results := make([]*DCRResolution, N)
+	errs := make([]error, N)
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			res, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+			results[idx] = res
+			errs[idx] = err
+		}(i)
+	}
+
+	// Release the gate so every blocked handler can proceed. Even if Go
+	// scheduled the leader's handler concurrently with the followers'
+	// arrival, only the leader actually invokes the handler — the followers
+	// wait inside singleflight.Do.
+	time.Sleep(50 * time.Millisecond)
+	close(gate)
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for concurrent resolveDCRCredentials goroutines")
+	}
+
+	for i := 0; i < N; i++ {
+		require.NoError(t, errs[i], "goroutine %d errored", i)
+		require.NotNil(t, results[i], "goroutine %d got nil resolution", i)
+		assert.Equal(t, "test-client-id", results[i].ClientID)
+	}
+	assert.EqualValues(t, 1, atomic.LoadInt32(&registrationCalls),
+		"expected exactly one registration despite %d concurrent callers; got %d",
+		N, atomic.LoadInt32(&registrationCalls))
+}
+
+// TestSynthesiseRegistrationEndpoint_PreservesIssuerPath guards the fix for
+// PR #5042 review comment #2: an issuer with a tenant prefix must surface
+// in the synthesised registration URL so DCR-on-multi-tenant providers
+// register at the correct tenant-aware path.
+func TestSynthesiseRegistrationEndpoint_PreservesIssuerPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		issuer string
+		want   string
+	}{
+		{
+			name:   "host-only issuer",
+			issuer: "https://idp.example.com",
+			want:   "https://idp.example.com/register",
+		},
+		{
+			name:   "trailing slash on host-only issuer is normalised",
+			issuer: "https://idp.example.com/",
+			want:   "https://idp.example.com/register",
+		},
+		{
+			name:   "tenant prefix preserved",
+			issuer: "https://idp.example.com/tenants/acme",
+			want:   "https://idp.example.com/tenants/acme/register",
+		},
+		{
+			name:   "tenant prefix with trailing slash normalised",
+			issuer: "https://idp.example.com/tenants/acme/",
+			want:   "https://idp.example.com/tenants/acme/register",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := synthesiseRegistrationEndpoint(tc.issuer)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestResolveUpstreamRedirectURI_PreservesIssuerPath is the companion to
+// TestSynthesiseRegistrationEndpoint_PreservesIssuerPath for the redirect
+// URI defaulting path: a tenant-prefixed issuer must not get its path
+// stripped when /oauth/callback is appended.
+func TestResolveUpstreamRedirectURI_PreservesIssuerPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		issuer string
+		want   string
+	}{
+		{
+			name:   "host-only issuer",
+			issuer: "https://thv.example.com",
+			want:   "https://thv.example.com/oauth/callback",
+		},
+		{
+			name:   "tenant prefix preserved",
+			issuer: "https://thv.example.com/tenants/acme",
+			want:   "https://thv.example.com/tenants/acme/oauth/callback",
+		},
+		{
+			name:   "trailing slash normalised",
+			issuer: "https://thv.example.com/tenants/acme/",
+			want:   "https://thv.example.com/tenants/acme/oauth/callback",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := resolveUpstreamRedirectURI("", tc.issuer)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestApplyResolution_DoesNotOverwritePreProvisionedClientID verifies the
+// defence-in-depth in applyResolution: a caller that bypasses
+// validateResolveInputs and invokes applyResolution directly with a
+// pre-provisioned ClientID does not have it silently clobbered.
+func TestApplyResolution_DoesNotOverwritePreProvisionedClientID(t *testing.T) {
+	t.Parallel()
+
+	rc := &authserver.OAuth2UpstreamRunConfig{
+		ClientID: "pre-provisioned",
+	}
+	res := &DCRResolution{
+		ClientID: "would-be-overwrite",
+	}
+	applyResolution(rc, res)
+	assert.Equal(t, "pre-provisioned", rc.ClientID,
+		"applyResolution must not overwrite a non-empty ClientID")
+}
+
+// TestResolveDCREndpoints_DirectRegistrationEndpointValidated covers
+// PR #5042 review comment #10: the cfg.RegistrationEndpoint short-circuit
+// branch validates the URL locally before performRegistration constructs a
+// bearer-token transport for it. Non-HTTPS or malformed values must be
+// rejected up front, not deep inside oauthproto.
+func TestResolveDCREndpoints_DirectRegistrationEndpointValidated(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		registrationEndpoint string
+		wantErrSub           string
+	}{
+		{
+			name:                 "http non-loopback rejected",
+			registrationEndpoint: "http://idp.example.com/register",
+			wantErrSub:           "must use https",
+		},
+		{
+			name:                 "missing scheme rejected",
+			registrationEndpoint: "idp.example.com/register",
+			wantErrSub:           "missing scheme or host",
+		},
+		{
+			name:                 "loopback http accepted",
+			registrationEndpoint: "http://127.0.0.1:8080/register",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := &authserver.DCRUpstreamConfig{RegistrationEndpoint: tc.registrationEndpoint}
+			_, err := resolveDCREndpoints(context.Background(), cfg)
+			if tc.wantErrSub == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErrSub)
+		})
+	}
+}
+
+// TestEndpointsFromMetadata_RejectsInsecureDiscoveredEndpoints covers
+// PR #5042 review comment #13: a self-consistent metadata document that
+// advertises an http:// authorization or token endpoint must be rejected
+// rather than silently flowing through to the auth-code/token-exchange
+// path. A compromised TLS connection to the metadata host is the threat
+// model.
+func TestEndpointsFromMetadata_RejectsInsecureDiscoveredEndpoints(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		metadata   *oauthproto.AuthorizationServerMetadata
+		wantErrSub string
+	}{
+		{
+			name: "http authorization_endpoint rejected",
+			metadata: &oauthproto.AuthorizationServerMetadata{
+				Issuer:                "https://idp.example.com",
+				AuthorizationEndpoint: "http://idp.example.com/authorize",
+				TokenEndpoint:         "https://idp.example.com/token",
+				RegistrationEndpoint:  "https://idp.example.com/register",
+			},
+			wantErrSub: "authorization_endpoint",
+		},
+		{
+			name: "http token_endpoint rejected",
+			metadata: &oauthproto.AuthorizationServerMetadata{
+				Issuer:                "https://idp.example.com",
+				AuthorizationEndpoint: "https://idp.example.com/authorize",
+				TokenEndpoint:         "http://idp.example.com/token",
+				RegistrationEndpoint:  "https://idp.example.com/register",
+			},
+			wantErrSub: "token_endpoint",
+		},
+		{
+			name: "missing authorization_endpoint rejected",
+			metadata: &oauthproto.AuthorizationServerMetadata{
+				Issuer:               "https://idp.example.com",
+				TokenEndpoint:        "https://idp.example.com/token",
+				RegistrationEndpoint: "https://idp.example.com/register",
+			},
+			wantErrSub: "authorization_endpoint is required",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := endpointsFromMetadata(tc.metadata, nil, "https://idp.example.com")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErrSub)
+		})
+	}
+}
+
+// failingDCRStore is a test double whose Get and Put always fail. Used by
+// TestResolveDCRCredentials_CacheFailureWraps* below to exercise the wrap
+// messages that operators see when the store backend errors at runtime.
+type failingDCRStore struct {
+	getErr error
+	putErr error
+}
+
+func (f failingDCRStore) Get(_ context.Context, _ DCRKey) (*DCRResolution, bool, error) {
+	if f.getErr != nil {
+		return nil, false, f.getErr
+	}
+	return nil, false, nil
+}
+
+func (f failingDCRStore) Put(_ context.Context, _ DCRKey, _ *DCRResolution) error {
+	return f.putErr
+}
+
+// TestResolveDCRCredentials_CacheGetFailureWrapped covers PR #5042 review
+// comment #12 for the cache.Get error path. When the store backend fails
+// (e.g. a Redis network error in Phase 3), the resolver wraps the error
+// with the operator-debugging contract message "dcr: cache lookup".
+func TestResolveDCRCredentials_CacheGetFailureWrapped(t *testing.T) {
+	t.Parallel()
+
+	storeErr := errors.New("simulated backend failure")
+	store := failingDCRStore{getErr: storeErr}
+
+	rc := &authserver.OAuth2UpstreamRunConfig{
+		DCRConfig: &authserver.DCRUpstreamConfig{
+			RegistrationEndpoint: "https://idp.example.com/register",
+		},
+	}
+
+	_, err := resolveDCRCredentials(context.Background(), rc, "https://idp.example.com", store)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, storeErr,
+		"cache.Get error must be wrapped with %%w so callers can inspect the cause")
+	assert.Contains(t, err.Error(), "dcr: cache lookup",
+		"the wrap message is part of the operator-debugging contract")
+}
+
+// TestResolveDCRCredentials_CachePutFailureWrapped covers PR #5042 review
+// comment #12 for the cache.Put error path. The path runs after a
+// successful registration, so we route the test through a real upstream
+// httptest server and only make Put fail.
+func TestResolveDCRCredentials_CachePutFailureWrapped(t *testing.T) {
+	t.Parallel()
+
+	server := newDCRTestServer(t, dcrTestHandlerConfig{})
+
+	storeErr := errors.New("simulated put backend failure")
+	store := failingDCRStore{putErr: storeErr}
+
+	rc := &authserver.OAuth2UpstreamRunConfig{
+		Scopes: []string{"openid"},
+		DCRConfig: &authserver.DCRUpstreamConfig{
+			DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+		},
+	}
+
+	_, err := resolveDCRCredentials(context.Background(), rc, server.URL, store)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, storeErr,
+		"cache.Put error must be wrapped with %%w so callers can inspect the cause")
+	assert.Contains(t, err.Error(), "dcr: cache put",
+		"the wrap message is part of the operator-debugging contract")
 }

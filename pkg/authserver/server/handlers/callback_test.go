@@ -884,6 +884,13 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 			lookupErr:        errors.New("simulated storage failure"),
 			expectedStoredRT: "",
 		},
+		{
+			name:             "does not carry prior RT when prior RT is empty",
+			priorRow:         &priorRow{sessionID: "old-session", upstreamSubject: "user-123", refreshToken: ""},
+			idpRefreshToken:  "",
+			idpSubject:       "user-123",
+			expectedStoredRT: "",
+		},
 	}
 
 	for _, tc := range cases {
@@ -964,6 +971,12 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 			newRow, ok := storState.upstreamTokens[newSessionID+":"+providerName]
 			require.True(t, ok, "token row for new session should be stored")
 			assert.Equal(t, tc.expectedStoredRT, newRow.RefreshToken)
+			// Sanity-check the rest of the row was written by the callback path so a
+			// regression that early-returns before StoreUpstreamTokens cannot pass.
+			assert.Equal(t, "new-access-token", newRow.AccessToken)
+			assert.Equal(t, "new-id-token", newRow.IDToken)
+			assert.Equal(t, tc.idpSubject, newRow.UpstreamSubject)
+			assert.False(t, newRow.ExpiresAt.IsZero(), "ExpiresAt must be populated")
 		})
 	}
 }

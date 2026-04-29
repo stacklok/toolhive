@@ -492,6 +492,60 @@ func TestUpsertServiceAccountWithOwnerReference(t *testing.T) {
 		assertOwnerReference(t, retrieved.OwnerReferences, owner)
 	})
 
+	t.Run("preserves existing ImagePullSecrets when desired list is empty (not nil)", func(t *testing.T) {
+		// An explicit []LocalObjectReference{} must behave the same as nil — neither should
+		// wipe SA-level pull secrets. Tooling like kustomize/helm/ArgoCD can emit empty
+		// slices during overlays/patches; silently clearing platform-managed dockercfg
+		// entries (OpenShift) on those callers would be destructive and undiagnosable.
+		t.Parallel()
+
+		ctx := t.Context()
+
+		owner := createTestOwner("owner-cm", "test-uid-empty-slice")
+
+		existingSA := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "empty-slice-sa",
+				Namespace: "default",
+			},
+			Secrets: []corev1.ObjectReference{
+				{Name: "openshift-sa-token-abc123"},
+			},
+			ImagePullSecrets: []corev1.LocalObjectReference{
+				{Name: "openshift-sa-dockercfg-xyz789"},
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(owner, existingSA).
+			Build()
+
+		client := NewClient(fakeClient, scheme)
+
+		// Pass non-nil but empty slices for both fields.
+		updatedSA := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "empty-slice-sa",
+				Namespace: "default",
+			},
+			Secrets:          []corev1.ObjectReference{},
+			ImagePullSecrets: []corev1.LocalObjectReference{},
+		}
+
+		_, err := client.UpsertServiceAccountWithOwnerReference(ctx, updatedSA, owner)
+		require.NoError(t, err)
+
+		retrieved, err := client.GetServiceAccount(ctx, "empty-slice-sa", "default")
+		require.NoError(t, err)
+
+		// Both fields should be preserved, identical to the nil-input case.
+		require.Len(t, retrieved.Secrets, 1, "Secrets should be preserved when input is empty slice")
+		assert.Equal(t, "openshift-sa-token-abc123", retrieved.Secrets[0].Name)
+		require.Len(t, retrieved.ImagePullSecrets, 1, "ImagePullSecrets should be preserved when input is empty slice")
+		assert.Equal(t, "openshift-sa-dockercfg-xyz789", retrieved.ImagePullSecrets[0].Name)
+	})
+
 	t.Run("overwrites Secrets and ImagePullSecrets when explicitly specified", func(t *testing.T) {
 		// Verify that when Secrets/ImagePullSecrets ARE specified, they get applied
 		t.Parallel()

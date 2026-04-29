@@ -5,6 +5,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -42,6 +43,10 @@ func llmProvider(t *testing.T, llmCfg llm.Config) config.Provider {
 	return tempProvider(t, c)
 }
 
+// noopLogin is a LoginFunc that always succeeds without touching the keyring.
+// Use it in tests that don't exercise the authentication path.
+var noopLogin llm.LoginFunc = func(context.Context, *llm.Config) error { return nil }
+
 // errOnUpdateProvider wraps a base Provider but returns a fixed error from
 // UpdateConfig. Used to inject deterministic failures without relying on
 // filesystem permission tricks that are unreliable on Windows.
@@ -56,65 +61,6 @@ func (p *errOnUpdateProvider) UpdateConfig(_ func(*config.Config) error) error {
 	return p.updateErr
 }
 
-// ── mergeToolConfigs ──────────────────────────────────────────────────────────
-
-func TestMergeToolConfigs_EmptyExisting(t *testing.T) {
-	t.Parallel()
-	incoming := []llm.ToolConfig{{Tool: "claude-code", Mode: "direct", ConfigPath: "/a"}}
-	got := mergeToolConfigs(nil, incoming)
-	assert.Equal(t, incoming, got)
-}
-
-func TestMergeToolConfigs_AppendsNew(t *testing.T) {
-	t.Parallel()
-	existing := []llm.ToolConfig{{Tool: "cursor", Mode: "proxy", ConfigPath: "/c"}}
-	incoming := []llm.ToolConfig{{Tool: "claude-code", Mode: "direct", ConfigPath: "/a"}}
-	got := mergeToolConfigs(existing, incoming)
-	assert.Len(t, got, 2)
-	assert.Equal(t, "cursor", got[0].Tool)
-	assert.Equal(t, "claude-code", got[1].Tool)
-}
-
-func TestMergeToolConfigs_ReplacesExisting(t *testing.T) {
-	t.Parallel()
-	existing := []llm.ToolConfig{{Tool: "cursor", Mode: "proxy", ConfigPath: "/old"}}
-	incoming := []llm.ToolConfig{{Tool: "cursor", Mode: "proxy", ConfigPath: "/new"}}
-	got := mergeToolConfigs(existing, incoming)
-	assert.Len(t, got, 1)
-	assert.Equal(t, "/new", got[0].ConfigPath)
-}
-
-func TestMergeToolConfigs_MixedReplaceAndAppend(t *testing.T) {
-	t.Parallel()
-	existing := []llm.ToolConfig{
-		{Tool: "cursor", ConfigPath: "/old-cursor"},
-		{Tool: "vscode", ConfigPath: "/old-vscode"},
-	}
-	incoming := []llm.ToolConfig{
-		{Tool: "cursor", ConfigPath: "/new-cursor"},
-		{Tool: "claude-code", ConfigPath: "/claude"},
-	}
-	got := mergeToolConfigs(existing, incoming)
-	assert.Len(t, got, 3)
-	assert.Equal(t, "/new-cursor", got[0].ConfigPath)
-	assert.Equal(t, "/old-vscode", got[1].ConfigPath)
-	assert.Equal(t, "/claude", got[2].ConfigPath)
-}
-
-// ── isTarget ─────────────────────────────────────────────────────────────────
-
-func TestIsTarget(t *testing.T) {
-	t.Parallel()
-	targets := []llm.ToolConfig{
-		{Tool: "claude-code"},
-		{Tool: "cursor"},
-	}
-	assert.True(t, isTarget(targets, "claude-code"))
-	assert.True(t, isTarget(targets, "cursor"))
-	assert.False(t, isTarget(targets, "vscode"))
-	assert.False(t, isTarget(targets, ""))
-}
-
 // ── runLLMSetup ───────────────────────────────────────────────────────────────
 
 func TestRunLLMSetup_NotConfigured(t *testing.T) {
@@ -125,7 +71,7 @@ func TestRunLLMSetup_NotConfigured(t *testing.T) {
 	provider := llmProvider(t, llm.Config{}) // no gateway URL
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(&stdout, &stderr, cm, provider)
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not configured")
 }
@@ -152,7 +98,7 @@ func TestRunLLMSetup_NoDetectedTools(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(&stdout, &stderr, cm, provider)
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{})
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "No supported AI tools detected")
 }
@@ -196,7 +142,7 @@ func TestRunLLMSetup_PartialFailure(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(&stdout, &stderr, cm, provider)
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{})
 	require.NoError(t, err)
 	assert.Contains(t, stderr.String(), "Warning: failed to configure claude-code")
 	assert.Contains(t, stdout.String(), "Configured gemini-cli")
@@ -230,7 +176,7 @@ func TestRunLLMSetup_RollbackOnConfigUpdateFailure(t *testing.T) {
 	provider := &errOnUpdateProvider{cfg: c, updateErr: errors.New("disk full")}
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(&stdout, &stderr, cm, provider)
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "persisting tool configuration")
 
@@ -280,7 +226,7 @@ func TestRunLLMSetup_RollbackBothToolsOnConfigUpdateFailure(t *testing.T) {
 	provider := &errOnUpdateProvider{cfg: c, updateErr: errors.New("disk full")}
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(&stdout, &stderr, cm, provider)
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "persisting tool configuration")
 
@@ -299,6 +245,49 @@ func TestRunLLMSetup_RollbackBothToolsOnConfigUpdateFailure(t *testing.T) {
 	}
 }
 
+func TestRunLLMSetup_LoginFailureLeavesNoState(t *testing.T) {
+	t.Parallel()
+	// Login returns an error — no tool config files should be touched and no
+	// ConfiguredTools entry should be persisted.
+	dir := t.TempDir()
+	claudeDir := filepath.Join(dir, ".claude")
+	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
+
+	cfgs := client.LLMTestIntegrations([]client.LLMTestEntry{
+		{
+			ClientType:   client.ClaudeCode,
+			Mode:         "direct",
+			SettingsDir:  []string{".claude"},
+			SettingsFile: "settings.json",
+			JSONPointers: []string{"/apiKeyHelper"},
+			ValueFields:  []string{"TokenHelperCommand"},
+		},
+	})
+	cm := client.NewTestClientManager(dir, nil, cfgs, nil)
+	provider := llmProvider(t, llm.Config{
+		GatewayURL: "https://gw.example.com",
+		OIDC:       llm.OIDCConfig{Issuer: "https://auth.example.com", ClientID: "id"},
+	})
+
+	loginErr := errors.New("auth server unreachable")
+	var stdout, stderr bytes.Buffer
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider,
+		func(_ context.Context, _ *llm.Config) error { return loginErr },
+		llm.SetOptions{},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OIDC login failed")
+
+	// No tool config file should have been created or modified.
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	_, statErr := os.Stat(settingsPath)
+	assert.True(t, os.IsNotExist(statErr), "settings.json must not exist after login failure")
+
+	// ConfiguredTools must remain empty.
+	cfg := provider.GetConfig()
+	assert.Empty(t, cfg.LLM.ConfiguredTools, "ConfiguredTools must not be persisted after login failure")
+}
+
 // ── runLLMTeardown ────────────────────────────────────────────────────────────
 
 func TestRunLLMTeardown_NoConfiguredTools(t *testing.T) {
@@ -308,7 +297,7 @@ func TestRunLLMTeardown_NoConfiguredTools(t *testing.T) {
 	provider := llmProvider(t, llm.Config{}) // no configured tools
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMTeardown(&stdout, &stderr, cm, nil, false, provider)
+	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, nil, false, provider)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "No tools are currently configured")
 }
@@ -322,7 +311,7 @@ func TestRunLLMTeardown_UnknownTool(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMTeardown(&stdout, &stderr, cm, []string{"unknown-tool"}, false, provider)
+	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, []string{"unknown-tool"}, false, provider)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"unknown-tool" is not configured`)
 }
@@ -355,7 +344,7 @@ func TestRunLLMTeardown_AllTools(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMTeardown(&stdout, &stderr, cm, nil, false, provider)
+	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, nil, false, provider)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "Reverted gemini-cli")
 
@@ -397,7 +386,7 @@ func TestRunLLMTeardown_ConfigUpdateFailureLeavesFilesUntouched(t *testing.T) {
 	provider := &errOnUpdateProvider{cfg: c, updateErr: errors.New("disk full")}
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMTeardown(&stdout, &stderr, cm, nil, false, provider)
+	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, nil, false, provider)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "persisting tool configuration")
 
@@ -438,7 +427,7 @@ func TestRunLLMTeardown_SingleTool(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMTeardown(&stdout, &stderr, cm, []string{"claude-code"}, false, provider)
+	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, []string{"claude-code"}, false, provider)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "Reverted claude-code")
 

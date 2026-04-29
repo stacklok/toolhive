@@ -20,6 +20,13 @@ jobs:
   create-tag:
     runs-on: ubuntu-latest
     steps:
+      - name: Generate release app token
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -134,7 +141,7 @@ jobs:
           git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git "$TAG"
           echo "Created and pushed tag: $TAG"
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Check if GitHub Release exists
         id: check-release
@@ -148,7 +155,7 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Create GitHub Release
         if: steps.check-release.outputs.exists == 'false'
@@ -157,7 +164,8 @@ jobs:
           TRIGGERED_BY="${{ steps.actor.outputs.triggered_by }}"
 
           # Create GitHub Release (triggers releaser.yml via release event)
-          # Note: Must use PAT (GH_TOKEN) because GITHUB_TOKEN cannot trigger other workflows
+          # Note: Uses a GitHub App installation token rather than GITHUB_TOKEN,
+          # because events from GITHUB_TOKEN cannot trigger downstream workflows.
           # Include actor metadata as HTML comment if available (parsed by releaser.yml)
           if [ -n "$TRIGGERED_BY" ]; then
             gh release create "$TAG" \
@@ -171,7 +179,7 @@ jobs:
           fi
           echo "Created GitHub Release: $TAG"
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Summary
         run: |

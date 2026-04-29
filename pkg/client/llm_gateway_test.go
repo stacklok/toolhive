@@ -12,6 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// fakeLLMBinary is the sentinel binary name used in tests that exercise the
+// exec.LookPath check inside DetectedLLMGatewayClients. The real lookup is
+// replaced by an injected stub, so no actual binary needs to exist.
+const fakeLLMBinary = "fake-llm-tool"
+
 // ── real production configs ───────────────────────────────────────────────────
 
 // TestRealClientConfigs_ConfigureAndRevert exercises ConfigureLLMGateway and
@@ -81,7 +86,7 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 		},
 		{
 			// ~/Library/Application Support/GitHub Copilot for Xcode/editorSettings.json
-			clientType: Xcode,
+			clientType: ClientApp(Xcode),
 			expectedKeys: []string{
 				"openAIBaseURL", "http://localhost:14000/v1",
 				"apiKey", "thv-proxy",
@@ -397,6 +402,139 @@ func TestConfigureLLMGateway_ProxyMode(t *testing.T) {
 	assert.Contains(t, string(data), "http://localhost:14000/v1")
 	assert.Contains(t, string(data), "apiKey")
 	assert.Contains(t, string(data), "thv-proxy")
+}
+
+// ── DetectedLLMGatewayClients ─────────────────────────────────────────────────
+
+// TestDetectedLLMGatewayClients_DirOnly verifies that a client without a
+// BinaryName set is detected based solely on the settings directory existing.
+func TestDetectedLLMGatewayClients_DirOnly(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+
+	cfgs := LLMTestIntegrations([]LLMTestEntry{{
+		ClientType:   ClaudeCode,
+		Mode:         "direct",
+		SettingsDir:  []string{".claude"},
+		SettingsFile: "settings.json",
+		JSONPointers: []string{"/apiKeyHelper"},
+		ValueFields:  []string{"TokenHelperCommand"},
+	}})
+	// LLMBinaryName is intentionally left empty — dir check only.
+	cm := NewTestClientManager(home, nil, cfgs, nil)
+
+	// Directory absent → not detected.
+	require.Empty(t, cm.DetectedLLMGatewayClients())
+
+	// Create the settings directory → now detected.
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+	detected := cm.DetectedLLMGatewayClients()
+	require.Len(t, detected, 1)
+	assert.Equal(t, ClaudeCode, detected[0])
+}
+
+// TestDetectedLLMGatewayClients_BinaryAndDirExist verifies that a client is
+// detected when both the settings directory and the binary are present.
+func TestDetectedLLMGatewayClients_BinaryAndDirExist(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+
+	cfgs := LLMTestIntegrations([]LLMTestEntry{{
+		ClientType:   GeminiCli,
+		Mode:         "direct",
+		SettingsDir:  []string{".gemini"},
+		SettingsFile: "settings.json",
+		JSONPointers: []string{"/baseUrl"},
+		ValueFields:  []string{"GatewayURL"},
+	}})
+	cfgs[0].LLMBinaryName = fakeLLMBinary
+	cm := NewTestClientManager(home, nil, cfgs, nil)
+	// Inject a lookPath that reports the fake binary as found.
+	cm.lookPath = func(name string) (string, error) { return "/usr/local/bin/" + name, nil }
+
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".gemini"), 0o700))
+
+	detected := cm.DetectedLLMGatewayClients()
+	require.Len(t, detected, 1)
+	assert.Equal(t, GeminiCli, detected[0])
+}
+
+// TestDetectedLLMGatewayClients_DirExistsButBinaryAbsent verifies that a
+// client is NOT detected when the settings directory exists but the binary is
+// absent from $PATH — the false-positive case the fix addresses.
+func TestDetectedLLMGatewayClients_DirExistsButBinaryAbsent(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+
+	cfgs := LLMTestIntegrations([]LLMTestEntry{{
+		ClientType:   ClaudeCode,
+		Mode:         "direct",
+		SettingsDir:  []string{".claude"},
+		SettingsFile: "settings.json",
+		JSONPointers: []string{"/apiKeyHelper"},
+		ValueFields:  []string{"TokenHelperCommand"},
+	}})
+	cfgs[0].LLMBinaryName = fakeLLMBinary
+	cm := NewTestClientManager(home, nil, cfgs, nil)
+	// Inject a lookPath that always reports the binary as missing.
+	cm.lookPath = func(_ string) (string, error) { return "", os.ErrNotExist }
+
+	// Create the settings directory to simulate a leftover install.
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+	// Should NOT be detected because the binary is not on $PATH.
+	assert.Empty(t, cm.DetectedLLMGatewayClients())
+}
+
+// TestDetectedLLMGatewayClients_NeitherDirNorBinary verifies that a client is
+// not detected when neither the directory nor the binary are present.
+func TestDetectedLLMGatewayClients_NeitherDirNorBinary(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+
+	cfgs := LLMTestIntegrations([]LLMTestEntry{{
+		ClientType:   ClaudeCode,
+		Mode:         "direct",
+		SettingsDir:  []string{".claude"},
+		SettingsFile: "settings.json",
+		JSONPointers: []string{"/apiKeyHelper"},
+		ValueFields:  []string{"TokenHelperCommand"},
+	}})
+	cfgs[0].LLMBinaryName = fakeLLMBinary
+	cm := NewTestClientManager(home, nil, cfgs, nil)
+	cm.lookPath = func(_ string) (string, error) { return "", os.ErrNotExist }
+
+	assert.Empty(t, cm.DetectedLLMGatewayClients())
+}
+
+// TestRealClientConfigs_LLMBinaryNames asserts the expected binary name for
+// every LLM-gateway-capable entry in supportedClientIntegrations. This is a
+// regression guard: a silent typo (e.g. "code" instead of "code-insiders")
+// causes detection to fail on machines that only have the Insiders build.
+func TestRealClientConfigs_LLMBinaryNames(t *testing.T) {
+	t.Parallel()
+
+	want := map[ClientApp]string{
+		VSCodeInsider: "code-insiders",
+		VSCode:        "code",
+		Cursor:        "cursor",
+		ClaudeCode:    "claude",
+		GeminiCli:     "gemini",
+		// Tools without a binary check (dir-only detection) are omitted.
+	}
+
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+
+	for clientType, wantBinary := range want {
+		t.Run(string(clientType), func(t *testing.T) {
+			t.Parallel()
+			cfg := cm.lookupClientAppConfig(clientType)
+			require.NotNil(t, cfg, "missing entry in supportedClientIntegrations for %s", clientType)
+			assert.Equal(t, wantBinary, cfg.LLMBinaryName,
+				"wrong LLMBinaryName for %s: detection will fail on machines that only have the expected binary", clientType)
+		})
+	}
 }
 
 // countSubstring counts non-overlapping occurrences of substr in s.

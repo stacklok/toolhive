@@ -971,10 +971,11 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 
 	// Ensure Role with appropriate permissions based on mode
 	_, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
-		Name:      serviceAccountName,
-		Namespace: vmcp.Namespace,
-		Rules:     rules,
-		Owner:     vmcp,
+		Name:             serviceAccountName,
+		Namespace:        vmcp.Namespace,
+		Rules:            rules,
+		Owner:            vmcp,
+		ImagePullSecrets: vmcp.Spec.ImagePullSecrets,
 	})
 	return err
 }
@@ -1393,6 +1394,10 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	if r.imagePullSecretsNeedsUpdate(ctx, deployment, vmcp) {
+		return true
+	}
+
 	// Check if spec.replicas has changed. Only compare when spec.replicas is non-nil;
 	// nil means hands-off mode (HPA or external controller manages replicas) and the live count is authoritative.
 	if vmcp.Spec.Replicas != nil {
@@ -1539,6 +1544,36 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 		return true
 	}
 	return deployment.Annotations[podTemplateSpecHashAnnotation] != expectedHash
+}
+
+// imagePullSecretsNeedsUpdate detects drift on vmcp.Spec.ImagePullSecrets by comparing a
+// hash of the desired list against the value stored in imagePullRefsHashAnnotation.
+// We cannot compare deployment.Spec.Template.Spec.ImagePullSecrets directly because the
+// live list is the strategic-merge union with anything the user supplied under
+// spec.podTemplateSpec.spec.imagePullSecrets, so a direct equality check would either
+// flag spurious drift or miss real changes depending on PodTemplateSpec content.
+// PodTemplateSpec drift is covered separately by podTemplateSpecNeedsUpdate.
+func (*VirtualMCPServerReconciler) imagePullSecretsNeedsUpdate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) bool {
+	if deployment == nil || vmcp == nil {
+		return true
+	}
+
+	expectedHash, err := imagePullSecretsHash(vmcp.Spec.ImagePullSecrets)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to hash imagePullSecrets, assuming update needed")
+		return true
+	}
+	// An empty desired list means the annotation should be absent; an absent annotation
+	// with an empty desired list is the steady state and must not trigger an update.
+	_, present := deployment.Annotations[imagePullRefsHashAnnotation]
+	if expectedHash == "" {
+		return present
+	}
+	return deployment.Annotations[imagePullRefsHashAnnotation] != expectedHash
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated
@@ -2200,37 +2235,59 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	return outgoing, backendsWithAuthConfig, allAuthErrors
 }
 
-// injectSubjectProviderIfNeeded auto-populates SubjectProviderName on a token_exchange
-// strategy when it is empty and an embedded auth server is configured on the VirtualMCPServer.
-// Mirrors injectUpstreamProviderIfNeeded in pkg/runner/middleware.go, which does the same
-// for Cedar's PrimaryUpstreamProvider.
-// Returns strategy unchanged when it is nil, not a token_exchange strategy, already has
-// SubjectProviderName set, or no embedded auth server is configured.
+// injectSubjectProviderIfNeeded auto-populates the upstream provider name on
+// token_exchange and aws_sts strategies when the field is empty and an embedded
+// auth server is configured on the VirtualMCPServer.
+// Both strategies use SubjectProviderName for the same concept: which upstream
+// provider's token to pull from Identity.UpstreamTokens. Mirrors
+// injectUpstreamProviderIfNeeded in pkg/runner/middleware.go, which does the
+// same for Cedar's PrimaryUpstreamProvider.
+// Returns strategy unchanged when it is nil, not an applicable strategy type,
+// already has the provider name set, or no embedded auth server is configured.
 func injectSubjectProviderIfNeeded(
 	strategy *authtypes.BackendAuthStrategy,
 	embeddedCfg *mcpv1beta1.EmbeddedAuthServerConfig,
 ) *authtypes.BackendAuthStrategy {
-	if strategy == nil ||
-		strategy.Type != authtypes.StrategyTypeTokenExchange ||
-		strategy.TokenExchange == nil ||
-		strategy.TokenExchange.SubjectProviderName != "" ||
-		embeddedCfg == nil {
+	if strategy == nil || embeddedCfg == nil {
 		return strategy
 	}
 
-	providerName := func() string {
-		if len(embeddedCfg.UpstreamProviders) > 0 {
-			return authserver.ResolveUpstreamName(embeddedCfg.UpstreamProviders[0].Name)
+	switch strategy.Type {
+	case authtypes.StrategyTypeTokenExchange:
+		if strategy.TokenExchange == nil || strategy.TokenExchange.SubjectProviderName != "" {
+			return strategy
 		}
-		return authserver.DefaultUpstreamName
-	}()
+		providerName := resolveFirstUpstreamProvider(embeddedCfg)
+		copied := *strategy
+		teCopied := *strategy.TokenExchange
+		teCopied.SubjectProviderName = providerName
+		copied.TokenExchange = &teCopied
+		return &copied
 
-	// Copy the strategy to avoid mutating the original.
-	copied := *strategy
-	teCopied := *strategy.TokenExchange
-	teCopied.SubjectProviderName = providerName
-	copied.TokenExchange = &teCopied
-	return &copied
+	case authtypes.StrategyTypeAwsSts:
+		if strategy.AwsSts == nil || strategy.AwsSts.SubjectProviderName != "" {
+			return strategy
+		}
+		providerName := resolveFirstUpstreamProvider(embeddedCfg)
+		copied := *strategy
+		stsCopied := *strategy.AwsSts
+		stsCopied.SubjectProviderName = providerName
+		copied.AwsSts = &stsCopied
+		return &copied
+
+	default:
+		return strategy
+	}
+}
+
+// resolveFirstUpstreamProvider returns the resolved name of the first upstream
+// provider configured on the embedded auth server, or the default name if none
+// are configured.
+func resolveFirstUpstreamProvider(embeddedCfg *mcpv1beta1.EmbeddedAuthServerConfig) string {
+	if len(embeddedCfg.UpstreamProviders) > 0 {
+		return authserver.ResolveUpstreamName(embeddedCfg.UpstreamProviders[0].Name)
+	}
+	return authserver.DefaultUpstreamName
 }
 
 // convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.

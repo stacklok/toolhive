@@ -141,7 +141,7 @@ func newAWSStsMiddleware(ctx context.Context, cfg *Config, targetURL *url.URL) (
 func createAWSStsMiddlewareFunc(
 	exchanger *Exchanger,
 	roleMapper *RoleMapper,
-	signer *requestSigner,
+	signer *RequestSigner,
 	sessionNameClaim string,
 	sessionDuration int32,
 	targetURL *url.URL,
@@ -186,7 +186,7 @@ func createAWSStsMiddlewareFunc(
 			}
 
 			// Extract and validate session name from claims
-			sessionName, err := extractSessionName(claims, sessionNameClaim)
+			sessionName, err := ExtractSessionName(claims, sessionNameClaim)
 			if err != nil {
 				slog.Warn("Failed to extract session name", "error", err)
 				http.Error(w, "Missing session name claim", http.StatusUnauthorized)
@@ -232,7 +232,7 @@ func createAWSStsMiddlewareFunc(
 // clone is used for signing so that only the SigV4 headers are copied back to
 // the original request; the reverse proxy's Director is left to handle host
 // rewriting. When targetURL is nil the request is signed in-place.
-func signRequestForTarget(r *http.Request, signer *requestSigner, creds *aws.Credentials, targetURL *url.URL) error {
+func signRequestForTarget(r *http.Request, signer *RequestSigner, creds *aws.Credentials, targetURL *url.URL) error {
 	if targetURL == nil {
 		return signer.SignRequest(r.Context(), r, creds)
 	}
@@ -301,7 +301,7 @@ func signRequestForTarget(r *http.Request, signer *requestSigner, creds *aws.Cre
 	return nil
 }
 
-// extractSessionName extracts the session name from JWT claims.
+// ExtractSessionName extracts the session name from JWT claims.
 // Returns an error if the configured claim is missing or empty, since a missing
 // claim likely indicates a misconfiguration and would produce untraceable
 // CloudTrail entries.
@@ -310,7 +310,7 @@ func signRequestForTarget(r *http.Request, signer *requestSigner, creds *aws.Cre
 // and returns a clear error if the value doesn't conform.
 //
 // See: https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRoleWithWebIdentity.html
-func extractSessionName(claims map[string]interface{}, claimName string) (string, error) {
+func ExtractSessionName(claims map[string]interface{}, claimName string) (string, error) {
 	value, ok := claims[claimName]
 	if !ok {
 		return "", fmt.Errorf("claim %q not found in token", claimName)

@@ -604,3 +604,88 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 		assert.NotEqual(t, d1.Annotations[podTemplateSpecHashAnnotation], d2.Annotations[podTemplateSpecHashAnnotation])
 	})
 }
+
+func TestBuildRegistryAPIDeployment_ImagePullSecrets(t *testing.T) {
+	t.Parallel()
+
+	const baseConfigYAML = "sources:\n  - name: k8s\n    kubernetes: {}\n"
+
+	tests := []struct {
+		name     string
+		spec     mcpv1beta1.MCPRegistrySpec
+		expected []corev1.LocalObjectReference
+	}{
+		{
+			name: "explicit field propagates to deployment",
+			spec: mcpv1beta1.MCPRegistrySpec{
+				ConfigYAML: baseConfigYAML,
+				ImagePullSecrets: []corev1.LocalObjectReference{
+					{Name: "registry-creds"},
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "registry-creds"}},
+		},
+		{
+			name: "no explicit field and no podtemplatespec yields empty",
+			spec: mcpv1beta1.MCPRegistrySpec{
+				ConfigYAML: baseConfigYAML,
+			},
+			expected: nil,
+		},
+		{
+			name: "podtemplatespec value wins on overlap (atomic replace)",
+			spec: mcpv1beta1.MCPRegistrySpec{
+				ConfigYAML: baseConfigYAML,
+				ImagePullSecrets: []corev1.LocalObjectReference{
+					{Name: "explicit-creds"},
+				},
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"override-creds"}]}}`),
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "override-creds"}},
+		},
+		{
+			name: "podtemplatespec without imagePullSecrets preserves explicit field",
+			spec: mcpv1beta1.MCPRegistrySpec{
+				ConfigYAML: baseConfigYAML,
+				ImagePullSecrets: []corev1.LocalObjectReference{
+					{Name: "explicit-creds"},
+				},
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"nodeSelector":{"disktype":"ssd"}}}`),
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "explicit-creds"}},
+		},
+		{
+			name: "podtemplatespec only (legacy behavior preserved)",
+			spec: mcpv1beta1.MCPRegistrySpec{
+				ConfigYAML: baseConfigYAML,
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"legacy-creds"}]}}`),
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "legacy-creds"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mgr := &manager{}
+			mcpRegistry := &mcpv1beta1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-registry",
+					Namespace: "test-namespace",
+				},
+				Spec: tt.spec,
+			}
+			deployment, err := mgr.buildRegistryAPIDeployment(t.Context(), mcpRegistry, "test-registry-server-config")
+			require.NoError(t, err)
+			require.NotNil(t, deployment)
+
+			assert.Equal(t, tt.expected, deployment.Spec.Template.Spec.ImagePullSecrets)
+		})
+	}
+}

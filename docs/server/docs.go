@@ -233,6 +233,10 @@ const docTemplate = `{
                     "session_name_claim": {
                         "description": "SessionNameClaim is the JWT claim to use for role session name (default: \"sub\").",
                         "type": "string"
+                    },
+                    "subject_provider_name": {
+                        "description": "SubjectProviderName identifies which upstream provider's access token to use\nfor STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer\ntoken from the incoming HTTP request is used.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -851,8 +855,7 @@ const docTemplate = `{
                     "mistral-vibe",
                     "codex",
                     "kimi-cli",
-                    "factory",
-                    "xcode"
+                    "factory"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -882,8 +885,7 @@ const docTemplate = `{
                     "MistralVibe",
                     "Codex",
                     "KimiCli",
-                    "Factory",
-                    "Xcode"
+                    "Factory"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {

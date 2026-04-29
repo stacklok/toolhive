@@ -288,6 +288,55 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 	assert.Equal(t, vmcpServiceAccountName(vmcp.Name), rb.Subjects[0].Name)
 }
 
+// TestVirtualMCPServerEnsureRBACResources_ImagePullSecrets verifies that
+// spec.imagePullSecrets propagates to the operator-managed ServiceAccount.
+func TestVirtualMCPServerEnsureRBACResources_ImagePullSecrets(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testVmcpName,
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+			ImagePullSecrets: []corev1.LocalObjectReference{
+				{Name: "vmcp-creds"},
+				{Name: "extra-creds"},
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, rbacv1.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	require.NoError(t, r.ensureRBACResources(t.Context(), vmcp))
+
+	sa := &corev1.ServiceAccount{}
+	require.NoError(t, fakeClient.Get(t.Context(), types.NamespacedName{
+		Name:      vmcpServiceAccountName(vmcp.Name),
+		Namespace: vmcp.Namespace,
+	}, sa))
+
+	expected := []corev1.LocalObjectReference{
+		{Name: "vmcp-creds"},
+		{Name: "extra-creds"},
+	}
+	assert.Equal(t, expected, sa.ImagePullSecrets)
+}
+
 func TestVirtualMCPServerEnsureRBACResources_Update(t *testing.T) {
 	t.Parallel()
 

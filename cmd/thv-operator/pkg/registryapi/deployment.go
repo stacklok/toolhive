@@ -208,6 +208,7 @@ func (*manager) buildRegistryAPIDeployment(
 		WithServiceAccountName(GetServiceAccountName(mcpRegistry)),
 		WithContainer(BuildRegistryAPIContainer(getRegistryAPIImage())),
 		WithRegistryServerConfigMount(RegistryAPIContainerName, configMapName),
+		WithImagePullSecrets(mcpRegistry.Spec.ImagePullSecrets),
 	}
 
 	// Add user-provided volumes (deserialized from raw JSON)

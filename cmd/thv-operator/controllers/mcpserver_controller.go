@@ -1723,6 +1723,18 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			return true
 		}
 
+		// Check if image pull secrets have changed.
+		// Sourced from spec.resourceOverrides.proxyDeployment.imagePullSecrets.
+		// Uses equality.Semantic.DeepEqual so nil and empty slices are treated as equal.
+		var expectedPullSecrets []corev1.LocalObjectReference
+		if mcpServer.Spec.ResourceOverrides != nil &&
+			mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
+			expectedPullSecrets = mcpServer.Spec.ResourceOverrides.ProxyDeployment.ImagePullSecrets
+		}
+		if !equality.Semantic.DeepEqual(deployment.Spec.Template.Spec.ImagePullSecrets, expectedPullSecrets) {
+			return true
+		}
+
 		// Check if the resource requirements have changed
 		if !equality.Semantic.DeepEqual(container.Resources, resourceRequirementsForMCPServer(mcpServer)) {
 			return true

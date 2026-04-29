@@ -824,6 +824,102 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 	}
 }
 
+func TestMCPServerDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		specSecrets       []corev1.LocalObjectReference // set on mcpServer.Spec.ResourceOverrides
+		deploymentSecrets []corev1.LocalObjectReference // overrides deployment after build
+		expectNeedsUpdate bool
+	}{
+		{
+			name:              "both empty - no update",
+			specSecrets:       nil,
+			deploymentSecrets: nil,
+			expectNeedsUpdate: false,
+		},
+		{
+			name:              "spec has secrets, deployment has nil - needs update",
+			specSecrets:       []corev1.LocalObjectReference{{Name: "regsec"}},
+			deploymentSecrets: nil,
+			expectNeedsUpdate: true,
+		},
+		{
+			name:              "spec cleared, deployment has stale - needs update",
+			specSecrets:       nil,
+			deploymentSecrets: []corev1.LocalObjectReference{{Name: "old-regsec"}},
+			expectNeedsUpdate: true,
+		},
+		{
+			name:              "match - no update",
+			specSecrets:       []corev1.LocalObjectReference{{Name: "regsec"}},
+			deploymentSecrets: []corev1.LocalObjectReference{{Name: "regsec"}},
+			expectNeedsUpdate: false,
+		},
+		{
+			name:              "spec nil vs deployment empty slice - no update",
+			specSecrets:       nil,
+			deploymentSecrets: []corev1.LocalObjectReference{},
+			expectNeedsUpdate: false,
+		},
+		{
+			name:              "spec empty slice vs deployment empty slice - no update",
+			specSecrets:       []corev1.LocalObjectReference{},
+			deploymentSecrets: []corev1.LocalObjectReference{},
+			expectNeedsUpdate: false,
+		},
+		{
+			name:              "reorder triggers update",
+			specSecrets:       []corev1.LocalObjectReference{{Name: "a"}, {Name: "b"}},
+			deploymentSecrets: []corev1.LocalObjectReference{{Name: "b"}, {Name: "a"}},
+			expectNeedsUpdate: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			r := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+			mcpServer := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1beta1.MCPServerSpec{
+					Image:     "test-image",
+					ProxyPort: 8080,
+				},
+			}
+			if tt.specSecrets != nil {
+				mcpServer.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
+					ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+						ImagePullSecrets: tt.specSecrets,
+					},
+				}
+			}
+
+			ctx := t.Context()
+			deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+			require.NotNil(t, deployment)
+
+			// Simulate the "stored" state by overwriting ImagePullSecrets only.
+			// The freshly built deployment is otherwise fully aligned with the mcpServer spec,
+			// so any detected drift is caused solely by this field.
+			deployment.Spec.Template.Spec.ImagePullSecrets = tt.deploymentSecrets
+
+			needsUpdate := r.deploymentNeedsUpdate(ctx, deployment, mcpServer, "test-checksum")
+			assert.Equal(t, tt.expectNeedsUpdate, needsUpdate, "ImagePullSecrets drift detection mismatch")
+		})
+	}
+}
+
 func TestMCPServerSessionAffinityNone(t *testing.T) {
 	t.Parallel()
 

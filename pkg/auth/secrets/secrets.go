@@ -165,10 +165,7 @@ func GenerateUniqueSecretNameWithPrefix(workloadName, prefix string, secretManag
 func StoreSecretInManagerWithProvider(ctx context.Context, secretName, secretValue string, secretManager secrets.Provider) error {
 	// Check if the provider supports writing secrets
 	if !secretManager.Capabilities().CanWrite {
-		configProvider := config.NewDefaultProvider()
-		cfg := configProvider.GetConfig()
-		providerType, _ := cfg.Secrets.GetProviderType()
-		return fmt.Errorf("secrets provider %s does not support writing secrets", providerType)
+		return fmt.Errorf("secrets provider does not support writing secrets")
 	}
 
 	// Store the secret

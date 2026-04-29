@@ -20,7 +20,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/tokensource"
 	"github.com/stacklok/toolhive/pkg/llm"
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
@@ -315,7 +314,9 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				proxyBaseURL := fmt.Sprintf("http://localhost:%d/v1", llm.DefaultProxyListenPort)
 				for pointer, valueFn := range clientTC.expectedKeys {
 					expectedSubstr := valueFn(gatewayURL, proxyBaseURL)
-					actualValue := jsonPointerGet(settings, pointer)
+					actualValue, found := jsonPointerGet(settings, pointer)
+					Expect(found).To(BeTrue(),
+						"JSON pointer %s should be present in %s", pointer, settingsFile)
 					Expect(actualValue).To(ContainSubstring(expectedSubstr),
 						"JSON pointer %s should contain %q in %s", pointer, expectedSubstr, settingsFile)
 				}
@@ -348,8 +349,8 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				Expect(json.Unmarshal(data, &after)).To(Succeed())
 
 				for pointer := range clientTC.expectedKeys {
-					value := jsonPointerGet(after, pointer)
-					Expect(value).To(BeEmpty(),
+					_, found := jsonPointerGet(after, pointer)
+					Expect(found).To(BeFalse(),
 						"JSON pointer %s should be absent after teardown in %s", pointer, settingsFile)
 				}
 
@@ -447,9 +448,11 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 			Expect(err).ToNot(HaveOccurred())
 			var geminiAfter map[string]any
 			Expect(json.Unmarshal(data, &geminiAfter)).To(Succeed())
-			Expect(jsonPointerGet(geminiAfter, "/auth/tokenCommand")).
-				To(ContainSubstring("llm token"),
-					"gemini-cli tokenCommand should still be set after claude-code teardown")
+			tokenCmd, found := jsonPointerGet(geminiAfter, "/auth/tokenCommand")
+			Expect(found).To(BeTrue(),
+				"gemini-cli /auth/tokenCommand should still be present after claude-code teardown")
+			Expect(tokenCmd).To(ContainSubstring("llm token"),
+				"gemini-cli tokenCommand should still reference 'llm token' after claude-code teardown")
 
 			By("verifying ConfiguredTools has only gemini-cli")
 			showOut, _ = thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
@@ -553,21 +556,12 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 			// cache is: __thv_llm_<DeriveSecretKey(gateway, issuer)>_AT
 			// Value format: <token>|<expiry_RFC3339>
 			By("injecting cached access token into environment")
-			secretKey := tokensource.DeriveSecretKey("LLM_OAUTH_", gatewayURL, issuerURL)
-			scopedKey := "__thv_llm_" + secretKey + "_AT"
-			envKey := secrets.EnvVarPrefix + scopedKey
+			envKey := tokensource.LLMAccessTokenEnvVar(gatewayURL, issuerURL)
 			fakeToken := "test-access-token"
 			tokenValue := fakeToken + "|" + time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 
-			// Re-build thvCmd with the extra env var for this step only.
 			thvCmdWithToken := func(args ...string) *e2e.THVCommand {
-				return e2e.NewTHVCommand(thvConfig, args...).
-					WithEnv(
-						"XDG_CONFIG_HOME="+tempDir,
-						"HOME="+tempDir,
-						"PATH="+binDir+":"+os.Getenv("PATH"),
-						envKey+"="+tokenValue,
-					)
+				return thvCmd(args...).WithEnv(envKey + "=" + tokenValue)
 			}
 
 			By("running thv llm token")
@@ -740,20 +734,12 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				// The environment secrets provider reads TOOLHIVE_SECRET_<scopedKey>.
 				// Value format: <token>|<expiry_RFC3339>
 				By(fmt.Sprintf("[%s] injecting cached access token", clientTC.name))
-				secretKey := tokensource.DeriveSecretKey("LLM_OAUTH_", mockGatewayURL, issuerURL)
-				scopedKey := "__thv_llm_" + secretKey + "_AT"
-				envKey := secrets.EnvVarPrefix + scopedKey
+				envKey := tokensource.LLMAccessTokenEnvVar(mockGatewayURL, issuerURL)
 				fakeToken := "e2e-bearer-token-" + clientTC.name
 				tokenValue := fakeToken + "|" + time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 
 				thvCmdWithToken := func(args ...string) *e2e.THVCommand {
-					return e2e.NewTHVCommand(thvConfig, args...).
-						WithEnv(
-							"XDG_CONFIG_HOME="+tempDir,
-							"HOME="+tempDir,
-							"PATH="+binDir+":"+os.Getenv("PATH"),
-							envKey+"="+tokenValue,
-						)
+					return thvCmd(args...).WithEnv(envKey + "=" + tokenValue)
 				}
 
 				// Configure the proxy port and start it.
@@ -913,21 +899,13 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 					"setup should succeed; stdout=%q stderr=%q", stdout, stderr)
 
 				By("injecting an expired cached access token via the environment provider")
-				secretKey := tokensource.DeriveSecretKey("LLM_OAUTH_", gatewayURL, issuerURL)
-				scopedKey := "__thv_llm_" + secretKey + "_AT"
-				envKey := secrets.EnvVarPrefix + scopedKey
+				envKey := tokensource.LLMAccessTokenEnvVar(gatewayURL, issuerURL)
 				expiredToken := "expired-test-token"
 				expiredAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 				tokenValue := expiredToken + "|" + expiredAt
 
 				thvCmdWithExpired := func(args ...string) *e2e.THVCommand {
-					return e2e.NewTHVCommand(thvConfig, args...).
-						WithEnv(
-							"XDG_CONFIG_HOME="+tempDir,
-							"HOME="+tempDir,
-							"PATH="+binDir+":"+os.Getenv("PATH"),
-							envKey+"="+tokenValue,
-						)
+					return thvCmd(args...).WithEnv(envKey + "=" + tokenValue)
 				}
 
 				By("running thv llm token with the expired token in the environment")
@@ -982,10 +960,11 @@ func installAllDetectedClients(tempDir, binDir string) []string {
 }
 
 // jsonPointerGet resolves a simplified JSON pointer (RFC 6901) against a
-// map[string]any, returning the string value or empty string if not found.
+// map[string]any. Returns the string value and true if the key exists, or
+// ("", false) if any segment is missing or a non-map node is encountered.
 // Supports arbitrary nesting depth but not array indexing (e.g. "/a/b/c" works,
 // "/items/0/name" does not).
-func jsonPointerGet(obj map[string]any, pointer string) string {
+func jsonPointerGet(obj map[string]any, pointer string) (string, bool) {
 	segments := strings.Split(strings.TrimPrefix(pointer, "/"), "/")
 	var cur any = obj
 	for _, seg := range segments {
@@ -995,12 +974,15 @@ func jsonPointerGet(obj map[string]any, pointer string) string {
 
 		m, ok := cur.(map[string]any)
 		if !ok {
-			return ""
+			return "", false
 		}
-		cur = m[seg]
+		cur, ok = m[seg]
+		if !ok {
+			return "", false
+		}
 	}
 	if cur == nil {
-		return ""
+		return "", false
 	}
-	return fmt.Sprintf("%v", cur)
+	return fmt.Sprintf("%v", cur), true
 }

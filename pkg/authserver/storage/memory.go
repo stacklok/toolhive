@@ -846,6 +846,13 @@ func (s *MemoryStorage) DeleteUpstreamTokens(_ context.Context, sessionID string
 	return nil
 }
 
+// GetLatestUpstreamTokensForUser always returns ErrNotFound in this stub. The full
+// implementation lands in the follow-on step; see the interface declaration in
+// types.go for the contract.
+func (*MemoryStorage) GetLatestUpstreamTokensForUser(_ context.Context, _, _ string) (*UpstreamTokens, error) {
+	return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+}
+
 // -----------------------
 // Pending Authorization Storage
 // -----------------------

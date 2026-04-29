@@ -1124,6 +1124,13 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 	return nil
 }
 
+// GetLatestUpstreamTokensForUser always returns ErrNotFound in this stub. The full
+// implementation lands in the follow-on step; see the interface declaration in
+// types.go for the contract.
+func (*RedisStorage) GetLatestUpstreamTokensForUser(_ context.Context, _, _ string) (*UpstreamTokens, error) {
+	return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+}
+
 // getUpstreamTokensFromKey retrieves and deserializes upstream tokens from a specific Redis key.
 func (s *RedisStorage) getUpstreamTokensFromKey(ctx context.Context, key string) (*UpstreamTokens, error) {
 	data, err := s.client.Get(ctx, key).Bytes()

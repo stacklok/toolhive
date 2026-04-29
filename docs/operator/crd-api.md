@@ -1417,6 +1417,38 @@ _Appears in:_
 | `valueSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ValueSecretRef references a Kubernetes Secret containing the header value |  | Required: \{\} <br /> |
 
 
+#### api.v1beta1.IdentityFromTokenConfig
+
+
+
+IdentityFromTokenConfig extracts user identity (subject, name, email) directly from the
+OAuth2 token-endpoint response body using gjson dot-notation paths. When configured on an
+OAuth2UpstreamConfig, the embedded auth server skips the userinfo HTTP call entirely and
+resolves identity from the token response.
+
+Paths use gjson dot-notation, where each segment is a JSON object key. For example,
+"username" extracts a top-level field, and "authed_user.id" extracts a nested field.
+
+Trust-model warning: Identity claims extracted via this block are not cryptographically
+verified — they are trusted only via the TLS connection to the token endpoint. Prefer
+OIDC + ID token validation when verifiable claims are required.
+
+Subject uniqueness is scoped to the upstream provider entry. To keep identity namespaces
+separate across multiple instances of the same provider (e.g., two Snowflake accounts),
+use distinct upstream provider entries.
+
+
+
+_Appears in:_
+- [api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `subjectPath` _string_ | SubjectPath is the dot-notation path to the subject (user ID) field in the token response.<br />Warning: claims read from the token response are trusted only via TLS, not<br />cryptographically verified; prefer OIDC ID tokens when verifiable claims are required.<br />Example: "authed_user.id" for Slack (top-level token-response field). For providers<br />whose token response embeds the access token as a JWT (e.g. Snowflake), use the<br />"@upstreamjwt" modifier to decode the payload, e.g. "access_token\|@upstreamjwt\|sub".<br />The "@upstreamjwt" modifier performs no signature verification either. |  | MaxLength: 256 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `namePath` _string_ | NamePath is the dot-notation path to the display name field in the token response.<br />If not specified or if the path does not resolve to a string, the display name is omitted.<br />Omit the field entirely rather than setting it to an empty string. |  | MaxLength: 256 <br />MinLength: 1 <br />Optional: \{\} <br /> |
+| `emailPath` _string_ | EmailPath is the dot-notation path to the email address field in the token response.<br />If not specified or if the path does not resolve to a string, the email is omitted.<br />Omit the field entirely rather than setting it to an empty string. |  | MaxLength: 256 <br />MinLength: 1 <br />Optional: \{\} <br /> |
+
+
 #### api.v1beta1.IncomingAuthConfig
 
 
@@ -2624,12 +2656,13 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `authorizationEndpoint` _string_ | AuthorizationEndpoint is the URL for the OAuth authorization endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
 | `tokenEndpoint` _string_ | TokenEndpoint is the URL for the OAuth token endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
-| `userInfo` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfo contains configuration for fetching user information from the upstream provider.<br />When omitted, the embedded auth server runs in synthesis mode for this<br />upstream: a non-PII subject derived from the access token, no Name/Email.<br />Use this shape for upstreams with no userinfo surface (e.g., MCP<br />authorization servers per the MCP spec). |  | Optional: \{\} <br /> |
+| `userInfo` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfo contains configuration for fetching user information from the upstream provider.<br />When omitted and IdentityFromToken is also unset, the embedded auth server runs in<br />synthesis mode for this upstream: a non-PII subject derived from the access token, no<br />Name/Email. Use this shape for upstreams with no userinfo surface and no identity in<br />the token response (e.g., MCP authorization servers per the MCP spec). When<br />IdentityFromToken is set instead, identity is resolved from the token response body<br />(e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call<br />is skipped entirely. |  | Optional: \{\} <br /> |
 | `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.<br />Mutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained<br />at runtime via RFC 7591 Dynamic Client Registration and must be left empty. |  | Optional: \{\} <br /> |
 | `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
 | `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IDP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IDP. |  | Optional: \{\} <br /> |
-| `tokenResponseMapping` _[api.v1beta1.TokenResponseMapping](#apiv1beta1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used. |  | Optional: \{\} <br /> |
+| `tokenResponseMapping` _[api.v1beta1.TokenResponseMapping](#apiv1beta1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used.<br />For extracting user identity from the token response, see IdentityFromToken. |  | Optional: \{\} <br /> |
+| `identityFromToken` _[api.v1beta1.IdentityFromTokenConfig](#apiv1beta1identityfromtokenconfig)_ | IdentityFromToken extracts user identity (subject, name, email) directly<br />from the OAuth2 token-endpoint response body using gjson dot-notation paths.<br />When set, the embedded auth server skips the userinfo HTTP call entirely<br />and resolves identity from the token response. See IdentityFromTokenConfig<br />for trust-model and uniqueness considerations. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
 | `dcrConfig` _[api.v1beta1.DCRUpstreamConfig](#apiv1beta1dcrupstreamconfig)_ | DCRConfig enables RFC 7591 Dynamic Client Registration against the upstream<br />authorization server. When set, the client credentials are obtained at<br />runtime rather than being pre-provisioned, and ClientID must be left empty.<br />Mutually exclusive with ClientID. |  | Optional: \{\} <br /> |
 
@@ -3158,6 +3191,8 @@ TokenResponseMapping maps non-standard token response fields to standard OAuth 2
 using dot-notation JSON paths. This supports upstream providers like GovSlack that nest
 the access token under paths like "authed_user.access_token".
 
+For extracting user identity from the token response, see IdentityFromToken.
+
 
 
 _Appears in:_
@@ -3321,7 +3356,9 @@ _Appears in:_
 
 UserInfoConfig contains configuration for fetching user information from an upstream provider.
 This supports both standard OIDC UserInfo endpoints and custom provider-specific endpoints
-like GitHub's /user API.
+like GitHub's /user API. For providers that do not expose a usable userinfo endpoint but
+include identity in the OAuth2 token response, use IdentityFromToken on OAuth2UpstreamConfig
+instead.
 
 
 

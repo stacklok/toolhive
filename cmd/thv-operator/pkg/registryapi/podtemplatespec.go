@@ -106,6 +106,26 @@ func WithContainer(container corev1.Container) PodTemplateSpecOption {
 	}
 }
 
+// WithImagePullSecrets sets the image pull secrets on the PodSpec.
+// Existing secrets are preserved; new secrets (by name) are appended for idempotency.
+func WithImagePullSecrets(secrets []corev1.LocalObjectReference) PodTemplateSpecOption {
+	return func(pts *corev1.PodTemplateSpec) {
+		if len(secrets) == 0 {
+			return
+		}
+		existing := make(map[string]bool, len(pts.Spec.ImagePullSecrets))
+		for _, s := range pts.Spec.ImagePullSecrets {
+			existing[s.Name] = true
+		}
+		for _, s := range secrets {
+			if !existing[s.Name] {
+				pts.Spec.ImagePullSecrets = append(pts.Spec.ImagePullSecrets, s)
+				existing[s.Name] = true
+			}
+		}
+	}
+}
+
 // WithVolume adds a volume to the PodSpec.
 func WithVolume(volume corev1.Volume) PodTemplateSpecOption {
 	return func(pts *corev1.PodTemplateSpec) {
@@ -435,6 +455,14 @@ func MergePodTemplateSpecs(defaultPTS, userPTS *corev1.PodTemplateSpec) corev1.P
 
 	// Merge volumes: add default volumes that user hasn't specified
 	result.Spec.Volumes = mergeVolumesUserFirst(defaultPTS.Spec.Volumes, result.Spec.Volumes)
+
+	// Merge image pull secrets: user values win on overlap; otherwise inherit defaults.
+	// The list is treated atomically — if the user specifies any imagePullSecrets in
+	// PodTemplateSpec, theirs replace the defaults entirely. This matches the +listType=atomic
+	// semantics on MCPRegistrySpec.ImagePullSecrets.
+	if len(result.Spec.ImagePullSecrets) == 0 {
+		result.Spec.ImagePullSecrets = defaultPTS.Spec.ImagePullSecrets
+	}
 
 	return *result
 }

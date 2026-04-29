@@ -109,6 +109,23 @@ type MCPRegistrySpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
+
+	// ImagePullSecrets allows specifying image pull secrets for the registry API workload.
+	// These are applied to both the registry-api Deployment's PodSpec.ImagePullSecrets
+	// and to the operator-managed ServiceAccount the registry API runs as, so private
+	// images are pullable through either path.
+	//
+	// Precedence with PodTemplateSpec:
+	//   - This field is applied first as the controller-generated default.
+	//   - Values set under spec.podTemplateSpec.spec.imagePullSecrets are user overrides
+	//     and win on overlap. If the user supplies imagePullSecrets via PodTemplateSpec,
+	//     those replace the default list on the Deployment (the list is treated atomically).
+	//   - The ServiceAccount is always populated from this field — PodTemplateSpec does not
+	//     affect the ServiceAccount.
+	//
+	// +listType=atomic
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
 
 // MCPRegistryStatus defines the observed state of MCPRegistry

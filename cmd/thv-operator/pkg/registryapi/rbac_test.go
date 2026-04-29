@@ -227,3 +227,32 @@ func TestRegistryAPIRBACRules(t *testing.T) {
 	assert.ElementsMatch(t, []string{"events"}, registryAPIRBACRules[5].Resources)
 	assert.ElementsMatch(t, []string{"create", "patch"}, registryAPIRBACRules[5].Verbs)
 }
+
+func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
+	t.Parallel()
+
+	mcpRegistry := createTestMCPRegistry()
+	mcpRegistry.Spec.ImagePullSecrets = []corev1.LocalObjectReference{
+		{Name: "registry-creds"},
+		{Name: "extra-creds"},
+	}
+
+	scheme := createTestScheme()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	m := &manager{client: c, scheme: scheme}
+
+	require.NoError(t, m.ensureRBACResources(t.Context(), mcpRegistry))
+
+	resourceName := mcpRegistry.Name + "-registry-api"
+	sa := &corev1.ServiceAccount{}
+	require.NoError(t, c.Get(t.Context(), types.NamespacedName{
+		Name:      resourceName,
+		Namespace: mcpRegistry.Namespace,
+	}, sa))
+
+	expected := []corev1.LocalObjectReference{
+		{Name: "registry-creds"},
+		{Name: "extra-creds"},
+	}
+	assert.Equal(t, expected, sa.ImagePullSecrets)
+}

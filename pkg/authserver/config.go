@@ -479,6 +479,87 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// Validate checks that the OAuth2UpstreamRunConfig is internally consistent.
+// It enforces the mutual exclusivity of ClientID and DCRConfig: exactly one must
+// be set. A ClientID is required for pre-provisioned clients; a DCRConfig is
+// required when client credentials are obtained at runtime via RFC 7591
+// Dynamic Client Registration. When DCRConfig is present, its own validity is
+// also checked via DCRUpstreamConfig.Validate.
+//
+// Validate intentionally does not verify fields handled by the shared
+// CommonOAuthConfig or upstream.OAuth2Config validators — it only covers the
+// run-config surface area unique to OAuth2UpstreamRunConfig.
+//
+// Called from buildPureOAuth2Config at the RunConfig → upstream.OAuth2Config
+// conversion boundary so that DCR-specific fields are validated before they
+// are dropped during conversion.
+func (c *OAuth2UpstreamRunConfig) Validate() error {
+	hasClientID := c.ClientID != ""
+	hasDCR := c.DCRConfig != nil
+	switch {
+	case !hasClientID && !hasDCR:
+		return fmt.Errorf("oauth2 upstream: either client_id or dcr_config is required")
+	case hasClientID && hasDCR:
+		return fmt.Errorf("oauth2 upstream: client_id and dcr_config are mutually exclusive")
+	}
+
+	if hasDCR {
+		if err := c.DCRConfig.Validate(); err != nil {
+			return fmt.Errorf("oauth2 upstream: invalid dcr_config: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Validate checks that the DCRUpstreamConfig specifies exactly one of
+// DiscoveryURL or RegistrationEndpoint, that the configured URL is well-formed
+// and uses HTTPS (or http on a loopback host for local development), and that
+// the two initial-access-token sources (InitialAccessTokenFile and
+// InitialAccessTokenEnvVar) are not both set.
+//
+// DiscoveryURL triggers runtime resolution of the registration endpoint via
+// RFC 8414 / OIDC Discovery; RegistrationEndpoint bypasses discovery for
+// providers that do not publish metadata. Requiring exactly one prevents
+// ambiguity about which URL the authserver should contact for registration.
+//
+// URL well-formedness and HTTPS are enforced here at the schema-validation
+// boundary so misconfiguration fails fast at startup rather than at first DCR
+// attempt; the runtime callers (pkg/oauthproto/discovery.go and
+// pkg/oauthproto/dcr.go) defend in depth, but this is the natural fail-fast
+// point.
+//
+// Rejecting a config that supplies both an InitialAccessTokenFile and an
+// InitialAccessTokenEnvVar prevents a credential-rotation footgun: if both
+// were accepted, an operator updating the env-var value would not realize
+// the file source still wins (or vice versa) and would silently keep
+// presenting a stale token at registration.
+func (c *DCRUpstreamConfig) Validate() error {
+	hasDiscovery := c.DiscoveryURL != ""
+	hasRegistration := c.RegistrationEndpoint != ""
+	switch {
+	case !hasDiscovery && !hasRegistration:
+		return fmt.Errorf("dcr_config: either discovery_url or registration_endpoint is required")
+	case hasDiscovery && hasRegistration:
+		return fmt.Errorf("dcr_config: discovery_url and registration_endpoint are mutually exclusive")
+	case hasDiscovery:
+		if err := networking.ValidateEndpointURL(c.DiscoveryURL); err != nil {
+			return fmt.Errorf("dcr_config: invalid discovery_url: %w", err)
+		}
+	case hasRegistration:
+		if err := networking.ValidateEndpointURL(c.RegistrationEndpoint); err != nil {
+			return fmt.Errorf("dcr_config: invalid registration_endpoint: %w", err)
+		}
+	}
+
+	if c.InitialAccessTokenFile != "" && c.InitialAccessTokenEnvVar != "" {
+		return fmt.Errorf(
+			"dcr_config: initial_access_token_file and initial_access_token_env_var are mutually exclusive")
+	}
+
+	return nil
+}
+
 // validateUpstreams validates the upstream configurations.
 func (c *Config) validateUpstreams() error {
 	if len(c.Upstreams) == 0 {
@@ -648,53 +729,5 @@ func validateIssuerURL(issuer string) error {
 		return fmt.Errorf("must not have trailing slash")
 	}
 
-	return nil
-}
-
-// Validate checks that the OAuth2UpstreamRunConfig is internally consistent.
-// It enforces the mutual exclusivity of ClientID and DCRConfig: exactly one must
-// be set. A ClientID is required for pre-provisioned clients; a DCRConfig is
-// required when client credentials are obtained at runtime via RFC 7591
-// Dynamic Client Registration. When DCRConfig is present, its own validity is
-// also checked via DCRUpstreamConfig.Validate.
-//
-// Validate intentionally does not verify fields handled by the shared
-// CommonOAuthConfig or upstream.OAuth2Config validators — it only covers the
-// run-config surface area unique to OAuth2UpstreamRunConfig.
-func (c *OAuth2UpstreamRunConfig) Validate() error {
-	hasClientID := c.ClientID != ""
-	hasDCR := c.DCRConfig != nil
-	switch {
-	case !hasClientID && !hasDCR:
-		return fmt.Errorf("oauth2 upstream: either client_id or dcr_config is required")
-	case hasClientID && hasDCR:
-		return fmt.Errorf("oauth2 upstream: client_id and dcr_config are mutually exclusive")
-	}
-
-	if hasDCR {
-		if err := c.DCRConfig.Validate(); err != nil {
-			return fmt.Errorf("oauth2 upstream: invalid dcr_config: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// Validate checks that the DCRUpstreamConfig specifies exactly one of
-// DiscoveryURL or RegistrationEndpoint.
-//
-// DiscoveryURL triggers runtime resolution of the registration endpoint via
-// RFC 8414 / OIDC Discovery; RegistrationEndpoint bypasses discovery for
-// providers that do not publish metadata. Requiring exactly one prevents
-// ambiguity about which URL the authserver should contact for registration.
-func (c *DCRUpstreamConfig) Validate() error {
-	hasDiscovery := c.DiscoveryURL != ""
-	hasRegistration := c.RegistrationEndpoint != ""
-	switch {
-	case !hasDiscovery && !hasRegistration:
-		return fmt.Errorf("dcr_config: either discovery_url or registration_endpoint is required")
-	case hasDiscovery && hasRegistration:
-		return fmt.Errorf("dcr_config: discovery_url and registration_endpoint are mutually exclusive")
-	}
 	return nil
 }

@@ -351,13 +351,46 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 			},
 		},
 		{
-			name: "optional metadata is ignored by validate",
+			name: "software metadata and a single token source pass validation",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint:   "https://idp.example.com/register",
+				InitialAccessTokenFile: "/var/run/secrets/dcr-token",
+				SoftwareID:             "toolhive",
+				SoftwareStatement:      "eyJhbGciOi...",
+			},
+		},
+		{
+			name: "both initial_access_token_file and initial_access_token_env_var rejects",
 			config: DCRUpstreamConfig{
 				RegistrationEndpoint:     "https://idp.example.com/register",
 				InitialAccessTokenFile:   "/var/run/secrets/dcr-token",
 				InitialAccessTokenEnvVar: "DCR_TOKEN",
-				SoftwareID:               "toolhive",
-				SoftwareStatement:        "eyJhbGciOi...",
+			},
+			wantErr: true,
+			errMsg:  "initial_access_token_file and initial_access_token_env_var are mutually exclusive",
+		},
+		{
+			name:    "malformed discovery_url rejects",
+			config:  DCRUpstreamConfig{DiscoveryURL: "://broken"},
+			wantErr: true,
+			errMsg:  "invalid discovery_url",
+		},
+		{
+			name:    "non-loopback http discovery_url rejects",
+			config:  DCRUpstreamConfig{DiscoveryURL: "http://idp.example.com/.well-known/oauth-authorization-server"},
+			wantErr: true,
+			errMsg:  "invalid discovery_url",
+		},
+		{
+			name:    "non-loopback http registration_endpoint rejects",
+			config:  DCRUpstreamConfig{RegistrationEndpoint: "http://idp.example.com/register"},
+			wantErr: true,
+			errMsg:  "invalid registration_endpoint",
+		},
+		{
+			name: "loopback http discovery_url is valid",
+			config: DCRUpstreamConfig{
+				DiscoveryURL: "http://localhost:8080/.well-known/oauth-authorization-server",
 			},
 		},
 	}

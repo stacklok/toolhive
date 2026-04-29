@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -378,4 +379,157 @@ func TestFetchAuthorizationServerMetadata_MissingRegistrationEndpoint(t *testing
 	assert.Equal(t, issuer, metadata.Issuer)
 	assert.Equal(t, issuer+"/token", metadata.TokenEndpoint)
 	assert.Empty(t, metadata.RegistrationEndpoint)
+}
+
+// TestFetchAuthorizationServerMetadata_PreferFullDocOverPartial pins the
+// no-short-circuit-on-partial behavior: when an earlier URL serves a valid
+// document missing registration_endpoint and a later URL serves the full
+// document, the full document must win. A real-world failure mode this
+// guards against is a tenant-aware IdP whose path-insertion document does
+// not advertise DCR while its OIDC discovery document does.
+func TestFetchAuthorizationServerMetadata_PreferFullDocOverPartial(t *testing.T) {
+	t.Parallel()
+
+	// Use a tenant-aware issuer so path-insertion and bare RFC 8414 URLs are
+	// distinct; that lets us serve a partial doc on path-insertion and a
+	// full doc on OIDC discovery without collisions.
+	server := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+	issuer := server.URL + "/tenants/acme"
+
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server/tenants/acme":
+			writeJSONMetadata(w, AuthorizationServerMetadata{
+				Issuer:        issuer,
+				TokenEndpoint: issuer + "/token-from-partial",
+				// RegistrationEndpoint intentionally omitted: partial doc.
+			})
+		case "/tenants/acme/.well-known/openid-configuration":
+			writeJSONMetadata(w, AuthorizationServerMetadata{
+				Issuer:               issuer,
+				TokenEndpoint:        issuer + "/token-from-full",
+				RegistrationEndpoint: issuer + "/register",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	metadata, err := FetchAuthorizationServerMetadata(context.Background(), issuer, server.Client())
+	require.NoError(t, err)
+	require.NotNil(t, metadata)
+	assert.Equal(t, issuer+"/register", metadata.RegistrationEndpoint,
+		"the OIDC document with a registration_endpoint must win over the partial path-insertion document")
+	assert.Equal(t, issuer+"/token-from-full", metadata.TokenEndpoint,
+		"the OIDC document, not the partial doc, must be returned in full")
+}
+
+// errSentinelTransport is a stand-in for a transport-level failure (e.g.
+// TLS or DNS error). It returns errSentinelTransportFailure from RoundTrip so the
+// test can confirm the per-attempt error is wrapped and reachable via
+// errors.Is on the aggregated discovery error.
+var errSentinelTransportFailure = errors.New("oauthproto-test: simulated transport failure")
+
+type errSentinelTransport struct{}
+
+func (errSentinelTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return nil, errSentinelTransportFailure
+}
+
+// TestFetchAuthorizationServerMetadata_AggregatedErrorPreservesWrap verifies
+// that per-attempt errors are joined via errors.Join (not flattened to a
+// string) so callers can still inspect causes through errors.Is/errors.As.
+func TestFetchAuthorizationServerMetadata_AggregatedErrorPreservesWrap(t *testing.T) {
+	t.Parallel()
+
+	client := &http.Client{Transport: errSentinelTransport{}}
+
+	metadata, err := FetchAuthorizationServerMetadata(
+		context.Background(), "https://idp.example.com/tenants/acme", client)
+
+	require.Error(t, err)
+	require.Nil(t, metadata)
+	assert.ErrorIs(t, err, errSentinelTransportFailure,
+		"aggregated discovery error must wrap per-attempt errors so errors.Is can find them")
+}
+
+// TestFetchAuthorizationServerMetadata_TenantWithEscapedChars guards against
+// the EscapedPath/Path double-encoding regression: a tenant containing
+// characters that url.PathEscape actually transforms (here, a space) must
+// reach the IdP encoded exactly once.
+func TestFetchAuthorizationServerMetadata_TenantWithEscapedChars(t *testing.T) {
+	t.Parallel()
+
+	// Issuer path "tenants/acme corp" — the literal space MUST end up
+	// encoded as %20 in the request path, not as %2520.
+	const escapedTenant = "/tenants/acme%20corp"
+	const wantPathInsertion = "/.well-known/oauth-authorization-server/tenants/acme%20corp"
+
+	server := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+	issuer := server.URL + escapedTenant
+
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// EscapedPath always returns the wire form, regardless of whether
+		// Go's URL parser populated RawPath (it leaves RawPath empty when
+		// the canonical escaping of Path matches the on-the-wire form).
+		// A regression that double-encodes "%20" → "%2520" would alter
+		// EscapedPath here and produce a 404 below.
+		if r.URL.EscapedPath() != wantPathInsertion {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSONMetadata(w, AuthorizationServerMetadata{
+			Issuer:               issuer,
+			TokenEndpoint:        issuer + "/token",
+			RegistrationEndpoint: issuer + "/register",
+		})
+	})
+
+	metadata, err := FetchAuthorizationServerMetadata(context.Background(), issuer, server.Client())
+	require.NoError(t, err)
+	require.NotNil(t, metadata)
+	assert.Equal(t, issuer, metadata.Issuer)
+}
+
+// TestFetchAuthorizationServerMetadata_DedupesPathInsertionAndBare locks in
+// the documented behavior that, for a tenant-less issuer, the path-insertion
+// (1) and bare RFC 8414 (3) URLs collapse to the same request, so only two
+// distinct discovery requests are made: oauth-authorization-server and
+// openid-configuration, in that priority order.
+func TestFetchAuthorizationServerMetadata_DedupesPathInsertionAndBare(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu        sync.Mutex
+		gotPaths  []string
+		seenPaths = map[string]struct{}{}
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if _, ok := seenPaths[r.URL.Path]; !ok {
+			seenPaths[r.URL.Path] = struct{}{}
+			gotPaths = append(gotPaths, r.URL.Path)
+		}
+		mu.Unlock()
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	// Tenant-less issuer; with no tenant path, URLs (1) and (3) are textually
+	// identical and must be deduplicated before the loop runs.
+	_, err := FetchAuthorizationServerMetadata(context.Background(), server.URL, server.Client())
+	require.Error(t, err) // every URL 404s
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t,
+		[]string{
+			"/.well-known/oauth-authorization-server",
+			"/.well-known/openid-configuration",
+		},
+		gotPaths,
+		"expected exactly two distinct discovery requests in priority order: path-insertion before OIDC",
+	)
 }

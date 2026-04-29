@@ -6,6 +6,7 @@ package oauthproto
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -32,11 +33,18 @@ const discoveryMaxResponseSize = 1024 * 1024 // 1MB
 // metadata for the given issuer, using a three-path fallback that mirrors
 // the guidance in RFC 8414 §3.1 and OpenID Connect Discovery 1.0.
 //
-// The paths are tried in this order; the first 200 OK with a clean
-// application/json response that passes the RFC 8414 §3.3 issuer check wins:
+// The paths are tried in this order:
 //  1. RFC 8414 path-insertion: {origin}/.well-known/oauth-authorization-server{path}
 //  2. OIDC Discovery:          {issuer}/.well-known/openid-configuration
 //  3. Bare RFC 8414:           {origin}/.well-known/oauth-authorization-server
+//
+// A 200 OK response with a clean application/json body that passes the
+// RFC 8414 §3.3 issuer check is a candidate. The first candidate with a
+// non-empty registration_endpoint wins immediately. If no candidate has a
+// registration_endpoint but at least one was otherwise valid, the first such
+// partial document is returned with ErrRegistrationEndpointMissing — never
+// short-circuiting on a partial doc, since a tenant-aware IdP may publish
+// path-insertion metadata without DCR while the OIDC document advertises it.
 //
 // If client is nil, a default *http.Client with a bounded 10 s timeout is
 // used. When client is non-nil, the same bounded 10 s per-call timeout is
@@ -48,12 +56,13 @@ const discoveryMaxResponseSize = 1024 * 1024 // 1MB
 //   - On full success, returns (metadata, nil) with a non-empty
 //     RegistrationEndpoint.
 //
-//   - When the winning document is otherwise valid but omits
-//     registration_endpoint, returns (metadata, ErrRegistrationEndpointMissing).
-//     The metadata is non-nil so callers can reuse the other fields
-//     (TokenEndpoint, JWKSURI, etc.). Note this deviates from the usual Go
-//     "err != nil ⇒ value is invalid" idiom; callers must check with
-//     errors.Is and explicitly decide whether to use the partial doc:
+//   - When at least one candidate document was issuer-validated but every such
+//     document omits registration_endpoint, returns the first partial document
+//     paired with ErrRegistrationEndpointMissing. The metadata is non-nil so
+//     callers can reuse the other fields (TokenEndpoint, JWKSURI, etc.). Note
+//     this deviates from the usual Go "err != nil ⇒ value is invalid" idiom;
+//     callers must check with errors.Is and explicitly decide whether to use
+//     the partial doc:
 //
 //     md, err := FetchAuthorizationServerMetadata(ctx, issuer, nil)
 //     switch {
@@ -66,7 +75,9 @@ const discoveryMaxResponseSize = 1024 * 1024 // 1MB
 //     }
 //
 //   - On any other failure (no URL served a valid doc, transport/decode error,
-//     issuer mismatch), returns (nil, err).
+//     issuer mismatch), returns (nil, err). The returned error wraps the
+//     per-attempt errors via errors.Join so callers can use errors.Is /
+//     errors.As to inspect underlying causes (e.g. context.DeadlineExceeded).
 func FetchAuthorizationServerMetadata(
 	ctx context.Context,
 	issuer string,
@@ -83,22 +94,33 @@ func FetchAuthorizationServerMetadata(
 	fetchCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 
-	var attemptErrs []string
+	var attemptErrs []error
+	var partialMetadata *AuthorizationServerMetadata
 	for _, u := range urls {
 		metadata, err := fetchDiscoveryDocument(fetchCtx, httpClient, u, issuer)
 		if err != nil {
-			attemptErrs = append(attemptErrs, fmt.Sprintf("%s: %v", u, err))
+			attemptErrs = append(attemptErrs, fmt.Errorf("%s: %w", u, err))
 			continue
 		}
 		if metadata.RegistrationEndpoint == "" {
-			return metadata, ErrRegistrationEndpointMissing
+			// Stash the first partial doc as a fallback, but keep iterating:
+			// a later URL (e.g. OIDC discovery) may advertise DCR even when
+			// the first hit (e.g. tenant-aware path-insertion) does not.
+			if partialMetadata == nil {
+				partialMetadata = metadata
+			}
+			continue
 		}
 		return metadata, nil
 	}
 
+	if partialMetadata != nil {
+		return partialMetadata, ErrRegistrationEndpointMissing
+	}
+
 	return nil, fmt.Errorf(
-		"failed to discover authorization server metadata for issuer %q: %s",
-		issuer, strings.Join(attemptErrs, "; "),
+		"failed to discover authorization server metadata for issuer %q: %w",
+		issuer, errors.Join(attemptErrs...),
 	)
 }
 
@@ -127,7 +149,10 @@ func buildDiscoveryURLs(issuer string) ([]string, error) {
 	}
 
 	// Strip trailing slash from issuer path so URL joins stay predictable.
-	tenant := strings.Trim(parsed.EscapedPath(), "/")
+	// Use the unescaped Path: assigning back into url.URL.Path means String()
+	// will escape exactly once. Using EscapedPath() here would re-escape
+	// percent-encoded tenants and produce e.g. "%252F" from "%2F".
+	tenant := strings.Trim(parsed.Path, "/")
 
 	origin := &url.URL{Scheme: parsed.Scheme, Host: parsed.Host}
 

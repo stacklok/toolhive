@@ -5,8 +5,9 @@
 // that the ToolHive operator applies to every workload it spawns.
 //
 // The operator parses a comma-separated list of secret names from the
-// THV_DEFAULT_IMAGE_PULL_SECRETS environment variable at startup and exposes
-// the result as a Defaults value that controllers consume during reconciliation.
+// TOOLHIVE_DEFAULT_IMAGE_PULL_SECRETS environment variable at startup and
+// exposes the result as a Defaults value that controllers consume during
+// reconciliation.
 //
 // Defaults are merged with any per-CR imagePullSecrets at workload-construction
 // time. See Defaults.Merge for the precedence rule.
@@ -25,7 +26,7 @@ import (
 //
 // The value is a comma-separated list of secret names, e.g. "regcred,otherscred".
 // Whitespace around entries is tolerated; empty entries are skipped.
-const EnvVar = "THV_DEFAULT_IMAGE_PULL_SECRETS"
+const EnvVar = "TOOLHIVE_DEFAULT_IMAGE_PULL_SECRETS"
 
 // Defaults holds the cluster-wide default imagePullSecrets that the operator
 // applies to every workload it spawns when the corresponding CR does not
@@ -55,8 +56,8 @@ func NewDefaults(names []string) Defaults {
 	return Defaults{secrets: parsed}
 }
 
-// LoadDefaultsFromEnv parses Defaults from the THV_DEFAULT_IMAGE_PULL_SECRETS
-// environment variable.
+// LoadDefaultsFromEnv parses Defaults from the
+// TOOLHIVE_DEFAULT_IMAGE_PULL_SECRETS environment variable.
 //
 // The variable is a comma-separated list of secret names. An empty or unset
 // variable yields an empty Defaults whose Merge is a no-op.

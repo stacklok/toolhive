@@ -48,7 +48,7 @@ spec:
             env vars below win on name collision: Kubernetes keeps the last
             entry when a name appears more than once on the container. This
             prevents an accidental `operator.env` override of reserved names
-            like THV_DEFAULT_IMAGE_PULL_SECRETS or TOOLHIVE_RUNNER_IMAGE.
+            like TOOLHIVE_DEFAULT_IMAGE_PULL_SECRETS or TOOLHIVE_RUNNER_IMAGE.
           */}}
           {{- with .Values.operator.env }}
             {{- toYaml . | nindent 10 }}
@@ -87,8 +87,31 @@ spec:
           - name: TOOLHIVE_REGISTRY_API_IMAGE
             value: "{{ .Values.registryAPI.image }}"
           {{- with .Values.operator.defaultImagePullSecrets }}
-          - name: THV_DEFAULT_IMAGE_PULL_SECRETS
-            value: "{{ join "," . }}"
+          {{- /*
+            Accept both shapes per values.yaml documentation:
+              - plain strings: ["regcred", "otherscred"]
+              - objects with a `name` field: [{name: regcred}, {name: otherscred}]
+            The object form mirrors `operator.imagePullSecrets` above so users
+            can copy that pattern without silent breakage. Anything else (numbers,
+            nested lists, objects without `name`) fails the template render with
+            a clear message instead of producing an env var like
+            `TOOLHIVE_DEFAULT_IMAGE_PULL_SECRETS=map[name:foo]`.
+          */}}
+          {{- $names := list }}
+          {{- range $i, $entry := . }}
+          {{- if kindIs "string" $entry }}
+          {{- $names = append $names $entry }}
+          {{- else if kindIs "map" $entry }}
+          {{- if not $entry.name }}
+          {{- fail (printf "operator.defaultImagePullSecrets[%d]: object entry must have a non-empty `name` field" $i) }}
+          {{- end }}
+          {{- $names = append $names $entry.name }}
+          {{- else }}
+          {{- fail (printf "operator.defaultImagePullSecrets[%d]: entry must be a string or an object with a `name` field, got %s" $i (kindOf $entry)) }}
+          {{- end }}
+          {{- end }}
+          - name: TOOLHIVE_DEFAULT_IMAGE_PULL_SECRETS
+            value: {{ join "," $names | quote }}
           {{- end }}
           livenessProbe:
             {{- toYaml .Values.operator.livenessProbe | nindent 12 }}

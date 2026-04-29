@@ -113,7 +113,7 @@ func main() {
 		// " , " or ",,,". Surface this so the misconfiguration is diagnosable
 		// instead of being silently ignored.
 		setupLog.Info(
-			"THV_DEFAULT_IMAGE_PULL_SECRETS is set but contains no valid secret names; "+
+			"TOOLHIVE_DEFAULT_IMAGE_PULL_SECRETS is set but contains no valid secret names; "+
 				"chart-level defaults will not be applied",
 			"imagePullSecrets", rawValue,
 		)

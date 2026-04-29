@@ -120,26 +120,9 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 		tempDir = GinkgoT().TempDir()
 
 		// Install a fake browser so OIDC login completes in headless/CI
-		// environments where no real browser is available. The script GETs
-		// the auth URL (without following the 302 redirect) so the mock OIDC
-		// server receives the /auth request and populates authRequestChan;
-		// CompleteAuthRequest then drives the callback hit.
-		//
-		// Platform note: CI runs on ubuntu-8cores-32gb (Linux only; no Windows
-		// support). curl ships on every GitHub-hosted Ubuntu runner; wget is
-		// tried as a fallback for minimal images.
-		binDir := filepath.Join(tempDir, "bin")
-		Expect(os.MkdirAll(binDir, 0750)).To(Succeed())
-		fakeBrowser := []byte(
-			"#!/bin/sh\n" +
-				// curl: -sf = silent + fail-on-HTTP-error; no -L so 302 is not followed.
-				// wget: --max-redirect=0 prevents following the 302 to the callback URL,
-				//       which would race with CompleteAuthRequest and make the test flaky.
-				"curl -sf \"$1\" >/dev/null 2>&1 || wget -q --max-redirect=0 \"$1\" -O /dev/null 2>&1 || true\n",
-		)
-		for _, name := range []string{"open", "xdg-open"} {
-			Expect(os.WriteFile(filepath.Join(binDir, name), fakeBrowser, 0750)).To(Succeed())
-		}
+		// environments where no real browser is available.
+		binDir, binDirErr := e2e.CreateFakeBrowserDir(tempDir)
+		Expect(binDirErr).ToNot(HaveOccurred())
 
 		// Isolated environment: XDG_CONFIG_HOME and HOME point to tempDir so
 		// these tests never touch the user's real config.yaml or secrets store.

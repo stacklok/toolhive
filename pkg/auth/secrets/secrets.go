@@ -9,6 +9,7 @@ package secrets
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"time"
 
@@ -209,12 +210,16 @@ func GetSystemSecretsProvider() (secrets.Provider, error) {
 	configProvider := config.NewDefaultProvider()
 	cfg := configProvider.GetConfig()
 
-	if !cfg.Secrets.SetupCompleted {
-		return nil, secrets.ErrSecretsNotSetup
-	}
-
+	// GetProviderType already handles the TOOLHIVE_SECRETS_PROVIDER env var and
+	// allows the "environment" provider even when SetupCompleted is false.
+	// Calling it first means Kubernetes / test deployments that set the env var
+	// do not have to complete interactive setup. The bare SetupCompleted guard
+	// below is only reached when no env var override is present.
 	providerType, err := cfg.Secrets.GetProviderType()
 	if err != nil {
+		if errors.Is(err, secrets.ErrSecretsNotSetup) {
+			return nil, secrets.ErrSecretsNotSetup
+		}
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 

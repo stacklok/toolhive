@@ -481,9 +481,10 @@ func executeTokenExchangeRequest(client *http.Client, req *http.Request) ([]byte
 }
 
 // validateResponseStatus checks the HTTP status code and returns an error if not successful.
-// On non-2xx responses it returns a *oauth2.RetrieveError; when the body is non-conformant
-// (no RFC 6749 §5.2 "error" field), the raw body is moved to debug logs and cleared from
-// the error so it cannot be interpolated into log messages by callers.
+// On non-2xx responses it extracts RFC 6749 §5.2 fields (error, error_description, error_uri)
+// onto the structured fields of the returned *oauth2.RetrieveError. Body is always cleared so
+// callers cannot interpolate raw upstream content into error strings — matching the pattern used
+// by Ory Hydra, which never surfaces raw error bodies through its public error type.
 func validateResponseStatus(resp *http.Response, body []byte) error {
 	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
 		return nil
@@ -513,8 +514,9 @@ func validateResponseStatus(resp *http.Response, body []byte) error {
 			"description", retrieveErr.ErrorDescription)
 	} else {
 		slog.Debug("Token exchange failed", "status", resp.StatusCode, "body_length", len(body), "body", string(body))
-		retrieveErr.Body = nil
 	}
+
+	retrieveErr.Body = nil
 
 	return retrieveErr
 }

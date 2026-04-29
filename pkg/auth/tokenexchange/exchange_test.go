@@ -376,7 +376,6 @@ func TestExchangeToken_HTTPErrorResponses(t *testing.T) {
 		responseBody        string
 		expectedErrorCode   string
 		expectedDescription string
-		expectedBodyNil     bool
 	}{
 		{
 			name:                "400 Bad Request",
@@ -404,10 +403,9 @@ func TestExchangeToken_HTTPErrorResponses(t *testing.T) {
 			expectedErrorCode: "server_error",
 		},
 		{
-			name:            "503 Service Unavailable",
-			statusCode:      http.StatusServiceUnavailable,
-			responseBody:    "Service temporarily unavailable",
-			expectedBodyNil: true,
+			name:         "503 Service Unavailable",
+			statusCode:   http.StatusServiceUnavailable,
+			responseBody: "Service temporarily unavailable",
 			// Non-JSON body: ErrorCode stays empty, body cleared to prevent info leak.
 		},
 	}
@@ -445,11 +443,7 @@ func TestExchangeToken_HTTPErrorResponses(t *testing.T) {
 			assert.Equal(t, tt.statusCode, retrieveErr.Response.StatusCode)
 			assert.Equal(t, tt.expectedErrorCode, retrieveErr.ErrorCode)
 			assert.Equal(t, tt.expectedDescription, retrieveErr.ErrorDescription)
-			if tt.expectedBodyNil {
-				assert.Nil(t, retrieveErr.Body)
-			} else if tt.expectedErrorCode != "" {
-				assert.Equal(t, []byte(tt.responseBody), retrieveErr.Body)
-			}
+			assert.Nil(t, retrieveErr.Body)
 		})
 	}
 }

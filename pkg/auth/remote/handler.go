@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"golang.org/x/oauth2"
 
@@ -511,17 +512,27 @@ func shouldUseCIMD(authServerInfo *discovery.AuthServerInfo, flowConfig *discove
 // client_id. Only the RFC 6749 error codes invalid_client and unauthorized_client
 // trigger a DCR retry; all other errors — including invalid_request and
 // token-exchange failures — surface as-is.
+//
+// CIMD rejection can surface from two stages:
+//   - Authorization endpoint: AS redirects to callback with error=invalid_client;
+//     flow.go formats this as "OAuth error: <code> - <description>" (a plain error).
+//   - Token endpoint: oauth2.RetrieveError with ErrorCode set.
 func isCIMDRejectionError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Token endpoint rejection — structured error from golang.org/x/oauth2.
 	var rerr *oauth2.RetrieveError
-	if !errors.As(err, &rerr) {
+	if errors.As(err, &rerr) {
+		switch rerr.ErrorCode {
+		case "invalid_client", "unauthorized_client":
+			return true
+		}
 		return false
 	}
-	switch rerr.ErrorCode {
-	case "invalid_client", "unauthorized_client":
-		return true
-	}
-	return false
+	// Authorization endpoint rejection — flow.go formats callback errors as
+	// "OAuth error: <code> - <description>". Check for the code after the prefix.
+	msg := err.Error()
+	return strings.HasPrefix(msg, "OAuth error: invalid_client") ||
+		strings.HasPrefix(msg, "OAuth error: unauthorized_client")
 }

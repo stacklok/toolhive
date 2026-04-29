@@ -839,6 +839,28 @@ func TestIsCIMDRejectionError(t *testing.T) {
 			err:  retrieveErr("access_denied"),
 			want: false,
 		},
+		// Authorization-endpoint rejections — flow.go format: "OAuth error: <code> - <desc>"
+		{
+			name: "auth callback invalid_client triggers retry",
+			err:  fmt.Errorf("OAuth error: invalid_client - client not recognised"),
+			want: true,
+		},
+		{
+			name: "auth callback unauthorized_client triggers retry",
+			err:  fmt.Errorf("OAuth error: unauthorized_client - not allowed"),
+			want: true,
+		},
+		{
+			name: "auth callback invalid_request does not trigger retry",
+			err:  fmt.Errorf("OAuth error: invalid_request - missing param"),
+			want: false,
+		},
+		{
+			name: "auth callback access_denied does not trigger retry",
+			err:  fmt.Errorf("OAuth error: access_denied - user denied"),
+			want: false,
+		},
+		// Non-OAuth errors must not trigger retry.
 		{
 			name: "network error does not trigger retry",
 			err:  fmt.Errorf("dial tcp: connection refused"),

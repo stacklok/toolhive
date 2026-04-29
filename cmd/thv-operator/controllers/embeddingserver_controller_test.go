@@ -998,3 +998,124 @@ func TestEmbeddingServer_PodTemplateSpec_PreservesUserFields(t *testing.T) {
 		})
 	}
 }
+
+// TestEmbeddingServer_PodTemplateSpec_SoftFailFallback verifies that when the
+// user-provided PodTemplateSpec passes validation (its JSON unmarshals into
+// corev1.PodTemplateSpec) but causes StrategicMergePatch to fail, the
+// reconciler does not surface an error — it logs and falls back to a
+// StatefulSet built entirely from controller defaults. This is the
+// EmbeddingServer caller's documented "soft-fail" policy on the otherwise
+// policy-neutral ctrlutil.ApplyPodTemplateSpecPatch helper.
+//
+// The payload below uses an unknown `$patch` directive nested inside a
+// container. Strategic merge patch rejects unknown directives at apply time,
+// while json.Unmarshal silently drops the unknown field when targeting
+// corev1.Container — so the validation pass accepts it and only the merge
+// fails.
+func TestEmbeddingServer_PodTemplateSpec_SoftFailFallback(t *testing.T) {
+	t.Parallel()
+
+	embedding := createTestEmbeddingServer("test", testNamespaceDefault, "test-image:latest", "test-model")
+	embedding.Spec.PodTemplateSpec = &runtime.RawExtension{
+		Raw: []byte(`{"spec":{"containers":[{"name":"embedding","$patch":"invalid"}]}}`),
+	}
+
+	scheme := createEmbeddingServerTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(embedding).
+		WithStatusSubresource(embedding).
+		Build()
+
+	reconciler := &EmbeddingServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		Recorder:         events.NewFakeRecorder(10),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	ctx := t.Context()
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      embedding.Name,
+			Namespace: embedding.Namespace,
+		},
+	}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err, "soft-fail: reconcile must not surface a strategic-merge-patch error")
+
+	sts := &appsv1.StatefulSet{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      embedding.Name,
+		Namespace: embedding.Namespace,
+	}, sts)
+	require.NoError(t, err, "StatefulSet should be created with controller defaults")
+
+	// Controller defaults must survive: a single embedding container with the
+	// configured image, our health probes, and the http port.
+	require.Len(t, sts.Spec.Template.Spec.Containers, 1)
+	c := sts.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, embeddingContainerName, c.Name)
+	assert.Equal(t, "test-image:latest", c.Image)
+	require.NotNil(t, c.LivenessProbe, "controller-generated liveness probe should be present")
+	require.NotNil(t, c.ReadinessProbe, "controller-generated readiness probe should be present")
+	require.Len(t, c.Ports, 1)
+	assert.Equal(t, "http", c.Ports[0].Name)
+}
+
+// TestEmbeddingServer_PodTemplateSpec_EmptyObjectIsNoOp verifies that a
+// PodTemplateSpec of `{}` is treated as a no-op: the StatefulSet is built
+// entirely from controller defaults, with nothing clobbered. This guards
+// against the regression where strategic merge patch on `{}` would replace
+// controller-generated arrays with empty slices.
+func TestEmbeddingServer_PodTemplateSpec_EmptyObjectIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	embedding := createTestEmbeddingServer("test", testNamespaceDefault, "test-image:latest", "test-model")
+	embedding.Spec.PodTemplateSpec = &runtime.RawExtension{Raw: []byte(`{}`)}
+
+	scheme := createEmbeddingServerTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(embedding).
+		WithStatusSubresource(embedding).
+		Build()
+
+	reconciler := &EmbeddingServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		Recorder:         events.NewFakeRecorder(10),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	ctx := t.Context()
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      embedding.Name,
+			Namespace: embedding.Namespace,
+		},
+	}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	sts := &appsv1.StatefulSet{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      embedding.Name,
+		Namespace: embedding.Namespace,
+	}, sts)
+	require.NoError(t, err, "StatefulSet should be created")
+
+	// Every controller-generated field must survive an empty patch.
+	require.Len(t, sts.Spec.Template.Spec.Containers, 1)
+	c := sts.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, embeddingContainerName, c.Name)
+	assert.Equal(t, "test-image:latest", c.Image)
+	require.NotNil(t, c.LivenessProbe)
+	require.NotNil(t, c.ReadinessProbe)
+	require.Len(t, c.Ports, 1)
+	assert.Equal(t, "http", c.Ports[0].Name)
+	assert.Contains(t, c.Args, "--model-id")
+	assert.Contains(t, c.Args, "test-model")
+}

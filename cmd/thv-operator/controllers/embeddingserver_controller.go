@@ -7,7 +7,6 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"reflect"
@@ -22,7 +21,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -408,7 +406,7 @@ func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
 	container := r.buildEmbeddingContainer(embedding)
 
 	// Build pod template
-	podTemplate := r.buildPodTemplate(embedding, labels, container)
+	podTemplate := r.buildPodTemplate(labels, container)
 
 	// Apply statefulset overrides
 	stsAnnotations, stsLabels := r.applyStatefulSetOverrides(embedding, &podTemplate)
@@ -443,10 +441,9 @@ func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
 	// Apply user-provided PodTemplateSpec customizations via strategic merge patch.
 	// This must happen after the controller-generated template is fully populated so
 	// that user fields override controller defaults rather than the other way around.
-	if err := r.applyPodTemplateSpecToStatefulSet(ctx, embedding, statefulSet); err != nil {
-		log.FromContext(ctx).Error(err, "Failed to apply PodTemplateSpec to StatefulSet")
-		return nil
-	}
+	// The merge is soft-fail: invalid input is logged and the StatefulSet is built
+	// from controller defaults. See applyPodTemplateSpecToStatefulSet's godoc.
+	r.applyPodTemplateSpecToStatefulSet(ctx, embedding, statefulSet)
 
 	if err := ctrl.SetControllerReference(embedding, statefulSet, r.Scheme); err != nil {
 		return nil
@@ -648,7 +645,6 @@ func (*EmbeddingServerReconciler) applyResourceRequirements(embedding *mcpv1beta
 // User-provided PodTemplateSpec customizations are applied later in
 // statefulSetForEmbedding via strategic merge patch.
 func (*EmbeddingServerReconciler) buildPodTemplate(
-	_ *mcpv1beta1.EmbeddingServer,
 	labels map[string]string,
 	container corev1.Container,
 ) corev1.PodTemplateSpec {
@@ -670,25 +666,26 @@ func (*EmbeddingServerReconciler) buildPodTemplate(
 // topologySpreadConstraints, init containers, sidecars, etc.) while keeping controller
 // defaults for fields the user did not set.
 //
-// The raw user JSON is used as the patch input (rather than re-marshaling a parsed
-// PodTemplateSpec). This avoids Go's `json.Marshal` turning nil slices into `[]`, which
-// strategic merge patch interprets as "replace with empty" and would clobber controller
-// defaults.
+// The merge itself is delegated to ctrlutil.ApplyPodTemplateSpecPatch — which is
+// policy-neutral. Invalid user input is treated here as a soft failure: the merge is
+// skipped and the StatefulSet is built from controller defaults. The user-facing signal
+// lives on the EmbeddingServer status (set by validateAndUpdatePodTemplateStatus):
+// Phase=Failed and ConditionPodTemplateValid=False. This mirrors the pre-existing
+// tolerant behavior — refusing to create the StatefulSet would leave the resource stuck
+// with no pod and no observable controller-side state, while the validation condition
+// already tells the user exactly why their input was rejected. The vMCP controller
+// makes the opposite choice (hard-fail) for the same helper; both are documented on
+// ApplyPodTemplateSpecPatch's godoc.
 //
-// Invalid user input is treated as a soft failure: the merge is skipped and the
-// StatefulSet is built from controller defaults. The user-facing signal lives on the
-// EmbeddingServer status (set by validateAndUpdatePodTemplateStatus): Phase=Failed
-// and ConditionPodTemplateValid=False. This mirrors the pre-existing tolerant
-// behavior — refusing to create the StatefulSet would leave the resource stuck with
-// no pod and no observable controller-side state, while the validation condition
-// already tells the user exactly why their input was rejected.
+// The function does not return an error: every failure mode is converted to a log line
+// plus controller-default fallback at this call site.
 func (*EmbeddingServerReconciler) applyPodTemplateSpecToStatefulSet(
 	ctx context.Context,
 	embedding *mcpv1beta1.EmbeddingServer,
 	statefulSet *appsv1.StatefulSet,
-) error {
+) {
 	if embedding.Spec.PodTemplateSpec == nil || len(embedding.Spec.PodTemplateSpec.Raw) == 0 {
-		return nil
+		return
 	}
 
 	logger := log.FromContext(ctx)
@@ -703,41 +700,25 @@ func (*EmbeddingServerReconciler) applyPodTemplateSpecToStatefulSet(
 			"error", err.Error(),
 			"embeddingserver", embedding.Name,
 			"namespace", embedding.Namespace)
-		return nil
+		return
 	}
 
-	userJSON := embedding.Spec.PodTemplateSpec.Raw
-
-	originalJSON, err := json.Marshal(statefulSet.Spec.Template)
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(statefulSet.Spec.Template, embedding.Spec.PodTemplateSpec.Raw)
 	if err != nil {
-		return fmt.Errorf("failed to marshal original PodTemplateSpec: %w", err)
-	}
-
-	patchedJSON, err := strategicpatch.StrategicMergePatch(originalJSON, userJSON, corev1.PodTemplateSpec{})
-	if err != nil {
+		// Soft failure: log and fall back to controller defaults. See function
+		// godoc above for the rationale and the contrast with the vMCP caller.
 		logger.Info("Skipping PodTemplateSpec merge: strategic merge patch failed; StatefulSet will use controller defaults",
 			"error", err.Error(),
 			"embeddingserver", embedding.Name,
 			"namespace", embedding.Namespace)
-		return nil
+		return
 	}
 
-	var patchedPodTemplateSpec corev1.PodTemplateSpec
-	if err := json.Unmarshal(patchedJSON, &patchedPodTemplateSpec); err != nil {
-		logger.Info("Skipping PodTemplateSpec merge: patched output failed to unmarshal; StatefulSet will use controller defaults",
-			"error", err.Error(),
-			"embeddingserver", embedding.Name,
-			"namespace", embedding.Namespace)
-		return nil
-	}
-
-	statefulSet.Spec.Template = patchedPodTemplateSpec
+	statefulSet.Spec.Template = merged
 
 	logger.V(1).Info("Applied PodTemplateSpec customizations to StatefulSet",
 		"embeddingserver", embedding.Name,
 		"namespace", embedding.Namespace)
-
-	return nil
 }
 
 // applyStatefulSetOverrides applies statefulset-level overrides and returns annotations and labels

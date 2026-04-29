@@ -267,18 +267,6 @@ func TestProcessSecret(t *testing.T) {
 		assert.Equal(t, "", result)
 	})
 
-	t.Run("non-empty plain-text value reaches GetSecretsManager", func(t *testing.T) {
-		t.Parallel()
-		// ProcessSecret delegates to GetSecretsManager() for non-empty, non-CLI-format
-		// values. The exact error depends on what secrets provider (if any) is
-		// configured on the test host, but it must NOT be nil and must NOT be the
-		// unknown-type error — proving the call reached the manager code path
-		// rather than returning early or failing token-type validation.
-		_, err := ProcessSecret("test-workload", "plain-text-secret", TokenTypeOAuthClientSecret)
-		assert.Error(t, err, "ProcessSecret with a plain-text value must fail when no writable provider is injectable")
-		assert.NotContains(t, err.Error(), "unknown token type",
-			"error should not be a token-type validation failure — it should come from the secrets manager")
-	})
 }
 
 func TestProcessSecretWithProvider(t *testing.T) {

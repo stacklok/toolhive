@@ -164,8 +164,8 @@ func GenerateUniqueSecretNameWithPrefix(workloadName, prefix string, secretManag
 // This version is testable with dependency injection
 func StoreSecretInManagerWithProvider(ctx context.Context, secretName, secretValue string, secretManager secrets.Provider) error {
 	// Check if the provider supports writing secrets
-	if !secretManager.Capabilities().CanWrite {
-		return fmt.Errorf("secrets provider does not support writing secrets")
+	if caps := secretManager.Capabilities(); !caps.CanWrite {
+		return fmt.Errorf("secrets provider (%s) does not support writing secrets", caps)
 	}
 
 	// Store the secret

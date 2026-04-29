@@ -107,6 +107,7 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 	var (
 		thvConfig    *e2e.TestConfig
 		tempDir      string
+		binDir       string
 		oidcPort     int
 		oidcServer   *e2e.OIDCMockServer
 		thvCmd       func(args ...string) *e2e.THVCommand
@@ -121,7 +122,8 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 
 		// Install a fake browser so OIDC login completes in headless/CI
 		// environments where no real browser is available.
-		binDir, binDirErr := e2e.CreateFakeBrowserDir(tempDir)
+		var binDirErr error
+		binDir, binDirErr = e2e.CreateFakeBrowserDir(tempDir)
 		Expect(binDirErr).ToNot(HaveOccurred())
 
 		// Isolated environment: XDG_CONFIG_HOME and HOME point to tempDir so
@@ -172,9 +174,10 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 
 	Describe("thv llm setup with inline flags", func() {
 		It("patches detected tools and persists config", func() {
-			// Create ~/.claude/ so the Claude Code adapter detects the tool.
+			// Create ~/.claude/ and stub the claude binary so the Claude Code adapter detects the tool.
 			claudeDir := filepath.Join(tempDir, ".claude")
 			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
+			Expect(createFakeBinary(binDir, "claude")).To(Succeed())
 
 			issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
 
@@ -223,9 +226,10 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 
 	Describe("thv llm teardown", func() {
 		It("reverts all tool configs", func() {
-			// Create ~/.claude/ to trigger Claude Code detection.
+			// Create ~/.claude/ and stub the claude binary to trigger Claude Code detection.
 			claudeDir := filepath.Join(tempDir, ".claude")
 			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
+			Expect(createFakeBinary(binDir, "claude")).To(Succeed())
 
 			issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
 
@@ -277,6 +281,7 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 			// teardown path itself and confirms that an unknown tool name is rejected.
 			claudeDir := filepath.Join(tempDir, ".claude")
 			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
+			Expect(createFakeBinary(binDir, "claude")).To(Succeed())
 
 			issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
 
@@ -331,6 +336,7 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 		It("clears cached tokens in addition to reverting tool configs", func() {
 			claudeDir := filepath.Join(tempDir, ".claude")
 			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
+			Expect(createFakeBinary(binDir, "claude")).To(Succeed())
 
 			issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
 

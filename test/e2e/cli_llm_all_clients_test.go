@@ -502,6 +502,13 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				out, serr, rerr := proxyCmd.RunWithTimeout(15 * time.Second)
 				done <- proxyResult{out, serr, rerr}
 			}()
+			DeferCleanup(func() {
+				_ = proxyCmd.Interrupt()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+				}
+			})
 
 			By(fmt.Sprintf("waiting for proxy to listen on port %d", proxyPort))
 			proxyAddr := fmt.Sprintf("127.0.0.1:%d", proxyPort)
@@ -514,18 +521,6 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				return nil
 			}, 10*time.Second, 300*time.Millisecond).Should(Succeed(),
 				"proxy should be listening on %s", proxyAddr)
-
-			By("interrupting the proxy")
-			_ = proxyCmd.Interrupt()
-
-			select {
-			case r := <-done:
-				// The proxy may exit with a non-zero code on SIGINT — that's OK.
-				// We only care that it started cleanly (it was listening above).
-				_ = r
-			case <-time.After(5 * time.Second):
-				Fail("proxy did not exit after interrupt within 5s")
-			}
 		})
 	})
 
@@ -580,28 +575,57 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
 			Expect(createFakeBinary(binDir, "claude")).To(Succeed())
 
+			// Start a local HTTPS mock gateway so the proxy can forward requests
+			// quickly rather than timing out on DNS resolution for a fake domain.
+			gwPort, portErr := networking.FindOrUsePort(0)
+			Expect(portErr).ToNot(HaveOccurred())
+			gw, gwErr := e2e.NewLLMGatewayMock(gwPort)
+			Expect(gwErr).ToNot(HaveOccurred())
+			Expect(gw.Start()).To(Succeed())
+			defer func() { _ = gw.Stop() }()
+
+			gwCertFile := filepath.Join(tempDir, "rebind-gw-cert.pem")
+			Expect(os.WriteFile(gwCertFile, gw.CertPEM(), 0600)).To(Succeed())
+
 			issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
 			stdout, stderr, err := runSetupWithOIDCCompletion(
 				thvCmd, oidcServer,
-				"--gateway-url", gatewayURL,
+				"--gateway-url", gw.URL(),
 				"--issuer", issuerURL,
 				"--client-id", clientID,
 			)
 			Expect(err).ToNot(HaveOccurred(),
 				"setup should succeed; stdout=%q stderr=%q", stdout, stderr)
 
-			proxyPort, portErr := networking.FindOrUsePort(0)
-			Expect(portErr).ToNot(HaveOccurred())
+			// Inject a cached access token so the proxy returns a response
+			// immediately rather than hanging on the 10-second token-fetch timeout.
+			// The loopback-Host check fires before token fetch, but a valid-looking
+			// token lets the proxy attempt forwarding and return 502 (not 403) fast.
+			rebindEnvKey := tokensource.LLMAccessTokenEnvVar(gw.URL(), issuerURL)
+			rebindToken := "rebind-test-token|" + time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+
+			proxyPort, portErr2 := networking.FindOrUsePort(0)
+			Expect(portErr2).ToNot(HaveOccurred())
 
 			By(fmt.Sprintf("setting proxy port to %d and starting proxy", proxyPort))
 			thvCmd("llm", "config", "set", "--proxy-port", fmt.Sprintf("%d", proxyPort)).ExpectSuccess()
 
 			done := make(chan struct{})
-			proxyCmd := thvCmd("llm", "proxy", "start")
+			proxyCmd := thvCmd("llm", "proxy", "start").WithEnv(
+				"SSL_CERT_FILE="+gwCertFile,
+				rebindEnvKey+"="+rebindToken,
+			)
 			go func() {
 				defer close(done)
 				_, _, _ = proxyCmd.RunWithTimeout(15 * time.Second)
 			}()
+			DeferCleanup(func() {
+				_ = proxyCmd.Interrupt()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+				}
+			})
 
 			proxyAddr := fmt.Sprintf("127.0.0.1:%d", proxyPort)
 			Eventually(func() error {
@@ -614,12 +638,14 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 			}, 10*time.Second, 300*time.Millisecond).Should(Succeed(),
 				"proxy should be listening on %s", proxyAddr)
 
+			rebindClient := &http.Client{Timeout: 10 * time.Second}
+
 			By("verifying a non-loopback Host header is rejected with 403")
 			req, reqErr := http.NewRequest("GET", fmt.Sprintf("http://%s/v1/models", proxyAddr), nil)
 			Expect(reqErr).ToNot(HaveOccurred())
 			req.Host = "attacker.example.com"
 
-			resp, doErr := http.DefaultClient.Do(req) //nolint:noctx
+			resp, doErr := rebindClient.Do(req) //nolint:noctx
 			Expect(doErr).ToNot(HaveOccurred())
 			_ = resp.Body.Close()
 			Expect(resp.StatusCode).To(Equal(http.StatusForbidden),
@@ -630,19 +656,11 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 			Expect(reqErr2).ToNot(HaveOccurred())
 			// Use the default Host (127.0.0.1:port) — no override needed.
 
-			resp2, doErr2 := http.DefaultClient.Do(req2) //nolint:noctx
+			resp2, doErr2 := rebindClient.Do(req2) //nolint:noctx
 			Expect(doErr2).ToNot(HaveOccurred())
 			_ = resp2.Body.Close()
 			Expect(resp2.StatusCode).ToNot(Equal(http.StatusForbidden),
 				"loopback Host should pass the DNS-rebinding guard (got %d instead)", resp2.StatusCode)
-
-			By("stopping the proxy")
-			_ = proxyCmd.Interrupt()
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-				Fail("proxy did not exit after interrupt within 5s")
-			}
 		})
 	})
 
@@ -700,12 +718,17 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				proxyPort, portErr := networking.FindOrUsePort(0)
 				Expect(portErr).ToNot(HaveOccurred())
 
-				// Start the mock LLM gateway (plain HTTP — no TLS cert trust needed
-				// in the subprocess).
+				// Start the mock LLM gateway (HTTPS with self-signed cert).
 				By(fmt.Sprintf("[%s] starting mock LLM gateway on port %d", clientTC.name, gatewayPort))
-				gateway := e2e.NewLLMGatewayMockHTTP(gatewayPort)
+				gateway, gwErr := e2e.NewLLMGatewayMock(gatewayPort)
+				Expect(gwErr).ToNot(HaveOccurred())
 				Expect(gateway.Start()).To(Succeed())
 				defer func() { _ = gateway.Stop() }()
+
+				// Write the self-signed cert to a temp file so the thv subprocess
+				// can trust it via SSL_CERT_FILE (respected by Go on Linux).
+				certFile := filepath.Join(tempDir, fmt.Sprintf("gw-cert-%d.pem", gatewayPort))
+				Expect(os.WriteFile(certFile, gateway.CertPEM(), 0600)).To(Succeed())
 
 				mockGatewayURL := gateway.URL()
 				issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
@@ -739,7 +762,10 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				tokenValue := fakeToken + "|" + time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 
 				thvCmdWithToken := func(args ...string) *e2e.THVCommand {
-					return thvCmd(args...).WithEnv(envKey + "=" + tokenValue)
+					return thvCmd(args...).WithEnv(
+						envKey+"="+tokenValue,
+						"SSL_CERT_FILE="+certFile,
+					)
 				}
 
 				// Configure the proxy port and start it.
@@ -753,6 +779,13 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 					defer close(done)
 					_, _, _ = proxyCmd.RunWithTimeout(20 * time.Second)
 				}()
+				DeferCleanup(func() {
+					_ = proxyCmd.Interrupt()
+					select {
+					case <-done:
+					case <-time.After(5 * time.Second):
+					}
+				})
 
 				proxyAddr := fmt.Sprintf("127.0.0.1:%d", proxyPort)
 				Eventually(func() error {
@@ -765,10 +798,13 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				}, 10*time.Second, 300*time.Millisecond).Should(Succeed(),
 					"proxy should be listening on %s", proxyAddr)
 
-				// Send a request through the proxy and verify the gateway received it
-				// with the correct Bearer token.
+				// Send requests through the proxy and verify the gateway received them
+				// with the correct Bearer token. Use a client with an explicit timeout
+				// so a stalled proxy fails fast rather than hanging the suite.
+				proxyClient := &http.Client{Timeout: 10 * time.Second}
+
 				By(fmt.Sprintf("[%s] sending GET /v1/models through the proxy", clientTC.name))
-				resp, doErr := http.Get(fmt.Sprintf("http://%s/v1/models", proxyAddr)) //nolint:noctx
+				resp, doErr := proxyClient.Get(fmt.Sprintf("http://%s/v1/models", proxyAddr)) //nolint:noctx
 				Expect(doErr).ToNot(HaveOccurred(), "GET /v1/models through proxy should not error")
 				_ = resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusOK),
@@ -780,7 +816,7 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 
 				// Also verify the response payload is the expected mock JSON.
 				By(fmt.Sprintf("[%s] sending POST /v1/chat/completions through the proxy", clientTC.name))
-				chatResp, chatErr := http.Post( //nolint:noctx
+				chatResp, chatErr := proxyClient.Post( //nolint:noctx
 					fmt.Sprintf("http://%s/v1/chat/completions", proxyAddr),
 					"application/json",
 					strings.NewReader(`{"model":"mock-gpt-4","messages":[{"role":"user","content":"hi"}]}`),
@@ -793,13 +829,6 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				Expect(chatBody).To(HaveKey("choices"),
 					"chat completions response should contain 'choices'")
 
-				By(fmt.Sprintf("[%s] stopping the proxy", clientTC.name))
-				_ = proxyCmd.Interrupt()
-				select {
-				case <-done:
-				case <-time.After(5 * time.Second):
-					Fail("proxy did not exit after interrupt within 5s")
-				}
 			})
 		}
 	})

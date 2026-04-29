@@ -1087,12 +1087,22 @@ func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, prox
 	// Ensure Role with minimal permissions for remote proxies
 	// Remote proxies only need ConfigMap and Secret read access (no StatefulSet/Pod management)
 	_, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
-		Name:      proxyRunnerNameForRBAC,
-		Namespace: proxy.Namespace,
-		Rules:     remoteProxyRBACRules,
-		Owner:     proxy,
+		Name:             proxyRunnerNameForRBAC,
+		Namespace:        proxy.Namespace,
+		Rules:            remoteProxyRBACRules,
+		Owner:            proxy,
+		ImagePullSecrets: imagePullSecretsForRemoteProxy(proxy),
 	})
 	return err
+}
+
+// imagePullSecretsForRemoteProxy returns the image pull secrets configured via
+// spec.resourceOverrides.proxyDeployment.imagePullSecrets, or nil if unset.
+func imagePullSecretsForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) []corev1.LocalObjectReference {
+	if proxy.Spec.ResourceOverrides == nil || proxy.Spec.ResourceOverrides.ProxyDeployment == nil {
+		return nil
+	}
+	return proxy.Spec.ResourceOverrides.ProxyDeployment.ImagePullSecrets
 }
 
 // updateMCPRemoteProxyStatus updates the status of the MCPRemoteProxy

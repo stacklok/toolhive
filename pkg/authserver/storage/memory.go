@@ -877,14 +877,15 @@ func (s *MemoryStorage) GetLatestUpstreamTokensForUser(_ context.Context, userID
 	}
 
 	return &UpstreamTokens{
-		ProviderID:      winner.ProviderID,
-		AccessToken:     winner.AccessToken,
-		RefreshToken:    winner.RefreshToken,
-		IDToken:         winner.IDToken,
-		ExpiresAt:       winner.ExpiresAt,
-		UserID:          winner.UserID,
-		UpstreamSubject: winner.UpstreamSubject,
-		ClientID:        winner.ClientID,
+		ProviderID:       winner.ProviderID,
+		AccessToken:      winner.AccessToken,
+		RefreshToken:     winner.RefreshToken,
+		IDToken:          winner.IDToken,
+		ExpiresAt:        winner.ExpiresAt,
+		SessionExpiresAt: winner.SessionExpiresAt,
+		UserID:           winner.UserID,
+		UpstreamSubject:  winner.UpstreamSubject,
+		ClientID:         winner.ClientID,
 	}, nil
 }
 

@@ -1173,15 +1173,20 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 			if stored.ExpiresAt != 0 {
 				expiresAt = time.Unix(stored.ExpiresAt, 0)
 			}
+			var sessionExpiresAt time.Time
+			if stored.SessionExpiresAt != 0 {
+				sessionExpiresAt = time.Unix(stored.SessionExpiresAt, 0)
+			}
 			winnerTokens = &UpstreamTokens{
-				ProviderID:      stored.ProviderID,
-				AccessToken:     stored.AccessToken,
-				RefreshToken:    stored.RefreshToken,
-				IDToken:         stored.IDToken,
-				ExpiresAt:       expiresAt,
-				UserID:          stored.UserID,
-				UpstreamSubject: stored.UpstreamSubject,
-				ClientID:        stored.ClientID,
+				ProviderID:       stored.ProviderID,
+				AccessToken:      stored.AccessToken,
+				RefreshToken:     stored.RefreshToken,
+				IDToken:          stored.IDToken,
+				ExpiresAt:        expiresAt,
+				SessionExpiresAt: sessionExpiresAt,
+				UserID:           stored.UserID,
+				UpstreamSubject:  stored.UpstreamSubject,
+				ClientID:         stored.ClientID,
 			}
 		}
 	}

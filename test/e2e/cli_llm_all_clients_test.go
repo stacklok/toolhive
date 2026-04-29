@@ -141,7 +141,7 @@ func allClientTestCases() []llmClientTestCase {
 			detectionDir: func(tempDir string) string {
 				return llmSettingsDirFor("vscode-insider", tempDir)
 			},
-			binaryName: "code",
+			binaryName: "code-insiders",
 			settingsPath: func(tempDir string) string {
 				return filepath.Join(llmSettingsDirFor("vscode-insider", tempDir), "settings.json")
 			},
@@ -981,9 +981,10 @@ func installAllDetectedClients(tempDir, binDir string) []string {
 	return installed
 }
 
-// jsonPointerGet resolves a simplified JSON pointer against a map[string]any,
-// returning the string value or empty string if not found. Supports two-level
-// nesting (e.g. "/auth/tokenCommand") but not arrays.
+// jsonPointerGet resolves a simplified JSON pointer (RFC 6901) against a
+// map[string]any, returning the string value or empty string if not found.
+// Supports arbitrary nesting depth but not array indexing (e.g. "/a/b/c" works,
+// "/items/0/name" does not).
 func jsonPointerGet(obj map[string]any, pointer string) string {
 	segments := strings.Split(strings.TrimPrefix(pointer, "/"), "/")
 	var cur any = obj

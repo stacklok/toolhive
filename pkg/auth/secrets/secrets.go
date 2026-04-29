@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -207,15 +208,21 @@ func GetUserSecretsProvider() (secrets.Provider, error) {
 // GetUserSecretsProvider it does not apply UserProvider filtering, so callers
 // can read and delete __thv_* prefixed keys directly.
 func GetSystemSecretsProvider() (secrets.Provider, error) {
-	configProvider := config.NewDefaultProvider()
+	return getSystemSecretsProviderFromConfig(config.NewDefaultProvider(), &env.OSReader{})
+}
+
+// getSystemSecretsProviderFromConfig is the testable core of GetSystemSecretsProvider.
+// It accepts an explicit config.Provider and env.Reader so tests can inject
+// both without touching global environment state.
+func getSystemSecretsProviderFromConfig(configProvider config.Provider, envReader env.Reader) (secrets.Provider, error) {
 	cfg := configProvider.GetConfig()
 
-	// GetProviderType already handles the TOOLHIVE_SECRETS_PROVIDER env var and
-	// allows the "environment" provider even when SetupCompleted is false.
-	// Calling it first means Kubernetes / test deployments that set the env var
-	// do not have to complete interactive setup. The bare SetupCompleted guard
-	// below is only reached when no env var override is present.
-	providerType, err := cfg.Secrets.GetProviderType()
+	// GetProviderTypeWithEnv handles the TOOLHIVE_SECRETS_PROVIDER env var and
+	// allows the "environment" provider even when SetupCompleted is false, so
+	// Kubernetes and test deployments can skip interactive setup. When no env
+	// var override is present and SetupCompleted is false, it returns
+	// ErrSecretsNotSetup, which is propagated directly to the caller.
+	providerType, err := cfg.Secrets.GetProviderTypeWithEnv(envReader)
 	if err != nil {
 		if errors.Is(err, secrets.ErrSecretsNotSetup) {
 			return nil, secrets.ErrSecretsNotSetup

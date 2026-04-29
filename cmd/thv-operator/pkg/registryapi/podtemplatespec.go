@@ -106,23 +106,15 @@ func WithContainer(container corev1.Container) PodTemplateSpecOption {
 	}
 }
 
-// WithImagePullSecrets sets the image pull secrets on the PodSpec.
-// Existing secrets are preserved; new secrets (by name) are appended for idempotency.
+// WithImagePullSecrets sets the image pull secrets on the pod spec from
+// spec.imagePullSecrets. These are treated as defaults; a user-provided
+// PodTemplateSpec can override them via MergePodTemplateSpecs.
 func WithImagePullSecrets(secrets []corev1.LocalObjectReference) PodTemplateSpecOption {
 	return func(pts *corev1.PodTemplateSpec) {
 		if len(secrets) == 0 {
 			return
 		}
-		existing := make(map[string]bool, len(pts.Spec.ImagePullSecrets))
-		for _, s := range pts.Spec.ImagePullSecrets {
-			existing[s.Name] = true
-		}
-		for _, s := range secrets {
-			if !existing[s.Name] {
-				pts.Spec.ImagePullSecrets = append(pts.Spec.ImagePullSecrets, s)
-				existing[s.Name] = true
-			}
-		}
+		pts.Spec.ImagePullSecrets = secrets
 	}
 }
 
@@ -420,6 +412,7 @@ func BuildRegistryAPIContainer(image string) corev1.Container {
 //   - ServiceAccountName: Default only if user hasn't specified
 //   - Containers: Merged by name - defaults fill in missing container fields
 //   - Volumes: Merged by name - defaults added only if not present
+//   - ImagePullSecrets: User list wins atomically if non-empty; otherwise inherits defaults
 //   - All other PodSpec fields: User values preserved as-is
 func MergePodTemplateSpecs(defaultPTS, userPTS *corev1.PodTemplateSpec) corev1.PodTemplateSpec {
 	if userPTS == nil {

@@ -92,7 +92,7 @@ var _ = Describe("CIMD Authentication", Label("remote", "auth", "cimd"), Serial,
 	Context("when the authorization server advertises CIMD support", func() {
 		It("uses the CIMD client_id and skips DCR", func() {
 			By("Starting mock authorization server with CIMD support enabled")
-			mockAS := newCIMDMockAuthServer(GinkgoT(), true)
+			mockAS := newCIMDMockAuthServer(GinkgoT(), true, false)
 
 			By("Starting mock MCP server that requires authentication")
 			mockMCP := newCIMDMockMCPServer(GinkgoT(), mockAS.URL())
@@ -160,7 +160,7 @@ var _ = Describe("CIMD Authentication", Label("remote", "auth", "cimd"), Serial,
 	Context("when the authorization server does NOT advertise CIMD support", func() {
 		It("falls back to DCR and does not use the CIMD client_id", func() {
 			By("Starting mock authorization server with CIMD support disabled")
-			mockAS := newCIMDMockAuthServer(GinkgoT(), false)
+			mockAS := newCIMDMockAuthServer(GinkgoT(), false, false)
 
 			By("Starting mock MCP server that requires authentication")
 			mockMCP := newCIMDMockMCPServer(GinkgoT(), mockAS.URL())
@@ -214,6 +214,90 @@ var _ = Describe("CIMD Authentication", Label("remote", "auth", "cimd"), Serial,
 			// Give thv a moment to hit the DCR endpoint before asserting.
 			Eventually(mockAS.DcrWasCalled, 10*time.Second, 500*time.Millisecond).Should(BeTrue(),
 				"DCR registration endpoint must be called when CIMD is not advertised")
+		})
+	})
+
+	Context("CIMD fallback and warm-start behaviour", func() {
+		It("falls back to DCR when AS rejects the CIMD client_id", func() {
+			By("Starting mock authorization server: CIMD advertised but first CIMD request rejected")
+			mockAS := newCIMDMockAuthServer(GinkgoT(), true, true)
+
+			By("Starting mock MCP server that requires authentication")
+			mockMCP := newCIMDMockMCPServer(GinkgoT(), mockAS.URL())
+
+			serverName := e2e.GenerateUniqueServerName("cimd-reject-fallback")
+
+			By("Starting thv run pointing at the mock MCP server")
+			cmd, outputBuffer := startCIMDRunCommand(config, serverName, mockMCP.URL, mockAS.IssuerURL())
+
+			defer func() {
+				if cmd.Process != nil {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
+				if config.CleanupAfter {
+					_ = e2e.StopAndRemoveMCPServer(config, serverName)
+				}
+			}()
+
+			By("Waiting for the first OAuth URL (CIMD attempt) to appear in the output")
+			var firstAuthURL string
+			Eventually(func() string {
+				firstAuthURL = extractAuthURL(outputBuffer.String())
+				return firstAuthURL
+			}, 30*time.Second, 500*time.Millisecond).ShouldNot(BeEmpty(),
+				"thv run should print 'Please open this URL in your browser' for the CIMD attempt")
+
+			By("Visiting the first URL — the AS will redirect back with error=invalid_client")
+			client := &http.Client{
+				Timeout: 10 * time.Second,
+				CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+					return nil // follow redirects
+				},
+			}
+			autoFirstURL := appendAutoComplete(firstAuthURL)
+			resp, err := client.Get(autoFirstURL) //nolint:gosec // URL is test-controlled
+			Expect(err).ToNot(HaveOccurred(), "GET to first auto-complete URL should not error")
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			// The redirect chain ends at the ToolHive callback; any 2xx/3xx is fine.
+			Expect(resp.StatusCode).To(BeNumerically("<", 500),
+				"redirect chain for CIMD rejection should not produce a server error")
+
+			By("Asserting the mock AS registered the CIMD rejection")
+			Eventually(mockAS.RejectCIMDWasCalled, 10*time.Second, 500*time.Millisecond).Should(BeTrue(),
+				"mock AS must have rejected the CIMD client_id before DCR retry")
+
+			By("Waiting for the second OAuth URL (DCR retry) to appear in the output")
+			var secondAuthURL string
+			Eventually(func() string {
+				out := outputBuffer.String()
+				// The second URL appears after the first; find the last occurrence.
+				allURLs := regexp.MustCompile(`Please open this URL in your browser: (https?://[^\s"]+)`).
+					FindAllStringSubmatch(out, -1)
+				if len(allURLs) >= 2 {
+					secondAuthURL = allURLs[len(allURLs)-1][1]
+				}
+				return secondAuthURL
+			}, 45*time.Second, 500*time.Millisecond).ShouldNot(BeEmpty(),
+				"thv run should print a second OAuth URL after the CIMD rejection triggers a DCR retry")
+
+			By("Completing the DCR OAuth flow via auto_complete")
+			autoSecondURL := appendAutoComplete(secondAuthURL)
+			resp2, err := client.Get(autoSecondURL) //nolint:gosec // URL is test-controlled
+			Expect(err).ToNot(HaveOccurred(), "GET to second auto-complete URL should succeed")
+			_, _ = io.Copy(io.Discard, resp2.Body)
+			_ = resp2.Body.Close()
+			Expect(resp2.StatusCode).To(BeNumerically("<", 400),
+				"DCR auto-complete redirect chain should succeed")
+
+			By("Asserting DCR was called during the retry")
+			Eventually(mockAS.DcrWasCalled, 10*time.Second, 500*time.Millisecond).Should(BeTrue(),
+				"DCR registration endpoint must be called after CIMD rejection")
+
+			By("Waiting for thv to report the server as running")
+			err = e2e.WaitForMCPServer(config, serverName, 30*time.Second)
+			Expect(err).ToNot(HaveOccurred(), "server should appear as running in thv list after CIMD→DCR fallback")
 		})
 	})
 })

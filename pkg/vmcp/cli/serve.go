@@ -69,6 +69,10 @@ type ServeConfig struct {
 	// the loaded config does not already define an audit section.
 	EnableAudit bool
 
+	// SessionTTL is the inactivity timeout for vMCP sessions.
+	// Zero uses the server default (30m). Negative values fail validation.
+	SessionTTL time.Duration
+
 	// Optimizer tier selection (Phase 4 — flag-driven).
 	// EnableOptimizer enables Tier 1 FTS5 keyword search (find_tool / call_tool).
 	EnableOptimizer bool
@@ -112,6 +116,9 @@ func (c ServeConfig) validateQuickModeHost() error {
 func Serve(ctx context.Context, cfg ServeConfig) error {
 	if err := cfg.validateQuickModeHost(); err != nil {
 		return err
+	}
+	if cfg.SessionTTL < 0 {
+		return fmt.Errorf("session-ttl must be non-negative, got %s", cfg.SessionTTL)
 	}
 
 	// Load and validate configuration — file path takes precedence over group quick mode.
@@ -373,6 +380,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		GroupRef:                vmcpCfg.Group,
 		Host:                    cfg.Host,
 		Port:                    cfg.Port,
+		SessionTTL:              cfg.SessionTTL,
 		AuthMiddleware:          authMiddleware,
 		AuthzMiddleware:         authzMiddleware,
 		AuthInfoHandler:         authInfoHandler,

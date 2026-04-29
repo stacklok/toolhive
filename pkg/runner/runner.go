@@ -166,6 +166,14 @@ func (c *RunConfig) GetPort() int {
 //
 //nolint:gocyclo // This function is complex but manageable
 func (r *Runner) Run(ctx context.Context) error {
+	// Resolve session TTL once so both the transport proxy and Redis storage use
+	// the same effective value, rather than each applying their own zero-fallback
+	// independently.
+	effectiveSessionTTL := r.Config.SessionTTL
+	if effectiveSessionTTL <= 0 {
+		effectiveSessionTTL = session.DefaultSessionTTL
+	}
+
 	// Create transport with runtime
 	transportConfig := types.Config{
 		Type:              r.Config.Transport,
@@ -177,6 +185,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Debug:             r.Config.Debug,
 		TrustProxyHeaders: r.Config.TrustProxyHeaders,
 		EndpointPrefix:    r.Config.EndpointPrefix,
+		SessionTTL:        effectiveSessionTTL,
 	}
 
 	// Set proxy mode for stdio transport
@@ -368,7 +377,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			Password:  os.Getenv(session.RedisPasswordEnvVar),
 			DB:        int(redisCfg.DB),
 			KeyPrefix: keyPrefix,
-		}, session.DefaultSessionTTL)
+		}, effectiveSessionTTL)
 		if err != nil {
 			return fmt.Errorf("failed to create Redis session storage: %w", err)
 		}

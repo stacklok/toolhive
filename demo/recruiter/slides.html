@@ -319,9 +319,9 @@
 <!-- ══════════════════════════════════════ 5 · Architecture ══ -->
 <section>
   <h2>Architecture</h2>
-  <p style="color:#718096; margin-bottom:.6em;">A shared MCP server — any agent session connects with one config file.</p>
+  <p style="color:#718096; margin-bottom:.5em;">A shared MCP server with fully pluggable storage, vector, and embedder backends.</p>
 
-  <svg viewBox="0 0 700 280" width="100%" style="max-width:680px; display:block; margin:0 auto;">
+  <svg viewBox="0 0 860 310" width="100%" style="display:block; margin:0 auto;">
     <defs>
       <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
         <path d="M0,0 L0,6 L8,3 z" fill="#00d4ff"/>
@@ -332,52 +332,76 @@
     </defs>
 
     <!-- Sessions -->
-    <rect x="8"   y="26"  width="150" height="44" rx="8" fill="#1a202c" stroke="#00d4ff" stroke-width="1.5"/>
-    <text x="83"  y="45"  fill="#718096" font-size="9.5" text-anchor="middle">Claude Code</text>
-    <text x="83"  y="60"  fill="#00d4ff" font-size="11" font-weight="600" text-anchor="middle">Recruiter A</text>
+    <rect x="8"  y="30"  width="148" height="42" rx="7" fill="#1a202c" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="82" y="48"  fill="#718096" font-size="9" text-anchor="middle">Claude Code</text>
+    <text x="82" y="62"  fill="#00d4ff" font-size="10.5" font-weight="600" text-anchor="middle">Recruiter A</text>
 
-    <rect x="8"   y="118" width="150" height="44" rx="8" fill="#1a202c" stroke="#00d4ff" stroke-width="1.5"/>
-    <text x="83"  y="137" fill="#718096" font-size="9.5" text-anchor="middle">Claude Code</text>
-    <text x="83"  y="152" fill="#00d4ff" font-size="11" font-weight="600" text-anchor="middle">Hiring Manager</text>
+    <rect x="8"  y="124" width="148" height="42" rx="7" fill="#1a202c" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="82" y="142" fill="#718096" font-size="9" text-anchor="middle">Claude Code</text>
+    <text x="82" y="156" fill="#00d4ff" font-size="10.5" font-weight="600" text-anchor="middle">Hiring Manager</text>
 
-    <rect x="8"   y="210" width="150" height="44" rx="8" fill="#1a202c" stroke="#00d4ff" stroke-width="1.5"/>
-    <text x="83"  y="229" fill="#718096" font-size="9.5" text-anchor="middle">Claude Code</text>
-    <text x="83"  y="244" fill="#00d4ff" font-size="11" font-weight="600" text-anchor="middle">Recruiter B</text>
+    <rect x="8"  y="218" width="148" height="42" rx="7" fill="#1a202c" stroke="#00d4ff" stroke-width="1.5"/>
+    <text x="82" y="236" fill="#718096" font-size="9" text-anchor="middle">Claude Code</text>
+    <text x="82" y="250" fill="#00d4ff" font-size="10.5" font-weight="600" text-anchor="middle">Recruiter B</text>
 
-    <!-- HTTP/MCP label -->
-    <text x="196" y="95" fill="#4a5568" font-size="9" text-anchor="middle">HTTP / MCP</text>
+    <text x="190" y="98" fill="#4a5568" font-size="8.5" text-anchor="middle">HTTP / MCP</text>
 
     <!-- Arrows to server -->
-    <line x1="160" y1="48"  x2="264" y2="120" stroke="#00d4ff" stroke-width="1.5" marker-end="url(#arr-cyan)"/>
-    <line x1="160" y1="140" x2="264" y2="140" stroke="#00d4ff" stroke-width="1.5" marker-end="url(#arr-cyan)"/>
-    <line x1="160" y1="232" x2="264" y2="160" stroke="#00d4ff" stroke-width="1.5" marker-end="url(#arr-cyan)"/>
+    <line x1="158" y1="51"  x2="262" y2="124" stroke="#00d4ff" stroke-width="1.5" marker-end="url(#arr-cyan)"/>
+    <line x1="158" y1="145" x2="262" y2="145" stroke="#00d4ff" stroke-width="1.5" marker-end="url(#arr-cyan)"/>
+    <line x1="158" y1="239" x2="262" y2="166" stroke="#00d4ff" stroke-width="1.5" marker-end="url(#arr-cyan)"/>
 
     <!-- Memory Server -->
-    <rect x="270" y="88" width="178" height="104" rx="10" fill="#0d1f2d" stroke="#00d4ff" stroke-width="2"/>
-    <text x="359" y="108" fill="#00d4ff" font-size="11" font-weight="700" text-anchor="middle">Memory Server</text>
-    <line x1="290" y1="115" x2="428" y2="115" stroke="#1a3a4a" stroke-width="1"/>
-    <text x="359" y="130" fill="#718096" font-size="9" text-anchor="middle">memory_remember / search</text>
-    <text x="359" y="144" fill="#718096" font-size="9" text-anchor="middle">memory_crystallize / flag</text>
-    <text x="359" y="158" fill="#718096" font-size="9" text-anchor="middle">resources/list · api/resources</text>
-    <text x="359" y="178" fill="#4a5568" font-size="8.5" text-anchor="middle">MCP Streamable HTTP</text>
+    <rect x="268" y="88" width="176" height="114" rx="9" fill="#0d1f2d" stroke="#00d4ff" stroke-width="2"/>
+    <!-- title + transport badge -->
+    <text x="356" y="106" fill="#00d4ff" font-size="11" font-weight="700" text-anchor="middle">Memory Server</text>
+    <rect x="290" y="110" width="132" height="14" rx="4" fill="rgba(0,212,255,.1)" stroke="rgba(0,212,255,.3)" stroke-width="1"/>
+    <text x="356" y="121" fill="#00d4ff" font-size="7.5" font-weight="600" text-anchor="middle" letter-spacing="0.08em">MCP · STREAMABLE HTTP</text>
+    <!-- MCP Tools label -->
+    <text x="283" y="137" fill="#4a5568" font-size="7.5" font-weight="600" letter-spacing="0.06em">MCP TOOLS</text>
+    <line x1="283" y1="140" x2="432" y2="140" stroke="#1a3a4a" stroke-width="1"/>
+    <!-- tool list -->
+    <text x="289" y="153" fill="#a0aec0" font-size="8.5">memory_remember</text>
+    <text x="380" y="153" fill="#718096" font-size="8">store + conflict check</text>
+    <text x="289" y="165" fill="#a0aec0" font-size="8.5">memory_search</text>
+    <text x="380" y="165" fill="#718096" font-size="8">vector similarity query</text>
+    <text x="289" y="177" fill="#a0aec0" font-size="8.5">memory_crystallize</text>
+    <text x="380" y="177" fill="#718096" font-size="8">→ Skill scaffold</text>
+    <text x="289" y="189" fill="#a0aec0" font-size="8.5">resources/list · flag · forget</text>
 
-    <!-- Arrows to backends -->
-    <line x1="450" y1="112" x2="530" y2="68"  stroke="#48bb78" stroke-width="1.5" marker-end="url(#arr-green)"/>
-    <line x1="450" y1="140" x2="530" y2="140" stroke="#48bb78" stroke-width="1.5" marker-end="url(#arr-green)"/>
-    <line x1="450" y1="168" x2="530" y2="212" stroke="#48bb78" stroke-width="1.5" marker-end="url(#arr-green)"/>
+    <!-- Arrows to backend groups -->
+    <line x1="446" y1="118" x2="516" y2="60"  stroke="#48bb78" stroke-width="1.5" marker-end="url(#arr-green)"/>
+    <line x1="446" y1="145" x2="516" y2="145" stroke="#48bb78" stroke-width="1.5" marker-end="url(#arr-green)"/>
+    <line x1="446" y1="172" x2="516" y2="230" stroke="#48bb78" stroke-width="1.5" marker-end="url(#arr-green)"/>
 
-    <!-- Backends -->
-    <rect x="536" y="38"  width="155" height="44" rx="7" fill="#1a202c" stroke="#48bb78" stroke-width="1.5"/>
-    <text x="613" y="57"  fill="#718096" font-size="9.5" text-anchor="middle">SQLite + sqlite-vec</text>
-    <text x="613" y="72"  fill="#48bb78" font-size="11" font-weight="600" text-anchor="middle">Storage + Vectors</text>
+    <!-- ── Storage backend ── -->
+    <rect x="522" y="18" width="320" height="74" rx="7" fill="#1a202c" stroke="#48bb78" stroke-width="1.5"/>
+    <text x="536" y="36"  fill="#48bb78" font-size="10" font-weight="700">💾  Storage</text>
+    <!-- default pill -->
+    <rect x="682" y="22" width="74" height="16" rx="8" fill="rgba(72,187,120,.15)" stroke="#48bb78" stroke-width="1"/>
+    <text x="719" y="34" fill="#48bb78" font-size="8" font-weight="600" text-anchor="middle">default</text>
+    <!-- options -->
+    <text x="536" y="52"  fill="#e2e8f0" font-size="9.5">SQLite + sqlite-vec</text>
+    <text x="536" y="67"  fill="#4a5568" font-size="9">also: PostgreSQL + pgvector  ·  Qdrant  ·  Weaviate  ·  Pinecone</text>
+    <text x="536" y="82"  fill="#4a5568" font-size="8.5" font-style="italic">swap provider in memory-server.yaml — no code changes</text>
 
-    <rect x="536" y="118" width="155" height="44" rx="7" fill="#1a202c" stroke="#9f7aea" stroke-width="1.5"/>
-    <text x="613" y="137" fill="#718096" font-size="9.5" text-anchor="middle">goose migrations</text>
-    <text x="613" y="152" fill="#9f7aea" font-size="11" font-weight="600" text-anchor="middle">Schema Manager</text>
+    <!-- ── Vector Store backend ── -->
+    <rect x="522" y="108" width="320" height="74" rx="7" fill="#1a202c" stroke="#9f7aea" stroke-width="1.5"/>
+    <text x="536" y="126" fill="#9f7aea" font-size="10" font-weight="700">🔍  Vector Store</text>
+    <rect x="682" y="112" width="74" height="16" rx="8" fill="rgba(159,122,234,.15)" stroke="#9f7aea" stroke-width="1"/>
+    <text x="719" y="124" fill="#9f7aea" font-size="8" font-weight="600" text-anchor="middle">default</text>
+    <text x="536" y="142" fill="#e2e8f0" font-size="9.5">sqlite-vec  (embedded, zero infra)</text>
+    <text x="536" y="157" fill="#4a5568" font-size="9">also: Qdrant  ·  pgvector  ·  Weaviate  ·  Pinecone</text>
+    <text x="536" y="172" fill="#4a5568" font-size="8.5" font-style="italic">PostgreSQL + pgvector collapses storage + vector into one</text>
 
-    <rect x="536" y="198" width="155" height="44" rx="7" fill="#1a202c" stroke="#f6e05e" stroke-width="1.5"/>
-    <text x="613" y="217" fill="#718096" font-size="9.5" text-anchor="middle">nomic-embed-text</text>
-    <text x="613" y="232" fill="#f6e05e" font-size="11" font-weight="600" text-anchor="middle">Ollama Embedder</text>
+    <!-- ── Embedder backend ── -->
+    <rect x="522" y="198" width="320" height="74" rx="7" fill="#1a202c" stroke="#f6e05e" stroke-width="1.5"/>
+    <text x="536" y="216" fill="#f6e05e" font-size="10" font-weight="700">🔤  Embedder</text>
+    <rect x="682" y="202" width="74" height="16" rx="8" fill="rgba(246,224,94,.15)" stroke="#f6e05e" stroke-width="1"/>
+    <text x="719" y="214" fill="#f6e05e" font-size="8" font-weight="600" text-anchor="middle">default</text>
+    <text x="536" y="232" fill="#e2e8f0" font-size="9.5">Ollama  (local, nomic-embed-text)</text>
+    <text x="536" y="247" fill="#4a5568" font-size="9">also: OpenAI  ·  Cohere  ·  Google Vertex AI</text>
+    <text x="536" y="262" fill="#4a5568" font-size="8.5" font-style="italic">teams with no local GPU use OpenAI or Cohere with zero changes</text>
   </svg>
 </section>
 

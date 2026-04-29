@@ -334,7 +334,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".github", "skills"},
 		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
 		LLMGatewayMode:     "proxy",
-		LLMBinaryName:      "code",
+		LLMBinaryName:      "code-insiders",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Code - Insiders", "User"},
 		LLMSettingsPlatformPrefix: map[Platform][]string{

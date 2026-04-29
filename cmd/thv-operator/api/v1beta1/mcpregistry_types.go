@@ -115,6 +115,18 @@ type MCPRegistrySpec struct {
 	// and to the operator-managed ServiceAccount the registry API runs as, so private
 	// images are pullable through either path.
 	//
+	// Use this field for new manifests.
+	//
+	// Important: this is the ONLY way to attach image-pull credentials to the
+	// operator-managed ServiceAccount. The legacy
+	// spec.podTemplateSpec.spec.imagePullSecrets path populates the Deployment's pod
+	// spec ONLY — it does NOT touch the ServiceAccount. On managed Kubernetes
+	// platforms that rely on ServiceAccount-level credential injection (for example
+	// GKE Workload Identity, OpenShift's per-SA dockercfg secrets, EKS IRSA), using
+	// only the legacy PodTemplateSpec path can fail to pull private images even when
+	// the secret exists in the namespace. Always set spec.imagePullSecrets when
+	// SA-level credentials matter.
+	//
 	// Precedence with PodTemplateSpec:
 	//   - This field is applied first as the controller-generated default.
 	//   - Values set under spec.podTemplateSpec.spec.imagePullSecrets are user overrides

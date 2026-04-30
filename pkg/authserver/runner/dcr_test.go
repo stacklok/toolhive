@@ -537,29 +537,68 @@ func TestResolveDCRCredentials_RegistrationEndpointDirectBypassesDiscovery(t *te
 	assert.Equal(t, int32(1), atomic.LoadInt32(&registrationHits))
 }
 
-func TestResolveDCRCredentials_RequiresClientIDEmpty(t *testing.T) {
+// TestResolveDCRCredentials_RejectsInvalidInputs covers every branch of
+// validateResolveInputs in one place: nil run-config, pre-provisioned
+// ClientID, missing DCRConfig, empty issuer, and nil credential store. The
+// previous split into two single-branch tests left three branches uncovered.
+func TestResolveDCRCredentials_RejectsInvalidInputs(t *testing.T) {
 	t.Parallel()
 
-	cache := NewInMemoryDCRCredentialStore()
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		ClientID: "preprovisioned",
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			RegistrationEndpoint: "https://example.com/register",
+	validCfg := &authserver.DCRUpstreamConfig{
+		RegistrationEndpoint: "https://example.com/register",
+	}
+
+	tests := []struct {
+		name       string
+		rc         *authserver.OAuth2UpstreamRunConfig
+		issuer     string
+		cache      DCRCredentialStore
+		wantErrSub string
+	}{
+		{
+			name:       "nil run-config",
+			rc:         nil,
+			issuer:     "https://example.com",
+			cache:      NewInMemoryDCRCredentialStore(),
+			wantErrSub: "oauth2 upstream run-config is required",
+		},
+		{
+			name:       "pre-provisioned client_id",
+			rc:         &authserver.OAuth2UpstreamRunConfig{ClientID: "preprovisioned", DCRConfig: validCfg},
+			issuer:     "https://example.com",
+			cache:      NewInMemoryDCRCredentialStore(),
+			wantErrSub: "pre-provisioned",
+		},
+		{
+			name:       "missing dcr_config",
+			rc:         &authserver.OAuth2UpstreamRunConfig{},
+			issuer:     "https://example.com",
+			cache:      NewInMemoryDCRCredentialStore(),
+			wantErrSub: "no dcr_config",
+		},
+		{
+			name:       "empty issuer",
+			rc:         &authserver.OAuth2UpstreamRunConfig{DCRConfig: validCfg},
+			issuer:     "",
+			cache:      NewInMemoryDCRCredentialStore(),
+			wantErrSub: "issuer is required",
+		},
+		{
+			name:       "nil cache",
+			rc:         &authserver.OAuth2UpstreamRunConfig{DCRConfig: validCfg},
+			issuer:     "https://example.com",
+			cache:      nil,
+			wantErrSub: "credential store is required",
 		},
 	}
-	_, err := resolveDCRCredentials(context.Background(), rc, "https://example.com", cache)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "pre-provisioned")
-}
-
-func TestResolveDCRCredentials_RequiresDCRConfig(t *testing.T) {
-	t.Parallel()
-
-	cache := NewInMemoryDCRCredentialStore()
-	rc := &authserver.OAuth2UpstreamRunConfig{}
-	_, err := resolveDCRCredentials(context.Background(), rc, "https://example.com", cache)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no dcr_config")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := resolveDCRCredentials(context.Background(), tc.rc, tc.issuer, tc.cache)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErrSub)
+		})
+	}
 }
 
 func TestNeedsDCR(t *testing.T) {

@@ -124,6 +124,12 @@ func discoverOIDCEndpointsWithClientAndValidation(
 				if oauthDoc.Issuer == doc.Issuer {
 					doc.RegistrationEndpoint = oauthDoc.RegistrationEndpoint
 					slog.Debug("Found registration_endpoint in OAuth authorization server metadata", "endpoint", doc.RegistrationEndpoint)
+					// Merge CIMD support flag — some servers (e.g. Granola) only advertise
+					// client_id_metadata_document_supported in the OAuth AS metadata, not
+					// in the OIDC discovery document.
+					if oauthDoc.ClientIDMetadataDocumentSupported {
+						doc.ClientIDMetadataDocumentSupported = true
+					}
 				} else {
 					slog.Warn("Issuer mismatch between OIDC and OAuth discovery documents, not merging registration_endpoint",
 						"oidc_issuer", doc.Issuer, "oauth_issuer", oauthDoc.Issuer)

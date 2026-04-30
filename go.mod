@@ -48,7 +48,7 @@ require (
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/shirou/gopsutil/v4 v4.26.3
 	github.com/spf13/viper v1.21.0
-	github.com/stacklok/toolhive-catalog v0.20260428.0
+	github.com/stacklok/toolhive-catalog v0.20260429.0
 	github.com/stacklok/toolhive-core v0.0.17
 	github.com/stretchr/testify v1.11.1
 	github.com/swaggo/swag/v2 v2.0.0-rc5
@@ -220,7 +220,7 @@ require (
 	github.com/morikuni/aec v1.0.0 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/muesli/termenv v0.16.0 // indirect
+	github.com/muesli/termenv v0.16.0
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/mxk/go-flowrate v0.0.0-20140419014527-cca7078d478f // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect

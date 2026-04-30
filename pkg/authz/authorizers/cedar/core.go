@@ -492,6 +492,26 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, erro
 		}
 		parsedClaims, err := parseUpstreamJWTClaims(upstreamToken)
 		if err != nil {
+			// Distinguish "not JWT-shaped" (opaque OAuth 2.0 access token —
+			// Google's ya29.*, GitHub's gho_*, etc.) from "JWT-shaped but
+			// malformed/tampered" (a JWT with three segments that fails to
+			// parse). Only fall back for the former; preserve the deny for
+			// the latter so a tampered upstream JWT cannot bypass policy.
+			//
+			// The embedded auth server already mirrors the upstream OIDC
+			// sub/email/name claims into its issued AS token (see
+			// pkg/authserver/server/session/session.go). For opaque-token
+			// providers, falling back to identity.Claims preserves identity
+			// for policies referencing standard OIDC claims; policies that
+			// reference upstream-only claims (groups, hd, custom namespaced
+			// claims) will see those attributes as absent and must be
+			// authored defensively (`has(claim_groups) && ...`).
+			if !looksLikeJWT(upstreamToken) {
+				slog.Warn("upstream token is not a JWT; falling back to request-token claims for Cedar evaluation",
+					"provider", a.primaryUpstreamProvider)
+				a.logClaimKeys("token-fallback", jwt.MapClaims(identity.Claims))
+				return jwt.MapClaims(identity.Claims), nil
+			}
 			return nil, fmt.Errorf("failed to parse upstream token for provider %q: %w",
 				a.primaryUpstreamProvider, err)
 		}
@@ -502,6 +522,13 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, erro
 	claims := jwt.MapClaims(identity.Claims)
 	a.logClaimKeys("token", claims)
 	return claims, nil
+}
+
+// looksLikeJWT returns true when the token has the three-segment shape of a
+// JOSE-compact-serialized JWT (`header.payload.signature`). It does not
+// validate the contents; the parser handles that.
+func looksLikeJWT(tokenStr string) bool {
+	return strings.Count(tokenStr, ".") == 2
 }
 
 // logClaimKeys emits a rate-limited DEBUG log listing the JWT claim keys

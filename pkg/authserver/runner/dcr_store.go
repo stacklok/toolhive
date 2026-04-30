@@ -27,10 +27,18 @@ const dcrStaleAgeThreshold = 90 * 24 * time.Hour
 // than the raw scope slice is used so the key is comparable and order-
 // insensitive.
 type DCRKey struct {
-	// Issuer is the authorization server's issuer identifier.
+	// Issuer is *this* auth server's issuer identifier — the local issuer
+	// of the embedded authorization server that performed the registration,
+	// NOT the upstream's. The cache is keyed by this value because two
+	// different local issuers registering against the same upstream are
+	// distinct OAuth clients and must not share credentials. The upstream's
+	// issuer is used only for RFC 8414 §3.3 metadata verification inside
+	// the resolver and is not part of the cache key.
 	Issuer string
 
-	// RedirectURI is the redirect URI registered with the authorization server.
+	// RedirectURI is the redirect URI registered with the upstream
+	// authorization server. Lives on the local issuer's origin since it is
+	// where the upstream sends the user back to us after authentication.
 	RedirectURI string
 
 	// ScopesHash is the SHA-256 hex digest of the sorted scope list.

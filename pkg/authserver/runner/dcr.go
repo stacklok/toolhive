@@ -194,13 +194,20 @@ func scopesHash(scopes []string) string {
 }
 
 // resolveDCRCredentials performs Dynamic Client Registration for rc against
-// the given issuer, caching the resulting credentials in cache. On cache hit
-// the resolver returns immediately without any network I/O.
+// the upstream authorization server identified by rc.DCRConfig, caching the
+// resulting credentials in cache. On cache hit the resolver returns
+// immediately without any network I/O.
 //
 // rc must have ClientID == "" and DCRConfig != nil — the caller is expected
-// to have validated this via OAuth2UpstreamRunConfig.Validate. issuer is the
-// upstream authorization server's issuer identifier used both for discovery
-// and for keying the cache.
+// to have validated this via OAuth2UpstreamRunConfig.Validate.
+//
+// localIssuer is *this* auth server's issuer identifier, NOT the upstream's.
+// It is used to key the cache and to default the redirect URI to
+// {localIssuer}/oauth/callback when rc.RedirectURI is empty. The upstream's
+// issuer is recovered separately from rc.DCRConfig.DiscoveryURL inside the
+// resolver and is used solely for RFC 8414 §3.3 metadata verification.
+// Passing the upstream's issuer here would produce a wrong-origin default
+// redirect and a cache key that does not identify the auth-server context.
 //
 // The caller is responsible for applying the returned resolution onto a COPY
 // of rc via applyResolution (per the copy-before-mutate rule). This function
@@ -208,27 +215,27 @@ func scopesHash(scopes []string) string {
 func resolveDCRCredentials(
 	ctx context.Context,
 	rc *authserver.OAuth2UpstreamRunConfig,
-	issuer string,
+	localIssuer string,
 	cache DCRCredentialStore,
 ) (*DCRResolution, error) {
-	if err := validateResolveInputs(rc, issuer, cache); err != nil {
+	if err := validateResolveInputs(rc, localIssuer, cache); err != nil {
 		return nil, err
 	}
 
-	redirectURI, err := resolveUpstreamRedirectURI(rc.RedirectURI, issuer)
+	redirectURI, err := resolveUpstreamRedirectURI(rc.RedirectURI, localIssuer)
 	if err != nil {
 		return nil, fmt.Errorf("dcr: resolve redirect uri: %w", err)
 	}
 
 	scopes := slices.Clone(rc.Scopes)
 	key := DCRKey{
-		Issuer:      issuer,
+		Issuer:      localIssuer,
 		RedirectURI: redirectURI,
 		ScopesHash:  scopesHash(scopes),
 	}
 
 	// Cache lookup short-circuits before any network I/O.
-	if cached, hit, err := lookupCachedResolution(ctx, cache, key, issuer, redirectURI); err != nil {
+	if cached, hit, err := lookupCachedResolution(ctx, cache, key, localIssuer, redirectURI); err != nil {
 		return nil, err
 	} else if hit {
 		return cached, nil
@@ -259,7 +266,7 @@ func resolveDCRCredentials(
 				res = nil
 			}
 		}()
-		return registerAndCache(ctx, rc, issuer, redirectURI, scopes, key, cache)
+		return registerAndCache(ctx, rc, localIssuer, redirectURI, scopes, key, cache)
 	})
 	if err != nil {
 		return nil, err
@@ -275,14 +282,14 @@ func resolveDCRCredentials(
 func registerAndCache(
 	ctx context.Context,
 	rc *authserver.OAuth2UpstreamRunConfig,
-	issuer, redirectURI string,
+	localIssuer, redirectURI string,
 	scopes []string,
 	key DCRKey,
 	cache DCRCredentialStore,
 ) (*DCRResolution, error) {
 	// Recheck cache: another flight that just finished may have populated
 	// it between our initial lookup and our singleflight entry.
-	if cached, hit, err := lookupCachedResolution(ctx, cache, key, issuer, redirectURI); err != nil {
+	if cached, hit, err := lookupCachedResolution(ctx, cache, key, localIssuer, redirectURI); err != nil {
 		return nil, err
 	} else if hit {
 		return cached, nil
@@ -290,10 +297,10 @@ func registerAndCache(
 
 	// Endpoint resolution: discover metadata when configured, otherwise use
 	// the caller-supplied RegistrationEndpoint directly. The upstream's
-	// expected issuer is recovered from cfg.DiscoveryURL inside the helper —
-	// the function-param `issuer` here names this auth server, which is
-	// correct for cache keying / redirect URI defaulting but wrong for
-	// RFC 8414 §3.3 metadata verification.
+	// expected issuer is recovered from cfg.DiscoveryURL inside the helper.
+	// localIssuer here is *this* auth server's issuer — correct for cache
+	// keying and redirect URI defaulting, but it must not be used for
+	// RFC 8414 §3.3 metadata verification (which is the upstream's concern).
 	endpoints, err := resolveDCREndpoints(ctx, rc.DCRConfig)
 	if err != nil {
 		return nil, err
@@ -311,7 +318,7 @@ func registerAndCache(
 		return nil, fmt.Errorf("dcr: %w", err)
 	}
 
-	registrationScopes := chooseRegistrationScopes(scopes, endpoints.scopesSupported, issuer)
+	registrationScopes := chooseRegistrationScopes(scopes, endpoints.scopesSupported, localIssuer)
 
 	response, err := performRegistration(ctx, rc.DCRConfig, endpoints.registrationEndpoint,
 		redirectURI, authMethod, registrationScopes)
@@ -329,7 +336,7 @@ func registerAndCache(
 
 	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
 	slog.Debug("dcr: registered new client",
-		"issuer", issuer,
+		"local_issuer", localIssuer,
 		"redirect_uri", redirectURI,
 		"client_id", resolution.ClientID,
 	)
@@ -346,7 +353,7 @@ func registerAndCache(
 // reach with partially-constructed run-configs.
 func validateResolveInputs(
 	rc *authserver.OAuth2UpstreamRunConfig,
-	issuer string,
+	localIssuer string,
 	cache DCRCredentialStore,
 ) error {
 	if rc == nil {
@@ -358,7 +365,7 @@ func validateResolveInputs(
 	if rc.DCRConfig == nil {
 		return fmt.Errorf("dcr: oauth2 upstream has no dcr_config")
 	}
-	if issuer == "" {
+	if localIssuer == "" {
 		return fmt.Errorf("dcr: issuer is required")
 	}
 	if cache == nil {
@@ -382,7 +389,7 @@ func lookupCachedResolution(
 	ctx context.Context,
 	cache DCRCredentialStore,
 	key DCRKey,
-	issuer, redirectURI string,
+	localIssuer, redirectURI string,
 ) (*DCRResolution, bool, error) {
 	cached, ok, err := cache.Get(ctx, key)
 	if err != nil {
@@ -394,7 +401,7 @@ func lookupCachedResolution(
 	if !cached.ClientSecretExpiresAt.IsZero() && time.Now().After(cached.ClientSecretExpiresAt) {
 		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
 		slog.Debug("dcr: cache hit ignored; cached secret expired per upstream client_secret_expires_at",
-			"issuer", issuer,
+			"local_issuer", localIssuer,
 			"redirect_uri", redirectURI,
 			"client_id", cached.ClientID,
 			"client_secret_expires_at", cached.ClientSecretExpiresAt.UTC().Format(time.RFC3339),
@@ -402,7 +409,7 @@ func lookupCachedResolution(
 		return nil, false, nil
 	}
 	slog.Debug("dcr: cache hit",
-		"issuer", issuer,
+		"local_issuer", localIssuer,
 		"redirect_uri", redirectURI,
 		"client_id", cached.ClientID,
 	)
@@ -425,7 +432,7 @@ func applyExplicitEndpointOverrides(endpoints *dcrEndpoints, rc *authserver.OAut
 // chooseRegistrationScopes selects the scopes to send in the registration
 // request: explicit caller scopes > discovered scopes_supported > empty.
 // Logs a warning when neither source produces any scopes.
-func chooseRegistrationScopes(explicit, discovered []string, issuer string) []string {
+func chooseRegistrationScopes(explicit, discovered []string, localIssuer string) []string {
 	if len(explicit) > 0 {
 		return explicit
 	}
@@ -433,7 +440,7 @@ func chooseRegistrationScopes(explicit, discovered []string, issuer string) []st
 		return discovered
 	}
 	slog.Warn("dcr: no scopes configured or discovered; registering with empty scope",
-		"issuer", issuer,
+		"local_issuer", localIssuer,
 	)
 	return nil
 }
@@ -653,7 +660,7 @@ func deriveExpectedIssuerFromDiscoveryURL(discoveryURL string) (string, error) {
 func endpointsFromMetadata(
 	metadata *oauthproto.AuthorizationServerMetadata,
 	fetchErr error,
-	issuer string,
+	upstreamIssuer string,
 ) (*dcrEndpoints, error) {
 	if fetchErr != nil && !errors.Is(fetchErr, oauthproto.ErrRegistrationEndpointMissing) {
 		return nil, fmt.Errorf("discover authorization server metadata: %w", fetchErr)
@@ -669,10 +676,11 @@ func endpointsFromMetadata(
 	registrationEndpoint := metadata.RegistrationEndpoint
 	if errors.Is(fetchErr, oauthproto.ErrRegistrationEndpointMissing) {
 		// Metadata is otherwise valid — synthesise the registration
-		// endpoint from the issuer origin. FetchAuthorizationServerMetadata*
-		// deliberately returns ErrRegistrationEndpointMissing alongside a
-		// non-nil metadata document, so use the returned endpoints/scopes.
-		synth, err := synthesiseRegistrationEndpoint(issuer)
+		// endpoint from the upstream issuer's origin.
+		// FetchAuthorizationServerMetadata* deliberately returns
+		// ErrRegistrationEndpointMissing alongside a non-nil metadata
+		// document, so we still use the returned endpoints/scopes.
+		synth, err := synthesiseRegistrationEndpoint(upstreamIssuer)
 		if err != nil {
 			return nil, fmt.Errorf("synthesise registration endpoint: %w", err)
 		}
@@ -689,21 +697,23 @@ func endpointsFromMetadata(
 	}, nil
 }
 
-// synthesiseRegistrationEndpoint builds {issuer}/register, used when
-// discovery succeeds but omits registration_endpoint.
+// synthesiseRegistrationEndpoint builds {upstreamIssuer}/register, used when
+// discovery succeeds but omits registration_endpoint. The argument is the
+// upstream's issuer (recovered from the discovery URL), not this auth
+// server's local issuer.
 //
 // The issuer's path is preserved so multi-tenant upstreams that ship DCR
 // without advertising it (e.g. https://idp.example.com/tenants/acme) keep
 // their tenant prefix in the synthesised URL. Stripping the path would land
 // the registration request at a global /register that does not match the
 // tenant-aware token/authorize URLs already accepted from metadata.
-func synthesiseRegistrationEndpoint(issuer string) (string, error) {
-	u, err := url.Parse(issuer)
+func synthesiseRegistrationEndpoint(upstreamIssuer string) (string, error) {
+	u, err := url.Parse(upstreamIssuer)
 	if err != nil {
 		return "", fmt.Errorf("parse issuer: %w", err)
 	}
 	if u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("issuer missing scheme or host: %q", issuer)
+		return "", fmt.Errorf("issuer missing scheme or host: %q", upstreamIssuer)
 	}
 	synth := &url.URL{
 		Scheme: u.Scheme,
@@ -715,15 +725,19 @@ func synthesiseRegistrationEndpoint(issuer string) (string, error) {
 
 // resolveUpstreamRedirectURI returns the redirect URI to present to the
 // upstream. The caller-supplied value wins; otherwise a default is derived
-// from {issuer}/oauth/callback. HTTPS is required except for loopback hosts
-// (development).
+// from {localIssuer}/oauth/callback. HTTPS is required except for loopback
+// hosts (development).
+//
+// localIssuer here is *this* auth server's issuer — the redirect URI is
+// where the upstream sends the user back to us, so it must live on our
+// origin, not the upstream's.
 //
 // The issuer's path is preserved when defaulting: an issuer with a tenant
 // prefix produces a redirect URI under that prefix, not at the host root.
 // url.URL.ResolveReference would replace the path entirely because
 // defaultUpstreamRedirectPath starts with "/", so we explicitly concatenate
 // instead.
-func resolveUpstreamRedirectURI(configured, issuer string) (string, error) {
+func resolveUpstreamRedirectURI(configured, localIssuer string) (string, error) {
 	if configured != "" {
 		u, err := url.Parse(configured)
 		if err != nil {
@@ -735,9 +749,9 @@ func resolveUpstreamRedirectURI(configured, issuer string) (string, error) {
 		return configured, nil
 	}
 
-	issuerURL, err := url.Parse(issuer)
+	issuerURL, err := url.Parse(localIssuer)
 	if err != nil {
-		return "", fmt.Errorf("invalid issuer %q: %w", issuer, err)
+		return "", fmt.Errorf("invalid issuer %q: %w", localIssuer, err)
 	}
 	resolved := &url.URL{
 		Scheme: issuerURL.Scheme,

@@ -35,6 +35,9 @@ func (c *Config) SetFields(opts SetOptions) error {
 	if opts.CallbackPort != 0 {
 		c.OIDC.CallbackPort = opts.CallbackPort
 	}
+	if opts.TLSSkipVerify != nil {
+		c.TLSSkipVerify = *opts.TLSSkipVerify
+	}
 
 	if !c.IsConfigured() {
 		return c.ValidatePartial()
@@ -44,14 +47,16 @@ func (c *Config) SetFields(opts SetOptions) error {
 
 // SetOptions carries the flag values for the "config set" command.
 // Zero values are treated as "not provided" and leave the existing config
-// field unchanged.
+// field unchanged. TLSSkipVerify uses a pointer so that false can be
+// distinguished from "not provided" (enabling explicit clear via config set).
 type SetOptions struct {
-	GatewayURL   string
-	Issuer       string
-	ClientID     string
-	Audience     string
-	ProxyPort    int
-	CallbackPort int
+	GatewayURL    string
+	Issuer        string
+	ClientID      string
+	Audience      string
+	ProxyPort     int
+	CallbackPort  int
+	TLSSkipVerify *bool // nil = not provided; &false = explicitly disable
 }
 
 // DeleteCachedTokens removes all cached OIDC tokens stored under the LLM
@@ -93,14 +98,17 @@ func (c *Config) Show(w io.Writer) error {
 		}
 	}
 
-	writef("Gateway URL:   %s\n", c.GatewayURL)
-	writef("OIDC Issuer:   %s\n", c.OIDC.Issuer)
-	writef("OIDC Client:   %s\n", c.OIDC.ClientID)
+	writef("Gateway URL:     %s\n", c.GatewayURL)
+	writef("OIDC Issuer:     %s\n", c.OIDC.Issuer)
+	writef("OIDC Client:     %s\n", c.OIDC.ClientID)
 	if c.OIDC.Audience != "" {
-		writef("Audience:      %s\n", c.OIDC.Audience)
+		writef("Audience:        %s\n", c.OIDC.Audience)
 	}
-	writef("Proxy Port:    %d\n", c.EffectiveProxyPort())
-	writef("Scopes:        %v\n", c.OIDC.EffectiveScopes())
+	writef("Proxy Port:      %d\n", c.EffectiveProxyPort())
+	writef("Scopes:          %v\n", c.OIDC.EffectiveScopes())
+	if c.TLSSkipVerify {
+		writef("TLS Skip Verify: true (WARNING: certificate verification disabled)\n")
+	}
 	if len(c.ConfiguredTools) > 0 {
 		writef("Configured tools:\n")
 		for _, t := range c.ConfiguredTools {

@@ -343,6 +343,51 @@ func TestProxy_PassesThroughSSE(t *testing.T) {
 	assert.Contains(t, string(got), "data: [DONE]")
 }
 
+func TestWithTLSSkipVerify(t *testing.T) {
+	t.Parallel()
+
+	// Self-signed upstream — default transport cannot verify this certificate.
+	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(gateway.Close)
+
+	t.Run("default transport rejects self-signed cert", func(t *testing.T) {
+		t.Parallel()
+		cfg := &llm.Config{
+			GatewayURL: gateway.URL,
+			Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
+		}
+		p, err := New(cfg, &stubTokenSource{token: "tok"})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = p.listener.Close() })
+
+		req := loopbackRequest("/v1/models")
+		w := httptest.NewRecorder()
+		p.handler().ServeHTTP(w, req)
+
+		// Certificate verification failure surfaces as 502 Bad Gateway.
+		assert.Equal(t, http.StatusBadGateway, w.Code)
+	})
+
+	t.Run("WithTLSSkipVerify(true) accepts self-signed cert", func(t *testing.T) {
+		t.Parallel()
+		cfg := &llm.Config{
+			GatewayURL: gateway.URL,
+			Proxy:      llm.ProxyConfig{ListenPort: freePort(t)},
+		}
+		p, err := New(cfg, &stubTokenSource{token: "tok"}, WithTLSSkipVerify(true))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = p.listener.Close() })
+
+		req := loopbackRequest("/v1/models")
+		w := httptest.NewRecorder()
+		p.handler().ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+}
+
 func TestProxy_PassesThroughErrorResponses(t *testing.T) {
 	t.Parallel()
 	for _, statusCode := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusInternalServerError} {

@@ -25,6 +25,7 @@ type ToolApplyConfig struct {
 	GatewayURL         string // direct-mode: URL of the upstream LLM gateway
 	ProxyBaseURL       string // proxy-mode: URL of the localhost reverse proxy
 	TokenHelperCommand string // direct-mode: shell command that prints a fresh token
+	TLSSkipVerify      bool   // when true, instruct the tool to skip TLS verification
 }
 
 // GatewayManager is the subset of client.ClientManager used by Setup and
@@ -113,29 +114,14 @@ func Setup(
 	}
 	_, _ = fmt.Fprintln(out, "Login successful.")
 
-	var configured []ToolConfig
-	for _, clientType := range detected {
-		configPath, err := gm.ConfigureLLMGateway(clientType, ToolApplyConfig{
-			GatewayURL:         llmCfg.GatewayURL,
-			ProxyBaseURL:       proxyBaseURL,
-			TokenHelperCommand: tokenHelperCommand,
-		})
-		if err != nil {
-			_, _ = fmt.Fprintf(errOut, "Warning: failed to configure %s: %v\n", clientType, err)
-			continue
-		}
-		mode := gm.LLMGatewayModeFor(clientType)
-		configured = append(configured, ToolConfig{
-			Tool:       clientType,
-			Mode:       mode,
-			ConfigPath: configPath,
-		})
-		_, _ = fmt.Fprintf(out, "Configured %s (%s mode)  →  %s\n", clientType, mode, configPath)
+	configured, err := configureDetectedTools(
+		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand, llmCfg.TLSSkipVerify,
+	)
+	if err != nil {
+		return err
 	}
 
-	if len(configured) == 0 {
-		return fmt.Errorf("failed to configure any detected tools")
-	}
+	warnTLSSkipVerify(errOut, llmCfg.TLSSkipVerify, configured)
 
 	if err := provider.UpdateLLMConfig(func(c *Config) error {
 		// SetFields applies inline opts to the on-disk config (preserving any
@@ -286,6 +272,69 @@ func mergeToolConfigs(existing, incoming []ToolConfig) []ToolConfig {
 		}
 	}
 	return result
+}
+
+// warnTLSSkipVerify prints mode-accurate warnings when TLS verification is
+// disabled. The impact differs by tool mode:
+//   - direct (Node.js tools like Claude Code, Gemini CLI): NODE_TLS_REJECT_UNAUTHORIZED=0
+//     is written to the tool's settings, disabling TLS for ALL of that tool's outbound
+//     connections — not just the LLM gateway.
+//   - proxy: only the proxy's upstream connection to the gateway has TLS verification
+//     disabled; the tool itself is unaffected.
+func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
+	if !skip {
+		return
+	}
+	for _, tc := range configured {
+		switch tc.Mode {
+		case "direct":
+			_, _ = fmt.Fprintf(errOut,
+				"Warning: %s uses direct mode — NODE_TLS_REJECT_UNAUTHORIZED=0 has been written to its "+
+					"settings, disabling TLS certificate verification for ALL of %s's outbound connections "+
+					"(LLM provider APIs, MCP registry, etc.), not just the LLM gateway. "+
+					"Use only in isolated local environments.\n", tc.Tool, tc.Tool)
+		case "proxy":
+			_, _ = fmt.Fprintf(errOut,
+				"Warning: %s uses proxy mode — TLS certificate verification is disabled for the "+
+					"proxy's upstream gateway connection only. Use only in isolated local environments.\n", tc.Tool)
+		}
+	}
+}
+
+// configureDetectedTools patches each detected tool's config file and returns
+// the list of successfully configured tools. An error is returned only when no
+// tool was configured successfully.
+func configureDetectedTools(
+	out, errOut io.Writer,
+	gm GatewayManager,
+	detected []string,
+	gatewayURL, proxyBaseURL, tokenHelperCommand string,
+	tlsSkipVerify bool,
+) ([]ToolConfig, error) {
+	var configured []ToolConfig
+	for _, clientType := range detected {
+		configPath, err := gm.ConfigureLLMGateway(clientType, ToolApplyConfig{
+			GatewayURL:         gatewayURL,
+			ProxyBaseURL:       proxyBaseURL,
+			TokenHelperCommand: tokenHelperCommand,
+			TLSSkipVerify:      tlsSkipVerify,
+		})
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "Warning: failed to configure %s: %v\n", clientType, err)
+			continue
+		}
+		mode := gm.LLMGatewayModeFor(clientType)
+		configured = append(configured, ToolConfig{
+			Tool:       clientType,
+			Mode:       mode,
+			ConfigPath: configPath,
+		})
+		_, _ = fmt.Fprintf(out, "Configured %s (%s mode)  →  %s\n", clientType, mode, configPath)
+	}
+	if len(configured) == 0 {
+		return nil, fmt.Errorf("failed to configure any detected tools")
+	}
+	return configured, nil
 }
 
 // hasProxyMode reports whether any of the given tool configs uses proxy mode.

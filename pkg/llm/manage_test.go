@@ -96,6 +96,29 @@ func TestConfig_SetFields(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "TLSSkipVerify pointer true sets field",
+			opts: SetOptions{TLSSkipVerify: boolPtr(true)},
+			want: Config{TLSSkipVerify: true},
+		},
+		{
+			name: "TLSSkipVerify pointer false clears field",
+			base: Config{
+				GatewayURL:    "https://gw.example.com",
+				TLSSkipVerify: true,
+			},
+			opts: SetOptions{TLSSkipVerify: boolPtr(false)},
+			want: Config{GatewayURL: "https://gw.example.com", TLSSkipVerify: false},
+		},
+		{
+			name: "nil TLSSkipVerify pointer leaves existing value unchanged",
+			base: Config{
+				GatewayURL:    "https://gw.example.com",
+				TLSSkipVerify: true,
+			},
+			opts: SetOptions{},
+			want: Config{GatewayURL: "https://gw.example.com", TLSSkipVerify: true},
+		},
 	}
 
 	for _, tt := range tests {
@@ -128,9 +151,14 @@ func TestConfig_SetFields(t *testing.T) {
 			if cfg.OIDC.CallbackPort != tt.want.OIDC.CallbackPort {
 				t.Errorf("OIDC.CallbackPort = %d, want %d", cfg.OIDC.CallbackPort, tt.want.OIDC.CallbackPort)
 			}
+			if cfg.TLSSkipVerify != tt.want.TLSSkipVerify {
+				t.Errorf("TLSSkipVerify = %v, want %v", cfg.TLSSkipVerify, tt.want.TLSSkipVerify)
+			}
 		})
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 // ── DeleteCachedTokens ───────────────────────────────────────────────────────
 
@@ -270,6 +298,24 @@ func TestConfig_Show(t *testing.T) {
 				ConfiguredTools: []ToolConfig{{Tool: "cursor", Mode: "proxy", ConfigPath: "/home/user/.cursor/config.json"}},
 			},
 			contains: []string{"cursor", "proxy", "/home/user/.cursor/config.json"},
+		},
+		{
+			name: "TLS skip verify shown with warning when set",
+			cfg: Config{
+				GatewayURL:    "https://gw.example.com",
+				TLSSkipVerify: true,
+				OIDC:          OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+			},
+			contains: []string{"TLS Skip Verify", "true", "WARNING"},
+		},
+		{
+			name: "TLS skip verify not shown when false",
+			cfg: Config{
+				GatewayURL:    "https://gw.example.com",
+				TLSSkipVerify: false,
+				OIDC:          OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+			},
+			absent: []string{"TLS Skip Verify"},
 		},
 	}
 

@@ -537,6 +537,91 @@ func TestRealClientConfigs_LLMBinaryNames(t *testing.T) {
 	}
 }
 
+// ── TLSSkipVerify / NodeTLSRejectUnauthorized / ClearWhenEmpty ───────────────
+
+func newTLSTestManager(t *testing.T) (*ClientManager, string) {
+	t.Helper()
+	home := t.TempDir()
+	cfgs := LLMTestIntegrations([]LLMTestEntry{{
+		ClientType:     ClaudeCode,
+		Mode:           "direct",
+		SettingsDir:    []string{".claude"},
+		SettingsFile:   "settings.json",
+		JSONPointers:   []string{"/apiKeyHelper", "/env/NODE_TLS_REJECT_UNAUTHORIZED"},
+		ValueFields:    []string{"TokenHelperCommand", "NodeTLSRejectUnauthorized"},
+		ClearWhenEmpty: []bool{false, true},
+	}})
+	return NewTestClientManager(home, nil, cfgs, nil), home
+}
+
+func TestConfigureLLMGateway_TLSSkipVerify_WritesNodeEnv(t *testing.T) {
+	t.Parallel()
+	cm, home := newTLSTestManager(t)
+
+	claudeDir := filepath.Join(home, ".claude")
+	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
+
+	_, err := cm.ConfigureLLMGateway(ClaudeCode, LLMApplyConfig{
+		TokenHelperCommand: `"thv" llm token`,
+		TLSSkipVerify:      true,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED")
+	assert.Contains(t, string(data), `"0"`)
+}
+
+func TestConfigureLLMGateway_TLSSkipVerify_NotSet_DoesNotWriteNodeEnv(t *testing.T) {
+	t.Parallel()
+	cm, home := newTLSTestManager(t)
+
+	claudeDir := filepath.Join(home, ".claude")
+	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
+
+	_, err := cm.ConfigureLLMGateway(ClaudeCode, LLMApplyConfig{
+		TokenHelperCommand: `"thv" llm token`,
+		TLSSkipVerify:      false,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED")
+}
+
+func TestConfigureLLMGateway_TLSSkipVerify_ClearRemovesKey(t *testing.T) {
+	t.Parallel()
+	cm, home := newTLSTestManager(t)
+
+	claudeDir := filepath.Join(home, ".claude")
+	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
+
+	// First run: set tls-skip-verify
+	_, err := cm.ConfigureLLMGateway(ClaudeCode, LLMApplyConfig{
+		TokenHelperCommand: `"thv" llm token`,
+		TLSSkipVerify:      true,
+	})
+	require.NoError(t, err)
+
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	require.NoError(t, err)
+	require.Contains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED", "key must be present after first configure")
+
+	// Second run: clear tls-skip-verify
+	_, err = cm.ConfigureLLMGateway(ClaudeCode, LLMApplyConfig{
+		TokenHelperCommand: `"thv" llm token`,
+		TLSSkipVerify:      false,
+	})
+	require.NoError(t, err)
+
+	data, err = os.ReadFile(settingsPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED", "key must be removed when TLSSkipVerify is cleared")
+}
+
 // countSubstring counts non-overlapping occurrences of substr in s.
 func countSubstring(s, substr string) int {
 	count := 0

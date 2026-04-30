@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -319,4 +321,116 @@ func TestSingleRequestWithStaleSessionIncludesRequestID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `"code":-32001`)
 	assert.Contains(t, string(body), `"id":"test-42"`)
+}
+
+// pickFreePort returns a TCP port the OS reports as available. There is a small
+// race window before the proxy binds it, but that is the same pattern other
+// streamable tests follow and is acceptable here.
+func pickFreePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := l.Addr().(*net.TCPAddr).Port
+	require.NoError(t, l.Close())
+	return port
+}
+
+// TestSessionlessConcurrentRequestsAreNotMixed verifies that two concurrent
+// sessionless POSTs sharing a JSON-RPC id each receive their own response
+// payload. Regression test: a previous change collapsed every sessionless
+// request onto compositeKey("", idKey), causing the in-process waiters /
+// idRestore sync.Maps to silently overwrite — symptoms were response
+// cross-talk (one client receiving the other's payload, with the JSON-RPC id
+// rewritten back to its own) and a request-timeout for the losing client.
+//
+// t.Setenv requires a non-parallel test; the trade-off is acceptable for a
+// single regression test that needs a short proxy timeout to fail fast.
+func TestSessionlessConcurrentRequestsAreNotMixed(t *testing.T) {
+	// Cap per-request timeout so this test fails in seconds, not the 60s
+	// default, when the bug regresses.
+	t.Setenv(proxyRequestTimeoutEnv, "3s")
+
+	port := pickFreePort(t)
+	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() { _ = proxy.Stop(ctx) })
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Backend uses a synchronization barrier: collect both incoming requests
+	// before sending any response, so both proxy waiters are registered first
+	// — that's the precondition under which the bug overwrites one waiter.
+	// Echo req.Method back in the result so we can prove each client got its
+	// own payload, not the other's.
+	go func() {
+		buffered := make([]*jsonrpc2.Request, 0, 2)
+		for len(buffered) < 2 {
+			select {
+			case msg := <-proxy.GetMessageChannel():
+				if req, ok := msg.(*jsonrpc2.Request); ok && req.ID.IsValid() {
+					buffered = append(buffered, req)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+		for _, req := range buffered {
+			result := map[string]any{"echoed_method": req.Method}
+			resp, _ := jsonrpc2.NewResponse(req.ID, result, nil)
+			_ = proxy.ForwardResponseToClients(ctx, resp)
+		}
+	}()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+
+	type result struct {
+		method string
+		status int
+		body   map[string]any
+		err    error
+	}
+
+	// Both POSTs share the same JSON-RPC id (1) and omit Mcp-Session-Id.
+	fire := func(method string) result {
+		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":{}}`, method)
+		client := &http.Client{Timeout: 8 * time.Second}
+		resp, err := client.Post(url, "application/json", bytes.NewReader([]byte(body)))
+		if err != nil {
+			return result{method: method, err: err}
+		}
+		defer func() {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}()
+		var decoded map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&decoded)
+		return result{method: method, status: resp.StatusCode, body: decoded}
+	}
+
+	resCh := make(chan result, 2)
+	go func() { resCh <- fire("tools/list") }()
+	go func() { resCh <- fire("resources/list") }()
+
+	received := map[string]result{}
+	for i := 0; i < 2; i++ {
+		select {
+		case r := <-resCh:
+			received[r.method] = r
+		case <-time.After(15 * time.Second):
+			t.Fatalf("timeout waiting for concurrent sessionless responses; received so far: %v", received)
+		}
+	}
+
+	for _, method := range []string{"tools/list", "resources/list"} {
+		r := received[method]
+		require.NoError(t, r.err, "client %q HTTP error", method)
+		require.Equal(t, http.StatusOK, r.status, "client %q HTTP status", method)
+		require.NotNil(t, r.body, "client %q empty body", method)
+		res, ok := r.body["result"].(map[string]any)
+		require.True(t, ok, "client %q missing result: %v", method, r.body)
+		assert.Equal(t, method, res["echoed_method"],
+			"client %q received the other client's payload (response cross-talk)", method)
+	}
 }

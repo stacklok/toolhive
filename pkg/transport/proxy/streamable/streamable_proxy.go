@@ -56,9 +56,21 @@ type HTTPProxy struct {
 	// Session manager for streamable HTTP sessions
 	sessionManager *session.Manager
 
-	// Waiters keyed by JSON-encoded request ID -> one-shot channel for response delivery
+	// sessionTTL is the resolved inactivity timeout for the session manager.
+	// Defaults to session.DefaultSessionTTL; overridable via WithSessionTTL.
+	sessionTTL time.Duration
+
+	// sessionStorage is the optional custom storage backend for the session manager.
+	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
+	sessionStorage session.Storage
+
+	// Waiters keyed by compositeKey(sessID, idKey) -> one-shot channel for response delivery.
+	// The composite key MUST be unique per concurrent request; sharing it across requests
+	// (e.g. with sessID="" for sessionless requests) silently overwrites entries and crosses
+	// response payloads between unrelated clients. See resolveSessionForRequest.
 	waiters sync.Map // map[string]chan jsonrpc2.Message
-	// Map of compositeKey(sessID|idKey) -> original client JSON-RPC ID to restore before replying
+	// Keyed by the same compositeKey(sessID, idKey); stores the original client JSON-RPC ID
+	// to restore before replying. Same uniqueness requirement as `waiters`.
 	idRestore sync.Map // map[string]jsonrpc2.ID
 
 	// Health checker
@@ -78,11 +90,18 @@ func WithSessionStorage(storage session.Storage) Option {
 		if storage == nil {
 			return
 		}
-		if p.sessionManager != nil {
-			_ = p.sessionManager.Stop()
+		p.sessionStorage = storage
+	}
+}
+
+// WithSessionTTL overrides the session inactivity timeout used by this proxy.
+// Zero or negative values are ignored so the constructor's default is preserved.
+func WithSessionTTL(ttl time.Duration) Option {
+	return func(p *HTTPProxy) {
+		if ttl <= 0 {
+			return
 		}
-		sFactory := func(id string) session.Session { return session.NewStreamableSession(id) }
-		p.sessionManager = session.NewManagerWithStorage(session.DefaultSessionTTL, sFactory, storage)
+		p.sessionTTL = ttl
 	}
 }
 
@@ -106,11 +125,18 @@ func NewHTTPProxy(
 		middlewares:       middlewares,
 		messageCh:         make(chan jsonrpc2.Message, 100),
 		responseCh:        make(chan jsonrpc2.Message, 100),
-		sessionManager:    session.NewManager(session.DefaultSessionTTL, sFactory),
+		sessionTTL:        session.DefaultSessionTTL,
 	}
 
 	for _, opt := range opts {
 		opt(proxy)
+	}
+
+	// Construct the session manager once, after options have resolved sessionTTL and sessionStorage.
+	if proxy.sessionStorage != nil {
+		proxy.sessionManager = session.NewManagerWithStorage(proxy.sessionTTL, sFactory, proxy.sessionStorage)
+	} else {
+		proxy.sessionManager = session.NewManager(proxy.sessionTTL, sFactory)
 	}
 
 	// Create health checker without MCP pinger
@@ -296,7 +322,7 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Notifications or client responses are accepted and forwarded (202)
-	if p.handleNotificationOrClientResponse(w, msg) {
+	if p.handleNotificationOrClientResponse(w, r.Header.Get("Mcp-Session-Id"), msg) {
 		return
 	}
 
@@ -619,17 +645,21 @@ func (p *HTTPProxy) ensureSession(id string) error {
 	return p.sessionManager.AddWithID(id)
 }
 
-// resolveSessionForBatch resolves or creates an ephemeral session for batch POSTs.
+// resolveSessionForBatch resolves the session for batch POSTs.
 // Writes appropriate HTTP errors and returns an error when handling should stop.
+//
+// Sessionless POSTs receive a per-request UUID used solely as an in-process
+// routing token. Sessionless routing tokens MUST be unique per request:
+// sharing one (e.g. the empty string) across concurrent sessionless requests
+// causes waiters/idRestore overwrites in the in-process sync.Maps, which leaks
+// one client's response payload to another (with the JSON-RPC id rewritten to
+// the receiver's). This is a confidentiality bug, not a performance issue --
+// do not collapse the token. The UUID is not registered with sessionManager,
+// so no session object is created in any storage backend.
 func (p *HTTPProxy) resolveSessionForBatch(w http.ResponseWriter, r *http.Request) (string, error) {
 	sessID := r.Header.Get("Mcp-Session-Id")
 	if sessID == "" {
-		sessID = uuid.New().String()
-		if err := p.ensureSession(sessID); err != nil {
-			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create session: %v", err))
-			return "", err
-		}
-		return sessID, nil
+		return uuid.New().String(), nil
 	}
 	if _, ok := p.sessionManager.Get(sessID); !ok {
 		session.WriteNotFound(w, nil)
@@ -639,8 +669,18 @@ func (p *HTTPProxy) resolveSessionForBatch(w http.ResponseWriter, r *http.Reques
 }
 
 // resolveSessionForRequest resolves session rules for a single JSON-RPC request.
-// On initialize, assigns session if missing and returns setSessionHeader=true.
-// For other methods, allows optional session by creating ephemeral (no header set).
+// On initialize, assigns a new session ID if none is provided and returns setSessionHeader=true.
+// A provided but unknown session ID returns 404.
+//
+// Sessionless non-initialize requests receive a per-request UUID used solely as
+// an in-process routing token (not registered with sessionManager). Sessionless
+// routing tokens MUST be unique per request: sharing one (e.g. the empty string)
+// across concurrent sessionless requests with the same JSON-RPC id collapses
+// them onto the same compositeKey(sessID, idKey) and overwrites entries in the
+// waiters / idRestore sync.Maps, leaking one client's response payload to
+// another. This is a confidentiality bug, not a performance issue -- do not
+// collapse the token.
+//
 // Writes HTTP errors on failure and returns error to stop handling.
 func (p *HTTPProxy) resolveSessionForRequest(
 	w http.ResponseWriter,
@@ -662,17 +702,14 @@ func (p *HTTPProxy) resolveSessionForRequest(
 		return sessID, setSessionHeader, nil
 	}
 
-	// Non-initialize path: sessions are optional; create ephemeral if missing
+	// Sessionless non-initialize: generate a per-request routing token.
+	// setSessionHeader stays false so the client never sees this UUID and the
+	// next request remains sessionless.
 	if sessID == "" {
-		sessID = uuid.New().String()
-		if err := p.ensureSession(sessID); err != nil {
-			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create session: %v", err))
-			return "", false, err
-		}
-		return sessID, false, nil
+		return uuid.New().String(), false, nil
 	}
 
-	// If session is provided, ensure it exists
+	// Session ID provided but not found: reject with 404.
 	if _, ok := p.sessionManager.Get(sessID); !ok {
 		session.WriteNotFound(w, req.ID.Raw())
 		return "", false, fmt.Errorf("session not found")
@@ -708,8 +745,12 @@ func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message,
 	return msg, true
 }
 
-func (p *HTTPProxy) handleNotificationOrClientResponse(w http.ResponseWriter, msg jsonrpc2.Message) bool {
+func (p *HTTPProxy) handleNotificationOrClientResponse(w http.ResponseWriter, sessID string, msg jsonrpc2.Message) bool {
 	if isNotification(msg) || (func() bool { _, ok := msg.(*jsonrpc2.Response); return ok })() {
+		// Refresh TTL so a client sending only notifications doesn't get evicted.
+		if sessID != "" {
+			p.sessionManager.Get(sessID)
+		}
 		if err := p.SendMessageToDestination(msg); err != nil {
 			slog.Error("failed to send message to destination", "error", err)
 		}

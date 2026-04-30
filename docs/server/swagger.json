@@ -1347,6 +1347,10 @@
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "session_ttl": {
+                        "description": "SessionTTL is the inactivity timeout for proxy sessions.\nZero uses the transport default (2h). Negative values are rejected by the builder.",
+                        "type": "integer"
+                    },
                     "stateless": {
                         "description": "Stateless indicates the server only supports POST (no SSE/GET).\nWhen true, the proxy returns 405 for incoming GET requests and uses a\nPOST-based health check instead of the default GET probe.\nApplies to both remote URLs and local container workloads.",
                         "type": "boolean"

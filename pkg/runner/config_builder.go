@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
@@ -358,6 +359,19 @@ func WithStateless(stateless bool) RunConfigBuilderOption {
 func WithEndpointPrefix(prefix string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.EndpointPrefix = prefix
+		return nil
+	}
+}
+
+// WithSessionTTL sets the inactivity timeout for proxy sessions.
+// Zero is valid and means "use the transport default" (2h).
+// Negative values return an error.
+func WithSessionTTL(ttl time.Duration) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if ttl < 0 {
+			return fmt.Errorf("session-ttl must be non-negative, got %s", ttl)
+		}
+		b.config.SessionTTL = ttl
 		return nil
 	}
 }

@@ -26,6 +26,7 @@ type OIDCConfig = pkgoidc.ClientConfig
 // ToolHive's config.yaml.
 type Config struct {
 	GatewayURL      string       `yaml:"gateway_url,omitempty"       json:"gateway_url,omitempty"`
+	TLSSkipVerify   bool         `yaml:"tls_skip_verify,omitempty"   json:"tls_skip_verify,omitempty"`
 	OIDC            OIDCConfig   `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
 	Proxy           ProxyConfig  `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
 	ConfiguredTools []ToolConfig `yaml:"configured_tools,omitempty"  json:"configured_tools,omitempty"`

@@ -7,12 +7,13 @@ package client
 // use in tests. No platform prefix is applied, so settings files resolve as
 // homeDir/SettingsDir.../SettingsFile on all platforms.
 type LLMTestEntry struct {
-	ClientType   ClientApp
-	Mode         string   // "direct" or "proxy"
-	SettingsDir  []string // path segments from homeDir to the settings directory
-	SettingsFile string   // settings filename
-	JSONPointers []string // RFC 6901 JSON Pointer paths to patch
-	ValueFields  []string // value-field names parallel to JSONPointers
+	ClientType     ClientApp
+	Mode           string   // "direct" or "proxy"
+	SettingsDir    []string // path segments from homeDir to the settings directory
+	SettingsFile   string   // settings filename
+	JSONPointers   []string // RFC 6901 JSON Pointer paths to patch
+	ValueFields    []string // value-field names parallel to JSONPointers
+	ClearWhenEmpty []bool   // ClearWhenEmpty flags parallel to JSONPointers (optional)
 }
 
 // LLMTestIntegrations converts []LLMTestEntry into an internal []clientAppConfig
@@ -28,7 +29,11 @@ func LLMTestIntegrations(entries []LLMTestEntry) []clientAppConfig {
 			if j < len(e.ValueFields) {
 				vf = e.ValueFields[j]
 			}
-			keys[j] = LLMGatewayKeySpec{JSONPointer: ptr, ValueField: vf}
+			cwe := false
+			if j < len(e.ClearWhenEmpty) {
+				cwe = e.ClearWhenEmpty[j]
+			}
+			keys[j] = LLMGatewayKeySpec{JSONPointer: ptr, ValueField: vf, ClearWhenEmpty: cwe}
 		}
 		cfgs[i] = clientAppConfig{
 			ClientType:         e.ClientType,

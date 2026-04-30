@@ -107,6 +107,7 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 	var (
 		thvConfig    *e2e.TestConfig
 		tempDir      string
+		binDir       string
 		oidcPort     int
 		oidcServer   *e2e.OIDCMockServer
 		thvCmd       func(args ...string) *e2e.THVCommand
@@ -120,26 +121,10 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 		tempDir = GinkgoT().TempDir()
 
 		// Install a fake browser so OIDC login completes in headless/CI
-		// environments where no real browser is available. The script GETs
-		// the auth URL (without following the 302 redirect) so the mock OIDC
-		// server receives the /auth request and populates authRequestChan;
-		// CompleteAuthRequest then drives the callback hit.
-		//
-		// Platform note: CI runs on ubuntu-8cores-32gb (Linux only; no Windows
-		// support). curl ships on every GitHub-hosted Ubuntu runner; wget is
-		// tried as a fallback for minimal images.
-		binDir := filepath.Join(tempDir, "bin")
-		Expect(os.MkdirAll(binDir, 0750)).To(Succeed())
-		fakeBrowser := []byte(
-			"#!/bin/sh\n" +
-				// curl: -sf = silent + fail-on-HTTP-error; no -L so 302 is not followed.
-				// wget: --max-redirect=0 prevents following the 302 to the callback URL,
-				//       which would race with CompleteAuthRequest and make the test flaky.
-				"curl -sf \"$1\" >/dev/null 2>&1 || wget -q --max-redirect=0 \"$1\" -O /dev/null 2>&1 || true\n",
-		)
-		for _, name := range []string{"open", "xdg-open"} {
-			Expect(os.WriteFile(filepath.Join(binDir, name), fakeBrowser, 0750)).To(Succeed())
-		}
+		// environments where no real browser is available.
+		var binDirErr error
+		binDir, binDirErr = e2e.CreateFakeBrowserDir(tempDir)
+		Expect(binDirErr).ToNot(HaveOccurred())
 
 		// Isolated environment: XDG_CONFIG_HOME and HOME point to tempDir so
 		// these tests never touch the user's real config.yaml or secrets store.
@@ -189,9 +174,10 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 
 	Describe("thv llm setup with inline flags", func() {
 		It("patches detected tools and persists config", func() {
-			// Create ~/.claude/ so the Claude Code adapter detects the tool.
+			// Create ~/.claude/ and stub the claude binary so the Claude Code adapter detects the tool.
 			claudeDir := filepath.Join(tempDir, ".claude")
 			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
+			Expect(createFakeBinary(binDir, "claude")).To(Succeed())
 
 			issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
 
@@ -240,9 +226,10 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 
 	Describe("thv llm teardown", func() {
 		It("reverts all tool configs", func() {
-			// Create ~/.claude/ to trigger Claude Code detection.
+			// Create ~/.claude/ and stub the claude binary to trigger Claude Code detection.
 			claudeDir := filepath.Join(tempDir, ".claude")
 			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
+			Expect(createFakeBinary(binDir, "claude")).To(Succeed())
 
 			issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
 
@@ -294,6 +281,7 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 			// teardown path itself and confirms that an unknown tool name is rejected.
 			claudeDir := filepath.Join(tempDir, ".claude")
 			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
+			Expect(createFakeBinary(binDir, "claude")).To(Succeed())
 
 			issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
 
@@ -348,6 +336,7 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 		It("clears cached tokens in addition to reverting tool configs", func() {
 			claudeDir := filepath.Join(tempDir, ".claude")
 			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
+			Expect(createFakeBinary(binDir, "claude")).To(Succeed())
 
 			issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
 

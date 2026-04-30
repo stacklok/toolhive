@@ -420,6 +420,20 @@ func DeriveSecretKey(prefix, resourceURL, issuer string) string {
 	return prefix + hex.EncodeToString(h[:4])
 }
 
+// LLMAccessTokenEnvVar returns the environment-variable name under which the
+// environment secrets provider expects a cached LLM access token for the given
+// gateway and issuer URLs. The format is:
+//
+//	TOOLHIVE_SECRET___thv_llm_<DeriveSecretKey("LLM_OAUTH_", gateway, issuer)>_AT
+//
+// This is the canonical source of truth for the key construction used by both
+// the proxy/token commands and the e2e tests that inject fake tokens.
+func LLMAccessTokenEnvVar(gatewayURL, issuerURL string) string {
+	key := DeriveSecretKey("LLM_OAUTH_", gatewayURL, issuerURL)
+	scopedKey := secrets.SystemKeyPrefix + string(secrets.ScopeLLM) + "_" + key + "_AT"
+	return secrets.EnvVarPrefix + scopedKey
+}
+
 // EnsureOfflineAccess returns scopes with "offline_access" appended if absent.
 // This scope is required for the provider to return a refresh token.
 func EnsureOfflineAccess(scopes []string) []string {

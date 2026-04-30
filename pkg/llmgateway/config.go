@@ -5,6 +5,27 @@
 // imported by both pkg/llm and pkg/client to avoid an import cycle.
 package llmgateway
 
+import "net/url"
+
+// ProxyOriginOf returns rawURL with its path, query, and fragment stripped so
+// only the scheme and host remain (the "origin"). Tools like Gemini CLI that
+// append their own API path (e.g. /v1beta/...) need the origin rather than the
+// full proxy base URL to avoid doubled path segments. Falls back to rawURL when
+// parsing fails.
+func ProxyOriginOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u == nil {
+		return rawURL
+	}
+	u.Path = ""
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String()
+}
+
 // ApplyConfig holds the values needed to configure a single tool's LLM
 // gateway settings. Using a struct prevents positional-argument mistakes when
 // the caller has multiple similar string values in scope.

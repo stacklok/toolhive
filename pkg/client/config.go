@@ -161,14 +161,20 @@ const (
 // literals by hujson.Patch.
 // ValueField names which LLMApplyConfig field to write: "GatewayURL",
 // "ProxyBaseURL", "TokenHelperCommand", "PlaceholderAPIKey" (constant "thv-proxy"),
-// or "NodeTLSRejectUnauthorized" (writes "0" when TLSSkipVerify is true).
+// "NodeTLSRejectUnauthorized" (writes "0" when TLSSkipVerify is true), or
+// "ProxyOrigin" (like ProxyBaseURL but with the path stripped — use for tools
+// such as Gemini CLI that append their own API path to avoid doubled segments).
+// Any other string is written as a literal value; use this to hard-code a
+// constant string into a settings key (e.g. forcing an auth type to a fixed value).
 // ClearWhenEmpty: when true and the resolved value is empty, the key is removed
 // from the settings file rather than skipped. Use for conditional keys like
 // NODE_TLS_REJECT_UNAUTHORIZED that must be cleaned up when the flag is cleared.
 type LLMGatewayKeySpec struct {
-	JSONPointer    string // RFC 6901 path
-	ValueField     string // "GatewayURL" | "ProxyBaseURL" | "TokenHelperCommand" | "PlaceholderAPIKey" | "NodeTLSRejectUnauthorized"
-	ClearWhenEmpty bool   // remove the key when the resolved value is empty
+	JSONPointer string // RFC 6901 path
+	// ValueField: "GatewayURL" | "ProxyBaseURL" | "ProxyOrigin" |
+	// "TokenHelperCommand" | "PlaceholderAPIKey" | "NodeTLSRejectUnauthorized"
+	ValueField     string
+	ClearWhenEmpty bool // remove the key when the resolved value is empty
 }
 
 // clientAppConfig represents a configuration path for a supported MCP client.
@@ -839,17 +845,28 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".agents", skillsDirName},
 		SkillsProjectPath: []string{".agents", skillsDirName},
-		// LLM gateway: patches the same settings.json used for MCP
-		LLMGatewayMode:     "direct",
+		// LLM gateway: patches the same settings.json used for MCP.
+		// Gemini CLI has no dynamic token-command equivalent, so it uses the
+		// proxy path. GOOGLE_GEMINI_BASE_URL is only honoured when
+		// security.auth.selectedType is "gemini-api-key" (fixed in
+		// gemini-cli v0.40.0, PR #25357); OAuth auth ignores the override.
+		//
+		// NODE_TLS_REJECT_UNAUTHORIZED is intentionally omitted: in proxy mode
+		// the tool connects to the local proxy over plain HTTP, so there is no
+		// TLS handshake on that leg. Setting the env var would globally disable
+		// TLS verification for all other HTTPS requests the Gemini CLI process
+		// makes, which is an unacceptable side-effect.
+		LLMGatewayMode:     "proxy",
 		LLMBinaryName:      "gemini",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{".gemini"},
 		LLMGatewayKeys: []LLMGatewayKeySpec{
-			{JSONPointer: "/auth/tokenCommand", ValueField: "TokenHelperCommand"},
-			{JSONPointer: "/baseUrl", ValueField: "GatewayURL"},
-			// NODE_TLS_REJECT_UNAUTHORIZED is only written when --tls-skip-verify is set.
-			// ClearWhenEmpty ensures it is removed when the flag is later cleared.
-			{JSONPointer: "/env/NODE_TLS_REJECT_UNAUTHORIZED", ValueField: "NodeTLSRejectUnauthorized", ClearWhenEmpty: true},
+			// Force API-key auth so GOOGLE_GEMINI_BASE_URL is respected.
+			// "gemini-api-key" is an unrecognised ValueField, so llmValueForSpec
+			// writes it as a literal string (see LLMGatewayKeySpec doc comment).
+			{JSONPointer: "/security/auth/selectedType", ValueField: "gemini-api-key"},
+			{JSONPointer: "/env/GEMINI_API_KEY", ValueField: "PlaceholderAPIKey"},
+			{JSONPointer: "/env/GOOGLE_GEMINI_BASE_URL", ValueField: "ProxyOrigin"},
 		},
 	},
 	{

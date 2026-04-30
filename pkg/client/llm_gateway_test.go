@@ -57,9 +57,12 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 		},
 		{
 			// ~/.gemini/settings.json
+			// NODE_TLS_REJECT_UNAUTHORIZED must NOT appear when TLSSkipVerify is false.
 			clientType: GeminiCli,
 			expectedKeys: []string{
-				"tokenCommand", "baseUrl", "https://gw.example.com",
+				"selectedType", "gemini-api-key",
+				"GEMINI_API_KEY", "thv-proxy",
+				"GOOGLE_GEMINI_BASE_URL", "http://localhost:14000",
 			},
 		},
 		{
@@ -622,6 +625,79 @@ func TestConfigureLLMGateway_TLSSkipVerify_ClearRemovesKey(t *testing.T) {
 	data, err = os.ReadFile(settingsPath)
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED", "key must be removed when TLSSkipVerify is cleared")
+}
+
+// TestRealClientConfigs_GeminiCLI_NeverWritesTLSKey verifies that
+// NODE_TLS_REJECT_UNAUTHORIZED is never written for Gemini CLI regardless of
+// TLSSkipVerify. In proxy mode the tool connects to localhost over plain HTTP,
+// so setting the env var would only globally suppress TLS for other HTTPS
+// requests — an unacceptable side-effect. The key spec is intentionally absent.
+func TestRealClientConfigs_GeminiCLI_NeverWritesTLSKey(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".gemini"), 0o700))
+
+	for _, skipVerify := range []bool{false, true} {
+		path, err := cm.ConfigureLLMGateway(GeminiCli, llmgateway.ApplyConfig{
+			ProxyBaseURL:  "http://localhost:14000/v1",
+			TLSSkipVerify: skipVerify,
+		})
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED",
+			"TLS key must never be written for Gemini CLI (TLSSkipVerify=%v)", skipVerify)
+	}
+}
+
+// ── llmValueForSpec unit tests ────────────────────────────────────────────────
+
+func TestLLMValueForSpec(t *testing.T) {
+	t.Parallel()
+
+	cfg := llmgateway.ApplyConfig{
+		GatewayURL:         "https://gw.example.com",
+		ProxyBaseURL:       "http://localhost:14000/v1",
+		TokenHelperCommand: `"thv" llm token`,
+		TLSSkipVerify:      false,
+	}
+
+	cases := []struct {
+		name       string
+		valueField string
+		cfg        llmgateway.ApplyConfig
+		want       string
+	}{
+		{"GatewayURL", "GatewayURL", cfg, "https://gw.example.com"},
+		{"ProxyBaseURL", "ProxyBaseURL", cfg, "http://localhost:14000/v1"},
+		{"TokenHelperCommand", "TokenHelperCommand", cfg, `"thv" llm token`},
+		{"PlaceholderAPIKey", "PlaceholderAPIKey", cfg, "thv-proxy"},
+		// NodeTLSRejectUnauthorized: "0" when set, "" when clear
+		{"NodeTLSRejectUnauthorized/skip=false", "NodeTLSRejectUnauthorized", cfg, ""},
+		{"NodeTLSRejectUnauthorized/skip=true", "NodeTLSRejectUnauthorized", llmgateway.ApplyConfig{TLSSkipVerify: true}, "0"},
+		// ProxyOrigin strips path, query, and fragment from ProxyBaseURL
+		{"ProxyOrigin/strips_path", "ProxyOrigin", cfg, "http://localhost:14000"},
+		{"ProxyOrigin/long_path", "ProxyOrigin", llmgateway.ApplyConfig{ProxyBaseURL: "http://localhost:9000/v1beta/openai"}, "http://localhost:9000"},
+		{"ProxyOrigin/strips_query_and_fragment", "ProxyOrigin", llmgateway.ApplyConfig{ProxyBaseURL: "http://host:8080/path?q=1#frag"}, "http://host:8080"},
+		// ForceQuery: trailing "?" with no key must not leak into the origin.
+		{"ProxyOrigin/force_query", "ProxyOrigin", llmgateway.ApplyConfig{ProxyBaseURL: "http://host:8080/path?"}, "http://host:8080"},
+		// ProxyOrigin falls back to the raw value when URL parsing fails
+		{"ProxyOrigin/invalid_url_fallback", "ProxyOrigin", llmgateway.ApplyConfig{ProxyBaseURL: "::invalid"}, "::invalid"},
+		// Unrecognised ValueField is written as a literal constant
+		{"literal/gemini-api-key", "gemini-api-key", cfg, "gemini-api-key"},
+		{"literal/some-literal", "some-literal", cfg, "some-literal"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := llmValueForSpec(tc.valueField, tc.cfg)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 // countSubstring counts non-overlapping occurrences of substr in s.

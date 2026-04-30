@@ -261,6 +261,10 @@ func (cm *ClientManager) buildLLMSettingsPath(cfg *clientAppConfig) string {
 // llmValueForSpec returns the config value corresponding to the ValueField name.
 // For "NodeTLSRejectUnauthorized", returns "0" when TLSSkipVerify is true, or ""
 // when false (which triggers removal when ClearWhenEmpty is set on the spec).
+// For "ProxyOrigin", returns ProxyBaseURL with the path stripped (origin only),
+// for tools like Gemini CLI that append their own API path to avoid doubled segments.
+// Any unrecognised ValueField string is returned as-is, allowing a spec entry to
+// hard-code a constant value into a settings key (e.g. forcing an auth type).
 func llmValueForSpec(valueField string, cfg llmgateway.ApplyConfig) string {
 	switch valueField {
 	case "GatewayURL":
@@ -276,6 +280,9 @@ func llmValueForSpec(valueField string, cfg llmgateway.ApplyConfig) string {
 			return "0"
 		}
 		return ""
+	case "ProxyOrigin":
+		// Like ProxyBaseURL but with the path stripped; see llmgateway.ProxyOriginOf.
+		return llmgateway.ProxyOriginOf(cfg.ProxyBaseURL)
 	default:
 		return valueField // treat unknown field names as literal values
 	}

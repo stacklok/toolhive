@@ -265,7 +265,10 @@ func registerAndCache(
 	// Token-endpoint auth method: intersect server support with our
 	// preference order; default to client_secret_basic if the server does
 	// not advertise the field at all.
-	authMethod, err := selectTokenEndpointAuthMethod(endpoints.tokenEndpointAuthMethodsSupported)
+	authMethod, err := selectTokenEndpointAuthMethod(
+		endpoints.tokenEndpointAuthMethodsSupported,
+		endpoints.codeChallengeMethodsSupported,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("dcr: %w", err)
 	}
@@ -449,6 +452,13 @@ type dcrEndpoints struct {
 	registrationEndpoint              string
 	tokenEndpointAuthMethodsSupported []string
 	scopesSupported                   []string
+	// codeChallengeMethodsSupported is consumed by
+	// selectTokenEndpointAuthMethod to gate the public-client (none) auth
+	// method on S256 PKCE being advertised. RFC 7636 / OAuth 2.1 require
+	// PKCE-with-S256 for public clients; registering as none against an
+	// upstream that advertises only plain (or omits the field) would be a
+	// compliance gap.
+	codeChallengeMethodsSupported []string
 }
 
 // resolveDCREndpoints produces the endpoint bundle from the DCRUpstreamConfig.
@@ -602,6 +612,7 @@ func endpointsFromMetadata(
 		registrationEndpoint:              registrationEndpoint,
 		tokenEndpointAuthMethodsSupported: metadata.TokenEndpointAuthMethodsSupported,
 		scopesSupported:                   metadata.ScopesSupported,
+		codeChallengeMethodsSupported:     metadata.CodeChallengeMethodsSupported,
 	}, nil
 }
 
@@ -711,10 +722,20 @@ func validateUpstreamEndpointURL(rawURL, label string) error {
 }
 
 // selectTokenEndpointAuthMethod returns the preferred token endpoint auth
-// method given the server's advertised set. When the server does not
-// advertise any methods the caller's default of client_secret_basic is used
-// (RFC 6749 §2.3.1 baseline).
-func selectTokenEndpointAuthMethod(serverSupported []string) (string, error) {
+// method given the server's advertised set, intersected with our preference
+// order. When the server does not advertise any methods the caller's default
+// of client_secret_basic is used (RFC 6749 §2.3.1 baseline).
+//
+// PKCE coupling for "none": the public-client method "none" is selected only
+// when the upstream also advertises S256 in code_challenge_methods_supported.
+// RFC 7636 §4.2 / OAuth 2.1 require S256 PKCE for public clients; registering
+// as none against an upstream that advertises only "plain" — or omits the
+// field entirely — would be a compliance gap. When S256 is missing, "none"
+// is skipped (the iteration continues to the next less-preferred method),
+// and if no other method is mutually supported the function returns an error
+// so the operator sees a clear failure at boot rather than a silent
+// downgrade at runtime.
+func selectTokenEndpointAuthMethod(serverSupported, codeChallengeMethodsSupported []string) (string, error) {
 	if len(serverSupported) == 0 {
 		return "client_secret_basic", nil
 	}
@@ -724,10 +745,24 @@ func selectTokenEndpointAuthMethod(serverSupported []string) (string, error) {
 		supported[m] = struct{}{}
 	}
 
+	pkceS256Advertised := slices.Contains(codeChallengeMethodsSupported, oauthproto.PKCEMethodS256)
+
 	for _, m := range authMethodPreference {
-		if _, ok := supported[m]; ok {
-			return m, nil
+		if _, ok := supported[m]; !ok {
+			continue
 		}
+		if m == "none" && !pkceS256Advertised {
+			// Public-client registration without S256 PKCE is non-compliant
+			// per RFC 7636 / OAuth 2.1. Try the next less-preferred method.
+			continue
+		}
+		return m, nil
+	}
+	if _, noneOnly := supported["none"]; noneOnly && !pkceS256Advertised {
+		return "", fmt.Errorf(
+			"upstream advertises only token_endpoint_auth_method=none but does not advertise "+
+				"S256 in code_challenge_methods_supported (got %v); refusing to register a public "+
+				"client without S256 PKCE per RFC 7636 / OAuth 2.1", codeChallengeMethodsSupported)
 	}
 	return "", fmt.Errorf(
 		"no supported token_endpoint_auth_method in server advertisement %v; "+

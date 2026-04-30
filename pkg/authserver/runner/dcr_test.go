@@ -41,6 +41,12 @@ type dcrTestHandlerConfig struct {
 	// scopesSupported is advertised in metadata.
 	scopesSupported []string
 
+	// codeChallengeMethodsSupported is advertised in metadata. Tests that
+	// exercise public-client (none) registration must include "S256" here,
+	// since selectTokenEndpointAuthMethod refuses to select none without
+	// it (RFC 7636 / OAuth 2.1).
+	codeChallengeMethodsSupported []string
+
 	// observeRegistration is called for each request hitting the
 	// registration endpoint. Safe for concurrent use.
 	observeRegistration func(r *http.Request, body []byte)
@@ -68,6 +74,7 @@ func newDCRTestServer(t *testing.T, cfg dcrTestHandlerConfig) *httptest.Server {
 			JWKSURI:                           server.URL + "/jwks",
 			TokenEndpointAuthMethodsSupported: cfg.tokenEndpointAuthMethodsSupported,
 			ScopesSupported:                   cfg.scopesSupported,
+			CodeChallengeMethodsSupported:     cfg.codeChallengeMethodsSupported,
 		}
 		if !cfg.omitRegistrationEndpoint {
 			md.RegistrationEndpoint = server.URL + registrationPath
@@ -337,7 +344,11 @@ func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
 	tests := []struct {
 		name      string
 		supported []string
-		expected  string
+		// codeChallenge is the upstream's advertised
+		// code_challenge_methods_supported. Required by the gating in
+		// selectTokenEndpointAuthMethod whenever the test expects "none".
+		codeChallenge []string
+		expected      string
 	}{
 		{
 			name:      "prefers client_secret_basic over none",
@@ -350,9 +361,10 @@ func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
 			expected:  "private_key_jwt",
 		},
 		{
-			name:      "falls back to none when only none supported",
-			supported: []string{"none"},
-			expected:  "none",
+			name:          "falls back to none when only none supported and S256 advertised",
+			supported:     []string{"none"},
+			codeChallenge: []string{"S256"},
+			expected:      "none",
 		},
 		{
 			name:      "defaults to client_secret_basic when metadata omits the field",
@@ -371,6 +383,7 @@ func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
 
 			server := newDCRTestServer(t, dcrTestHandlerConfig{
 				tokenEndpointAuthMethodsSupported: tc.supported,
+				codeChallengeMethodsSupported:     tc.codeChallenge,
 			})
 			cache := NewInMemoryDCRCredentialStore()
 			issuer := server.URL
@@ -384,6 +397,48 @@ func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
 			res, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
 			require.NoError(t, err)
 			assert.Equal(t, tc.expected, res.TokenEndpointAuthMethod)
+		})
+	}
+}
+
+// TestResolveDCRCredentials_RefusesNoneWithoutS256 pins the compliance gate
+// added for the "none" auth method: an upstream that advertises only "none"
+// for token_endpoint_auth_methods but does not advertise S256 in
+// code_challenge_methods_supported must be rejected at boot rather than
+// quietly registering a public client without RFC 7636 / OAuth 2.1 PKCE.
+func TestResolveDCRCredentials_RefusesNoneWithoutS256(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		codeChallenge []string
+	}{
+		{name: "code_challenge_methods_supported omitted", codeChallenge: nil},
+		{name: "code_challenge_methods_supported lists only plain", codeChallenge: []string{"plain"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newDCRTestServer(t, dcrTestHandlerConfig{
+				tokenEndpointAuthMethodsSupported: []string{"none"},
+				codeChallengeMethodsSupported:     tc.codeChallenge,
+			})
+			cache := NewInMemoryDCRCredentialStore()
+			issuer := server.URL
+			rc := &authserver.OAuth2UpstreamRunConfig{
+				Scopes: []string{"openid"},
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
+				},
+			}
+
+			_, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "S256",
+				"error must mention the missing S256 advertisement so operators can correlate")
+			assert.Contains(t, err.Error(), "RFC 7636",
+				"error must cite the spec being enforced")
 		})
 	}
 }

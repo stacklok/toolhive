@@ -537,6 +537,22 @@ func (c *OAuth2UpstreamRunConfig) Validate() error {
 		if err := c.DCRConfig.Validate(); err != nil {
 			return fmt.Errorf("oauth2 upstream: invalid dcr_config: %w", err)
 		}
+
+		// When the operator configures DCRConfig.RegistrationEndpoint, the
+		// resolver bypasses discovery and therefore cannot populate
+		// AuthorizationEndpoint or TokenEndpoint from server metadata. The
+		// run-config must supply both explicitly or the upstream is
+		// unusable: registration would succeed and the first authorize or
+		// token-exchange call would silently fail with empty endpoints.
+		// Discovery flow (DCRConfig.DiscoveryURL) is unaffected — those
+		// fields populate from metadata.
+		if c.DCRConfig.RegistrationEndpoint != "" {
+			if c.AuthorizationEndpoint == "" || c.TokenEndpoint == "" {
+				return fmt.Errorf(
+					"oauth2 upstream: authorization_endpoint and token_endpoint are required " +
+						"when dcr_config.registration_endpoint is set (no discovery to populate them)")
+			}
+		}
 	}
 
 	return nil

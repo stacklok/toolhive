@@ -41,7 +41,11 @@ type ConfigUpdater interface {
 	UpdateLLMConfig(fn func(*Config) error) error
 }
 
-// Setup configures all detected AI tools to use the LLM gateway.
+// Setup configures detected AI tools to use the LLM gateway.
+//
+// When targetClient is non-empty only that client is configured; an error is
+// returned if the client is not installed. Pass an empty string to configure
+// all detected clients (the original behaviour).
 //
 // It applies inlineOpts in-memory before login so a failed login leaves no
 // persisted state. Tool config files are patched only after login succeeds;
@@ -49,7 +53,7 @@ type ConfigUpdater interface {
 func Setup(
 	ctx context.Context, out, errOut io.Writer,
 	gm GatewayManager, provider ConfigUpdater, login LoginFunc,
-	inlineOpts SetOptions,
+	inlineOpts SetOptions, targetClient string,
 ) error {
 	llmCfg := provider.GetLLMConfig()
 
@@ -93,7 +97,10 @@ func Setup(
 	// Detect tools before login so we skip the interactive browser flow when
 	// there is nothing to configure. Login still runs before any files are
 	// patched, preserving the guarantee that a failed login leaves no state.
-	detected := gm.DetectedLLMGatewayClients()
+	detected, err := filterDetectedClients(gm.DetectedLLMGatewayClients(), targetClient)
+	if err != nil {
+		return err
+	}
 	if len(detected) == 0 {
 		_, _ = fmt.Fprintln(out, "No supported AI tools detected.")
 		return nil
@@ -290,6 +297,21 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 					"proxy's upstream gateway connection only. Use only in isolated local environments.\n", tc.Tool)
 		}
 	}
+}
+
+// filterDetectedClients narrows the detected client list to a single entry when
+// targetClient is non-empty. It returns an error if the named client is not in
+// the detected list. When targetClient is empty the list is returned unchanged.
+func filterDetectedClients(detected []string, targetClient string) ([]string, error) {
+	if targetClient == "" {
+		return detected, nil
+	}
+	for _, c := range detected {
+		if c == targetClient {
+			return []string{targetClient}, nil
+		}
+	}
+	return nil, fmt.Errorf("client %q is not installed or not detected", targetClient)
 }
 
 // configureDetectedTools patches each detected tool's config file and returns

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 	pkgsecrets "github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -18,23 +19,13 @@ import (
 // parameter so that tests can inject a no-op without touching the keyring.
 type LoginFunc func(ctx context.Context, cfg *Config) error
 
-// ToolApplyConfig carries the values needed to configure a single tool's LLM
-// gateway settings. Using a struct prevents positional-argument mistakes when
-// the caller has multiple similar string values in scope.
-type ToolApplyConfig struct {
-	GatewayURL         string // direct-mode: URL of the upstream LLM gateway
-	ProxyBaseURL       string // proxy-mode: URL of the localhost reverse proxy
-	TokenHelperCommand string // direct-mode: shell command that prints a fresh token
-	TLSSkipVerify      bool   // when true, instruct the tool to skip TLS verification
-}
-
 // GatewayManager is the subset of client.ClientManager used by Setup and
 // Teardown. Defined here so pkg/llm does not import pkg/client.
 type GatewayManager interface {
 	// DetectedLLMGatewayClients returns tool names for all installed LLM-gateway-capable tools.
 	DetectedLLMGatewayClients() []string
 	// ConfigureLLMGateway patches the tool's config file and returns the config path.
-	ConfigureLLMGateway(clientType string, cfg ToolApplyConfig) (string, error)
+	ConfigureLLMGateway(clientType string, cfg llmgateway.ApplyConfig) (string, error)
 	// LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
 	LLMGatewayModeFor(clientType string) string
 	// RevertLLMGateway removes the LLM gateway settings from the tool's config file.
@@ -313,7 +304,7 @@ func configureDetectedTools(
 ) ([]ToolConfig, error) {
 	var configured []ToolConfig
 	for _, clientType := range detected {
-		configPath, err := gm.ConfigureLLMGateway(clientType, ToolApplyConfig{
+		configPath, err := gm.ConfigureLLMGateway(clientType, llmgateway.ApplyConfig{
 			GatewayURL:         gatewayURL,
 			ProxyBaseURL:       proxyBaseURL,
 			TokenHelperCommand: tokenHelperCommand,

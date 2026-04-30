@@ -5,6 +5,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -51,6 +52,9 @@ type DCRCredentialStore interface {
 	Get(ctx context.Context, key DCRKey) (*DCRResolution, bool, error)
 
 	// Put stores the resolution for key, overwriting any existing entry.
+	// Implementations must reject a nil resolution with an error rather
+	// than silently succeeding — a no-op would leave callers with no
+	// debug trail for the subsequent Get miss.
 	Put(ctx context.Context, key DCRKey, resolution *DCRResolution) error
 }
 
@@ -117,9 +121,14 @@ func (s *inMemoryDCRCredentialStore) Get(_ context.Context, key DCRKey) (*DCRRes
 }
 
 // Put implements DCRCredentialStore.
+//
+// A nil resolution is rejected rather than silently no-oped: a caller
+// passing nil would otherwise get a successful return, observe a miss on
+// the next Get, and have no error trail to debug from. Per the constructor-
+// validation rule in .claude/rules/go-style.md, fail loudly at the boundary.
 func (s *inMemoryDCRCredentialStore) Put(_ context.Context, key DCRKey, resolution *DCRResolution) error {
 	if resolution == nil {
-		return nil
+		return fmt.Errorf("dcr: resolution must not be nil")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

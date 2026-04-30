@@ -127,6 +127,27 @@ func TestInMemoryDCRCredentialStore_Put_OverwritesExisting(t *testing.T) {
 	assert.Equal(t, "second", got.ClientID)
 }
 
+// TestInMemoryDCRCredentialStore_Put_RejectsNilResolution pins the
+// fail-loud-on-invalid-input contract: passing nil must error rather than
+// silently no-op. A silent no-op would leave the caller with a successful
+// Put followed by a Get miss and no debug trail to explain it.
+func TestInMemoryDCRCredentialStore_Put_RejectsNilResolution(t *testing.T) {
+	t.Parallel()
+
+	store := NewInMemoryDCRCredentialStore()
+	ctx := context.Background()
+	key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x.example.com/cb"}
+
+	err := store.Put(ctx, key, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be nil")
+
+	// And confirm the rejection did not partially populate the store.
+	_, ok, getErr := store.Get(ctx, key)
+	require.NoError(t, getErr)
+	assert.False(t, ok, "rejected Put must not leave any entry behind")
+}
+
 func TestInMemoryDCRCredentialStore_GetReturnsDefensiveCopy(t *testing.T) {
 	t.Parallel()
 

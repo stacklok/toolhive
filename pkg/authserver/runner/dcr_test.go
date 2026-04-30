@@ -945,10 +945,41 @@ func TestDeriveExpectedIssuerFromDiscoveryURL(t *testing.T) {
 	}
 }
 
+// countingStore is a DCRCredentialStore decorator that counts the number of
+// Get calls that returned a hit. The singleflight coalescing test uses it
+// to assert that no concurrent caller observed a cache hit during the run:
+// a hit during the test would mean a goroutine raced past the gate, took
+// the cache-lookup short-circuit instead of joining the singleflight, and
+// silently weakened the test's coverage.
+type countingStore struct {
+	inner DCRCredentialStore
+	hits  atomic.Int32
+}
+
+func (c *countingStore) Get(ctx context.Context, key DCRKey) (*DCRResolution, bool, error) {
+	res, ok, err := c.inner.Get(ctx, key)
+	if ok {
+		c.hits.Add(1)
+	}
+	return res, ok, err
+}
+
+func (c *countingStore) Put(ctx context.Context, key DCRKey, res *DCRResolution) error {
+	return c.inner.Put(ctx, key, res)
+}
+
 // TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers pins the
 // behaviour that N concurrent callers for the same DCRKey result in exactly
 // one RegisterClientDynamically call against the upstream — preventing the
 // orphaned-registration class of bug raised in PR #5042 review.
+//
+// "Exactly one registration" is necessary but not sufficient to prove the
+// singleflight coalescing path actually fired: a late-arriving goroutine
+// that reached resolveDCRCredentials after the leader's cache.Put would
+// short-circuit through lookupCachedResolution, take the cache hit, and
+// still leave registrationCalls == 1. A countingStore wrapper makes that
+// regression loud — we assert no caller observed a cache hit, so any timing
+// slip fails the test instead of silently weakening coverage.
 func TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers(t *testing.T) {
 	t.Parallel()
 
@@ -965,7 +996,7 @@ func TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers(t *testing
 		},
 	})
 
-	cache := NewInMemoryDCRCredentialStore()
+	cache := &countingStore{inner: NewInMemoryDCRCredentialStore()}
 	issuer := server.URL
 	rc := &authserver.OAuth2UpstreamRunConfig{
 		Scopes: []string{"openid", "profile"},
@@ -992,7 +1023,11 @@ func TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers(t *testing
 	// scheduled the leader's handler concurrently with the followers'
 	// arrival, only the leader actually invokes the handler — the followers
 	// wait inside singleflight.Do.
-	time.Sleep(50 * time.Millisecond)
+	//
+	// 250 ms gives every goroutine slack to reach singleflight.Do under CI
+	// load before the gate releases. If this still races, the countingStore
+	// assertion below fails loudly rather than silently weakening coverage.
+	time.Sleep(250 * time.Millisecond)
 	close(gate)
 
 	done := make(chan struct{})
@@ -1011,6 +1046,10 @@ func TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers(t *testing
 	assert.EqualValues(t, 1, atomic.LoadInt32(&registrationCalls),
 		"expected exactly one registration despite %d concurrent callers; got %d",
 		N, atomic.LoadInt32(&registrationCalls))
+	assert.EqualValues(t, 0, cache.hits.Load(),
+		"no goroutine should have observed a cache hit; if any did, the gate window "+
+			"was too short and a late-arriver took the lookupCachedResolution "+
+			"short-circuit instead of exercising the singleflight coalescing path")
 }
 
 // TestSynthesiseRegistrationEndpoint_PreservesIssuerPath guards the fix for

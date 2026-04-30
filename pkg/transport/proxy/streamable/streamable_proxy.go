@@ -64,9 +64,13 @@ type HTTPProxy struct {
 	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
 	sessionStorage session.Storage
 
-	// Waiters keyed by JSON-encoded request ID -> one-shot channel for response delivery
+	// Waiters keyed by compositeKey(sessID, idKey) -> one-shot channel for response delivery.
+	// The composite key MUST be unique per concurrent request; sharing it across requests
+	// (e.g. with sessID="" for sessionless requests) silently overwrites entries and crosses
+	// response payloads between unrelated clients. See resolveSessionForRequest.
 	waiters sync.Map // map[string]chan jsonrpc2.Message
-	// Map of compositeKey(sessID|idKey) -> original client JSON-RPC ID to restore before replying
+	// Keyed by the same compositeKey(sessID, idKey); stores the original client JSON-RPC ID
+	// to restore before replying. Same uniqueness requirement as `waiters`.
 	idRestore sync.Map // map[string]jsonrpc2.ID
 
 	// Health checker
@@ -643,12 +647,19 @@ func (p *HTTPProxy) ensureSession(id string) error {
 
 // resolveSessionForBatch resolves the session for batch POSTs.
 // Writes appropriate HTTP errors and returns an error when handling should stop.
-// An absent session header is allowed (returns "", nil) so that notification-only
-// batches can still return 202 without requiring a session.
+//
+// Sessionless POSTs receive a per-request UUID used solely as an in-process
+// routing token. Sessionless routing tokens MUST be unique per request:
+// sharing one (e.g. the empty string) across concurrent sessionless requests
+// causes waiters/idRestore overwrites in the in-process sync.Maps, which leaks
+// one client's response payload to another (with the JSON-RPC id rewritten to
+// the receiver's). This is a confidentiality bug, not a performance issue --
+// do not collapse the token. The UUID is not registered with sessionManager,
+// so no session object is created in any storage backend.
 func (p *HTTPProxy) resolveSessionForBatch(w http.ResponseWriter, r *http.Request) (string, error) {
 	sessID := r.Header.Get("Mcp-Session-Id")
 	if sessID == "" {
-		return "", nil
+		return uuid.New().String(), nil
 	}
 	if _, ok := p.sessionManager.Get(sessID); !ok {
 		session.WriteNotFound(w, nil)
@@ -659,8 +670,17 @@ func (p *HTTPProxy) resolveSessionForBatch(w http.ResponseWriter, r *http.Reques
 
 // resolveSessionForRequest resolves session rules for a single JSON-RPC request.
 // On initialize, assigns a new session ID if none is provided and returns setSessionHeader=true.
-// For other methods, allows sessionless requests (sessID="") for in-process routing;
-// a provided but unknown session ID returns 404.
+// A provided but unknown session ID returns 404.
+//
+// Sessionless non-initialize requests receive a per-request UUID used solely as
+// an in-process routing token (not registered with sessionManager). Sessionless
+// routing tokens MUST be unique per request: sharing one (e.g. the empty string)
+// across concurrent sessionless requests with the same JSON-RPC id collapses
+// them onto the same compositeKey(sessID, idKey) and overwrites entries in the
+// waiters / idRestore sync.Maps, leaking one client's response payload to
+// another. This is a confidentiality bug, not a performance issue -- do not
+// collapse the token.
+//
 // Writes HTTP errors on failure and returns error to stop handling.
 func (p *HTTPProxy) resolveSessionForRequest(
 	w http.ResponseWriter,
@@ -682,10 +702,11 @@ func (p *HTTPProxy) resolveSessionForRequest(
 		return sessID, setSessionHeader, nil
 	}
 
-	// Non-initialize requests without a session ID are allowed in sessionless mode
-	// (no session object created, composite key uses empty sessID for in-process routing).
+	// Sessionless non-initialize: generate a per-request routing token.
+	// setSessionHeader stays false so the client never sees this UUID and the
+	// next request remains sessionless.
 	if sessID == "" {
-		return "", false, nil
+		return uuid.New().String(), false, nil
 	}
 
 	// Session ID provided but not found: reject with 404.

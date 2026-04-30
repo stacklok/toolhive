@@ -6,6 +6,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
 )
@@ -795,6 +797,88 @@ func TestAuthenticate_BearerTokenPriority(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "my-bearer-token", token.AccessToken)
 	assert.Equal(t, "Bearer", token.TokenType)
+}
+
+// retrieveErr constructs an *oauth2.RetrieveError with the given error code,
+// matching what golang.org/x/oauth2 returns for token endpoint errors.
+func retrieveErr(code string) *oauth2.RetrieveError {
+	return &oauth2.RetrieveError{ErrorCode: code}
+}
+
+// TestIsCIMDRejectionError covers the isCIMDRejectionError helper used in the CIMD retry path.
+func TestIsCIMDRejectionError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error returns false",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "invalid_client triggers retry",
+			err:  retrieveErr("invalid_client"),
+			want: true,
+		},
+		{
+			name: "unauthorized_client triggers retry",
+			err:  retrieveErr("unauthorized_client"),
+			want: true,
+		},
+		{
+			name: "invalid_request does not trigger retry",
+			err:  retrieveErr("invalid_request"),
+			want: false,
+		},
+		{
+			name: "access_denied does not trigger retry",
+			err:  retrieveErr("access_denied"),
+			want: false,
+		},
+		// Authorization-endpoint rejections — flow.go format: "OAuth error: <code> - <desc>"
+		{
+			name: "auth callback invalid_client triggers retry",
+			err:  fmt.Errorf("OAuth error: invalid_client - client not recognised"),
+			want: true,
+		},
+		{
+			name: "auth callback unauthorized_client triggers retry",
+			err:  fmt.Errorf("OAuth error: unauthorized_client - not allowed"),
+			want: true,
+		},
+		{
+			name: "auth callback invalid_request does not trigger retry",
+			err:  fmt.Errorf("OAuth error: invalid_request - missing param"),
+			want: false,
+		},
+		{
+			name: "auth callback access_denied does not trigger retry",
+			err:  fmt.Errorf("OAuth error: access_denied - user denied"),
+			want: false,
+		},
+		// Non-OAuth errors must not trigger retry.
+		{
+			name: "network error does not trigger retry",
+			err:  fmt.Errorf("dial tcp: connection refused"),
+			want: false,
+		},
+		{
+			name: "timeout error does not trigger retry",
+			err:  fmt.Errorf("OAuth flow timed out after 5m0s - user did not complete authentication"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isCIMDRejectionError(tt.err))
+		})
+	}
 }
 
 // TestAuthenticate_BearerTokenDiscovery tests that bearer token discovery works correctly

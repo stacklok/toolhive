@@ -298,6 +298,10 @@ type AuthorizationServerMetadata struct {
 	// ScopesSupported lists the OAuth 2.0 scope values supported (RECOMMENDED per RFC 8414).
 	// For MCP authorization servers, this typically includes "openid" and "offline_access".
 	ScopesSupported []string `json:"scopes_supported,omitempty"`
+
+	// ClientIDMetadataDocumentSupported indicates the server accepts HTTPS URLs as client_id
+	// values per draft-ietf-oauth-client-id-metadata-document.
+	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
 }
 
 // OIDCDiscoveryDocument represents the OpenID Connect Discovery 1.0 document.

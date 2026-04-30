@@ -53,10 +53,11 @@ type AuthInfo struct {
 
 // AuthServerInfo contains information about a validated authorization server
 type AuthServerInfo struct {
-	Issuer               string
-	AuthorizationURL     string
-	TokenURL             string
-	RegistrationEndpoint string
+	Issuer                            string
+	AuthorizationURL                  string
+	TokenURL                          string
+	RegistrationEndpoint              string
+	ClientIDMetadataDocumentSupported bool
 }
 
 // Config holds configuration for authentication discovery
@@ -539,9 +540,10 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		return nil, fmt.Errorf("OAuth flow config cannot be nil")
 	}
 
-	// Resolve port availability BEFORE dynamic registration
-	// This ensures we register the OAuth client with the same port we'll actually use
-
+	// Resolve port availability before registration. DCR clients allow port fallback
+	// because the actual port is registered after selection. Pre-registered and CIMD
+	// clients require the configured port to be available as-is — it is already
+	// published in their IdP application or metadata document redirect URI.
 	if shouldDynamicallyRegisterClient(config) {
 		// For dynamic registration, we can allow fallback to alternative ports
 		// since we can register the client with the actual port we'll use
@@ -555,8 +557,9 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		}
 		config.CallbackPort = port
 	} else {
-		// For pre-registered clients, use strict port checking
-		// The user likely configured this port in their IdP/app
+		// For pre-registered clients and CIMD, use strict port checking.
+		// The port is either configured in the IdP app or baked into the
+		// redirect URI in the hosted metadata document.
 		if !networking.IsAvailable(config.CallbackPort) {
 			return nil, fmt.Errorf(
 				"specified auth callback port %d is not available - please choose a different port or ensure it's not in use",
@@ -836,10 +839,11 @@ func ValidateAndDiscoverAuthServer(ctx context.Context, potentialIssuer string) 
 		}
 
 		return &AuthServerInfo{
-			Issuer:               doc.Issuer,
-			AuthorizationURL:     doc.AuthorizationEndpoint,
-			TokenURL:             doc.TokenEndpoint,
-			RegistrationEndpoint: doc.RegistrationEndpoint,
+			Issuer:                            doc.Issuer,
+			AuthorizationURL:                  doc.AuthorizationEndpoint,
+			TokenURL:                          doc.TokenEndpoint,
+			RegistrationEndpoint:              doc.RegistrationEndpoint,
+			ClientIDMetadataDocumentSupported: doc.ClientIDMetadataDocumentSupported,
 		}, nil
 	}
 

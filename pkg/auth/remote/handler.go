@@ -5,12 +5,15 @@ package remote
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -131,15 +134,29 @@ func (h *Handler) performOAuthFlow(
 ) (oauth2.TokenSource, error) {
 	slog.Debug("Starting OAuth authentication flow", "issuer", issuer)
 
-	// Create OAuth flow config
+	// Client registration priority (MCP spec: stored credentials → CIMD → DCR):
+	// Priority 1: Pre-configured credentials — set by buildOAuthFlowConfig from h.config.ClientID/ClientSecret.
+	// Priority 2: CIMD — AS advertises support and no credentials are set; use metadata URL as client_id.
+	// Priority 3: DCR — PerformOAuthFlow handles this when ClientID is still empty after the above.
 	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo)
+	if shouldUseCIMD(authServerInfo, flowConfig) {
+		flowConfig.ClientID = oauthproto.ToolHiveClientMetadataDocumentURL
+		slog.Debug("Using CIMD client_id", "url", oauthproto.ToolHiveClientMetadataDocumentURL)
+	}
 
 	result, err := discovery.PerformOAuthFlow(ctx, issuer, flowConfig)
+	if err != nil {
+		// If we used CIMD and it was rejected, we need to retry with DCR.
+		if flowConfig.ClientID == oauthproto.ToolHiveClientMetadataDocumentURL && isCIMDRejectionError(err) {
+			slog.Warn("CIMD client_id rejected by AS, retrying with DCR", "issuer", issuer, "error", err)
+			flowConfig.ClientID = ""
+			result, err = discovery.PerformOAuthFlow(ctx, issuer, flowConfig)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	// Persist and wrap the token source
 	return h.wrapWithPersistence(result), nil
 }
 
@@ -187,12 +204,21 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 
 	// Persist DCR client credentials if available (for servers that use Dynamic Client Registration)
 	// Only persist if client_id exists - client_secret may be empty for PKCE flows
-	if h.clientCredentialsPersister != nil && result.ClientID != "" {
+	// CIMD client IDs (HTTPS URLs) are stable constants and are stored separately below.
+	if h.clientCredentialsPersister != nil && result.ClientID != "" &&
+		!oauthproto.IsClientIDMetadataDocumentURL(result.ClientID) {
 		if err := h.clientCredentialsPersister(result.ClientID, result.ClientSecret); err != nil {
 			slog.Warn("Failed to persist DCR client credentials", "error", err)
 		} else {
 			slog.Debug("Successfully persisted DCR client credentials for future restarts")
 		}
+	}
+
+	// Persist the CIMD metadata URL separately so it can be used as client_id
+	// on token refresh without conflating it with DCR-issued credentials.
+	if oauthproto.IsClientIDMetadataDocumentURL(result.ClientID) {
+		h.config.CachedCIMDClientID = result.ClientID
+		slog.Debug("Persisted CIMD client_id for future restarts", "url", result.ClientID)
 	}
 
 	// Wrap the token source to persist refreshed tokens
@@ -210,6 +236,15 @@ func (h *Handler) resolveClientCredentials(ctx context.Context) (clientID, clien
 	// First try to use statically configured credentials
 	clientID = h.config.ClientID
 	clientSecret = h.config.ClientSecret
+
+	// If CIMD was used in a prior session, use the cached metadata URL as client_id.
+	// CIMD clients have no secret (token_endpoint_auth_method=none).
+	// Checked before DCR so that DCR credential rotation does not change which
+	// client_id is sent on token refresh.
+	if h.config.HasCachedCIMDClientID() {
+		slog.Debug("Using cached CIMD client_id", "url", h.config.CachedCIMDClientID)
+		return h.config.CachedCIMDClientID, ""
+	}
 
 	// If we have cached DCR client credentials, use those instead
 	if h.config.HasCachedClientCredentials() {
@@ -317,18 +352,23 @@ func (h *Handler) discoverIssuerAndScopes(
 	authInfo *discovery.AuthInfo,
 	remoteURL string,
 ) (string, []string, *discovery.AuthServerInfo, error) {
-	// Priority 1: Use configured issuer if available
+	// Priority 1: Use configured issuer if available. Fetch discovery to populate
+	// AuthServerInfo (including ClientIDMetadataDocumentSupported) even when the
+	// issuer is pre-configured, so CIMD detection works on this path.
 	if h.config.Issuer != "" {
 		slog.Debug("Using configured issuer", "issuer", h.config.Issuer)
-		return h.config.Issuer, h.config.Scopes, nil, nil
+		authServerInfo, _ := discovery.ValidateAndDiscoverAuthServer(ctx, h.config.Issuer)
+		return h.config.Issuer, h.config.Scopes, authServerInfo, nil
 	}
 
-	// Priority 2: Try to derive from realm (RFC 8414)
+	// Priority 2: Try to derive from realm (RFC 8414). Fetch discovery for the
+	// same reason as Priority 1 — the realm path skips resource metadata discovery.
 	if authInfo.Realm != "" {
 		derivedIssuer := discovery.DeriveIssuerFromRealm(authInfo.Realm)
 		if derivedIssuer != "" {
 			slog.Debug("Derived issuer from realm", "issuer", derivedIssuer)
-			return derivedIssuer, h.config.Scopes, nil, nil
+			authServerInfo, _ := discovery.ValidateAndDiscoverAuthServer(ctx, derivedIssuer)
+			return derivedIssuer, h.config.Scopes, authServerInfo, nil
 		}
 	}
 
@@ -456,4 +496,43 @@ func (h *Handler) tryDiscoverFromWellKnown(
 	}
 
 	return authServerInfo.Issuer, scopes, authServerInfo, nil
+}
+
+// shouldUseCIMD reports whether the CIMD client_id should be presented to the AS.
+// The AS must advertise CIMD support and no pre-configured credentials may be set.
+// Mirrors shouldDynamicallyRegisterClient in pkg/auth/discovery for consistency.
+func shouldUseCIMD(authServerInfo *discovery.AuthServerInfo, flowConfig *discovery.OAuthFlowConfig) bool {
+	if authServerInfo == nil || !authServerInfo.ClientIDMetadataDocumentSupported {
+		return false
+	}
+	return flowConfig.ClientID == "" && flowConfig.ClientSecret == ""
+}
+
+// isCIMDRejectionError returns true if err indicates the AS rejected the CIMD
+// client_id. Only the RFC 6749 error codes invalid_client and unauthorized_client
+// trigger a DCR retry; all other errors — including invalid_request and
+// token-exchange failures — surface as-is.
+//
+// CIMD rejection can surface from two stages:
+//   - Authorization endpoint: AS redirects to callback with error=invalid_client;
+//     flow.go formats this as "OAuth error: <code> - <description>" (a plain error).
+//   - Token endpoint: oauth2.RetrieveError with ErrorCode set.
+func isCIMDRejectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Token endpoint rejection — structured error from golang.org/x/oauth2.
+	var rerr *oauth2.RetrieveError
+	if errors.As(err, &rerr) {
+		switch rerr.ErrorCode {
+		case "invalid_client", "unauthorized_client":
+			return true
+		}
+		return false
+	}
+	// Authorization endpoint rejection — flow.go formats callback errors as
+	// "OAuth error: <code> - <description>". Check for the code after the prefix.
+	msg := err.Error()
+	return strings.HasPrefix(msg, "OAuth error: invalid_client") ||
+		strings.HasPrefix(msg, "OAuth error: unauthorized_client")
 }

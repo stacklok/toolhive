@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/llm"
 	llmproxy "github.com/stacklok/toolhive/pkg/llm/proxy"
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 	pkgsecrets "github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -348,13 +349,8 @@ func (a *clientManagerAdapter) DetectedLLMGatewayClients() []string {
 	return result
 }
 
-func (a *clientManagerAdapter) ConfigureLLMGateway(clientType string, cfg llm.ToolApplyConfig) (string, error) {
-	return a.cm.ConfigureLLMGateway(client.ClientApp(clientType), client.LLMApplyConfig{
-		GatewayURL:         cfg.GatewayURL,
-		ProxyBaseURL:       cfg.ProxyBaseURL,
-		TokenHelperCommand: cfg.TokenHelperCommand,
-		TLSSkipVerify:      cfg.TLSSkipVerify,
-	})
+func (a *clientManagerAdapter) ConfigureLLMGateway(clientType string, cfg llmgateway.ApplyConfig) (string, error) {
+	return a.cm.ConfigureLLMGateway(client.ClientApp(clientType), cfg)
 }
 
 func (a *clientManagerAdapter) LLMGatewayModeFor(clientType string) string {

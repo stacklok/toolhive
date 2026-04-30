@@ -13,6 +13,7 @@ import (
 	"github.com/tailscale/hujson"
 
 	"github.com/stacklok/toolhive/pkg/fileutils"
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 )
 
 // llmPlaceholderAPIKey is the static API key written into proxy-mode tool
@@ -27,21 +28,13 @@ type llmPatchOp struct {
 	Value json.RawMessage `json:"value,omitempty"`
 }
 
-// LLMApplyConfig holds the values needed to configure an LLM gateway for a tool.
-type LLMApplyConfig struct {
-	GatewayURL         string // direct-mode: URL of the upstream LLM gateway
-	ProxyBaseURL       string // proxy-mode: URL of the localhost reverse proxy
-	TokenHelperCommand string // direct-mode: command that prints a fresh access token
-	TLSSkipVerify      bool   // when true, instruct the tool to skip TLS verification
-}
-
 // ConfigureLLMGateway patches the tool's LLM-gateway settings file with cfg
 // and returns the absolute path of the patched file.
 //
 // It uses fileutils.WithFileLock so concurrent calls (e.g. two "thv llm setup"
 // invocations) are serialised. Comments and trailing commas in JSONC settings
 // files are preserved via hujson. Writes are crash-safe via AtomicWriteFile.
-func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg LLMApplyConfig) (string, error) {
+func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgateway.ApplyConfig) (string, error) {
 	appCfg := cm.lookupClientAppConfig(clientType)
 	if appCfg == nil || appCfg.LLMGatewayMode == "" {
 		return "", fmt.Errorf("client %q does not support LLM gateway configuration", clientType)
@@ -86,7 +79,7 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg LLMApplyC
 // Specs with ClearWhenEmpty=true are removed when their resolved value is empty,
 // allowing conditional keys (e.g. NODE_TLS_REJECT_UNAUTHORIZED) to be cleaned
 // up when the associated flag is cleared.
-func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg LLMApplyConfig, filePath string) error {
+func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgateway.ApplyConfig, filePath string) error {
 	// Ensure ancestors only for specs that will be written (not removed).
 	for _, spec := range specs {
 		if spec.ClearWhenEmpty && llmValueForSpec(spec.ValueField, cfg) == "" {
@@ -268,7 +261,7 @@ func (cm *ClientManager) buildLLMSettingsPath(cfg *clientAppConfig) string {
 // llmValueForSpec returns the config value corresponding to the ValueField name.
 // For "NodeTLSRejectUnauthorized", returns "0" when TLSSkipVerify is true, or ""
 // when false (which triggers removal when ClearWhenEmpty is set on the spec).
-func llmValueForSpec(valueField string, cfg LLMApplyConfig) string {
+func llmValueForSpec(valueField string, cfg llmgateway.ApplyConfig) string {
 	switch valueField {
 	case "GatewayURL":
 		return cfg.GatewayURL

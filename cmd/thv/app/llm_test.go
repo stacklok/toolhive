@@ -71,7 +71,7 @@ func TestRunLLMSetup_NotConfigured(t *testing.T) {
 	provider := llmProvider(t, llm.Config{}) // no gateway URL
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{})
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not configured")
 }
@@ -98,7 +98,7 @@ func TestRunLLMSetup_NoDetectedTools(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{})
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "")
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "No supported AI tools detected")
 }
@@ -142,7 +142,7 @@ func TestRunLLMSetup_PartialFailure(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{})
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "")
 	require.NoError(t, err)
 	assert.Contains(t, stderr.String(), "Warning: failed to configure claude-code")
 	assert.Contains(t, stdout.String(), "Configured gemini-cli")
@@ -176,7 +176,7 @@ func TestRunLLMSetup_RollbackOnConfigUpdateFailure(t *testing.T) {
 	provider := &errOnUpdateProvider{cfg: c, updateErr: errors.New("disk full")}
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{})
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "persisting tool configuration")
 
@@ -226,7 +226,7 @@ func TestRunLLMSetup_RollbackBothToolsOnConfigUpdateFailure(t *testing.T) {
 	provider := &errOnUpdateProvider{cfg: c, updateErr: errors.New("disk full")}
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{})
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "persisting tool configuration")
 
@@ -273,7 +273,7 @@ func TestRunLLMSetup_LoginFailureLeavesNoState(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider,
 		func(_ context.Context, _ *llm.Config) error { return loginErr },
-		llm.SetOptions{},
+		llm.SetOptions{}, "",
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "OIDC login failed")
@@ -434,4 +434,138 @@ func TestRunLLMTeardown_SingleTool(t *testing.T) {
 	data, err := os.ReadFile(claudePath)
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "apiKeyHelper")
+}
+
+// ── --client flag (setup) ─────────────────────────────────────────────────────
+
+func TestRunLLMSetup_ClientFlag_ConfiguresSingleTool(t *testing.T) {
+	t.Parallel()
+	// Two tools installed; --client selects only claude-code.
+	// gemini-cli dir exists but must NOT be touched.
+	dir := t.TempDir()
+
+	claudeDir := filepath.Join(dir, ".claude")
+	geminiDir := filepath.Join(dir, ".gemini")
+	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
+	require.NoError(t, os.MkdirAll(geminiDir, 0o700))
+
+	cfgs := client.LLMTestIntegrations([]client.LLMTestEntry{
+		{
+			ClientType:   client.ClaudeCode,
+			Mode:         "direct",
+			SettingsDir:  []string{".claude"},
+			SettingsFile: "settings.json",
+			JSONPointers: []string{"/apiKeyHelper"},
+			ValueFields:  []string{"TokenHelperCommand"},
+		},
+		{
+			ClientType:   client.GeminiCli,
+			Mode:         "direct",
+			SettingsDir:  []string{".gemini"},
+			SettingsFile: "settings.json",
+			JSONPointers: []string{"/baseUrl"},
+			ValueFields:  []string{"GatewayURL"},
+		},
+	})
+	cm := client.NewTestClientManager(dir, nil, cfgs, nil)
+	provider := llmProvider(t, llm.Config{
+		GatewayURL: "https://gw.example.com",
+		OIDC:       llm.OIDCConfig{Issuer: "https://auth.example.com", ClientID: "id"},
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "claude-code")
+	require.NoError(t, err)
+	assert.Contains(t, stdout.String(), "Configured claude-code")
+	assert.NotContains(t, stdout.String(), "gemini-cli")
+
+	// Only claude-code settings file should exist.
+	_, statErr := os.Stat(filepath.Join(claudeDir, "settings.json"))
+	assert.NoError(t, statErr, "claude-code settings.json must be created")
+	_, statErr = os.Stat(filepath.Join(geminiDir, "settings.json"))
+	assert.True(t, os.IsNotExist(statErr), "gemini-cli settings.json must not be created")
+}
+
+func TestRunLLMSetup_ClientFlag_NotInstalled(t *testing.T) {
+	t.Parallel()
+	// --client names a tool that is not detected (no settings dir on disk).
+	dir := t.TempDir()
+
+	cfgs := client.LLMTestIntegrations([]client.LLMTestEntry{
+		{
+			ClientType:   client.ClaudeCode,
+			Mode:         "direct",
+			SettingsDir:  []string{".claude"},
+			SettingsFile: "settings.json",
+			JSONPointers: []string{"/apiKeyHelper"},
+			ValueFields:  []string{"TokenHelperCommand"},
+		},
+	})
+	cm := client.NewTestClientManager(dir, nil, cfgs, nil)
+	provider := llmProvider(t, llm.Config{
+		GatewayURL: "https://gw.example.com",
+		OIDC:       llm.OIDCConfig{Issuer: "https://auth.example.com", ClientID: "id"},
+	})
+
+	var stdout, stderr bytes.Buffer
+	// cursor is not installed (no dir); expect an error.
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "cursor")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"cursor" is not installed or not detected`)
+}
+
+// ── --client flag (teardown) ──────────────────────────────────────────────────
+
+func TestRunLLMTeardown_ClientFlag_RevertsNamedTool(t *testing.T) {
+	t.Parallel()
+	// --client equivalent: pass []string{"claude-code"} as the target.
+	// Reuses the same runLLMTeardown path; the flag is wired in the cobra
+	// command, so here we test the underlying function directly.
+	dir := t.TempDir()
+
+	claudeDir := filepath.Join(dir, ".claude")
+	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
+	claudePath := filepath.Join(claudeDir, "settings.json")
+	require.NoError(t, os.WriteFile(claudePath,
+		[]byte(`{"apiKeyHelper":"thv llm token"}`), 0o600))
+
+	cfgs := client.LLMTestIntegrations([]client.LLMTestEntry{
+		{
+			ClientType:   client.ClaudeCode,
+			Mode:         "direct",
+			SettingsDir:  []string{".claude"},
+			SettingsFile: "settings.json",
+			JSONPointers: []string{"/apiKeyHelper"},
+			ValueFields:  []string{"TokenHelperCommand"},
+		},
+	})
+	cm := client.NewTestClientManager(dir, nil, cfgs, nil)
+	provider := llmProvider(t, llm.Config{
+		ConfiguredTools: []llm.ToolConfig{
+			{Tool: "claude-code", Mode: "direct", ConfigPath: claudePath},
+			{Tool: "cursor", Mode: "proxy", ConfigPath: "/some/cursor/path"},
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	// Simulate --client claude-code by passing it as a single-element slice.
+	err := runLLMTeardown(context.Background(), &stdout, &stderr, cm, []string{"claude-code"}, false, provider)
+	require.NoError(t, err)
+	assert.Contains(t, stdout.String(), "Reverted claude-code")
+
+	// cursor must remain configured.
+	cfg := provider.GetConfig()
+	require.Len(t, cfg.LLM.ConfiguredTools, 1)
+	assert.Equal(t, "cursor", cfg.LLM.ConfiguredTools[0].Tool)
+}
+
+func TestLLMTeardownCommand_ClientFlagAndPositionalArgMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+	// Execute the cobra command with both --client and a positional arg; the
+	// RunE mutual-exclusion guard must fire before any client manager is built.
+	cmd := newLLMTeardownCommand()
+	cmd.SetArgs([]string{"--client", "claude-code", "cursor"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot use --client and a positional tool-name argument at the same time")
 }

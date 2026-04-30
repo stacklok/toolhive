@@ -215,11 +215,12 @@ func newLLMSetupCommand() *cobra.Command {
 	var (
 		opts          llm.SetOptions
 		tlsSkipVerify bool
+		targetClient  string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Configure all detected AI tools to use the LLM gateway",
+		Short: "Configure detected AI tools to use the LLM gateway",
 		Long: `Detect installed AI coding tools (Claude Code, Gemini CLI, Cursor, VS Code,
 Xcode) and patch each tool's configuration to route through the LLM gateway.
 
@@ -228,6 +229,9 @@ Token-helper tools (Claude Code, Gemini CLI) are configured to call
 
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".
+
+Use --client to configure only a single named tool instead of all detected
+tools. An error is returned if the named client is not installed.
 
 Inline flags (--gateway-url, --issuer, --client-id, etc.) are applied for this
 run and persisted to config only after login and tool patching succeed. This
@@ -245,7 +249,7 @@ Run "thv llm teardown" to revert all changes.`,
 			}
 			return runLLMSetup(
 				cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
-				cm, config.NewDefaultProvider(), oidcLogin, opts,
+				cm, config.NewDefaultProvider(), oidcLogin, opts, targetClient,
 			)
 		},
 	}
@@ -261,6 +265,8 @@ Run "thv llm teardown" to revert all changes.`,
 			"For direct-mode tools (Claude Code, Gemini CLI) this sets NODE_TLS_REJECT_UNAUTHORIZED=0, "+
 			"disabling TLS for ALL of that tool's outbound connections. "+
 			"For proxy-mode tools only the proxy-to-gateway connection is affected.")
+	cmd.Flags().StringVar(&targetClient, "client", "",
+		"Configure only this AI tool by name (e.g. claude-code, cursor). Omit to configure all detected tools.")
 
 	return cmd
 }
@@ -279,23 +285,33 @@ func oidcLogin(ctx context.Context, cfg *llm.Config) error {
 func runLLMSetup(
 	ctx context.Context, out, errOut io.Writer,
 	cm *client.ClientManager, provider config.Provider, login llm.LoginFunc,
-	inlineOpts llm.SetOptions,
+	inlineOpts llm.SetOptions, targetClient string,
 ) error {
-	return llm.Setup(ctx, out, errOut, &clientManagerAdapter{cm}, &configUpdaterAdapter{provider}, login, inlineOpts)
+	return llm.Setup(ctx, out, errOut, &clientManagerAdapter{cm}, &configUpdaterAdapter{provider}, login, inlineOpts, targetClient)
 }
 
 func newLLMTeardownCommand() *cobra.Command {
-	var purgeTokens bool
+	var (
+		purgeTokens  bool
+		targetClient string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "teardown [tool-name]",
 		Short: "Remove LLM gateway configuration from all (or one) configured tools",
 		Long: `Revert the configuration changes made by "thv llm setup" for all configured
-tools, or for a single tool when tool-name is provided.
+tools, or for a single tool when tool-name is provided as a positional argument
+or via --client.
 
 Use --purge-tokens to also remove cached OIDC tokens from the secrets provider.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if targetClient != "" && len(args) > 0 {
+				return fmt.Errorf("cannot use --client and a positional tool-name argument at the same time")
+			}
+			if targetClient != "" {
+				args = []string{targetClient}
+			}
 			cm, err := client.NewClientManager()
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
@@ -305,6 +321,8 @@ Use --purge-tokens to also remove cached OIDC tokens from the secrets provider.`
 	}
 
 	cmd.Flags().BoolVar(&purgeTokens, "purge-tokens", false, "Also delete cached OIDC tokens from the secrets provider")
+	cmd.Flags().StringVar(&targetClient, "client", "",
+		"Remove configuration for only this AI tool by name (e.g. claude-code, cursor). Omit to revert all configured tools.")
 
 	return cmd
 }

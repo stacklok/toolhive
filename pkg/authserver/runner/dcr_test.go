@@ -50,6 +50,13 @@ type dcrTestHandlerConfig struct {
 	// observeRegistration is called for each request hitting the
 	// registration endpoint. Safe for concurrent use.
 	observeRegistration func(r *http.Request, body []byte)
+
+	// clientIDIssuedAt and clientSecretExpiresAt are echoed back in the
+	// RFC 7591 §3.2.1 response. Both are int64 epoch seconds; 0 is the wire
+	// convention for "field absent" and (for ClientSecretExpiresAt) "secret
+	// does not expire".
+	clientIDIssuedAt      int64
+	clientSecretExpiresAt int64
 }
 
 // newDCRTestServer mounts RFC 8414 metadata and a DCR endpoint on a single
@@ -105,6 +112,8 @@ func newDCRTestServer(t *testing.T, cfg dcrTestHandlerConfig) *httptest.Server {
 			RegistrationAccessToken: "test-reg-token",
 			RegistrationClientURI:   server.URL + "/register/test-client-id",
 			TokenEndpointAuthMethod: req.TokenEndpointAuthMethod,
+			ClientIDIssuedAt:        cfg.clientIDIssuedAt,
+			ClientSecretExpiresAt:   cfg.clientSecretExpiresAt,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -1268,4 +1277,164 @@ func TestResolveDCRCredentials_CachePutFailureWrapped(t *testing.T) {
 		"cache.Put error must be wrapped with %%w so callers can inspect the cause")
 	assert.Contains(t, err.Error(), "dcr: cache put",
 		"the wrap message is part of the operator-debugging contract")
+}
+
+// TestBuildResolution_PopulatesRFC7591ExpiryFields covers the conversion of
+// the int64 epoch fields client_id_issued_at and client_secret_expires_at
+// into time.Time on DCRResolution. The wire convention "0 means absent /
+// does not expire" is preserved as the zero time.Time.
+func TestBuildResolution_PopulatesRFC7591ExpiryFields(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuedEpoch  int64 = 1_700_000_000 // 2023-11-14T22:13:20Z
+		expiresEpoch int64 = 1_800_000_000 // 2027-01-15T08:00:00Z
+	)
+
+	tests := []struct {
+		name          string
+		issuedAt      int64
+		expiresAt     int64
+		wantIssuedAt  time.Time
+		wantExpiresAt time.Time
+	}{
+		{
+			name:          "both fields populated",
+			issuedAt:      issuedEpoch,
+			expiresAt:     expiresEpoch,
+			wantIssuedAt:  time.Unix(issuedEpoch, 0).UTC(),
+			wantExpiresAt: time.Unix(expiresEpoch, 0).UTC(),
+		},
+		{
+			name:          "client_secret_expires_at zero means does-not-expire",
+			issuedAt:      issuedEpoch,
+			expiresAt:     0,
+			wantIssuedAt:  time.Unix(issuedEpoch, 0).UTC(),
+			wantExpiresAt: time.Time{},
+		},
+		{
+			name:          "both fields omitted by upstream",
+			issuedAt:      0,
+			expiresAt:     0,
+			wantIssuedAt:  time.Time{},
+			wantExpiresAt: time.Time{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			resolution := buildResolution(
+				&oauthproto.DynamicClientRegistrationResponse{
+					ClientID:              "id",
+					ClientSecret:          "secret",
+					ClientIDIssuedAt:      tc.issuedAt,
+					ClientSecretExpiresAt: tc.expiresAt,
+				},
+				&dcrEndpoints{
+					authorizationEndpoint: "https://idp.example.com/authorize",
+					tokenEndpoint:         "https://idp.example.com/token",
+				},
+				"client_secret_basic",
+			)
+			assert.Equal(t, tc.wantIssuedAt, resolution.ClientIDIssuedAt)
+			assert.Equal(t, tc.wantExpiresAt, resolution.ClientSecretExpiresAt)
+		})
+	}
+}
+
+// TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret pins the fix for
+// the cache-serves-expired-secrets bug: when an entry's
+// ClientSecretExpiresAt has passed, lookupCachedResolution treats it as a
+// miss so registerAndCache re-runs and overwrites the stale entry. Without
+// this, the cached secret would be served indefinitely past the upstream-
+// asserted expiry and every token-endpoint call would 401 with no signal
+// back to the resolver.
+func TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret(t *testing.T) {
+	t.Parallel()
+
+	var registrationCalls int32
+	server := newDCRTestServer(t, dcrTestHandlerConfig{
+		// Issue a secret that expired one minute ago. Every fresh
+		// registration call will produce an already-expired entry; the
+		// resolver will refetch on every Resolve as a result.
+		clientSecretExpiresAt: time.Now().Add(-time.Minute).Unix(),
+		observeRegistration: func(_ *http.Request, _ []byte) {
+			atomic.AddInt32(&registrationCalls, 1)
+		},
+	})
+
+	cache := NewInMemoryDCRCredentialStore()
+	issuer := server.URL
+	rc := &authserver.OAuth2UpstreamRunConfig{
+		Scopes: []string{"openid"},
+		DCRConfig: &authserver.DCRUpstreamConfig{
+			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
+		},
+	}
+
+	// First call: registers, populates cache with already-expired entry.
+	res1, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	require.NoError(t, err)
+	require.NotNil(t, res1)
+	require.False(t, res1.ClientSecretExpiresAt.IsZero(),
+		"upstream advertised an expiry — the resolution must echo it")
+	require.True(t, time.Now().After(res1.ClientSecretExpiresAt),
+		"test setup should have produced an already-expired secret")
+	require.EqualValues(t, 1, atomic.LoadInt32(&registrationCalls))
+
+	// Second call: the cached entry is expired, so the resolver must refetch.
+	res2, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	require.NoError(t, err)
+	require.NotNil(t, res2)
+	assert.EqualValues(t, 2, atomic.LoadInt32(&registrationCalls),
+		"expired cache entry must trigger a re-registration; got %d total calls",
+		atomic.LoadInt32(&registrationCalls))
+}
+
+// TestResolveDCRCredentials_HonoursFutureExpiryAndZero pins that
+// lookupCachedResolution does NOT refetch when the cached secret is still
+// valid — either because the upstream-asserted expiry is in the future, or
+// because the upstream omitted client_secret_expires_at (zero ⇒ "does not
+// expire" per RFC 7591 §3.2.1). The cache hit path is the hot path and a
+// regression here would silently increase upstream load.
+func TestResolveDCRCredentials_HonoursFutureExpiryAndZero(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		expiresAt int64
+	}{
+		{name: "future expiry served from cache", expiresAt: time.Now().Add(time.Hour).Unix()},
+		{name: "zero (does not expire) served from cache", expiresAt: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var registrationCalls int32
+			server := newDCRTestServer(t, dcrTestHandlerConfig{
+				clientSecretExpiresAt: tc.expiresAt,
+				observeRegistration: func(_ *http.Request, _ []byte) {
+					atomic.AddInt32(&registrationCalls, 1)
+				},
+			})
+			cache := NewInMemoryDCRCredentialStore()
+			issuer := server.URL
+			rc := &authserver.OAuth2UpstreamRunConfig{
+				Scopes: []string{"openid"},
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
+				},
+			}
+
+			_, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+			require.NoError(t, err)
+			_, err = resolveDCRCredentials(context.Background(), rc, issuer, cache)
+			require.NoError(t, err)
+
+			assert.EqualValues(t, 1, atomic.LoadInt32(&registrationCalls),
+				"second call must hit the cache; got %d total registrations",
+				atomic.LoadInt32(&registrationCalls))
+		})
+	}
 }

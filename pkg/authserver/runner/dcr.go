@@ -95,6 +95,25 @@ type DCRResolution struct {
 	// token endpoint for this client.
 	TokenEndpointAuthMethod string
 
+	// ClientIDIssuedAt is the RFC 7591 §3.2.1 "client_id_issued_at" value
+	// converted to a Go time.Time. Zero when the upstream omitted the field
+	// (the field is OPTIONAL per RFC 7591). Informational; not used to
+	// invalidate the cache.
+	ClientIDIssuedAt time.Time
+
+	// ClientSecretExpiresAt is the RFC 7591 §3.2.1 "client_secret_expires_at"
+	// value converted to a Go time.Time. The wire convention is that 0 means
+	// "the secret does not expire"; in this struct that is represented by
+	// the zero time.Time so callers can use IsZero() rather than special-
+	// casing 0.
+	//
+	// When non-zero, this field is the authoritative signal that
+	// lookupCachedResolution uses to refetch credentials before the upstream
+	// rejects them at the token endpoint. The 90-day dcrStaleAgeThreshold
+	// is a heuristic for "consider rotating"; this is a hard expiry asserted
+	// by the upstream itself.
+	ClientSecretExpiresAt time.Time
+
 	// CreatedAt is the wall-clock time at which the resolution was completed.
 	// Used by Step 2g observability to compute staleness against
 	// dcrStaleAgeThreshold.
@@ -332,6 +351,14 @@ func validateResolveInputs(
 // lookupCachedResolution checks the cache and logs the hit. On hit it
 // returns (resolution, true, nil). On miss it returns (nil, false, nil). An
 // error is returned only on backend failure.
+//
+// Entries whose RFC 7591 §3.2.1 client_secret_expires_at has already passed
+// are treated as misses so the singleflight body (registerAndCache) re-runs
+// the registration and overwrites the stale entry via cache.Put. Without
+// this check the cache would serve an expired secret indefinitely; the
+// upstream's token endpoint would 401 on every use and the resolver would
+// have no signal to refetch. The check is skipped when the field is zero,
+// per the RFC 7591 convention "0 means the secret does not expire".
 func lookupCachedResolution(
 	ctx context.Context,
 	cache DCRCredentialStore,
@@ -343,6 +370,16 @@ func lookupCachedResolution(
 		return nil, false, fmt.Errorf("dcr: cache lookup: %w", err)
 	}
 	if !ok {
+		return nil, false, nil
+	}
+	if !cached.ClientSecretExpiresAt.IsZero() && time.Now().After(cached.ClientSecretExpiresAt) {
+		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
+		slog.Debug("dcr: cache hit ignored; cached secret expired per upstream client_secret_expires_at",
+			"issuer", issuer,
+			"redirect_uri", redirectURI,
+			"client_id", cached.ClientID,
+			"client_secret_expires_at", cached.ClientSecretExpiresAt.UTC().Format(time.RFC3339),
+		)
 		return nil, false, nil
 	}
 	slog.Debug("dcr: cache hit",
@@ -422,6 +459,11 @@ func performRegistration(
 // the resolved endpoints. If the server did not echo a
 // token_endpoint_auth_method in the response, the method actually sent is
 // recorded so downstream consumers see a definite value.
+//
+// RFC 7591 §3.2.1 client_id_issued_at and client_secret_expires_at are
+// converted from int64 epoch seconds to time.Time. The wire value 0 means
+// "field absent" or "secret does not expire"; both map to the zero time.Time
+// so callers can use IsZero() uniformly.
 func buildResolution(
 	response *oauthproto.DynamicClientRegistrationResponse,
 	endpoints *dcrEndpoints,
@@ -439,8 +481,20 @@ func buildResolution(
 		RegistrationAccessToken: response.RegistrationAccessToken,
 		RegistrationClientURI:   response.RegistrationClientURI,
 		TokenEndpointAuthMethod: authMethod,
+		ClientIDIssuedAt:        epochSecondsToTime(response.ClientIDIssuedAt),
+		ClientSecretExpiresAt:   epochSecondsToTime(response.ClientSecretExpiresAt),
 		CreatedAt:               time.Now(),
 	}
+}
+
+// epochSecondsToTime converts the int64 epoch-seconds form used by RFC 7591
+// into a time.Time. Zero passes through to the zero time.Time so callers can
+// rely on IsZero() to mean "field absent" / "does not expire".
+func epochSecondsToTime(epoch int64) time.Time {
+	if epoch == 0 {
+		return time.Time{}
+	}
+	return time.Unix(epoch, 0).UTC()
 }
 
 // dcrEndpoints is the internal bundle of endpoints produced by endpoint

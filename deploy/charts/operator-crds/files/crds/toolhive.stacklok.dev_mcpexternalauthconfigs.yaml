@@ -581,7 +581,10 @@ spec:
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.
-                                Required for OAuth2 providers to resolve user identity.
+                                When omitted, the embedded auth server runs in synthesis mode for this
+                                upstream: a non-PII subject derived from the access token, no Name/Email.
+                                Use this shape for upstreams with no userinfo surface (e.g., MCP
+                                authorization servers per the MCP spec).
                               properties:
                                 additionalHeaders:
                                   additionalProperties:
@@ -643,7 +646,6 @@ spec:
                           - authorizationEndpoint
                           - clientId
                           - tokenEndpoint
-                          - userInfo
                           type: object
                         oidcConfig:
                           description: |-
@@ -1614,7 +1616,10 @@ spec:
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.
-                                Required for OAuth2 providers to resolve user identity.
+                                When omitted, the embedded auth server runs in synthesis mode for this
+                                upstream: a non-PII subject derived from the access token, no Name/Email.
+                                Use this shape for upstreams with no userinfo surface (e.g., MCP
+                                authorization servers per the MCP spec).
                               properties:
                                 additionalHeaders:
                                   additionalProperties:
@@ -1676,7 +1681,6 @@ spec:
                           - authorizationEndpoint
                           - clientId
                           - tokenEndpoint
-                          - userInfo
                           type: object
                         oidcConfig:
                           description: |-

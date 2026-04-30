@@ -222,7 +222,11 @@ func (s *MemoryStorage) cleanupExpired() {
 
 	var expiredUpstreamTokens []upstreamKey
 	for k, v := range s.upstreamTokens {
-		if now.After(v.expiresAt) {
+		// Zero expiresAt is the sentinel for "no TTL" (non-expiring token with no session
+		// bound). Other entry types never use zero expiresAt, so only upstream tokens need
+		// this guard — without it, time.Time{} would compare as before any real time and
+		// every non-expiring token would be swept on the next tick.
+		if !v.expiresAt.IsZero() && now.After(v.expiresAt) {
 			expiredUpstreamTokens = append(expiredUpstreamTokens, k)
 		}
 	}
@@ -704,25 +708,33 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 	now := time.Now()
 	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
 	// survives in storage for transparent token refresh by the middleware.
-	var expiresAt time.Time
-	if tokens != nil && !tokens.ExpiresAt.IsZero() {
-		expiresAt = tokens.ExpiresAt.Add(DefaultRefreshTokenTTL)
-	} else {
-		expiresAt = now.Add(DefaultAccessTokenTTL + DefaultRefreshTokenTTL)
-	}
+	// Zero ExpiresAt means the token never expires; no TTL is applied.
+	expiresAt := func() time.Time {
+		if tokens == nil {
+			return now.Add(DefaultAccessTokenTTL + DefaultRefreshTokenTTL)
+		}
+		if !tokens.ExpiresAt.IsZero() {
+			return tokens.ExpiresAt.Add(DefaultRefreshTokenTTL)
+		}
+		if !tokens.SessionExpiresAt.IsZero() {
+			return tokens.SessionExpiresAt.Add(DefaultRefreshTokenTTL)
+		}
+		return time.Time{} // non-expiring token with no known session bound
+	}()
 
 	// Make a defensive copy to prevent aliasing issues
 	var tokensCopy *UpstreamTokens
 	if tokens != nil {
 		tokensCopy = &UpstreamTokens{
-			ProviderID:      tokens.ProviderID,
-			AccessToken:     tokens.AccessToken,
-			RefreshToken:    tokens.RefreshToken,
-			IDToken:         tokens.IDToken,
-			ExpiresAt:       tokens.ExpiresAt,
-			UserID:          tokens.UserID,
-			UpstreamSubject: tokens.UpstreamSubject,
-			ClientID:        tokens.ClientID,
+			ProviderID:       tokens.ProviderID,
+			AccessToken:      tokens.AccessToken,
+			RefreshToken:     tokens.RefreshToken,
+			IDToken:          tokens.IDToken,
+			ExpiresAt:        tokens.ExpiresAt,
+			SessionExpiresAt: tokens.SessionExpiresAt,
+			UserID:           tokens.UserID,
+			UpstreamSubject:  tokens.UpstreamSubject,
+			ClientID:         tokens.ClientID,
 		}
 	}
 
@@ -759,14 +771,15 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, provider
 		return nil, nil
 	}
 	result := &UpstreamTokens{
-		ProviderID:      tokens.ProviderID,
-		AccessToken:     tokens.AccessToken,
-		RefreshToken:    tokens.RefreshToken,
-		IDToken:         tokens.IDToken,
-		ExpiresAt:       tokens.ExpiresAt,
-		UserID:          tokens.UserID,
-		UpstreamSubject: tokens.UpstreamSubject,
-		ClientID:        tokens.ClientID,
+		ProviderID:       tokens.ProviderID,
+		AccessToken:      tokens.AccessToken,
+		RefreshToken:     tokens.RefreshToken,
+		IDToken:          tokens.IDToken,
+		ExpiresAt:        tokens.ExpiresAt,
+		SessionExpiresAt: tokens.SessionExpiresAt,
+		UserID:           tokens.UserID,
+		UpstreamSubject:  tokens.UpstreamSubject,
+		ClientID:         tokens.ClientID,
 	}
 
 	// Check the token's own ExpiresAt (access token expiry), not the entry's expiresAt
@@ -800,14 +813,15 @@ func (s *MemoryStorage) GetAllUpstreamTokens(_ context.Context, sessionID string
 		}
 		// Defensive copy
 		result[key.providerName] = &UpstreamTokens{
-			ProviderID:      tokens.ProviderID,
-			AccessToken:     tokens.AccessToken,
-			RefreshToken:    tokens.RefreshToken,
-			IDToken:         tokens.IDToken,
-			ExpiresAt:       tokens.ExpiresAt,
-			UserID:          tokens.UserID,
-			UpstreamSubject: tokens.UpstreamSubject,
-			ClientID:        tokens.ClientID,
+			ProviderID:       tokens.ProviderID,
+			AccessToken:      tokens.AccessToken,
+			RefreshToken:     tokens.RefreshToken,
+			IDToken:          tokens.IDToken,
+			ExpiresAt:        tokens.ExpiresAt,
+			SessionExpiresAt: tokens.SessionExpiresAt,
+			UserID:           tokens.UserID,
+			UpstreamSubject:  tokens.UpstreamSubject,
+			ClientID:         tokens.ClientID,
 		}
 	}
 

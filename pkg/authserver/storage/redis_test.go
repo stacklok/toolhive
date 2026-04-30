@@ -643,10 +643,10 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 		})
 	})
 
-	t.Run("zero ExpiresAt tokens are retrievable (no expiry)", func(t *testing.T) {
-		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			// Store tokens with zero ExpiresAt (no expiry set).
-			// These should be retrievable — Redis TTL handles actual expiration.
+	t.Run("zero ExpiresAt tokens are stored without Redis TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			// Non-expiring tokens (ExpiresAt zero) must be stored without a Redis TTL
+			// so they are never automatically evicted.
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "no-expiry", "provider-a", &UpstreamTokens{
 				AccessToken: "no-expiry-token",
 				ProviderID:  "test-provider",
@@ -658,6 +658,252 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			assert.Equal(t, "no-expiry-token", retrieved.AccessToken)
 			assert.Equal(t, "test-provider", retrieved.ProviderID)
 			assert.True(t, retrieved.ExpiresAt.IsZero())
+
+			// Verify the key has no Redis TTL (miniredis returns 0 for keys without expiry).
+			key := redisUpstreamKey(s.keyPrefix, "no-expiry", "provider-a")
+			assert.Equal(t, time.Duration(0), mr.TTL(key), "non-expiring token must have no Redis TTL")
+		})
+	})
+
+	t.Run("mixed-expiry session: non-expiring write removes index set TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			// First store an expiring token — this sets a TTL on the index set.
+			err := s.StoreUpstreamTokens(ctx, "mixed-session", "provider-expiring", &UpstreamTokens{
+				AccessToken: "expiring-token",
+				ProviderID:  "provider-expiring",
+				ExpiresAt:   time.Now().Add(time.Hour),
+			})
+			require.NoError(t, err)
+
+			// Then store a non-expiring token for the same session.
+			err = s.StoreUpstreamTokens(ctx, "mixed-session", "provider-nonexpiring", &UpstreamTokens{
+				AccessToken: "non-expiring-token",
+				ProviderID:  "provider-nonexpiring",
+				// ExpiresAt intentionally zero
+			})
+			require.NoError(t, err)
+
+			// The index set must now have no TTL (PERSIST removed it).
+			idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "mixed-session")
+			assert.Equal(t, time.Duration(0), mr.TTL(idxKey),
+				"index set TTL must be removed when a non-expiring token is added to the session")
+		})
+	})
+
+	t.Run("mixed-expiry session: expiring write after non-expiring keeps index persistent", func(t *testing.T) {
+		// Regression test for the inverse ordering of the prior subtest. When a
+		// non-expiring token is written first and an expiring token follows, the
+		// Lua script must NOT re-apply a TTL to the index set — that would evict
+		// the index and orphan the non-expiring token's per-provider key.
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			// Non-expiring first: index gets PERSIST'd.
+			err := s.StoreUpstreamTokens(ctx, "inverse-session", "provider-nonexpiring", &UpstreamTokens{
+				AccessToken: "non-expiring-token",
+				ProviderID:  "provider-nonexpiring",
+				// ExpiresAt intentionally zero
+			})
+			require.NoError(t, err)
+
+			// Expiring second: must NOT re-apply a TTL.
+			err = s.StoreUpstreamTokens(ctx, "inverse-session", "provider-expiring", &UpstreamTokens{
+				AccessToken: "expiring-token",
+				ProviderID:  "provider-expiring",
+				ExpiresAt:   time.Now().Add(time.Hour),
+			})
+			require.NoError(t, err)
+
+			idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "inverse-session")
+			assert.Equal(t, time.Duration(0), mr.TTL(idxKey),
+				"index set TTL must remain unset after an expiring write follows a non-expiring one")
+
+			// Fast-forward past the expiring token's TTL. The expiring per-provider
+			// key evicts; the non-expiring one remains; the index stays intact.
+			mr.FastForward(time.Hour + DefaultRefreshTokenTTL + time.Second)
+
+			all, err := s.GetAllUpstreamTokens(ctx, "inverse-session")
+			require.NoError(t, err)
+			require.Contains(t, all, "provider-nonexpiring",
+				"non-expiring token must remain reachable through the index")
+			assert.NotContains(t, all, "provider-expiring",
+				"expiring token must have been evicted by Redis TTL")
+		})
+	})
+
+	t.Run("fresh expiring write applies index TTL", func(t *testing.T) {
+		// Regression guard: the Lua script must apply a TTL on the very first
+		// expiring write to a session (where the index set is being created
+		// fresh by the SADD). Without this, the index would never expire.
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "fresh-session", "provider-a", &UpstreamTokens{
+				AccessToken: "expiring-token",
+				ProviderID:  "provider-a",
+				ExpiresAt:   time.Now().Add(time.Hour),
+			}))
+
+			idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "fresh-session")
+			ttl := mr.TTL(idxKey)
+			assert.Greater(t, ttl, time.Duration(0),
+				"index set must have a TTL after a fresh expiring write")
+		})
+	})
+
+	t.Run("longer expiring write after shorter extends index TTL", func(t *testing.T) {
+		// Locks down the idxTTL < ttlMs branch: when a member with longer TTL
+		// is added, the index TTL must be extended to match.
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "extend-session", "provider-short", &UpstreamTokens{
+				AccessToken: "short-token",
+				ProviderID:  "provider-short",
+				ExpiresAt:   time.Now().Add(15 * time.Minute),
+			}))
+
+			idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "extend-session")
+			shortTTL := mr.TTL(idxKey)
+			require.Greater(t, shortTTL, time.Duration(0))
+
+			// Add a member with a much longer TTL.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "extend-session", "provider-long", &UpstreamTokens{
+				AccessToken: "long-token",
+				ProviderID:  "provider-long",
+				ExpiresAt:   time.Now().Add(24 * time.Hour),
+			}))
+
+			longTTL := mr.TTL(idxKey)
+			assert.Greater(t, longTTL, shortTTL,
+				"index TTL must be extended when a longer-lived member is added")
+		})
+	})
+
+	t.Run("shorter expiring write after longer leaves index TTL unchanged", func(t *testing.T) {
+		// Locks down the idxTTL >= ttlMs no-op branch: shorter-TTL members must
+		// not shrink the index — the longest-lived member governs.
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "noshrink-session", "provider-long", &UpstreamTokens{
+				AccessToken: "long-token",
+				ProviderID:  "provider-long",
+				ExpiresAt:   time.Now().Add(24 * time.Hour),
+			}))
+
+			idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "noshrink-session")
+			longTTL := mr.TTL(idxKey)
+			require.Greater(t, longTTL, time.Duration(0))
+
+			// Add a member with a shorter TTL.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "noshrink-session", "provider-short", &UpstreamTokens{
+				AccessToken: "short-token",
+				ProviderID:  "provider-short",
+				ExpiresAt:   time.Now().Add(15 * time.Minute),
+			}))
+
+			afterTTL := mr.TTL(idxKey)
+			// Allow tiny clock-drift tolerance: TTL must not have shrunk meaningfully.
+			assert.GreaterOrEqual(t, afterTTL, longTTL-time.Second,
+				"index TTL must not shrink when a shorter-lived member is added")
+		})
+	})
+
+	t.Run("same provider rewrite from non-expiring to expiring keeps PERSIST'd until rewrite", func(t *testing.T) {
+		// When the SAME provider rewrites from non-expiring to expiring, the
+		// index set is no longer intentionally persistent (the only non-expiring
+		// member is gone). With the current "leave PERSIST'd alone" rule, the
+		// index stays without a TTL until something else evicts the entry. This
+		// is acceptable for now — documented limitation, not a leak in practice
+		// because DeleteUpstreamTokens cleans up the whole session.
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "rewrite-session", "provider-a", &UpstreamTokens{
+				AccessToken: "non-expiring",
+				ProviderID:  "provider-a",
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "rewrite-session", "provider-a", &UpstreamTokens{
+				AccessToken: "now-expiring",
+				ProviderID:  "provider-a",
+				ExpiresAt:   time.Now().Add(time.Hour),
+			}))
+
+			idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, "rewrite-session")
+			// Pre-existing PERSIST is preserved; we accept this trade-off rather
+			// than tracking per-member TTL state in Lua. DeleteUpstreamTokens
+			// remains the cleanup path.
+			assert.Equal(t, time.Duration(0), mr.TTL(idxKey),
+				"index TTL is left alone on same-provider rewrite (acceptable limitation)")
+
+			// The new value is reachable.
+			retrieved, err := s.GetUpstreamTokens(ctx, "rewrite-session", "provider-a")
+			require.NoError(t, err)
+			require.NotNil(t, retrieved)
+			assert.Equal(t, "now-expiring", retrieved.AccessToken)
+		})
+	})
+
+	t.Run("non-expiring token with SessionExpiresAt gets proper Redis TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			sessionExpiry := time.Now().Add(time.Hour)
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-bound", "github", &UpstreamTokens{
+				AccessToken:      "pat-token",
+				ProviderID:       "github",
+				SessionExpiresAt: sessionExpiry,
+			}))
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "sess-bound", "github")
+			require.NoError(t, err)
+			require.NotNil(t, retrieved)
+			assert.Equal(t, "pat-token", retrieved.AccessToken)
+			assert.True(t, retrieved.ExpiresAt.IsZero(), "ExpiresAt must remain zero for non-expiring token")
+			// Assert field survives JSON round-trip (Unix truncation → 1s tolerance).
+			// RefreshAndStore carries SessionExpiresAt forward; silent zeroing here
+			// would cause every token refresh to lose the session bound.
+			assert.WithinDuration(t, sessionExpiry, retrieved.SessionExpiresAt, time.Second,
+				"SessionExpiresAt must survive Store→Get round-trip")
+
+			// Fast-forward past SessionExpiresAt + DefaultRefreshTokenTTL
+			mr.FastForward(time.Hour + DefaultRefreshTokenTTL + time.Second)
+
+			_, err = s.GetUpstreamTokens(ctx, "sess-bound", "github")
+			requireRedisNotFoundError(t, err)
+		})
+	})
+
+	t.Run("deeply stale ExpiresAt branch clamps TTL to one second", func(t *testing.T) {
+		// Regression guard for the clamp introduced in marshalUpstreamTokensWithTTL.
+		// Pre-fix, a token whose access expiry + DefaultRefreshTokenTTL had both
+		// elapsed was stored with a full 30-day grace (DefaultRefreshTokenTTL),
+		// retaining stale tokens far longer than necessary.  The fix clamps to
+		// time.Second so deeply-stale rows evict promptly.  Cold-path callers
+		// (refresher races, admin rewrites, legacy-row migrations) must observe
+		// the 1-second lifetime — not the old 30-day grace — so this test pins
+		// the behavior and will fail loudly if the clamp is reverted.
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			stalePast := time.Now().Add(-(DefaultRefreshTokenTTL + time.Hour))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "stale-expires-session", "provider-a", &UpstreamTokens{
+				AccessToken: "stale-token",
+				ProviderID:  "provider-a",
+				ExpiresAt:   stalePast,
+			}))
+
+			key := redisUpstreamKey(s.keyPrefix, "stale-expires-session", "provider-a")
+			assert.LessOrEqual(t, mr.TTL(key), 2*time.Second,
+				"deeply-stale ExpiresAt token must be stored with a 1s TTL, not the full DefaultRefreshTokenTTL grace")
+		})
+	})
+
+	t.Run("deeply stale SessionExpiresAt branch clamps TTL to one second", func(t *testing.T) {
+		// Mirror of the previous subtest for the SessionExpiresAt branch.
+		// When ExpiresAt is zero but SessionExpiresAt + DefaultRefreshTokenTTL
+		// have both elapsed, the same clamp must apply so that session-bound
+		// non-expiring tokens (e.g. GitHub PATs) don't linger for 30 days after
+		// the session itself has long expired.
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			stalePast := time.Now().Add(-(DefaultRefreshTokenTTL + time.Hour))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "stale-session-expires-session", "github", &UpstreamTokens{
+				AccessToken:      "stale-pat",
+				ProviderID:       "github",
+				SessionExpiresAt: stalePast,
+				// ExpiresAt intentionally zero — exercises the SessionExpiresAt branch
+			}))
+
+			key := redisUpstreamKey(s.keyPrefix, "stale-session-expires-session", "github")
+			assert.LessOrEqual(t, mr.TTL(key), 2*time.Second,
+				"deeply-stale SessionExpiresAt token must be stored with a 1s TTL, not the full DefaultRefreshTokenTTL grace")
 		})
 	})
 
@@ -763,6 +1009,46 @@ func TestRedisStorage_UpstreamTokens(t *testing.T) {
 			_, err = s.GetUpstreamTokens(ctx, "session-ep", "")
 			require.Error(t, err)
 			require.ErrorIs(t, err, fosite.ErrInvalidRequest)
+		})
+	})
+
+	t.Run("legacy JSON without session_expires_at decodes with zero SessionExpiresAt", func(t *testing.T) {
+		// Pin the wire-shape contract: pre-PR Redis data that has no
+		// "session_expires_at" key must deserialise to SessionExpiresAt.IsZero().
+		// A future DisallowUnknownFields flip or JSON tag rename would break this
+		// without failing any other test in the suite.
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			futureExpiry := time.Now().Add(time.Hour).Unix()
+			legacyJSON := fmt.Sprintf(`{
+				"provider_id": "github",
+				"access_token": "legacy-access",
+				"refresh_token": "legacy-refresh",
+				"id_token": "legacy-id",
+				"expires_at": %d,
+				"user_id": "legacy-user-uuid",
+				"upstream_subject": "github-sub-123",
+				"client_id": "legacy-client"
+			}`, futureExpiry)
+
+			// Inject directly into miniredis, bypassing the Store path, to simulate
+			// a pre-PR row written without "session_expires_at".
+			key := redisUpstreamKey(s.keyPrefix, "legacy-session", "github")
+			require.NoError(t, mr.Set(key, legacyJSON))
+
+			retrieved, err := s.GetUpstreamTokens(ctx, "legacy-session", "github")
+			require.NoError(t, err)
+			require.NotNil(t, retrieved)
+
+			assert.Equal(t, "github", retrieved.ProviderID)
+			assert.Equal(t, "legacy-access", retrieved.AccessToken)
+			assert.Equal(t, "legacy-refresh", retrieved.RefreshToken)
+			assert.Equal(t, "legacy-id", retrieved.IDToken)
+			assert.Equal(t, "legacy-user-uuid", retrieved.UserID)
+			assert.Equal(t, "github-sub-123", retrieved.UpstreamSubject)
+			assert.Equal(t, "legacy-client", retrieved.ClientID)
+			assert.Equal(t, time.Unix(futureExpiry, 0), retrieved.ExpiresAt)
+			assert.True(t, retrieved.SessionExpiresAt.IsZero(),
+				"SessionExpiresAt must be zero when absent from legacy JSON")
 		})
 	})
 

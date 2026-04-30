@@ -105,38 +105,56 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// This was generated in authorize.go and will be reused across all legs of the chain.
 	sessionID := pending.SessionID
 
-	// Determine identity: first leg resolves from upstream, subsequent legs carry from pending
+	// Determine identity: first leg resolves from upstream, subsequent legs
+	// carry from pending. Synthetic identities (see upstream.Identity.Synthetic)
+	// bypass UserResolver — the synthesized subject rotates per re-auth and
+	// would otherwise grow `users` monotonically. We use the synthesized value
+	// directly as an ephemeral session key and skip the LastAuthenticated
+	// update (no provider_identities row to bump).
 	var subject, userName, userEmail string
 	if pending.ResolvedUserID == "" {
 		// First leg — this is the identity provider
-		user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
-		if err != nil {
-			slog.Error("failed to resolve user", "error", err)
-			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to resolve user"))
-			return
+		if result.Synthetic {
+			subject = result.Subject
+		} else {
+			user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
+			if err != nil {
+				slog.Error("failed to resolve user", "error", err)
+				h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to resolve user"))
+				return
+			}
+			subject = user.ID
+			h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
 		}
-		subject = user.ID
 		userName = result.Name
 		userEmail = result.Email
-		h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
 	} else {
 		// Subsequent leg — use identity carried from first leg
 		subject = pending.ResolvedUserID
 		userName = pending.ResolvedUserName
 		userEmail = pending.ResolvedUserEmail
-		h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
+		if !result.Synthetic {
+			h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
+		}
 	}
 
-	// Convert IDP tokens to storage tokens with binding fields
+	// Convert IDP tokens to storage tokens with binding fields.
+	// SessionExpiresAt is set unconditionally as the Fosite session bound. Storage
+	// backends use it as a fallback storage lifetime when ExpiresAt is zero (a
+	// non-expiring upstream token). Setting it on every write — even when ExpiresAt
+	// is non-zero — protects the refresh path: if the upstream provider stops
+	// asserting expires_in on a later refresh, the carried-forward SessionExpiresAt
+	// still bounds the storage lifetime instead of leaving the row indefinitely.
 	storageTokens := &storage.UpstreamTokens{
-		ProviderID:      providerID,
-		AccessToken:     idpTokens.AccessToken,
-		RefreshToken:    idpTokens.RefreshToken,
-		IDToken:         idpTokens.IDToken,
-		ExpiresAt:       idpTokens.ExpiresAt,
-		ClientID:        pending.ClientID,
-		UserID:          subject,         // Internal ToolHive user ID
-		UpstreamSubject: providerSubject, // Upstream IDP's subject claim
+		ProviderID:       providerID,
+		AccessToken:      idpTokens.AccessToken,
+		RefreshToken:     idpTokens.RefreshToken,
+		IDToken:          idpTokens.IDToken,
+		ExpiresAt:        idpTokens.ExpiresAt,
+		SessionExpiresAt: time.Now().Add(h.config.RefreshTokenLifespan),
+		ClientID:         pending.ClientID,
+		UserID:           subject,         // Internal ToolHive user ID
+		UpstreamSubject:  providerSubject, // Upstream IDP's subject claim
 	}
 
 	if err := h.storage.StoreUpstreamTokens(ctx, sessionID, providerID, storageTokens); err != nil {

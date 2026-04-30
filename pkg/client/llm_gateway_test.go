@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 )
 
 // fakeLLMBinary is the sentinel binary name used in tests that exercise the
@@ -32,7 +34,7 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 	// Use real supportedClientIntegrations so we exercise the actual paths and keys.
 	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
 
-	applyCfg := LLMApplyConfig{
+	applyCfg := llmgateway.ApplyConfig{
 		GatewayURL:         "https://gw.example.com",
 		ProxyBaseURL:       "http://localhost:14000/v1",
 		TokenHelperCommand: `"thv" llm token`,
@@ -162,7 +164,7 @@ func TestConfigureLLMGateway_DeepNestedKey(t *testing.T) {
 	claudeDir := filepath.Join(home, ".claude")
 	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
 
-	path, err := cm.ConfigureLLMGateway(ClaudeCode, LLMApplyConfig{
+	path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
 		GatewayURL: "https://gw.example.com",
 	})
 	require.NoError(t, err)
@@ -223,7 +225,7 @@ func TestConfigureLLMGateway_CreatesFile(t *testing.T) {
 	claudeDir := filepath.Join(home, ".claude")
 	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
 
-	path, err := cm.ConfigureLLMGateway(ClaudeCode, LLMApplyConfig{
+	path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
 		TokenHelperCommand: `"thv" llm token`,
 	})
 	require.NoError(t, err)
@@ -247,7 +249,7 @@ func TestConfigureLLMGateway_PreservesExistingKeys(t *testing.T) {
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	require.NoError(t, os.WriteFile(settingsPath, []byte(`{"permissions":{"allow":["read"]}}`), 0o600))
 
-	_, err := cm.ConfigureLLMGateway(ClaudeCode, LLMApplyConfig{
+	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
 		TokenHelperCommand: `"thv" llm token`,
 	})
 	require.NoError(t, err)
@@ -275,7 +277,7 @@ func TestConfigureLLMGateway_JSONCPreservesExistingParent(t *testing.T) {
   "env": { "EXISTING_KEY": "keep-me" },
 }`), 0o600))
 
-	_, err := cm.ConfigureLLMGateway(ClaudeCode, LLMApplyConfig{
+	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
 		GatewayURL: "https://gw.example.com",
 	})
 	require.NoError(t, err)
@@ -297,7 +299,7 @@ func TestConfigureLLMGateway_UnsupportedClient(t *testing.T) {
 	home := t.TempDir()
 	cm := NewTestClientManager(home, nil, nil, nil)
 
-	_, err := cm.ConfigureLLMGateway(ClaudeCode, LLMApplyConfig{})
+	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not support LLM gateway")
 }
@@ -309,7 +311,7 @@ func TestConfigureLLMGateway_Idempotent(t *testing.T) {
 	claudeDir := filepath.Join(home, ".claude")
 	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
 
-	cfg := LLMApplyConfig{TokenHelperCommand: `"thv" llm token`}
+	cfg := llmgateway.ApplyConfig{TokenHelperCommand: `"thv" llm token`}
 	_, err := cm.ConfigureLLMGateway(ClaudeCode, cfg)
 	require.NoError(t, err)
 	_, err = cm.ConfigureLLMGateway(ClaudeCode, cfg)
@@ -391,7 +393,7 @@ func TestConfigureLLMGateway_ProxyMode(t *testing.T) {
 	dir := filepath.Join(home, ".cursor-test")
 	require.NoError(t, os.MkdirAll(dir, 0o700))
 
-	path, err := cm.ConfigureLLMGateway(Cursor, LLMApplyConfig{
+	path, err := cm.ConfigureLLMGateway(Cursor, llmgateway.ApplyConfig{
 		ProxyBaseURL: "http://localhost:14000/v1",
 	})
 	require.NoError(t, err)
@@ -535,6 +537,91 @@ func TestRealClientConfigs_LLMBinaryNames(t *testing.T) {
 				"wrong LLMBinaryName for %s: detection will fail on machines that only have the expected binary", clientType)
 		})
 	}
+}
+
+// ── TLSSkipVerify / NodeTLSRejectUnauthorized / ClearWhenEmpty ───────────────
+
+func newTLSTestManager(t *testing.T) (*ClientManager, string) {
+	t.Helper()
+	home := t.TempDir()
+	cfgs := LLMTestIntegrations([]LLMTestEntry{{
+		ClientType:     ClaudeCode,
+		Mode:           "direct",
+		SettingsDir:    []string{".claude"},
+		SettingsFile:   "settings.json",
+		JSONPointers:   []string{"/apiKeyHelper", "/env/NODE_TLS_REJECT_UNAUTHORIZED"},
+		ValueFields:    []string{"TokenHelperCommand", "NodeTLSRejectUnauthorized"},
+		ClearWhenEmpty: []bool{false, true},
+	}})
+	return NewTestClientManager(home, nil, cfgs, nil), home
+}
+
+func TestConfigureLLMGateway_TLSSkipVerify_WritesNodeEnv(t *testing.T) {
+	t.Parallel()
+	cm, home := newTLSTestManager(t)
+
+	claudeDir := filepath.Join(home, ".claude")
+	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
+
+	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
+		TokenHelperCommand: `"thv" llm token`,
+		TLSSkipVerify:      true,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED")
+	assert.Contains(t, string(data), `"0"`)
+}
+
+func TestConfigureLLMGateway_TLSSkipVerify_NotSet_DoesNotWriteNodeEnv(t *testing.T) {
+	t.Parallel()
+	cm, home := newTLSTestManager(t)
+
+	claudeDir := filepath.Join(home, ".claude")
+	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
+
+	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
+		TokenHelperCommand: `"thv" llm token`,
+		TLSSkipVerify:      false,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED")
+}
+
+func TestConfigureLLMGateway_TLSSkipVerify_ClearRemovesKey(t *testing.T) {
+	t.Parallel()
+	cm, home := newTLSTestManager(t)
+
+	claudeDir := filepath.Join(home, ".claude")
+	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
+
+	// First run: set tls-skip-verify
+	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
+		TokenHelperCommand: `"thv" llm token`,
+		TLSSkipVerify:      true,
+	})
+	require.NoError(t, err)
+
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	require.NoError(t, err)
+	require.Contains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED", "key must be present after first configure")
+
+	// Second run: clear tls-skip-verify
+	_, err = cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
+		TokenHelperCommand: `"thv" llm token`,
+		TLSSkipVerify:      false,
+	})
+	require.NoError(t, err)
+
+	data, err = os.ReadFile(settingsPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED", "key must be removed when TLSSkipVerify is cleared")
 }
 
 // countSubstring counts non-overlapping occurrences of substr in s.

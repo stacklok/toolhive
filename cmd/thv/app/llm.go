@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/llm"
 	llmproxy "github.com/stacklok/toolhive/pkg/llm/proxy"
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 	pkgsecrets "github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -72,7 +73,10 @@ func newConfigCommand() *cobra.Command {
 }
 
 func newConfigSetCommand() *cobra.Command {
-	var opts llm.SetOptions
+	var (
+		opts          llm.SetOptions
+		tlsSkipVerify bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "set",
@@ -85,7 +89,10 @@ Example:
     --issuer https://auth.example.com \
     --client-id my-client-id`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cmd.Flags().Changed("tls-skip-verify") {
+				opts.TLSSkipVerify = &tlsSkipVerify
+			}
 			return config.UpdateConfig(func(c *config.Config) error {
 				return c.LLM.SetFields(opts)
 			})
@@ -98,6 +105,8 @@ Example:
 	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
 	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
 	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
+	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
+		"Skip TLS certificate verification for the upstream gateway (local dev only; use --tls-skip-verify=false to clear)")
 
 	return cmd
 }
@@ -204,7 +213,10 @@ func buildLLMTokenSource(cfg *llm.Config, interactive bool) (*llm.TokenSource, e
 // ── setup / teardown ─────────────────────────────────────────────────────────
 
 func newLLMSetupCommand() *cobra.Command {
-	var opts llm.SetOptions
+	var (
+		opts          llm.SetOptions
+		tlsSkipVerify bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "setup",
@@ -225,6 +237,9 @@ lets you combine "config set" and "setup" into a single command.
 Run "thv llm teardown" to revert all changes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cmd.Flags().Changed("tls-skip-verify") {
+				opts.TLSSkipVerify = &tlsSkipVerify
+			}
 			cm, err := client.NewClientManager()
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
@@ -242,6 +257,11 @@ Run "thv llm teardown" to revert all changes.`,
 	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
 	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
 	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
+	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
+		"Skip TLS certificate verification for the upstream gateway (local dev only). "+
+			"For direct-mode tools (Claude Code, Gemini CLI) this sets NODE_TLS_REJECT_UNAUTHORIZED=0, "+
+			"disabling TLS for ALL of that tool's outbound connections. "+
+			"For proxy-mode tools only the proxy-to-gateway connection is affected.")
 
 	return cmd
 }
@@ -329,12 +349,8 @@ func (a *clientManagerAdapter) DetectedLLMGatewayClients() []string {
 	return result
 }
 
-func (a *clientManagerAdapter) ConfigureLLMGateway(clientType string, cfg llm.ToolApplyConfig) (string, error) {
-	return a.cm.ConfigureLLMGateway(client.ClientApp(clientType), client.LLMApplyConfig{
-		GatewayURL:         cfg.GatewayURL,
-		ProxyBaseURL:       cfg.ProxyBaseURL,
-		TokenHelperCommand: cfg.TokenHelperCommand,
-	})
+func (a *clientManagerAdapter) ConfigureLLMGateway(clientType string, cfg llmgateway.ApplyConfig) (string, error) {
+	return a.cm.ConfigureLLMGateway(client.ClientApp(clientType), cfg)
 }
 
 func (a *clientManagerAdapter) LLMGatewayModeFor(clientType string) string {
@@ -370,7 +386,9 @@ func newLLMProxyCommand() *cobra.Command {
 }
 
 func newLLMProxyStartCommand() *cobra.Command {
-	return &cobra.Command{
+	var tlsSkipVerify bool
+
+	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start the LLM gateway localhost proxy",
 		Long: `Start a localhost reverse proxy that injects fresh OIDC tokens for AI tools
@@ -392,9 +410,20 @@ To run it in the background, use your shell or a process manager:
 				return fmt.Errorf("LLM gateway configuration is invalid: %w", err)
 			}
 
+			// --tls-skip-verify overrides the stored config; if not provided, fall
+			// back to whatever was persisted by "thv llm setup" or "config set".
+			if cmd.Flags().Changed("tls-skip-verify") {
+				llmCfg.TLSSkipVerify = tlsSkipVerify
+			}
+
 			return runLLMProxyForeground(cmd.Context(), &llmCfg)
 		},
 	}
+
+	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
+		"Skip TLS certificate verification for the upstream gateway (overrides stored config; local dev only)")
+
+	return cmd
 }
 
 // runLLMProxyForeground builds a TokenSource and starts the proxy in this process.
@@ -403,7 +432,7 @@ func runLLMProxyForeground(ctx context.Context, llmCfg *llm.Config) error {
 	if err != nil {
 		return err
 	}
-	p, err := llmproxy.New(llmCfg, ts)
+	p, err := llmproxy.New(llmCfg, ts, llmproxy.WithTLSSkipVerify(llmCfg.TLSSkipVerify))
 	if err != nil {
 		return err
 	}

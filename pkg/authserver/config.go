@@ -211,6 +211,8 @@ type OAuth2UpstreamRunConfig struct {
 	TokenEndpoint string `json:"token_endpoint" yaml:"token_endpoint"`
 
 	// ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
+	// Mutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained
+	// at runtime via RFC 7591 Dynamic Client Registration and must be left empty.
 	ClientID string `json:"client_id" yaml:"client_id"`
 
 	// ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
@@ -228,8 +230,12 @@ type OAuth2UpstreamRunConfig struct {
 	// Scopes are the OAuth scopes to request from the upstream IDP.
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 
-	// UserInfo contains configuration for fetching user information (required for OAuth2).
-	UserInfo *UserInfoRunConfig `json:"userinfo" yaml:"userinfo"`
+	// UserInfo contains configuration for fetching user information.
+	// Optional: when nil, the upstream OAuth2 provider derives a deterministic
+	// subject by SHA-256-hashing the access token (with a "tk-" prefix) instead
+	// of calling a userinfo endpoint. OIDC providers always derive Subject from
+	// the ID token and are unaffected.
+	UserInfo *UserInfoRunConfig `json:"userinfo,omitempty" yaml:"userinfo,omitempty"`
 
 	// TokenResponseMapping configures custom field extraction from non-standard token responses.
 	// When set, the token exchange bypasses golang.org/x/oauth2 and extracts fields using
@@ -242,6 +248,56 @@ type OAuth2UpstreamRunConfig struct {
 	// Google's access_type=offline.
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
+
+	// DCRConfig enables RFC 7591 Dynamic Client Registration against the
+	// upstream authorization server. When set, the client credentials are
+	// obtained at runtime rather than being pre-provisioned via ClientID /
+	// ClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.
+	// Mutually exclusive with ClientID.
+	DCRConfig *DCRUpstreamConfig `json:"dcr_config,omitempty" yaml:"dcr_config,omitempty"`
+}
+
+// DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an
+// upstream authorization server. When present on an OAuth2 upstream, the
+// authserver performs registration at runtime to obtain client credentials,
+// replacing the need to pre-provision a ClientID.
+//
+// Exactly one of DiscoveryURL or RegistrationEndpoint must be set. DiscoveryURL
+// points at RFC 8414 / OIDC Discovery metadata from which the registration
+// endpoint is resolved; RegistrationEndpoint is used directly when the upstream
+// does not publish discovery metadata.
+type DCRUpstreamConfig struct {
+	// DiscoveryURL is the RFC 8414 / OIDC Discovery URL from which the
+	// registration_endpoint is resolved at runtime. Mutually exclusive with
+	// RegistrationEndpoint.
+	DiscoveryURL string `json:"discovery_url,omitempty" yaml:"discovery_url,omitempty"`
+
+	// RegistrationEndpoint is the RFC 7591 registration endpoint URL used
+	// directly, bypassing discovery. Mutually exclusive with DiscoveryURL.
+	RegistrationEndpoint string `json:"registration_endpoint,omitempty" yaml:"registration_endpoint,omitempty"`
+
+	// InitialAccessTokenFile is the path to a file containing the RFC 7591
+	// initial access token presented to the registration endpoint. Mutually
+	// exclusive with InitialAccessTokenEnvVar. Both may be omitted for open
+	// registration endpoints.
+	//nolint:lll // field tags require full JSON+YAML names
+	InitialAccessTokenFile string `json:"initial_access_token_file,omitempty" yaml:"initial_access_token_file,omitempty"`
+
+	// InitialAccessTokenEnvVar is the name of an environment variable
+	// containing the RFC 7591 initial access token. Mutually exclusive with
+	// InitialAccessTokenFile.
+	//nolint:lll // field tags require full JSON+YAML names
+	InitialAccessTokenEnvVar string `json:"initial_access_token_env_var,omitempty" yaml:"initial_access_token_env_var,omitempty"`
+
+	// SoftwareID is the RFC 7591 "software_id" registration metadata value,
+	// identifying the client software independent of any particular
+	// registration instance.
+	SoftwareID string `json:"software_id,omitempty" yaml:"software_id,omitempty"`
+
+	// SoftwareStatement is the RFC 7591 "software_statement" JWT asserting
+	// metadata about the client software, signed by a party the authorization
+	// server trusts.
+	SoftwareStatement string `json:"software_statement,omitempty" yaml:"software_statement,omitempty"`
 }
 
 // TokenResponseMappingRunConfig maps non-standard token response fields to standard fields.
@@ -420,6 +476,87 @@ func (c *Config) Validate() error {
 		"issuer", c.Issuer,
 		"upstream_count", len(c.Upstreams),
 	)
+	return nil
+}
+
+// Validate checks that the OAuth2UpstreamRunConfig is internally consistent.
+// It enforces the mutual exclusivity of ClientID and DCRConfig: exactly one must
+// be set. A ClientID is required for pre-provisioned clients; a DCRConfig is
+// required when client credentials are obtained at runtime via RFC 7591
+// Dynamic Client Registration. When DCRConfig is present, its own validity is
+// also checked via DCRUpstreamConfig.Validate.
+//
+// Validate intentionally does not verify fields handled by the shared
+// CommonOAuthConfig or upstream.OAuth2Config validators — it only covers the
+// run-config surface area unique to OAuth2UpstreamRunConfig.
+//
+// Called from buildPureOAuth2Config at the RunConfig → upstream.OAuth2Config
+// conversion boundary so that DCR-specific fields are validated before they
+// are dropped during conversion.
+func (c *OAuth2UpstreamRunConfig) Validate() error {
+	hasClientID := c.ClientID != ""
+	hasDCR := c.DCRConfig != nil
+	switch {
+	case !hasClientID && !hasDCR:
+		return fmt.Errorf("oauth2 upstream: either client_id or dcr_config is required")
+	case hasClientID && hasDCR:
+		return fmt.Errorf("oauth2 upstream: client_id and dcr_config are mutually exclusive")
+	}
+
+	if hasDCR {
+		if err := c.DCRConfig.Validate(); err != nil {
+			return fmt.Errorf("oauth2 upstream: invalid dcr_config: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Validate checks that the DCRUpstreamConfig specifies exactly one of
+// DiscoveryURL or RegistrationEndpoint, that the configured URL is well-formed
+// and uses HTTPS (or http on a loopback host for local development), and that
+// the two initial-access-token sources (InitialAccessTokenFile and
+// InitialAccessTokenEnvVar) are not both set.
+//
+// DiscoveryURL triggers runtime resolution of the registration endpoint via
+// RFC 8414 / OIDC Discovery; RegistrationEndpoint bypasses discovery for
+// providers that do not publish metadata. Requiring exactly one prevents
+// ambiguity about which URL the authserver should contact for registration.
+//
+// URL well-formedness and HTTPS are enforced here at the schema-validation
+// boundary so misconfiguration fails fast at startup rather than at first DCR
+// attempt; the runtime callers (pkg/oauthproto/discovery.go and
+// pkg/oauthproto/dcr.go) defend in depth, but this is the natural fail-fast
+// point.
+//
+// Rejecting a config that supplies both an InitialAccessTokenFile and an
+// InitialAccessTokenEnvVar prevents a credential-rotation footgun: if both
+// were accepted, an operator updating the env-var value would not realize
+// the file source still wins (or vice versa) and would silently keep
+// presenting a stale token at registration.
+func (c *DCRUpstreamConfig) Validate() error {
+	hasDiscovery := c.DiscoveryURL != ""
+	hasRegistration := c.RegistrationEndpoint != ""
+	switch {
+	case !hasDiscovery && !hasRegistration:
+		return fmt.Errorf("dcr_config: either discovery_url or registration_endpoint is required")
+	case hasDiscovery && hasRegistration:
+		return fmt.Errorf("dcr_config: discovery_url and registration_endpoint are mutually exclusive")
+	case hasDiscovery:
+		if err := networking.ValidateEndpointURL(c.DiscoveryURL); err != nil {
+			return fmt.Errorf("dcr_config: invalid discovery_url: %w", err)
+		}
+	case hasRegistration:
+		if err := networking.ValidateEndpointURL(c.RegistrationEndpoint); err != nil {
+			return fmt.Errorf("dcr_config: invalid registration_endpoint: %w", err)
+		}
+	}
+
+	if c.InitialAccessTokenFile != "" && c.InitialAccessTokenEnvVar != "" {
+		return fmt.Errorf(
+			"dcr_config: initial_access_token_file and initial_access_token_env_var are mutually exclusive")
+	}
+
 	return nil
 }
 

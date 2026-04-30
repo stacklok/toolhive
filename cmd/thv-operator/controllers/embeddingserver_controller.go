@@ -29,6 +29,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 )
 
 // EmbeddingServerReconciler reconciles a EmbeddingServer object
@@ -37,6 +38,13 @@ type EmbeddingServerReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
+	// operator chart, applied to the StatefulSet's PodSpec before the
+	// user-provided PodTemplateSpec strategic-merge patch runs. The strategic
+	// merge with the user PTS continues to additively merge the user's
+	// imagePullSecrets entries on top, with the user's entries winning on
+	// name collisions per Kubernetes' strategic-merge semantics.
+	ImagePullSecretsDefaults imagepullsecrets.Defaults
 }
 
 const (
@@ -644,7 +652,12 @@ func (*EmbeddingServerReconciler) applyResourceRequirements(embedding *mcpv1beta
 // buildPodTemplate builds the pod template for the statefulset.
 // User-provided PodTemplateSpec customizations are applied later in
 // statefulSetForEmbedding via strategic merge patch.
-func (*EmbeddingServerReconciler) buildPodTemplate(
+//
+// Cluster-wide chart defaults for imagePullSecrets are placed on the base
+// PodSpec here so that a subsequent strategic-merge with the user PTS
+// additively unions the lists (Kubernetes treats PodSpec.ImagePullSecrets
+// as a merge list keyed on Name; user entries win on name collisions).
+func (r *EmbeddingServerReconciler) buildPodTemplate(
 	labels map[string]string,
 	container corev1.Container,
 ) corev1.PodTemplateSpec {
@@ -655,7 +668,8 @@ func (*EmbeddingServerReconciler) buildPodTemplate(
 			Labels: labels,
 		},
 		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{container},
+			ImagePullSecrets: r.ImagePullSecretsDefaults.List(),
+			Containers:       []corev1.Container{container},
 		},
 	}
 }

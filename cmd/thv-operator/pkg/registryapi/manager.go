@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
@@ -23,17 +24,26 @@ type manager struct {
 	client     client.Client
 	scheme     *runtime.Scheme
 	kubeHelper *kubernetes.Client
+	// imagePullSecretsDefaults are cluster-wide defaults sourced from the
+	// operator chart that are merged with the per-CR imagePullSecrets when
+	// constructing the registry-api workload. The zero value is a usable
+	// empty Defaults.
+	imagePullSecretsDefaults imagepullsecrets.Defaults
 }
 
-// NewManager creates a new registry API manager
+// NewManager creates a new registry API manager. imagePullSecretsDefaults are
+// cluster-wide pull-secret defaults from the operator chart; passing the zero
+// value disables the merge and the registry-api uses only the per-CR list.
 func NewManager(
 	k8sClient client.Client,
 	scheme *runtime.Scheme,
+	imagePullSecretsDefaults imagepullsecrets.Defaults,
 ) Manager {
 	return &manager{
-		client:     k8sClient,
-		scheme:     scheme,
-		kubeHelper: kubernetes.NewClient(k8sClient, scheme),
+		client:                   k8sClient,
+		scheme:                   scheme,
+		kubeHelper:               kubernetes.NewClient(k8sClient, scheme),
+		imagePullSecretsDefaults: imagePullSecretsDefaults,
 	}
 }
 

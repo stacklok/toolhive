@@ -5,6 +5,7 @@ package v1beta1
 
 import (
 	"fmt"
+	"sort"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -365,9 +366,12 @@ type OAuth2UpstreamConfig struct {
 	TokenEndpoint string `json:"tokenEndpoint"`
 
 	// UserInfo contains configuration for fetching user information from the upstream provider.
-	// Required for OAuth2 providers to resolve user identity.
-	// +kubebuilder:validation:Required
-	UserInfo *UserInfoConfig `json:"userInfo"`
+	// When omitted, the embedded auth server runs in synthesis mode for this
+	// upstream: a non-PII subject derived from the access token, no Name/Email.
+	// Use this shape for upstreams with no userinfo surface (e.g., MCP
+	// authorization servers per the MCP spec).
+	// +optional
+	UserInfo *UserInfoConfig `json:"userInfo,omitempty"`
 
 	// ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
 	// +kubebuilder:validation:Required
@@ -754,6 +758,29 @@ type UpstreamInjectSpec struct {
 	ProviderName string `json:"providerName"`
 }
 
+// Condition types specific to MCPExternalAuthConfig and the inline embedded
+// auth server config it shares with VirtualMCPServer.
+const (
+	// ConditionTypeIdentitySynthesized is an advisory set to True when at
+	// least one OAuth2 upstream has no userInfo endpoint configured (the
+	// embedded auth server synthesizes its subject from the access token,
+	// no Name/Email claims). Surfaces on resources that own the upstream
+	// declaration so a missing userInfo block is visible in
+	// `kubectl describe` instead of only in proxyrunner logs.
+	ConditionTypeIdentitySynthesized = "IdentitySynthesized"
+)
+
+// Condition reasons for ConditionTypeIdentitySynthesized.
+const (
+	// ConditionReasonIdentitySynthesizedActive: one or more OAuth2 upstreams
+	// have nil userInfo. The condition message names the affected upstream(s).
+	ConditionReasonIdentitySynthesizedActive = "OAuth2UpstreamWithoutUserInfo"
+
+	// ConditionReasonIdentitySynthesizedInactive: every upstream has userInfo;
+	// real identity is being resolved.
+	ConditionReasonIdentitySynthesizedInactive = "AllUpstreamsHaveUserInfo"
+)
+
 // MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
 type MCPExternalAuthConfigStatus struct {
 	// Conditions represent the latest available observations of the MCPExternalAuthConfig's state
@@ -943,6 +970,29 @@ func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]stri
 		return p.OAuth2Config.AdditionalAuthorizationParams
 	}
 	return nil
+}
+
+// SyntheticIdentityUpstreams returns the names of OAuth2 upstreams running
+// in synthesis mode (no userInfo configured), sorted lexically for
+// deterministic condition messages. OIDC upstreams are skipped — they always
+// have an ID-token-derived subject. Source of truth for the
+// ConditionTypeIdentitySynthesized advisory.
+func (c *EmbeddedAuthServerConfig) SyntheticIdentityUpstreams() []string {
+	if c == nil {
+		return nil
+	}
+	var names []string
+	for i := range c.UpstreamProviders {
+		p := &c.UpstreamProviders[i]
+		if p.Type != UpstreamProviderTypeOAuth2 || p.OAuth2Config == nil {
+			continue
+		}
+		if p.OAuth2Config.UserInfo == nil {
+			names = append(names, p.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ValidateAdditionalAuthorizationParams checks that no reserved OAuth2 parameters

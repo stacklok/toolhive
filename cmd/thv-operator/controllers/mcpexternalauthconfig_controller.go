@@ -83,10 +83,21 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{RequeueAfter: externalAuthConfigRequeueDelay}, nil
 	}
 
+	// Compute the IdentitySynthesized advisory upfront, before validation.
+	// The advisory is a pure function of the upstream provider field shape
+	// (specifically, which OAuth2 upstreams have nil userInfo) and does not
+	// depend on issuer URL validity or other Validate() concerns. Computing
+	// it before validation ensures the advisory tracks the current spec on
+	// every reconcile — including the validation-failure path — so a broken
+	// edit cannot leave a stale True/upstream-name dangling.
+	syntheticChanged := r.applyIdentitySynthesizedCondition(externalAuthConfig)
+
 	// Validate spec configuration early
 	if err := externalAuthConfig.Validate(); err != nil {
 		logger.Error(err, "MCPExternalAuthConfig spec validation failed")
-		// Update status with validation error
+		// Update status with validation error. The synthesis condition mutated
+		// above is part of the same in-memory Conditions slice and will land
+		// in this same write.
 		meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeValid,
 			Status:             metav1.ConditionFalse,
@@ -108,6 +119,9 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		Message:            "Spec validation passed",
 		ObservedGeneration: externalAuthConfig.Generation,
 	})
+	if syntheticChanged {
+		conditionChanged = true
+	}
 
 	// Calculate the hash of the current configuration
 	configHash := r.calculateConfigHash(externalAuthConfig.Spec)
@@ -134,6 +148,43 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 // calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities
 func (*MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1beta1.MCPExternalAuthConfigSpec) string {
 	return ctrlutil.CalculateConfigHash(spec)
+}
+
+// applyIdentitySynthesizedCondition sets ConditionTypeIdentitySynthesized
+// True when any OAuth2 upstream has nil userInfo, False when every upstream
+// has userInfo configured, and removes it for non-embeddedAuthServer types
+// where the question is moot. Returns true if the in-memory condition list
+// changed so the caller can fold this into the next status write.
+func (*MCPExternalAuthConfigReconciler) applyIdentitySynthesizedCondition(
+	cfg *mcpv1beta1.MCPExternalAuthConfig,
+) bool {
+	if cfg.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer || cfg.Spec.EmbeddedAuthServer == nil {
+		return meta.RemoveStatusCondition(&cfg.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized)
+	}
+
+	syntheticUpstreams := cfg.Spec.EmbeddedAuthServer.SyntheticIdentityUpstreams()
+	if len(syntheticUpstreams) == 0 {
+		return meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeIdentitySynthesized,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonIdentitySynthesizedInactive,
+			Message:            "All OAuth2 upstreams have userInfo configured; user identity is resolved from the upstream",
+			ObservedGeneration: cfg.Generation,
+		})
+	}
+
+	return meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
+		Type:   mcpv1beta1.ConditionTypeIdentitySynthesized,
+		Status: metav1.ConditionTrue,
+		Reason: mcpv1beta1.ConditionReasonIdentitySynthesizedActive,
+		Message: fmt.Sprintf(
+			"OAuth2 upstream(s) %v have no userInfo configured; the embedded auth server will "+
+				"synthesize a non-PII subject from the access token (no Name/Email claims). "+
+				"If a userInfo endpoint exists for these upstreams, configure it to resolve real identity.",
+			syntheticUpstreams,
+		),
+		ObservedGeneration: cfg.Generation,
+	})
 }
 
 // handleConfigHashChange handles the logic when the config hash changes

@@ -521,6 +521,65 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 		assert.Equal(t, map[string]string{"access_type": "offline"},
 			cfg.AdditionalAuthorizationParams)
 	})
+
+	t.Run("rejects config with neither ClientID nor DCRConfig", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				RedirectURI:           "https://my-app.com/callback",
+			},
+		}
+
+		_, err := buildPureOAuth2Config(rc)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "client_id or dcr_config is required")
+	})
+
+	t.Run("rejects config with both ClientID and DCRConfig", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				ClientID:              "my-client-id",
+				RedirectURI:           "https://my-app.com/callback",
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://example.com/register",
+				},
+			},
+		}
+
+		_, err := buildPureOAuth2Config(rc)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "mutually exclusive")
+	})
+
+	t.Run("accepts DCRConfig without ClientID", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				RedirectURI:           "https://my-app.com/callback",
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://example.com/register",
+				},
+			},
+		}
+
+		cfg, err := buildPureOAuth2Config(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Empty(t, cfg.ClientID)
+	})
 }
 
 // TestBuildPureOAuth2ConfigWithEnvVar tests buildPureOAuth2Config with environment variables.

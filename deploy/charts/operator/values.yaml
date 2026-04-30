@@ -25,16 +25,32 @@ operator:
 
   # -- List of image pull secrets to use
   imagePullSecrets: []
+
+  # -- List of image pull secrets that the operator applies as defaults to every
+  # workload it spawns (proxy runners, vMCP servers, registry API, etc.).
+  # Per-CR `imagePullSecrets` take precedence on name collisions; chart-level
+  # entries are appended additively. The operator parses these once at startup
+  # from the TOOLHIVE_DEFAULT_IMAGE_PULL_SECRETS environment variable. The
+  # Secrets must exist in the namespace where each workload is created.
+  #
+  # Each entry may be either a plain string (the Secret name) or an object
+  # with a `name` field, e.g.:
+  #   defaultImagePullSecrets:
+  #     - regcred
+  #     - name: otherscred
+  # The two shapes are equivalent; the object form matches `operator.imagePullSecrets`
+  # above for convenience.
+  defaultImagePullSecrets: []
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.25.0
+  image: ghcr.io/stacklok/toolhive/operator:v0.26.1
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.25.0
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.26.1
 
   # -- Image to use for Virtual MCP Server (vMCP) deployments
-  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.25.0
+  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.26.1
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0

@@ -413,6 +413,51 @@ components:
             This is required and must match a configured upstream provider name.
           type: string
       type: object
+    github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig:
+      description: |-
+        DCRConfig enables RFC 7591 Dynamic Client Registration against the
+        upstream authorization server. When set, the client credentials are
+        obtained at runtime rather than being pre-provisioned via ClientID /
+        ClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.
+        Mutually exclusive with ClientID.
+      properties:
+        discovery_url:
+          description: |-
+            DiscoveryURL is the RFC 8414 / OIDC Discovery URL from which the
+            registration_endpoint is resolved at runtime. Mutually exclusive with
+            RegistrationEndpoint.
+          type: string
+        initial_access_token_env_var:
+          description: |-
+            InitialAccessTokenEnvVar is the name of an environment variable
+            containing the RFC 7591 initial access token. Mutually exclusive with
+            InitialAccessTokenFile.
+          type: string
+        initial_access_token_file:
+          description: |-
+            InitialAccessTokenFile is the path to a file containing the RFC 7591
+            initial access token presented to the registration endpoint. Mutually
+            exclusive with InitialAccessTokenEnvVar. Both may be omitted for open
+            registration endpoints.
+          type: string
+        registration_endpoint:
+          description: |-
+            RegistrationEndpoint is the RFC 7591 registration endpoint URL used
+            directly, bypassing discovery. Mutually exclusive with DiscoveryURL.
+          type: string
+        software_id:
+          description: |-
+            SoftwareID is the RFC 7591 "software_id" registration metadata value,
+            identifying the client software independent of any particular
+            registration instance.
+          type: string
+        software_statement:
+          description: |-
+            SoftwareStatement is the RFC 7591 "software_statement" JWT asserting
+            metadata about the client software, signed by a party the authorization
+            server trusts.
+          type: string
+      type: object
     github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig:
       description: |-
         OAuth2Config contains OAuth 2.0-specific configuration.
@@ -431,8 +476,10 @@ components:
             endpoint.
           type: string
         client_id:
-          description: ClientID is the OAuth 2.0 client identifier registered with
-            the upstream IDP.
+          description: |-
+            ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
+            Mutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained
+            at runtime via RFC 7591 Dynamic Client Registration and must be left empty.
           type: string
         client_secret_env_var:
           description: |-
@@ -444,6 +491,8 @@ components:
             ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
             Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
           type: string
+        dcr_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig'
         redirect_uri:
           description: |-
             RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -708,8 +757,12 @@ components:
           uniqueItems: false
       type: object
     github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig:
-      description: UserInfo contains configuration for fetching user information (required
-        for OAuth2).
+      description: |-
+        UserInfo contains configuration for fetching user information.
+        Optional: when nil, the upstream OAuth2 provider derives a deterministic
+        subject by SHA-256-hashing the access token (with a "tk-" prefix) instead
+        of calling a userinfo endpoint. OIDC providers always derive Subject from
+        the ID token and are unaffected.
       properties:
         additional_headers:
           additionalProperties:

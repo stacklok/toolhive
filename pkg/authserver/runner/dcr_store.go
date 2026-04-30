@@ -55,8 +55,16 @@ type DCRCredentialStore interface {
 }
 
 // NewInMemoryDCRCredentialStore returns a thread-safe in-memory
-// DCRCredentialStore. Entries are retained for the process lifetime; there is
-// no TTL and no background cleanup goroutine.
+// DCRCredentialStore intended for tests and single-replica development
+// deployments. Production deployments should use the Redis-backed store
+// introduced in Phase 3, which addresses the cross-replica sharing,
+// durability, and cross-process coordination gaps documented below.
+//
+// Entries are retained for the process lifetime; there is no TTL and no
+// background cleanup goroutine. The unbounded-cache footgun called out in
+// .claude/rules/go-style.md "Resource Leaks" does not bite here because the
+// key space is bounded by the operator-configured upstream count, and this
+// implementation is not the production answer.
 //
 // What this enables: serialises Get/Put against a single in-process map so
 // concurrent callers within one authserver process see a consistent view of

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
@@ -97,7 +98,7 @@ type stubGatewayManager struct {
 }
 
 func (*stubGatewayManager) DetectedLLMGatewayClients() []string { return nil }
-func (*stubGatewayManager) ConfigureLLMGateway(_ string, _ ToolApplyConfig) (string, error) {
+func (*stubGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
 func (*stubGatewayManager) LLMGatewayModeFor(_ string) string { return "" }

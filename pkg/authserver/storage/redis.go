@@ -793,15 +793,19 @@ func (s *RedisStorage) DeletePKCERequestSession(ctx context.Context, signature s
 // -----------------------
 
 // storedUpstreamTokens is a serializable wrapper for UpstreamTokens.
+// Time fields use int64 Unix epoch; 0 is the sentinel meaning "not set".
+// Neither time field uses omitempty so that 0 is always present and the
+// read path can use a consistent != 0 check for both.
 type storedUpstreamTokens struct {
-	ProviderID      string `json:"provider_id"`
-	AccessToken     string `json:"access_token"`  //nolint:gosec // G117: field legitimately holds sensitive data
-	RefreshToken    string `json:"refresh_token"` //nolint:gosec // G117: field legitimately holds sensitive data
-	IDToken         string `json:"id_token"`
-	ExpiresAt       int64  `json:"expires_at"`
-	UserID          string `json:"user_id"`
-	UpstreamSubject string `json:"upstream_subject"`
-	ClientID        string `json:"client_id"`
+	ProviderID       string `json:"provider_id"`
+	AccessToken      string `json:"access_token"`  //nolint:gosec // G117: field legitimately holds sensitive data
+	RefreshToken     string `json:"refresh_token"` //nolint:gosec // G117: field legitimately holds sensitive data
+	IDToken          string `json:"id_token"`
+	ExpiresAt        int64  `json:"expires_at"`
+	SessionExpiresAt int64  `json:"session_expires_at"`
+	UserID           string `json:"user_id"`
+	UpstreamSubject  string `json:"upstream_subject"`
+	ClientID         string `json:"client_id"`
 }
 
 // storeUpstreamTokensScript atomically reads the existing UserID, writes new token
@@ -832,14 +836,52 @@ else
     redis.call('SET', KEYS[1], ARGV[1])
 end
 
--- Add the per-provider key to the session index set
+-- Maintain the session index set's TTL.
+--
+-- Invariant: the index set must outlive every per-provider key it points to.
+--   * If ANY member is non-expiring (ttlMs == 0), the index set must also be
+--     persistent. Otherwise the index evicts and we lose the ability to find
+--     (and clean up) the per-provider key, leaking it forever.
+--   * If ALL members are expiring, the index TTL must be at least the longest
+--     member TTL.
+--
+-- Known trade-off: an in-place rewrite of the same (sessionID, providerName)
+-- slot from non-expiring to expiring leaves the index PERSIST'd, even though
+-- the rewritten member was the sole persistence anchor. Detecting this would
+-- require tracking per-member TTL state in the index, which adds complexity.
+-- We accept the trade-off because DeleteUpstreamTokens and session GC clean
+-- the index up anyway. This behaviour is pinned by the test
+-- "same provider rewrite from non-expiring to expiring keeps PERSIST'd until
+-- rewrite" in redis_test.go — a future maintainer who tightens the rule will
+-- see that test fail and can find the rationale here.
+--
+-- We discriminate two cases that look identical AFTER SADD (both have PTTL == -1):
+--   1. A fresh set our SADD just created. We own the TTL decision unconditionally.
+--   2. An existing set previously PERSIST'd by a non-expiring member. Must stay
+--      persistent — applying a TTL here is the bug this script must avoid.
+--
+-- The trick: read EXISTS BEFORE SADD. SADD creates the set as a side-effect,
+-- so post-SADD any "no TTL" state is ambiguous; pre-SADD it is not.
+local idxExisted = redis.call('EXISTS', KEYS[2])
 redis.call('SADD', KEYS[2], KEYS[1])
--- Keep the index set alive at least as long as the token
-if ttlMs > 0 then
-    local currentTTL = redis.call('PTTL', KEYS[2])
-    if currentTTL < ttlMs then
+
+if ttlMs == 0 then
+    -- This member never expires. Make the index persistent (no-op if already so).
+    redis.call('PERSIST', KEYS[2])
+elseif idxExisted == 0 then
+    -- Fresh set; our SADD created it. Apply our TTL.
+    redis.call('PEXPIRE', KEYS[2], ttlMs)
+else
+    -- Existing set; its TTL summarises prior members.
+    local idxTTL = redis.call('PTTL', KEYS[2])
+    if idxTTL == -1 then
+        -- A previous non-expiring write PERSIST'd it. Leave it alone —
+        -- applying a TTL here is the bug we are fixing.
+    elseif idxTTL < ttlMs then
+        -- Existing TTL is shorter than this member's. Extend.
         redis.call('PEXPIRE', KEYS[2], ttlMs)
     end
+    -- else: idxTTL >= ttlMs, index already outlives this member.
 end
 
 local newUserID = ARGV[3]
@@ -869,15 +911,21 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 		expiresAtUnix = tokens.ExpiresAt.Unix()
 	}
 
+	var sessionExpiresAtUnix int64
+	if !tokens.SessionExpiresAt.IsZero() {
+		sessionExpiresAtUnix = tokens.SessionExpiresAt.Unix()
+	}
+
 	stored := storedUpstreamTokens{
-		ProviderID:      tokens.ProviderID,
-		AccessToken:     tokens.AccessToken,
-		RefreshToken:    tokens.RefreshToken,
-		IDToken:         tokens.IDToken,
-		ExpiresAt:       expiresAtUnix,
-		UserID:          tokens.UserID,
-		UpstreamSubject: tokens.UpstreamSubject,
-		ClientID:        tokens.ClientID,
+		ProviderID:       tokens.ProviderID,
+		AccessToken:      tokens.AccessToken,
+		RefreshToken:     tokens.RefreshToken,
+		IDToken:          tokens.IDToken,
+		ExpiresAt:        expiresAtUnix,
+		SessionExpiresAt: sessionExpiresAtUnix,
+		UserID:           tokens.UserID,
+		UpstreamSubject:  tokens.UpstreamSubject,
+		ClientID:         tokens.ClientID,
 	}
 
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
@@ -887,11 +935,20 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 
 	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
 	// survives in storage for transparent token refresh by the middleware.
-	ttl := DefaultAccessTokenTTL + DefaultRefreshTokenTTL
+	// Zero ExpiresAt means the token never expires; return ttl=0 so the Lua script
+	// stores the key without a Redis TTL.
+	var ttl time.Duration // zero means no Redis TTL (non-expiring token with no known session bound)
 	if !tokens.ExpiresAt.IsZero() {
 		ttl = time.Until(tokens.ExpiresAt) + DefaultRefreshTokenTTL
-		if ttl < 0 {
-			ttl = DefaultRefreshTokenTTL
+		if ttl <= 0 {
+			// Access token and its refresh grace period have both passed — evict promptly.
+			ttl = time.Second
+		}
+	} else if !tokens.SessionExpiresAt.IsZero() {
+		ttl = time.Until(tokens.SessionExpiresAt) + DefaultRefreshTokenTTL
+		if ttl <= 0 {
+			// Session bound and its refresh grace period have both passed — evict promptly.
+			ttl = time.Second
 		}
 	}
 
@@ -1103,15 +1160,21 @@ func unmarshalUpstreamTokens(data []byte) (*UpstreamTokens, error) {
 		expired = time.Now().After(expiresAt)
 	}
 
+	var sessionExpiresAt time.Time
+	if stored.SessionExpiresAt != 0 {
+		sessionExpiresAt = time.Unix(stored.SessionExpiresAt, 0)
+	}
+
 	tokens := &UpstreamTokens{
-		ProviderID:      stored.ProviderID,
-		AccessToken:     stored.AccessToken,
-		RefreshToken:    stored.RefreshToken,
-		IDToken:         stored.IDToken,
-		ExpiresAt:       expiresAt,
-		UserID:          stored.UserID,
-		UpstreamSubject: stored.UpstreamSubject,
-		ClientID:        stored.ClientID,
+		ProviderID:       stored.ProviderID,
+		AccessToken:      stored.AccessToken,
+		RefreshToken:     stored.RefreshToken,
+		IDToken:          stored.IDToken,
+		ExpiresAt:        expiresAt,
+		SessionExpiresAt: sessionExpiresAt,
+		UserID:           stored.UserID,
+		UpstreamSubject:  stored.UpstreamSubject,
+		ClientID:         stored.ClientID,
 	}
 
 	// Return tokens along with ErrExpired so callers can use the refresh token

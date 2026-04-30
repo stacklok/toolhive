@@ -157,10 +157,15 @@ const (
 // top-level key names (e.g. "/cursor.general.openAIBaseURL") are treated as
 // literals by hujson.Patch.
 // ValueField names which LLMApplyConfig field to write: "GatewayURL",
-// "ProxyBaseURL", "TokenHelperCommand", or "PlaceholderAPIKey" (constant "thv-proxy").
+// "ProxyBaseURL", "TokenHelperCommand", "PlaceholderAPIKey" (constant "thv-proxy"),
+// or "NodeTLSRejectUnauthorized" (writes "0" when TLSSkipVerify is true).
+// ClearWhenEmpty: when true and the resolved value is empty, the key is removed
+// from the settings file rather than skipped. Use for conditional keys like
+// NODE_TLS_REJECT_UNAUTHORIZED that must be cleaned up when the flag is cleared.
 type LLMGatewayKeySpec struct {
-	JSONPointer string // RFC 6901 path
-	ValueField  string // "GatewayURL" | "ProxyBaseURL" | "TokenHelperCommand" | "PlaceholderAPIKey"
+	JSONPointer    string // RFC 6901 path
+	ValueField     string // "GatewayURL" | "ProxyBaseURL" | "TokenHelperCommand" | "PlaceholderAPIKey" | "NodeTLSRejectUnauthorized"
+	ClearWhenEmpty bool   // remove the key when the resolved value is empty
 }
 
 // clientAppConfig represents a configuration path for a supported MCP client.
@@ -457,6 +462,9 @@ var supportedClientIntegrations = []clientAppConfig{
 		LLMGatewayKeys: []LLMGatewayKeySpec{
 			{JSONPointer: "/apiKeyHelper", ValueField: "TokenHelperCommand"},
 			{JSONPointer: "/env/ANTHROPIC_BASE_URL", ValueField: "GatewayURL"},
+			// NODE_TLS_REJECT_UNAUTHORIZED is only written when --tls-skip-verify is set.
+			// ClearWhenEmpty ensures it is removed when the flag is later cleared.
+			{JSONPointer: "/env/NODE_TLS_REJECT_UNAUTHORIZED", ValueField: "NodeTLSRejectUnauthorized", ClearWhenEmpty: true},
 		},
 	},
 	{
@@ -836,6 +844,9 @@ var supportedClientIntegrations = []clientAppConfig{
 		LLMGatewayKeys: []LLMGatewayKeySpec{
 			{JSONPointer: "/auth/tokenCommand", ValueField: "TokenHelperCommand"},
 			{JSONPointer: "/baseUrl", ValueField: "GatewayURL"},
+			// NODE_TLS_REJECT_UNAUTHORIZED is only written when --tls-skip-verify is set.
+			// ClearWhenEmpty ensures it is removed when the flag is later cleared.
+			{JSONPointer: "/env/NODE_TLS_REJECT_UNAUTHORIZED", ValueField: "NodeTLSRejectUnauthorized", ClearWhenEmpty: true},
 		},
 	},
 	{

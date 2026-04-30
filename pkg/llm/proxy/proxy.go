@@ -6,6 +6,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,30 @@ import (
 // *llm.TokenSource satisfies this interface.
 type TokenSource interface {
 	Token(ctx context.Context) (string, error)
+}
+
+// Option configures optional Proxy behaviour.
+type Option func(*Proxy)
+
+// WithTLSSkipVerify disables TLS certificate verification for the upstream
+// gateway connection. This is intended for local development only (e.g.,
+// self-signed certificates). It must NOT be used in production.
+func WithTLSSkipVerify(skip bool) Option {
+	return func(p *Proxy) {
+		if !skip {
+			return
+		}
+		slog.Warn("LLM proxy: TLS certificate verification disabled for upstream — non-production use only")
+		// Clone http.DefaultTransport so we preserve all production defaults
+		// (timeouts, ProxyFromEnvironment, HTTP/2, connection pooling) and only
+		// toggle InsecureSkipVerify.
+		base := http.DefaultTransport.(*http.Transport).Clone() //nolint:forcetypeassert // DefaultTransport is always *http.Transport
+		if base.TLSClientConfig == nil {
+			base.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		base.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // G402: intentional for local dev with self-signed certs
+		p.transport = base
+	}
 }
 
 // tokenContextKey is the context key used to pass the injected token to the
@@ -60,7 +85,7 @@ type Proxy struct {
 // returns the correct address before Start is called. Returns an error if
 // GatewayURL is unparsable, the listen address is not loopback, or the port
 // is already in use.
-func New(cfg *llm.Config, ts TokenSource) (*Proxy, error) {
+func New(cfg *llm.Config, ts TokenSource, opts ...Option) (*Proxy, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("cfg must not be nil")
 	}
@@ -91,6 +116,9 @@ func New(cfg *llm.Config, ts TokenSource) (*Proxy, error) {
 		gatewayURL:  gatewayURL,
 		tokenSource: ts,
 		listener:    ln,
+	}
+	for _, o := range opts {
+		o(p)
 	}
 	p.rp = &httputil.ReverseProxy{
 		// Transport delegates to p.transport so tests can swap it after New().

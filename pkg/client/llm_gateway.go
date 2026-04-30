@@ -13,6 +13,7 @@ import (
 	"github.com/tailscale/hujson"
 
 	"github.com/stacklok/toolhive/pkg/fileutils"
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 )
 
 // llmPlaceholderAPIKey is the static API key written into proxy-mode tool
@@ -27,20 +28,13 @@ type llmPatchOp struct {
 	Value json.RawMessage `json:"value,omitempty"`
 }
 
-// LLMApplyConfig holds the values needed to configure an LLM gateway for a tool.
-type LLMApplyConfig struct {
-	GatewayURL         string // direct-mode: URL of the upstream LLM gateway
-	ProxyBaseURL       string // proxy-mode: URL of the localhost reverse proxy
-	TokenHelperCommand string // direct-mode: command that prints a fresh access token
-}
-
 // ConfigureLLMGateway patches the tool's LLM-gateway settings file with cfg
 // and returns the absolute path of the patched file.
 //
 // It uses fileutils.WithFileLock so concurrent calls (e.g. two "thv llm setup"
 // invocations) are serialised. Comments and trailing commas in JSONC settings
 // files are preserved via hujson. Writes are crash-safe via AtomicWriteFile.
-func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg LLMApplyConfig) (string, error) {
+func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgateway.ApplyConfig) (string, error) {
 	appCfg := cm.lookupClientAppConfig(clientType)
 	if appCfg == nil || appCfg.LLMGatewayMode == "" {
 		return "", fmt.Errorf("client %q does not support LLM gateway configuration", clientType)
@@ -65,27 +59,8 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg LLMApplyC
 			return fmt.Errorf("parsing %s: %w", path, err)
 		}
 
-		// Ensure every intermediate ancestor object exists before patching.
-		// e.g. "/a/b/c" requires "/a" and "/a/b" to already be present.
-		for _, spec := range appCfg.LLMGatewayKeys {
-			if err := ensureLLMAncestors(&v, spec.JSONPointer, path); err != nil {
-				return err
-			}
-		}
-
-		for _, spec := range appCfg.LLMGatewayKeys {
-			value := llmValueForSpec(spec.ValueField, cfg)
-			valueJSON, err := json.Marshal(value)
-			if err != nil {
-				return fmt.Errorf("marshaling value for %s: %w", spec.JSONPointer, err)
-			}
-			patchDoc, err := json.Marshal([]llmPatchOp{{Op: "add", Path: spec.JSONPointer, Value: valueJSON}})
-			if err != nil {
-				return fmt.Errorf("marshaling patch for %s: %w", spec.JSONPointer, err)
-			}
-			if err := v.Patch(patchDoc); err != nil {
-				return fmt.Errorf("patching %s in %s: %w", spec.JSONPointer, path, err)
-			}
+		if err := applyLLMGatewayKeys(&v, appCfg.LLMGatewayKeys, cfg, path); err != nil {
+			return err
 		}
 
 		formatted, err := hujson.Format(v.Pack())
@@ -98,6 +73,74 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg LLMApplyC
 		return "", err
 	}
 	return path, nil
+}
+
+// applyLLMGatewayKeys writes or removes each key spec into v according to cfg.
+// Specs with ClearWhenEmpty=true are removed when their resolved value is empty,
+// allowing conditional keys (e.g. NODE_TLS_REJECT_UNAUTHORIZED) to be cleaned
+// up when the associated flag is cleared.
+func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgateway.ApplyConfig, filePath string) error {
+	// Ensure ancestors only for specs that will be written (not removed).
+	for _, spec := range specs {
+		if spec.ClearWhenEmpty && llmValueForSpec(spec.ValueField, cfg) == "" {
+			continue
+		}
+		if err := ensureLLMAncestors(v, spec.JSONPointer, filePath); err != nil {
+			return err
+		}
+	}
+
+	// Standardize once for existence checks in the remove path.
+	standardized, err := hujson.Standardize(v.Pack())
+	if err != nil {
+		return fmt.Errorf("standardizing %s: %w", filePath, err)
+	}
+
+	for _, spec := range specs {
+		value := llmValueForSpec(spec.ValueField, cfg)
+		if spec.ClearWhenEmpty && value == "" {
+			if err := removeLLMKey(v, spec.JSONPointer, filePath, standardized); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := addLLMKey(v, spec.JSONPointer, value, filePath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeLLMKey removes the key at ptr from v if it exists. standardized is
+// pre-computed hujson.Standardize output used for the existence check.
+func removeLLMKey(v *hujson.Value, ptr, filePath string, standardized []byte) error {
+	if !jsonPointerExists(standardized, ptr) {
+		return nil
+	}
+	patchDoc, err := json.Marshal([]llmPatchOp{{Op: "remove", Path: ptr}})
+	if err != nil {
+		return fmt.Errorf("marshaling remove patch for %s: %w", ptr, err)
+	}
+	if err := v.Patch(patchDoc); err != nil {
+		return fmt.Errorf("removing %s from %s: %w", ptr, filePath, err)
+	}
+	return nil
+}
+
+// addLLMKey writes value to the key at ptr inside v.
+func addLLMKey(v *hujson.Value, ptr, value, filePath string) error {
+	valueJSON, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshaling value for %s: %w", ptr, err)
+	}
+	patchDoc, err := json.Marshal([]llmPatchOp{{Op: "add", Path: ptr, Value: valueJSON}})
+	if err != nil {
+		return fmt.Errorf("marshaling patch for %s: %w", ptr, err)
+	}
+	if err := v.Patch(patchDoc); err != nil {
+		return fmt.Errorf("patching %s in %s: %w", ptr, filePath, err)
+	}
+	return nil
 }
 
 // RevertLLMGateway removes the LLM gateway keys from the tool's settings file.
@@ -216,7 +259,9 @@ func (cm *ClientManager) buildLLMSettingsPath(cfg *clientAppConfig) string {
 }
 
 // llmValueForSpec returns the config value corresponding to the ValueField name.
-func llmValueForSpec(valueField string, cfg LLMApplyConfig) string {
+// For "NodeTLSRejectUnauthorized", returns "0" when TLSSkipVerify is true, or ""
+// when false (which triggers removal when ClearWhenEmpty is set on the spec).
+func llmValueForSpec(valueField string, cfg llmgateway.ApplyConfig) string {
 	switch valueField {
 	case "GatewayURL":
 		return cfg.GatewayURL
@@ -226,6 +271,11 @@ func llmValueForSpec(valueField string, cfg LLMApplyConfig) string {
 		return cfg.TokenHelperCommand
 	case "PlaceholderAPIKey":
 		return llmPlaceholderAPIKey
+	case "NodeTLSRejectUnauthorized":
+		if cfg.TLSSkipVerify {
+			return "0"
+		}
+		return ""
 	default:
 		return valueField // treat unknown field names as literal values
 	}

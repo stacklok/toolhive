@@ -4,8 +4,10 @@
 package cedar
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"testing"
 
 	cedar "github.com/cedar-policy/cedar-go"
@@ -2830,6 +2832,301 @@ func TestConfigOptionsRoleClaimNameJSON(t *testing.T) {
 					"empty RoleClaimName must be omitted from JSON output")
 			} else {
 				assert.Contains(t, string(marshalled), "role_claim_name")
+			}
+		})
+	}
+}
+
+// TestValidateGroupEntityType exercises the private validateGroupEntityType helper
+// directly. Each case names an input, states whether it should succeed, and — for
+// error cases — a substring that the error message must contain so operators can
+// diagnose misconfiguration from a single log line.
+//
+// Only our package's contract is tested here:
+//  1. Empty string short-circuits to nil.
+//  2. Inputs containing "::" are rejected with our project-specific error.
+//  3. Valid Cedar identifiers pass through (smoke test of the cedar-go delegation path).
+//  4. Invalid Cedar identifiers surface the cedar-go rejection wrapped with our message.
+//  5. __cedarFoo is accepted — the Cedar spec only reserves the bare "__cedar" token,
+//     not the entire prefix namespace. This intentional behavioral difference vs older
+//     hand-rolled validators would be the most surprising case for a future reader.
+//
+// Exhaustive grammar testing (hyphens, leading digits, whitespace, reserved words, …)
+// belongs in cedar-go's own test suite, not here.
+func TestValidateGroupEntityType(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		input       string
+		wantErr     bool
+		errContains string // substring the error message must contain (ignored when wantErr=false)
+	}{
+		{
+			// Empty string triggers the short-circuit: our function returns nil immediately
+			// without consulting cedar-go's parser.
+			name:    "empty string accepted (short-circuit, means use default)",
+			input:   "",
+			wantErr: false,
+		},
+		{
+			// Smoke test: a plain valid identifier must pass the cedar-go delegation path.
+			name:    "valid Cedar identifier accepted",
+			input:   "OrgRole",
+			wantErr: false,
+		},
+		{
+			// Our project rule: "::" always means a namespaced type which is never a
+			// valid bare entity-type name. We reject before delegating to cedar-go.
+			name:        "namespaced type rejected with project-specific message",
+			input:       "Foo::Bar",
+			wantErr:     true,
+			errContains: "::",
+		},
+		{
+			// Smoke test: an invalid Cedar identifier must produce an error containing
+			// our wrapper text, proving the cedar-go rejection bubbles up correctly.
+			// One representative case is sufficient; the grammar details are cedar-go's domain.
+			name:        "invalid Cedar identifier rejected with wrapper message",
+			input:       "Org-Role",
+			wantErr:     true,
+			errContains: "not a valid Cedar identifier",
+		},
+		{
+			// The Cedar spec reserves the literal "__cedar" token. "__cedarFoo" (with a
+			// suffix) is accepted because the reservation does NOT extend to the whole
+			// prefix namespace. This is intentionally different from older hand-rolled
+			// validators that rejected the entire "__cedar" prefix — keep this case so a
+			// future refactor cannot silently regress to the stricter behavior.
+			name:    "__cedarFoo accepted (Cedar spec only reserves bare __cedar)",
+			input:   "__cedarFoo",
+			wantErr: false,
+		},
+		{
+			// Sanity check that cedar-go's reserved-word rejection surfaces through our
+			// wrapper. One reserved word is enough to prove the path works.
+			name:        "reserved word 'in' rejected",
+			input:       "in",
+			wantErr:     true,
+			errContains: "not a valid Cedar identifier",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateGroupEntityType(tc.input)
+
+			if tc.wantErr {
+				require.Error(t, err, "expected an error for input %q", tc.input)
+				assert.Contains(t, err.Error(), tc.errContains,
+					"error for %q should mention %q", tc.input, tc.errContains)
+			} else {
+				require.NoError(t, err, "unexpected error for input %q", tc.input)
+			}
+		})
+	}
+}
+
+// TestAuthorizeWithJWTClaims_CustomGroupEntityType proves that GroupEntityType
+// actually flows through Cedar evaluation, not just through entity construction.
+// Case A: GroupEntityType "OrgRole" with policy "principal in OrgRole::..." → Permit.
+// Case B: same policy, default GroupEntityType "" (resolves to THVGroup) → Deny,
+// because the parent UIDs are typed THVGroup::"engineering" which is not in OrgRole.
+// The two cases are adjacent so the contrast is visible to reviewers.
+func TestAuthorizeWithJWTClaims_CustomGroupEntityType(t *testing.T) {
+	t.Parallel()
+
+	// Policy references OrgRole — only a factory configured with GroupEntityType "OrgRole"
+	// will synthesise parent UIDs that match this policy.
+	policy := `
+		permit(
+			principal in OrgRole::"engineering",
+			action == Action::"call_tool",
+			resource == Tool::"deploy"
+		);
+	`
+
+	identity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user1",
+			Claims: map[string]any{
+				"sub":    "user1",
+				"groups": []interface{}{"engineering"},
+			},
+		},
+	}
+
+	tests := []struct {
+		name            string
+		groupEntityType string
+		wantAuthorize   bool
+	}{
+		{
+			// GroupEntityType "OrgRole" makes the factory emit OrgRole::"engineering"
+			// as the principal's parent UID. Cedar's `in` resolves to true → Permit.
+			name:            "custom_type_OrgRole_permits",
+			groupEntityType: "OrgRole",
+			wantAuthorize:   true,
+		},
+		{
+			// Default GroupEntityType "" resolves to THVGroup. The factory emits
+			// THVGroup::"engineering" instead of OrgRole::"engineering". Cedar's `in`
+			// for OrgRole::"engineering" evaluates to false → Deny by default.
+			name:            "default_type_THVGroup_denies",
+			groupEntityType: "",
+			wantAuthorize:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:        []string{policy},
+				EntitiesJSON:    `[]`,
+				GroupClaimName:  "groups",
+				GroupEntityType: tt.groupEntityType,
+			}, "")
+			require.NoError(t, err)
+
+			ctx := auth.WithIdentity(context.Background(), identity)
+
+			authorized, err := authorizer.AuthorizeWithJWTClaims(
+				ctx,
+				authorizers.MCPFeatureTool,
+				authorizers.MCPOperationCall,
+				"deploy",
+				nil,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuthorize, authorized,
+				"GroupEntityType=%q: expected allow=%v", tt.groupEntityType, tt.wantAuthorize)
+		})
+	}
+}
+
+// TestNewCedarAuthorizerGroupEntityTypeValidation is a thin wiring proof
+// that NewCedarAuthorizer actually invokes validateGroupEntityType. The
+// exhaustive rejection coverage lives in TestValidateGroupEntityType — this
+// test only confirms one valid input passes through and one invalid input
+// produces the validator's error at the constructor boundary.
+func TestNewCedarAuthorizerGroupEntityTypeValidation(t *testing.T) {
+	t.Parallel()
+
+	validPolicy := []string{`permit(principal, action, resource);`}
+
+	testCases := []struct {
+		name            string
+		groupEntityType string
+		wantErr         bool
+		errContains     string
+	}{
+		{name: "empty string succeeds", groupEntityType: "", wantErr: false},
+		{name: "namespaced type fails", groupEntityType: "Foo::Bar", wantErr: true, errContains: "::"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:        validPolicy,
+				GroupEntityType: tc.groupEntityType,
+			}, "")
+
+			if tc.wantErr {
+				require.Error(t, err, "expected construction error for GroupEntityType=%q", tc.groupEntityType)
+				assert.Contains(t, err.Error(), tc.errContains,
+					"validator error must bubble up unchanged to the constructor boundary")
+			} else {
+				require.NoError(t, err, "unexpected error for GroupEntityType=%q", tc.groupEntityType)
+			}
+		})
+	}
+}
+
+// captureSlogWarn redirects slog's default logger to a bytes.Buffer for the
+// duration of f, then restores the original default. Returns the captured
+// output. This helper exists because slog.SetDefault is a process-global
+// side effect — tests that use it must NOT run in parallel.
+func captureSlogWarn(t *testing.T, f func()) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	orig := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	f()
+
+	return buf.String()
+}
+
+// TestStaleTHVGroupWarning verifies that NewCedarAuthorizer emits a WARN log
+// when entities_json contains entities of type "THVGroup" while GroupEntityType
+// is configured to a different value. The mismatch causes Cedar's `in` operator
+// to evaluate to false for those entities — a silent deny that is hard to debug
+// without this diagnostic.
+//
+// Subtests use slog.SetDefault (process-global), so they must NOT run in
+// parallel with other tests. The parent is still parallel-safe because it does
+// not touch global state itself.
+//
+//nolint:paralleltest,tparallel // Subtests redirect slog.Default, which is process-global state
+func TestStaleTHVGroupWarning(t *testing.T) {
+	t.Parallel()
+
+	const thvGroupEntity = `[{"uid":{"type":"THVGroup","id":"engineering"},"attrs":{},"parents":[]}]`
+	validPolicy := []string{`permit(principal, action, resource);`}
+
+	tests := []struct {
+		name            string
+		groupEntityType string
+		entitiesJSON    string
+		wantWarn        bool
+		wantContains    []string // when wantWarn=true, log must contain each of these
+	}{
+		{
+			name:            "warns when stale THVGroup present and GroupEntityType differs",
+			groupEntityType: "OrgRole",
+			entitiesJSON:    thvGroupEntity,
+			wantWarn:        true,
+			wantContains:    []string{"GroupEntityType", "OrgRole", "THVGroup"},
+		},
+		{
+			// Most common path: GroupEntityType is empty (uses THVGroup default), so no
+			// conflict is possible. One negative is sufficient to prove the guard works.
+			name:            "no warning when GroupEntityType is empty (uses THVGroup default)",
+			groupEntityType: "",
+			entitiesJSON:    thvGroupEntity,
+			wantWarn:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Cannot be parallel: subtests redirect slog.Default.
+			output := captureSlogWarn(t, func() {
+				_, err := NewCedarAuthorizer(ConfigOptions{
+					Policies:        validPolicy,
+					EntitiesJSON:    tt.entitiesJSON,
+					GroupEntityType: tt.groupEntityType,
+				}, "")
+				require.NoError(t, err)
+			})
+
+			if tt.wantWarn {
+				require.NotEmpty(t, output, "expected a warn log")
+				for _, want := range tt.wantContains {
+					assert.Contains(t, output, want,
+						"warn log must mention %q", want)
+				}
+			} else {
+				assert.Empty(t, output, "no warning expected")
 			}
 		})
 	}

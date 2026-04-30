@@ -83,7 +83,7 @@ func (m *manager) ensureRBACResources(
 		Rules:            registryAPIRBACRules,
 		Owner:            mcpRegistry,
 		Labels:           labels,
-		ImagePullSecrets: mcpRegistry.Spec.ImagePullSecrets,
+		ImagePullSecrets: m.imagePullSecretsDefaults.Merge(mcpRegistry.Spec.ImagePullSecrets),
 	}); err != nil {
 		return err
 	}

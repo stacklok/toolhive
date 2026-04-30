@@ -11,9 +11,54 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
+	envmocks "github.com/stacklok/toolhive-core/env/mocks"
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
+
+// TestGetSystemSecretsProvider_EnvOverrideBypassesSetup verifies the regression
+// fix: TOOLHIVE_SECRETS_PROVIDER=environment must succeed even when
+// SetupCompleted is false (no config file), so Kubernetes / test deployments
+// don't have to run interactive setup.
+func TestGetSystemSecretsProvider_EnvOverrideBypassesSetup(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	// PathProvider pointing at a non-existent file → SetupCompleted defaults to false.
+	cfgProvider := config.NewPathProvider(t.TempDir() + "/config.yaml")
+
+	// Mock env reader returns "environment" for the provider env var.
+	mockEnv := envmocks.NewMockReader(ctrl)
+	mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return(string(secrets.EnvironmentType))
+
+	provider, err := getSystemSecretsProviderFromConfig(cfgProvider, mockEnv)
+	assert.NoError(t, err, "environment provider should succeed without interactive setup")
+	assert.NotNil(t, provider, "should return a non-nil provider")
+}
+
+// TestGetSystemSecretsProvider_NoSetupNoEnvVar verifies that without both
+// SetupCompleted and a TOOLHIVE_SECRETS_PROVIDER override, the function
+// returns ErrSecretsNotSetup.
+func TestGetSystemSecretsProvider_NoSetupNoEnvVar(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	// PathProvider pointing at a non-existent file → SetupCompleted defaults to false.
+	cfgProvider := config.NewPathProvider(t.TempDir() + "/config.yaml")
+
+	// Mock env reader returns empty string → no override present.
+	mockEnv := envmocks.NewMockReader(ctrl)
+	mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return("")
+
+	_, err := getSystemSecretsProviderFromConfig(cfgProvider, mockEnv)
+	assert.ErrorIs(t, err, secrets.ErrSecretsNotSetup,
+		"should return ErrSecretsNotSetup when setup is incomplete and no env override is present")
+}
 
 func TestGenerateUniqueSecretNameWithPrefix(t *testing.T) {
 	t.Parallel()
@@ -221,6 +266,7 @@ func TestProcessSecret(t *testing.T) {
 		assert.Contains(t, err.Error(), "unknown token type")
 		assert.Equal(t, "", result)
 	})
+
 }
 
 func TestProcessSecretWithProvider(t *testing.T) {

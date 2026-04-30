@@ -24,6 +24,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 )
 
 var (
@@ -114,7 +115,9 @@ var _ = BeforeSuite(func() {
 
 		// Set up MCPRegistry controller
 		By("setting up MCPRegistry controller")
-		err = controllers.NewMCPRegistryReconciler(testMgr.GetClient(), testMgr.GetScheme()).SetupWithManager(testMgr)
+		err = controllers.NewMCPRegistryReconciler(
+			testMgr.GetClient(), testMgr.GetScheme(), imagepullsecrets.Defaults{},
+		).SetupWithManager(testMgr)
 		Expect(err).NotTo(HaveOccurred())
 
 		// Start the manager in the background

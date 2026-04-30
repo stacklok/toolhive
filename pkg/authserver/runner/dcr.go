@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -238,8 +239,26 @@ func resolveDCRCredentials(
 	// receive the leader's *DCRResolution result. The flight key embeds the
 	// DCRKey fields with a separator that cannot appear in any of them
 	// (newline is not valid in OAuth scope tokens, URLs, or hex digests).
+	//
+	// A defer/recover inside the closure converts a panic in registerAndCache
+	// (or anything it calls) into a normal error. Without this, singleflight
+	// re-panics the leader's panic in every follower — N concurrent callers
+	// for the same DCRKey would all crash with the same value. The panic is
+	// still surfaced: it is logged at Error with a stack trace, and the
+	// returned error wraps the recovered value so callers can react to it as
+	// a normal failure.
 	flightKey := key.Issuer + "\n" + key.RedirectURI + "\n" + key.ScopesHash
-	resolutionAny, err, _ := dcrFlight.Do(flightKey, func() (any, error) {
+	resolutionAny, err, _ := dcrFlight.Do(flightKey, func() (res any, err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("dcr: registration panicked",
+					"panic", fmt.Sprintf("%v", r),
+					"stack", string(debug.Stack()),
+				)
+				err = fmt.Errorf("dcr: registration panicked: %v", r)
+				res = nil
+			}
+		}()
 		return registerAndCache(ctx, rc, issuer, redirectURI, scopes, key, cache)
 	})
 	if err != nil {

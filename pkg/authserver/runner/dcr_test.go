@@ -1438,3 +1438,83 @@ func TestResolveDCRCredentials_HonoursFutureExpiryAndZero(t *testing.T) {
 		})
 	}
 }
+
+// panickingPutDCRStore is a test double whose Put panics with a fixed
+// value. Get is a normal cache miss so callers reach the singleflight
+// closure and trigger the panic via cache.Put inside registerAndCache.
+type panickingPutDCRStore struct {
+	panicValue any
+}
+
+func (panickingPutDCRStore) Get(_ context.Context, _ DCRKey) (*DCRResolution, bool, error) {
+	return nil, false, nil
+}
+
+func (s panickingPutDCRStore) Put(_ context.Context, _ DCRKey, _ *DCRResolution) error {
+	panic(s.panicValue)
+}
+
+// TestResolveDCRCredentials_RecoversPanicInsideSingleflight pins the
+// behaviour that a panic inside the singleflight closure does not propagate
+// up as a panic to either the leader goroutine or any of the followers.
+// singleflight.Group re-panics the leader's panic in every follower, so
+// without the recover N concurrent callers for the same DCRKey would all
+// crash with the same value. The defer/recover converts the panic to a
+// normal error, the panic is logged at Error with a stack, and every
+// caller gets the same wrapped error.
+func TestResolveDCRCredentials_RecoversPanicInsideSingleflight(t *testing.T) {
+	t.Parallel()
+
+	server := newDCRTestServer(t, dcrTestHandlerConfig{})
+	store := panickingPutDCRStore{panicValue: "boom"}
+
+	issuer := server.URL
+	rc := &authserver.OAuth2UpstreamRunConfig{
+		Scopes: []string{"openid"},
+		DCRConfig: &authserver.DCRUpstreamConfig{
+			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
+		},
+	}
+
+	const N = 6
+	var wg sync.WaitGroup
+	wg.Add(N)
+	errs := make([]error, N)
+	panicked := make([]bool, N)
+
+	for i := 0; i < N; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			defer func() {
+				// If the recover inside the singleflight closure is
+				// missing, the panic re-propagates here. Capture it so
+				// the assertion below produces a clear failure message
+				// rather than a runtime crash that taints other tests.
+				if r := recover(); r != nil {
+					panicked[idx] = true
+				}
+			}()
+			_, errs[idx] = resolveDCRCredentials(context.Background(), rc, issuer, store)
+		}(i)
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for concurrent callers")
+	}
+
+	for i := 0; i < N; i++ {
+		require.False(t, panicked[i],
+			"goroutine %d observed an un-recovered panic from the singleflight closure", i)
+		require.Error(t, errs[i],
+			"goroutine %d should have received an error converted from the panic", i)
+		assert.Contains(t, errs[i].Error(), "panicked",
+			"goroutine %d's error must mention the panic so operators can correlate; got %q",
+			i, errs[i].Error())
+		assert.Contains(t, errs[i].Error(), "boom",
+			"goroutine %d's error must include the panic value so the cause is recoverable", i)
+	}
+}

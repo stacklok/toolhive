@@ -251,6 +251,97 @@
   </div>
 </section>
 
+<!-- ══════════════════════════════════════ 3b · Five Tensions ══ -->
+<section>
+  <h2>Five Design Tensions</h2>
+  <p style="color:#718096; margin-bottom:.6em; font-size:.82em;">
+    Every memory system is pulled along five axes that tug in opposite directions.
+    The right balance shifts with the application — a medical triage agent operates under a very different
+    faithfulness–efficiency frontier than a recipe recommender.
+    <em style="color:#4a5568;">(arXiv 2603.07670)</em>
+  </p>
+
+  <!-- tension rows -->
+  <div style="display:flex; flex-direction:column; gap:7px; max-width:900px; margin:0 auto;">
+
+    <!-- Utility vs Efficiency -->
+    <div style="display:grid; grid-template-columns:130px 1fr 1fr; gap:0; align-items:center; background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.07); border-radius:8px; overflow:hidden;">
+      <div style="padding:9px 12px; background:rgba(0,212,255,.07); border-right:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:.78em; font-weight:700; color:var(--cyan);">⚡  Utility</div>
+        <div style="font-size:.68em; color:#4a5568; margin-top:2px;">vs Efficiency</div>
+      </div>
+      <div style="padding:9px 14px; border-right:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:.72em; color:#718096; line-height:1.4;">Maximising utility tempts you to store everything — bloating storage and retrieval cost. Aggressive compression silently discards the one rare fact that matters three weeks later.</div>
+      </div>
+      <div style="padding:9px 14px;">
+        <div style="font-size:.72em; color:#a0aec0; line-height:1.4;">Store semantically compressed memories, not raw transcripts. Trust scores surface high-value entries first so retrieval cost stays bounded.</div>
+      </div>
+    </div>
+
+    <!-- Faithfulness -->
+    <div style="display:grid; grid-template-columns:130px 1fr 1fr; gap:0; align-items:center; background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.07); border-radius:8px; overflow:hidden;">
+      <div style="padding:9px 12px; background:rgba(72,187,120,.07); border-right:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:.78em; font-weight:700; color:var(--green);">🎯  Faithfulness</div>
+        <div style="font-size:.68em; color:#4a5568; margin-top:2px;">vs Adaptivity</div>
+      </div>
+      <div style="padding:9px 14px; border-right:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:.72em; color:#718096; line-height:1.4;">Stale or hallucinated recall can be worse than no recall at all. But locking down memory prevents it from reflecting a world that changes.</div>
+      </div>
+      <div style="padding:9px 14px;">
+        <div style="font-size:.72em; color:#a0aec0; line-height:1.4;">Conflict detection on write. Staleness scoring updated every 24h. Human-authored entries always outrank agent entries. Correction history preserved.</div>
+      </div>
+    </div>
+
+    <!-- Adaptivity -->
+    <div style="display:grid; grid-template-columns:130px 1fr 1fr; gap:0; align-items:center; background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.07); border-radius:8px; overflow:hidden;">
+      <div style="padding:9px 12px; background:rgba(246,224,94,.07); border-right:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:.78em; font-weight:700; color:var(--yellow);">🔄  Adaptivity</div>
+        <div style="font-size:.68em; color:#4a5568; margin-top:2px;">vs Stability</div>
+      </div>
+      <div style="padding:9px 14px; border-right:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:.72em; color:#718096; line-height:1.4;">Memory that updates freely drifts — an agent can overwrite good knowledge with a bad observation. Full retrains are expensive and disrupt continuity.</div>
+      </div>
+      <div style="padding:9px 14px;">
+        <div style="font-size:.72em; color:#a0aec0; line-height:1.4;">Incremental writes via <code>memory_remember</code>. Updates create a revision history — nothing is ever silently overwritten. Flag + review before trust score recovers.</div>
+      </div>
+    </div>
+
+    <!-- Efficiency -->
+    <div style="display:grid; grid-template-columns:130px 1fr 1fr; gap:0; align-items:center; background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.07); border-radius:8px; overflow:hidden;">
+      <div style="padding:9px 12px; background:rgba(237,137,54,.07); border-right:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:.78em; font-weight:700; color:var(--orange);">📊  Efficiency</div>
+        <div style="font-size:.68em; color:#4a5568; margin-top:2px;">latency · tokens · storage</div>
+      </div>
+      <div style="padding:9px 14px; border-right:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:.72em; color:#718096; line-height:1.4;">Every retrieved memory costs tokens in the context window. Large retrieval sets slow inference and dilute relevance. Embedding calls add latency on every write.</div>
+      </div>
+      <div style="padding:9px 14px;">
+        <div style="font-size:.72em; color:#a0aec0; line-height:1.4;">Embed once on write, never on read. Single-pass vector search with configurable <code>top_k</code>. TTL-based expiry keeps the store bounded. Score-weighted ranking cuts noise.</div>
+      </div>
+    </div>
+
+    <!-- Governance -->
+    <div style="display:grid; grid-template-columns:130px 1fr 1fr; gap:0; align-items:center; background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.07); border-radius:8px; overflow:hidden;">
+      <div style="padding:9px 12px; background:rgba(159,122,234,.07); border-right:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:.78em; font-weight:700; color:var(--purple);">🏛️  Governance</div>
+        <div style="font-size:.68em; color:#4a5568; margin-top:2px;">privacy · deletion · policy</div>
+      </div>
+      <div style="padding:9px 14px; border-right:1px solid rgba(255,255,255,.07);">
+        <div style="font-size:.72em; color:#718096; line-height:1.4;">Memory systems accumulate sensitive data. Without explicit deletion and access controls, memory becomes a liability — agents can recall things they shouldn't.</div>
+      </div>
+      <div style="padding:9px 14px;">
+        <div style="font-size:.72em; color:#a0aec0; line-height:1.4;">Explicit <code>memory_forget</code>. Agents can only delete their own entries; humans can delete any. TTL for automatic expiry. Read-only Resources protected by <code>ErrReadOnly</code>.</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:.6em; max-width:900px; margin-left:auto; margin-right:auto;">
+    <div style="font-size:.68em; color:#4a5568; padding:0 4px; font-style:italic; text-align:center;">Tension</div>
+    <div style="font-size:.68em; color:#4a5568; padding:0 4px; font-style:italic; text-align:center;">Our position</div>
+  </div>
+</section>
+
 <!-- ══════════════════════════════════════ 4 · Our Approach ══ -->
 <section>
   <h2>Our Approach vs. the Literature</h2>

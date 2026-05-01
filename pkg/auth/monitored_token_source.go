@@ -132,9 +132,9 @@ type transientRefresher struct {
 	// upstream identifies the upstream authorization server that issued the
 	// token, and clientID is the OAuth 2.0 client_id used by this workload.
 	// Both are optional and are only surfaced in structured logs (notably the
-	// DCR remediation warning emitted from isTransientNetworkError when a
-	// permanent 4xx indicates a stale cached DCR client). Empty strings are
-	// acceptable and are omitted from log output by the slog handler.
+	// DCR/CIMD remediation warning emitted from MonitoredTokenSource on the
+	// transition to Unauthenticated). Empty strings are acceptable and are
+	// omitted from log output by the slog handler.
 	upstream string
 	clientID string
 
@@ -181,7 +181,7 @@ func (r *transientRefresher) retry(ctx context.Context, origErr error) (*oauth2.
 		if tokenErr == nil {
 			return t, nil
 		}
-		if !isTransientNetworkError(tokenErr, r.workload, r.upstream, r.clientID) {
+		if !isTransientNetworkError(tokenErr) {
 			return nil, backoff.Permanent(tokenErr)
 		}
 		return nil, tokenErr
@@ -239,11 +239,12 @@ type MonitoredTokenSource struct {
 // oauth2.TokenSource and monitors it for authentication failures.
 //
 // upstream and clientID annotate structured logs emitted by the token source,
-// most importantly the DCR remediation warning fired from
-// isTransientNetworkError when the token endpoint returns a permanent 4xx
-// (which frequently indicates a stale cached RFC 7591 registration). Pass
-// empty strings when the workload does not use DCR or the upstream issuer
-// is unknown; the slog handler will render the attributes as empty.
+// most importantly the DCR/CIMD remediation warning fired on the transition
+// to Unauthenticated when the token endpoint returns a permanent 4xx (which
+// frequently indicates stale cached credentials). Pass empty strings when
+// the workload does not use DCR/CIMD or the upstream issuer is unknown; the
+// remediation log will be suppressed when clientID is empty since its
+// operator-correlation field would be blank.
 //
 // The fields are fixed at construction time rather than exposed via a setter
 // so there is no data race between a late writer and the readers in Token()
@@ -295,8 +296,11 @@ func (mts *MonitoredTokenSource) Token() (*oauth2.Token, error) {
 		return tok, nil
 	}
 
-	if !isTransientNetworkError(err, mts.workloadName, mts.upstream, mts.clientID) {
-		mts.markAsUnauthenticated(fmt.Sprintf("Token retrieval failed: %v", err))
+	if !isTransientNetworkError(err) {
+		mts.markAsUnauthenticated(
+			fmt.Sprintf("Token retrieval failed: %v", err),
+			isPermanentTokenEndpointError(err),
+		)
 		return nil, err
 	}
 
@@ -305,7 +309,10 @@ func (mts *MonitoredTokenSource) Token() (*oauth2.Token, error) {
 	tok, err = mts.refresher.Refresh(mts.monitoringCtx, err)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			mts.markAsUnauthenticated(fmt.Sprintf("Token refresh failed after retries: %v", err))
+			mts.markAsUnauthenticated(
+				fmt.Sprintf("Token refresh failed after retries: %v", err),
+				isPermanentTokenEndpointError(err),
+			)
 		}
 		return nil, err
 	}
@@ -382,12 +389,11 @@ func (mts *MonitoredTokenSource) onTick() (bool, time.Duration) {
 // (certificate verification, handshake failure) are NOT considered transient and
 // return false so the workload is marked unauthenticated immediately.
 //
-// workload, upstream, and clientID are context strings used only in
-// structured logs — notably the DCR remediation warning emitted in the
-// permanent-4xx branch, which suggests the cached RFC 7591 registration is
-// no longer recognised by the authorization server. All three are optional;
-// pass empty strings when the context is unknown.
-func isTransientNetworkError(err error, workload, upstream, clientID string) bool {
+// The function is side-effect free; callers that want to emit a DCR
+// remediation hint on a permanent 4xx must do so themselves at the
+// state-transition boundary using isPermanentTokenEndpointError to
+// classify, so a tight Token() loop does not spam the same record.
+func isTransientNetworkError(err error) bool {
 	if err == nil ||
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
@@ -403,20 +409,6 @@ func isTransientNetworkError(err error, workload, upstream, clientID string) boo
 			)
 			return true
 		}
-		// Permanent 4xx from the token endpoint frequently indicates that the
-		// cached Dynamic Client Registration has been revoked, rotated, or is
-		// no longer recognised by the authorization server. Emit a remediation
-		// hint before returning false so operators can correlate the
-		// unauthentication with a stale DCR rather than a user-action issue.
-		// The returned boolean is unchanged.
-		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
-		slog.Warn(
-			"cached DCR client is no longer recognized by the authorization server; "+
-				"delete the cached credentials and restart to re-register.",
-			"workload", workload,
-			"upstream", upstream,
-			"client_id", clientID,
-		)
 		return false
 	}
 
@@ -451,6 +443,21 @@ func isTransientNetworkError(err error, workload, upstream, clientID string) boo
 	return false
 }
 
+// isPermanentTokenEndpointError reports whether err is an *oauth2.RetrieveError
+// with a non-5xx HTTP status (i.e. a permanent token-endpoint response such as
+// 400, 401, 403). Used at state-transition boundaries to decide whether to
+// emit a DCR/CIMD remediation hint alongside the unauthentication.
+func isPermanentTokenEndpointError(err error) bool {
+	retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](err)
+	if !ok {
+		return false
+	}
+	if retrieveErr.Response == nil {
+		return true
+	}
+	return retrieveErr.Response.StatusCode < 500
+}
+
 // isOAuthParseError detects errors from the oauth2 library that indicate the
 // token endpoint returned an unparsable response body on a 2xx status. This
 // typically happens when a load balancer, CDN, or reverse proxy intercepts the
@@ -466,13 +473,39 @@ func isOAuthParseError(err error) bool {
 		strings.Contains(msg, "oauth2: cannot parse response")
 }
 
-// markAsUnauthenticated marks the workload as unauthenticated and stops background monitoring.
-func (mts *MonitoredTokenSource) markAsUnauthenticated(reason string) {
+// markAsUnauthenticated marks the workload as unauthenticated and stops
+// background monitoring. If permanent4xx is true and the workload was
+// constructed with a non-empty client_id, a one-shot DCR/CIMD remediation
+// hint is emitted alongside the stop transition. The hint and the close
+// of stopMonitoring share stopOnce, so a caller (e.g. a tight Token()
+// loop) cannot spam the record on every call after the workload has
+// already transitioned to Unauthenticated.
+func (mts *MonitoredTokenSource) markAsUnauthenticated(reason string, permanent4xx bool) {
 	_ = mts.statusUpdater.SetWorkloadStatus(
 		context.Background(),
 		mts.workloadName,
 		runtime.WorkloadStatusUnauthenticated,
 		reason,
 	)
-	mts.stopOnce.Do(func() { close(mts.stopMonitoring) })
+	mts.stopOnce.Do(func() {
+		// A permanent 4xx from the token endpoint commonly indicates the
+		// cached client (DCR or CIMD) is no longer recognised — but the
+		// same branch fires for revoked consent, disabled accounts, and
+		// statically configured clients, so the message has to be honest
+		// about the variability. Gating on clientID != "" suppresses the
+		// log entirely for workloads where no client_id context is
+		// available; the operator-correlation it provides would be empty.
+		if permanent4xx && mts.clientID != "" {
+			//nolint:gosec // G706: client_id is public metadata per RFC 7591.
+			slog.Warn(
+				"token endpoint returned a permanent error; if this workload uses "+
+					"cached DCR or CIMD credentials they may be stale — delete the "+
+					"cached credentials and restart to re-register.",
+				"workload", mts.workloadName,
+				"upstream", mts.upstream,
+				"client_id", mts.clientID,
+			)
+		}
+		close(mts.stopMonitoring)
+	})
 }

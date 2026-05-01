@@ -38,7 +38,7 @@ func (c *Config) SetFields(opts SetOptions) error {
 	if opts.TLSSkipVerify != nil {
 		c.TLSSkipVerify = *opts.TLSSkipVerify
 	}
-	if opts.AnthropicPathPrefix != "" {
+	if opts.AnthropicPathPrefix != nil {
 		c.AnthropicPathPrefix = opts.AnthropicPathPrefix
 	}
 
@@ -50,8 +50,10 @@ func (c *Config) SetFields(opts SetOptions) error {
 
 // SetOptions carries the flag values for the "config set" command.
 // Zero values are treated as "not provided" and leave the existing config
-// field unchanged. TLSSkipVerify uses a pointer so that false can be
-// distinguished from "not provided" (enabling explicit clear via config set).
+// field unchanged. Pointer-typed fields use nil for "not provided" so that
+// the zero value (false, "") can still be set explicitly — required for
+// TLSSkipVerify=false (clear) and AnthropicPathPrefix="" (opt out of the
+// /anthropic default for LiteLLM or direct Anthropic).
 type SetOptions struct {
 	GatewayURL          string
 	Issuer              string
@@ -59,8 +61,8 @@ type SetOptions struct {
 	Audience            string
 	ProxyPort           int
 	CallbackPort        int
-	TLSSkipVerify       *bool // nil = not provided; &false = explicitly disable
-	AnthropicPathPrefix string
+	TLSSkipVerify       *bool   // nil = not provided; &false = explicitly disable
+	AnthropicPathPrefix *string // nil = not provided; &"" = explicit no prefix; &"/x" = explicit value
 }
 
 // DeleteCachedTokens removes all cached OIDC tokens stored under the LLM
@@ -103,8 +105,13 @@ func (c *Config) Show(w io.Writer) error {
 	}
 
 	writef("Gateway URL:     %s\n", c.GatewayURL)
-	if c.AnthropicPathPrefix != "" {
-		writef("Anthropic path:  %s\n", c.AnthropicPathPrefix)
+	switch {
+	case c.AnthropicPathPrefix == nil:
+		writef("Anthropic path:  %s (default)\n", DefaultAnthropicPathPrefix)
+	case *c.AnthropicPathPrefix == "":
+		writef("Anthropic path:  (none — direct Anthropic / LiteLLM)\n")
+	default:
+		writef("Anthropic path:  %s\n", *c.AnthropicPathPrefix)
 	}
 	writef("OIDC Issuer:     %s\n", c.OIDC.Issuer)
 	writef("OIDC Client:     %s\n", c.OIDC.ClientID)

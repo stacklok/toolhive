@@ -316,6 +316,41 @@ func TestConfig_EffectiveProxyPort(t *testing.T) {
 	})
 }
 
+func TestConfig_EffectiveAnthropicPathPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{
+			name: "nil falls back to /anthropic default for Envoy AI Gateway",
+			cfg:  Config{},
+			want: DefaultAnthropicPathPrefix,
+		},
+		{
+			name: "explicit empty opts out of the default",
+			cfg:  Config{AnthropicPathPrefix: stringPtr("")},
+			want: "",
+		},
+		{
+			name: "explicit value passes through",
+			cfg:  Config{AnthropicPathPrefix: stringPtr("/anthropic/v2")},
+			want: "/anthropic/v2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.EffectiveAnthropicPathPrefix(); got != tt.want {
+				t.Errorf("EffectiveAnthropicPathPrefix() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOIDCConfig_EffectiveScopes(t *testing.T) {
 	t.Parallel()
 

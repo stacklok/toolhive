@@ -74,8 +74,9 @@ func newConfigCommand() *cobra.Command {
 
 func newConfigSetCommand() *cobra.Command {
 	var (
-		opts          llm.SetOptions
-		tlsSkipVerify bool
+		opts                llm.SetOptions
+		tlsSkipVerify       bool
+		anthropicPathPrefix string
 	)
 
 	cmd := &cobra.Command{
@@ -93,6 +94,9 @@ Example:
 			if cmd.Flags().Changed("tls-skip-verify") {
 				opts.TLSSkipVerify = &tlsSkipVerify
 			}
+			if cmd.Flags().Changed("anthropic-path-prefix") {
+				opts.AnthropicPathPrefix = &anthropicPathPrefix
+			}
 			return config.UpdateConfig(func(c *config.Config) error {
 				return c.LLM.SetFields(opts)
 			})
@@ -107,9 +111,10 @@ Example:
 	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
 	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
 		"Skip TLS certificate verification for the upstream gateway (local dev only; use --tls-skip-verify=false to clear)")
-	cmd.Flags().StringVar(&opts.AnthropicPathPrefix, "anthropic-path-prefix", "",
-		"Path prefix appended to the gateway URL when writing ANTHROPIC_BASE_URL "+
-			"(e.g. \"/anthropic\" for Envoy AI Gateway). Leave empty for LiteLLM or direct Anthropic.")
+	cmd.Flags().StringVar(&anthropicPathPrefix, "anthropic-path-prefix", llm.DefaultAnthropicPathPrefix,
+		`Path prefix appended to the gateway URL when writing ANTHROPIC_BASE_URL. `+
+			`Defaults to "/anthropic" (Envoy AI Gateway). `+
+			`Pass --anthropic-path-prefix="" for LiteLLM or direct Anthropic.`)
 
 	return cmd
 }
@@ -217,9 +222,10 @@ func buildLLMTokenSource(cfg *llm.Config, interactive bool) (*llm.TokenSource, e
 
 func newLLMSetupCommand() *cobra.Command {
 	var (
-		opts          llm.SetOptions
-		tlsSkipVerify bool
-		targetClient  string
+		opts                llm.SetOptions
+		tlsSkipVerify       bool
+		anthropicPathPrefix string
+		targetClient        string
 	)
 
 	cmd := &cobra.Command{
@@ -247,6 +253,9 @@ Run "thv llm teardown" to revert all changes.`,
 			if cmd.Flags().Changed("tls-skip-verify") {
 				opts.TLSSkipVerify = &tlsSkipVerify
 			}
+			if cmd.Flags().Changed("anthropic-path-prefix") {
+				opts.AnthropicPathPrefix = &anthropicPathPrefix
+			}
 			cm, err := client.NewClientManager()
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
@@ -269,9 +278,10 @@ Run "thv llm teardown" to revert all changes.`,
 			"For direct-mode tools (Claude Code, Gemini CLI) this sets NODE_TLS_REJECT_UNAUTHORIZED=0, "+
 			"disabling TLS for ALL of that tool's outbound connections. "+
 			"For proxy-mode tools only the proxy-to-gateway connection is affected.")
-	cmd.Flags().StringVar(&opts.AnthropicPathPrefix, "anthropic-path-prefix", "",
-		"Path prefix appended to the gateway URL when writing ANTHROPIC_BASE_URL "+
-			"(e.g. \"/anthropic\" for Envoy AI Gateway). Leave empty for LiteLLM or direct Anthropic.")
+	cmd.Flags().StringVar(&anthropicPathPrefix, "anthropic-path-prefix", llm.DefaultAnthropicPathPrefix,
+		`Path prefix appended to the gateway URL when writing ANTHROPIC_BASE_URL. `+
+			`Defaults to "/anthropic" (Envoy AI Gateway). `+
+			`Pass --anthropic-path-prefix="" for LiteLLM or direct Anthropic.`)
 	cmd.Flags().StringVar(&targetClient, "client", "",
 		"Configure only this AI tool by name (e.g. claude-code, cursor). Omit to configure all detected tools.")
 

@@ -114,7 +114,7 @@ func Setup(
 
 	configured, err := configureDetectedTools(
 		out, errOut, gm, detected,
-		llmCfg.GatewayURL, llmCfg.AnthropicPathPrefix, proxyBaseURL, tokenHelperCommand,
+		llmCfg.GatewayURL, llmCfg.EffectiveAnthropicPathPrefix(), proxyBaseURL, tokenHelperCommand,
 		llmCfg.TLSSkipVerify,
 	)
 	if err != nil {

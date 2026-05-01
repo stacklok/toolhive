@@ -17,6 +17,13 @@ import (
 // from being persisted into ToolHive config or Claude Code's settings file.
 const maxAnthropicPathPrefixLen = 256
 
+// DefaultAnthropicPathPrefix is the path appended to the gateway URL when the
+// user has not explicitly set llm.anthropic_path_prefix. It targets Envoy AI
+// Gateway, which routes native-Anthropic traffic at /anthropic/v1/messages.
+// Users on LiteLLM or direct Anthropic must opt out with
+// `--anthropic-path-prefix=""` so EffectiveAnthropicPathPrefix returns "".
+const DefaultAnthropicPathPrefix = "/anthropic"
+
 const (
 	// DefaultProxyListenPort is the default port the localhost proxy listens on.
 	DefaultProxyListenPort = 14000
@@ -34,10 +41,12 @@ type Config struct {
 	GatewayURL    string `yaml:"gateway_url,omitempty"       json:"gateway_url,omitempty"`
 	TLSSkipVerify bool   `yaml:"tls_skip_verify,omitempty"   json:"tls_skip_verify,omitempty"`
 	// AnthropicPathPrefix is appended to GatewayURL when writing
-	// ANTHROPIC_BASE_URL for direct-mode tools. Set to "/anthropic" for Envoy
-	// AI Gateway, leave empty for LiteLLM or direct Anthropic. Must start with
-	// "/" when non-empty and contain no query string or fragment.
-	AnthropicPathPrefix string       `yaml:"anthropic_path_prefix,omitempty" json:"anthropic_path_prefix,omitempty"`
+	// ANTHROPIC_BASE_URL for direct-mode tools. nil means "use the default"
+	// (DefaultAnthropicPathPrefix, which targets Envoy AI Gateway). An
+	// explicit empty string means "no prefix" — required for LiteLLM or direct
+	// Anthropic. Use EffectiveAnthropicPathPrefix to read the resolved value.
+	// Must start with "/" when non-nil and non-empty.
+	AnthropicPathPrefix *string      `yaml:"anthropic_path_prefix,omitempty" json:"anthropic_path_prefix,omitempty"`
 	OIDC                OIDCConfig   `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
 	Proxy               ProxyConfig  `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
 	ConfiguredTools     []ToolConfig `yaml:"configured_tools,omitempty"  json:"configured_tools,omitempty"`
@@ -132,28 +141,43 @@ func (c *Config) EffectiveProxyPort() int {
 	return DefaultProxyListenPort
 }
 
-// validateAnthropicPathPrefix enforces that the prefix, when non-empty, is a
-// well-formed URL path: starts with "/", contains no query string, fragment,
-// or shell-unsafe characters, and stays under maxAnthropicPathPrefixLen. The
-// shell check is defensive — the value flows into a Node-process env var, not
-// a shell command, but rejecting metacharacters keeps surprises out of any
-// future caller that does invoke a shell.
-func validateAnthropicPathPrefix(p string) error {
-	if p == "" {
+// EffectiveAnthropicPathPrefix returns the path prefix that should be appended
+// to the gateway URL when writing ANTHROPIC_BASE_URL. A nil persisted value
+// means "use the default" (DefaultAnthropicPathPrefix, targeting Envoy AI
+// Gateway). An explicit empty string disables the prefix for LiteLLM or
+// direct Anthropic.
+func (c *Config) EffectiveAnthropicPathPrefix() string {
+	if c.AnthropicPathPrefix == nil {
+		return DefaultAnthropicPathPrefix
+	}
+	return *c.AnthropicPathPrefix
+}
+
+// validateAnthropicPathPrefix enforces that the prefix, when non-nil and
+// non-empty, is a well-formed URL path: starts with "/", contains no query
+// string, fragment, or shell-unsafe characters, and stays under
+// maxAnthropicPathPrefixLen. nil means "use the default" and an explicit
+// empty string means "no prefix" — both are valid. The shell check is
+// defensive: the value flows into a Node-process env var, not a shell
+// command, but rejecting metacharacters keeps surprises out of any future
+// caller that does invoke a shell.
+func validateAnthropicPathPrefix(p *string) error {
+	if p == nil || *p == "" {
 		return nil
 	}
-	if len(p) > maxAnthropicPathPrefixLen {
-		return fmt.Errorf("must be %d characters or fewer, got %d", maxAnthropicPathPrefixLen, len(p))
+	v := *p
+	if len(v) > maxAnthropicPathPrefixLen {
+		return fmt.Errorf("must be %d characters or fewer, got %d", maxAnthropicPathPrefixLen, len(v))
 	}
-	if !strings.HasPrefix(p, "/") {
-		return fmt.Errorf("must start with %q, got %q", "/", p)
+	if !strings.HasPrefix(v, "/") {
+		return fmt.Errorf("must start with %q, got %q", "/", v)
 	}
-	if strings.ContainsAny(p, "?#") {
-		return fmt.Errorf("must not contain a query string or fragment, got %q", p)
+	if strings.ContainsAny(v, "?#") {
+		return fmt.Errorf("must not contain a query string or fragment, got %q", v)
 	}
 	const shellUnsafe = `"\;$` + "`\n\r '"
-	if strings.ContainsAny(p, shellUnsafe) {
-		return fmt.Errorf("must not contain whitespace or shell metacharacters, got %q", p)
+	if strings.ContainsAny(v, shellUnsafe) {
+		return fmt.Errorf("must not contain whitespace or shell metacharacters, got %q", v)
 	}
 	return nil
 }

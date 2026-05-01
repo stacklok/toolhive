@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -123,38 +124,49 @@ func TestConfig_SetFields(t *testing.T) {
 			name: "AnthropicPathPrefix accepts a leading-slash path",
 			opts: SetOptions{
 				GatewayURL:          "https://gw.example.com",
-				AnthropicPathPrefix: "/anthropic",
+				AnthropicPathPrefix: stringPtr("/anthropic"),
 			},
 			want: Config{
 				GatewayURL:          "https://gw.example.com",
-				AnthropicPathPrefix: "/anthropic",
+				AnthropicPathPrefix: stringPtr("/anthropic"),
+			},
+		},
+		{
+			name: "explicit empty AnthropicPathPrefix opts out of the default",
+			opts: SetOptions{
+				GatewayURL:          "https://gw.example.com",
+				AnthropicPathPrefix: stringPtr(""),
+			},
+			want: Config{
+				GatewayURL:          "https://gw.example.com",
+				AnthropicPathPrefix: stringPtr(""),
 			},
 		},
 		{
 			name:    "AnthropicPathPrefix rejects values without leading slash",
-			opts:    SetOptions{GatewayURL: "https://gw.example.com", AnthropicPathPrefix: "anthropic"},
+			opts:    SetOptions{GatewayURL: "https://gw.example.com", AnthropicPathPrefix: stringPtr("anthropic")},
 			wantErr: true,
 		},
 		{
 			name:    "AnthropicPathPrefix rejects values with query string",
-			opts:    SetOptions{GatewayURL: "https://gw.example.com", AnthropicPathPrefix: "/anthropic?x=1"},
+			opts:    SetOptions{GatewayURL: "https://gw.example.com", AnthropicPathPrefix: stringPtr("/anthropic?x=1")},
 			wantErr: true,
 		},
 		{
 			name:    "AnthropicPathPrefix rejects values with shell metacharacters",
-			opts:    SetOptions{GatewayURL: "https://gw.example.com", AnthropicPathPrefix: "/anthropic;rm -rf /"},
+			opts:    SetOptions{GatewayURL: "https://gw.example.com", AnthropicPathPrefix: stringPtr("/anthropic;rm -rf /")},
 			wantErr: true,
 		},
 		{
-			name: "empty AnthropicPathPrefix leaves existing value unchanged",
+			name: "nil AnthropicPathPrefix leaves existing value unchanged",
 			base: Config{
 				GatewayURL:          "https://gw.example.com",
-				AnthropicPathPrefix: "/anthropic",
+				AnthropicPathPrefix: stringPtr("/anthropic"),
 			},
 			opts: SetOptions{},
 			want: Config{
 				GatewayURL:          "https://gw.example.com",
-				AnthropicPathPrefix: "/anthropic",
+				AnthropicPathPrefix: stringPtr("/anthropic"),
 			},
 		},
 	}
@@ -192,14 +204,30 @@ func TestConfig_SetFields(t *testing.T) {
 			if cfg.TLSSkipVerify != tt.want.TLSSkipVerify {
 				t.Errorf("TLSSkipVerify = %v, want %v", cfg.TLSSkipVerify, tt.want.TLSSkipVerify)
 			}
-			if cfg.AnthropicPathPrefix != tt.want.AnthropicPathPrefix {
-				t.Errorf("AnthropicPathPrefix = %q, want %q", cfg.AnthropicPathPrefix, tt.want.AnthropicPathPrefix)
+			if !stringPtrEqual(cfg.AnthropicPathPrefix, tt.want.AnthropicPathPrefix) {
+				t.Errorf("AnthropicPathPrefix = %s, want %s",
+					stringPtrFmt(cfg.AnthropicPathPrefix), stringPtrFmt(tt.want.AnthropicPathPrefix))
 			}
 		})
 	}
 }
 
-func boolPtr(b bool) *bool { return &b }
+func boolPtr(b bool) *bool       { return &b }
+func stringPtr(s string) *string { return &s }
+
+func stringPtrEqual(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func stringPtrFmt(p *string) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%q", *p)
+}
 
 // ── DeleteCachedTokens ───────────────────────────────────────────────────────
 

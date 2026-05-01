@@ -2761,7 +2761,9 @@ _Appears in:_
 
 
 RedisStorageConfig configures Redis connection for auth server storage.
-Exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set.
+Exactly one of addr or sentinelConfig must be set. Set clusterMode to true when
+addr points to a Redis Cluster discovery endpoint (GCP Memorystore Cluster,
+AWS ElastiCache cluster mode enabled).
 
 
 
@@ -2770,7 +2772,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `addr` _string_ | Addr is the Redis server address for standalone mode (e.g., "host:port").<br />Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present<br />a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig. |  | Optional: \{\} <br /> |
+| `addr` _string_ | Addr is the Redis server address (host:port). Required for standalone and cluster modes.<br />Use for managed Redis services that expose a single endpoint (GCP Memorystore basic tier,<br />AWS ElastiCache without cluster mode, or cluster-mode services when clusterMode is true).<br />Mutually exclusive with sentinelConfig. |  | Optional: \{\} <br /> |
+| `clusterMode` _boolean_ | ClusterMode enables the Redis Cluster protocol. Set to true when addr points to a<br />Redis Cluster discovery endpoint (e.g., GCP Memorystore Cluster, AWS ElastiCache<br />cluster mode enabled). Requires addr to be set. |  | Optional: \{\} <br /> |
 | `sentinelConfig` _[api.v1beta1.RedisSentinelConfig](#apiv1beta1redissentinelconfig)_ | SentinelConfig holds Redis Sentinel configuration.<br />Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr. |  | Optional: \{\} <br /> |
 | `aclUserConfig` _[api.v1beta1.RedisACLUserConfig](#apiv1beta1redisacluserconfig)_ | ACLUserConfig configures Redis ACL user authentication. |  | Required: \{\} <br /> |
 | `dialTimeout` _string_ | DialTimeout is the timeout for establishing connections.<br />Format: Go duration string (e.g., "5s", "1m"). | 5s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |

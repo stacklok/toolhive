@@ -66,16 +66,26 @@ type RunConfig struct {
 	RedisConfig *RedisRunConfig `json:"redis_config,omitempty" yaml:"redis_config,omitempty"`
 }
 
+// ClusterRunConfig contains Redis Cluster configuration for cross-process serialization.
+type ClusterRunConfig struct {
+	// Addrs is the list of seed node addresses (host:port) for the Redis Cluster.
+	Addrs []string `json:"addrs" yaml:"addrs"`
+}
+
 // RedisRunConfig is the serializable Redis configuration for RunConfig.
-// Exactly one of Addr (standalone) or SentinelConfig (Sentinel) must be set.
+// Exactly one of Addr (standalone), SentinelConfig (Sentinel), or ClusterConfig (Cluster) must be set.
 type RedisRunConfig struct {
 	// Addr is the Redis server address for standalone mode (e.g., "host:port").
-	// Mutually exclusive with SentinelConfig.
+	// Mutually exclusive with SentinelConfig and ClusterConfig.
 	Addr string `json:"addr,omitempty" yaml:"addr,omitempty"`
 
 	// SentinelConfig contains Sentinel-specific configuration.
-	// Mutually exclusive with Addr.
+	// Mutually exclusive with Addr and ClusterConfig.
 	SentinelConfig *SentinelRunConfig `json:"sentinel_config,omitempty" yaml:"sentinel_config,omitempty"`
+
+	// ClusterConfig contains Redis Cluster-specific configuration.
+	// Mutually exclusive with Addr and SentinelConfig.
+	ClusterConfig *ClusterRunConfig `json:"cluster_config,omitempty" yaml:"cluster_config,omitempty"`
 
 	// AuthType must be "aclUser" - only ACL user authentication is supported.
 	AuthType string `json:"auth_type" yaml:"auth_type"`
@@ -95,7 +105,7 @@ type RedisRunConfig struct {
 	// WriteTimeout is the timeout for write operations (e.g., "3s").
 	WriteTimeout string `json:"write_timeout,omitempty" yaml:"write_timeout,omitempty"`
 
-	// TLS configures TLS for Redis/Valkey master connections.
+	// TLS configures TLS for Redis/Valkey master or cluster node connections.
 	TLS *RedisTLSRunConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
 
 	// SentinelTLS configures TLS for Sentinel connections. Only applies when SentinelConfig is set.

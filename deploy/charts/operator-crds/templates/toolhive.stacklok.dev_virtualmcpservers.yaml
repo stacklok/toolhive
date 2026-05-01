@@ -194,8 +194,26 @@ spec:
                             description: |-
                               Addr is the Redis server address for standalone mode (e.g., "host:port").
                               Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present
-                              a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig.
+                              a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig and clusterConfig.
                             type: string
+                          clusterConfig:
+                            description: |-
+                              ClusterConfig holds Redis Cluster configuration.
+                              Use for managed Redis services that use the Redis Cluster protocol (e.g., GCP Memorystore Cluster,
+                              AWS ElastiCache Serverless). Mutually exclusive with addr and sentinelConfig.
+                            properties:
+                              addrs:
+                                description: |-
+                                  Addrs is the list of seed node host:port addresses for the Redis Cluster.
+                                  At least one address is required; go-redis discovers other nodes automatically.
+                                items:
+                                  type: string
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - addrs
+                            type: object
                           dialTimeout:
                             default: 5s
                             description: |-
@@ -213,7 +231,7 @@ spec:
                           sentinelConfig:
                             description: |-
                               SentinelConfig holds Redis Sentinel configuration.
-                              Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr.
+                              Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr and clusterConfig.
                             properties:
                               db:
                                 default: 0
@@ -318,9 +336,10 @@ spec:
                         - aclUserConfig
                         type: object
                         x-kubernetes-validations:
-                        - message: exactly one of addr (standalone) or sentinelConfig
-                            (Sentinel) must be set
-                          rule: (self.addr.size() > 0) != has(self.sentinelConfig)
+                        - message: exactly one of addr (standalone), sentinelConfig
+                            (Sentinel), or clusterConfig (Cluster) must be set
+                          rule: '(self.addr.size() > 0 ? 1 : 0) + (has(self.sentinelConfig)
+                            ? 1 : 0) + (has(self.clusterConfig) ? 1 : 0) == 1'
                       type:
                         default: memory
                         description: |-
@@ -2690,8 +2709,26 @@ spec:
                             description: |-
                               Addr is the Redis server address for standalone mode (e.g., "host:port").
                               Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present
-                              a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig.
+                              a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig and clusterConfig.
                             type: string
+                          clusterConfig:
+                            description: |-
+                              ClusterConfig holds Redis Cluster configuration.
+                              Use for managed Redis services that use the Redis Cluster protocol (e.g., GCP Memorystore Cluster,
+                              AWS ElastiCache Serverless). Mutually exclusive with addr and sentinelConfig.
+                            properties:
+                              addrs:
+                                description: |-
+                                  Addrs is the list of seed node host:port addresses for the Redis Cluster.
+                                  At least one address is required; go-redis discovers other nodes automatically.
+                                items:
+                                  type: string
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - addrs
+                            type: object
                           dialTimeout:
                             default: 5s
                             description: |-
@@ -2709,7 +2746,7 @@ spec:
                           sentinelConfig:
                             description: |-
                               SentinelConfig holds Redis Sentinel configuration.
-                              Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr.
+                              Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr and clusterConfig.
                             properties:
                               db:
                                 default: 0
@@ -2814,9 +2851,10 @@ spec:
                         - aclUserConfig
                         type: object
                         x-kubernetes-validations:
-                        - message: exactly one of addr (standalone) or sentinelConfig
-                            (Sentinel) must be set
-                          rule: (self.addr.size() > 0) != has(self.sentinelConfig)
+                        - message: exactly one of addr (standalone), sentinelConfig
+                            (Sentinel), or clusterConfig (Cluster) must be set
+                          rule: '(self.addr.size() > 0 ? 1 : 0) + (has(self.sentinelConfig)
+                            ? 1 : 0) + (has(self.clusterConfig) ? 1 : 0) == 1'
                       type:
                         default: memory
                         description: |-

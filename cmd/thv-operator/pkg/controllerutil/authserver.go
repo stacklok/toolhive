@@ -544,45 +544,57 @@ func buildStorageRunConfig(
 		return nil, fmt.Errorf("redis config is required when storage type is redis")
 	}
 
-	if redisConfig.SentinelConfig == nil {
-		return nil, fmt.Errorf("sentinel config is required for Redis storage")
+	if redisConfig.Addr == "" && redisConfig.SentinelConfig == nil {
+		return nil, fmt.Errorf("either addr (standalone) or sentinel config is required for Redis storage")
+	}
+
+	if redisConfig.Addr != "" && redisConfig.SentinelConfig != nil {
+		return nil, fmt.Errorf("addr and sentinel config are mutually exclusive for Redis storage")
 	}
 
 	if redisConfig.ACLUserConfig == nil ||
-		redisConfig.ACLUserConfig.UsernameSecretRef == nil ||
 		redisConfig.ACLUserConfig.PasswordSecretRef == nil {
 		return nil, fmt.Errorf("ACL user config is required for Redis storage")
-	}
-
-	// Resolve Sentinel addresses (static or via Kubernetes Service discovery)
-	sentinelAddrs, err := resolveSentinelAddrs(redisConfig.SentinelConfig, namespace)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve sentinel addresses: %w", err)
 	}
 
 	// Build key prefix for multi-tenancy using namespace and MCP server name
 	keyPrefix := storage.DeriveKeyPrefix(namespace, mcpServerName)
 
+	aclRunConfig := &storage.ACLUserRunConfig{
+		PasswordEnvVar: authrunner.RedisPasswordEnvVar,
+	}
+	if redisConfig.ACLUserConfig.UsernameSecretRef != nil {
+		aclRunConfig.UsernameEnvVar = authrunner.RedisUsernameEnvVar
+	}
+
+	rc := &storage.RedisRunConfig{
+		Addr:          redisConfig.Addr,
+		AuthType:      storage.AuthTypeACLUser,
+		ACLUserConfig: aclRunConfig,
+		KeyPrefix:     keyPrefix,
+		DialTimeout:   redisConfig.DialTimeout,
+		ReadTimeout:   redisConfig.ReadTimeout,
+		WriteTimeout:  redisConfig.WriteTimeout,
+		TLS:           convertRedisTLSConfig(redisConfig.TLS, false),
+	}
+
+	if redisConfig.SentinelConfig != nil {
+		// Resolve Sentinel addresses (static or via Kubernetes Service discovery)
+		sentinelAddrs, err := resolveSentinelAddrs(redisConfig.SentinelConfig, namespace)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve sentinel addresses: %w", err)
+		}
+		rc.SentinelConfig = &storage.SentinelRunConfig{
+			MasterName:    redisConfig.SentinelConfig.MasterName,
+			SentinelAddrs: sentinelAddrs,
+			DB:            int(redisConfig.SentinelConfig.DB),
+		}
+		rc.SentinelTLS = convertRedisTLSConfig(redisConfig.SentinelTLS, true)
+	}
+
 	return &storage.RunConfig{
-		Type: string(storage.TypeRedis),
-		RedisConfig: &storage.RedisRunConfig{
-			SentinelConfig: &storage.SentinelRunConfig{
-				MasterName:    redisConfig.SentinelConfig.MasterName,
-				SentinelAddrs: sentinelAddrs,
-				DB:            int(redisConfig.SentinelConfig.DB),
-			},
-			AuthType: storage.AuthTypeACLUser,
-			ACLUserConfig: &storage.ACLUserRunConfig{
-				UsernameEnvVar: authrunner.RedisUsernameEnvVar,
-				PasswordEnvVar: authrunner.RedisPasswordEnvVar,
-			},
-			KeyPrefix:    keyPrefix,
-			DialTimeout:  redisConfig.DialTimeout,
-			ReadTimeout:  redisConfig.ReadTimeout,
-			WriteTimeout: redisConfig.WriteTimeout,
-			TLS:          convertRedisTLSConfig(redisConfig.TLS, false),
-			SentinelTLS:  convertRedisTLSConfig(redisConfig.SentinelTLS, true),
-		},
+		Type:        string(storage.TypeRedis),
+		RedisConfig: rc,
 	}, nil
 }
 

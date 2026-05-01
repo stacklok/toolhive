@@ -419,7 +419,7 @@ const docTemplate = `{
                 "description": "DCRConfig enables RFC 7591 Dynamic Client Registration against the\nupstream authorization server. When set, the client credentials are\nobtained at runtime rather than being pre-provisioned via ClientID /\nClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.\nMutually exclusive with ClientID.",
                 "properties": {
                     "discovery_url": {
-                        "description": "DiscoveryURL is the RFC 8414 / OIDC Discovery URL from which the\nregistration_endpoint is resolved at runtime. Mutually exclusive with\nRegistrationEndpoint.",
+                        "description": "DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to\nfetch at runtime. The resolver issues a single GET against this URL\n(no well-known-path fallback) and reads registration_endpoint,\nauthorization_endpoint, token_endpoint,\ntoken_endpoint_auth_methods_supported, and scopes_supported from the\nresponse. Per RFC 8414 §3.3, the document's \"issuer\" field must\nexactly match the upstream issuer configured on the parent\nrun-config.\n\nUse this field when the upstream publishes discovery metadata at a\npath that differs from the issuer-derived well-known paths — for\nexample a multi-tenant IdP whose metadata lives at\nhttps://idp.example.com/tenants/acme/.well-known/openid-configuration.\n\nMutually exclusive with RegistrationEndpoint.",
                         "type": "string"
                     },
                     "initial_access_token_env_var": {
@@ -431,7 +431,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "registration_endpoint": {
-                        "description": "RegistrationEndpoint is the RFC 7591 registration endpoint URL used\ndirectly, bypassing discovery. Mutually exclusive with DiscoveryURL.",
+                        "description": "RegistrationEndpoint is the RFC 7591 registration endpoint URL used\ndirectly, bypassing discovery. Because no discovery is performed,\nserver-capability fields (token_endpoint_auth_methods_supported,\nscopes_supported) are unavailable on this code path; the caller is\nexpected to also supply AuthorizationEndpoint, TokenEndpoint, and an\nexplicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth\nmethod falls back to the resolver's default (client_secret_basic).\n\nMutually exclusive with DiscoveryURL.",
                         "type": "string"
                     },
                     "software_id": {
@@ -768,6 +768,10 @@ const docTemplate = `{
                     "acl_user_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig"
                     },
+                    "addr": {
+                        "description": "Addr is the Redis server address for standalone mode (e.g., \"host:port\").\nMutually exclusive with SentinelConfig.",
+                        "type": "string"
+                    },
                     "auth_type": {
                         "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
                         "type": "string"
@@ -801,7 +805,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig": {
-                "description": "SentinelTLS configures TLS for Sentinel connections.\nFalls back to TLS config when nil.",
+                "description": "SentinelTLS configures TLS for Sentinel connections. Only applies when SentinelConfig is set.",
                 "properties": {
                     "ca_cert_file": {
                         "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
@@ -828,7 +832,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig": {
-                "description": "SentinelConfig contains Sentinel-specific configuration.",
+                "description": "SentinelConfig contains Sentinel-specific configuration.\nMutually exclusive with Addr.",
                 "properties": {
                     "db": {
                         "description": "DB is the Redis database number (default: 0).",

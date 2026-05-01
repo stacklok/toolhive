@@ -937,3 +937,77 @@ func TestAuthenticate_BearerTokenDiscovery(t *testing.T) {
 		assert.Equal(t, "Bearer", token.TokenType)
 	})
 }
+
+// TestResolveClientCredentials verifies the credential selection priority in
+// resolveClientCredentials: CachedCIMDClientID > CachedClientID (DCR) >
+// statically-configured ClientID.
+func TestResolveClientCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		config           *Config
+		wantClientID     string
+		wantClientSecret string
+	}{
+		{
+			name: "CachedCIMDClientID takes precedence over DCR and static credentials",
+			config: &Config{
+				ClientID:           "static-client-id",
+				ClientSecret:       "static-secret",
+				CachedClientID:     "dcr-client-id",
+				CachedCIMDClientID: "https://toolhive.dev/oauth/client-metadata.json",
+			},
+			wantClientID:     "https://toolhive.dev/oauth/client-metadata.json",
+			wantClientSecret: "",
+		},
+		{
+			name: "CachedCIMDClientID returns empty secret (token_endpoint_auth_method=none)",
+			config: &Config{
+				CachedCIMDClientID: "https://toolhive.dev/oauth/client-metadata.json",
+			},
+			wantClientID:     "https://toolhive.dev/oauth/client-metadata.json",
+			wantClientSecret: "",
+		},
+		{
+			// When CachedClientID is set the DCR client_id is used, but because
+			// CachedClientSecretRef is empty (no secret reference stored) the
+			// function falls through to the statically-configured ClientSecret.
+			name: "CachedClientID used when CachedCIMDClientID is empty",
+			config: &Config{
+				ClientID:       "static-client-id",
+				ClientSecret:   "static-secret",
+				CachedClientID: "dcr-client-id",
+			},
+			wantClientID:     "dcr-client-id",
+			wantClientSecret: "static-secret",
+		},
+		{
+			name: "static credentials used when no cached credentials exist",
+			config: &Config{
+				ClientID:     "static-client-id",
+				ClientSecret: "static-secret",
+			},
+			wantClientID:     "static-client-id",
+			wantClientSecret: "static-secret",
+		},
+		{
+			name:             "all empty returns empty strings",
+			config:           &Config{},
+			wantClientID:     "",
+			wantClientSecret: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &Handler{config: tt.config}
+			gotClientID, gotClientSecret := h.resolveClientCredentials(context.Background())
+
+			assert.Equal(t, tt.wantClientID, gotClientID, "clientID mismatch")
+			assert.Equal(t, tt.wantClientSecret, gotClientSecret, "clientSecret mismatch")
+		})
+	}
+}

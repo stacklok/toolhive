@@ -574,6 +574,26 @@ func TestRemoteAuthLogContext(t *testing.T) {
 			wantClientID: "dcr-client-id",
 		},
 		{
+			name: "cached CIMD client_id wins over DCR and static",
+			cfg: &remote.Config{
+				Issuer:             "https://idp.example.com",
+				ClientID:           "static-client-id",
+				CachedClientID:     "dcr-client-id",
+				CachedCIMDClientID: "https://idp.example.com/cimd",
+			},
+			wantUpstream: "https://idp.example.com",
+			wantClientID: "https://idp.example.com/cimd",
+		},
+		{
+			name: "cached CIMD client_id used when no DCR or static",
+			cfg: &remote.Config{
+				Issuer:             "https://idp.example.com",
+				CachedCIMDClientID: "https://idp.example.com/cimd",
+			},
+			wantUpstream: "https://idp.example.com",
+			wantClientID: "https://idp.example.com/cimd",
+		},
+		{
 			name:         "empty config returns empty fields",
 			cfg:          &remote.Config{},
 			wantUpstream: "",

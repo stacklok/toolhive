@@ -769,12 +769,16 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig"
                     },
                     "addr": {
-                        "description": "Addr is the Redis server address for standalone mode (e.g., \"host:port\").\nMutually exclusive with SentinelConfig.",
+                        "description": "Addr is the Redis server address (host:port). Required for standalone and cluster modes.\nMutually exclusive with SentinelConfig.",
                         "type": "string"
                     },
                     "auth_type": {
                         "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
                         "type": "string"
+                    },
+                    "cluster_mode": {
+                        "description": "ClusterMode enables the Redis Cluster protocol. Requires Addr to be set.",
+                        "type": "boolean"
                     },
                     "dial_timeout": {
                         "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",

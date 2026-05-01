@@ -26,6 +26,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	checksum "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -223,6 +224,7 @@ func TestResourceOverrides(t *testing.T) {
 		mcpServer                *mcpv1beta1.MCPServer
 		expectedDeploymentLabels map[string]string
 		expectedDeploymentAnns   map[string]string
+		expectedPodTemplateAnns  map[string]string
 		expectedServiceLabels    map[string]string
 		expectedServiceAnns      map[string]string
 	}{
@@ -246,6 +248,9 @@ func TestResourceOverrides(t *testing.T) {
 				"toolhive-name":              "test-server",
 			},
 			expectedDeploymentAnns: map[string]string{},
+			expectedPodTemplateAnns: map[string]string{
+				"toolhive.stacklok.dev/runconfig-checksum": "test-checksum",
+			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
 				"app.kubernetes.io/name":     "mcpserver",
@@ -306,6 +311,9 @@ func TestResourceOverrides(t *testing.T) {
 				"custom-annotation": "deployment-annotation",
 				"monitoring/scrape": "true",
 			},
+			expectedPodTemplateAnns: map[string]string{
+				"toolhive.stacklok.dev/runconfig-checksum": "test-checksum",
+			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
 				"app.kubernetes.io/name":     "mcpserver",
@@ -364,6 +372,9 @@ func TestResourceOverrides(t *testing.T) {
 				"environment":                "test",
 			},
 			expectedDeploymentAnns: map[string]string{},
+			expectedPodTemplateAnns: map[string]string{
+				"toolhive.stacklok.dev/runconfig-checksum": "test-checksum",
+			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
 				"app.kubernetes.io/name":     "mcpserver",
@@ -400,6 +411,9 @@ func TestResourceOverrides(t *testing.T) {
 				"toolhive-name":              "test-server",
 			},
 			expectedDeploymentAnns: map[string]string{},
+			expectedPodTemplateAnns: map[string]string{
+				"toolhive.stacklok.dev/runconfig-checksum": "test-checksum",
+			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
 				"app.kubernetes.io/name":     "mcpserver",
@@ -463,6 +477,9 @@ func TestResourceOverrides(t *testing.T) {
 				"monitoring/enabled": "true",
 				"version":            "v1.2.3",
 			},
+			expectedPodTemplateAnns: map[string]string{
+				"toolhive.stacklok.dev/runconfig-checksum": "test-checksum",
+			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
 				"app.kubernetes.io/name":     "mcpserver",
@@ -504,6 +521,11 @@ func TestResourceOverrides(t *testing.T) {
 				"toolhive-name":              "test-server",
 			},
 			expectedDeploymentAnns: map[string]string{},
+			expectedPodTemplateAnns: map[string]string{
+				"vault.hashicorp.com/agent-inject":         "true",
+				"vault.hashicorp.com/role":                 "toolhive-mcp-workloads",
+				"toolhive.stacklok.dev/runconfig-checksum": "test-checksum",
+			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
 				"app.kubernetes.io/name":     "mcpserver",
@@ -529,6 +551,8 @@ func TestResourceOverrides(t *testing.T) {
 
 			assert.Equal(t, tt.expectedDeploymentLabels, deployment.Labels)
 			assert.Equal(t, tt.expectedDeploymentAnns, deployment.Annotations)
+			assert.Equal(t, tt.expectedPodTemplateAnns, deployment.Spec.Template.Annotations,
+				"pod template annotations must contain user overrides plus the runconfig-checksum")
 
 			// Test service creation
 			service := r.serviceForMCPServer(t.Context(), tt.mcpServer)
@@ -591,6 +615,83 @@ func TestResourceOverrides(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDeploymentForMCPServer_PodTemplateOverridesPreserveRunConfigChecksum(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
+
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image: "test:latest",
+			ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+				ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+					PodTemplateMetadataOverrides: &mcpv1beta1.ResourceMetadataOverrides{
+						Annotations: map[string]string{
+							"user.example.com/some-key": "value",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	deployment := r.deploymentForMCPServer(t.Context(), mcpServer, "C1")
+	require.NotNil(t, deployment)
+
+	assert.Equal(t, "C1",
+		deployment.Spec.Template.Annotations[checksum.RunConfigChecksumAnnotation],
+		"runconfig-checksum must survive when PodTemplateMetadataOverrides.Annotations is set")
+	assert.Equal(t, "value",
+		deployment.Spec.Template.Annotations["user.example.com/some-key"],
+		"user override must survive")
+	assert.Len(t, deployment.Spec.Template.Annotations, 2,
+		"no extra keys should leak into the pod template")
+}
+
+func TestDeploymentNeedsUpdate_StableAfterBuildWithPodTemplateOverrides(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
+
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image: "test:latest",
+			ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+				ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+					PodTemplateMetadataOverrides: &mcpv1beta1.ResourceMetadataOverrides{
+						Annotations: map[string]string{
+							"vault.hashicorp.com/agent-inject": "true",
+							"vault.hashicorp.com/role":         "toolhive-mcp-workloads",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	const runConfigChecksum = "stable-checksum"
+	built := r.deploymentForMCPServer(t.Context(), mcpServer, runConfigChecksum)
+	require.NotNil(t, built)
+
+	// Constructor and comparator must agree on the same input — otherwise the
+	// operator gets stuck in a perpetual r.Update loop on every reconcile.
+	needsUpdate := r.deploymentNeedsUpdate(t.Context(), built, mcpServer, runConfigChecksum)
+	assert.False(t, needsUpdate,
+		"deploymentNeedsUpdate must report no drift immediately after deploymentForMCPServer with the same checksum and overrides")
 }
 
 func TestMergeStringMaps(t *testing.T) {

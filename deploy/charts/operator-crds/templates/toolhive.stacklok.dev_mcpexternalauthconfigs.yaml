@@ -319,28 +319,17 @@ spec:
                             type: object
                           addr:
                             description: |-
-                              Addr is the Redis server address for standalone mode (e.g., "host:port").
-                              Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present
-                              a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig and clusterConfig.
+                              Addr is the Redis server address (host:port). Required for standalone and cluster modes.
+                              Use for managed Redis services that expose a single endpoint (GCP Memorystore basic tier,
+                              AWS ElastiCache without cluster mode, or cluster-mode services when clusterMode is true).
+                              Mutually exclusive with sentinelConfig.
                             type: string
-                          clusterConfig:
+                          clusterMode:
                             description: |-
-                              ClusterConfig holds Redis Cluster configuration.
-                              Use for managed Redis services that use the Redis Cluster protocol (e.g., GCP Memorystore Cluster,
-                              AWS ElastiCache Serverless). Mutually exclusive with addr and sentinelConfig.
-                            properties:
-                              addrs:
-                                description: |-
-                                  Addrs is the list of seed node host:port addresses for the Redis Cluster.
-                                  At least one address is required; go-redis discovers other nodes automatically.
-                                items:
-                                  type: string
-                                minItems: 1
-                                type: array
-                                x-kubernetes-list-type: atomic
-                            required:
-                            - addrs
-                            type: object
+                              ClusterMode enables the Redis Cluster protocol. Set to true when addr points to a
+                              Redis Cluster discovery endpoint (e.g., GCP Memorystore Cluster, AWS ElastiCache
+                              cluster mode enabled). Requires addr to be set.
+                            type: boolean
                           dialTimeout:
                             default: 5s
                             description: |-
@@ -358,7 +347,7 @@ spec:
                           sentinelConfig:
                             description: |-
                               SentinelConfig holds Redis Sentinel configuration.
-                              Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr and clusterConfig.
+                              Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr.
                             properties:
                               db:
                                 default: 0
@@ -463,10 +452,10 @@ spec:
                         - aclUserConfig
                         type: object
                         x-kubernetes-validations:
-                        - message: exactly one of addr (standalone), sentinelConfig
-                            (Sentinel), or clusterConfig (Cluster) must be set
-                          rule: '(self.addr.size() > 0 ? 1 : 0) + (has(self.sentinelConfig)
-                            ? 1 : 0) + (has(self.clusterConfig) ? 1 : 0) == 1'
+                        - message: exactly one of addr or sentinelConfig must be set
+                          rule: (self.addr.size() > 0) != has(self.sentinelConfig)
+                        - message: clusterMode requires addr to be set
+                          rule: '!self.clusterMode || self.addr.size() > 0'
                       type:
                         default: memory
                         description: |-
@@ -1386,28 +1375,17 @@ spec:
                             type: object
                           addr:
                             description: |-
-                              Addr is the Redis server address for standalone mode (e.g., "host:port").
-                              Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present
-                              a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig and clusterConfig.
+                              Addr is the Redis server address (host:port). Required for standalone and cluster modes.
+                              Use for managed Redis services that expose a single endpoint (GCP Memorystore basic tier,
+                              AWS ElastiCache without cluster mode, or cluster-mode services when clusterMode is true).
+                              Mutually exclusive with sentinelConfig.
                             type: string
-                          clusterConfig:
+                          clusterMode:
                             description: |-
-                              ClusterConfig holds Redis Cluster configuration.
-                              Use for managed Redis services that use the Redis Cluster protocol (e.g., GCP Memorystore Cluster,
-                              AWS ElastiCache Serverless). Mutually exclusive with addr and sentinelConfig.
-                            properties:
-                              addrs:
-                                description: |-
-                                  Addrs is the list of seed node host:port addresses for the Redis Cluster.
-                                  At least one address is required; go-redis discovers other nodes automatically.
-                                items:
-                                  type: string
-                                minItems: 1
-                                type: array
-                                x-kubernetes-list-type: atomic
-                            required:
-                            - addrs
-                            type: object
+                              ClusterMode enables the Redis Cluster protocol. Set to true when addr points to a
+                              Redis Cluster discovery endpoint (e.g., GCP Memorystore Cluster, AWS ElastiCache
+                              cluster mode enabled). Requires addr to be set.
+                            type: boolean
                           dialTimeout:
                             default: 5s
                             description: |-
@@ -1425,7 +1403,7 @@ spec:
                           sentinelConfig:
                             description: |-
                               SentinelConfig holds Redis Sentinel configuration.
-                              Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr and clusterConfig.
+                              Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr.
                             properties:
                               db:
                                 default: 0
@@ -1530,10 +1508,10 @@ spec:
                         - aclUserConfig
                         type: object
                         x-kubernetes-validations:
-                        - message: exactly one of addr (standalone), sentinelConfig
-                            (Sentinel), or clusterConfig (Cluster) must be set
-                          rule: '(self.addr.size() > 0 ? 1 : 0) + (has(self.sentinelConfig)
-                            ? 1 : 0) + (has(self.clusterConfig) ? 1 : 0) == 1'
+                        - message: exactly one of addr or sentinelConfig must be set
+                          rule: (self.addr.size() > 0) != has(self.sentinelConfig)
+                        - message: clusterMode requires addr to be set
+                          rule: '!self.clusterMode || self.addr.size() > 0'
                       type:
                         default: memory
                         description: |-

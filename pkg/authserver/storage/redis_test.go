@@ -103,7 +103,7 @@ func TestRedisConfig_Validation(t *testing.T) {
 		{
 			name:    "neither addr nor sentinel config",
 			cfg:     RedisConfig{ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"}, KeyPrefix: "test:"},
-			wantErr: "one of addr (standalone), sentinel configuration, or cluster configuration is required",
+			wantErr: "one of addr (standalone or cluster) or sentinel configuration is required",
 		},
 		{
 			name: "addr and sentinel config both set",
@@ -116,29 +116,23 @@ func TestRedisConfig_Validation(t *testing.T) {
 			wantErr: "mutually exclusive",
 		},
 		{
-			name: "cluster config and addr both set",
+			name: "cluster mode with sentinel config",
 			cfg: RedisConfig{
-				Addr:          "localhost:6379",
-				ClusterConfig: &ClusterConfig{Addrs: []string{"localhost:6379"}},
-				ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"},
-				KeyPrefix:     "test:",
-			},
-			wantErr: "mutually exclusive",
-		},
-		{
-			name: "cluster config and sentinel both set",
-			cfg: RedisConfig{
+				ClusterMode:    true,
 				SentinelConfig: &SentinelConfig{MasterName: "m", SentinelAddrs: []string{"localhost:26379"}},
-				ClusterConfig:  &ClusterConfig{Addrs: []string{"localhost:6379"}},
 				ACLUserConfig:  &ACLUserConfig{Username: "u", Password: "p"},
 				KeyPrefix:      "test:",
 			},
-			wantErr: "mutually exclusive",
+			wantErr: "cluster mode cannot be used with sentinel",
 		},
 		{
-			name:    "cluster config with no addrs",
-			cfg:     RedisConfig{ClusterConfig: &ClusterConfig{}, ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"}, KeyPrefix: "test:"},
-			wantErr: "at least one cluster address is required",
+			name: "cluster mode without addr",
+			cfg: RedisConfig{
+				ClusterMode:   true,
+				ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"},
+				KeyPrefix:     "test:",
+			},
+			wantErr: "cluster mode requires addr",
 		},
 		{
 			name:    "missing sentinel master name",
@@ -251,9 +245,8 @@ func TestNewRedisStorage_Cluster_ConnectionFailure(t *testing.T) {
 	t.Parallel()
 
 	cfg := RedisConfig{
-		ClusterConfig: &ClusterConfig{
-			Addrs: []string{"localhost:19998"},
-		},
+		Addr:        "localhost:19998",
+		ClusterMode: true,
 		ACLUserConfig: &ACLUserConfig{
 			Username: "user",
 			Password: "pass",

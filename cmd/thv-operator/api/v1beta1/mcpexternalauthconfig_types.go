@@ -525,28 +525,32 @@ type AuthServerStorageConfig struct {
 }
 
 // RedisStorageConfig configures Redis connection for auth server storage.
-// Exactly one of addr (standalone), sentinelConfig (Sentinel), or clusterConfig (Cluster) must be set.
+// Exactly one of addr or sentinelConfig must be set. Set clusterMode to true when
+// addr points to a Redis Cluster discovery endpoint (GCP Memorystore Cluster,
+// AWS ElastiCache cluster mode enabled).
 //
-// +kubebuilder:validation:XValidation:rule="(self.addr.size() > 0 ? 1 : 0) + (has(self.sentinelConfig) ? 1 : 0) + (has(self.clusterConfig) ? 1 : 0) == 1",message="exactly one of addr (standalone), sentinelConfig (Sentinel), or clusterConfig (Cluster) must be set"
+// +kubebuilder:validation:XValidation:rule="(self.addr.size() > 0) != has(self.sentinelConfig)",message="exactly one of addr or sentinelConfig must be set"
+// +kubebuilder:validation:XValidation:rule="!self.clusterMode || self.addr.size() > 0",message="clusterMode requires addr to be set"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type RedisStorageConfig struct {
-	// Addr is the Redis server address for standalone mode (e.g., "host:port").
-	// Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present
-	// a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig and clusterConfig.
+	// Addr is the Redis server address (host:port). Required for standalone and cluster modes.
+	// Use for managed Redis services that expose a single endpoint (GCP Memorystore basic tier,
+	// AWS ElastiCache without cluster mode, or cluster-mode services when clusterMode is true).
+	// Mutually exclusive with sentinelConfig.
 	// +optional
 	Addr string `json:"addr,omitempty"`
 
+	// ClusterMode enables the Redis Cluster protocol. Set to true when addr points to a
+	// Redis Cluster discovery endpoint (e.g., GCP Memorystore Cluster, AWS ElastiCache
+	// cluster mode enabled). Requires addr to be set.
+	// +optional
+	ClusterMode bool `json:"clusterMode,omitempty"`
+
 	// SentinelConfig holds Redis Sentinel configuration.
-	// Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr and clusterConfig.
+	// Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr.
 	// +optional
 	SentinelConfig *RedisSentinelConfig `json:"sentinelConfig,omitempty"`
-
-	// ClusterConfig holds Redis Cluster configuration.
-	// Use for managed Redis services that use the Redis Cluster protocol (e.g., GCP Memorystore Cluster,
-	// AWS ElastiCache Serverless). Mutually exclusive with addr and sentinelConfig.
-	// +optional
-	ClusterConfig *RedisClusterConfig `json:"clusterConfig,omitempty"`
 
 	// ACLUserConfig configures Redis ACL user authentication.
 	// +kubebuilder:validation:Required
@@ -605,16 +609,6 @@ type RedisSentinelConfig struct {
 	// +kubebuilder:default=0
 	// +optional
 	DB int32 `json:"db,omitempty"`
-}
-
-// RedisClusterConfig configures Redis Cluster connection.
-type RedisClusterConfig struct {
-	// Addrs is the list of seed node host:port addresses for the Redis Cluster.
-	// At least one address is required; go-redis discovers other nodes automatically.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
-	// +listType=atomic
-	Addrs []string `json:"addrs"`
 }
 
 // SentinelServiceRef references a Kubernetes Service for Sentinel discovery.

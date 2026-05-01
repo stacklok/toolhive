@@ -544,8 +544,11 @@ func buildStorageRunConfig(
 		return nil, fmt.Errorf("redis config is required when storage type is redis")
 	}
 
-	if err := validateRedisConnectionMode(redisConfig); err != nil {
-		return nil, err
+	if redisConfig.Addr != "" && redisConfig.SentinelConfig != nil {
+		return nil, fmt.Errorf("addr and sentinelConfig are mutually exclusive for Redis storage")
+	}
+	if redisConfig.Addr == "" && redisConfig.SentinelConfig == nil {
+		return nil, fmt.Errorf("one of addr (standalone or cluster) or sentinelConfig (Sentinel) is required for Redis storage")
 	}
 
 	if redisConfig.ACLUserConfig == nil ||
@@ -565,6 +568,7 @@ func buildStorageRunConfig(
 
 	rc := &storage.RedisRunConfig{
 		Addr:          redisConfig.Addr,
+		ClusterMode:   redisConfig.ClusterMode,
 		AuthType:      storage.AuthTypeACLUser,
 		ACLUserConfig: aclRunConfig,
 		KeyPrefix:     keyPrefix,
@@ -588,39 +592,10 @@ func buildStorageRunConfig(
 		rc.SentinelTLS = convertRedisTLSConfig(redisConfig.SentinelTLS, true)
 	}
 
-	if redisConfig.ClusterConfig != nil {
-		rc.ClusterConfig = &storage.ClusterRunConfig{
-			Addrs: redisConfig.ClusterConfig.Addrs,
-		}
-	}
-
 	return &storage.RunConfig{
 		Type:        string(storage.TypeRedis),
 		RedisConfig: rc,
 	}, nil
-}
-
-// validateRedisConnectionMode checks that exactly one of addr, sentinelConfig,
-// or clusterConfig is set on the Redis storage config.
-func validateRedisConnectionMode(cfg *mcpv1beta1.RedisStorageConfig) error {
-	modes := 0
-	if cfg.Addr != "" {
-		modes++
-	}
-	if cfg.SentinelConfig != nil {
-		modes++
-	}
-	if cfg.ClusterConfig != nil {
-		modes++
-	}
-	if modes > 1 {
-		return fmt.Errorf("addr, sentinelConfig, and clusterConfig are mutually exclusive for Redis storage")
-	}
-	if modes == 0 {
-		return fmt.Errorf("one of addr (standalone), sentinelConfig (Sentinel)," +
-			" or clusterConfig (Cluster) is required for Redis storage")
-	}
-	return nil
 }
 
 // convertRedisTLSConfig converts CRD RedisTLSConfig to RunConfig.

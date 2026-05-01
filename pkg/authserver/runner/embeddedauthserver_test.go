@@ -1098,7 +1098,7 @@ func TestCreateStorage(t *testing.T) {
 			},
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "one of addr (standalone), sentinel_config (sentinel), or cluster_config (cluster) is required")
+		assert.Contains(t, err.Error(), "one of addr (standalone or cluster) or sentinel_config (sentinel) is required")
 	})
 }
 
@@ -1122,7 +1122,7 @@ func TestConvertRedisRunConfig(t *testing.T) {
 			},
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "one of addr (standalone), sentinel_config (sentinel), or cluster_config (cluster) is required")
+		assert.Contains(t, err.Error(), "one of addr (standalone or cluster) or sentinel_config (sentinel) is required")
 	})
 
 	t.Run("missing ACL user config returns error", func(t *testing.T) {
@@ -1186,39 +1186,21 @@ func TestConvertRedisRunConfig(t *testing.T) {
 		assert.Contains(t, err.Error(), "one of addr")
 	})
 
-	t.Run("cluster config with addr also set returns error", func(t *testing.T) {
+	t.Run("cluster mode with sentinel also set returns error", func(t *testing.T) {
 		t.Parallel()
 		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
-			Addr: "redis.example.com:6379",
-			ClusterConfig: &storage.ClusterRunConfig{
-				Addrs: []string{"node1:6379", "node2:6379"},
-			},
-			ACLUserConfig: &storage.ACLUserRunConfig{
-				PasswordEnvVar: "PASS",
-			},
-			KeyPrefix: "thv:",
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "mutually exclusive")
-	})
-
-	t.Run("cluster config with sentinel also set returns error", func(t *testing.T) {
-		t.Parallel()
-		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			ClusterMode: true,
 			SentinelConfig: &storage.SentinelRunConfig{
 				MasterName:    "mymaster",
 				SentinelAddrs: []string{"sentinel:26379"},
 			},
-			ClusterConfig: &storage.ClusterRunConfig{
-				Addrs: []string{"node1:6379"},
-			},
 			ACLUserConfig: &storage.ACLUserRunConfig{
 				PasswordEnvVar: "PASS",
 			},
 			KeyPrefix: "thv:",
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "mutually exclusive")
+		assert.Contains(t, err.Error(), "cluster mode cannot be used with sentinel")
 	})
 }
 
@@ -1335,14 +1317,13 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 		assert.Equal(t, "mypass", cfg.ACLUserConfig.Password)
 	})
 
-	t.Run("cluster config resolves correctly", func(t *testing.T) {
+	t.Run("cluster mode resolves correctly", func(t *testing.T) {
 		t.Setenv("TEST_REDIS_USER_CLUSTER", "clusteruser")
 		t.Setenv("TEST_REDIS_PASS_CLUSTER", "clusterpass")
 
 		cfg, err := convertRedisRunConfig(&storage.RedisRunConfig{
-			ClusterConfig: &storage.ClusterRunConfig{
-				Addrs: []string{"node1.example.com:6379", "node2.example.com:6379"},
-			},
+			Addr:        "discovery.example.com:6379",
+			ClusterMode: true,
 			ACLUserConfig: &storage.ACLUserRunConfig{
 				UsernameEnvVar: "TEST_REDIS_USER_CLUSTER",
 				PasswordEnvVar: "TEST_REDIS_PASS_CLUSTER",
@@ -1351,9 +1332,8 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
-		require.NotNil(t, cfg.ClusterConfig)
-		assert.Equal(t, []string{"node1.example.com:6379", "node2.example.com:6379"}, cfg.ClusterConfig.Addrs)
-		assert.Empty(t, cfg.Addr)
+		assert.Equal(t, "discovery.example.com:6379", cfg.Addr)
+		assert.True(t, cfg.ClusterMode)
 		assert.Nil(t, cfg.SentinelConfig)
 		require.NotNil(t, cfg.ACLUserConfig)
 		assert.Equal(t, "clusteruser", cfg.ACLUserConfig.Username)

@@ -66,26 +66,20 @@ type RunConfig struct {
 	RedisConfig *RedisRunConfig `json:"redis_config,omitempty" yaml:"redis_config,omitempty"`
 }
 
-// ClusterRunConfig contains Redis Cluster configuration for cross-process serialization.
-type ClusterRunConfig struct {
-	// Addrs is the list of seed node addresses (host:port) for the Redis Cluster.
-	Addrs []string `json:"addrs" yaml:"addrs"`
-}
-
 // RedisRunConfig is the serializable Redis configuration for RunConfig.
-// Exactly one of Addr (standalone), SentinelConfig (Sentinel), or ClusterConfig (Cluster) must be set.
+// Exactly one of Addr (standalone/cluster) or SentinelConfig must be set.
+// Set ClusterMode to true when Addr points to a Redis Cluster discovery endpoint.
 type RedisRunConfig struct {
-	// Addr is the Redis server address for standalone mode (e.g., "host:port").
-	// Mutually exclusive with SentinelConfig and ClusterConfig.
+	// Addr is the Redis server address (host:port). Required for standalone and cluster modes.
+	// Mutually exclusive with SentinelConfig.
 	Addr string `json:"addr,omitempty" yaml:"addr,omitempty"`
 
-	// SentinelConfig contains Sentinel-specific configuration.
-	// Mutually exclusive with Addr and ClusterConfig.
-	SentinelConfig *SentinelRunConfig `json:"sentinel_config,omitempty" yaml:"sentinel_config,omitempty"`
+	// ClusterMode enables the Redis Cluster protocol. Requires Addr to be set.
+	ClusterMode bool `json:"cluster_mode,omitempty" yaml:"cluster_mode,omitempty"`
 
-	// ClusterConfig contains Redis Cluster-specific configuration.
-	// Mutually exclusive with Addr and SentinelConfig.
-	ClusterConfig *ClusterRunConfig `json:"cluster_config,omitempty" yaml:"cluster_config,omitempty"`
+	// SentinelConfig contains Sentinel-specific configuration.
+	// Mutually exclusive with Addr.
+	SentinelConfig *SentinelRunConfig `json:"sentinel_config,omitempty" yaml:"sentinel_config,omitempty"`
 
 	// AuthType must be "aclUser" - only ACL user authentication is supported.
 	AuthType string `json:"auth_type" yaml:"auth_type"`

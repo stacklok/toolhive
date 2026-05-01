@@ -50,23 +50,18 @@ func warnOnCleanupErr(err error, operation, key string) {
 	}
 }
 
-// ClusterConfig contains Redis Cluster connection configuration.
-type ClusterConfig struct {
-	// Addrs is the list of seed node addresses (host:port) for the Redis Cluster.
-	Addrs []string
-}
-
 // RedisConfig holds Redis connection configuration for runtime use.
 type RedisConfig struct {
-	// Addr is the Redis server address for standalone mode (e.g., "host:port").
-	// Mutually exclusive with SentinelConfig and ClusterConfig.
+	// Addr is the Redis server address (host:port). Required for standalone and cluster modes.
+	// Mutually exclusive with SentinelConfig.
 	Addr string
 
-	// SentinelConfig is required for Sentinel mode. Mutually exclusive with Addr and ClusterConfig.
-	SentinelConfig *SentinelConfig
+	// ClusterMode enables Redis Cluster protocol. Requires Addr to be set.
+	// Use for managed cluster-mode services (GCP Memorystore Cluster, AWS ElastiCache cluster mode).
+	ClusterMode bool
 
-	// ClusterConfig is required for Cluster mode. Mutually exclusive with Addr and SentinelConfig.
-	ClusterConfig *ClusterConfig
+	// SentinelConfig is required for Sentinel mode. Mutually exclusive with Addr.
+	SentinelConfig *SentinelConfig
 
 	// ACLUserConfig is required - ACL user authentication only.
 	ACLUserConfig *ACLUserConfig
@@ -215,7 +210,7 @@ func configureTLSDialer(opts *redis.FailoverOptions, masterCfg, sentinelCfg *Red
 }
 
 // NewRedisStorage creates Redis-backed storage.
-// Supports standalone mode (Addr set) and Sentinel failover mode (SentinelConfig set).
+// Supports standalone mode (Addr), cluster mode (Addr + ClusterMode), and Sentinel mode (SentinelConfig).
 // Returns error if configuration validation fails or connection cannot be established.
 func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error) {
 	if err := validateConfig(&cfg); err != nil {
@@ -255,14 +250,14 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error
 
 		client = redis.NewFailoverClient(opts)
 
-	case cfg.ClusterConfig != nil:
+	case cfg.ClusterMode:
 		tlsCfg, err := buildTLSConfig(cfg.TLS)
 		if err != nil {
 			return nil, fmt.Errorf("TLS config: %w", err)
 		}
 
 		opts := &redis.ClusterOptions{
-			Addrs:        cfg.ClusterConfig.Addrs,
+			Addrs:        []string{cfg.Addr},
 			Username:     cfg.ACLUserConfig.Username,
 			Password:     cfg.ACLUserConfig.Password,
 			DialTimeout:  cfg.DialTimeout,
@@ -322,21 +317,17 @@ func defaultSessionFactory(subject, idpSessionID, clientID string) fosite.Sessio
 }
 
 func validateConfig(cfg *RedisConfig) error {
-	modes := 0
-	if cfg.Addr != "" {
-		modes++
+	if cfg.ClusterMode && cfg.SentinelConfig != nil {
+		return errors.New("cluster mode cannot be used with sentinel configuration")
 	}
-	if cfg.SentinelConfig != nil {
-		modes++
+	if cfg.Addr != "" && cfg.SentinelConfig != nil {
+		return errors.New("addr and sentinel configuration are mutually exclusive; exactly one must be set")
 	}
-	if cfg.ClusterConfig != nil {
-		modes++
+	if cfg.ClusterMode && cfg.Addr == "" {
+		return errors.New("cluster mode requires addr to be set")
 	}
-	if modes > 1 {
-		return errors.New("addr, sentinel, and cluster configuration are mutually exclusive; exactly one must be set")
-	}
-	if modes == 0 {
-		return errors.New("one of addr (standalone), sentinel configuration, or cluster configuration is required")
+	if cfg.Addr == "" && cfg.SentinelConfig == nil {
+		return errors.New("one of addr (standalone or cluster) or sentinel configuration is required")
 	}
 	if cfg.SentinelConfig != nil {
 		if cfg.SentinelConfig.MasterName == "" {
@@ -344,11 +335,6 @@ func validateConfig(cfg *RedisConfig) error {
 		}
 		if len(cfg.SentinelConfig.SentinelAddrs) == 0 {
 			return errors.New("at least one sentinel address is required")
-		}
-	}
-	if cfg.ClusterConfig != nil {
-		if len(cfg.ClusterConfig.Addrs) == 0 {
-			return errors.New("at least one cluster address is required")
 		}
 	}
 	if cfg.ACLUserConfig == nil {

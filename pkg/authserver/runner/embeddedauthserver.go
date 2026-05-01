@@ -481,39 +481,27 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (*storage.RedisConfig, er
 		return nil, fmt.Errorf("redis config is required when storage type is redis")
 	}
 
-	modes := 0
-	if rc.Addr != "" {
-		modes++
+	if rc.Addr != "" && rc.SentinelConfig != nil {
+		return nil, fmt.Errorf("addr and sentinel_config are mutually exclusive; exactly one must be set")
 	}
-	if rc.SentinelConfig != nil {
-		modes++
+	if rc.Addr == "" && rc.SentinelConfig == nil {
+		return nil, fmt.Errorf("one of addr (standalone or cluster) or sentinel_config (sentinel) is required")
 	}
-	if rc.ClusterConfig != nil {
-		modes++
-	}
-	if modes > 1 {
-		return nil, fmt.Errorf("addr, sentinel_config, and cluster_config are mutually exclusive; exactly one must be set")
-	}
-	if modes == 0 {
-		return nil, fmt.Errorf("one of addr (standalone), sentinel_config (sentinel), or cluster_config (cluster) is required")
+	if rc.ClusterMode && rc.SentinelConfig != nil {
+		return nil, fmt.Errorf("cluster mode cannot be used with sentinel configuration")
 	}
 
 	cfg := &storage.RedisConfig{
-		KeyPrefix: rc.KeyPrefix,
+		Addr:        rc.Addr,
+		ClusterMode: rc.ClusterMode,
+		KeyPrefix:   rc.KeyPrefix,
 	}
 
-	switch {
-	case rc.Addr != "":
-		cfg.Addr = rc.Addr
-	case rc.SentinelConfig != nil:
+	if rc.SentinelConfig != nil {
 		cfg.SentinelConfig = &storage.SentinelConfig{
 			MasterName:    rc.SentinelConfig.MasterName,
 			SentinelAddrs: rc.SentinelConfig.SentinelAddrs,
 			DB:            rc.SentinelConfig.DB,
-		}
-	case rc.ClusterConfig != nil:
-		cfg.ClusterConfig = &storage.ClusterConfig{
-			Addrs: rc.ClusterConfig.Addrs,
 		}
 	}
 

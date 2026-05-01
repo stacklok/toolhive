@@ -62,6 +62,9 @@ linters:
       forbid-spec-pollution: false
       # Force using Succeed() for functions and HaveOccurred() for errors
       force-succeed: false
+    goconst:
+      ignore-tests: true
+      min-occurrences: 25
     gocyclo:
       min-complexity: 15
     gosec:
@@ -78,6 +81,7 @@ linters:
         - G704 # SSRF via taint analysis
         - G705 # XSS via taint analysis
         - G706 # Log injection via taint analysis
+        - G710 # Open redirect via taint analysis
     lll:
       line-length: 130
     revive:
@@ -115,7 +119,14 @@ linters:
           - errcheck
           - dupl
           - gosec
+          - goconst
         path: (.+)_test\.go
+      - linters:
+          - goconst
+        path: ^test/
+      - linters:
+          - goconst
+        path: ^deploy/
       - linters:
           - lll
         path: .golangci.yml

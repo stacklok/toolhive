@@ -18,31 +18,51 @@ import (
 // HeaderForwardMiddlewareName is the type constant for the header forward middleware.
 const HeaderForwardMiddlewareName = "header-forward"
 
+// Restricted HTTP header name constants.
+const (
+	HeaderHost               = "Host"
+	HeaderConnection         = "Connection"
+	HeaderKeepAlive          = "Keep-Alive"
+	HeaderTrailer            = "Trailer"
+	HeaderUpgrade            = "Upgrade"
+	HeaderHttp2Settings      = "Http2-Settings"
+	HeaderProxyAuthorization = "Proxy-Authorization"
+	HeaderProxyAuthenticate  = "Proxy-Authenticate"
+	HeaderProxyConnection    = "Proxy-Connection"
+	HeaderTransferEncoding   = "Transfer-Encoding"
+	HeaderContentLength      = "Content-Length"
+	HeaderForwarded          = "Forwarded"
+	HeaderXForwardedFor      = "X-Forwarded-For"
+	HeaderXForwardedHost     = "X-Forwarded-Host"
+	HeaderXForwardedProto    = "X-Forwarded-Proto"
+	HeaderXRealIP            = "X-Real-Ip"
+)
+
 // RestrictedHeaders is the set of headers that cannot be configured for forwarding.
 // Keys are in canonical form (http.CanonicalHeaderKey).
 var RestrictedHeaders = map[string]bool{
 	// Routing manipulation
-	"Host": true,
+	HeaderHost: true,
 	// Hop-by-hop headers (RFC 7230, RFC 7540)
-	"Connection":     true,
-	"Keep-Alive":     true,
-	"Te":             true,
-	"Trailer":        true,
-	"Upgrade":        true,
-	"Http2-Settings": true, // RFC 7540 Section 3.2.1
+	HeaderConnection:    true,
+	HeaderKeepAlive:     true,
+	"Te":                true,
+	HeaderTrailer:       true,
+	HeaderUpgrade:       true,
+	HeaderHttp2Settings: true, // RFC 7540 Section 3.2.1
 	// Hop-by-hop proxy headers
-	"Proxy-Authorization": true,
-	"Proxy-Authenticate":  true,
-	"Proxy-Connection":    true,
+	HeaderProxyAuthorization: true,
+	HeaderProxyAuthenticate:  true,
+	HeaderProxyConnection:    true,
 	// Request smuggling vectors
-	"Transfer-Encoding": true,
-	"Content-Length":    true,
+	HeaderTransferEncoding: true,
+	HeaderContentLength:    true,
 	// Identity spoofing
-	"Forwarded":         true, // RFC 7239 (standardized X-Forwarded-*)
-	"X-Forwarded-For":   true,
-	"X-Forwarded-Host":  true,
-	"X-Forwarded-Proto": true,
-	"X-Real-Ip":         true,
+	HeaderForwarded:       true, // RFC 7239 (standardized X-Forwarded-*)
+	HeaderXForwardedFor:   true,
+	HeaderXForwardedHost:  true,
+	HeaderXForwardedProto: true,
+	HeaderXRealIP:         true,
 }
 
 // HeaderForwardMiddlewareParams holds the parameters for the header forward middleware factory.

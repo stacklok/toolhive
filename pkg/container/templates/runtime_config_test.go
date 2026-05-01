@@ -29,19 +29,19 @@ func TestGetDefaultRuntimeConfig(t *testing.T) {
 			name:          "Go default config",
 			transportType: TransportTypeGO,
 			wantImage:     DefaultGoBuilderImage,
-			wantPackages:  []string{DefaultCACertificatesPackage, "git"},
+			wantPackages:  []string{DefaultCACertificatesPackage, DefaultGitPackage},
 		},
 		{
 			name:          "NPX default config",
 			transportType: TransportTypeNPX,
 			wantImage:     DefaultNodeBuilderImage,
-			wantPackages:  []string{"git", DefaultCACertificatesPackage},
+			wantPackages:  []string{DefaultGitPackage, DefaultCACertificatesPackage},
 		},
 		{
 			name:          "UVX default config",
 			transportType: TransportTypeUVX,
 			wantImage:     DefaultPythonBuilderImage,
-			wantPackages:  []string{DefaultCACertificatesPackage, "git"},
+			wantPackages:  []string{DefaultCACertificatesPackage, DefaultGitPackage},
 		},
 	}
 
@@ -82,7 +82,7 @@ func TestGetDockerfileTemplateWithCustomRuntimeConfig(t *testing.T) {
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
 				BuilderImage:       "golang:1.24-alpine",
-				AdditionalPackages: []string{DefaultCACertificatesPackage, "git", "gcc"},
+				AdditionalPackages: []string{DefaultCACertificatesPackage, DefaultGitPackage, "gcc"},
 			},
 			wantInContent: "FROM golang:1.24-alpine AS builder",
 		},
@@ -91,7 +91,7 @@ func TestGetDockerfileTemplateWithCustomRuntimeConfig(t *testing.T) {
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
 				BuilderImage:       "node:20-alpine",
-				AdditionalPackages: []string{"git"},
+				AdditionalPackages: []string{DefaultGitPackage},
 			},
 			wantInContent: "FROM node:20-alpine AS builder",
 		},
@@ -150,7 +150,7 @@ func TestRuntimeConfigValidate_ValidPackageNames(t *testing.T) {
 	t.Parallel()
 
 	validPackages := []string{
-		"git",
+		DefaultGitPackage,
 		DefaultCACertificatesPackage,
 		"libssl1.1",
 		"g++",
@@ -232,7 +232,7 @@ func TestRuntimeConfigValidate_ValidBuilderImages(t *testing.T) {
 
 			rc := &RuntimeConfig{
 				BuilderImage:       img,
-				AdditionalPackages: []string{"git"},
+				AdditionalPackages: []string{DefaultGitPackage},
 			}
 			assert.NoError(t, rc.Validate())
 		})
@@ -261,7 +261,7 @@ func TestRuntimeConfigValidate_InvalidBuilderImages(t *testing.T) {
 
 			rc := &RuntimeConfig{
 				BuilderImage:       tt.image,
-				AdditionalPackages: []string{"git"},
+				AdditionalPackages: []string{DefaultGitPackage},
 			}
 			err := rc.Validate()
 			require.Error(t, err)
@@ -275,7 +275,7 @@ func TestRuntimeConfigValidate_EmptyBuilderImageIsAllowed(t *testing.T) {
 
 	rc := &RuntimeConfig{
 		BuilderImage:       "",
-		AdditionalPackages: []string{"git"},
+		AdditionalPackages: []string{DefaultGitPackage},
 	}
 	assert.NoError(t, rc.Validate())
 }
@@ -292,7 +292,7 @@ func TestRuntimeConfigValidate_MultipleErrors(t *testing.T) {
 
 	rc := &RuntimeConfig{
 		BuilderImage:       "alpine\nRUN evil",
-		AdditionalPackages: []string{"git", "pkg;ls", testCurlPackage, "$(evil)"},
+		AdditionalPackages: []string{DefaultGitPackage, "pkg;ls", testCurlPackage, "$(evil)"},
 	}
 	err := rc.Validate()
 	require.Error(t, err)

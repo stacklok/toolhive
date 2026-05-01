@@ -26,61 +26,61 @@ func TestClaimMapperIntegration(t *testing.T) {
 	}{
 		{
 			name:         "MPE mapper with standard OIDC claims",
-			claimMapping: "mpe",
+			claimMapping: testClaimMapping,
 			jwtClaims: map[string]any{
-				"sub":    "user@example.com",
-				"roles":  []any{"developer"},
-				"groups": []any{"engineering"},
+				testClaimSub:    testSubjectUser,
+				testClaimRoles:  []any{testRoleDeveloper},
+				testClaimGroups: []any{testGroupEng},
 			},
 			expectedPrincipal: map[string]any{
-				"sub":          "user@example.com",
-				"mroles":       []any{"developer"},
-				"mgroups":      []any{"engineering"},
-				"mannotations": map[string]any{},
+				testClaimSub:          testSubjectUser,
+				testClaimMroles:       []any{testRoleDeveloper},
+				testClaimMgroups:      []any{testGroupEng},
+				testClaimMannotations: map[string]any{},
 			},
 		},
 		{
 			name:         "MPE mapper with MPE-native claims",
-			claimMapping: "mpe",
+			claimMapping: testClaimMapping,
 			jwtClaims: map[string]any{
-				"sub":        "user@example.com",
-				"mroles":     []any{"admin"},
-				"mgroups":    []any{"security"},
-				"mclearance": "TOP_SECRET",
+				testClaimSub:        testSubjectUser,
+				testClaimMroles:     []any{testRoleAdmin},
+				testClaimMgroups:    []any{testGroupSecurity},
+				testClaimMclearance: testClearanceTop,
 			},
 			expectedPrincipal: map[string]any{
-				"sub":          "user@example.com",
-				"mroles":       []any{"admin"},
-				"mgroups":      []any{"security"},
-				"mclearance":   "TOP_SECRET",
-				"mannotations": map[string]any{},
+				testClaimSub:          testSubjectUser,
+				testClaimMroles:       []any{testRoleAdmin},
+				testClaimMgroups:      []any{testGroupSecurity},
+				testClaimMclearance:   testClearanceTop,
+				testClaimMannotations: map[string]any{},
 			},
 		},
 		{
 			name:         "Standard mapper with OIDC claims",
-			claimMapping: "standard",
+			claimMapping: testClaimStandard,
 			jwtClaims: map[string]any{
-				"sub":    "user@example.com",
-				"roles":  []any{"developer"},
-				"groups": []any{"engineering"},
+				testClaimSub:    testSubjectUser,
+				testClaimRoles:  []any{testRoleDeveloper},
+				testClaimGroups: []any{testGroupEng},
 			},
 			expectedPrincipal: map[string]any{
-				"sub":    "user@example.com",
-				"roles":  []any{"developer"},
-				"groups": []any{"engineering"},
+				testClaimSub:    testSubjectUser,
+				testClaimRoles:  []any{testRoleDeveloper},
+				testClaimGroups: []any{testGroupEng},
 			},
 		},
 		{
 			name:         "Standard mapper ignores MPE-specific claims",
-			claimMapping: "standard",
+			claimMapping: testClaimStandard,
 			jwtClaims: map[string]any{
-				"sub":        "user@example.com",
-				"mroles":     []any{"admin"},
-				"mgroups":    []any{"security"},
-				"mclearance": "SECRET",
+				testClaimSub:        testSubjectUser,
+				testClaimMroles:     []any{testRoleAdmin},
+				testClaimMgroups:    []any{testGroupSecurity},
+				testClaimMclearance: testClearanceSecret,
 			},
 			expectedPrincipal: map[string]any{
-				"sub": "user@example.com",
+				testClaimSub: testSubjectUser,
 			},
 		},
 	}
@@ -142,7 +142,7 @@ func TestClaimMapperIntegration(t *testing.T) {
 				authorizers.MCPFeatureTool,
 				authorizers.MCPOperationCall,
 				"weather",
-				map[string]any{"location": "New York"},
+				map[string]any{testClaimLocation: testLocation},
 			)
 
 			if err != nil {
@@ -154,9 +154,9 @@ func TestClaimMapperIntegration(t *testing.T) {
 			}
 
 			// Verify the principal in the captured PORC matches expectations
-			principal, ok := capturedPORC["principal"].(map[string]any)
+			principal, ok := capturedPORC[testKeyPrincipal].(map[string]any)
 			if !ok {
-				t.Fatalf("PORC principal is not a map: %T", capturedPORC["principal"])
+				t.Fatalf("PORC principal is not a map: %T", capturedPORC[testKeyPrincipal])
 			}
 
 			// Compare principal fields
@@ -176,8 +176,8 @@ func TestClaimMapperIntegration(t *testing.T) {
 			}
 
 			// Verify operation and resource are present
-			if capturedPORC["operation"] != "mcp:tool:call" {
-				t.Errorf("operation = %v, want mcp:tool:call", capturedPORC["operation"])
+			if capturedPORC["operation"] != testOpToolCall {
+				t.Errorf("operation = %v, want %s", capturedPORC["operation"], testOpToolCall)
 			}
 			if capturedPORC["resource"] != "mrn:mcp:test-server:tool:weather" {
 				t.Errorf("resource = %v, want mrn:mcp:test-server:tool:weather", capturedPORC["resource"])

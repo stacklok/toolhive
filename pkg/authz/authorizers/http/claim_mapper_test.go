@@ -20,155 +20,155 @@ func TestMPEClaimMapper_MapClaims(t *testing.T) {
 		want   map[string]any
 	}{
 		{
-			name:   "nil claims",
+			name:   testNameNilClaims,
 			claims: nil,
 			want:   map[string]any{},
 		},
 		{
-			name: "basic claims",
+			name: testNameBasicClaims,
 			claims: map[string]any{
-				"sub": "user@example.com",
+				testClaimSub: testSubjectUser,
 			},
 			want: map[string]any{
-				"sub":          "user@example.com",
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "mroles claim (MPE native)",
 			claims: map[string]any{
-				"sub":    "user@example.com",
-				"mroles": []string{"developer"},
+				testClaimSub:    testSubjectUser,
+				testClaimMroles: []string{testRoleDeveloper},
 			},
 			want: map[string]any{
-				"sub":          "user@example.com",
-				"mroles":       []string{"developer"},
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimMroles:       []string{testRoleDeveloper},
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "roles mapped to mroles",
 			claims: map[string]any{
-				"sub":   "user@example.com",
-				"roles": []string{"admin"},
+				testClaimSub:   testSubjectUser,
+				testClaimRoles: []string{testRoleAdmin},
 			},
 			want: map[string]any{
-				"sub":          "user@example.com",
-				"mroles":       []string{"admin"},
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimMroles:       []string{testRoleAdmin},
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "mgroups claim (MPE native)",
 			claims: map[string]any{
-				"sub":     "user@example.com",
-				"mgroups": []string{"engineering"},
+				testClaimSub:     testSubjectUser,
+				testClaimMgroups: []string{testGroupEng},
 			},
 			want: map[string]any{
-				"sub":          "user@example.com",
-				"mgroups":      []string{"engineering"},
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimMgroups:      []string{testGroupEng},
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "groups mapped to mgroups",
 			claims: map[string]any{
-				"sub":    "user@example.com",
-				"groups": []string{"engineering"},
+				testClaimSub:    testSubjectUser,
+				testClaimGroups: []string{testGroupEng},
 			},
 			want: map[string]any{
-				"sub":          "user@example.com",
-				"mgroups":      []string{"engineering"},
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimMgroups:      []string{testGroupEng},
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "scopes claim",
 			claims: map[string]any{
-				"sub":    "user@example.com",
-				"scopes": []string{"read", "write"},
+				testClaimSub:    testSubjectUser,
+				testClaimScopes: []string{testScopeRead, testScopeWrite},
 			},
 			want: map[string]any{
-				"sub":          "user@example.com",
-				"scopes":       []string{"read", "write"},
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimScopes:       []string{testScopeRead, testScopeWrite},
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "scope mapped to scopes",
 			claims: map[string]any{
-				"sub":   "user@example.com",
-				"scope": "read write",
+				testClaimSub:   testSubjectUser,
+				testClaimScope: testScopeReadWrite,
 			},
 			want: map[string]any{
-				"sub":          "user@example.com",
-				"scopes":       "read write",
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimScopes:       testScopeReadWrite,
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "mclearance claim (MPE native)",
 			claims: map[string]any{
-				"sub":        "user@example.com",
-				"mclearance": "TOP_SECRET",
+				testClaimSub:        testSubjectUser,
+				testClaimMclearance: testClearanceTop,
 			},
 			want: map[string]any{
-				"sub":          "user@example.com",
-				"mclearance":   "TOP_SECRET",
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimMclearance:   testClearanceTop,
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "clearance mapped to mclearance",
 			claims: map[string]any{
-				"sub":       "user@example.com",
-				"clearance": "SECRET",
+				testClaimSub: testSubjectUser,
+				"clearance":  testClearanceSecret,
 			},
 			want: map[string]any{
-				"sub":          "user@example.com",
-				"mclearance":   "SECRET",
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimMclearance:   testClearanceSecret,
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "mannotations claim (MPE native)",
 			claims: map[string]any{
-				"sub":          "user@example.com",
-				"mannotations": map[string]string{"dept": "engineering"},
+				testClaimSub:          testSubjectUser,
+				testClaimMannotations: map[string]string{testDeptKey: testGroupEng},
 			},
 			want: map[string]any{
-				"sub":          "user@example.com",
-				"mannotations": map[string]string{"dept": "engineering"},
+				testClaimSub:          testSubjectUser,
+				testClaimMannotations: map[string]string{testDeptKey: testGroupEng},
 			},
 		},
 		{
 			name: "annotations mapped to mannotations",
 			claims: map[string]any{
-				"sub":         "user@example.com",
-				"annotations": map[string]string{"dept": "sales"},
+				testClaimSub:         testSubjectUser,
+				testClaimAnnotations: map[string]string{testDeptKey: "sales"},
 			},
 			want: map[string]any{
-				"sub":          "user@example.com",
-				"mannotations": map[string]string{"dept": "sales"},
+				testClaimSub:          testSubjectUser,
+				testClaimMannotations: map[string]string{testDeptKey: "sales"},
 			},
 		},
 		{
 			name: "all claims",
 			claims: map[string]any{
-				"sub":          "user@example.com",
-				"mroles":       []string{"admin"},
-				"mgroups":      []string{"engineering"},
-				"scopes":       []string{"read", "write"},
-				"mclearance":   "TOP_SECRET",
-				"mannotations": map[string]string{"dept": "engineering"},
+				testClaimSub:          testSubjectUser,
+				testClaimMroles:       []string{testRoleAdmin},
+				testClaimMgroups:      []string{testGroupEng},
+				testClaimScopes:       []string{testScopeRead, testScopeWrite},
+				testClaimMclearance:   testClearanceTop,
+				testClaimMannotations: map[string]string{testDeptKey: testGroupEng},
 			},
 			want: map[string]any{
-				"sub":          "user@example.com",
-				"mroles":       []string{"admin"},
-				"mgroups":      []string{"engineering"},
-				"scopes":       []string{"read", "write"},
-				"mclearance":   "TOP_SECRET",
-				"mannotations": map[string]string{"dept": "engineering"},
+				testClaimSub:          testSubjectUser,
+				testClaimMroles:       []string{testRoleAdmin},
+				testClaimMgroups:      []string{testGroupEng},
+				testClaimScopes:       []string{testScopeRead, testScopeWrite},
+				testClaimMclearance:   testClearanceTop,
+				testClaimMannotations: map[string]string{testDeptKey: testGroupEng},
 			},
 		},
 	}
@@ -188,7 +188,7 @@ func TestMPEClaimMapper_MapClaims(t *testing.T) {
 
 			// Verify mannotations exists (required for some PDPs in identity phase)
 			if tt.claims != nil {
-				if _, ok := got["mannotations"]; !ok {
+				if _, ok := got[testClaimMannotations]; !ok {
 					t.Error("MPEClaimMapper.MapClaims() missing mannotations field")
 				}
 			}
@@ -207,89 +207,89 @@ func TestStandardClaimMapper_MapClaims(t *testing.T) {
 		want   map[string]any
 	}{
 		{
-			name:   "nil claims",
+			name:   testNameNilClaims,
 			claims: nil,
 			want:   map[string]any{},
 		},
 		{
-			name: "basic claims",
+			name: testNameBasicClaims,
 			claims: map[string]any{
-				"sub": "user@example.com",
+				testClaimSub: testSubjectUser,
 			},
 			want: map[string]any{
-				"sub": "user@example.com",
+				testClaimSub: testSubjectUser,
 			},
 		},
 		{
 			name: "roles claim",
 			claims: map[string]any{
-				"sub":   "user@example.com",
-				"roles": []string{"developer"},
+				testClaimSub:   testSubjectUser,
+				testClaimRoles: []string{testRoleDeveloper},
 			},
 			want: map[string]any{
-				"sub":   "user@example.com",
-				"roles": []string{"developer"},
+				testClaimSub:   testSubjectUser,
+				testClaimRoles: []string{testRoleDeveloper},
 			},
 		},
 		{
 			name: "groups claim",
 			claims: map[string]any{
-				"sub":    "user@example.com",
-				"groups": []string{"engineering"},
+				testClaimSub:    testSubjectUser,
+				testClaimGroups: []string{testGroupEng},
 			},
 			want: map[string]any{
-				"sub":    "user@example.com",
-				"groups": []string{"engineering"},
+				testClaimSub:    testSubjectUser,
+				testClaimGroups: []string{testGroupEng},
 			},
 		},
 		{
 			name: "scopes claim",
 			claims: map[string]any{
-				"sub":    "user@example.com",
-				"scopes": []string{"read", "write"},
+				testClaimSub:    testSubjectUser,
+				testClaimScopes: []string{testScopeRead, testScopeWrite},
 			},
 			want: map[string]any{
-				"sub":    "user@example.com",
-				"scopes": []string{"read", "write"},
+				testClaimSub:    testSubjectUser,
+				testClaimScopes: []string{testScopeRead, testScopeWrite},
 			},
 		},
 		{
 			name: "scope normalized to scopes",
 			claims: map[string]any{
-				"sub":   "user@example.com",
-				"scope": "read write",
+				testClaimSub:   testSubjectUser,
+				testClaimScope: testScopeReadWrite,
 			},
 			want: map[string]any{
-				"sub":    "user@example.com",
-				"scopes": "read write",
+				testClaimSub:    testSubjectUser,
+				testClaimScopes: testScopeReadWrite,
 			},
 		},
 		{
 			name: "all standard claims",
 			claims: map[string]any{
-				"sub":    "user@example.com",
-				"roles":  []string{"admin"},
-				"groups": []string{"engineering"},
-				"scopes": []string{"read", "write"},
+				testClaimSub:    testSubjectUser,
+				testClaimRoles:  []string{testRoleAdmin},
+				testClaimGroups: []string{testGroupEng},
+				testClaimScopes: []string{testScopeRead, testScopeWrite},
 			},
 			want: map[string]any{
-				"sub":    "user@example.com",
-				"roles":  []string{"admin"},
-				"groups": []string{"engineering"},
-				"scopes": []string{"read", "write"},
+				testClaimSub:    testSubjectUser,
+				testClaimRoles:  []string{testRoleAdmin},
+				testClaimGroups: []string{testGroupEng},
+				testClaimScopes: []string{testScopeRead, testScopeWrite},
 			},
 		},
 		{
 			name: "ignores MPE-specific claims",
 			claims: map[string]any{
-				"sub":          "user@example.com",
-				"mroles":       []string{"admin"},
-				"mgroups":      []string{"engineering"},
-				"mclearance":   "SECRET",
-				"mannotations": map[string]string{"dept": "engineering"},
+				testClaimSub:          testSubjectUser,
+				testClaimMroles:       []string{testRoleAdmin},
+				testClaimMgroups:      []string{testGroupEng},
+				testClaimMclearance:   testClearanceSecret,
+				testClaimMannotations: map[string]string{testDeptKey: testGroupEng},
 			},
 			want: map[string]any{
-				"sub": "user@example.com",
+				testClaimSub: testSubjectUser,
 			},
 		},
 	}

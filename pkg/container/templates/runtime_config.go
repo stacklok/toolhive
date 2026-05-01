@@ -25,6 +25,8 @@ const (
 	DefaultPythonBuilderImage = "python:3.14-slim"
 	// DefaultCACertificatesPackage is the CA certificates package name used across runtimes.
 	DefaultCACertificatesPackage = "ca-certificates"
+	// DefaultGitPackage is the git package name installed in builder and runtime stages.
+	DefaultGitPackage = "git"
 )
 
 // packageNamePattern matches valid Alpine/Debian package names.
@@ -88,15 +90,15 @@ func (rc *RuntimeConfig) Validate() error {
 var RuntimeDefaults = map[TransportType]RuntimeConfig{
 	TransportTypeGO: {
 		BuilderImage:       DefaultGoBuilderImage,
-		AdditionalPackages: []string{DefaultCACertificatesPackage, "git"},
+		AdditionalPackages: []string{DefaultCACertificatesPackage, DefaultGitPackage},
 	},
 	TransportTypeNPX: {
 		BuilderImage:       DefaultNodeBuilderImage,
-		AdditionalPackages: []string{"git", DefaultCACertificatesPackage},
+		AdditionalPackages: []string{DefaultGitPackage, DefaultCACertificatesPackage},
 	},
 	TransportTypeUVX: {
 		BuilderImage:       DefaultPythonBuilderImage,
-		AdditionalPackages: []string{DefaultCACertificatesPackage, "git"},
+		AdditionalPackages: []string{DefaultCACertificatesPackage, DefaultGitPackage},
 	},
 }
 

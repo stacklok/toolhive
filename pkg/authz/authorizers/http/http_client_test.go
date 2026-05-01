@@ -52,7 +52,7 @@ func TestNewClient(t *testing.T) {
 		{
 			name: "valid HTTP URL",
 			config: &ConnectionConfig{
-				URL: "http://localhost:9000",
+				URL: testPDPURL,
 			},
 			wantErr: false,
 		},
@@ -66,7 +66,7 @@ func TestNewClient(t *testing.T) {
 		{
 			name: "with timeout",
 			config: &ConnectionConfig{
-				URL:     "http://localhost:9000",
+				URL:     testPDPURL,
 				Timeout: 60,
 			},
 			wantErr: false,
@@ -195,10 +195,10 @@ func TestHTTPClient_Authorize(t *testing.T) {
 
 			// Make request
 			porc := PORC{
-				"principal": Principal{"sub": "test"},
-				"operation": "mcp:tool:call",
-				"resource":  "mcp:tool:test",
-				"context":   Context{},
+				testKeyPrincipal: Principal{testClaimSub: testPrincipalSub},
+				testKeyOperation: testOpToolCall,
+				testKeyResource:  testOpToolTest,
+				testKeyContext:   Context{},
 			}
 
 			allow, err := client.Authorize(context.Background(), porc, tt.probe)
@@ -232,10 +232,10 @@ func TestHTTPClient_Authorize_InvalidJSON(t *testing.T) {
 	}
 
 	porc := PORC{
-		"principal": Principal{"sub": "test"},
-		"operation": "mcp:tool:call",
-		"resource":  "mcp:tool:test",
-		"context":   Context{},
+		testKeyPrincipal: Principal{testClaimSub: testPrincipalSub},
+		"operation":      testOpToolCall,
+		"resource":       testOpToolTest,
+		testKeyContext:   Context{},
 	}
 
 	_, err = client.Authorize(context.Background(), porc, false)
@@ -250,7 +250,7 @@ func TestHTTPClient_Authorize_InvalidJSON(t *testing.T) {
 func TestHTTPClient_Close(t *testing.T) {
 	t.Parallel()
 
-	client, err := NewClient(&ConnectionConfig{URL: "http://localhost:9000"})
+	client, err := NewClient(&ConnectionConfig{URL: testPDPURL})
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -274,16 +274,16 @@ func TestHTTPClient_Authorize_PORCValidation(t *testing.T) {
 		}
 
 		// Validate required fields
-		if _, ok := porc["principal"]; !ok {
+		if _, ok := porc[testKeyPrincipal]; !ok {
 			t.Error("PORC missing principal")
 		}
-		if _, ok := porc["operation"]; !ok {
+		if _, ok := porc[testKeyOperation]; !ok {
 			t.Error("PORC missing operation")
 		}
-		if _, ok := porc["resource"]; !ok {
+		if _, ok := porc[testKeyResource]; !ok {
 			t.Error("PORC missing resource")
 		}
-		if _, ok := porc["context"]; !ok {
+		if _, ok := porc[testKeyContext]; !ok {
 			t.Error("PORC missing context")
 		}
 
@@ -298,17 +298,17 @@ func TestHTTPClient_Authorize_PORCValidation(t *testing.T) {
 	}
 
 	porc := PORC{
-		"principal": map[string]any{
-			"sub":    "user@example.com",
-			"mroles": []string{"mrn:iam:role:user"},
+		testKeyPrincipal: map[string]any{
+			testClaimSub:    testSubjectUser,
+			testClaimMroles: []string{"mrn:iam:role:user"},
 		},
-		"operation": "mcp:tool:call",
-		"resource":  "mrn:mcp:test:tool:weather",
-		"context": map[string]any{
-			"mcp": map[string]any{
-				"feature":     "tool",
+		testKeyOperation: testOpToolCall,
+		testKeyResource:  testMRNToolWeather,
+		testKeyContext: map[string]any{
+			testKeyMCP: map[string]any{
+				"feature":     testFieldTool,
 				"operation":   "call",
-				"resource_id": "weather",
+				"resource_id": testResWeather,
 			},
 		},
 	}
@@ -344,10 +344,10 @@ func TestHTTPClient_Authorize_Timeout(t *testing.T) {
 	}
 
 	porc := PORC{
-		"principal": Principal{"sub": "test"},
-		"operation": "mcp:tool:call",
-		"resource":  "mcp:tool:test",
-		"context":   Context{},
+		testKeyPrincipal: Principal{testClaimSub: testPrincipalSub},
+		"operation":      testOpToolCall,
+		"resource":       testOpToolTest,
+		testKeyContext:   Context{},
 	}
 
 	// Should succeed since server responds immediately
@@ -397,10 +397,10 @@ func TestHTTPClient_Authorize_ContextCancellation(t *testing.T) {
 	defer cancel()
 
 	porc := PORC{
-		"principal": Principal{"sub": "test"},
-		"operation": "mcp:tool:call",
-		"resource":  "mcp:tool:test",
-		"context":   Context{},
+		testKeyPrincipal: Principal{testClaimSub: testPrincipalSub},
+		"operation":      testOpToolCall,
+		"resource":       testOpToolTest,
+		testKeyContext:   Context{},
 	}
 
 	// Start the authorization request in a goroutine

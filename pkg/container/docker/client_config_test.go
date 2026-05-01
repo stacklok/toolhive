@@ -15,6 +15,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
 
+// Shared test constants used across docker package test files.
+const (
+	testMountDst1    = "/dst1"
+	testMountDst2    = "/dst2"
+	testContainerApp = "/app"
+)
+
 func TestSetupExposedPorts_SetsPorts(t *testing.T) {
 	t.Parallel()
 
@@ -77,20 +84,20 @@ func TestConvertMounts_BindMounts(t *testing.T) {
 	t.Parallel()
 
 	in := []runtime.Mount{
-		{Source: "/src1", Target: "/dst1", ReadOnly: true},
-		{Source: "/src2", Target: "/dst2", ReadOnly: false},
+		{Source: "/src1", Target: testMountDst1, ReadOnly: true},
+		{Source: "/src2", Target: testMountDst2, ReadOnly: false},
 	}
 	out := convertMounts(in)
 
 	require.Len(t, out, 2)
 	assert.Equal(t, mount.TypeBind, out[0].Type)
 	assert.Equal(t, "/src1", out[0].Source)
-	assert.Equal(t, "/dst1", out[0].Target)
+	assert.Equal(t, testMountDst1, out[0].Target)
 	assert.Equal(t, true, out[0].ReadOnly)
 
 	assert.Equal(t, mount.TypeBind, out[1].Type)
 	assert.Equal(t, "/src2", out[1].Source)
-	assert.Equal(t, "/dst2", out[1].Target)
+	assert.Equal(t, testMountDst2, out[1].Target)
 	assert.Equal(t, false, out[1].ReadOnly)
 }
 
@@ -213,8 +220,8 @@ func TestCompareContainerConfig_AllMatch(t *testing.T) {
 		Privileged:    false,
 		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
 		Mounts: []mount.Mount{
-			{Type: mount.TypeBind, Source: "/src1", Target: "/dst1", ReadOnly: true},
-			{Type: mount.TypeBind, Source: "/src2", Target: "/dst2", ReadOnly: false},
+			{Type: mount.TypeBind, Source: "/src1", Target: testMountDst1, ReadOnly: true},
+			{Type: mount.TypeBind, Source: "/src2", Target: testMountDst2, ReadOnly: false},
 		},
 	}
 	require.NoError(t, setupPortBindings(desiredHost, map[string][]runtime.PortBinding{
@@ -247,8 +254,8 @@ func TestCompareContainerConfig_AllMatch(t *testing.T) {
 				Privileged:    false,
 				RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
 				Mounts: []mount.Mount{
-					{Type: mount.TypeBind, Source: "/src1", Target: "/dst1", ReadOnly: true},
-					{Type: mount.TypeBind, Source: "/src2", Target: "/dst2", ReadOnly: false},
+					{Type: mount.TypeBind, Source: "/src1", Target: testMountDst1, ReadOnly: true},
+					{Type: mount.TypeBind, Source: "/src2", Target: testMountDst2, ReadOnly: false},
 				},
 				PortBindings: nat.PortMap{
 					p8080: []nat.PortBinding{{HostIP: "", HostPort: "18080"}},

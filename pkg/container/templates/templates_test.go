@@ -33,6 +33,7 @@ const (
 	testGolangBuilderRE     = `FROM golang:\d+\.\d+-alpine AS builder`
 	testAlpineRuntimeRE     = `FROM index\.docker\.io/library/alpine:\d+\.\d+@sha256:[0-9a-f]+`
 	testCustomBuildEnvVar   = "# Custom build environment variables"
+	testCACertContent       = "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----"
 )
 
 func TestGetDockerfileTemplate(t *testing.T) {
@@ -76,7 +77,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			transportType: TransportTypeUVX,
 			data: TemplateData{
 				MCPPackage:    testExamplePackage,
-				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
+				CACertContent: testCACertContent,
 			},
 			wantContains: []string{
 				testFromPython,
@@ -125,7 +126,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			transportType: TransportTypeNPX,
 			data: TemplateData{
 				MCPPackage:    testExamplePackage,
-				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
+				CACertContent: testCACertContent,
 			},
 			wantContains: []string{
 				testFromNode,
@@ -172,7 +173,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			transportType: TransportTypeGO,
 			data: TemplateData{
 				MCPPackage:    testExamplePackage,
-				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
+				CACertContent: testCACertContent,
 			},
 			wantContains: []string{
 				testFromGolang,
@@ -432,7 +433,7 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
 				BuilderImage:       DefaultNodeBuilderImage,
-				AdditionalPackages: []string{"git", DefaultCACertificatesPackage, testCurlPackage},
+				AdditionalPackages: []string{DefaultGitPackage, DefaultCACertificatesPackage, testCurlPackage},
 			},
 			wantInRuntime: testCurlPackage,
 		},
@@ -441,7 +442,7 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
 				BuilderImage:       DefaultPythonBuilderImage,
-				AdditionalPackages: []string{DefaultCACertificatesPackage, "git", testCurlPackage},
+				AdditionalPackages: []string{DefaultCACertificatesPackage, DefaultGitPackage, testCurlPackage},
 			},
 			wantInRuntime: testCurlPackage,
 		},
@@ -450,7 +451,7 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
 				BuilderImage:       DefaultGoBuilderImage,
-				AdditionalPackages: []string{DefaultCACertificatesPackage, "git", testCurlPackage},
+				AdditionalPackages: []string{DefaultCACertificatesPackage, DefaultGitPackage, testCurlPackage},
 			},
 			wantInRuntime: testCurlPackage,
 		},

@@ -17,6 +17,12 @@ import (
 // testConfigType is a test configuration type registered for testing
 const testConfigType = "test-config-type"
 
+// testConfigVersion and testConfigVersion2 are version strings used across config tests.
+const (
+	testConfigVersion  = "1.0"
+	testConfigVersion2 = "2.0"
+)
+
 // testFactory is a simple test factory for config tests
 type testFactory struct{}
 
@@ -63,14 +69,14 @@ func TestConfigUnmarshalJSON(t *testing.T) {
 		{
 			name:            "Valid configuration",
 			input:           `{"version": "1.0", "type": "test-config-type", "test_field": "value"}`,
-			expectedVersion: "1.0",
+			expectedVersion: testConfigVersion,
 			expectedType:    testConfigType,
 			expectError:     false,
 		},
 		{
 			name:            "Minimal configuration",
 			input:           `{"version": "2.0", "type": "customtype"}`,
-			expectedVersion: "2.0",
+			expectedVersion: testConfigVersion2,
 			expectedType:    "customtype",
 			expectError:     false,
 		},
@@ -113,7 +119,7 @@ func TestConfigMarshalJSON(t *testing.T) {
 		{
 			name: "Config with raw config",
 			config: Config{
-				Version:   "1.0",
+				Version:   testConfigVersion,
 				Type:      testConfigType,
 				rawConfig: json.RawMessage(`{"version":"1.0","type":"test-config-type","test_field":"value"}`),
 			},
@@ -122,7 +128,7 @@ func TestConfigMarshalJSON(t *testing.T) {
 		{
 			name: "Config without raw config (fallback)",
 			config: Config{
-				Version: "1.0",
+				Version: testConfigVersion,
 				Type:    testConfigType,
 			},
 			expectError: false,
@@ -158,7 +164,7 @@ func TestConfigRawConfig(t *testing.T) {
 
 	rawData := json.RawMessage(`{"version":"1.0","type":"test-config-type"}`)
 	config := Config{
-		Version:   "1.0",
+		Version:   testConfigVersion,
 		Type:      testConfigType,
 		rawConfig: rawData,
 	}
@@ -259,7 +265,7 @@ test_field: value`,
 
 			require.NoError(t, err)
 			require.NotNil(t, config)
-			assert.Equal(t, "1.0", config.Version)
+			assert.Equal(t, testConfigVersion, config.Version)
 			assert.Equal(t, ConfigType(testConfigType), config.Type)
 		})
 	}
@@ -333,7 +339,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "Missing type",
 			config: Config{
-				Version:   "1.0",
+				Version:   testConfigVersion,
 				rawConfig: json.RawMessage(`{"version":"1.0"}`),
 			},
 			expectError: true,
@@ -342,7 +348,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "Unsupported type",
 			config: Config{
-				Version:   "1.0",
+				Version:   testConfigVersion,
 				Type:      "unsupported",
 				rawConfig: json.RawMessage(`{"version":"1.0","type":"unsupported"}`),
 			},
@@ -352,7 +358,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "Missing raw config",
 			config: Config{
-				Version: "1.0",
+				Version: testConfigVersion,
 				Type:    testConfigType,
 				// No rawConfig
 			},
@@ -362,7 +368,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "Valid config",
 			config: Config{
-				Version:   "1.0",
+				Version:   testConfigVersion,
 				Type:      testConfigType,
 				rawConfig: json.RawMessage(`{"version":"1.0","type":"test-config-type","test_field":"value"}`),
 			},
@@ -402,11 +408,11 @@ func TestNewConfig(t *testing.T) {
 		{
 			name: "Map config",
 			fullConfig: map[string]interface{}{
-				"version":    "1.0",
+				"version":    testConfigVersion,
 				"type":       testConfigType,
 				"test_field": "value",
 			},
-			expectedVersion: "1.0",
+			expectedVersion: testConfigVersion,
 			expectedType:    testConfigType,
 		},
 		{
@@ -415,10 +421,10 @@ func TestNewConfig(t *testing.T) {
 				Version string `json:"version"`
 				Type    string `json:"type"`
 			}{
-				Version: "2.0",
+				Version: testConfigVersion2,
 				Type:    "testtype",
 			},
-			expectedVersion: "2.0",
+			expectedVersion: testConfigVersion2,
 			expectedType:    "testtype",
 		},
 	}

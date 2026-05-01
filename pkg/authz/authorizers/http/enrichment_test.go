@@ -22,20 +22,20 @@ func TestEnrichPORCWithAnnotations(t *testing.T) {
 		{
 			name: "both context and mcp exist as correct types",
 			porc: PORC{
-				"context": map[string]interface{}{
-					"mcp": map[string]interface{}{
-						"server_id": "test-server",
+				testKeyContext: map[string]interface{}{
+					testKeyMCP: map[string]interface{}{
+						testFieldServerID: testFieldTestSrv,
 					},
 				},
 			},
 			annotationMap: map[string]interface{}{
-				"readOnlyHint": true,
+				testAnnoReadOnlyHint: true,
 			},
 			expected: PORC{
-				"context": map[string]interface{}{
-					"mcp": map[string]interface{}{
-						"server_id":   "test-server",
-						"annotations": map[string]interface{}{"readOnlyHint": true},
+				testKeyContext: map[string]interface{}{
+					testKeyMCP: map[string]interface{}{
+						testFieldServerID:  testFieldTestSrv,
+						testKeyAnnotations: map[string]interface{}{testAnnoReadOnlyHint: true},
 					},
 				},
 			},
@@ -43,33 +43,33 @@ func TestEnrichPORCWithAnnotations(t *testing.T) {
 		{
 			name: "context exists but mcp does not exist",
 			porc: PORC{
-				"context": map[string]interface{}{
+				testKeyContext: map[string]interface{}{
 					"other_key": "some_value",
 				},
 			},
 			annotationMap: map[string]interface{}{
-				"destructiveHint": true,
+				testAnnoDestructiveHint: true,
 			},
 			expected: PORC{
-				"context": map[string]interface{}{
+				testKeyContext: map[string]interface{}{
 					"other_key": "some_value",
-					"mcp":       map[string]interface{}{"annotations": map[string]interface{}{"destructiveHint": true}},
+					testKeyMCP:  map[string]interface{}{testKeyAnnotations: map[string]interface{}{testAnnoDestructiveHint: true}},
 				},
 			},
 		},
 		{
 			name: "context does not exist",
 			porc: PORC{
-				"principal": "user1",
+				testKeyPrincipal: "user1",
 			},
 			annotationMap: map[string]interface{}{
 				"openWorldHint": false,
 			},
 			expected: PORC{
-				"principal": "user1",
-				"context": map[string]interface{}{
-					"mcp": map[string]interface{}{
-						"annotations": map[string]interface{}{"openWorldHint": false},
+				testKeyPrincipal: "user1",
+				testKeyContext: map[string]interface{}{
+					testKeyMCP: map[string]interface{}{
+						testKeyAnnotations: map[string]interface{}{"openWorldHint": false},
 					},
 				},
 			},
@@ -77,15 +77,15 @@ func TestEnrichPORCWithAnnotations(t *testing.T) {
 		{
 			name: "context is nil",
 			porc: PORC{
-				"context": nil,
+				testKeyContext: nil,
 			},
 			annotationMap: map[string]interface{}{
-				"readOnlyHint": true,
+				testAnnoReadOnlyHint: true,
 			},
 			expected: PORC{
-				"context": map[string]interface{}{
-					"mcp": map[string]interface{}{
-						"annotations": map[string]interface{}{"readOnlyHint": true},
+				testKeyContext: map[string]interface{}{
+					testKeyMCP: map[string]interface{}{
+						testKeyAnnotations: map[string]interface{}{testAnnoReadOnlyHint: true},
 					},
 				},
 			},
@@ -93,15 +93,15 @@ func TestEnrichPORCWithAnnotations(t *testing.T) {
 		{
 			name: "context is wrong type (string)",
 			porc: PORC{
-				"context": "unexpected-string",
+				testKeyContext: "unexpected-string",
 			},
 			annotationMap: map[string]interface{}{
 				"idempotentHint": true,
 			},
 			expected: PORC{
-				"context": map[string]interface{}{
-					"mcp": map[string]interface{}{
-						"annotations": map[string]interface{}{"idempotentHint": true},
+				testKeyContext: map[string]interface{}{
+					testKeyMCP: map[string]interface{}{
+						testKeyAnnotations: map[string]interface{}{"idempotentHint": true},
 					},
 				},
 			},
@@ -109,17 +109,17 @@ func TestEnrichPORCWithAnnotations(t *testing.T) {
 		{
 			name: "context exists but mcp is wrong type (string)",
 			porc: PORC{
-				"context": map[string]interface{}{
-					"mcp": "unexpected-string",
+				testKeyContext: map[string]interface{}{
+					testKeyMCP: "unexpected-string",
 				},
 			},
 			annotationMap: map[string]interface{}{
-				"readOnlyHint": true,
+				testAnnoReadOnlyHint: true,
 			},
 			expected: PORC{
-				"context": map[string]interface{}{
-					"mcp": map[string]interface{}{
-						"annotations": map[string]interface{}{"readOnlyHint": true},
+				testKeyContext: map[string]interface{}{
+					testKeyMCP: map[string]interface{}{
+						testKeyAnnotations: map[string]interface{}{testAnnoReadOnlyHint: true},
 					},
 				},
 			},
@@ -127,25 +127,25 @@ func TestEnrichPORCWithAnnotations(t *testing.T) {
 		{
 			name: "existing mcp fields are preserved when annotations are added",
 			porc: PORC{
-				"context": map[string]interface{}{
-					"mcp": map[string]interface{}{
-						"server_id": "my-server",
-						"tool":      "calculate",
+				testKeyContext: map[string]interface{}{
+					testKeyMCP: map[string]interface{}{
+						testFieldServerID: "my-server",
+						testFieldTool:     "calculate",
 					},
 				},
 			},
 			annotationMap: map[string]interface{}{
-				"readOnlyHint":    true,
-				"destructiveHint": false,
+				testAnnoReadOnlyHint:    true,
+				testAnnoDestructiveHint: false,
 			},
 			expected: PORC{
-				"context": map[string]interface{}{
-					"mcp": map[string]interface{}{
-						"server_id": "my-server",
-						"tool":      "calculate",
-						"annotations": map[string]interface{}{
-							"readOnlyHint":    true,
-							"destructiveHint": false,
+				testKeyContext: map[string]interface{}{
+					testKeyMCP: map[string]interface{}{
+						testFieldServerID: "my-server",
+						testFieldTool:     "calculate",
+						testKeyAnnotations: map[string]interface{}{
+							testAnnoReadOnlyHint:    true,
+							testAnnoDestructiveHint: false,
 						},
 					},
 				},
@@ -154,18 +154,18 @@ func TestEnrichPORCWithAnnotations(t *testing.T) {
 		{
 			name: "empty annotation map",
 			porc: PORC{
-				"context": map[string]interface{}{
-					"mcp": map[string]interface{}{
-						"server_id": "test-server",
+				testKeyContext: map[string]interface{}{
+					testKeyMCP: map[string]interface{}{
+						testFieldServerID: testFieldTestSrv,
 					},
 				},
 			},
 			annotationMap: map[string]interface{}{},
 			expected: PORC{
-				"context": map[string]interface{}{
-					"mcp": map[string]interface{}{
-						"server_id":   "test-server",
-						"annotations": map[string]interface{}{},
+				testKeyContext: map[string]interface{}{
+					testKeyMCP: map[string]interface{}{
+						testFieldServerID:  testFieldTestSrv,
+						testKeyAnnotations: map[string]interface{}{},
 					},
 				},
 			},
@@ -179,19 +179,19 @@ func TestEnrichPORCWithAnnotations(t *testing.T) {
 			enrichPORCWithAnnotations(tt.porc, tt.annotationMap)
 
 			// Verify the top-level context key exists and is the right type.
-			rawCtx, ok := tt.porc["context"]
+			rawCtx, ok := tt.porc[testKeyContext]
 			require.True(t, ok, "porc must have a \"context\" key after enrichment")
 			porcCtx, ok := rawCtx.(map[string]interface{})
 			require.True(t, ok, "porc[\"context\"] must be map[string]interface{}")
 
 			// Verify the mcp key exists and is the right type.
-			rawMCP, ok := porcCtx["mcp"]
+			rawMCP, ok := porcCtx[testKeyMCP]
 			require.True(t, ok, "porc[\"context\"] must have an \"mcp\" key after enrichment")
 			mcpCtx, ok := rawMCP.(map[string]interface{})
 			require.True(t, ok, "porc[\"context\"][\"mcp\"] must be map[string]interface{}")
 
 			// Verify annotations were set.
-			assert.Equal(t, tt.annotationMap, mcpCtx["annotations"])
+			assert.Equal(t, tt.annotationMap, mcpCtx[testKeyAnnotations])
 
 			// Verify full PORC matches expected structure.
 			assert.Equal(t, tt.expected, tt.porc)

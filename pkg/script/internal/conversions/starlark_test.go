@@ -79,7 +79,7 @@ func TestGoToStarlark(t *testing.T) {
 		},
 		{
 			name:  "map",
-			input: map[string]interface{}{"key": "val"},
+			input: map[string]interface{}{testMapKey: "val"},
 			check: func(t *testing.T, v starlark.Value) {
 				t.Helper()
 				d, ok := v.(*starlark.Dict)

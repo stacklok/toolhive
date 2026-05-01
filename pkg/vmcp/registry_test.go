@@ -28,25 +28,25 @@ func TestNewImmutableRegistry(t *testing.T) {
 		expectedCount int
 	}{
 		{
-			name: "single backend",
+			name: testNameSingleBackend,
 			backends: []Backend{
 				{
-					ID:            "backend-1",
-					Name:          "GitHub MCP",
-					BaseURL:       "http://localhost:8080",
-					TransportType: "streamable-http",
+					ID:            testBackendIDBackend1,
+					Name:          testBackendNameGithubMCP,
+					BaseURL:       testBaseURL,
+					TransportType: testTransportStreamableHTTP,
 					HealthStatus:  BackendHealthy,
-					AuthConfig:    &authtypes.BackendAuthStrategy{Type: "unauthenticated"},
-					Metadata:      map[string]string{"env": "production"},
+					AuthConfig:    &authtypes.BackendAuthStrategy{Type: testAuthTypeUnauthenticated},
+					Metadata:      map[string]string{testMetaKeyEnv: testMetaValueProduction},
 				},
 			},
 			expectedCount: 1,
 		},
 		{
-			name: "multiple backends",
+			name: testNameMultipleBackends,
 			backends: []Backend{
-				{ID: "github-mcp", Name: "GitHub MCP", HealthStatus: BackendHealthy},
-				{ID: "jira-mcp", Name: "Jira MCP", HealthStatus: BackendHealthy},
+				{ID: testBackendIDGithubMCP, Name: testBackendNameGithubMCP, HealthStatus: BackendHealthy},
+				{ID: testBackendIDJiraMCP, Name: testBackendNameJiraMCP, HealthStatus: BackendHealthy},
 				{ID: "slack-mcp", Name: "Slack MCP", HealthStatus: BackendDegraded},
 			},
 			expectedCount: 3,
@@ -58,7 +58,7 @@ func TestNewImmutableRegistry(t *testing.T) {
 				{ID: "degraded", HealthStatus: BackendDegraded},
 				{ID: "unhealthy", HealthStatus: BackendUnhealthy},
 				{ID: "unknown", HealthStatus: BackendUnknown},
-				{ID: "unauthenticated", HealthStatus: BackendUnauthenticated},
+				{ID: testStatusUnauthenticated, HealthStatus: BackendUnauthenticated},
 			},
 			expectedCount: 5,
 		},
@@ -67,7 +67,7 @@ func TestNewImmutableRegistry(t *testing.T) {
 			backends: []Backend{
 				{ID: "http", TransportType: "http"},
 				{ID: "sse", TransportType: "sse"},
-				{ID: "streamable", TransportType: "streamable-http"},
+				{ID: "streamable", TransportType: testTransportStreamableHTTP},
 			},
 			expectedCount: 3,
 		},
@@ -85,7 +85,7 @@ func TestNewImmutableRegistry(t *testing.T) {
 			name: "nil metadata maps",
 			backends: []Backend{
 				{
-					ID:         "backend-1",
+					ID:         testBackendIDBackend1,
 					AuthConfig: nil,
 					Metadata:   nil,
 				},
@@ -95,7 +95,7 @@ func TestNewImmutableRegistry(t *testing.T) {
 		{
 			name: "minimal fields",
 			backends: []Backend{
-				{ID: "minimal"},
+				{ID: testBackendIDMinimal},
 			},
 			expectedCount: 1,
 		},
@@ -130,11 +130,11 @@ func TestNewImmutableRegistry(t *testing.T) {
 
 				streamableBackend := registry.Get(ctx, "streamable")
 				require.NotNil(t, streamableBackend)
-				assert.Equal(t, "streamable-http", streamableBackend.TransportType)
+				assert.Equal(t, testTransportStreamableHTTP, streamableBackend.TransportType)
 			}
 
 			if tt.name == "nil metadata maps" {
-				backend := registry.Get(ctx, "backend-1")
+				backend := registry.Get(ctx, testBackendIDBackend1)
 				require.NotNil(t, backend)
 				assert.Nil(t, backend.AuthConfig)
 				assert.Nil(t, backend.Metadata)
@@ -157,22 +157,22 @@ func TestBackendRegistry_Get(t *testing.T) {
 	// Setup registry for tests
 	backends := []Backend{
 		{
-			ID:            "github-mcp",
-			Name:          "GitHub MCP",
-			BaseURL:       "http://localhost:8080",
-			TransportType: "streamable-http",
+			ID:            testBackendIDGithubMCP,
+			Name:          testBackendNameGithubMCP,
+			BaseURL:       testBaseURL,
+			TransportType: testTransportStreamableHTTP,
 			HealthStatus:  BackendHealthy,
 			AuthConfig: &authtypes.BackendAuthStrategy{
-				Type: "token_exchange",
+				Type: testAuthTypeTokenExchange,
 				TokenExchange: &authtypes.TokenExchangeConfig{
-					Audience: "github-api",
+					Audience: testAudienceGithubAPI,
 				},
 			},
-			Metadata: map[string]string{"env": "production"},
+			Metadata: map[string]string{testMetaKeyEnv: testMetaValueProduction},
 		},
 		{
-			ID:           "jira-mcp",
-			Name:         "Jira MCP",
+			ID:           testBackendIDJiraMCP,
+			Name:         testBackendNameJiraMCP,
 			HealthStatus: BackendHealthy,
 		},
 	}
@@ -186,19 +186,19 @@ func TestBackendRegistry_Get(t *testing.T) {
 	}{
 		{
 			name:    "existing backend",
-			id:      "github-mcp",
+			id:      testBackendIDGithubMCP,
 			wantNil: false,
 			validate: func(t *testing.T, b *Backend) {
 				t.Helper()
-				assert.Equal(t, "github-mcp", b.ID)
-				assert.Equal(t, "GitHub MCP", b.Name)
-				assert.Equal(t, "http://localhost:8080", b.BaseURL)
-				assert.Equal(t, "streamable-http", b.TransportType)
+				assert.Equal(t, testBackendIDGithubMCP, b.ID)
+				assert.Equal(t, testBackendNameGithubMCP, b.Name)
+				assert.Equal(t, testBaseURL, b.BaseURL)
+				assert.Equal(t, testTransportStreamableHTTP, b.TransportType)
 				assert.Equal(t, BackendHealthy, b.HealthStatus)
 				assert.NotNil(t, b.AuthConfig)
-				assert.Equal(t, "token_exchange", b.AuthConfig.Type)
-				assert.Equal(t, "github-api", b.AuthConfig.TokenExchange.Audience)
-				assert.Equal(t, "production", b.Metadata["env"])
+				assert.Equal(t, testAuthTypeTokenExchange, b.AuthConfig.Type)
+				assert.Equal(t, testAudienceGithubAPI, b.AuthConfig.TokenExchange.Audience)
+				assert.Equal(t, testMetaValueProduction, b.Metadata[testMetaKeyEnv])
 			},
 		},
 		{
@@ -238,8 +238,8 @@ func TestBackendRegistry_Get(t *testing.T) {
 	t.Run("returns independent copies", func(t *testing.T) {
 		t.Parallel()
 
-		backend1 := registry.Get(ctx, "github-mcp")
-		backend2 := registry.Get(ctx, "github-mcp")
+		backend1 := registry.Get(ctx, testBackendIDGithubMCP)
+		backend2 := registry.Get(ctx, testBackendIDGithubMCP)
 
 		require.NotNil(t, backend1)
 		require.NotNil(t, backend2)
@@ -248,7 +248,7 @@ func TestBackendRegistry_Get(t *testing.T) {
 
 		// Modifying one should not affect the other
 		backend1.Name = testModifiedName
-		assert.Equal(t, "GitHub MCP", backend2.Name)
+		assert.Equal(t, testBackendNameGithubMCP, backend2.Name)
 	})
 
 	t.Run("concurrent reads", func(t *testing.T) {
@@ -257,9 +257,9 @@ func TestBackendRegistry_Get(t *testing.T) {
 		done := make(chan bool)
 		for i := 0; i < 10; i++ {
 			go func() {
-				backend := registry.Get(ctx, "github-mcp")
+				backend := registry.Get(ctx, testBackendIDGithubMCP)
 				assert.NotNil(t, backend)
-				assert.Equal(t, "github-mcp", backend.ID)
+				assert.Equal(t, testBackendIDGithubMCP, backend.ID)
 				done <- true
 			}()
 		}
@@ -278,9 +278,9 @@ func TestBackendRegistry_List(t *testing.T) {
 		t.Parallel()
 
 		backends := []Backend{
-			{ID: "backend-1", Name: "Backend 1"},
-			{ID: "backend-2", Name: "Backend 2"},
-			{ID: "backend-3", Name: "Backend 3"},
+			{ID: testBackendIDBackend1, Name: testBackendNameBackend1},
+			{ID: testBackendIDBackend2, Name: testBackendNameBackend2},
+			{ID: testBackendIDBackend3, Name: testBackendNameBackend3},
 		}
 		registry := NewImmutableRegistry(backends)
 
@@ -292,15 +292,15 @@ func TestBackendRegistry_List(t *testing.T) {
 		for _, b := range result {
 			ids[b.ID] = true
 		}
-		assert.Contains(t, ids, "backend-1")
-		assert.Contains(t, ids, "backend-2")
-		assert.Contains(t, ids, "backend-3")
+		assert.Contains(t, ids, testBackendIDBackend1)
+		assert.Contains(t, ids, testBackendIDBackend2)
+		assert.Contains(t, ids, testBackendIDBackend3)
 	})
 
 	t.Run("returns modifiable copy", func(t *testing.T) {
 		t.Parallel()
 
-		backends := []Backend{{ID: "backend-1", Name: "Backend 1"}}
+		backends := []Backend{{ID: testBackendIDBackend1, Name: testBackendNameBackend1}}
 		registry := NewImmutableRegistry(backends)
 
 		list1 := registry.List(ctx)
@@ -309,7 +309,7 @@ func TestBackendRegistry_List(t *testing.T) {
 
 		list2 := registry.List(ctx)
 		assert.Len(t, list2, 1)
-		assert.Equal(t, "Backend 1", list2[0].Name)
+		assert.Equal(t, testBackendNameBackend1, list2[0].Name)
 	})
 
 	t.Run("preserves all fields", func(t *testing.T) {
@@ -317,16 +317,16 @@ func TestBackendRegistry_List(t *testing.T) {
 
 		backends := []Backend{
 			{
-				ID:            "github-mcp",
-				Name:          "GitHub MCP",
-				TransportType: "streamable-http",
+				ID:            testBackendIDGithubMCP,
+				Name:          testBackendNameGithubMCP,
+				TransportType: testTransportStreamableHTTP,
 				AuthConfig: &authtypes.BackendAuthStrategy{
-					Type: "token_exchange",
+					Type: testAuthTypeTokenExchange,
 					TokenExchange: &authtypes.TokenExchangeConfig{
-						Audience: "github-api",
+						Audience: testAudienceGithubAPI,
 					},
 				},
-				Metadata: map[string]string{"env": "production"},
+				Metadata: map[string]string{testMetaKeyEnv: testMetaValueProduction},
 			},
 		}
 		registry := NewImmutableRegistry(backends)
@@ -334,9 +334,9 @@ func TestBackendRegistry_List(t *testing.T) {
 		result := registry.List(ctx)
 
 		require.Len(t, result, 1)
-		assert.Equal(t, "github-mcp", result[0].ID)
-		assert.Equal(t, "github-api", result[0].AuthConfig.TokenExchange.Audience)
-		assert.Equal(t, "production", result[0].Metadata["env"])
+		assert.Equal(t, testBackendIDGithubMCP, result[0].ID)
+		assert.Equal(t, testAudienceGithubAPI, result[0].AuthConfig.TokenExchange.Audience)
+		assert.Equal(t, testMetaValueProduction, result[0].Metadata[testMetaKeyEnv])
 	})
 
 	t.Run("empty registry", func(t *testing.T) {
@@ -353,8 +353,8 @@ func TestBackendRegistry_List(t *testing.T) {
 		t.Parallel()
 
 		backends := []Backend{
-			{ID: "backend-1"},
-			{ID: "backend-2"},
+			{ID: testBackendIDBackend1},
+			{ID: testBackendIDBackend2},
 		}
 		registry := NewImmutableRegistry(backends)
 
@@ -388,16 +388,16 @@ func TestBackendRegistry_Count(t *testing.T) {
 			want:     0,
 		},
 		{
-			name:     "single backend",
-			backends: []Backend{{ID: "backend-1"}},
+			name:     testNameSingleBackend,
+			backends: []Backend{{ID: testBackendIDBackend1}},
 			want:     1,
 		},
 		{
-			name: "multiple backends",
+			name: testNameMultipleBackends,
 			backends: []Backend{
-				{ID: "backend-1"},
-				{ID: "backend-2"},
-				{ID: "backend-3"},
+				{ID: testBackendIDBackend1},
+				{ID: testBackendIDBackend2},
+				{ID: testBackendIDBackend3},
 				{ID: "backend-4"},
 				{ID: "backend-5"},
 			},
@@ -423,9 +423,9 @@ func TestBackendRegistry_Count(t *testing.T) {
 		t.Parallel()
 
 		backends := []Backend{
-			{ID: "backend-1"},
-			{ID: "backend-2"},
-			{ID: "backend-3"},
+			{ID: testBackendIDBackend1},
+			{ID: testBackendIDBackend2},
+			{ID: testBackendIDBackend3},
 		}
 		registry := NewImmutableRegistry(backends)
 
@@ -455,39 +455,39 @@ func TestBackendToTarget(t *testing.T) {
 		{
 			name: "complete backend",
 			backend: &Backend{
-				ID:            "github-mcp",
-				Name:          "GitHub MCP",
-				BaseURL:       "http://localhost:8080",
-				TransportType: "streamable-http",
+				ID:            testBackendIDGithubMCP,
+				Name:          testBackendNameGithubMCP,
+				BaseURL:       testBaseURL,
+				TransportType: testTransportStreamableHTTP,
 				HealthStatus:  BackendHealthy,
 				AuthConfig: &authtypes.BackendAuthStrategy{
-					Type: "token_exchange",
+					Type: testAuthTypeTokenExchange,
 					TokenExchange: &authtypes.TokenExchangeConfig{
-						Audience: "github-api",
+						Audience: testAudienceGithubAPI,
 						Scopes:   []string{"repo"},
 					},
 				},
-				Metadata: map[string]string{"env": "production"},
+				Metadata: map[string]string{testMetaKeyEnv: testMetaValueProduction},
 			},
 			wantNil: false,
 			validate: func(t *testing.T, target *BackendTarget) {
 				t.Helper()
-				assert.Equal(t, "github-mcp", target.WorkloadID)
-				assert.Equal(t, "GitHub MCP", target.WorkloadName)
-				assert.Equal(t, "http://localhost:8080", target.BaseURL)
-				assert.Equal(t, "streamable-http", target.TransportType)
+				assert.Equal(t, testBackendIDGithubMCP, target.WorkloadID)
+				assert.Equal(t, testBackendNameGithubMCP, target.WorkloadName)
+				assert.Equal(t, testBaseURL, target.BaseURL)
+				assert.Equal(t, testTransportStreamableHTTP, target.TransportType)
 				assert.Equal(t, BackendHealthy, target.HealthStatus)
 				assert.NotNil(t, target.AuthConfig)
-				assert.Equal(t, "token_exchange", target.AuthConfig.Type)
-				assert.Equal(t, "github-api", target.AuthConfig.TokenExchange.Audience)
-				assert.Equal(t, "production", target.Metadata["env"])
+				assert.Equal(t, testAuthTypeTokenExchange, target.AuthConfig.Type)
+				assert.Equal(t, testAudienceGithubAPI, target.AuthConfig.TokenExchange.Audience)
+				assert.Equal(t, testMetaValueProduction, target.Metadata[testMetaKeyEnv])
 				assert.False(t, target.SessionAffinity)
 			},
 		},
 		{
 			name: "preserves metadata",
 			backend: &Backend{
-				ID: "test",
+				ID: testBackendIDTest,
 				AuthConfig: &authtypes.BackendAuthStrategy{
 					Type: "header_injection",
 					HeaderInjection: &authtypes.HeaderInjectionConfig{
@@ -495,7 +495,7 @@ func TestBackendToTarget(t *testing.T) {
 						HeaderValue: "Bearer secret",
 					},
 				},
-				Metadata: map[string]string{"env": "staging", "region": "us-west-2", "version": "2.0.0"},
+				Metadata: map[string]string{testMetaKeyEnv: "staging", "region": "us-west-2", "version": "2.0.0"},
 			},
 			wantNil: false,
 			validate: func(t *testing.T, target *BackendTarget) {
@@ -503,7 +503,7 @@ func TestBackendToTarget(t *testing.T) {
 				assert.NotNil(t, target.AuthConfig)
 				// Removed timeout assertion - not part of typed config
 				// Removed retries assertion - not part of typed config
-				assert.Equal(t, "staging", target.Metadata["env"])
+				assert.Equal(t, "staging", target.Metadata[testMetaKeyEnv])
 				assert.Equal(t, "us-west-2", target.Metadata["region"])
 				assert.Equal(t, "2.0.0", target.Metadata["version"])
 			},
@@ -514,7 +514,7 @@ func TestBackendToTarget(t *testing.T) {
 				ID:            "remote-mcp",
 				Name:          "Remote MCP",
 				BaseURL:       "https://mcp.example.com/mcp",
-				TransportType: "streamable-http",
+				TransportType: testTransportStreamableHTTP,
 				Type:          BackendTypeEntry,
 				CABundlePath:  "/etc/toolhive/ca-bundles/internal/ca.crt",
 				HealthStatus:  BackendHealthy,
@@ -525,7 +525,7 @@ func TestBackendToTarget(t *testing.T) {
 				assert.Equal(t, "remote-mcp", target.WorkloadID)
 				assert.Equal(t, "Remote MCP", target.WorkloadName)
 				assert.Equal(t, "https://mcp.example.com/mcp", target.BaseURL)
-				assert.Equal(t, "streamable-http", target.TransportType)
+				assert.Equal(t, testTransportStreamableHTTP, target.TransportType)
 				assert.Equal(t, "/etc/toolhive/ca-bundles/internal/ca.crt", target.CABundlePath)
 				assert.Equal(t, BackendHealthy, target.HealthStatus)
 			},
@@ -536,7 +536,7 @@ func TestBackendToTarget(t *testing.T) {
 				ID:            "dynamic-entry",
 				Name:          "Dynamic Entry",
 				BaseURL:       "https://mcp.internal:8443/mcp",
-				TransportType: "streamable-http",
+				TransportType: testTransportStreamableHTTP,
 				Type:          BackendTypeEntry,
 				CABundleData:  []byte("test-ca-data"),
 				HealthStatus:  BackendHealthy,
@@ -552,12 +552,12 @@ func TestBackendToTarget(t *testing.T) {
 		{
 			name: "minimal backend",
 			backend: &Backend{
-				ID: "minimal",
+				ID: testBackendIDMinimal,
 			},
 			wantNil: false,
 			validate: func(t *testing.T, target *BackendTarget) {
 				t.Helper()
-				assert.Equal(t, "minimal", target.WorkloadID)
+				assert.Equal(t, testBackendIDMinimal, target.WorkloadID)
 				assert.Empty(t, target.WorkloadName)
 				assert.Empty(t, target.BaseURL)
 				assert.Empty(t, target.TransportType)
@@ -604,7 +604,7 @@ func TestBackendToTarget(t *testing.T) {
 
 		for _, status := range statuses {
 			backend := &Backend{
-				ID:           "test",
+				ID:           testBackendIDTest,
 				HealthStatus: status,
 			}
 
@@ -624,18 +624,18 @@ func TestImmutabilityGuarantees(t *testing.T) {
 		t.Parallel()
 
 		backends := []Backend{
-			{ID: "backend-1", Name: "Backend 1", HealthStatus: BackendHealthy},
+			{ID: testBackendIDBackend1, Name: testBackendNameBackend1, HealthStatus: BackendHealthy},
 		}
 		registry := NewImmutableRegistry(backends)
 
 		// Modify the returned backend
-		backend := registry.Get(ctx, "backend-1")
+		backend := registry.Get(ctx, testBackendIDBackend1)
 		backend.Name = testModifiedName
 		backend.HealthStatus = BackendUnhealthy
 
 		// Get again - should be unchanged
-		backend2 := registry.Get(ctx, "backend-1")
-		assert.Equal(t, "Backend 1", backend2.Name)
+		backend2 := registry.Get(ctx, testBackendIDBackend1)
+		assert.Equal(t, testBackendNameBackend1, backend2.Name)
 		assert.Equal(t, BackendHealthy, backend2.HealthStatus)
 	})
 
@@ -643,38 +643,38 @@ func TestImmutabilityGuarantees(t *testing.T) {
 		t.Parallel()
 
 		backends := []Backend{
-			{ID: "backend-1", Name: "Backend 1"},
-			{ID: "backend-2", Name: "Backend 2"},
+			{ID: testBackendIDBackend1, Name: testBackendNameBackend1},
+			{ID: testBackendIDBackend2, Name: testBackendNameBackend2},
 		}
 		registry := NewImmutableRegistry(backends)
 
 		// Modify the list
 		list := registry.List(ctx)
 		list[0].Name = testModifiedName
-		_ = append(list, Backend{ID: "backend-3"})
+		_ = append(list, Backend{ID: testBackendIDBackend3})
 
 		// Registry should be unchanged
 		assert.Equal(t, 2, registry.Count())
-		backend := registry.Get(ctx, "backend-1")
-		assert.Equal(t, "Backend 1", backend.Name)
-		assert.Nil(t, registry.Get(ctx, "backend-3"))
+		backend := registry.Get(ctx, testBackendIDBackend1)
+		assert.Equal(t, testBackendNameBackend1, backend.Name)
+		assert.Nil(t, registry.Get(ctx, testBackendIDBackend3))
 	})
 
 	t.Run("original slice modifications do not affect registry", func(t *testing.T) {
 		t.Parallel()
 
 		backends := []Backend{
-			{ID: "backend-1", Name: "Backend 1"},
+			{ID: testBackendIDBackend1, Name: testBackendNameBackend1},
 		}
 		registry := NewImmutableRegistry(backends)
 
 		// Modify original slice
 		backends[0].Name = testModifiedName
-		_ = append(backends, Backend{ID: "backend-2"})
+		_ = append(backends, Backend{ID: testBackendIDBackend2})
 
 		// Registry should be unchanged
-		backend := registry.Get(ctx, "backend-1")
-		assert.Equal(t, "Backend 1", backend.Name)
+		backend := registry.Get(ctx, testBackendIDBackend1)
+		assert.Equal(t, testBackendNameBackend1, backend.Name)
 		assert.Equal(t, 1, registry.Count())
 	})
 }
@@ -735,7 +735,7 @@ func TestDomainTypes_RoutingTable(t *testing.T) {
 	t.Run("can be created with all capability types", func(t *testing.T) {
 		t.Parallel()
 
-		toolTarget := &BackendTarget{WorkloadID: "github-mcp", BaseURL: "http://localhost:8080"}
+		toolTarget := &BackendTarget{WorkloadID: testBackendIDGithubMCP, BaseURL: testBaseURL}
 		resourceTarget := &BackendTarget{WorkloadID: "storage-mcp", BaseURL: "http://localhost:8081"}
 		promptTarget := &BackendTarget{WorkloadID: "llm-mcp", BaseURL: "http://localhost:8082"}
 
@@ -749,17 +749,17 @@ func TestDomainTypes_RoutingTable(t *testing.T) {
 				"file:///settings.yaml": resourceTarget,
 			},
 			Prompts: map[string]*BackendTarget{
-				"code_review": promptTarget,
-				"greeting":    promptTarget,
+				testCapabilityCodeReview: promptTarget,
+				"greeting":               promptTarget,
 			},
 		}
 
 		assert.Len(t, table.Tools, 2)
 		assert.Len(t, table.Resources, 2)
 		assert.Len(t, table.Prompts, 2)
-		assert.Equal(t, "github-mcp", table.Tools["create_pr"].WorkloadID)
+		assert.Equal(t, testBackendIDGithubMCP, table.Tools["create_pr"].WorkloadID)
 		assert.Equal(t, "storage-mcp", table.Resources["file:///config.json"].WorkloadID)
-		assert.Equal(t, "llm-mcp", table.Prompts["code_review"].WorkloadID)
+		assert.Equal(t, "llm-mcp", table.Prompts[testCapabilityCodeReview].WorkloadID)
 	})
 
 	t.Run("can be created with empty maps", func(t *testing.T) {
@@ -793,37 +793,37 @@ func TestBackendTarget_GetBackendCapabilityName(t *testing.T) {
 		{
 			name: "returns original name when set (prefix strategy)",
 			target: &BackendTarget{
-				WorkloadID:             "fetch",
-				OriginalCapabilityName: "fetch",
+				WorkloadID:             testCapabilityFetch,
+				OriginalCapabilityName: testCapabilityFetch,
 			},
 			resolvedName:        "fetch_fetch",
-			expectedBackendName: "fetch",
+			expectedBackendName: testCapabilityFetch,
 			description:         "Tool renamed from 'fetch' to 'fetch_fetch' via prefix strategy",
 		},
 		{
 			name: "returns original name when set (manual strategy)",
 			target: &BackendTarget{
-				WorkloadID:             "github",
-				OriginalCapabilityName: "create_issue",
+				WorkloadID:             testCapabilityGithub,
+				OriginalCapabilityName: testCapabilityCreateIssue,
 			},
 			resolvedName:        "github_create_issue_custom",
-			expectedBackendName: "create_issue",
+			expectedBackendName: testCapabilityCreateIssue,
 			description:         "Tool renamed from 'create_issue' to 'github_create_issue_custom' via manual override",
 		},
 		{
 			name: "returns resolved name when original is empty (no conflict)",
 			target: &BackendTarget{
-				WorkloadID:             "github",
+				WorkloadID:             testCapabilityGithub,
 				OriginalCapabilityName: "",
 			},
-			resolvedName:        "create_issue",
-			expectedBackendName: "create_issue",
+			resolvedName:        testCapabilityCreateIssue,
+			expectedBackendName: testCapabilityCreateIssue,
 			description:         "No conflict resolution applied, names match",
 		},
 		{
 			name: "returns resolved name when original is empty (priority strategy winner)",
 			target: &BackendTarget{
-				WorkloadID:             "github",
+				WorkloadID:             testCapabilityGithub,
 				OriginalCapabilityName: "",
 			},
 			resolvedName:        "list_issues",
@@ -844,10 +844,10 @@ func TestBackendTarget_GetBackendCapabilityName(t *testing.T) {
 			name: "handles prompt names",
 			target: &BackendTarget{
 				WorkloadID:             "ai",
-				OriginalCapabilityName: "code_review",
+				OriginalCapabilityName: testCapabilityCodeReview,
 			},
 			resolvedName:        "ai_code_review",
-			expectedBackendName: "code_review",
+			expectedBackendName: testCapabilityCodeReview,
 			description:         "Prompt name translated for backend",
 		},
 	}
@@ -876,25 +876,25 @@ func TestNewDynamicRegistry(t *testing.T) {
 		expectedCount int
 	}{
 		{
-			name: "single backend",
+			name: testNameSingleBackend,
 			backends: []Backend{
 				{
-					ID:            "backend-1",
-					Name:          "GitHub MCP",
-					BaseURL:       "http://localhost:8080",
-					TransportType: "streamable-http",
+					ID:            testBackendIDBackend1,
+					Name:          testBackendNameGithubMCP,
+					BaseURL:       testBaseURL,
+					TransportType: testTransportStreamableHTTP,
 					HealthStatus:  BackendHealthy,
-					AuthConfig:    &authtypes.BackendAuthStrategy{Type: "unauthenticated"},
-					Metadata:      map[string]string{"env": "production"},
+					AuthConfig:    &authtypes.BackendAuthStrategy{Type: testAuthTypeUnauthenticated},
+					Metadata:      map[string]string{testMetaKeyEnv: testMetaValueProduction},
 				},
 			},
 			expectedCount: 1,
 		},
 		{
-			name: "multiple backends",
+			name: testNameMultipleBackends,
 			backends: []Backend{
-				{ID: "github-mcp", Name: "GitHub MCP", HealthStatus: BackendHealthy},
-				{ID: "jira-mcp", Name: "Jira MCP", HealthStatus: BackendHealthy},
+				{ID: testBackendIDGithubMCP, Name: testBackendNameGithubMCP, HealthStatus: BackendHealthy},
+				{ID: testBackendIDJiraMCP, Name: testBackendNameJiraMCP, HealthStatus: BackendHealthy},
 				{ID: "slack-mcp", Name: "Slack MCP", HealthStatus: BackendDegraded},
 			},
 			expectedCount: 3,
@@ -939,8 +939,8 @@ func TestDynamicRegistry_Upsert(t *testing.T) {
 
 		registry := NewDynamicRegistry(nil)
 		backend := Backend{
-			ID:           "github-mcp",
-			Name:         "GitHub MCP",
+			ID:           testBackendIDGithubMCP,
+			Name:         testBackendNameGithubMCP,
 			HealthStatus: BackendHealthy,
 		}
 
@@ -950,25 +950,25 @@ func TestDynamicRegistry_Upsert(t *testing.T) {
 		assert.Equal(t, 1, registry.Count())
 		assert.Equal(t, uint64(1), registry.Version())
 
-		retrieved := registry.Get(ctx, "github-mcp")
+		retrieved := registry.Get(ctx, testBackendIDGithubMCP)
 		require.NotNil(t, retrieved)
-		assert.Equal(t, "GitHub MCP", retrieved.Name)
+		assert.Equal(t, testBackendNameGithubMCP, retrieved.Name)
 	})
 
 	t.Run("updates existing backend", func(t *testing.T) {
 		t.Parallel()
 
-		initial := []Backend{{ID: "github-mcp", Name: "Original Name"}}
+		initial := []Backend{{ID: testBackendIDGithubMCP, Name: testNameOriginal + " Name"}}
 		registry := NewDynamicRegistry(initial)
 
-		updated := Backend{ID: "github-mcp", Name: "Updated Name"}
+		updated := Backend{ID: testBackendIDGithubMCP, Name: "Updated Name"}
 		err := registry.Upsert(updated)
 
 		require.NoError(t, err)
 		assert.Equal(t, 1, registry.Count())
 		assert.Equal(t, uint64(1), registry.Version())
 
-		retrieved := registry.Get(ctx, "github-mcp")
+		retrieved := registry.Get(ctx, testBackendIDGithubMCP)
 		require.NotNil(t, retrieved)
 		assert.Equal(t, "Updated Name", retrieved.Name)
 	})
@@ -977,7 +977,7 @@ func TestDynamicRegistry_Upsert(t *testing.T) {
 		t.Parallel()
 
 		registry := NewDynamicRegistry(nil)
-		backend := Backend{ID: "test", Name: "Test"}
+		backend := Backend{ID: testBackendIDTest, Name: "Test"}
 
 		err := registry.Upsert(backend)
 		require.NoError(t, err)
@@ -1011,7 +1011,7 @@ func TestDynamicRegistry_Upsert(t *testing.T) {
 		t.Parallel()
 
 		registry := NewDynamicRegistry(nil)
-		backend := Backend{ID: "test", Name: "Original"}
+		backend := Backend{ID: testBackendIDTest, Name: testNameOriginal}
 
 		err := registry.Upsert(backend)
 		require.NoError(t, err)
@@ -1020,9 +1020,9 @@ func TestDynamicRegistry_Upsert(t *testing.T) {
 		backend.Name = "External Modification"
 
 		// Registry should be unchanged (because Upsert received a copy)
-		retrieved := registry.Get(ctx, "test")
+		retrieved := registry.Get(ctx, testBackendIDTest)
 		require.NotNil(t, retrieved)
-		assert.Equal(t, "Original", retrieved.Name)
+		assert.Equal(t, testNameOriginal, retrieved.Name)
 	})
 }
 
@@ -1033,15 +1033,15 @@ func TestDynamicRegistry_Remove(t *testing.T) {
 	t.Run("removes existing backend", func(t *testing.T) {
 		t.Parallel()
 
-		backends := []Backend{{ID: "github-mcp", Name: "GitHub"}}
+		backends := []Backend{{ID: testBackendIDGithubMCP, Name: "GitHub"}}
 		registry := NewDynamicRegistry(backends)
 
-		err := registry.Remove("github-mcp")
+		err := registry.Remove(testBackendIDGithubMCP)
 
 		require.NoError(t, err)
 		assert.Equal(t, 0, registry.Count())
 		assert.Equal(t, uint64(1), registry.Version())
-		assert.Nil(t, registry.Get(ctx, "github-mcp"))
+		assert.Nil(t, registry.Get(ctx, testBackendIDGithubMCP))
 	})
 
 	t.Run("idempotent - removing non-existent backend succeeds", func(t *testing.T) {
@@ -1058,14 +1058,14 @@ func TestDynamicRegistry_Remove(t *testing.T) {
 	t.Run("multiple removes increment version", func(t *testing.T) {
 		t.Parallel()
 
-		backends := []Backend{{ID: "test", Name: "Test"}}
+		backends := []Backend{{ID: testBackendIDTest, Name: "Test"}}
 		registry := NewDynamicRegistry(backends)
 
-		err := registry.Remove("test")
+		err := registry.Remove(testBackendIDTest)
 		require.NoError(t, err)
 		assert.Equal(t, uint64(1), registry.Version())
 
-		err = registry.Remove("test")
+		err = registry.Remove(testBackendIDTest)
 		require.NoError(t, err)
 		assert.Equal(t, uint64(2), registry.Version())
 
@@ -1076,19 +1076,19 @@ func TestDynamicRegistry_Remove(t *testing.T) {
 		t.Parallel()
 
 		backends := []Backend{
-			{ID: "backend-1", Name: "Backend 1"},
-			{ID: "backend-2", Name: "Backend 2"},
-			{ID: "backend-3", Name: "Backend 3"},
+			{ID: testBackendIDBackend1, Name: testBackendNameBackend1},
+			{ID: testBackendIDBackend2, Name: testBackendNameBackend2},
+			{ID: testBackendIDBackend3, Name: testBackendNameBackend3},
 		}
 		registry := NewDynamicRegistry(backends)
 
-		err := registry.Remove("backend-2")
+		err := registry.Remove(testBackendIDBackend2)
 
 		require.NoError(t, err)
 		assert.Equal(t, 2, registry.Count())
-		assert.Nil(t, registry.Get(ctx, "backend-2"))
-		assert.NotNil(t, registry.Get(ctx, "backend-1"))
-		assert.NotNil(t, registry.Get(ctx, "backend-3"))
+		assert.Nil(t, registry.Get(ctx, testBackendIDBackend2))
+		assert.NotNil(t, registry.Get(ctx, testBackendIDBackend1))
+		assert.NotNil(t, registry.Get(ctx, testBackendIDBackend3))
 	})
 }
 
@@ -1121,10 +1121,10 @@ func TestDynamicRegistry_Version(t *testing.T) {
 	t.Run("version increments on remove", func(t *testing.T) {
 		t.Parallel()
 
-		backends := []Backend{{ID: "test"}}
+		backends := []Backend{{ID: testBackendIDTest}}
 		registry := NewDynamicRegistry(backends)
 
-		_ = registry.Remove("test")
+		_ = registry.Remove(testBackendIDTest)
 		assert.Equal(t, uint64(1), registry.Version())
 
 		_ = registry.Remove("non-existent")
@@ -1168,15 +1168,15 @@ func TestDynamicRegistry_ConcurrentAccess(t *testing.T) {
 		t.Parallel()
 
 		backends := []Backend{
-			{ID: "backend-1", Name: "Backend 1"},
-			{ID: "backend-2", Name: "Backend 2"},
+			{ID: testBackendIDBackend1, Name: testBackendNameBackend1},
+			{ID: testBackendIDBackend2, Name: testBackendNameBackend2},
 		}
 		registry := NewDynamicRegistry(backends)
 
 		done := make(chan bool)
 		for i := 0; i < 50; i++ {
 			go func() {
-				_ = registry.Get(ctx, "backend-1")
+				_ = registry.Get(ctx, testBackendIDBackend1)
 				_ = registry.List(ctx)
 				_ = registry.Count()
 				_ = registry.Version()
@@ -1215,8 +1215,8 @@ func TestDynamicRegistry_ConcurrentAccess(t *testing.T) {
 		t.Parallel()
 
 		backends := []Backend{
-			{ID: "backend-1", Name: "Backend 1"},
-			{ID: "backend-2", Name: "Backend 2"},
+			{ID: testBackendIDBackend1, Name: testBackendNameBackend1},
+			{ID: testBackendIDBackend2, Name: testBackendNameBackend2},
 		}
 		registry := NewDynamicRegistry(backends)
 
@@ -1225,7 +1225,7 @@ func TestDynamicRegistry_ConcurrentAccess(t *testing.T) {
 		// Readers
 		for i := 0; i < 25; i++ {
 			go func() {
-				_ = registry.Get(ctx, "backend-1")
+				_ = registry.Get(ctx, testBackendIDBackend1)
 				_ = registry.List(ctx)
 				_ = registry.Count()
 				done <- true
@@ -1260,10 +1260,10 @@ func TestDynamicRegistry_ImmutabilityGuarantees(t *testing.T) {
 		t.Parallel()
 
 		registry := NewDynamicRegistry(nil)
-		_ = registry.Upsert(Backend{ID: "test", Name: "Original"})
+		_ = registry.Upsert(Backend{ID: testBackendIDTest, Name: testNameOriginal})
 
-		backend1 := registry.Get(ctx, "test")
-		backend2 := registry.Get(ctx, "test")
+		backend1 := registry.Get(ctx, testBackendIDTest)
+		backend2 := registry.Get(ctx, testBackendIDTest)
 
 		require.NotNil(t, backend1)
 		require.NotNil(t, backend2)
@@ -1272,36 +1272,36 @@ func TestDynamicRegistry_ImmutabilityGuarantees(t *testing.T) {
 
 		// Modifying one should not affect the other
 		backend1.Name = testModifiedName
-		assert.Equal(t, "Original", backend2.Name)
+		assert.Equal(t, testNameOriginal, backend2.Name)
 	})
 
 	t.Run("List returns independent copies", func(t *testing.T) {
 		t.Parallel()
 
 		registry := NewDynamicRegistry(nil)
-		_ = registry.Upsert(Backend{ID: "test", Name: "Original"})
+		_ = registry.Upsert(Backend{ID: testBackendIDTest, Name: testNameOriginal})
 
 		list1 := registry.List(ctx)
 		list1[0].Name = testModifiedName
 
 		list2 := registry.List(ctx)
-		assert.Equal(t, "Original", list2[0].Name)
+		assert.Equal(t, testNameOriginal, list2[0].Name)
 	})
 
 	t.Run("modifications after Get do not affect registry", func(t *testing.T) {
 		t.Parallel()
 
 		registry := NewDynamicRegistry(nil)
-		_ = registry.Upsert(Backend{ID: "test", Name: "Original"})
+		_ = registry.Upsert(Backend{ID: testBackendIDTest, Name: testNameOriginal})
 
-		backend := registry.Get(ctx, "test")
+		backend := registry.Get(ctx, testBackendIDTest)
 		backend.Name = testModifiedName
 		backend.HealthStatus = BackendUnhealthy
 
 		// Registry should be unchanged
-		retrieved := registry.Get(ctx, "test")
+		retrieved := registry.Get(ctx, testBackendIDTest)
 		require.NotNil(t, retrieved)
-		assert.Equal(t, "Original", retrieved.Name)
+		assert.Equal(t, testNameOriginal, retrieved.Name)
 		assert.NotEqual(t, BackendUnhealthy, retrieved.HealthStatus)
 	})
 }

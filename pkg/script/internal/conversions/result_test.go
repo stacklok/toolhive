@@ -10,6 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testMapKey is a shared key name used across conversions test files.
+const testMapKey = "key"
+
 func TestParseToolResult(t *testing.T) {
 	t.Parallel()
 
@@ -23,10 +26,10 @@ func TestParseToolResult(t *testing.T) {
 			name: "structured content with SDK wrapper",
 			result: &mcp.CallToolResult{
 				StructuredContent: map[string]interface{}{
-					"result": map[string]interface{}{"key": "value"},
+					"result": map[string]interface{}{testMapKey: "value"},
 				},
 			},
-			expect: map[string]interface{}{"key": "value"},
+			expect: map[string]interface{}{testMapKey: "value"},
 		},
 		{
 			name: "structured content without wrapper",

@@ -22,15 +22,15 @@ func TestConfigOptions_Validate(t *testing.T) {
 			name:    "nil config",
 			config:  nil,
 			wantErr: true,
-			errMsg:  "pdp configuration is required",
+			errMsg:  testErrMsgPDPRequired,
 		},
 		{
 			name: "valid HTTP config with MPE claim mapping",
 			config: &ConfigOptions{
 				HTTP: &ConnectionConfig{
-					URL: "http://localhost:9000",
+					URL: testPDPURL,
 				},
-				ClaimMapping: "mpe",
+				ClaimMapping: testClaimMapping,
 			},
 			wantErr: false,
 		},
@@ -38,9 +38,9 @@ func TestConfigOptions_Validate(t *testing.T) {
 			name: "valid HTTP config with standard claim mapping",
 			config: &ConfigOptions{
 				HTTP: &ConnectionConfig{
-					URL: "http://localhost:9000",
+					URL: testPDPURL,
 				},
-				ClaimMapping: "standard",
+				ClaimMapping: testClaimStandard,
 			},
 			wantErr: false,
 		},
@@ -51,7 +51,7 @@ func TestConfigOptions_Validate(t *testing.T) {
 					URL:     "https://pdp.example.com",
 					Timeout: 60,
 				},
-				ClaimMapping: "mpe",
+				ClaimMapping: testClaimMapping,
 			},
 			wantErr: false,
 		},
@@ -65,7 +65,7 @@ func TestConfigOptions_Validate(t *testing.T) {
 			name: "HTTP config without URL",
 			config: &ConfigOptions{
 				HTTP:         &ConnectionConfig{},
-				ClaimMapping: "mpe",
+				ClaimMapping: testClaimMapping,
 			},
 			wantErr: true,
 			errMsg:  "http.url is required",
@@ -74,7 +74,7 @@ func TestConfigOptions_Validate(t *testing.T) {
 			name: "missing claim_mapping",
 			config: &ConfigOptions{
 				HTTP: &ConnectionConfig{
-					URL: "http://localhost:9000",
+					URL: testPDPURL,
 				},
 			},
 			wantErr: true,
@@ -84,7 +84,7 @@ func TestConfigOptions_Validate(t *testing.T) {
 			name: "invalid claim_mapping",
 			config: &ConfigOptions{
 				HTTP: &ConnectionConfig{
-					URL: "http://localhost:9000",
+					URL: testPDPURL,
 				},
 				ClaimMapping: "invalid",
 			},
@@ -120,7 +120,7 @@ func TestParseConfig(t *testing.T) {
 		wantErr   bool
 	}{
 		{
-			name: "valid HTTP config",
+			name: testNameValidHTTPConfig,
 			rawConfig: `{
 				"version": "1.0",
 				"type": "httpv1",
@@ -138,12 +138,9 @@ func TestParseConfig(t *testing.T) {
 			wantErr:   true,
 		},
 		{
-			name: "missing pdp field",
-			rawConfig: `{
-				"version": "1.0",
-				"type": "httpv1"
-			}`,
-			wantErr: false, // parseConfig doesn't validate, just parses
+			name:      testNameMissingPDPField,
+			rawConfig: testRawConfigMissingPDP,
+			wantErr:   false, // parseConfig doesn't validate, just parses
 		},
 	}
 
@@ -171,16 +168,16 @@ func TestConfigOptions_GetClaimMapping(t *testing.T) {
 		{
 			name: "mpe mapping",
 			config: &ConfigOptions{
-				ClaimMapping: "mpe",
+				ClaimMapping: testClaimMapping,
 			},
-			want: "mpe",
+			want: testClaimMapping,
 		},
 		{
 			name: "standard mapping",
 			config: &ConfigOptions{
-				ClaimMapping: "standard",
+				ClaimMapping: testClaimStandard,
 			},
-			want: "standard",
+			want: testClaimStandard,
 		},
 	}
 
@@ -209,7 +206,7 @@ func TestConfigOptions_CreateClaimMapper(t *testing.T) {
 		{
 			name: "MPE mapper",
 			config: &ConfigOptions{
-				ClaimMapping: "mpe",
+				ClaimMapping: testClaimMapping,
 			},
 			wantType: "*http.MPEClaimMapper",
 			wantErr:  false,
@@ -217,7 +214,7 @@ func TestConfigOptions_CreateClaimMapper(t *testing.T) {
 		{
 			name: "standard mapper",
 			config: &ConfigOptions{
-				ClaimMapping: "standard",
+				ClaimMapping: testClaimStandard,
 			},
 			wantType: "*http.StandardClaimMapper",
 			wantErr:  false,

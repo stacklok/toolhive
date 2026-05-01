@@ -55,7 +55,7 @@ func TestValidateRedisConfig(t *testing.T) {
 	}{
 		{
 			name:    "both Addr and SentinelConfig set",
-			cfg:     RedisConfig{Addr: testRedisAddr, SentinelConfig: &SentinelConfig{MasterName: "m", SentinelAddrs: []string{"s:26379"}}, KeyPrefix: "p:"},
+			cfg:     RedisConfig{Addr: testRedisAddr, SentinelConfig: &SentinelConfig{MasterName: "m", SentinelAddrs: []string{testSentinelAddr}}, KeyPrefix: "p:"},
 			wantErr: "mutually exclusive",
 		},
 		{
@@ -65,7 +65,7 @@ func TestValidateRedisConfig(t *testing.T) {
 		},
 		{
 			name:    "Sentinel missing MasterName",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{SentinelAddrs: []string{"s:26379"}}, KeyPrefix: "p:"},
+			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{SentinelAddrs: []string{testSentinelAddr}}, KeyPrefix: "p:"},
 			wantErr: "MasterName",
 		},
 		{
@@ -89,7 +89,7 @@ func TestValidateRedisConfig(t *testing.T) {
 		},
 		{
 			name: "valid sentinel",
-			cfg:  RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "m", SentinelAddrs: []string{"s:26379"}}, KeyPrefix: "thv:vmcp:session:"},
+			cfg:  RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "m", SentinelAddrs: []string{testSentinelAddr}}, KeyPrefix: "thv:vmcp:session:"},
 		},
 	}
 

@@ -10,6 +10,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Test constants shared across git package test files.
+const (
+	testRepoURL    = "https://example.com/repo.git"
+	testCommitHash = "abc123"
+	testShortHash  = "abc"
+	testAuthorName = "Test"
+)
+
 func TestNewDefaultGitClient(t *testing.T) {
 	t.Parallel()
 	client := NewDefaultGitClient()
@@ -25,10 +33,10 @@ func TestDefaultGitClient_Clone_Errors(t *testing.T) {
 		config CloneConfig
 	}{
 		{name: "invalid URL", config: CloneConfig{URL: "invalid-url"}},
-		{name: "conflicting branch and tag", config: CloneConfig{URL: "https://example.com/repo.git", Branch: "main", Tag: "v1.0"}},
-		{name: "conflicting branch and commit", config: CloneConfig{URL: "https://example.com/repo.git", Branch: "main", Commit: "abc123"}},
-		{name: "conflicting tag and commit", config: CloneConfig{URL: "https://example.com/repo.git", Tag: "v1.0", Commit: "abc123"}},
-		{name: "all three refs set", config: CloneConfig{URL: "https://example.com/repo.git", Branch: "main", Tag: "v1.0", Commit: "abc123"}},
+		{name: "conflicting branch and tag", config: CloneConfig{URL: testRepoURL, Branch: "main", Tag: "v1.0"}},
+		{name: "conflicting branch and commit", config: CloneConfig{URL: testRepoURL, Branch: "main", Commit: testCommitHash}},
+		{name: "conflicting tag and commit", config: CloneConfig{URL: testRepoURL, Tag: "v1.0", Commit: testCommitHash}},
+		{name: "all three refs set", config: CloneConfig{URL: testRepoURL, Branch: "main", Tag: "v1.0", Commit: testCommitHash}},
 	}
 
 	for _, tt := range tests {
@@ -162,14 +170,14 @@ func TestCloneConfig_Validate(t *testing.T) {
 		config  CloneConfig
 		wantErr bool
 	}{
-		{name: "URL only", config: CloneConfig{URL: "https://example.com/repo.git"}, wantErr: false},
+		{name: "URL only", config: CloneConfig{URL: testRepoURL}, wantErr: false},
 		{name: "branch only", config: CloneConfig{URL: "u", Branch: "main"}, wantErr: false},
 		{name: "tag only", config: CloneConfig{URL: "u", Tag: "v1"}, wantErr: false},
-		{name: "commit only", config: CloneConfig{URL: "u", Commit: "abc"}, wantErr: false},
+		{name: "commit only", config: CloneConfig{URL: "u", Commit: testShortHash}, wantErr: false},
 		{name: "branch+tag", config: CloneConfig{URL: "u", Branch: "main", Tag: "v1"}, wantErr: true},
-		{name: "branch+commit", config: CloneConfig{URL: "u", Branch: "main", Commit: "abc"}, wantErr: true},
-		{name: "tag+commit", config: CloneConfig{URL: "u", Tag: "v1", Commit: "abc"}, wantErr: true},
-		{name: "all three", config: CloneConfig{URL: "u", Branch: "main", Tag: "v1", Commit: "abc"}, wantErr: true},
+		{name: "branch+commit", config: CloneConfig{URL: "u", Branch: "main", Commit: testShortHash}, wantErr: true},
+		{name: "tag+commit", config: CloneConfig{URL: "u", Tag: "v1", Commit: testShortHash}, wantErr: true},
+		{name: "all three", config: CloneConfig{URL: "u", Branch: "main", Tag: "v1", Commit: testShortHash}, wantErr: true},
 	}
 
 	for _, tt := range tests {

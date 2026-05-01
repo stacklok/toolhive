@@ -22,4 +22,7 @@ const (
 	// testOriginalValue is used in data-storage tests to assert that an
 	// existing entry is not overwritten by a second Create call.
 	testOriginalValue = "original"
+
+	// testSentinelAddr is a sentinel address used in Redis config validation tests.
+	testSentinelAddr = "s:26379"
 )

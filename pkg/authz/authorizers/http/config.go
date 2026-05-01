@@ -12,6 +12,14 @@ import (
 // ConfigType is the configuration type identifier for HTTP-based PDP authorization.
 const ConfigType = "httpv1"
 
+// Claim mapping type constants.
+const (
+	// ClaimMappingMPE selects the MPE claim mapper (m-prefixed claims).
+	ClaimMappingMPE = "mpe"
+	// ClaimMappingStandard selects the standard OIDC claim mapper.
+	ClaimMappingStandard = "standard"
+)
+
 // Config represents the complete authorization configuration file structure
 // for HTTP-based PDP authorization. This includes the common version/type fields
 // plus the PDP-specific "pdp" field.
@@ -91,7 +99,7 @@ func (c *ConfigOptions) Validate() error {
 	}
 
 	// Validate claim_mapping value
-	if c.ClaimMapping != "mpe" && c.ClaimMapping != "standard" {
+	if c.ClaimMapping != ClaimMappingMPE && c.ClaimMapping != ClaimMappingStandard {
 		return fmt.Errorf("invalid claim_mapping %q (valid values: mpe, standard)", c.ClaimMapping)
 	}
 
@@ -115,9 +123,9 @@ func (c *ConfigOptions) GetClaimMapping() string {
 // CreateClaimMapper creates a ClaimMapper based on the configured claim mapping type.
 func (c *ConfigOptions) CreateClaimMapper() (ClaimMapper, error) {
 	switch c.GetClaimMapping() {
-	case "mpe":
+	case ClaimMappingMPE:
 		return &MPEClaimMapper{}, nil
-	case "standard":
+	case ClaimMappingStandard:
 		return &StandardClaimMapper{}, nil
 	default:
 		return nil, fmt.Errorf("unknown claim mapping type: %s (valid values: mpe, standard)", c.ClaimMapping)

@@ -156,6 +156,24 @@ const (
 	BackendUnauthenticated BackendHealthStatus = "unauthenticated"
 )
 
+// CRD status string constants used by ToCRDStatus and DiscoveredBackend.Status.
+const (
+	// BackendReady is the CRD status value for a healthy backend.
+	BackendReady = "ready"
+
+	// BackendCRDStatusDegraded is the CRD status value for a degraded backend.
+	BackendCRDStatusDegraded = "degraded"
+
+	// BackendCRDStatusUnavailable is the CRD status value for an unhealthy backend.
+	BackendCRDStatusUnavailable = "unavailable"
+
+	// BackendCRDStatusUnauthenticated is the CRD status value for an unauthenticated backend.
+	BackendCRDStatusUnauthenticated = "unauthenticated"
+
+	// BackendCRDStatusUnknown is the CRD status value when the backend status is unknown.
+	BackendCRDStatusUnknown = "unknown"
+)
+
 // ToCRDStatus converts BackendHealthStatus to CRD-friendly status string.
 // This maps internal health states to user-facing status values:
 //   - healthy → ready
@@ -166,17 +184,17 @@ const (
 func (s BackendHealthStatus) ToCRDStatus() string {
 	switch s {
 	case BackendHealthy:
-		return "ready"
+		return BackendReady
 	case BackendDegraded:
-		return "degraded"
+		return BackendCRDStatusDegraded
 	case BackendUnhealthy:
-		return "unavailable"
+		return BackendCRDStatusUnavailable
 	case BackendUnauthenticated:
-		return "unauthenticated"
+		return BackendCRDStatusUnauthenticated
 	case BackendUnknown:
-		return "unknown"
+		return BackendCRDStatusUnknown
 	default:
-		return "unknown"
+		return BackendCRDStatusUnknown
 	}
 }
 

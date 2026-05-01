@@ -251,7 +251,7 @@ func TestPartialMatchingPrevention_IntegrationScenarios(t *testing.T) {
 	// Scenario: User has containers "app", "app-web", "app-db"
 	// When looking for "app", should only find exact match, not the others
 	mockContainers := []container.Summary{
-		{ID: "app-main", Names: []string{"/app"}, Labels: map[string]string{"toolhive": "true"}},
+		{ID: "app-main", Names: []string{testContainerApp}, Labels: map[string]string{"toolhive": "true"}},
 		{ID: "app-web-id", Names: []string{"/app-web"}, Labels: map[string]string{"toolhive": "true"}},
 		{ID: "app-db-id", Names: []string{"/app-db"}, Labels: map[string]string{"toolhive": "true"}},
 		{ID: "webapp-id", Names: []string{"/webapp"}, Labels: map[string]string{"toolhive": "true"}},

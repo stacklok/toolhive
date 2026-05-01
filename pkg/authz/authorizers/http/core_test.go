@@ -27,7 +27,7 @@ func TestFactory_ValidateConfig(t *testing.T) {
 		errMsg    string
 	}{
 		{
-			name: "valid HTTP config",
+			name: testNameValidHTTPConfig,
 			rawConfig: `{
 				"version": "1.0",
 				"type": "httpv1",
@@ -41,13 +41,10 @@ func TestFactory_ValidateConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "missing pdp field",
-			rawConfig: `{
-				"version": "1.0",
-				"type": "httpv1"
-			}`,
-			wantErr: true,
-			errMsg:  "pdp configuration is required",
+			name:      testNameMissingPDPField,
+			rawConfig: testRawConfigMissingPDP,
+			wantErr:   true,
+			errMsg:    testErrMsgPDPRequired,
 		},
 		{
 			name: "HTTP config missing URL",
@@ -105,7 +102,7 @@ func TestFactory_CreateAuthorizer(t *testing.T) {
 		errMsg    string
 	}{
 		{
-			name: "valid HTTP config",
+			name: testNameValidHTTPConfig,
 			rawConfig: `{
 				"version": "1.0",
 				"type": "httpv1",
@@ -119,13 +116,10 @@ func TestFactory_CreateAuthorizer(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "missing pdp field",
-			rawConfig: `{
-				"version": "1.0",
-				"type": "httpv1"
-			}`,
-			wantErr: true,
-			errMsg:  "pdp configuration is required",
+			name:      testNameMissingPDPField,
+			rawConfig: testRawConfigMissingPDP,
+			wantErr:   true,
+			errMsg:    testErrMsgPDPRequired,
 		},
 	}
 
@@ -169,13 +163,13 @@ func TestAuthorizer_AuthorizeWithJWTClaims(t *testing.T) {
 			serverAllow: true,
 			feature:     authorizers.MCPFeatureTool,
 			operation:   authorizers.MCPOperationCall,
-			resourceID:  "weather",
+			resourceID:  testResWeather,
 			arguments: map[string]interface{}{
-				"location": "New York",
+				testClaimLocation: testLocation,
 			},
 			claims: map[string]interface{}{
-				"sub":   "user@example.com",
-				"roles": []string{"developer"},
+				testClaimSub:   testSubjectUser,
+				testClaimRoles: []string{testRoleDeveloper},
 			},
 			wantAuthorized: true,
 			wantErr:        false,
@@ -188,7 +182,7 @@ func TestAuthorizer_AuthorizeWithJWTClaims(t *testing.T) {
 			resourceID:  "admin-tool",
 			arguments:   nil,
 			claims: map[string]interface{}{
-				"sub": "user@example.com",
+				testClaimSub: testSubjectUser,
 			},
 			wantAuthorized: false,
 			wantErr:        false,
@@ -198,10 +192,10 @@ func TestAuthorizer_AuthorizeWithJWTClaims(t *testing.T) {
 			serverAllow: true,
 			feature:     authorizers.MCPFeaturePrompt,
 			operation:   authorizers.MCPOperationGet,
-			resourceID:  "greeting",
+			resourceID:  testResGreeting,
 			arguments:   nil,
 			claims: map[string]interface{}{
-				"sub": "user@example.com",
+				testClaimSub: testSubjectUser,
 			},
 			wantAuthorized: true,
 			wantErr:        false,
@@ -211,10 +205,10 @@ func TestAuthorizer_AuthorizeWithJWTClaims(t *testing.T) {
 			serverAllow: true,
 			feature:     authorizers.MCPFeatureResource,
 			operation:   authorizers.MCPOperationRead,
-			resourceID:  "file://data.json",
+			resourceID:  testResDataJSON,
 			arguments:   nil,
 			claims: map[string]interface{}{
-				"sub": "user@example.com",
+				testClaimSub: testSubjectUser,
 			},
 			wantAuthorized: true,
 			wantErr:        false,
@@ -253,7 +247,7 @@ func TestAuthorizer_AuthorizeWithJWTClaims(t *testing.T) {
 				HTTP: &ConnectionConfig{
 					URL: server.URL,
 				},
-				ClaimMapping: "mpe",
+				ClaimMapping: testClaimMapping,
 			}, "test")
 			if err != nil {
 				t.Fatalf("Failed to create authorizer: %v", err)
@@ -294,7 +288,7 @@ func TestAuthorizer_AuthorizeWithJWTClaims_NoIdentity(t *testing.T) {
 		HTTP: &ConnectionConfig{
 			URL: server.URL,
 		},
-		ClaimMapping: "mpe",
+		ClaimMapping: testClaimMapping,
 	}, "test")
 	if err != nil {
 		t.Fatalf("Failed to create authorizer: %v", err)

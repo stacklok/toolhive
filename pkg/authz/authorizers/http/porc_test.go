@@ -27,24 +27,24 @@ func TestBuildPORC(t *testing.T) {
 			name:       "tool call",
 			feature:    authorizers.MCPFeatureTool,
 			operation:  authorizers.MCPOperationCall,
-			resourceID: "weather",
+			resourceID: testResWeather,
 			claims: map[string]interface{}{
-				"sub": "user@example.com",
+				testClaimSub: testSubjectUser,
 			},
 			arguments: map[string]interface{}{
-				"location": "New York",
+				testClaimLocation: testLocation,
 			},
-			wantOp:  "mcp:tool:call",
-			wantRes: "mrn:mcp:test:tool:weather",
+			wantOp:  testOpToolCall,
+			wantRes: testMRNToolWeather,
 		},
 		{
 			name:       "prompt get",
 			feature:    authorizers.MCPFeaturePrompt,
 			operation:  authorizers.MCPOperationGet,
-			resourceID: "greeting",
+			resourceID: testResGreeting,
 			claims: map[string]interface{}{
-				"sub":    "user@example.com",
-				"mroles": []string{"developer"},
+				testClaimSub:    testSubjectUser,
+				testClaimMroles: []string{testRoleDeveloper},
 			},
 			arguments: nil,
 			wantOp:    "mcp:prompt:get",
@@ -54,9 +54,9 @@ func TestBuildPORC(t *testing.T) {
 			name:       "resource read",
 			feature:    authorizers.MCPFeatureResource,
 			operation:  authorizers.MCPOperationRead,
-			resourceID: "file://data.json",
+			resourceID: testResDataJSON,
 			claims: map[string]interface{}{
-				"sub": "user@example.com",
+				testClaimSub: testSubjectUser,
 			},
 			arguments: nil,
 			wantOp:    "mcp:resource:read",
@@ -68,7 +68,7 @@ func TestBuildPORC(t *testing.T) {
 			operation:  authorizers.MCPOperationList,
 			resourceID: "",
 			claims: map[string]interface{}{
-				"sub": "user@example.com",
+				testClaimSub: testSubjectUser,
 			},
 			arguments: nil,
 			wantOp:    "mcp:tool:list",
@@ -93,12 +93,12 @@ func TestBuildPORC(t *testing.T) {
 			}
 
 			// Check principal exists (returns map[string]interface{} for PDP compatibility)
-			if _, ok := porc["principal"].(map[string]interface{}); !ok {
+			if _, ok := porc[testKeyPrincipal].(map[string]interface{}); !ok {
 				t.Error("buildPORC() missing principal")
 			}
 
 			// Check context exists (returns map[string]interface{} for PDP compatibility)
-			if _, ok := porc["context"].(map[string]interface{}); !ok {
+			if _, ok := porc[testKeyContext].(map[string]interface{}); !ok {
 				t.Error("buildPORC() missing context")
 			}
 		})
@@ -130,89 +130,89 @@ func TestBuildPrincipal(t *testing.T) {
 		want   map[string]interface{}
 	}{
 		{
-			name:   "nil claims",
+			name:   testNameNilClaims,
 			claims: nil,
 			want:   map[string]interface{}{},
 		},
 		{
-			name: "basic claims",
+			name: testNameBasicClaims,
 			claims: map[string]interface{}{
-				"sub": "user@example.com",
+				testClaimSub: testSubjectUser,
 			},
 			want: map[string]interface{}{
-				"sub":          "user@example.com",
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "mroles claim",
 			claims: map[string]interface{}{
-				"sub":    "user@example.com",
-				"mroles": []string{"developer"},
+				testClaimSub:    testSubjectUser,
+				testClaimMroles: []string{testRoleDeveloper},
 			},
 			want: map[string]interface{}{
-				"sub":          "user@example.com",
-				"mroles":       []string{"developer"},
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimMroles:       []string{testRoleDeveloper},
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "roles mapped to mroles",
 			claims: map[string]interface{}{
-				"sub":   "user@example.com",
-				"roles": []string{"admin"},
+				testClaimSub:   testSubjectUser,
+				testClaimRoles: []string{testRoleAdmin},
 			},
 			want: map[string]interface{}{
-				"sub":          "user@example.com",
-				"mroles":       []string{"admin"},
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimMroles:       []string{testRoleAdmin},
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "groups mapped to mgroups",
 			claims: map[string]interface{}{
-				"sub":    "user@example.com",
-				"groups": []string{"engineering"},
+				testClaimSub:    testSubjectUser,
+				testClaimGroups: []string{testGroupEng},
 			},
 			want: map[string]interface{}{
-				"sub":          "user@example.com",
-				"mgroups":      []string{"engineering"},
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimMgroups:      []string{testGroupEng},
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "scope mapped to scopes",
 			claims: map[string]interface{}{
-				"sub":   "user@example.com",
-				"scope": "read write",
+				testClaimSub:   testSubjectUser,
+				testClaimScope: testScopeReadWrite,
 			},
 			want: map[string]interface{}{
-				"sub":          "user@example.com",
-				"scopes":       "read write",
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimScopes:       testScopeReadWrite,
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "clearance mapped to mclearance",
 			claims: map[string]interface{}{
-				"sub":       "user@example.com",
-				"clearance": "TOP_SECRET",
+				testClaimSub: testSubjectUser,
+				"clearance":  testClearanceTop,
 			},
 			want: map[string]interface{}{
-				"sub":          "user@example.com",
-				"mclearance":   "TOP_SECRET",
-				"mannotations": emptyAnnotations,
+				testClaimSub:          testSubjectUser,
+				testClaimMclearance:   testClearanceTop,
+				testClaimMannotations: emptyAnnotations,
 			},
 		},
 		{
 			name: "annotations mapped to mannotations",
 			claims: map[string]interface{}{
-				"sub":         "user@example.com",
-				"annotations": map[string]string{"dept": "engineering"},
+				testClaimSub:         testSubjectUser,
+				testClaimAnnotations: map[string]string{testDeptKey: testGroupEng},
 			},
 			want: map[string]interface{}{
-				"sub":          "user@example.com",
-				"mannotations": map[string]string{"dept": "engineering"},
+				testClaimSub:          testSubjectUser,
+				testClaimMannotations: map[string]string{testDeptKey: testGroupEng},
 			},
 		},
 	}
@@ -234,7 +234,7 @@ func TestBuildPrincipal(t *testing.T) {
 
 			// Verify mannotations exists (required for some PDPs in identity phase)
 			if tt.claims != nil {
-				if _, ok := got["mannotations"]; !ok {
+				if _, ok := got[testClaimMannotations]; !ok {
 					t.Error("buildPrincipal() missing mannotations field")
 				}
 			}
@@ -250,7 +250,7 @@ func TestBuildOperation(t *testing.T) {
 		operation authorizers.MCPOperation
 		want      string
 	}{
-		{authorizers.MCPFeatureTool, authorizers.MCPOperationCall, "mcp:tool:call"},
+		{authorizers.MCPFeatureTool, authorizers.MCPOperationCall, testOpToolCall},
 		{authorizers.MCPFeatureTool, authorizers.MCPOperationList, "mcp:tool:list"},
 		{authorizers.MCPFeaturePrompt, authorizers.MCPOperationGet, "mcp:prompt:get"},
 		{authorizers.MCPFeaturePrompt, authorizers.MCPOperationList, "mcp:prompt:list"},
@@ -277,9 +277,9 @@ func TestBuildResource(t *testing.T) {
 		resourceID string
 		want       string
 	}{
-		{authorizers.MCPFeatureTool, "weather", "mrn:mcp:test:tool:weather"},
-		{authorizers.MCPFeaturePrompt, "greeting", "mrn:mcp:test:prompt:greeting"},
-		{authorizers.MCPFeatureResource, "file://data.json", "mrn:mcp:test:resource:file://data.json"},
+		{authorizers.MCPFeatureTool, "weather", testMRNToolWeather},
+		{authorizers.MCPFeaturePrompt, testResGreeting, "mrn:mcp:test:prompt:greeting"},
+		{authorizers.MCPFeatureResource, testResDataJSON, "mrn:mcp:test:resource:file://data.json"},
 		{authorizers.MCPFeatureTool, "", "mrn:mcp:test:tool:"},
 	}
 
@@ -309,7 +309,7 @@ func TestBuildContext(t *testing.T) {
 			name:       "basic context",
 			feature:    authorizers.MCPFeatureTool,
 			operation:  authorizers.MCPOperationCall,
-			resourceID: "weather",
+			resourceID: testResWeather,
 			arguments:  nil,
 			wantArgs:   false,
 		},
@@ -317,10 +317,10 @@ func TestBuildContext(t *testing.T) {
 			name:       "context with arguments",
 			feature:    authorizers.MCPFeatureTool,
 			operation:  authorizers.MCPOperationCall,
-			resourceID: "weather",
+			resourceID: testResWeather,
 			arguments: map[string]interface{}{
-				"location": "New York",
-				"units":    "celsius",
+				testClaimLocation: testLocation,
+				"units":           "celsius",
 			},
 			wantArgs: true,
 		},
@@ -333,7 +333,7 @@ func TestBuildContext(t *testing.T) {
 			got := builder.buildContext(tt.feature, tt.operation, tt.resourceID, tt.arguments)
 
 			// Check that mcp object exists
-			mcpObj, ok := got["mcp"].(map[string]interface{})
+			mcpObj, ok := got[testKeyMCP].(map[string]interface{})
 			if !ok {
 				t.Fatal("buildContext() missing or invalid mcp object")
 			}
@@ -377,7 +377,7 @@ func TestBuildContext_ConfigOptions(t *testing.T) {
 		{
 			name:          "default config - no context",
 			config:        ContextConfig{},
-			arguments:     map[string]interface{}{"location": "New York"},
+			arguments:     map[string]interface{}{testClaimLocation: testLocation},
 			wantMcpObject: false,
 			wantOperation: false,
 			wantArgs:      false,
@@ -387,7 +387,7 @@ func TestBuildContext_ConfigOptions(t *testing.T) {
 			config: ContextConfig{
 				IncludeOperation: true,
 			},
-			arguments:     map[string]interface{}{"location": "New York"},
+			arguments:     map[string]interface{}{testClaimLocation: testLocation},
 			wantMcpObject: true,
 			wantOperation: true,
 			wantArgs:      false,
@@ -397,7 +397,7 @@ func TestBuildContext_ConfigOptions(t *testing.T) {
 			config: ContextConfig{
 				IncludeArgs: true,
 			},
-			arguments:     map[string]interface{}{"location": "New York"},
+			arguments:     map[string]interface{}{testClaimLocation: testLocation},
 			wantMcpObject: true,
 			wantOperation: false,
 			wantArgs:      true,
@@ -418,7 +418,7 @@ func TestBuildContext_ConfigOptions(t *testing.T) {
 				IncludeArgs:      true,
 				IncludeOperation: true,
 			},
-			arguments:     map[string]interface{}{"location": "New York"},
+			arguments:     map[string]interface{}{testClaimLocation: testLocation},
 			wantMcpObject: true,
 			wantOperation: true,
 			wantArgs:      true,
@@ -431,7 +431,7 @@ func TestBuildContext_ConfigOptions(t *testing.T) {
 			builder := NewPORCBuilder("test", tt.config, defaultClaimMapper())
 			got := builder.buildContext(authorizers.MCPFeatureTool, authorizers.MCPOperationCall, "weather", tt.arguments)
 
-			mcpObj, hasMcp := got["mcp"].(map[string]interface{})
+			mcpObj, hasMcp := got[testKeyMCP].(map[string]interface{})
 
 			if tt.wantMcpObject {
 				if !hasMcp {

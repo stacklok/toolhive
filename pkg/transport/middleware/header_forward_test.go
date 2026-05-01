@@ -32,6 +32,9 @@ func executeMiddleware(t *testing.T, mw func(http.Handler) http.Handler, existin
 	return captured
 }
 
+// testCustomHeader is a non-restricted header name used across middleware tests.
+const testCustomHeader = "X-Custom"
+
 func TestCreateHeaderForwardMiddleware(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -52,8 +55,8 @@ func TestCreateHeaderForwardMiddleware(t *testing.T) {
 		},
 		{
 			name:          "single header",
-			configHeaders: map[string]string{"X-Custom": "value"},
-			expected:      map[string]string{"X-Custom": "value"},
+			configHeaders: map[string]string{testCustomHeader: "value"},
+			expected:      map[string]string{testCustomHeader: "value"},
 		},
 		{
 			name:          "multiple headers",
@@ -67,9 +70,9 @@ func TestCreateHeaderForwardMiddleware(t *testing.T) {
 		},
 		{
 			name:            "overwrites existing header",
-			configHeaders:   map[string]string{"X-Custom": "new"},
-			existingHeaders: map[string]string{"X-Custom": "old"},
-			expected:        map[string]string{"X-Custom": "new"},
+			configHeaders:   map[string]string{testCustomHeader: "new"},
+			existingHeaders: map[string]string{testCustomHeader: "old"},
+			expected:        map[string]string{testCustomHeader: "new"},
 		},
 		{
 			name:            "preserves other existing headers",
@@ -103,23 +106,23 @@ func TestCreateHeaderForwardMiddleware_RestrictedHeaders(t *testing.T) {
 		name   string
 		header string
 	}{
-		{name: "Host", header: "Host"},
-		{name: "Connection", header: "Connection"},
-		{name: "Keep-Alive", header: "Keep-Alive"},
+		{name: HeaderHost, header: HeaderHost},
+		{name: HeaderConnection, header: HeaderConnection},
+		{name: HeaderKeepAlive, header: HeaderKeepAlive},
 		{name: "Te", header: "Te"},
-		{name: "Trailer", header: "Trailer"},
-		{name: "Upgrade", header: "Upgrade"},
-		{name: "Http2-Settings", header: "Http2-Settings"},
-		{name: "Proxy-Authorization", header: "Proxy-Authorization"},
-		{name: "Proxy-Authenticate", header: "Proxy-Authenticate"},
-		{name: "Proxy-Connection", header: "Proxy-Connection"},
-		{name: "Transfer-Encoding", header: "Transfer-Encoding"},
-		{name: "Content-Length", header: "Content-Length"},
-		{name: "Forwarded", header: "Forwarded"},
-		{name: "X-Forwarded-For", header: "X-Forwarded-For"},
-		{name: "X-Forwarded-Host", header: "X-Forwarded-Host"},
-		{name: "X-Forwarded-Proto", header: "X-Forwarded-Proto"},
-		{name: "X-Real-Ip", header: "X-Real-Ip"},
+		{name: HeaderTrailer, header: HeaderTrailer},
+		{name: HeaderUpgrade, header: HeaderUpgrade},
+		{name: HeaderHttp2Settings, header: HeaderHttp2Settings},
+		{name: HeaderProxyAuthorization, header: HeaderProxyAuthorization},
+		{name: HeaderProxyAuthenticate, header: HeaderProxyAuthenticate},
+		{name: HeaderProxyConnection, header: HeaderProxyConnection},
+		{name: HeaderTransferEncoding, header: HeaderTransferEncoding},
+		{name: HeaderContentLength, header: HeaderContentLength},
+		{name: HeaderForwarded, header: HeaderForwarded},
+		{name: HeaderXForwardedFor, header: HeaderXForwardedFor},
+		{name: HeaderXForwardedHost, header: HeaderXForwardedHost},
+		{name: HeaderXForwardedProto, header: HeaderXForwardedProto},
+		{name: HeaderXRealIP, header: HeaderXRealIP},
 		{name: "lowercase variant", header: "x-forwarded-for"},
 		{name: "mixed case variant", header: "content-LENGTH"},
 	}
@@ -166,7 +169,7 @@ func TestCreateMiddleware(t *testing.T) {
 		},
 		{
 			name:    "restricted header returns error",
-			params:  mustMarshal(t, HeaderForwardMiddlewareParams{AddHeaders: map[string]string{"Host": "evil.com"}}),
+			params:  mustMarshal(t, HeaderForwardMiddlewareParams{AddHeaders: map[string]string{HeaderHost: "evil.com"}}),
 			wantErr: true,
 		},
 	}

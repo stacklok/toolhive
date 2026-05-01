@@ -13,6 +13,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
+// PORC field key constants used in building and enriching authorization requests.
+const (
+	porcKeyContext     = "context"
+	porcKeyMCP         = "mcp"
+	porcKeyAnnotations = "annotations"
+)
+
 func init() {
 	// Register the HTTP PDP authorizer factory with the authorizers registry.
 	authorizers.Register(ConfigType, &Factory{})
@@ -158,25 +165,25 @@ func (a *Authorizer) Close() error {
 // refactor changes the types), we log a warning and create fresh maps rather
 // than silently dropping existing context data.
 func enrichPORCWithAnnotations(porc PORC, annotationMap map[string]interface{}) {
-	porcCtx, ok := porc["context"].(map[string]interface{})
+	porcCtx, ok := porc[porcKeyContext].(map[string]interface{})
 	if !ok {
-		if porc["context"] != nil {
+		if porc[porcKeyContext] != nil {
 			slog.Warn("enrichPORCWithAnnotations: porc[\"context\"] has unexpected type, creating fresh context")
 		}
-		porc["context"] = map[string]interface{}{
-			"mcp": map[string]interface{}{"annotations": annotationMap},
+		porc[porcKeyContext] = map[string]interface{}{
+			porcKeyMCP: map[string]interface{}{porcKeyAnnotations: annotationMap},
 		}
 		return
 	}
 
-	mcpCtx, ok := porcCtx["mcp"].(map[string]interface{})
+	mcpCtx, ok := porcCtx[porcKeyMCP].(map[string]interface{})
 	if !ok {
-		if porcCtx["mcp"] != nil {
+		if porcCtx[porcKeyMCP] != nil {
 			slog.Warn("enrichPORCWithAnnotations: porc[\"context\"][\"mcp\"] has unexpected type, creating fresh mcp context")
 		}
-		porcCtx["mcp"] = map[string]interface{}{"annotations": annotationMap}
+		porcCtx[porcKeyMCP] = map[string]interface{}{porcKeyAnnotations: annotationMap}
 		return
 	}
 
-	mcpCtx["annotations"] = annotationMap
+	mcpCtx[porcKeyAnnotations] = annotationMap
 }

@@ -80,7 +80,7 @@ func TestStopWorkload_Running_CallsContainerStop(t *testing.T) {
 			return []container.Summary{
 				{
 					ID:     "cid-running",
-					Names:  []string{"/app"},
+					Names:  []string{testContainerApp},
 					Labels: map[string]string{"toolhive": "true"}, // no network isolation -> avoids proxy stops
 					State:  "running",
 				},
@@ -92,7 +92,7 @@ func TestStopWorkload_Running_CallsContainerStop(t *testing.T) {
 			ns.Ports = nat.PortMap{}
 			return container.InspectResponse{
 				ContainerJSONBase: &container.ContainerJSONBase{
-					Name:  "/app",
+					Name:  testContainerApp,
 					State: &container.State{Status: "running", Running: true},
 				},
 				Config:          &container.Config{Image: "img", Labels: map[string]string{"toolhive": "true"}},

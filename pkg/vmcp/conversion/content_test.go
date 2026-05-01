@@ -13,6 +13,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
+// testLastModified is a fixed RFC 3339 timestamp used across annotation test cases.
+const testLastModified = "2025-01-12T15:00:58Z"
+
 func boolPtr(b bool) *bool          { return &b }
 func float64Ptr(f float64) *float64 { return &f }
 
@@ -308,12 +311,12 @@ func TestConvertMCPAnnotations(t *testing.T) {
 			input: &mcp.Annotations{
 				Audience:     []mcp.Role{mcp.RoleUser, mcp.RoleAssistant},
 				Priority:     float64Ptr(0.8),
-				LastModified: "2025-01-12T15:00:58Z",
+				LastModified: testLastModified,
 			},
 			want: &vmcp.ContentAnnotations{
 				Audience:     []string{"user", "assistant"},
 				Priority:     float64Ptr(0.8),
-				LastModified: "2025-01-12T15:00:58Z",
+				LastModified: testLastModified,
 			},
 		},
 		{
@@ -386,12 +389,12 @@ func TestToMCPAnnotations(t *testing.T) {
 			input: &vmcp.ContentAnnotations{
 				Audience:     []string{"user", "assistant"},
 				Priority:     float64Ptr(0.8),
-				LastModified: "2025-01-12T15:00:58Z",
+				LastModified: testLastModified,
 			},
 			want: &mcp.Annotations{
 				Audience:     []mcp.Role{mcp.RoleUser, mcp.RoleAssistant},
 				Priority:     float64Ptr(0.8),
-				LastModified: "2025-01-12T15:00:58Z",
+				LastModified: testLastModified,
 			},
 		},
 	}

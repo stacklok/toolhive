@@ -27,6 +27,27 @@ const (
 
 	protoVersion = "2024-11-05"
 	toolEcho     = "echo"
+
+	// MCP response field keys.
+	fieldProtocolVersion = "protocolVersion"
+	fieldServerInfo      = "serverInfo"
+	fieldName            = "name"
+	fieldVersion         = "version"
+	fieldCapabilities    = "capabilities"
+	fieldTools           = "tools"
+	fieldDescription     = "description"
+	fieldContent         = "content"
+	fieldType            = "type"
+	fieldText            = "text"
+	fieldResources       = "resources"
+	fieldInput           = "input"
+
+	// MCP response values.
+	testServerVersion = "0.0.0-test"
+	testServerName    = "toolhive-test-server"
+	testEchoDesc      = "Echo test tool"
+	testContentType   = "text"
+	testContentText   = "ok"
 )
 
 // TestMCPGoClientInitializeAndPing spins up the Streamable HTTP proxy and uses the real mcp-go client
@@ -64,33 +85,33 @@ func TestMCPGoClientInitializeAndPing(t *testing.T) {
 				case methodInitialize:
 					// Minimal initialize result matching MCP schema
 					result := map[string]any{
-						"protocolVersion": "2024-11-05",
-						"serverInfo": map[string]any{
-							"name":    "toolhive-test-server",
-							"version": "0.0.0-test",
+						fieldProtocolVersion: protoVersion,
+						fieldServerInfo: map[string]any{
+							fieldName:    testServerName,
+							fieldVersion: testServerVersion,
 						},
-						"capabilities": map[string]any{},
+						fieldCapabilities: map[string]any{},
 					}
 					resp, _ := jsonrpc2.NewResponse(req.ID, result, nil)
 					_ = proxy.ForwardResponseToClients(ctx, resp)
 				case methodToolsList:
 					result := map[string]any{
-						"tools": []map[string]any{
-							{"name": toolEcho, "description": "Echo test tool"},
+						fieldTools: []map[string]any{
+							{fieldName: toolEcho, fieldDescription: testEchoDesc},
 						},
 					}
 					resp, _ := jsonrpc2.NewResponse(req.ID, result, nil)
 					_ = proxy.ForwardResponseToClients(ctx, resp)
 				case methodToolsCall:
 					result := map[string]any{
-						"content": []map[string]any{
-							{"type": "text", "text": "ok"},
+						fieldContent: []map[string]any{
+							{fieldType: testContentType, fieldText: testContentText},
 						},
 					}
 					resp, _ := jsonrpc2.NewResponse(req.ID, result, nil)
 					_ = proxy.ForwardResponseToClients(ctx, resp)
 				case methodResourcesList:
-					result := map[string]any{"resources": []any{}}
+					result := map[string]any{fieldResources: []any{}}
 					resp, _ := jsonrpc2.NewResponse(req.ID, result, nil)
 					_ = proxy.ForwardResponseToClients(ctx, resp)
 				case methodPing:
@@ -150,7 +171,7 @@ func TestMCPGoClientInitializeAndPing(t *testing.T) {
 	defer ctCancel()
 	ctReq := mcp.CallToolRequest{}
 	ctReq.Params.Name = toolEcho
-	ctReq.Params.Arguments = map[string]any{"input": "hello"}
+	ctReq.Params.Arguments = map[string]any{fieldInput: "hello"}
 	ctRes, err := cl.CallTool(ctCtx, ctReq)
 	require.NoError(t, err, "call tool over streamable http")
 	require.NotNil(t, ctRes)
@@ -185,30 +206,30 @@ func TestMCPGoConcurrentClientsAndPings(t *testing.T) {
 				switch req.Method {
 				case methodInitialize:
 					result := map[string]any{
-						"protocolVersion": "2024-11-05",
-						"serverInfo":      map[string]any{"name": "toolhive-test-server", "version": "0.0.0-test"},
-						"capabilities":    map[string]any{},
+						fieldProtocolVersion: protoVersion,
+						fieldServerInfo:      map[string]any{fieldName: testServerName, fieldVersion: testServerVersion},
+						fieldCapabilities:    map[string]any{},
 					}
 					resp, _ := jsonrpc2.NewResponse(req.ID, result, nil)
 					_ = proxy.ForwardResponseToClients(ctx, resp)
 				case methodToolsList:
 					result := map[string]any{
-						"tools": []map[string]any{
-							{"name": toolEcho, "description": "Echo test tool"},
+						fieldTools: []map[string]any{
+							{fieldName: toolEcho, fieldDescription: testEchoDesc},
 						},
 					}
 					resp, _ := jsonrpc2.NewResponse(req.ID, result, nil)
 					_ = proxy.ForwardResponseToClients(ctx, resp)
 				case methodToolsCall:
 					result := map[string]any{
-						"content": []map[string]any{
-							{"type": "text", "text": "ok"},
+						fieldContent: []map[string]any{
+							{fieldType: testContentType, fieldText: testContentText},
 						},
 					}
 					resp, _ := jsonrpc2.NewResponse(req.ID, result, nil)
 					_ = proxy.ForwardResponseToClients(ctx, resp)
 				case methodResourcesList:
-					result := map[string]any{"resources": []any{}}
+					result := map[string]any{fieldResources: []any{}}
 					resp, _ := jsonrpc2.NewResponse(req.ID, result, nil)
 					_ = proxy.ForwardResponseToClients(ctx, resp)
 				case methodPing:
@@ -286,7 +307,7 @@ func TestMCPGoConcurrentClientsAndPings(t *testing.T) {
 				defer cancel()
 				ctReq := mcp.CallToolRequest{}
 				ctReq.Params.Name = toolEcho
-				ctReq.Params.Arguments = map[string]any{"input": "ok"}
+				ctReq.Params.Arguments = map[string]any{fieldInput: testContentText}
 				if _, err := c.CallTool(callCtx, ctReq); err != nil {
 					errCh <- err
 				}
@@ -335,30 +356,30 @@ func TestMCPGoManySequentialPingsSingleClient(t *testing.T) {
 				switch req.Method {
 				case methodInitialize:
 					result := map[string]any{
-						"protocolVersion": "2024-11-05",
-						"serverInfo":      map[string]any{"name": "toolhive-test-server", "version": "0.0.0-test"},
-						"capabilities":    map[string]any{},
+						fieldProtocolVersion: protoVersion,
+						fieldServerInfo:      map[string]any{fieldName: testServerName, fieldVersion: testServerVersion},
+						fieldCapabilities:    map[string]any{},
 					}
 					resp, _ := jsonrpc2.NewResponse(req.ID, result, nil)
 					_ = proxy.ForwardResponseToClients(ctx, resp)
 				case methodToolsList:
 					result := map[string]any{
-						"tools": []map[string]any{
-							{"name": toolEcho, "description": "Echo test tool"},
+						fieldTools: []map[string]any{
+							{fieldName: toolEcho, fieldDescription: testEchoDesc},
 						},
 					}
 					resp, _ := jsonrpc2.NewResponse(req.ID, result, nil)
 					_ = proxy.ForwardResponseToClients(ctx, resp)
 				case methodToolsCall:
 					result := map[string]any{
-						"content": []map[string]any{
-							{"type": "text", "text": "ok"},
+						fieldContent: []map[string]any{
+							{fieldType: testContentType, fieldText: testContentText},
 						},
 					}
 					resp, _ := jsonrpc2.NewResponse(req.ID, result, nil)
 					_ = proxy.ForwardResponseToClients(ctx, resp)
 				case methodResourcesList:
-					result := map[string]any{"resources": []any{}}
+					result := map[string]any{fieldResources: []any{}}
 					resp, _ := jsonrpc2.NewResponse(req.ID, result, nil)
 					_ = proxy.ForwardResponseToClients(ctx, resp)
 				case methodPing:
@@ -398,7 +419,7 @@ func TestMCPGoManySequentialPingsSingleClient(t *testing.T) {
 		callCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		ctReq := mcp.CallToolRequest{}
 		ctReq.Params.Name = toolEcho
-		ctReq.Params.Arguments = map[string]any{"input": "ok"}
+		ctReq.Params.Arguments = map[string]any{fieldInput: testContentText}
 		_, err := cl.CallTool(callCtx, ctReq)
 		cancel()
 		require.NoErrorf(t, err, "call-tool %d should succeed", i)

@@ -16,6 +16,9 @@ import (
 // skip the desktop validation check. Set to "1" or "true" to skip.
 const envSkipDesktopCheck = "TOOLHIVE_SKIP_DESKTOP_CHECK"
 
+// runtimeWindows is the GOOS value for Windows.
+const runtimeWindows = "windows"
+
 // ErrDesktopConflict is returned when a conflict is detected between the
 // current CLI and the desktop-managed CLI.
 var ErrDesktopConflict = errors.New("CLI conflict detected")
@@ -152,7 +155,7 @@ func getTargetPath(marker *cliSourceMarker) string {
 	// For Windows/copy method, construct the path to the desktop-managed CLI
 	// from the known installation location: %LOCALAPPDATA%\ToolHive\bin\thv.exe
 	// Note: copy method is only used on Windows; on other platforms, return empty.
-	if marker.InstallMethod == installMethodCopy && runtime.GOOS == "windows" {
+	if marker.InstallMethod == installMethodCopy && runtime.GOOS == runtimeWindows {
 		return filepath.Join(getWindowsLocalAppData(), "ToolHive", "bin", "thv.exe")
 	}
 
@@ -197,7 +200,7 @@ func resolvePath(path string) (string, error) {
 // case sensitivity.
 func pathsEqual(path1, path2 string) bool {
 	// On Windows and macOS, file systems are typically case-insensitive
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+	if runtime.GOOS == runtimeWindows || runtime.GOOS == "darwin" {
 		return strings.EqualFold(path1, path2)
 	}
 	// On Linux and other platforms, use case-sensitive comparison
@@ -242,7 +245,7 @@ func buildConflictMessage(desktopPath, currentPath string, marker *cliSourceMark
 // getDesktopBinPath returns the platform-specific path to the desktop-managed
 // CLI bin directory and the executable name.
 func getDesktopBinPath() (binPath string, exeName string) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == runtimeWindows {
 		// Windows: %LOCALAPPDATA%\ToolHive\bin\thv.exe
 		return filepath.Join(getWindowsLocalAppData(), "ToolHive", "bin"), "thv.exe"
 	}

@@ -48,7 +48,7 @@ func TestCreateMcpContainer_Isolated_WiresConfigAndNetworks(t *testing.T) {
 
 	perm := &runtime.PermissionConfig{
 		Mounts: []runtime.Mount{
-			{Source: "/src1", Target: "/dst1", ReadOnly: true},
+			{Source: "/src1", Target: testMountDst1, ReadOnly: true},
 		},
 		NetworkMode: "bridge",
 		CapDrop:     []string{"ALL"},
@@ -268,7 +268,7 @@ func TestCreateContainer_Mismatch_RemovesAndRecreates(t *testing.T) {
 	api := &fakeDockerAPI{
 		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
 			return []container.Summary{
-				{ID: "cid-old", Names: []string{"/app"}},
+				{ID: "cid-old", Names: []string{testContainerApp}},
 			}, nil
 		},
 		inspectFunc: func(_ context.Context, id string) (container.InspectResponse, error) {

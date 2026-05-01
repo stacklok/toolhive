@@ -73,9 +73,9 @@ type DCRCredentialStore interface {
 // durability, and cross-process coordination gaps documented below.
 //
 // Entries are retained for the process lifetime; there is no TTL and no
-// background cleanup goroutine. The unbounded-cache footgun called out in
-// .claude/rules/go-style.md "Resource Leaks" does not bite here because the
-// key space is bounded by the operator-configured upstream count, and this
+// background cleanup goroutine. The usual concern about an unbounded
+// cache leaking memory does not apply here because the key space is
+// bounded by the operator-configured upstream count, and this
 // implementation is not the production answer.
 //
 // What this enables: serialises Get/Put against a single in-process map so
@@ -122,8 +122,8 @@ func (s *inMemoryDCRCredentialStore) Get(_ context.Context, key DCRKey) (*DCRRes
 		return nil, false, nil
 	}
 	// Return a defensive copy so mutations by the caller never reach the
-	// cache entry. This mirrors the copy-before-mutate rule in
-	// .claude/rules/go-style.md.
+	// cache entry — internal maps and pointers must not be reachable from
+	// the caller's value.
 	cp := *res
 	return &cp, true, nil
 }
@@ -132,8 +132,8 @@ func (s *inMemoryDCRCredentialStore) Get(_ context.Context, key DCRKey) (*DCRRes
 //
 // A nil resolution is rejected rather than silently no-oped: a caller
 // passing nil would otherwise get a successful return, observe a miss on
-// the next Get, and have no error trail to debug from. Per the constructor-
-// validation rule in .claude/rules/go-style.md, fail loudly at the boundary.
+// the next Get, and have no error trail to debug from. Failing loudly at
+// the boundary makes such bugs visible at the first call.
 func (s *inMemoryDCRCredentialStore) Put(_ context.Context, key DCRKey, resolution *DCRResolution) error {
 	if resolution == nil {
 		return fmt.Errorf("dcr: resolution must not be nil")

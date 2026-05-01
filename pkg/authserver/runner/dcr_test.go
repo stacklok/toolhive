@@ -631,7 +631,7 @@ func TestNeedsDCR(t *testing.T) {
 	}
 }
 
-func TestApplyResolution_RespectsExplicitEndpoints(t *testing.T) {
+func TestConsumeResolution_RespectsExplicitEndpoints(t *testing.T) {
 	t.Parallel()
 
 	rc := &authserver.OAuth2UpstreamRunConfig{
@@ -643,13 +643,13 @@ func TestApplyResolution_RespectsExplicitEndpoints(t *testing.T) {
 		AuthorizationEndpoint: "https://discovered/authorize",
 		TokenEndpoint:         "https://discovered/token",
 	}
-	applyResolution(rc, res)
+	consumeResolution(rc, res)
 	assert.Equal(t, "got-client", rc.ClientID)
 	assert.Equal(t, "https://explicit/authorize", rc.AuthorizationEndpoint)
 	assert.Equal(t, "https://explicit/token", rc.TokenEndpoint)
 }
 
-func TestApplyResolution_FillsMissingEndpoints(t *testing.T) {
+func TestConsumeResolution_FillsMissingEndpoints(t *testing.T) {
 	t.Parallel()
 
 	rc := &authserver.OAuth2UpstreamRunConfig{}
@@ -658,18 +658,18 @@ func TestApplyResolution_FillsMissingEndpoints(t *testing.T) {
 		AuthorizationEndpoint: "https://discovered/authorize",
 		TokenEndpoint:         "https://discovered/token",
 	}
-	applyResolution(rc, res)
+	consumeResolution(rc, res)
 	assert.Equal(t, "got-client", rc.ClientID)
 	assert.Equal(t, "https://discovered/authorize", rc.AuthorizationEndpoint)
 	assert.Equal(t, "https://discovered/token", rc.TokenEndpoint)
 }
 
-// TestApplyResolution_ConsumesDCRConfig pins the contract that
-// applyResolution clears DCRConfig on the run-config copy after writing the
-// resolved ClientID. Without this, OAuth2UpstreamRunConfig.Validate (run by
-// buildPureOAuth2Config downstream) trips its ClientID-xor-DCRConfig rule
-// on the resolved copy and rejects the upstream at boot.
-func TestApplyResolution_ConsumesDCRConfig(t *testing.T) {
+// TestConsumeResolution_ClearsDCRConfig pins the contract that
+// consumeResolution clears DCRConfig on the run-config copy after writing
+// the resolved ClientID. Without this, OAuth2UpstreamRunConfig.Validate
+// (run by buildPureOAuth2Config downstream) trips its ClientID-xor-
+// DCRConfig rule on the resolved copy and rejects the upstream at boot.
+func TestConsumeResolution_ClearsDCRConfig(t *testing.T) {
 	t.Parallel()
 
 	rc := &authserver.OAuth2UpstreamRunConfig{
@@ -681,11 +681,11 @@ func TestApplyResolution_ConsumesDCRConfig(t *testing.T) {
 		ClientID: "dcr-issued-client",
 	}
 
-	applyResolution(rc, res)
+	consumeResolution(rc, res)
 
 	assert.Equal(t, "dcr-issued-client", rc.ClientID)
 	assert.Nil(t, rc.DCRConfig,
-		"applyResolution must clear DCRConfig so the resolved copy satisfies the ClientID-xor-DCRConfig invariant")
+		"consumeResolution must clear DCRConfig so the resolved copy satisfies the ClientID-xor-DCRConfig invariant")
 }
 
 func TestResolveUpstreamRedirectURI(t *testing.T) {
@@ -1197,11 +1197,11 @@ func TestResolveUpstreamRedirectURI_PreservesIssuerPath(t *testing.T) {
 	}
 }
 
-// TestApplyResolution_DoesNotOverwritePreProvisionedClientID verifies the
-// defence-in-depth in applyResolution: a caller that bypasses
-// validateResolveInputs and invokes applyResolution directly with a
+// TestConsumeResolution_DoesNotOverwritePreProvisionedClientID verifies
+// the defence-in-depth in consumeResolution: a caller that bypasses
+// validateResolveInputs and invokes consumeResolution directly with a
 // pre-provisioned ClientID does not have it silently clobbered.
-func TestApplyResolution_DoesNotOverwritePreProvisionedClientID(t *testing.T) {
+func TestConsumeResolution_DoesNotOverwritePreProvisionedClientID(t *testing.T) {
 	t.Parallel()
 
 	rc := &authserver.OAuth2UpstreamRunConfig{
@@ -1210,9 +1210,9 @@ func TestApplyResolution_DoesNotOverwritePreProvisionedClientID(t *testing.T) {
 	res := &DCRResolution{
 		ClientID: "would-be-overwrite",
 	}
-	applyResolution(rc, res)
+	consumeResolution(rc, res)
 	assert.Equal(t, "pre-provisioned", rc.ClientID,
-		"applyResolution must not overwrite a non-empty ClientID")
+		"consumeResolution must not overwrite a non-empty ClientID")
 }
 
 // TestResolveDCREndpoints_DirectRegistrationEndpointValidated covers
@@ -1568,8 +1568,9 @@ func (s panickingPutDCRStore) Put(_ context.Context, _ DCRKey, _ *DCRResolution)
 // singleflight.Group re-panics the leader's panic in every follower, so
 // without the recover N concurrent callers for the same DCRKey would all
 // crash with the same value. The defer/recover converts the panic to a
-// normal error, the panic is logged at Error with a stack, and every
-// caller gets the same wrapped error.
+// *dcrStepError(dcrStepRegister, ..., Stack: <captured>); the boundary
+// caller's logDCRStepError emits the single Error record and every caller
+// gets the same wrapped error.
 func TestResolveDCRCredentials_RecoversPanicInsideSingleflight(t *testing.T) {
 	t.Parallel()
 
@@ -1624,10 +1625,21 @@ func TestResolveDCRCredentials_RecoversPanicInsideSingleflight(t *testing.T) {
 			i, errs[i].Error())
 		assert.Contains(t, errs[i].Error(), "boom",
 			"goroutine %d's error must include the panic value so the cause is recoverable", i)
+
+		// The captured stack and dcrStepRegister tag must travel with the
+		// returned error so the boundary log (logDCRStepError) emits a
+		// single Error record without a duplicate in-defer log.
+		var stepErr *dcrStepError
+		require.True(t, errors.As(errs[i], &stepErr),
+			"goroutine %d's error must wrap a *dcrStepError; got %T", i, errs[i])
+		assert.Equal(t, dcrStepRegister, stepErr.Step,
+			"goroutine %d's wrapped error must carry the dcrStepRegister step", i)
+		assert.NotEmpty(t, stepErr.Stack,
+			"goroutine %d's wrapped error must include the captured panic stack", i)
 	}
 }
 
-func TestDCRStepError(t *testing.T) {
+func TestDcrStepError(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Error formats step and cause", func(t *testing.T) {
@@ -1653,21 +1665,21 @@ func TestDCRStepError(t *testing.T) {
 		e := newDCRStepError(dcrStepCacheRead, "https://as", "https://app/cb", cause)
 		wrapped := fmt.Errorf("outer: %w", e)
 
-		var got *DCRStepError
+		var got *dcrStepError
 		require.True(t, errors.As(wrapped, &got))
 		assert.Equal(t, dcrStepCacheRead, got.Step)
 		assert.Equal(t, "https://as", got.Issuer)
 		assert.Equal(t, "https://app/cb", got.RedirectURI)
 	})
 
-	t.Run("resolveDCRCredentials wraps every failure in a DCRStepError", func(t *testing.T) {
+	t.Run("resolveDCRCredentials wraps every failure in a dcrStepError", func(t *testing.T) {
 		t.Parallel()
 
 		// Precondition failure → dcrStepValidate.
 		_, err := resolveDCRCredentials(context.Background(), nil, "https://as",
 			NewInMemoryDCRCredentialStore())
 		require.Error(t, err)
-		var stepErr *DCRStepError
+		var stepErr *dcrStepError
 		require.True(t, errors.As(err, &stepErr))
 		assert.Equal(t, dcrStepValidate, stepErr.Step)
 	})
@@ -1740,6 +1752,28 @@ func TestSanitizeErrorForLog(t *testing.T) {
 			name:     "go http client style quoted URL is sanitised",
 			in:       fmt.Errorf(`Get "https://as.example.com/register?token=abc": EOF`),
 			expected: `Get "https://as.example.com/register": EOF`,
+		},
+		{
+			name:     "embedded userinfo is stripped",
+			in:       fmt.Errorf("connect https://user:pass@host.example/path?q=1 failed"),
+			expected: "connect https://host.example/path failed",
+		},
+		{
+			name:     "embedded userinfo without query is stripped",
+			in:       fmt.Errorf("connect https://user:pass@host.example/path failed"),
+			expected: "connect https://host.example/path failed",
+		},
+		{
+			name:     "fragment is stripped",
+			in:       fmt.Errorf("callback https://app.example/cb#access_token=abc failed"),
+			expected: "callback https://app.example/cb failed",
+		},
+		{
+			// url.Parse normalises the scheme to lowercase, so the
+			// post-sanitisation form matches the canonical scheme casing.
+			name:     "uppercase scheme is sanitised",
+			in:       fmt.Errorf("GET HTTPS://as.example.com/register?token=leak failed"),
+			expected: "GET https://as.example.com/register failed",
 		},
 	}
 

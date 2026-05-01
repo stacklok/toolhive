@@ -423,9 +423,21 @@ components:
       properties:
         discovery_url:
           description: |-
-            DiscoveryURL is the RFC 8414 / OIDC Discovery URL from which the
-            registration_endpoint is resolved at runtime. Mutually exclusive with
-            RegistrationEndpoint.
+            DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
+            fetch at runtime. The resolver issues a single GET against this URL
+            (no well-known-path fallback) and reads registration_endpoint,
+            authorization_endpoint, token_endpoint,
+            token_endpoint_auth_methods_supported, and scopes_supported from the
+            response. Per RFC 8414 §3.3, the document's "issuer" field must
+            exactly match the upstream issuer configured on the parent
+            run-config.
+
+            Use this field when the upstream publishes discovery metadata at a
+            path that differs from the issuer-derived well-known paths — for
+            example a multi-tenant IdP whose metadata lives at
+            https://idp.example.com/tenants/acme/.well-known/openid-configuration.
+
+            Mutually exclusive with RegistrationEndpoint.
           type: string
         initial_access_token_env_var:
           description: |-
@@ -443,7 +455,14 @@ components:
         registration_endpoint:
           description: |-
             RegistrationEndpoint is the RFC 7591 registration endpoint URL used
-            directly, bypassing discovery. Mutually exclusive with DiscoveryURL.
+            directly, bypassing discovery. Because no discovery is performed,
+            server-capability fields (token_endpoint_auth_methods_supported,
+            scopes_supported) are unavailable on this code path; the caller is
+            expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
+            explicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth
+            method falls back to the resolver's default (client_secret_basic).
+
+            Mutually exclusive with DiscoveryURL.
           type: string
         software_id:
           description: |-

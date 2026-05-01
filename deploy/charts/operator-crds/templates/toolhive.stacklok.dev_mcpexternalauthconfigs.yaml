@@ -478,8 +478,19 @@ spec:
                       The embedded auth server delegates authentication to these providers.
                       MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
-                      description: UpstreamProviderConfig defines configuration for
-                        an upstream Identity Provider.
+                      description: |-
+                        UpstreamProviderConfig defines configuration for an upstream Identity Provider.
+
+                        Exactly one of OIDCConfig or OAuth2Config must be set and must match the
+                        declared Type: oidc-typed providers set OIDCConfig, oauth2-typed providers
+                        set OAuth2Config. The CEL rule below enforces the pairing at admission; the
+                        matching Go-level check in validateUpstreamProvider provides defense-in-depth
+                        for stored objects.
+
+                        The rule is structured as a chain of equality checks ending in an explicit
+                        `false`, so adding a new UpstreamProviderType value without extending this
+                        rule fails admission instead of silently demanding the OAuth2 shape. When
+                        adding a new type, extend both this rule and validateUpstreamProvider.
                       properties:
                         name:
                           description: |-
@@ -513,8 +524,10 @@ spec:
                               pattern: ^https?://.*$
                               type: string
                             clientId:
-                              description: ClientID is the OAuth 2.0 client identifier
-                                registered with the upstream IDP.
+                              description: |-
+                                ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
+                                Mutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained
+                                at runtime via RFC 7591 Dynamic Client Registration and must be left empty.
                               type: string
                             clientSecretRef:
                               description: |-
@@ -531,6 +544,75 @@ spec:
                               - key
                               - name
                               type: object
+                            dcrConfig:
+                              description: |-
+                                DCRConfig enables RFC 7591 Dynamic Client Registration against the upstream
+                                authorization server. When set, the client credentials are obtained at
+                                runtime rather than being pre-provisioned, and ClientID must be left empty.
+                                Mutually exclusive with ClientID.
+                              properties:
+                                discoveryUrl:
+                                  description: |-
+                                    DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
+                                    issues a single GET against this URL (no well-known-path fallback) and
+                                    reads registration_endpoint, authorization_endpoint, token_endpoint,
+                                    token_endpoint_auth_methods_supported, and scopes_supported from the
+                                    response.
+                                    Mutually exclusive with RegistrationEndpoint.
+                                    MaxLength bounds CEL cost estimation on the parent struct's
+                                    XValidation rule and matches the conventional URL length cap.
+                                  maxLength: 2048
+                                  pattern: ^https?://.*$
+                                  type: string
+                                initialAccessTokenRef:
+                                  description: |-
+                                    InitialAccessTokenRef is an optional reference to a Kubernetes Secret
+                                    carrying an RFC 7591 §3 initial access token. When set, the resolver
+                                    presents the token value as a Bearer credential on the registration
+                                    request. Mirrors the ClientSecretRef pattern.
+                                  properties:
+                                    key:
+                                      description: Key is the key within the secret
+                                      type: string
+                                    name:
+                                      description: Name is the name of the secret
+                                      type: string
+                                  required:
+                                  - key
+                                  - name
+                                  type: object
+                                registrationEndpoint:
+                                  description: |-
+                                    RegistrationEndpoint is the RFC 7591 registration endpoint URL used
+                                    directly, bypassing discovery. When using this field, the caller is
+                                    expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
+                                    explicit Scopes list on the parent OAuth2UpstreamConfig.
+                                    Mutually exclusive with DiscoveryURL.
+                                    MaxLength bounds CEL cost estimation on the parent struct's
+                                    XValidation rule and matches the conventional URL length cap.
+                                  maxLength: 2048
+                                  pattern: ^https?://.*$
+                                  type: string
+                                softwareId:
+                                  description: |-
+                                    SoftwareID is the RFC 7591 "software_id" registration metadata value,
+                                    identifying the client software independent of any particular
+                                    registration instance. Typically a UUID or short identifier.
+                                  maxLength: 255
+                                  type: string
+                                softwareStatement:
+                                  description: |-
+                                    SoftwareStatement is the RFC 7591 "software_statement" JWT asserting
+                                    metadata about the client software, signed by a party the authorization
+                                    server trusts. Bounded to 4096 characters to prevent unbounded
+                                    user input from inflating the CR beyond etcd object limits.
+                                  maxLength: 4096
+                                  type: string
+                              type: object
+                              x-kubernetes-validations:
+                              - message: exactly one of discoveryUrl or registrationEndpoint
+                                  must be set
+                                rule: has(self.discoveryUrl) != has(self.registrationEndpoint)
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -647,9 +729,13 @@ spec:
                               type: object
                           required:
                           - authorizationEndpoint
-                          - clientId
                           - tokenEndpoint
                           type: object
+                          x-kubernetes-validations:
+                          - message: exactly one of clientId or dcrConfig must be
+                              set
+                            rule: '(has(self.clientId) && size(self.clientId) > 0)
+                              ? !has(self.dcrConfig) : has(self.dcrConfig)'
                         oidcConfig:
                           description: |-
                             OIDCConfig contains OIDC-specific configuration.
@@ -789,6 +875,13 @@ spec:
                       - name
                       - type
                       type: object
+                      x-kubernetes-validations:
+                      - message: type must be 'oidc' or 'oauth2'; oidcConfig must
+                          be set when type is 'oidc' and oauth2Config must be set
+                          when type is 'oauth2' (and the other must not be set)
+                        rule: 'self.type == ''oidc'' ? (has(self.oidcConfig) && !has(self.oauth2Config))
+                          : self.type == ''oauth2'' ? (has(self.oauth2Config) && !has(self.oidcConfig))
+                          : false'
                     minItems: 1
                     type: array
                     x-kubernetes-list-map-keys:
@@ -1513,8 +1606,19 @@ spec:
                       The embedded auth server delegates authentication to these providers.
                       MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
-                      description: UpstreamProviderConfig defines configuration for
-                        an upstream Identity Provider.
+                      description: |-
+                        UpstreamProviderConfig defines configuration for an upstream Identity Provider.
+
+                        Exactly one of OIDCConfig or OAuth2Config must be set and must match the
+                        declared Type: oidc-typed providers set OIDCConfig, oauth2-typed providers
+                        set OAuth2Config. The CEL rule below enforces the pairing at admission; the
+                        matching Go-level check in validateUpstreamProvider provides defense-in-depth
+                        for stored objects.
+
+                        The rule is structured as a chain of equality checks ending in an explicit
+                        `false`, so adding a new UpstreamProviderType value without extending this
+                        rule fails admission instead of silently demanding the OAuth2 shape. When
+                        adding a new type, extend both this rule and validateUpstreamProvider.
                       properties:
                         name:
                           description: |-
@@ -1548,8 +1652,10 @@ spec:
                               pattern: ^https?://.*$
                               type: string
                             clientId:
-                              description: ClientID is the OAuth 2.0 client identifier
-                                registered with the upstream IDP.
+                              description: |-
+                                ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
+                                Mutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained
+                                at runtime via RFC 7591 Dynamic Client Registration and must be left empty.
                               type: string
                             clientSecretRef:
                               description: |-
@@ -1566,6 +1672,75 @@ spec:
                               - key
                               - name
                               type: object
+                            dcrConfig:
+                              description: |-
+                                DCRConfig enables RFC 7591 Dynamic Client Registration against the upstream
+                                authorization server. When set, the client credentials are obtained at
+                                runtime rather than being pre-provisioned, and ClientID must be left empty.
+                                Mutually exclusive with ClientID.
+                              properties:
+                                discoveryUrl:
+                                  description: |-
+                                    DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
+                                    issues a single GET against this URL (no well-known-path fallback) and
+                                    reads registration_endpoint, authorization_endpoint, token_endpoint,
+                                    token_endpoint_auth_methods_supported, and scopes_supported from the
+                                    response.
+                                    Mutually exclusive with RegistrationEndpoint.
+                                    MaxLength bounds CEL cost estimation on the parent struct's
+                                    XValidation rule and matches the conventional URL length cap.
+                                  maxLength: 2048
+                                  pattern: ^https?://.*$
+                                  type: string
+                                initialAccessTokenRef:
+                                  description: |-
+                                    InitialAccessTokenRef is an optional reference to a Kubernetes Secret
+                                    carrying an RFC 7591 §3 initial access token. When set, the resolver
+                                    presents the token value as a Bearer credential on the registration
+                                    request. Mirrors the ClientSecretRef pattern.
+                                  properties:
+                                    key:
+                                      description: Key is the key within the secret
+                                      type: string
+                                    name:
+                                      description: Name is the name of the secret
+                                      type: string
+                                  required:
+                                  - key
+                                  - name
+                                  type: object
+                                registrationEndpoint:
+                                  description: |-
+                                    RegistrationEndpoint is the RFC 7591 registration endpoint URL used
+                                    directly, bypassing discovery. When using this field, the caller is
+                                    expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
+                                    explicit Scopes list on the parent OAuth2UpstreamConfig.
+                                    Mutually exclusive with DiscoveryURL.
+                                    MaxLength bounds CEL cost estimation on the parent struct's
+                                    XValidation rule and matches the conventional URL length cap.
+                                  maxLength: 2048
+                                  pattern: ^https?://.*$
+                                  type: string
+                                softwareId:
+                                  description: |-
+                                    SoftwareID is the RFC 7591 "software_id" registration metadata value,
+                                    identifying the client software independent of any particular
+                                    registration instance. Typically a UUID or short identifier.
+                                  maxLength: 255
+                                  type: string
+                                softwareStatement:
+                                  description: |-
+                                    SoftwareStatement is the RFC 7591 "software_statement" JWT asserting
+                                    metadata about the client software, signed by a party the authorization
+                                    server trusts. Bounded to 4096 characters to prevent unbounded
+                                    user input from inflating the CR beyond etcd object limits.
+                                  maxLength: 4096
+                                  type: string
+                              type: object
+                              x-kubernetes-validations:
+                              - message: exactly one of discoveryUrl or registrationEndpoint
+                                  must be set
+                                rule: has(self.discoveryUrl) != has(self.registrationEndpoint)
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -1682,9 +1857,13 @@ spec:
                               type: object
                           required:
                           - authorizationEndpoint
-                          - clientId
                           - tokenEndpoint
                           type: object
+                          x-kubernetes-validations:
+                          - message: exactly one of clientId or dcrConfig must be
+                              set
+                            rule: '(has(self.clientId) && size(self.clientId) > 0)
+                              ? !has(self.dcrConfig) : has(self.dcrConfig)'
                         oidcConfig:
                           description: |-
                             OIDCConfig contains OIDC-specific configuration.
@@ -1824,6 +2003,13 @@ spec:
                       - name
                       - type
                       type: object
+                      x-kubernetes-validations:
+                      - message: type must be 'oidc' or 'oauth2'; oidcConfig must
+                          be set when type is 'oidc' and oauth2Config must be set
+                          when type is 'oauth2' (and the other must not be set)
+                        rule: 'self.type == ''oidc'' ? (has(self.oidcConfig) && !has(self.oauth2Config))
+                          : self.type == ''oauth2'' ? (has(self.oauth2Config) && !has(self.oidcConfig))
+                          : false'
                     minItems: 1
                     type: array
                     x-kubernetes-list-map-keys:

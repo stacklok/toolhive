@@ -46,6 +46,9 @@ type Config struct {
 	// explicit empty string means "no prefix" — required for LiteLLM or direct
 	// Anthropic. Use EffectiveAnthropicPathPrefix to read the resolved value.
 	// Must start with "/" when non-nil and non-empty.
+	// Note: omitempty applies only when the pointer is nil — a non-nil pointer
+	// to "" is persisted as an explicit empty string, preserving the "no
+	// prefix" intent across restarts.
 	AnthropicPathPrefix *string      `yaml:"anthropic_path_prefix,omitempty" json:"anthropic_path_prefix,omitempty"`
 	OIDC                OIDCConfig   `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
 	Proxy               ProxyConfig  `yaml:"proxy,omitempty"             json:"proxy,omitempty"`

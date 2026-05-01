@@ -39,7 +39,8 @@ func (c *Config) SetFields(opts SetOptions) error {
 		c.TLSSkipVerify = *opts.TLSSkipVerify
 	}
 	if opts.AnthropicPathPrefix != nil {
-		c.AnthropicPathPrefix = opts.AnthropicPathPrefix
+		v := *opts.AnthropicPathPrefix
+		c.AnthropicPathPrefix = &v
 	}
 
 	if !c.IsConfigured() {
@@ -105,14 +106,17 @@ func (c *Config) Show(w io.Writer) error {
 	}
 
 	writef("Gateway URL:     %s\n", c.GatewayURL)
-	switch {
-	case c.AnthropicPathPrefix == nil:
-		writef("Anthropic path:  %s (default)\n", DefaultAnthropicPathPrefix)
-	case *c.AnthropicPathPrefix == "":
-		writef("Anthropic path:  (none — direct Anthropic / LiteLLM)\n")
-	default:
-		writef("Anthropic path:  %s\n", *c.AnthropicPathPrefix)
-	}
+	anthropicPathDisplay := func() string {
+		switch {
+		case c.AnthropicPathPrefix == nil:
+			return fmt.Sprintf("%s (default)", DefaultAnthropicPathPrefix)
+		case *c.AnthropicPathPrefix == "":
+			return "(none — direct Anthropic / LiteLLM)"
+		default:
+			return *c.AnthropicPathPrefix
+		}
+	}()
+	writef("Anthropic path:  %s\n", anthropicPathDisplay)
 	writef("OIDC Issuer:     %s\n", c.OIDC.Issuer)
 	writef("OIDC Client:     %s\n", c.OIDC.ClientID)
 	if c.OIDC.Audience != "" {

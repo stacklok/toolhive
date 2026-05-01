@@ -163,9 +163,12 @@ const (
 // from the settings file rather than skipped. Use for conditional keys like
 // NODE_TLS_REJECT_UNAUTHORIZED that must be cleaned up when the flag is cleared.
 type LLMGatewayKeySpec struct {
-	JSONPointer    string // RFC 6901 path
-	ValueField     string // "GatewayURL" | "ProxyBaseURL" | "TokenHelperCommand" | "PlaceholderAPIKey" | "NodeTLSRejectUnauthorized"
-	ClearWhenEmpty bool   // remove the key when the resolved value is empty
+	JSONPointer string // RFC 6901 path
+	// ValueField names which ApplyConfig field to write:
+	// "AnthropicBaseURL" | "GatewayURL" | "ProxyBaseURL" |
+	// "TokenHelperCommand" | "PlaceholderAPIKey" | "NodeTLSRejectUnauthorized"
+	ValueField     string
+	ClearWhenEmpty bool // remove the key when the resolved value is empty
 }
 
 // clientAppConfig represents a configuration path for a supported MCP client.

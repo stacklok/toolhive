@@ -202,8 +202,9 @@ func setRegistryCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to clear registry auth: %w", err)
 	}
 
+	hasAuth := registryAuthIssuer != "" && registryAuthClientID != ""
 	service := registry.NewConfigurator()
-	registryType, err := service.SetRegistryFromInput(input, allowPrivateRegistryIp)
+	registryType, err := service.SetRegistryFromInput(input, allowPrivateRegistryIp, hasAuth)
 	if err != nil {
 		// Enhance error message for better user experience
 		return enhanceRegistryError(err, input, registryType)

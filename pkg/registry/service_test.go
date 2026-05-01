@@ -4,6 +4,8 @@
 package registry_test
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,20 +20,22 @@ import (
 func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 	t.Parallel()
 
+	const validAPIResponse = `{"servers":[],"metadata":{"count":0}}`
+
 	tests := []struct {
 		name           string
 		input          string
 		allowPrivateIP bool
+		hasAuth        bool
 		expectedType   string
 		expectError    bool
-		setupFunc      func(t *testing.T) string // Returns path to test file if needed
-		cleanupFunc    func(path string)
+		setupFunc      func(t *testing.T) string
+		handler        http.HandlerFunc
 	}{
 		{
 			name:           "set local registry file",
 			allowPrivateIP: false,
 			expectedType:   config.RegistryTypeFile,
-			expectError:    false,
 			setupFunc: func(t *testing.T) string {
 				t.Helper()
 				tmpFile := filepath.Join(t.TempDir(), "test-registry.json")
@@ -46,19 +50,17 @@ func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 			},
 		},
 		{
-			name:           "invalid local file - missing",
-			allowPrivateIP: false,
-			expectedType:   config.RegistryTypeFile,
-			expectError:    true,
+			name:         "invalid local file - missing",
+			expectedType: config.RegistryTypeFile,
+			expectError:  true,
 			setupFunc: func(_ *testing.T) string {
 				return "/tmp/non-existent-file-xyz123.json"
 			},
 		},
 		{
-			name:           "invalid local file - wrong structure",
-			allowPrivateIP: false,
-			expectedType:   config.RegistryTypeFile,
-			expectError:    true,
+			name:         "invalid local file - wrong structure",
+			expectedType: config.RegistryTypeFile,
+			expectError:  true,
 			setupFunc: func(t *testing.T) string {
 				t.Helper()
 				tmpFile := filepath.Join(t.TempDir(), "invalid-registry.json")
@@ -67,37 +69,64 @@ func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 				return tmpFile
 			},
 		},
+		{
+			name:           "valid MCP registry API",
+			allowPrivateIP: true,
+			expectedType:   config.RegistryTypeAPI,
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(validAPIResponse))
+			},
+		},
+		{
+			name:           "API registry returns 401 with auth provided",
+			allowPrivateIP: true,
+			hasAuth:        true,
+			expectedType:   config.RegistryTypeAPI,
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+			},
+		},
+		{
+			name:           "API registry returns 401 without auth",
+			allowPrivateIP: true,
+			hasAuth:        false,
+			expectedType:   config.RegistryTypeAPI,
+			expectError:    true,
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create a test config provider
 			tmpDir := t.TempDir()
 			configPath := filepath.Join(tmpDir, "config.yaml")
 			provider := config.NewPathProvider(configPath)
 			service := registry.NewConfiguratorWithProvider(provider)
 
-			// Setup test data if needed
 			var input string
-			if tt.setupFunc != nil {
+			if tt.handler != nil {
+				server := httptest.NewServer(tt.handler)
+				t.Cleanup(server.Close)
+				input = server.URL
+			} else if tt.setupFunc != nil {
 				input = tt.setupFunc(t)
 			} else {
 				input = tt.input
 			}
 
-			// Call the service
-			registryType, err := service.SetRegistryFromInput(input, tt.allowPrivateIP)
+			registryType, err := service.SetRegistryFromInput(input, tt.allowPrivateIP, tt.hasAuth)
 
-			// Check results
 			if tt.expectError {
-				assert.Error(t, err, "Expected an error")
-				assert.Equal(t, tt.expectedType, registryType, "Registry type should be returned even on error")
+				assert.Error(t, err)
 			} else {
-				assert.NoError(t, err, "Should not return error")
-				assert.Equal(t, tt.expectedType, registryType, "Registry type should match")
+				assert.NoError(t, err)
 			}
+			assert.Equal(t, tt.expectedType, registryType)
 		})
 	}
 }
@@ -123,7 +152,7 @@ func TestConfigurator_UnsetRegistry(t *testing.T) {
 	service := registry.NewConfiguratorWithProvider(provider)
 
 	// First, set a registry
-	_, err := service.SetRegistryFromInput(tmpFile, false)
+	_, err := service.SetRegistryFromInput(tmpFile, false, false)
 	require.NoError(t, err, "Should be able to set registry")
 
 	// Verify it's set
@@ -140,6 +169,7 @@ func TestConfigurator_UnsetRegistry(t *testing.T) {
 	assert.Equal(t, config.RegistryTypeDefault, registryType, "Registry type should be default")
 	assert.Empty(t, source, "Source should be empty")
 }
+
 
 func TestConfigurator_GetRegistryInfo(t *testing.T) {
 	t.Parallel()
@@ -168,7 +198,7 @@ func TestConfigurator_GetRegistryInfo(t *testing.T) {
 					"data": {"servers": [{"name": "io.example.test"}]}
 				}`)
 				require.NoError(t, os.WriteFile(tmpFile, content, 0600))
-				_, err := service.SetRegistryFromInput(tmpFile, false)
+				_, err := service.SetRegistryFromInput(tmpFile, false, false)
 				require.NoError(t, err)
 			},
 			expectedType: config.RegistryTypeFile,

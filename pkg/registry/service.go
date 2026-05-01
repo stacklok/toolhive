@@ -4,9 +4,11 @@
 package registry
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
 // Configurator provides high-level operations for registry configuration management.
@@ -20,8 +22,10 @@ import (
 type Configurator interface {
 	// SetRegistryFromInput auto-detects the registry type (URL/API/File) and configures it.
 	// Returns the detected registry type and any error.
+	// hasAuth indicates whether authentication credentials will be provided for the registry.
+	// When true, a 401 probe response is treated as valid (credentials arrive atomically).
 	// Callers should call registry.ResetDefaultProvider() after this method succeeds.
-	SetRegistryFromInput(input string, allowPrivateIP bool) (registryType string, err error)
+	SetRegistryFromInput(input string, allowPrivateIP bool, hasAuth bool) (registryType string, err error)
 
 	// UnsetRegistry resets the registry configuration to defaults (built-in registry).
 	// Returns any error that occurred during the operation.
@@ -54,7 +58,7 @@ func NewConfiguratorWithProvider(provider config.Provider) Configurator {
 }
 
 // SetRegistryFromInput auto-detects the registry type and configures it.
-func (s *DefaultConfigurator) SetRegistryFromInput(input string, allowPrivateIP bool) (string, error) {
+func (s *DefaultConfigurator) SetRegistryFromInput(input string, allowPrivateIP bool, hasAuth bool) (string, error) {
 	// Auto-detect the registry type
 	registryType, cleanPath := config.DetectRegistryType(input, allowPrivateIP)
 
@@ -68,6 +72,9 @@ func (s *DefaultConfigurator) SetRegistryFromInput(input string, allowPrivateIP 
 		}
 
 	case config.RegistryTypeAPI:
+		if err = probeAPIRegistry(cleanPath, allowPrivateIP, hasAuth); err != nil {
+			return registryType, err
+		}
 		err = s.provider.SetRegistryAPI(cleanPath, allowPrivateIP)
 		if err != nil {
 			return registryType, fmt.Errorf("failed to set registry API: %w", err)
@@ -110,6 +117,20 @@ func (s *DefaultConfigurator) UnsetRegistry() error {
 	config.ResetSingleton()
 
 	return nil
+}
+
+// probeAPIRegistry validates apiURL is a reachable MCP Registry API endpoint before saving.
+// A 401 response means the URL is a valid registry that requires auth: accept it when
+// hasAuth is true (credentials arrive atomically in the same operation), reject otherwise.
+func probeAPIRegistry(apiURL string, allowPrivateIP, hasAuth bool) error {
+	_, err := NewAPIRegistryProvider(apiURL, allowPrivateIP, nil)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, auth.ErrRegistryAuthRequired) && hasAuth {
+		return nil
+	}
+	return err
 }
 
 // GetRegistryInfo returns information about the currently configured registry.

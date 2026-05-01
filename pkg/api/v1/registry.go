@@ -663,7 +663,7 @@ func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (str
 	}
 
 	// Use the service to set the registry
-	registryType, err := rr.configService.SetRegistryFromInput(input, allowPrivateIP)
+	registryType, err := rr.configService.SetRegistryFromInput(input, allowPrivateIP, req.Auth != nil)
 	if err != nil {
 		slog.Error("failed to set registry", "error", err)
 		// Check if error is connectivity/timeout related

@@ -38,6 +38,9 @@ func (c *Config) SetFields(opts SetOptions) error {
 	if opts.TLSSkipVerify != nil {
 		c.TLSSkipVerify = *opts.TLSSkipVerify
 	}
+	if opts.AnthropicPathPrefix != "" {
+		c.AnthropicPathPrefix = opts.AnthropicPathPrefix
+	}
 
 	if !c.IsConfigured() {
 		return c.ValidatePartial()
@@ -50,13 +53,14 @@ func (c *Config) SetFields(opts SetOptions) error {
 // field unchanged. TLSSkipVerify uses a pointer so that false can be
 // distinguished from "not provided" (enabling explicit clear via config set).
 type SetOptions struct {
-	GatewayURL    string
-	Issuer        string
-	ClientID      string
-	Audience      string
-	ProxyPort     int
-	CallbackPort  int
-	TLSSkipVerify *bool // nil = not provided; &false = explicitly disable
+	GatewayURL          string
+	Issuer              string
+	ClientID            string
+	Audience            string
+	ProxyPort           int
+	CallbackPort        int
+	TLSSkipVerify       *bool // nil = not provided; &false = explicitly disable
+	AnthropicPathPrefix string
 }
 
 // DeleteCachedTokens removes all cached OIDC tokens stored under the LLM
@@ -99,6 +103,9 @@ func (c *Config) Show(w io.Writer) error {
 	}
 
 	writef("Gateway URL:     %s\n", c.GatewayURL)
+	if c.AnthropicPathPrefix != "" {
+		writef("Anthropic path:  %s\n", c.AnthropicPathPrefix)
+	}
 	writef("OIDC Issuer:     %s\n", c.OIDC.Issuer)
 	writef("OIDC Client:     %s\n", c.OIDC.ClientID)
 	if c.OIDC.Audience != "" {

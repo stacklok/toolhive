@@ -119,6 +119,44 @@ func TestConfig_SetFields(t *testing.T) {
 			opts: SetOptions{},
 			want: Config{GatewayURL: "https://gw.example.com", TLSSkipVerify: true},
 		},
+		{
+			name: "AnthropicPathPrefix accepts a leading-slash path",
+			opts: SetOptions{
+				GatewayURL:          "https://gw.example.com",
+				AnthropicPathPrefix: "/anthropic",
+			},
+			want: Config{
+				GatewayURL:          "https://gw.example.com",
+				AnthropicPathPrefix: "/anthropic",
+			},
+		},
+		{
+			name:    "AnthropicPathPrefix rejects values without leading slash",
+			opts:    SetOptions{GatewayURL: "https://gw.example.com", AnthropicPathPrefix: "anthropic"},
+			wantErr: true,
+		},
+		{
+			name:    "AnthropicPathPrefix rejects values with query string",
+			opts:    SetOptions{GatewayURL: "https://gw.example.com", AnthropicPathPrefix: "/anthropic?x=1"},
+			wantErr: true,
+		},
+		{
+			name:    "AnthropicPathPrefix rejects values with shell metacharacters",
+			opts:    SetOptions{GatewayURL: "https://gw.example.com", AnthropicPathPrefix: "/anthropic;rm -rf /"},
+			wantErr: true,
+		},
+		{
+			name: "empty AnthropicPathPrefix leaves existing value unchanged",
+			base: Config{
+				GatewayURL:          "https://gw.example.com",
+				AnthropicPathPrefix: "/anthropic",
+			},
+			opts: SetOptions{},
+			want: Config{
+				GatewayURL:          "https://gw.example.com",
+				AnthropicPathPrefix: "/anthropic",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -153,6 +191,9 @@ func TestConfig_SetFields(t *testing.T) {
 			}
 			if cfg.TLSSkipVerify != tt.want.TLSSkipVerify {
 				t.Errorf("TLSSkipVerify = %v, want %v", cfg.TLSSkipVerify, tt.want.TLSSkipVerify)
+			}
+			if cfg.AnthropicPathPrefix != tt.want.AnthropicPathPrefix {
+				t.Errorf("AnthropicPathPrefix = %q, want %q", cfg.AnthropicPathPrefix, tt.want.AnthropicPathPrefix)
 			}
 		})
 	}

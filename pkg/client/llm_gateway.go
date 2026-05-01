@@ -261,10 +261,15 @@ func (cm *ClientManager) buildLLMSettingsPath(cfg *clientAppConfig) string {
 // llmValueForSpec returns the config value corresponding to the ValueField name.
 // For "NodeTLSRejectUnauthorized", returns "0" when TLSSkipVerify is true, or ""
 // when false (which triggers removal when ClearWhenEmpty is set on the spec).
+// "AnthropicBaseURL" returns GatewayURL with AnthropicPathPrefix appended, so
+// gateways that route Anthropic-shaped traffic under a sub-path (e.g. Envoy AI
+// Gateway at /anthropic) work without a manual edit.
 func llmValueForSpec(valueField string, cfg llmgateway.ApplyConfig) string {
 	switch valueField {
 	case "GatewayURL":
 		return cfg.GatewayURL
+	case "AnthropicBaseURL":
+		return cfg.GatewayURL + cfg.AnthropicPathPrefix
 	case "ProxyBaseURL":
 		return cfg.ProxyBaseURL
 	case "TokenHelperCommand":

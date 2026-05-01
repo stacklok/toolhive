@@ -113,7 +113,9 @@ func Setup(
 	_, _ = fmt.Fprintln(out, "Login successful.")
 
 	configured, err := configureDetectedTools(
-		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand, llmCfg.TLSSkipVerify,
+		out, errOut, gm, detected,
+		llmCfg.GatewayURL, llmCfg.AnthropicPathPrefix, proxyBaseURL, tokenHelperCommand,
+		llmCfg.TLSSkipVerify,
 	)
 	if err != nil {
 		return err
@@ -321,16 +323,17 @@ func configureDetectedTools(
 	out, errOut io.Writer,
 	gm GatewayManager,
 	detected []string,
-	gatewayURL, proxyBaseURL, tokenHelperCommand string,
+	gatewayURL, anthropicPathPrefix, proxyBaseURL, tokenHelperCommand string,
 	tlsSkipVerify bool,
 ) ([]ToolConfig, error) {
 	var configured []ToolConfig
 	for _, clientType := range detected {
 		configPath, err := gm.ConfigureLLMGateway(clientType, llmgateway.ApplyConfig{
-			GatewayURL:         gatewayURL,
-			ProxyBaseURL:       proxyBaseURL,
-			TokenHelperCommand: tokenHelperCommand,
-			TLSSkipVerify:      tlsSkipVerify,
+			GatewayURL:          gatewayURL,
+			AnthropicPathPrefix: anthropicPathPrefix,
+			ProxyBaseURL:        proxyBaseURL,
+			TokenHelperCommand:  tokenHelperCommand,
+			TLSSkipVerify:       tlsSkipVerify,
 		})
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Warning: failed to configure %s: %v\n", clientType, err)

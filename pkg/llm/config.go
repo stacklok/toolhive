@@ -6,10 +6,16 @@ package llm
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/stacklok/toolhive/pkg/networking"
 	pkgoidc "github.com/stacklok/toolhive/pkg/oidc"
 )
+
+// maxAnthropicPathPrefixLen caps the AnthropicPathPrefix length to a value
+// large enough for any realistic gateway route while preventing absurd inputs
+// from being persisted into ToolHive config or Claude Code's settings file.
+const maxAnthropicPathPrefixLen = 256
 
 const (
 	// DefaultProxyListenPort is the default port the localhost proxy listens on.
@@ -25,11 +31,16 @@ type OIDCConfig = pkgoidc.ClientConfig
 // Config holds all LLM gateway settings persisted under the llm: key in
 // ToolHive's config.yaml.
 type Config struct {
-	GatewayURL      string       `yaml:"gateway_url,omitempty"       json:"gateway_url,omitempty"`
-	TLSSkipVerify   bool         `yaml:"tls_skip_verify,omitempty"   json:"tls_skip_verify,omitempty"`
-	OIDC            OIDCConfig   `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
-	Proxy           ProxyConfig  `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
-	ConfiguredTools []ToolConfig `yaml:"configured_tools,omitempty"  json:"configured_tools,omitempty"`
+	GatewayURL    string `yaml:"gateway_url,omitempty"       json:"gateway_url,omitempty"`
+	TLSSkipVerify bool   `yaml:"tls_skip_verify,omitempty"   json:"tls_skip_verify,omitempty"`
+	// AnthropicPathPrefix is appended to GatewayURL when writing
+	// ANTHROPIC_BASE_URL for direct-mode tools. Set to "/anthropic" for Envoy
+	// AI Gateway, leave empty for LiteLLM or direct Anthropic. Must start with
+	// "/" when non-empty and contain no query string or fragment.
+	AnthropicPathPrefix string       `yaml:"anthropic_path_prefix,omitempty" json:"anthropic_path_prefix,omitempty"`
+	OIDC                OIDCConfig   `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
+	Proxy               ProxyConfig  `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
+	ConfiguredTools     []ToolConfig `yaml:"configured_tools,omitempty"  json:"configured_tools,omitempty"`
 }
 
 // ProxyConfig holds configuration for the localhost reverse proxy.
@@ -77,6 +88,10 @@ func (c *Config) ValidatePartial() error {
 		errs = append(errs, fmt.Errorf("proxy.listen_port must be between 1024 and 65535, got: %d", c.Proxy.ListenPort))
 	}
 
+	if err := validateAnthropicPathPrefix(c.AnthropicPathPrefix); err != nil {
+		errs = append(errs, fmt.Errorf("anthropic_path_prefix: %w", err))
+	}
+
 	// Reuse networking.ValidateCallbackPort for the OIDC callback port — same
 	// range check (1024–65535), zero means ephemeral (auto-assigned). Pass the
 	// client ID so the validator applies strict availability checking for
@@ -115,4 +130,30 @@ func (c *Config) EffectiveProxyPort() int {
 		return c.Proxy.ListenPort
 	}
 	return DefaultProxyListenPort
+}
+
+// validateAnthropicPathPrefix enforces that the prefix, when non-empty, is a
+// well-formed URL path: starts with "/", contains no query string, fragment,
+// or shell-unsafe characters, and stays under maxAnthropicPathPrefixLen. The
+// shell check is defensive — the value flows into a Node-process env var, not
+// a shell command, but rejecting metacharacters keeps surprises out of any
+// future caller that does invoke a shell.
+func validateAnthropicPathPrefix(p string) error {
+	if p == "" {
+		return nil
+	}
+	if len(p) > maxAnthropicPathPrefixLen {
+		return fmt.Errorf("must be %d characters or fewer, got %d", maxAnthropicPathPrefixLen, len(p))
+	}
+	if !strings.HasPrefix(p, "/") {
+		return fmt.Errorf("must start with %q, got %q", "/", p)
+	}
+	if strings.ContainsAny(p, "?#") {
+		return fmt.Errorf("must not contain a query string or fragment, got %q", p)
+	}
+	const shellUnsafe = `"\;$` + "`\n\r '"
+	if strings.ContainsAny(p, shellUnsafe) {
+		return fmt.Errorf("must not contain whitespace or shell metacharacters, got %q", p)
+	}
+	return nil
 }

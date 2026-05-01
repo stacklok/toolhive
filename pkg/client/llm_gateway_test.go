@@ -539,6 +539,61 @@ func TestRealClientConfigs_LLMBinaryNames(t *testing.T) {
 	}
 }
 
+// ── AnthropicPathPrefix ──────────────────────────────────────────────────────
+
+// TestConfigureLLMGateway_AnthropicPathPrefix verifies that when a non-empty
+// AnthropicPathPrefix is supplied (e.g. for Envoy AI Gateway, which serves
+// native-Anthropic traffic at /anthropic/v1/messages), the prefix is appended
+// to the gateway URL written to ANTHROPIC_BASE_URL. With an empty prefix the
+// gateway URL is written unchanged so non-prefixed gateways (LiteLLM, direct
+// Anthropic) continue to work.
+func TestConfigureLLMGateway_AnthropicPathPrefix(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		prefix  string
+		wantURL string // exact JSON-encoded value, including closing quote
+	}{
+		{
+			name:    "bare gateway URL when prefix is empty",
+			prefix:  "",
+			wantURL: `"https://gw.example.com"`,
+		},
+		{
+			name:    "prefix is appended for Envoy AI Gateway",
+			prefix:  "/anthropic",
+			wantURL: `"https://gw.example.com/anthropic"`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			home := t.TempDir()
+			cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+
+			claudeDir := filepath.Join(home, ".claude")
+			require.NoError(t, os.MkdirAll(claudeDir, 0o700))
+
+			path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
+				GatewayURL:          "https://gw.example.com",
+				AnthropicPathPrefix: tc.prefix,
+				TokenHelperCommand:  `"thv" llm token`,
+			})
+			require.NoError(t, err)
+
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			s := string(data)
+			assert.Contains(t, s, "ANTHROPIC_BASE_URL")
+			assert.Contains(t, s, tc.wantURL,
+				"ANTHROPIC_BASE_URL must be written as %s", tc.wantURL)
+		})
+	}
+}
+
 // ── TLSSkipVerify / NodeTLSRejectUnauthorized / ClearWhenEmpty ───────────────
 
 func newTLSTestManager(t *testing.T) (*ClientManager, string) {

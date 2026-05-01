@@ -13,4 +13,11 @@ type ApplyConfig struct {
 	ProxyBaseURL       string // proxy-mode: URL of the localhost reverse proxy
 	TokenHelperCommand string // direct-mode: shell command that prints a fresh token
 	TLSSkipVerify      bool   // when true, instruct the tool to skip TLS verification
+	// AnthropicPathPrefix is appended to GatewayURL when writing the base URL
+	// for Anthropic-shaped APIs (e.g. ANTHROPIC_BASE_URL for Claude Code). Set
+	// to "/anthropic" for Envoy AI Gateway, leave empty for LiteLLM or direct
+	// Anthropic. The prefix is not applied to the localhost proxy upstream
+	// because proxy-mode tools forward OpenAI-shaped traffic on a separate
+	// route.
+	AnthropicPathPrefix string
 }

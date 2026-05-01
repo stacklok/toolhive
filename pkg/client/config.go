@@ -461,7 +461,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		LLMSettingsRelPath: []string{".claude"},
 		LLMGatewayKeys: []LLMGatewayKeySpec{
 			{JSONPointer: "/apiKeyHelper", ValueField: "TokenHelperCommand"},
-			{JSONPointer: "/env/ANTHROPIC_BASE_URL", ValueField: "GatewayURL"},
+			// AnthropicBaseURL appends llm.anthropic_path_prefix to the gateway
+			// URL so Envoy AI Gateway (which routes native-Anthropic traffic at
+			// /anthropic) works without manual edits.
+			{JSONPointer: "/env/ANTHROPIC_BASE_URL", ValueField: "AnthropicBaseURL"},
 			// NODE_TLS_REJECT_UNAUTHORIZED is only written when --tls-skip-verify is set.
 			// ClearWhenEmpty ensures it is removed when the flag is later cleared.
 			{JSONPointer: "/env/NODE_TLS_REJECT_UNAUTHORIZED", ValueField: "NodeTLSRejectUnauthorized", ClearWhenEmpty: true},

@@ -157,57 +157,37 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 			}
 			Expect(k8sClient.Create(ctx, compositeToolDef)).Should(Succeed())
 
-			// Wait for VirtualMCPServer to reconcile after the composite tool definition is created
-			// First, wait for the CompositeToolRefsValidated condition to become True
+			// Wait for VirtualMCPServer to reach a stable successful state after the composite
+			// tool definition is created. All conditions are checked atomically in a single
+			// Eventually to avoid races where the controller passes through a transient state
+			// (CompositeToolRefsValidated=True but Phase still=Failed from a prior reconcile)
+			// that satisfies each check individually but not all at once.
 			Eventually(func() bool {
 				updatedVMCP := &mcpv1beta1.VirtualMCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
+				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      vmcpName,
 					Namespace: namespace,
-				}, updatedVMCP)
-				if err != nil {
+				}, updatedVMCP); err != nil {
 					return false
 				}
 
-				// Check for CompositeToolRefsValidated condition to be True
+				conditionValid := false
 				for _, cond := range updatedVMCP.Status.Conditions {
 					if cond.Type == mcpv1beta1.ConditionTypeCompositeToolRefsValidated {
-						return cond.Status == metav1.ConditionTrue &&
+						conditionValid = cond.Status == metav1.ConditionTrue &&
 							cond.Reason == mcpv1beta1.ConditionReasonCompositeToolRefsValid
+						break
 					}
 				}
-				return false
+
+				phaseOK := updatedVMCP.Status.Phase == mcpv1beta1.VirtualMCPServerPhaseReady ||
+					updatedVMCP.Status.Phase == mcpv1beta1.VirtualMCPServerPhasePending
+
+				return conditionValid &&
+					updatedVMCP.Status.ObservedGeneration > 0 &&
+					updatedVMCP.Status.ObservedGeneration == updatedVMCP.Generation &&
+					phaseOK
 			}, timeout, interval).Should(BeTrue())
-
-			// Then verify that ObservedGeneration is set and matches Generation
-			// This indicates successful reconciliation
-			Eventually(func() bool {
-				updatedVMCP := &mcpv1beta1.VirtualMCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      vmcpName,
-					Namespace: namespace,
-				}, updatedVMCP)
-				if err != nil {
-					return false
-				}
-
-				// Check that ObservedGeneration is set and matches Generation
-				return updatedVMCP.Status.ObservedGeneration > 0 &&
-					updatedVMCP.Status.ObservedGeneration == updatedVMCP.Generation
-			}, timeout, interval).Should(BeTrue())
-
-			// Verify the VirtualMCPServer is in a valid state
-			updatedVMCP := &mcpv1beta1.VirtualMCPServer{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpName,
-				Namespace: namespace,
-			}, updatedVMCP)).Should(Succeed())
-
-			Expect(updatedVMCP.Status.ObservedGeneration).To(Equal(updatedVMCP.Generation))
-			Expect(updatedVMCP.Status.Phase).To(Or(
-				Equal(mcpv1beta1.VirtualMCPServerPhaseReady),
-				Equal(mcpv1beta1.VirtualMCPServerPhasePending),
-			))
 		})
 	})
 

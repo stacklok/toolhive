@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
@@ -537,77 +536,4 @@ func TestRunner_GetUpstreamTokenReader(t *testing.T) {
 		assert.NotNil(t, reader)
 		assert.Equal(t, svc, reader)
 	})
-}
-
-func TestRemoteAuthLogContext(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		cfg          *remote.Config
-		wantUpstream string
-		wantClientID string
-	}{
-		{
-			name:         "nil config returns empty strings",
-			cfg:          nil,
-			wantUpstream: "",
-			wantClientID: "",
-		},
-		{
-			name: "static client_id when no cache",
-			cfg: &remote.Config{
-				Issuer:   "https://idp.example.com",
-				ClientID: "static-client-id",
-			},
-			wantUpstream: "https://idp.example.com",
-			wantClientID: "static-client-id",
-		},
-		{
-			name: "cached DCR client_id wins over static",
-			cfg: &remote.Config{
-				Issuer:         "https://idp.example.com",
-				ClientID:       "static-client-id",
-				CachedClientID: "dcr-client-id",
-			},
-			wantUpstream: "https://idp.example.com",
-			wantClientID: "dcr-client-id",
-		},
-		{
-			name: "cached CIMD client_id wins over DCR and static",
-			cfg: &remote.Config{
-				Issuer:             "https://idp.example.com",
-				ClientID:           "static-client-id",
-				CachedClientID:     "dcr-client-id",
-				CachedCIMDClientID: "https://idp.example.com/cimd",
-			},
-			wantUpstream: "https://idp.example.com",
-			wantClientID: "https://idp.example.com/cimd",
-		},
-		{
-			name: "cached CIMD client_id used when no DCR or static",
-			cfg: &remote.Config{
-				Issuer:             "https://idp.example.com",
-				CachedCIMDClientID: "https://idp.example.com/cimd",
-			},
-			wantUpstream: "https://idp.example.com",
-			wantClientID: "https://idp.example.com/cimd",
-		},
-		{
-			name:         "empty config returns empty fields",
-			cfg:          &remote.Config{},
-			wantUpstream: "",
-			wantClientID: "",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			upstream, clientID := remoteAuthLogContext(tc.cfg)
-			assert.Equal(t, tc.wantUpstream, upstream)
-			assert.Equal(t, tc.wantClientID, clientID)
-		})
-	}
 }

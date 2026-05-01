@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -444,18 +445,33 @@ func isTransientNetworkError(err error) bool {
 }
 
 // isPermanentTokenEndpointError reports whether err is an *oauth2.RetrieveError
-// with a non-5xx HTTP status (i.e. a permanent token-endpoint response such as
-// 400, 401, 403). Used at state-transition boundaries to decide whether to
-// emit a DCR/CIMD remediation hint alongside the unauthentication.
+// whose status implies the cached client credentials are themselves the
+// problem — specifically 400 (invalid_grant / invalid_client), 401, or
+// 403. Used at state-transition boundaries to decide whether to emit a
+// DCR/CIMD remediation hint alongside the unauthentication.
+//
+// Other 4xx codes are intentionally NOT treated as permanent here even
+// though isTransientNetworkError classifies the whole RetrieveError
+// branch as non-transient. 408 (Request Timeout) and 429 (Too Many
+// Requests) are typically transient back-pressure that the operator
+// cannot remediate by deleting cached credentials; firing the
+// "delete the cached credentials and restart" Warn on those would
+// mislead operators chasing a transient hiccup. The narrower allowlist
+// keeps the remediation hint truthful.
 func isPermanentTokenEndpointError(err error) bool {
 	retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](err)
 	if !ok {
 		return false
 	}
 	if retrieveErr.Response == nil {
-		return true
+		return false
 	}
-	return retrieveErr.Response.StatusCode < 500
+	switch retrieveErr.Response.StatusCode {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden:
+		return true
+	default:
+		return false
+	}
 }
 
 // isOAuthParseError detects errors from the oauth2 library that indicate the

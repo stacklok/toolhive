@@ -407,11 +407,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			// remediation warning emitted by isTransientNetworkError on a
 			// permanent 4xx (indicating a stale RFC 7591 registration)
 			// carries enough context for an operator to identify which
-			// upstream AS + client_id to re-register. The cached DCR
-			// client_id wins over any statically configured ClientID,
-			// matching the precedence used by resolveClientCredentials in
-			// pkg/auth/remote.
-			upstream, clientID := remoteAuthLogContext(r.Config.RemoteAuthConfig)
+			// upstream AS + client_id to re-register. Precedence (cached
+			// CIMD > cached DCR > static) lives next to
+			// resolveClientCredentials in pkg/auth/remote so both call
+			// sites stay in sync.
+			upstream, clientID := r.Config.RemoteAuthConfig.LogContext()
 
 			r.authenticatedTokenSource = auth.NewMonitoredTokenSource(
 				r.monitoringCtx,
@@ -799,28 +799,6 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 	}
 
 	return tokenSource, nil
-}
-
-// remoteAuthLogContext extracts the upstream issuer and resolved client_id
-// from a remote auth config for use as log-correlation fields on the
-// MonitoredTokenSource. Returns ("", "") when cfg is nil so callers do not
-// need to guard the call. Mirrors the precedence applied at runtime when
-// sending the client_id on token refresh: cached CIMD URL > cached DCR
-// client_id > statically configured client_id.
-func remoteAuthLogContext(cfg *remote.Config) (upstream, clientID string) {
-	if cfg == nil {
-		return "", ""
-	}
-	clientID = func() string {
-		if cfg.CachedCIMDClientID != "" {
-			return cfg.CachedCIMDClientID
-		}
-		if cfg.CachedClientID != "" {
-			return cfg.CachedClientID
-		}
-		return cfg.ClientID
-	}()
-	return cfg.Issuer, clientID
 }
 
 // Cleanup performs cleanup operations for the runner, including shutting down all middleware.

@@ -310,6 +310,10 @@ func handleHTTPResponse(resp *http.Response) (*DynamicClientRegistrationResponse
 		// readable.
 		const maxErrorBodySize = 8 * 1024
 		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
+		// Drain whatever exceeded the cap so net/http can reuse the TCP
+		// connection — without this the deferred Close terminates the
+		// connection mid-stream when the upstream returned more than 8 KiB.
+		_, _ = io.Copy(io.Discard, resp.Body)
 
 		// Detect if DCR is not supported by the provider.
 		// Common HTTP status codes when DCR is unsupported:

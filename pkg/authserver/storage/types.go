@@ -240,8 +240,10 @@ type ClientRegistry interface {
 // middleware that needs to retrieve upstream tokens (e.g., token swap middleware that
 // replaces JWT auth with upstream IDP tokens for backend requests).
 //
-// Tokens are keyed by (sessionID, providerName) to support multiple upstream providers
-// per session. Each provider's tokens are stored and retrieved independently.
+// Tokens are keyed primarily by (sessionID, providerName) to support multiple upstream
+// providers per session. Each provider's tokens are stored and retrieved independently.
+// A secondary lookup by (userID, providerID) is exposed via GetLatestUpstreamTokensForUser;
+// see that method for usage and security contract.
 type UpstreamTokenStorage interface {
 	// StoreUpstreamTokens stores the upstream IDP tokens for a session and provider.
 	// The providerName identifies which upstream provider these tokens belong to.
@@ -263,6 +265,42 @@ type UpstreamTokenStorage interface {
 	// DeleteUpstreamTokens removes all upstream IDP tokens for a session (all providers).
 	// Returns ErrNotFound if the session does not exist.
 	DeleteUpstreamTokens(ctx context.Context, sessionID string) error
+
+	// GetLatestUpstreamTokensForUser returns the most recently stored upstream tokens
+	// for (userID, providerID) across any session. The "latest" winner is determined
+	// by treating non-expiring rows (zero ExpiresAt — providers like Slack and GitHub
+	// OAuth Apps that genuinely never expire) as the strongest candidate, falling
+	// back to ExpiresAt descending among finite-expiry rows. This aligns with the
+	// rest of the package treating zero ExpiresAt as "alive forever" (see IsExpired,
+	// cleanupExpired, marshalUpstreamTokensWithTTL). Both backends use the same
+	// rule so the carry-forward decision is consistent regardless of deployment
+	// shape.
+	//
+	// This is a secondary lookup that intentionally bypasses the primary
+	// (sessionID, providerName) key. It is used by the OAuth callback to preserve a
+	// previously-issued refresh token when the upstream IdP omits refresh_token on
+	// re-authorization (e.g. Google without prompt=consent). When a sessionID is
+	// available, callers should use GetUpstreamTokens instead. This method mirrors
+	// the preservation pattern in upstreamTokenRefresher.RefreshAndStore.
+	//
+	// # Liveness
+	//
+	// The returned tokens may be expired. Callers MUST NOT assume liveness; they
+	// must handle the expired case (typically by reading only the RefreshToken,
+	// which remains usable past the access token's expiry). This method does NOT
+	// return ErrExpired and the implementation MUST NOT filter expired rows.
+	//
+	// # Cross-identity safety
+	//
+	// The returned record is NOT filtered by upstream subject. The same internal
+	// UserID can in principle map to multiple upstream subjects on the same provider
+	// (account-linking edge cases or data-integrity issues). Callers MUST verify
+	// that prior.UpstreamSubject == currentProviderSubject before reusing any
+	// credential from the returned record. The OAuth callback applies this guard;
+	// other future callers must do the same.
+	//
+	// Returns ErrNotFound if no record exists for the (userID, providerID) pair.
+	GetLatestUpstreamTokensForUser(ctx context.Context, userID, providerID string) (*UpstreamTokens, error)
 }
 
 // UpstreamTokenRefresher can refresh expired upstream tokens using their stored refresh token.

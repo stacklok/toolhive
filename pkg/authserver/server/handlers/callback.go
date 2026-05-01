@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -157,6 +158,8 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		UpstreamSubject:  providerSubject, // Upstream IDP's subject claim
 	}
 
+	h.maybeCarryForwardRefreshToken(ctx, storageTokens, subject, providerSubject, providerID)
+
 	if err := h.storage.StoreUpstreamTokens(ctx, sessionID, providerID, storageTokens); err != nil {
 		slog.Error("failed to store upstream tokens",
 			"error", err,
@@ -168,6 +171,45 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, subject, userName, userEmail)
+}
+
+// maybeCarryForwardRefreshToken preserves a prior refresh token when the upstream IdP
+// omits refresh_token on re-authorization (a common behavior, e.g. Google without
+// prompt=consent). Without this, the new row would be written with an empty RefreshToken,
+// orphaning the previously-issued RT and forcing the next refresh attempt to fail.
+// Mirrors the preservation pattern in upstreamTokenRefresher.RefreshAndStore.
+//
+// The UpstreamSubject == providerSubject guard is defense-in-depth against account-linking
+// edge cases where one internal user might have two distinct upstream subjects on the
+// same provider.
+//
+// storageTokens is mutated in-place only when a carry-forward is warranted.
+func (h *Handler) maybeCarryForwardRefreshToken(
+	ctx context.Context,
+	storageTokens *storage.UpstreamTokens,
+	subject, providerSubject, providerID string,
+) {
+	if storageTokens.RefreshToken != "" {
+		return
+	}
+	prior, err := h.storage.GetLatestUpstreamTokensForUser(ctx, subject, providerID)
+	switch {
+	case err == nil:
+		if prior != nil && prior.UpstreamSubject == providerSubject && prior.RefreshToken != "" {
+			storageTokens.RefreshToken = prior.RefreshToken
+			slog.Debug("preserved upstream refresh token from prior row",
+				"user_id", subject, "provider_id", providerID,
+			)
+		}
+	case errors.Is(err, storage.ErrNotFound):
+		// First authorization for this user/provider — nothing to preserve.
+	default:
+		// Storage error — log and continue with empty RT. Failing the callback
+		// would be a worse user experience than the (already broken) status quo.
+		slog.Warn("failed to look up prior upstream tokens for RT preservation",
+			"error", err, "user_id", subject, "provider_id", providerID,
+		)
+	}
 }
 
 // writeAuthorizationResponse generates an authorization code and writes the redirect response.

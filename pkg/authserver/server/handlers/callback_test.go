@@ -826,6 +826,161 @@ func TestCallbackHandler_TwoUpstreams_StorePendingError_CleansUp(t *testing.T) {
 	}
 }
 
+// TestCallbackHandler_RefreshTokenCarryForward verifies the OAuth callback's
+// behavior when the upstream IdP omits refresh_token on re-authorization. The
+// handler looks up a prior (user, provider) row and carries the prior RT
+// forward, with a defensive UpstreamSubject guard against account-linking
+// edge cases. Storage errors during the lookup are non-fatal.
+func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
+	t.Parallel()
+
+	type priorRow struct {
+		sessionID       string
+		upstreamSubject string
+		refreshToken    string
+	}
+
+	cases := []struct {
+		name             string
+		priorRow         *priorRow // nil = no prior row
+		idpRefreshToken  string    // RT returned by upstream exchange
+		idpSubject       string    // subject claim returned by upstream
+		lookupErr        error     // if non-nil, storage lookup returns this error
+		expectedStoredRT string    // expected RefreshToken on the new row
+	}{
+		{
+			name:             "preserves prior RT when IdP omits it",
+			priorRow:         &priorRow{sessionID: "old-session", upstreamSubject: "user-123", refreshToken: "rt-prior"},
+			idpRefreshToken:  "",
+			idpSubject:       "user-123",
+			expectedStoredRT: "rt-prior",
+		},
+		{
+			name:             "no carry across different upstream subjects",
+			priorRow:         &priorRow{sessionID: "alice-session", upstreamSubject: "alice@idp", refreshToken: "rt-prior"},
+			idpRefreshToken:  "",
+			idpSubject:       "bob@idp",
+			expectedStoredRT: "",
+		},
+		{
+			name:             "fresh IdP RT wins",
+			priorRow:         &priorRow{sessionID: "old-session", upstreamSubject: "user-123", refreshToken: "rt-prior"},
+			idpRefreshToken:  "rt-fresh",
+			idpSubject:       "user-123",
+			expectedStoredRT: "rt-fresh",
+		},
+		{
+			name:             "no prior row accepts empty RT",
+			priorRow:         nil,
+			idpRefreshToken:  "",
+			idpSubject:       "user-123",
+			expectedStoredRT: "",
+		},
+		{
+			name:             "storage error during lookup is non-fatal",
+			priorRow:         nil,
+			idpRefreshToken:  "",
+			idpSubject:       "user-123",
+			lookupErr:        errors.New("simulated storage failure"),
+			expectedStoredRT: "",
+		},
+		{
+			name:             "does not carry prior RT when prior RT is empty",
+			priorRow:         &priorRow{sessionID: "old-session", upstreamSubject: "user-123", refreshToken: ""},
+			idpRefreshToken:  "",
+			idpSubject:       "user-123",
+			expectedStoredRT: "",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			const (
+				providerName   = "test-upstream"
+				existingUserID = "user-id"
+				newSessionID   = "new-session"
+			)
+
+			var opts []baseTestSetupOption
+			if tc.lookupErr != nil {
+				opts = append(opts, withGetLatestUpstreamTokensError(tc.lookupErr))
+			}
+			handler, storState, mockUpstream := handlerTestSetup(t, opts...)
+
+			mockUpstream.exchangeResult = &upstream.Identity{
+				Tokens: &upstream.Tokens{
+					AccessToken:  "new-access-token",
+					RefreshToken: tc.idpRefreshToken,
+					IDToken:      "new-id-token",
+					ExpiresAt:    time.Now().Add(time.Hour),
+				},
+				Subject: tc.idpSubject,
+			}
+
+			// Pre-populate user + identity so ResolveUser is deterministic.
+			storState.users[existingUserID] = &storage.User{
+				ID:        existingUserID,
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			storState.providerIdentities[providerName+":"+tc.idpSubject] = &storage.ProviderIdentity{
+				UserID:          existingUserID,
+				ProviderID:      providerName,
+				ProviderSubject: tc.idpSubject,
+				LinkedAt:        time.Now(),
+				LastUsedAt:      time.Now(),
+			}
+
+			if tc.priorRow != nil {
+				storState.upstreamTokens[tc.priorRow.sessionID+":"+providerName] = &storage.UpstreamTokens{
+					ProviderID:      providerName,
+					AccessToken:     "old-access",
+					RefreshToken:    tc.priorRow.refreshToken,
+					ExpiresAt:       time.Now().Add(30 * time.Minute),
+					ClientID:        testAuthClientID,
+					UserID:          existingUserID,
+					UpstreamSubject: tc.priorRow.upstreamSubject,
+				}
+			}
+
+			internalState := testInternalState
+			storState.pendingAuths[internalState] = &storage.PendingAuthorization{
+				ClientID:             testAuthClientID,
+				RedirectURI:          testAuthRedirectURI,
+				State:                "client-state",
+				PKCEChallenge:        "challenge123",
+				PKCEMethod:           "S256",
+				Scopes:               []string{"openid"},
+				InternalState:        internalState,
+				UpstreamPKCEVerifier: "verifier-1234567890123456789012345678",
+				SessionID:            newSessionID,
+				UpstreamProviderName: providerName,
+				CreatedAt:            time.Now(),
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=test-code&state="+internalState, nil)
+			rec := httptest.NewRecorder()
+			handler.CallbackHandler(rec, req)
+
+			require.Equal(t, http.StatusSeeOther, rec.Code)
+			assert.NotContains(t, rec.Header().Get("Location"), "error=")
+
+			newRow, ok := storState.upstreamTokens[newSessionID+":"+providerName]
+			require.True(t, ok, "token row for new session should be stored")
+			assert.Equal(t, tc.expectedStoredRT, newRow.RefreshToken)
+			// Sanity-check the rest of the row was written by the callback path so a
+			// regression that early-returns before StoreUpstreamTokens cannot pass.
+			assert.Equal(t, "new-access-token", newRow.AccessToken)
+			assert.Equal(t, "new-id-token", newRow.IDToken)
+			assert.Equal(t, tc.idpSubject, newRow.UpstreamSubject)
+			assert.False(t, newRow.ExpiresAt.IsZero(), "ExpiresAt must be populated")
+		})
+	}
+}
+
 func TestRoutesIncludeAuthorizeAndCallback(t *testing.T) {
 	t.Parallel()
 	handler, _, _ := handlerTestSetup(t)

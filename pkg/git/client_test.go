@@ -33,10 +33,10 @@ func TestDefaultGitClient_Clone_Errors(t *testing.T) {
 		config CloneConfig
 	}{
 		{name: "invalid URL", config: CloneConfig{URL: "invalid-url"}},
-		{name: "conflicting branch and tag", config: CloneConfig{URL: testRepoURL, Branch: "main", Tag: "v1.0"}},
-		{name: "conflicting branch and commit", config: CloneConfig{URL: testRepoURL, Branch: "main", Commit: testCommitHash}},
+		{name: "conflicting branch and tag", config: CloneConfig{URL: testRepoURL, Branch: mainBranchName, Tag: "v1.0"}},
+		{name: "conflicting branch and commit", config: CloneConfig{URL: testRepoURL, Branch: mainBranchName, Commit: testCommitHash}},
 		{name: "conflicting tag and commit", config: CloneConfig{URL: testRepoURL, Tag: "v1.0", Commit: testCommitHash}},
-		{name: "all three refs set", config: CloneConfig{URL: testRepoURL, Branch: "main", Tag: "v1.0", Commit: testCommitHash}},
+		{name: "all three refs set", config: CloneConfig{URL: testRepoURL, Branch: mainBranchName, Tag: "v1.0", Commit: testCommitHash}},
 	}
 
 	for _, tt := range tests {
@@ -171,13 +171,13 @@ func TestCloneConfig_Validate(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "URL only", config: CloneConfig{URL: testRepoURL}, wantErr: false},
-		{name: "branch only", config: CloneConfig{URL: "u", Branch: "main"}, wantErr: false},
+		{name: "branch only", config: CloneConfig{URL: "u", Branch: mainBranchName}, wantErr: false},
 		{name: "tag only", config: CloneConfig{URL: "u", Tag: "v1"}, wantErr: false},
 		{name: "commit only", config: CloneConfig{URL: "u", Commit: testShortHash}, wantErr: false},
-		{name: "branch+tag", config: CloneConfig{URL: "u", Branch: "main", Tag: "v1"}, wantErr: true},
-		{name: "branch+commit", config: CloneConfig{URL: "u", Branch: "main", Commit: testShortHash}, wantErr: true},
+		{name: "branch+tag", config: CloneConfig{URL: "u", Branch: mainBranchName, Tag: "v1"}, wantErr: true},
+		{name: "branch+commit", config: CloneConfig{URL: "u", Branch: mainBranchName, Commit: testShortHash}, wantErr: true},
 		{name: "tag+commit", config: CloneConfig{URL: "u", Tag: "v1", Commit: testShortHash}, wantErr: true},
-		{name: "all three", config: CloneConfig{URL: "u", Branch: "main", Tag: "v1", Commit: testShortHash}, wantErr: true},
+		{name: "all three", config: CloneConfig{URL: "u", Branch: mainBranchName, Tag: "v1", Commit: testShortHash}, wantErr: true},
 	}
 
 	for _, tt := range tests {

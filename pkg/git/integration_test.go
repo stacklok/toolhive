@@ -15,7 +15,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const mainBranchName = "main"
+const (
+	mainBranchName  = "main"
+	testAuthorEmail = "test@example.com"
+)
 
 // initTestRepo creates a local git repo with an initial commit containing the given files.
 // Returns the repo directory path.
@@ -36,7 +39,7 @@ func initTestRepo(t *testing.T, files map[string]string) string {
 	}
 
 	_, err = wt.Commit("Initial commit", &gogit.CommitOptions{
-		Author: &object.Signature{Name: testAuthorName, Email: "test@example.com"},
+		Author: &object.Signature{Name: testAuthorName, Email: testAuthorEmail},
 	})
 	require.NoError(t, err)
 
@@ -99,7 +102,7 @@ func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 	_, err = wt.Add("feature.txt")
 	require.NoError(t, err)
 	_, err = wt.Commit("Add feature", &gogit.CommitOptions{
-		Author: &object.Signature{Name: testAuthorName, Email: "test@example.com"},
+		Author: &object.Signature{Name: testAuthorName, Email: testAuthorEmail},
 	})
 	require.NoError(t, err)
 
@@ -142,7 +145,7 @@ func TestDefaultGitClient_CloneWithTag(t *testing.T) {
 	_, err = wt.Add("v2.txt")
 	require.NoError(t, err)
 	_, err = wt.Commit("Post-tag commit", &gogit.CommitOptions{
-		Author: &object.Signature{Name: testAuthorName, Email: "test@example.com"},
+		Author: &object.Signature{Name: testAuthorName, Email: testAuthorEmail},
 	})
 	require.NoError(t, err)
 
@@ -186,7 +189,7 @@ func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 	_, err = wt.Add("file2.txt")
 	require.NoError(t, err)
 	_, err = wt.Commit("Second commit", &gogit.CommitOptions{
-		Author: &object.Signature{Name: testAuthorName, Email: "test@example.com"},
+		Author: &object.Signature{Name: testAuthorName, Email: testAuthorEmail},
 	})
 	require.NoError(t, err)
 

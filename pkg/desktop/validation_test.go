@@ -19,7 +19,7 @@ const (
 	testSymlinkTarget  = "/path/to/binary"
 	testInstalledAt    = "2026-01-22T10:30:00Z"
 	testDesktopVersion = "2.0.0"
-	testInstallCopy    = "copy"
+	testInstallCopy    = installMethodCopy
 	testCLIChecksum    = "abc123"
 	testLocalBinPath   = "/usr/local/bin/thv"
 )
@@ -40,8 +40,8 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 				t.Helper()
 				marker := cliSourceMarker{
 					SchemaVersion:  1,
-					Source:         "desktop",
-					InstallMethod:  "symlink",
+					Source:         sourceDesktop,
+					InstallMethod:  installMethodSymlink,
 					CLIVersion:     testCLIVersion,
 					SymlinkTarget:  testSymlinkTarget,
 					InstalledAt:    testInstalledAt,
@@ -54,8 +54,8 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 			validateFn: func(t *testing.T, marker *cliSourceMarker) {
 				t.Helper()
 				assert.Equal(t, 1, marker.SchemaVersion)
-				assert.Equal(t, "desktop", marker.Source)
-				assert.Equal(t, "symlink", marker.InstallMethod)
+				assert.Equal(t, sourceDesktop, marker.Source)
+				assert.Equal(t, installMethodSymlink, marker.InstallMethod)
 				assert.Equal(t, testCLIVersion, marker.CLIVersion)
 				assert.Equal(t, testSymlinkTarget, marker.SymlinkTarget)
 			},
@@ -86,8 +86,8 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 				t.Helper()
 				marker := map[string]any{
 					"schema_version":  99,
-					"source":          "desktop",
-					"install_method":  "symlink",
+					"source":          sourceDesktop,
+					"install_method":  installMethodSymlink,
 					"cli_version":     testCLIVersion,
 					"installed_at":    testInstalledAt,
 					"desktop_version": testDesktopVersion,
@@ -104,7 +104,7 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 				marker := map[string]any{
 					"schema_version":  1,
 					"source":          "manual",
-					"install_method":  "symlink",
+					"install_method":  installMethodSymlink,
 					"cli_version":     testCLIVersion,
 					"installed_at":    testInstalledAt,
 					"desktop_version": testDesktopVersion,
@@ -120,7 +120,7 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 				t.Helper()
 				marker := cliSourceMarker{
 					SchemaVersion:  1,
-					Source:         "desktop",
+					Source:         sourceDesktop,
 					InstallMethod:  testInstallCopy,
 					CLIVersion:     testCLIVersion,
 					CLIChecksum:    testCLIChecksum,
@@ -143,8 +143,8 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 				t.Helper()
 				marker := cliSourceMarker{
 					SchemaVersion:  1,
-					Source:         "desktop",
-					InstallMethod:  "flatpak",
+					Source:         sourceDesktop,
+					InstallMethod:  installMethodFlatpak,
 					CLIVersion:     testCLIVersion,
 					FlatpakTarget:  "/home/user/.local/share/flatpak/app/com.stacklok.ToolHive/x86_64/master/active/files/toolhive/resources/bin/linux-x64/thv",
 					InstalledAt:    testInstalledAt,
@@ -156,7 +156,7 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 			wantMarker: true,
 			validateFn: func(t *testing.T, marker *cliSourceMarker) {
 				t.Helper()
-				assert.Equal(t, "flatpak", marker.InstallMethod)
+				assert.Equal(t, installMethodFlatpak, marker.InstallMethod)
 				assert.Contains(t, marker.FlatpakTarget, "com.stacklok.ToolHive")
 			},
 		},
@@ -211,8 +211,8 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		// Write a marker file pointing to a non-existent binary
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
-			Source:         "desktop",
-			InstallMethod:  "symlink",
+			Source:         sourceDesktop,
+			InstallMethod:  installMethodSymlink,
 			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  "/nonexistent/path/to/thv",
 			InstalledAt:    testInstalledAt,
@@ -250,8 +250,8 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		// Write a marker file pointing to the current executable
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
-			Source:         "desktop",
-			InstallMethod:  "symlink",
+			Source:         sourceDesktop,
+			InstallMethod:  installMethodSymlink,
 			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  resolvedExe,
 			InstalledAt:    testInstalledAt,
@@ -284,8 +284,8 @@ func TestCheckDesktopAlignment(t *testing.T) {
 		// Write a marker file pointing to the fake binary
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
-			Source:         "desktop",
-			InstallMethod:  "symlink",
+			Source:         sourceDesktop,
+			InstallMethod:  installMethodSymlink,
 			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  fakeBinaryPath,
 			InstalledAt:    testInstalledAt,
@@ -323,8 +323,8 @@ func TestIsDesktopManagedCLI(t *testing.T) {
 
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
-			Source:         "desktop",
-			InstallMethod:  "symlink",
+			Source:         sourceDesktop,
+			InstallMethod:  installMethodSymlink,
 			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  "/nonexistent/path/to/thv",
 			InstalledAt:    testInstalledAt,
@@ -352,8 +352,8 @@ func TestIsDesktopManagedCLI(t *testing.T) {
 
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
-			Source:         "desktop",
-			InstallMethod:  "symlink",
+			Source:         sourceDesktop,
+			InstallMethod:  installMethodSymlink,
 			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  resolvedExe,
 			InstalledAt:    testInstalledAt,
@@ -378,8 +378,8 @@ func TestIsDesktopManagedCLI(t *testing.T) {
 
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
-			Source:         "desktop",
-			InstallMethod:  "symlink",
+			Source:         sourceDesktop,
+			InstallMethod:  installMethodSymlink,
 			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  fakeBinaryPath,
 			InstalledAt:    testInstalledAt,
@@ -497,8 +497,8 @@ func TestBuildConflictMessage(t *testing.T) {
 
 	marker := &cliSourceMarker{
 		SchemaVersion:  1,
-		Source:         "desktop",
-		InstallMethod:  "symlink",
+		Source:         sourceDesktop,
+		InstallMethod:  installMethodSymlink,
 		CLIVersion:     testCLIVersion,
 		SymlinkTarget:  "/Applications/ToolHive.app/Contents/Resources/bin/thv",
 		InstalledAt:    testInstalledAt,
@@ -529,7 +529,7 @@ func TestGetTargetPath(t *testing.T) {
 	t.Run("symlink method with target", func(t *testing.T) {
 		t.Parallel()
 		marker := &cliSourceMarker{
-			InstallMethod: "symlink",
+			InstallMethod: installMethodSymlink,
 			SymlinkTarget: testSymlinkTarget,
 		}
 		result := getTargetPath(marker)
@@ -539,7 +539,7 @@ func TestGetTargetPath(t *testing.T) {
 	t.Run("symlink method without target", func(t *testing.T) {
 		t.Parallel()
 		marker := &cliSourceMarker{
-			InstallMethod: "symlink",
+			InstallMethod: installMethodSymlink,
 			SymlinkTarget: "",
 		}
 		result := getTargetPath(marker)
@@ -549,7 +549,7 @@ func TestGetTargetPath(t *testing.T) {
 	t.Run("flatpak method with target", func(t *testing.T) {
 		t.Parallel()
 		marker := &cliSourceMarker{
-			InstallMethod: "flatpak",
+			InstallMethod: installMethodFlatpak,
 			FlatpakTarget: "/home/user/.local/share/flatpak/app/com.stacklok.ToolHive/x86_64/master/active/files/toolhive/resources/bin/linux-x64/thv",
 		}
 		result := getTargetPath(marker)
@@ -559,7 +559,7 @@ func TestGetTargetPath(t *testing.T) {
 	t.Run("flatpak method without target", func(t *testing.T) {
 		t.Parallel()
 		marker := &cliSourceMarker{
-			InstallMethod: "flatpak",
+			InstallMethod: installMethodFlatpak,
 			FlatpakTarget: "",
 		}
 		result := getTargetPath(marker)
@@ -695,8 +695,8 @@ func TestReadMarkerFile(t *testing.T) {
 
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
-			Source:         "desktop",
-			InstallMethod:  "symlink",
+			Source:         sourceDesktop,
+			InstallMethod:  installMethodSymlink,
 			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  testSymlinkTarget,
 			InstalledAt:    testInstalledAt,
@@ -752,8 +752,8 @@ func TestValidateDesktopAlignmentWithConflict(t *testing.T) {
 		// Write a marker file pointing to the fake binary
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
-			Source:         "desktop",
-			InstallMethod:  "symlink",
+			Source:         sourceDesktop,
+			InstallMethod:  installMethodSymlink,
 			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  fakeBinaryPath,
 			InstalledAt:    testInstalledAt,
@@ -788,7 +788,7 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 		// Write a marker file with copy method (no symlink target)
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
-			Source:         "desktop",
+			Source:         sourceDesktop,
 			InstallMethod:  testInstallCopy,
 			CLIVersion:     testCLIVersion,
 			CLIChecksum:    testCLIChecksum,
@@ -830,7 +830,7 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 		// Write a marker file with copy method
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
-			Source:         "desktop",
+			Source:         sourceDesktop,
 			InstallMethod:  testInstallCopy,
 			CLIVersion:     testCLIVersion,
 			CLIChecksum:    testCLIChecksum,
@@ -869,7 +869,7 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 		// Write a marker file with copy method
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
-			Source:         "desktop",
+			Source:         sourceDesktop,
 			InstallMethod:  testInstallCopy,
 			CLIVersion:     testCLIVersion,
 			CLIChecksum:    testCLIChecksum,
@@ -908,8 +908,8 @@ func TestCheckDesktopAlignmentFlatpakMethod(t *testing.T) {
 		// Write a marker file with flatpak method
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
-			Source:         "desktop",
-			InstallMethod:  "flatpak",
+			Source:         sourceDesktop,
+			InstallMethod:  installMethodFlatpak,
 			CLIVersion:     testCLIVersion,
 			FlatpakTarget:  fakeFlatpakBinary,
 			InstalledAt:    testInstalledAt,
@@ -939,8 +939,8 @@ func TestCheckDesktopAlignmentFlatpakMethod(t *testing.T) {
 		// (simulates Flatpak being uninstalled)
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
-			Source:         "desktop",
-			InstallMethod:  "flatpak",
+			Source:         sourceDesktop,
+			InstallMethod:  installMethodFlatpak,
 			CLIVersion:     testCLIVersion,
 			FlatpakTarget:  "/nonexistent/flatpak/app/thv",
 			InstalledAt:    testInstalledAt,
@@ -965,8 +965,8 @@ func TestBuildConflictMessageWithoutDesktopVersion(t *testing.T) {
 
 	marker := &cliSourceMarker{
 		SchemaVersion:  1,
-		Source:         "desktop",
-		InstallMethod:  "symlink",
+		Source:         sourceDesktop,
+		InstallMethod:  installMethodSymlink,
 		CLIVersion:     testCLIVersion,
 		SymlinkTarget:  "/path/to/thv",
 		InstalledAt:    testInstalledAt,

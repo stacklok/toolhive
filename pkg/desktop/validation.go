@@ -138,21 +138,21 @@ func shouldSkipValidation() bool {
 // getTargetPath extracts the target binary path from the marker based on
 // the installation method and platform.
 func getTargetPath(marker *cliSourceMarker) string {
-	if marker.InstallMethod == "symlink" && marker.SymlinkTarget != "" {
+	if marker.InstallMethod == installMethodSymlink && marker.SymlinkTarget != "" {
 		return marker.SymlinkTarget
 	}
 
 	// For Flatpak installations, the target is the host-visible path to the
 	// CLI binary inside the Flatpak app directory. The validation logic is
 	// the same as symlink: check if the target exists and compare paths.
-	if marker.InstallMethod == "flatpak" && marker.FlatpakTarget != "" {
+	if marker.InstallMethod == installMethodFlatpak && marker.FlatpakTarget != "" {
 		return marker.FlatpakTarget
 	}
 
 	// For Windows/copy method, construct the path to the desktop-managed CLI
 	// from the known installation location: %LOCALAPPDATA%\ToolHive\bin\thv.exe
 	// Note: copy method is only used on Windows; on other platforms, return empty.
-	if marker.InstallMethod == "copy" && runtime.GOOS == "windows" {
+	if marker.InstallMethod == installMethodCopy && runtime.GOOS == "windows" {
 		return filepath.Join(getWindowsLocalAppData(), "ToolHive", "bin", "thv.exe")
 	}
 

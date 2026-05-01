@@ -5,8 +5,22 @@
 // the ToolHive Desktop application's CLI management.
 package desktop
 
-// currentSchemaVersion is the expected schema version for marker files.
-const currentSchemaVersion = 1
+const (
+	// currentSchemaVersion is the expected schema version for marker files.
+	currentSchemaVersion = 1
+
+	// sourceDesktop is the source value written by the ToolHive Desktop app.
+	sourceDesktop = "desktop"
+
+	// installMethodSymlink indicates the CLI was installed via a symlink (macOS/Linux).
+	installMethodSymlink = "symlink"
+
+	// installMethodFlatpak indicates the CLI was installed via a Flatpak wrapper (Linux).
+	installMethodFlatpak = "flatpak"
+
+	// installMethodCopy indicates the CLI was installed by copying the binary (Windows).
+	installMethodCopy = "copy"
+)
 
 // cliSourceMarker represents the marker file schema written by the
 // ToolHive Desktop application at ~/.toolhive/.cli-source.

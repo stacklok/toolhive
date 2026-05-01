@@ -69,7 +69,7 @@ func readMarkerFileFromPath(path string) (*cliSourceMarker, error) {
 	}
 
 	// Validate source field
-	if marker.Source != "desktop" {
+	if marker.Source != sourceDesktop {
 		return nil, errInvalidMarker
 	}
 

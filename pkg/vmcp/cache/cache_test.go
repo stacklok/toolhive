@@ -215,7 +215,7 @@ func TestCachedToken_Lifecycle(t *testing.T) {
 	// Stage 1: Fresh token just issued
 	token := &CachedToken{
 		Token:        "lifecycle-token",
-		TokenType:    "Bearer",
+		TokenType:    testTokenType,
 		ExpiresAt:    time.Now().Add(10 * time.Minute),
 		RefreshToken: "refresh-token",
 		Scopes:       []string{"read", "write"},

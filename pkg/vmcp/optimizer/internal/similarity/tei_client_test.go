@@ -15,6 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const testInputText = "hello"
+
 func Test_newTEIClient(t *testing.T) {
 	t.Parallel()
 
@@ -114,7 +116,7 @@ func TestTEIClient_EmbedBatch(t *testing.T) {
 		},
 		{
 			name:  "single input",
-			texts: []string{"hello"},
+			texts: []string{testInputText},
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode([][]float32{{0.1, 0.2}})
@@ -124,7 +126,7 @@ func TestTEIClient_EmbedBatch(t *testing.T) {
 		},
 		{
 			name:  "multiple inputs",
-			texts: []string{"hello", "world"},
+			texts: []string{testInputText, "world"},
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode([][]float32{{0.1, 0.2}, {0.3, 0.4}})
@@ -134,7 +136,7 @@ func TestTEIClient_EmbedBatch(t *testing.T) {
 		},
 		{
 			name:  "server error",
-			texts: []string{"hello"},
+			texts: []string{testInputText},
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
 				_, _ = w.Write([]byte("internal error"))
@@ -143,7 +145,7 @@ func TestTEIClient_EmbedBatch(t *testing.T) {
 		},
 		{
 			name:  "mismatched count",
-			texts: []string{"hello", "world"},
+			texts: []string{testInputText, "world"},
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode([][]float32{{0.1, 0.2}})

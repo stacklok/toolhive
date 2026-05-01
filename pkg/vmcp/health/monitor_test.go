@@ -17,6 +17,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
 
+const (
+	testMonitorBackendName1 = "Backend 1"
+	testMonitorBackendName2 = "Backend 2"
+	testMonitorBackendID1   = "backend-1"
+	testMonitorBackendID2   = "backend-2"
+	testMonitorBackendURL1  = "http://localhost:8080"
+	testMonitorBackendURL2  = "http://localhost:8081"
+)
+
 func TestNewMonitor_Validation(t *testing.T) {
 	t.Parallel()
 
@@ -25,7 +34,7 @@ func TestNewMonitor_Validation(t *testing.T) {
 
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: testMonitorBackendURL1},
 	}
 
 	tests := []struct {
@@ -142,7 +151,7 @@ func TestMonitor_StartStop(t *testing.T) {
 
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: testMonitorBackendURL1, TransportType: "sse"},
 	}
 
 	config := MonitorConfig{
@@ -167,7 +176,7 @@ func TestMonitor_StartStop(t *testing.T) {
 
 	// Wait for at least one health check to complete
 	require.Eventually(t, func() bool {
-		return monitor.IsBackendHealthy("backend-1")
+		return monitor.IsBackendHealthy(testMonitorBackendID1)
 	}, 500*time.Millisecond, 10*time.Millisecond, "backend should become healthy")
 
 	// Stop monitor
@@ -187,7 +196,7 @@ func TestMonitor_StartErrors(t *testing.T) {
 
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: testMonitorBackendURL1},
 	}
 
 	config := MonitorConfig{
@@ -255,7 +264,7 @@ func TestMonitor_StopWithoutStart(t *testing.T) {
 
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: testMonitorBackendURL1},
 	}
 
 	config := MonitorConfig{
@@ -280,7 +289,7 @@ func TestMonitor_PeriodicHealthChecks(t *testing.T) {
 
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: testMonitorBackendURL1, TransportType: "sse"},
 	}
 
 	config := MonitorConfig{
@@ -307,11 +316,11 @@ func TestMonitor_PeriodicHealthChecks(t *testing.T) {
 
 	// Wait for threshold to be exceeded (2 failures)
 	require.Eventually(t, func() bool {
-		status, err := monitor.GetBackendStatus("backend-1")
+		status, err := monitor.GetBackendStatus(testMonitorBackendID1)
 		return err == nil && status == vmcp.BackendUnhealthy
 	}, 500*time.Millisecond, 10*time.Millisecond, "backend should become unhealthy after threshold")
 
-	state, err := monitor.GetBackendState("backend-1")
+	state, err := monitor.GetBackendState(testMonitorBackendID1)
 	assert.NoError(t, err)
 	assert.GreaterOrEqual(t, state.ConsecutiveFailures, 2)
 }
@@ -324,8 +333,8 @@ func TestMonitor_GetHealthSummary(t *testing.T) {
 
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
-		{ID: "backend-2", Name: "Backend 2", BaseURL: "http://localhost:8081", TransportType: "sse"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: testMonitorBackendURL1, TransportType: "sse"},
+		{ID: testMonitorBackendID2, Name: testMonitorBackendName2, BaseURL: testMonitorBackendURL2, TransportType: "sse"},
 	}
 
 	config := MonitorConfig{
@@ -338,7 +347,7 @@ func TestMonitor_GetHealthSummary(t *testing.T) {
 	mockClient.EXPECT().
 		ListCapabilities(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
-			if target.WorkloadID == "backend-1" {
+			if target.WorkloadID == testMonitorBackendID1 {
 				return &vmcp.CapabilityList{}, nil
 			}
 			return nil, errors.New("backend unavailable")
@@ -375,7 +384,7 @@ func TestMonitor_GetBackendStatus(t *testing.T) {
 
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: testMonitorBackendURL1, TransportType: "sse"},
 	}
 
 	config := MonitorConfig{
@@ -401,12 +410,12 @@ func TestMonitor_GetBackendStatus(t *testing.T) {
 
 	// Wait for initial health check to complete
 	require.Eventually(t, func() bool {
-		status, err := monitor.GetBackendStatus("backend-1")
+		status, err := monitor.GetBackendStatus(testMonitorBackendID1)
 		return err == nil && status == vmcp.BackendHealthy
 	}, 500*time.Millisecond, 10*time.Millisecond, "backend status should be available and healthy")
 
 	// Test getting status for existing backend
-	status, err := monitor.GetBackendStatus("backend-1")
+	status, err := monitor.GetBackendStatus(testMonitorBackendID1)
 	assert.NoError(t, err)
 	assert.Equal(t, vmcp.BackendHealthy, status)
 
@@ -424,7 +433,7 @@ func TestMonitor_GetBackendState(t *testing.T) {
 
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: testMonitorBackendURL1, TransportType: "sse"},
 	}
 
 	config := MonitorConfig{
@@ -450,12 +459,12 @@ func TestMonitor_GetBackendState(t *testing.T) {
 
 	// Wait for initial health check to complete
 	require.Eventually(t, func() bool {
-		state, err := monitor.GetBackendState("backend-1")
+		state, err := monitor.GetBackendState(testMonitorBackendID1)
 		return err == nil && state != nil && state.Status == vmcp.BackendHealthy
 	}, 500*time.Millisecond, 10*time.Millisecond, "backend state should be available and healthy")
 
 	// Test getting state for existing backend
-	state, err := monitor.GetBackendState("backend-1")
+	state, err := monitor.GetBackendState(testMonitorBackendID1)
 	assert.NoError(t, err)
 	assert.NotNil(t, state)
 	assert.Equal(t, vmcp.BackendHealthy, state.Status)
@@ -474,8 +483,8 @@ func TestMonitor_GetAllBackendStates(t *testing.T) {
 
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
-		{ID: "backend-2", Name: "Backend 2", BaseURL: "http://localhost:8081", TransportType: "sse"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: testMonitorBackendURL1, TransportType: "sse"},
+		{ID: testMonitorBackendID2, Name: testMonitorBackendName2, BaseURL: testMonitorBackendURL2, TransportType: "sse"},
 	}
 
 	config := MonitorConfig{
@@ -507,8 +516,8 @@ func TestMonitor_GetAllBackendStates(t *testing.T) {
 
 	allStates := monitor.GetAllBackendStates()
 	assert.Len(t, allStates, 2)
-	assert.Contains(t, allStates, "backend-1")
-	assert.Contains(t, allStates, "backend-2")
+	assert.Contains(t, allStates, testMonitorBackendID1)
+	assert.Contains(t, allStates, testMonitorBackendID2)
 }
 
 func TestMonitor_ContextCancellation(t *testing.T) {
@@ -519,7 +528,7 @@ func TestMonitor_ContextCancellation(t *testing.T) {
 
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: testMonitorBackendURL1, TransportType: "sse"},
 	}
 
 	config := MonitorConfig{
@@ -543,7 +552,7 @@ func TestMonitor_ContextCancellation(t *testing.T) {
 
 	// Wait for a few health checks to run
 	require.Eventually(t, func() bool {
-		return monitor.IsBackendHealthy("backend-1")
+		return monitor.IsBackendHealthy(testMonitorBackendID1)
 	}, 500*time.Millisecond, 10*time.Millisecond, "backend should have completed at least one health check")
 
 	// Cancel context
@@ -804,7 +813,7 @@ func TestMonitor_UpdateBackends(t *testing.T) {
 
 	// Start with one initial backend
 	initialBackends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: testMonitorBackendURL1, TransportType: "sse"},
 	}
 
 	config := MonitorConfig{
@@ -831,7 +840,7 @@ func TestMonitor_UpdateBackends(t *testing.T) {
 
 	// Wait for initial backend to be healthy
 	require.Eventually(t, func() bool {
-		return monitor.IsBackendHealthy("backend-1")
+		return monitor.IsBackendHealthy(testMonitorBackendID1)
 	}, 500*time.Millisecond, 10*time.Millisecond, "backend-1 should become healthy")
 
 	// Wait for initial health checks to complete
@@ -842,8 +851,8 @@ func TestMonitor_UpdateBackends(t *testing.T) {
 	// This tests the fix for the WaitGroup bug where dynamic backends
 	// would call initialCheckWg.Done() without a corresponding Add()
 	updatedBackends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
-		{ID: "backend-2", Name: "Backend 2", BaseURL: "http://localhost:8081", TransportType: "sse"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: testMonitorBackendURL1, TransportType: "sse"},
+		{ID: testMonitorBackendID2, Name: testMonitorBackendName2, BaseURL: testMonitorBackendURL2, TransportType: "sse"},
 	}
 
 	monitor.UpdateBackends(updatedBackends)
@@ -851,7 +860,7 @@ func TestMonitor_UpdateBackends(t *testing.T) {
 	// Wait for new backend to be monitored and become healthy
 	// This should not panic (which would happen with the WaitGroup bug)
 	require.Eventually(t, func() bool {
-		return monitor.IsBackendHealthy("backend-2")
+		return monitor.IsBackendHealthy(testMonitorBackendID2)
 	}, 500*time.Millisecond, 10*time.Millisecond, "backend-2 should become healthy")
 
 	// Verify both backends are now in the summary
@@ -861,19 +870,19 @@ func TestMonitor_UpdateBackends(t *testing.T) {
 
 	// Test removing a backend
 	reducedBackends := []vmcp.Backend{
-		{ID: "backend-2", Name: "Backend 2", BaseURL: "http://localhost:8081", TransportType: "sse"},
+		{ID: testMonitorBackendID2, Name: testMonitorBackendName2, BaseURL: testMonitorBackendURL2, TransportType: "sse"},
 	}
 
 	monitor.UpdateBackends(reducedBackends)
 
 	// Wait for backend-1 to be removed from monitoring
 	require.Eventually(t, func() bool {
-		_, err := monitor.GetBackendState("backend-1")
+		_, err := monitor.GetBackendState(testMonitorBackendID1)
 		return err != nil // Error means state was removed
 	}, 500*time.Millisecond, 50*time.Millisecond, "backend-1 state should be removed")
 
 	// Backend-2 should still be healthy
-	assert.True(t, monitor.IsBackendHealthy("backend-2"))
+	assert.True(t, monitor.IsBackendHealthy(testMonitorBackendID2))
 
 	// Verify summary only shows backend-2
 	summary = monitor.GetHealthSummary()
@@ -936,7 +945,7 @@ func TestMonitor_UpdateBackends_PropertyChange(t *testing.T) {
 
 	// Start with one backend at an old URL
 	initialBackends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://old-url:8080", TransportType: "sse"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: "http://old-url:8080", TransportType: "sse"},
 	}
 
 	config := MonitorConfig{
@@ -963,13 +972,13 @@ func TestMonitor_UpdateBackends_PropertyChange(t *testing.T) {
 
 	// Wait for initial backend to become healthy
 	require.Eventually(t, func() bool {
-		return monitor.IsBackendHealthy("backend-1")
+		return monitor.IsBackendHealthy(testMonitorBackendID1)
 	}, 500*time.Millisecond, 10*time.Millisecond, "backend-1 should become healthy")
 
 	// Update the same backend with a new URL (simulating operator reconcile
 	// setting Status.URL after the Service is created)
 	updatedBackends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://new-url:8080", TransportType: "sse"},
+		{ID: testMonitorBackendID1, Name: testMonitorBackendName1, BaseURL: "http://new-url:8080", TransportType: "sse"},
 	}
 
 	monitor.UpdateBackends(updatedBackends)
@@ -977,7 +986,7 @@ func TestMonitor_UpdateBackends_PropertyChange(t *testing.T) {
 	// The backend should still be monitored and become healthy at the new URL.
 	// The old goroutine is cancelled and a new one started with the updated properties.
 	require.Eventually(t, func() bool {
-		return monitor.IsBackendHealthy("backend-1")
+		return monitor.IsBackendHealthy(testMonitorBackendID1)
 	}, 500*time.Millisecond, 10*time.Millisecond, "backend-1 should remain healthy after URL change")
 
 	// Verify the backend is the only one being monitored
@@ -995,8 +1004,8 @@ func TestMonitor_CircuitBreakerDisabled(t *testing.T) {
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
 		{
-			ID:            "backend-1",
-			Name:          "Backend 1",
+			ID:            testMonitorBackendID1,
+			Name:          testMonitorBackendName1,
 			BaseURL:       "http://backend1:8080",
 			TransportType: "http",
 		},
@@ -1035,7 +1044,7 @@ func TestMonitor_CircuitBreakerDisabled(t *testing.T) {
 
 	// Wait for multiple health checks
 	require.Eventually(t, func() bool {
-		state, err := monitor.GetBackendState("backend-1")
+		state, err := monitor.GetBackendState(testMonitorBackendID1)
 		return err == nil && state.ConsecutiveFailures > 5
 	}, 2*time.Second, 50*time.Millisecond, "should record multiple failures")
 
@@ -1053,8 +1062,8 @@ func TestMonitor_CircuitBreakerEnabled(t *testing.T) {
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
 		{
-			ID:            "backend-1",
-			Name:          "Backend 1",
+			ID:            testMonitorBackendID1,
+			Name:          testMonitorBackendName1,
 			BaseURL:       "http://backend1:8080",
 			TransportType: "http",
 		},
@@ -1101,7 +1110,7 @@ func TestMonitor_CircuitBreakerEnabled(t *testing.T) {
 
 	// Wait for failures to accumulate and circuit to open
 	require.Eventually(t, func() bool {
-		return monitor.statusTracker.IsCircuitOpen("backend-1")
+		return monitor.statusTracker.IsCircuitOpen(testMonitorBackendID1)
 	}, 1*time.Second, 50*time.Millisecond, "circuit should open after failures")
 
 	// No more health checks should be attempted while circuit is open
@@ -1124,8 +1133,8 @@ func TestMonitor_CircuitBreakerRecovery(t *testing.T) {
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
 		{
-			ID:            "backend-1",
-			Name:          "Backend 1",
+			ID:            testMonitorBackendID1,
+			Name:          testMonitorBackendName1,
 			BaseURL:       "http://backend1:8080",
 			TransportType: "http",
 		},
@@ -1174,12 +1183,12 @@ func TestMonitor_CircuitBreakerRecovery(t *testing.T) {
 
 	// Wait for failures to accumulate and circuit to open
 	require.Eventually(t, func() bool {
-		return monitor.statusTracker.IsCircuitOpen("backend-1")
+		return monitor.statusTracker.IsCircuitOpen(testMonitorBackendID1)
 	}, 1*time.Second, 50*time.Millisecond, "circuit should open after failures")
 
 	// Circuit should eventually close after successful recovery (with circuit breaker timeout)
 	require.Eventually(t, func() bool {
-		cbState, exists := monitor.statusTracker.GetCircuitBreakerState("backend-1")
+		cbState, exists := monitor.statusTracker.GetCircuitBreakerState(testMonitorBackendID1)
 		return exists && cbState == CircuitClosed
 	}, 2*time.Second, 50*time.Millisecond, "circuit should close after successful recovery")
 
@@ -1197,8 +1206,8 @@ func TestMonitor_CircuitBreakerStatusReporting(t *testing.T) {
 	mockClient := mocks.NewMockBackendClient(ctrl)
 	backends := []vmcp.Backend{
 		{
-			ID:            "backend-1",
-			Name:          "Backend 1",
+			ID:            testMonitorBackendID1,
+			Name:          testMonitorBackendName1,
 			BaseURL:       "http://backend1:8080",
 			TransportType: "http",
 		},
@@ -1241,7 +1250,7 @@ func TestMonitor_CircuitBreakerStatusReporting(t *testing.T) {
 
 	// Wait for failures and circuit to open
 	require.Eventually(t, func() bool {
-		return monitor.statusTracker.IsCircuitOpen("backend-1")
+		return monitor.statusTracker.IsCircuitOpen(testMonitorBackendID1)
 	}, 1*time.Second, 50*time.Millisecond, "circuit should open after failures")
 
 	// Build status and verify circuit breaker state is included

@@ -17,6 +17,11 @@ import (
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
+const (
+	conditionTypeReady        = "Ready"
+	reasonAllBackendsRoutable = "AllBackendsRoutable"
+)
+
 // WithHealthCheckMarker marks a context as a health check request.
 // Authentication layers can use IsHealthCheck to identify and skip authentication
 // for health check requests.
@@ -861,7 +866,7 @@ func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount i
 
 	// Ready condition - true if phase is Ready
 	readyCondition := metav1.Condition{
-		Type:               "Ready",
+		Type:               conditionTypeReady,
 		Status:             metav1.ConditionFalse,
 		LastTransitionTime: now,
 		Reason:             "BackendsUnhealthy",
@@ -871,7 +876,7 @@ func buildConditions(summary Summary, phase vmcp.Phase, configuredBackendCount i
 	switch phase {
 	case vmcp.PhaseReady:
 		readyCondition.Status = metav1.ConditionTrue
-		readyCondition.Reason = "AllBackendsRoutable"
+		readyCondition.Reason = reasonAllBackendsRoutable
 		// Distinguish cold start (no backends configured) from having routable backends
 		if summary.Total == 0 && configuredBackendCount == 0 {
 			readyCondition.Message = "Ready, no backends configured"

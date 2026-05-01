@@ -16,7 +16,6 @@ import (
 )
 
 const (
-	conditionTypeReady    = "Ready"
 	conditionTypeDegraded = "Degraded"
 )
 
@@ -44,7 +43,7 @@ func TestBuildConditions(t *testing.T) {
 			phase:                  vmcp.PhaseReady,
 			configuredBackendCount: 3,
 			expectedReadyStatus:    metav1.ConditionTrue,
-			expectedReason:         "AllBackendsRoutable",
+			expectedReason:         reasonAllBackendsRoutable,
 			expectedMessage:        "All 3 backends are healthy",
 			hasDegradedCond:        false,
 		},
@@ -57,7 +56,7 @@ func TestBuildConditions(t *testing.T) {
 			phase:                  vmcp.PhaseReady,
 			configuredBackendCount: 0,
 			expectedReadyStatus:    metav1.ConditionTrue,
-			expectedReason:         "AllBackendsRoutable",
+			expectedReason:         reasonAllBackendsRoutable,
 			expectedMessage:        "Ready, no backends configured",
 			hasDegradedCond:        false,
 		},
@@ -96,7 +95,7 @@ func TestBuildConditions(t *testing.T) {
 			phase:                  vmcp.PhaseReady,
 			configuredBackendCount: 2,
 			expectedReadyStatus:    metav1.ConditionTrue,
-			expectedReason:         "AllBackendsRoutable",
+			expectedReason:         reasonAllBackendsRoutable,
 			expectedMessage:        "All 2 backends require authentication",
 			hasDegradedCond:        false,
 		},
@@ -110,7 +109,7 @@ func TestBuildConditions(t *testing.T) {
 			phase:                  vmcp.PhaseReady,
 			configuredBackendCount: 3,
 			expectedReadyStatus:    metav1.ConditionTrue,
-			expectedReason:         "AllBackendsRoutable",
+			expectedReason:         reasonAllBackendsRoutable,
 			expectedMessage:        "2 backends healthy, 1 requires authentication",
 			hasDegradedCond:        false,
 		},
@@ -477,7 +476,7 @@ func TestBuildStatus_PhaseLogic(t *testing.T) {
 			// Verify Ready condition exists
 			var readyCond *metav1.Condition
 			for i := range status.Conditions {
-				if status.Conditions[i].Type == "Ready" {
+				if status.Conditions[i].Type == conditionTypeReady {
 					readyCond = &status.Conditions[i]
 					break
 				}
@@ -522,7 +521,7 @@ func TestBuildStatus_PendingPhase(t *testing.T) {
 	// Verify Ready condition
 	var readyCond *metav1.Condition
 	for i := range status.Conditions {
-		if status.Conditions[i].Type == "Ready" {
+		if status.Conditions[i].Type == conditionTypeReady {
 			readyCond = &status.Conditions[i]
 			break
 		}

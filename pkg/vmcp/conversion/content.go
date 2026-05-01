@@ -15,6 +15,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
+const (
+	jsonTypeKey = "type"
+)
+
 // ConvertMCPAnnotations converts mcp.Annotations to vmcp.ContentAnnotations.
 // Returns nil if the input is nil or all fields are zero-valued.
 func ConvertMCPAnnotations(ann *mcp.Annotations) *vmcp.ContentAnnotations {
@@ -270,10 +274,10 @@ func ConvertToolInputSchema(schema mcp.ToolInputSchema) map[string]any {
 	result := make(map[string]any)
 	b, err := json.Marshal(schema)
 	if err != nil {
-		return map[string]any{"type": schema.Type}
+		return map[string]any{jsonTypeKey: schema.Type}
 	}
 	if err := json.Unmarshal(b, &result); err != nil {
-		return map[string]any{"type": schema.Type}
+		return map[string]any{jsonTypeKey: schema.Type}
 	}
 	return result
 }

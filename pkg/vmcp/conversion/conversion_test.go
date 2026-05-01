@@ -14,6 +14,48 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
 
+const (
+	testSchemaTypeObject           = "object"
+	testSchemaTitle                = "title"
+	testRoleUser                   = "user"
+	testRoleSystem                 = "system"
+	testRoleAssistantExt           = "assistant"
+	testMIMEImagePNG               = "image/png"
+	testValueString                = "value"
+	testMIMEAudioMPEG              = "audio/mpeg"
+	testURIReadmeMD                = "file://readme.md"
+	testMIMETextMarkdown           = "text/markdown"
+	testURIImagePNG                = "file://image.png"
+	testDataBase64Blob             = "base64blobdata"
+	testURIDocPDF                  = "file://doc.pdf"
+	testMIMEAppPDF                 = "application/pdf"
+	testMIMEImageJPEG              = "image/jpeg"
+	testDataAudio                  = "audiodata"
+	testURIFileA                   = "file://a"
+	testMIMEAppOctet               = "application/octet-stream"
+	testURIFileC                   = "file://c"
+	testURIFileD                   = "file://d"
+	testURIFileE                   = "file://e"
+	testDataPNGBase64              = "cG5nZGF0YQ=="
+	testTextHelloWorld             = "Hello, world!"
+	testKeyText1                   = "text_1"
+	testDataBase64                 = "base64data"
+	testKeyImage0                  = "image_0"
+	testContentTypeText            = "Text"
+	testKeyResource                = "resource"
+	testMetaTokenBase              = "token-123"
+	testMetaKeyProgressToken       = "progressToken"
+	testMetaTraceID                = "trace-456"
+	testMetaSpanID                 = "span-789"
+	testMetaTokenABC               = "token-abc"
+	testMetaTraceDef               = "trace-def"
+	testMetaKeyCustom              = "custom"
+	testMetaTrace123               = "trace-123"
+	testContentTypeMCPText         = "mcp.TextContent"
+	testContentTypeMCPEmbedded     = "mcp.EmbeddedResource"
+	testContentTypeMCPResourceLink = "mcp.ResourceLink"
+)
+
 func TestConvertToolInputSchema(t *testing.T) {
 	t.Parallel()
 
@@ -25,26 +67,26 @@ func TestConvertToolInputSchema(t *testing.T) {
 		{
 			name: "captures type, properties, required",
 			schema: mcp.ToolInputSchema{
-				Type: "object",
+				Type: testSchemaTypeObject,
 				Properties: map[string]any{
-					"title": map[string]any{"type": "string"},
+					testSchemaTitle: map[string]any{"type": "string"},
 				},
-				Required: []string{"title"},
+				Required: []string{testSchemaTitle},
 			},
 			checks: func(t *testing.T, got map[string]any) {
 				t.Helper()
-				assert.Equal(t, "object", got["type"])
+				assert.Equal(t, testSchemaTypeObject, got["type"])
 				assert.Contains(t, got, "properties")
 				required, ok := got["required"].([]any)
 				require.True(t, ok)
-				assert.Equal(t, []any{"title"}, required)
+				assert.Equal(t, []any{testSchemaTitle}, required)
 			},
 		},
 		{
 			name: "captures $defs",
 			schema: mcp.ToolInputSchema{
-				Type: "object",
-				Defs: map[string]any{"Config": map[string]any{"type": "object"}},
+				Type: testSchemaTypeObject,
+				Defs: map[string]any{"Config": map[string]any{"type": testSchemaTypeObject}},
 			},
 			checks: func(t *testing.T, got map[string]any) {
 				t.Helper()
@@ -53,7 +95,7 @@ func TestConvertToolInputSchema(t *testing.T) {
 		},
 		{
 			name:   "nil required emitted as empty array by mcp-go",
-			schema: mcp.ToolInputSchema{Type: "object", Required: nil},
+			schema: mcp.ToolInputSchema{Type: testSchemaTypeObject, Required: nil},
 			checks: func(t *testing.T, got map[string]any) {
 				t.Helper()
 				required, ok := got["required"].([]any)
@@ -93,32 +135,32 @@ func TestConvertMCPPromptMessages(t *testing.T) {
 		{
 			name: "single text message preserves role and content",
 			messages: []mcp.PromptMessage{
-				{Role: "user", Content: mcp.NewTextContent("Hello")},
+				{Role: testRoleUser, Content: mcp.NewTextContent("Hello")},
 			},
 			want: []vmcp.PromptMessage{
-				{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello"}},
+				{Role: testRoleUser, Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello"}},
 			},
 		},
 		{
 			name: "multiple messages with different roles",
 			messages: []mcp.PromptMessage{
-				{Role: "system", Content: mcp.NewTextContent("You are helpful")},
-				{Role: "user", Content: mcp.NewTextContent("Hi")},
-				{Role: "assistant", Content: mcp.NewTextContent("Hello!")},
+				{Role: testRoleSystem, Content: mcp.NewTextContent("You are helpful")},
+				{Role: testRoleUser, Content: mcp.NewTextContent("Hi")},
+				{Role: testRoleAssistantExt, Content: mcp.NewTextContent("Hello!")},
 			},
 			want: []vmcp.PromptMessage{
-				{Role: "system", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "You are helpful"}},
-				{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hi"}},
-				{Role: "assistant", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello!"}},
+				{Role: testRoleSystem, Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "You are helpful"}},
+				{Role: testRoleUser, Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hi"}},
+				{Role: testRoleAssistantExt, Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello!"}},
 			},
 		},
 		{
 			name: "message with image content is preserved",
 			messages: []mcp.PromptMessage{
-				{Role: "user", Content: mcp.NewImageContent("base64imgdata", "image/png")},
+				{Role: testRoleUser, Content: mcp.NewImageContent("base64imgdata", testMIMEImagePNG)},
 			},
 			want: []vmcp.PromptMessage{
-				{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeImage, Data: "base64imgdata", MimeType: "image/png"}},
+				{Role: testRoleUser, Content: vmcp.Content{Type: vmcp.ContentTypeImage, Data: "base64imgdata", MimeType: testMIMEImagePNG}},
 			},
 		},
 	}
@@ -154,12 +196,12 @@ func TestToMCPPromptMessages(t *testing.T) {
 		{
 			name: "single text message preserves role and content",
 			messages: []vmcp.PromptMessage{
-				{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello"}},
+				{Role: testRoleUser, Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello"}},
 			},
 			wantLen: 1,
 			check: func(t *testing.T, result []mcp.PromptMessage) {
 				t.Helper()
-				assert.Equal(t, mcp.Role("user"), result[0].Role)
+				assert.Equal(t, mcp.Role(testRoleUser), result[0].Role)
 				text, ok := mcp.AsTextContent(result[0].Content)
 				require.True(t, ok)
 				assert.Equal(t, "Hello", text.Text)
@@ -168,22 +210,22 @@ func TestToMCPPromptMessages(t *testing.T) {
 		{
 			name: "multiple messages with different roles",
 			messages: []vmcp.PromptMessage{
-				{Role: "system", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Be helpful"}},
-				{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hi"}},
-				{Role: "assistant", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello!"}},
+				{Role: testRoleSystem, Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Be helpful"}},
+				{Role: testRoleUser, Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hi"}},
+				{Role: testRoleAssistantExt, Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello!"}},
 			},
 			wantLen: 3,
 			check: func(t *testing.T, result []mcp.PromptMessage) {
 				t.Helper()
-				assert.Equal(t, mcp.Role("system"), result[0].Role)
-				assert.Equal(t, mcp.Role("user"), result[1].Role)
-				assert.Equal(t, mcp.Role("assistant"), result[2].Role)
+				assert.Equal(t, mcp.Role(testRoleSystem), result[0].Role)
+				assert.Equal(t, mcp.Role(testRoleUser), result[1].Role)
+				assert.Equal(t, mcp.Role(testRoleAssistantExt), result[2].Role)
 			},
 		},
 		{
 			name: "image content is preserved",
 			messages: []vmcp.PromptMessage{
-				{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeImage, Data: "imgdata", MimeType: "image/png"}},
+				{Role: testRoleUser, Content: vmcp.Content{Type: vmcp.ContentTypeImage, Data: "imgdata", MimeType: testMIMEImagePNG}},
 			},
 			wantLen: 1,
 			check: func(t *testing.T, result []mcp.PromptMessage) {
@@ -191,7 +233,7 @@ func TestToMCPPromptMessages(t *testing.T) {
 				img, ok := result[0].Content.(mcp.ImageContent)
 				require.True(t, ok)
 				assert.Equal(t, "imgdata", img.Data)
-				assert.Equal(t, "image/png", img.MIMEType)
+				assert.Equal(t, testMIMEImagePNG, img.MIMEType)
 			},
 		},
 	}
@@ -212,9 +254,9 @@ func TestPromptMessagesRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	original := []mcp.PromptMessage{
-		{Role: "system", Content: mcp.NewTextContent("You are helpful")},
-		{Role: "user", Content: mcp.NewImageContent("base64data", "image/png")},
-		{Role: "assistant", Content: mcp.NewTextContent("I see an image")},
+		{Role: testRoleSystem, Content: mcp.NewTextContent("You are helpful")},
+		{Role: testRoleUser, Content: mcp.NewImageContent(testDataBase64, testMIMEImagePNG)},
+		{Role: testRoleAssistantExt, Content: mcp.NewTextContent("I see an image")},
 	}
 
 	// mcp -> vmcp -> mcp
@@ -234,8 +276,8 @@ func TestPromptMessagesRoundTrip(t *testing.T) {
 	// Verify image content preserved
 	img1, ok := roundTripped[1].Content.(mcp.ImageContent)
 	require.True(t, ok)
-	assert.Equal(t, "base64data", img1.Data)
-	assert.Equal(t, "image/png", img1.MIMEType)
+	assert.Equal(t, testDataBase64, img1.Data)
+	assert.Equal(t, testMIMEImagePNG, img1.MIMEType)
 
 	// Verify second text content preserved
 	text2, ok := mcp.AsTextContent(roundTripped[2].Content)
@@ -258,8 +300,8 @@ func TestConvertPromptArguments(t *testing.T) {
 		},
 		{
 			name:      "string values pass through unchanged",
-			arguments: map[string]any{"key": "value"},
-			want:      map[string]string{"key": "value"},
+			arguments: map[string]any{"key": testValueString},
+			want:      map[string]string{"key": testValueString},
 		},
 		{
 			name: "non-string values are formatted",
@@ -301,31 +343,31 @@ func TestConvertMCPContent(t *testing.T) {
 		},
 		{
 			name:  "image content",
-			input: mcp.NewImageContent("base64imgdata", "image/png"),
-			want:  vmcp.Content{Type: vmcp.ContentTypeImage, Data: "base64imgdata", MimeType: "image/png"},
+			input: mcp.NewImageContent("base64imgdata", testMIMEImagePNG),
+			want:  vmcp.Content{Type: vmcp.ContentTypeImage, Data: "base64imgdata", MimeType: testMIMEImagePNG},
 		},
 		{
 			name:  "audio content",
-			input: mcp.NewAudioContent("base64audiodata", "audio/mpeg"),
-			want:  vmcp.Content{Type: vmcp.ContentTypeAudio, Data: "base64audiodata", MimeType: "audio/mpeg"},
+			input: mcp.NewAudioContent("base64audiodata", testMIMEAudioMPEG),
+			want:  vmcp.Content{Type: vmcp.ContentTypeAudio, Data: "base64audiodata", MimeType: testMIMEAudioMPEG},
 		},
 		{
 			name: "embedded resource with text content",
 			input: mcp.NewEmbeddedResource(mcp.TextResourceContents{
-				URI:      "file://readme.md",
-				MIMEType: "text/markdown",
+				URI:      testURIReadmeMD,
+				MIMEType: testMIMETextMarkdown,
 				Text:     "# Hello World",
 			}),
-			want: vmcp.Content{Type: vmcp.ContentTypeResource, Text: "# Hello World", URI: "file://readme.md", MimeType: "text/markdown"},
+			want: vmcp.Content{Type: vmcp.ContentTypeResource, Text: "# Hello World", URI: testURIReadmeMD, MimeType: testMIMETextMarkdown},
 		},
 		{
 			name: "embedded resource with blob content",
 			input: mcp.NewEmbeddedResource(mcp.BlobResourceContents{
-				URI:      "file://image.png",
-				MIMEType: "image/png",
-				Blob:     "base64blobdata",
+				URI:      testURIImagePNG,
+				MIMEType: testMIMEImagePNG,
+				Blob:     testDataBase64Blob,
 			}),
-			want: vmcp.Content{Type: vmcp.ContentTypeResource, Data: "base64blobdata", URI: "file://image.png", MimeType: "image/png"},
+			want: vmcp.Content{Type: vmcp.ContentTypeResource, Data: testDataBase64Blob, URI: testURIImagePNG, MimeType: testMIMEImagePNG},
 		},
 		{
 			name: "embedded resource with empty URI and MimeType",
@@ -336,13 +378,13 @@ func TestConvertMCPContent(t *testing.T) {
 		},
 		{
 			name:  "resource_link with all fields",
-			input: mcp.NewResourceLink("file://doc.pdf", "My Doc", "A PDF document", "application/pdf"),
+			input: mcp.NewResourceLink(testURIDocPDF, "My Doc", "A PDF document", testMIMEAppPDF),
 			want: vmcp.Content{
 				Type:        vmcp.ContentTypeLink,
-				URI:         "file://doc.pdf",
+				URI:         testURIDocPDF,
 				Name:        "My Doc",
 				Description: "A PDF document",
-				MimeType:    "application/pdf",
+				MimeType:    testMIMEAppPDF,
 			},
 		},
 		{
@@ -380,13 +422,13 @@ func TestConvertMCPContents(t *testing.T) {
 		t.Parallel()
 		input := []mcp.Content{
 			mcp.NewTextContent("first"),
-			mcp.NewImageContent("imgdata", "image/jpeg"),
-			mcp.NewAudioContent("audiodata", "audio/ogg"),
+			mcp.NewImageContent("imgdata", testMIMEImageJPEG),
+			mcp.NewAudioContent(testDataAudio, "audio/ogg"),
 		}
 		want := []vmcp.Content{
 			{Type: vmcp.ContentTypeText, Text: "first"},
-			{Type: vmcp.ContentTypeImage, Data: "imgdata", MimeType: "image/jpeg"},
-			{Type: vmcp.ContentTypeAudio, Data: "audiodata", MimeType: "audio/ogg"},
+			{Type: vmcp.ContentTypeImage, Data: "imgdata", MimeType: testMIMEImageJPEG},
+			{Type: vmcp.ContentTypeAudio, Data: testDataAudio, MimeType: "audio/ogg"},
 		}
 		got := conversion.ConvertMCPContents(input)
 		assert.Equal(t, want, got)
@@ -423,41 +465,41 @@ func TestConvertMCPResourceContents(t *testing.T) {
 		{
 			name: "single text item",
 			contents: []mcp.ResourceContents{
-				mcp.TextResourceContents{URI: "file://a", MIMEType: "text/plain", Text: "hello resource"},
+				mcp.TextResourceContents{URI: testURIFileA, MIMEType: "text/plain", Text: "hello resource"},
 			},
 			want: []vmcp.ResourceContent{
-				{URI: "file://a", MimeType: "text/plain", Text: "hello resource"},
+				{URI: testURIFileA, MimeType: "text/plain", Text: "hello resource"},
 			},
 		},
 		{
 			name: "single blob item preserved as base64",
 			contents: []mcp.ResourceContents{
-				mcp.BlobResourceContents{URI: "file://b", MIMEType: "application/octet-stream", Blob: "YmluYXJ5IGRhdGE="},
+				mcp.BlobResourceContents{URI: "file://b", MIMEType: testMIMEAppOctet, Blob: "YmluYXJ5IGRhdGE="},
 			},
 			want: []vmcp.ResourceContent{
-				{URI: "file://b", MimeType: "application/octet-stream", Blob: "YmluYXJ5IGRhdGE="},
+				{URI: "file://b", MimeType: testMIMEAppOctet, Blob: "YmluYXJ5IGRhdGE="},
 			},
 		},
 		{
 			name: "multiple items preserve per-item URIs and MIME types",
 			contents: []mcp.ResourceContents{
-				mcp.TextResourceContents{URI: "file://c", MIMEType: "text/plain", Text: "part1"},
-				mcp.TextResourceContents{URI: "file://d", MIMEType: "text/html", Text: "part2"},
+				mcp.TextResourceContents{URI: testURIFileC, MIMEType: "text/plain", Text: "part1"},
+				mcp.TextResourceContents{URI: testURIFileD, MIMEType: "text/html", Text: "part2"},
 			},
 			want: []vmcp.ResourceContent{
-				{URI: "file://c", MimeType: "text/plain", Text: "part1"},
-				{URI: "file://d", MimeType: "text/html", Text: "part2"},
+				{URI: testURIFileC, MimeType: "text/plain", Text: "part1"},
+				{URI: testURIFileD, MimeType: "text/html", Text: "part2"},
 			},
 		},
 		{
 			name: "mixed text and blob items",
 			contents: []mcp.ResourceContents{
-				mcp.TextResourceContents{URI: "file://e", MIMEType: "text/plain", Text: "text"},
-				mcp.BlobResourceContents{URI: "file://f", MIMEType: "image/png", Blob: "cG5nZGF0YQ=="},
+				mcp.TextResourceContents{URI: testURIFileE, MIMEType: "text/plain", Text: "text"},
+				mcp.BlobResourceContents{URI: "file://f", MIMEType: testMIMEImagePNG, Blob: testDataPNGBase64},
 			},
 			want: []vmcp.ResourceContent{
-				{URI: "file://e", MimeType: "text/plain", Text: "text"},
-				{URI: "file://f", MimeType: "image/png", Blob: "cG5nZGF0YQ=="},
+				{URI: testURIFileE, MimeType: "text/plain", Text: "text"},
+				{URI: "file://f", MimeType: testMIMEImagePNG, Blob: testDataPNGBase64},
 			},
 		},
 	}
@@ -490,14 +532,14 @@ func TestToMCPResourceContents(t *testing.T) {
 		{
 			name: "text content produces TextResourceContents",
 			contents: []vmcp.ResourceContent{
-				{URI: "file://a", MimeType: "text/plain", Text: "hello"},
+				{URI: testURIFileA, MimeType: "text/plain", Text: "hello"},
 			},
 			check: func(t *testing.T, result []mcp.ResourceContents) {
 				t.Helper()
 				require.Len(t, result, 1)
 				textRes, ok := mcp.AsTextResourceContents(result[0])
 				require.True(t, ok, "expected TextResourceContents")
-				assert.Equal(t, "file://a", textRes.URI)
+				assert.Equal(t, testURIFileA, textRes.URI)
 				assert.Equal(t, "text/plain", textRes.MIMEType)
 				assert.Equal(t, "hello", textRes.Text)
 			},
@@ -505,7 +547,7 @@ func TestToMCPResourceContents(t *testing.T) {
 		{
 			name: "blob content produces BlobResourceContents",
 			contents: []vmcp.ResourceContent{
-				{URI: "file://b", MimeType: "image/png", Blob: "cG5nZGF0YQ=="},
+				{URI: "file://b", MimeType: testMIMEImagePNG, Blob: testDataPNGBase64},
 			},
 			check: func(t *testing.T, result []mcp.ResourceContents) {
 				t.Helper()
@@ -513,21 +555,21 @@ func TestToMCPResourceContents(t *testing.T) {
 				blobRes, ok := mcp.AsBlobResourceContents(result[0])
 				require.True(t, ok, "expected BlobResourceContents")
 				assert.Equal(t, "file://b", blobRes.URI)
-				assert.Equal(t, "image/png", blobRes.MIMEType)
-				assert.Equal(t, "cG5nZGF0YQ==", blobRes.Blob)
+				assert.Equal(t, testMIMEImagePNG, blobRes.MIMEType)
+				assert.Equal(t, testDataPNGBase64, blobRes.Blob)
 			},
 		},
 		{
 			name: "empty text and blob produces TextResourceContents",
 			contents: []vmcp.ResourceContent{
-				{URI: "file://c", MimeType: "text/plain"},
+				{URI: testURIFileC, MimeType: "text/plain"},
 			},
 			check: func(t *testing.T, result []mcp.ResourceContents) {
 				t.Helper()
 				require.Len(t, result, 1)
 				textRes, ok := mcp.AsTextResourceContents(result[0])
 				require.True(t, ok, "expected TextResourceContents for empty content")
-				assert.Equal(t, "file://c", textRes.URI)
+				assert.Equal(t, testURIFileC, textRes.URI)
 				assert.Equal(t, "text/plain", textRes.MIMEType)
 				assert.Equal(t, "", textRes.Text)
 			},
@@ -535,8 +577,8 @@ func TestToMCPResourceContents(t *testing.T) {
 		{
 			name: "mixed items preserve order and types",
 			contents: []vmcp.ResourceContent{
-				{URI: "file://d", MimeType: "text/plain", Text: "text data"},
-				{URI: "file://e", MimeType: "image/png", Blob: "cG5nZGF0YQ=="},
+				{URI: testURIFileD, MimeType: "text/plain", Text: "text data"},
+				{URI: testURIFileE, MimeType: testMIMEImagePNG, Blob: testDataPNGBase64},
 			},
 			check: func(t *testing.T, result []mcp.ResourceContents) {
 				t.Helper()
@@ -564,14 +606,14 @@ func TestResourceContentsRoundTrip(t *testing.T) {
 	t.Run("text resource round-trip", func(t *testing.T) {
 		t.Parallel()
 		input := []mcp.ResourceContents{
-			mcp.TextResourceContents{URI: "file://a", MIMEType: "text/plain", Text: "hello"},
+			mcp.TextResourceContents{URI: testURIFileA, MIMEType: "text/plain", Text: "hello"},
 		}
 		intermediate := conversion.ConvertMCPResourceContents(input)
 		output := conversion.ToMCPResourceContents(intermediate)
 		require.Len(t, output, 1)
 		textRes, ok := mcp.AsTextResourceContents(output[0])
 		require.True(t, ok)
-		assert.Equal(t, "file://a", textRes.URI)
+		assert.Equal(t, testURIFileA, textRes.URI)
 		assert.Equal(t, "text/plain", textRes.MIMEType)
 		assert.Equal(t, "hello", textRes.Text)
 	})
@@ -579,7 +621,7 @@ func TestResourceContentsRoundTrip(t *testing.T) {
 	t.Run("blob resource round-trip", func(t *testing.T) {
 		t.Parallel()
 		input := []mcp.ResourceContents{
-			mcp.BlobResourceContents{URI: "file://b", MIMEType: "image/png", Blob: "cG5nZGF0YQ=="},
+			mcp.BlobResourceContents{URI: "file://b", MIMEType: testMIMEImagePNG, Blob: testDataPNGBase64},
 		}
 		intermediate := conversion.ConvertMCPResourceContents(input)
 		output := conversion.ToMCPResourceContents(intermediate)
@@ -587,8 +629,8 @@ func TestResourceContentsRoundTrip(t *testing.T) {
 		blobRes, ok := mcp.AsBlobResourceContents(output[0])
 		require.True(t, ok)
 		assert.Equal(t, "file://b", blobRes.URI)
-		assert.Equal(t, "image/png", blobRes.MIMEType)
-		assert.Equal(t, "cG5nZGF0YQ==", blobRes.Blob)
+		assert.Equal(t, testMIMEImagePNG, blobRes.MIMEType)
+		assert.Equal(t, testDataPNGBase64, blobRes.Blob)
 	})
 }
 
@@ -608,10 +650,10 @@ func TestContentArrayToMap(t *testing.T) {
 		{
 			name: "single text content",
 			content: []vmcp.Content{
-				{Type: vmcp.ContentTypeText, Text: "Hello, world!"},
+				{Type: vmcp.ContentTypeText, Text: testTextHelloWorld},
 			},
 			expected: map[string]any{
-				"text": "Hello, world!",
+				"text": testTextHelloWorld,
 			},
 		},
 		{
@@ -622,73 +664,73 @@ func TestContentArrayToMap(t *testing.T) {
 				{Type: vmcp.ContentTypeText, Text: "Third"},
 			},
 			expected: map[string]any{
-				"text":   "First",
-				"text_1": "Second",
-				"text_2": "Third",
+				"text":       "First",
+				testKeyText1: "Second",
+				"text_2":     "Third",
 			},
 		},
 		{
 			name: "single image content",
 			content: []vmcp.Content{
-				{Type: vmcp.ContentTypeImage, Data: "base64data", MimeType: "image/png"},
+				{Type: vmcp.ContentTypeImage, Data: testDataBase64, MimeType: testMIMEImagePNG},
 			},
 			expected: map[string]any{
-				"image_0": "base64data",
+				testKeyImage0: testDataBase64,
 			},
 		},
 		{
 			name: "multiple images",
 			content: []vmcp.Content{
-				{Type: vmcp.ContentTypeImage, Data: "data1", MimeType: "image/png"},
-				{Type: vmcp.ContentTypeImage, Data: "data2", MimeType: "image/jpeg"},
+				{Type: vmcp.ContentTypeImage, Data: "data1", MimeType: testMIMEImagePNG},
+				{Type: vmcp.ContentTypeImage, Data: "data2", MimeType: testMIMEImageJPEG},
 			},
 			expected: map[string]any{
-				"image_0": "data1",
-				"image_1": "data2",
+				testKeyImage0: "data1",
+				"image_1":     "data2",
 			},
 		},
 		{
 			name: "mixed content types",
 			content: []vmcp.Content{
 				{Type: vmcp.ContentTypeText, Text: "First text"},
-				{Type: vmcp.ContentTypeImage, Data: "image1", MimeType: "image/png"},
+				{Type: vmcp.ContentTypeImage, Data: "image1", MimeType: testMIMEImagePNG},
 				{Type: vmcp.ContentTypeText, Text: "Second text"},
-				{Type: vmcp.ContentTypeImage, Data: "image2", MimeType: "image/jpeg"},
+				{Type: vmcp.ContentTypeImage, Data: "image2", MimeType: testMIMEImageJPEG},
 			},
 			expected: map[string]any{
-				"text":    "First text",
-				"text_1":  "Second text",
-				"image_0": "image1",
-				"image_1": "image2",
+				"text":        "First text",
+				testKeyText1:  "Second text",
+				testKeyImage0: "image1",
+				"image_1":     "image2",
 			},
 		},
 		{
 			name: "audio content is ignored",
 			content: []vmcp.Content{
-				{Type: vmcp.ContentTypeAudio, Data: "audiodata", MimeType: "audio/mpeg"},
+				{Type: vmcp.ContentTypeAudio, Data: testDataAudio, MimeType: testMIMEAudioMPEG},
 			},
 			expected: map[string]any{},
 		},
 		{
 			name: "audio mixed with other content is ignored",
 			content: []vmcp.Content{
-				{Type: vmcp.ContentTypeText, Text: "Text content"},
-				{Type: vmcp.ContentTypeAudio, Data: "audiodata", MimeType: "audio/mpeg"},
-				{Type: vmcp.ContentTypeImage, Data: "imagedata", MimeType: "image/png"},
+				{Type: vmcp.ContentTypeText, Text: testContentTypeText},
+				{Type: vmcp.ContentTypeAudio, Data: testDataAudio, MimeType: testMIMEAudioMPEG},
+				{Type: vmcp.ContentTypeImage, Data: "imagedata", MimeType: testMIMEImagePNG},
 			},
 			expected: map[string]any{
-				"text":    "Text content",
-				"image_0": "imagedata",
+				"text":        testContentTypeText,
+				testKeyImage0: "imagedata",
 			},
 		},
 		{
 			name: "unknown types are ignored",
 			content: []vmcp.Content{
-				{Type: vmcp.ContentTypeText, Text: "Text"},
+				{Type: vmcp.ContentTypeText, Text: testContentTypeText},
 				{Type: "unknown", Text: "Should be ignored"},
 			},
 			expected: map[string]any{
-				"text": "Text",
+				"text": testContentTypeText,
 			},
 		},
 		{
@@ -697,29 +739,29 @@ func TestContentArrayToMap(t *testing.T) {
 				{Type: vmcp.ContentTypeResource, Text: "SBOM JSON data", URI: "file://sbom.json", MimeType: "application/json"},
 			},
 			expected: map[string]any{
-				"resource": "SBOM JSON data",
+				testKeyResource: "SBOM JSON data",
 			},
 		},
 		{
 			name: "single blob resource content uses Data field",
 			content: []vmcp.Content{
-				{Type: vmcp.ContentTypeResource, Data: "base64blobdata", URI: "file://binary", MimeType: "application/octet-stream"},
+				{Type: vmcp.ContentTypeResource, Data: testDataBase64Blob, URI: "file://binary", MimeType: testMIMEAppOctet},
 			},
 			expected: map[string]any{
-				"resource": "base64blobdata",
+				testKeyResource: testDataBase64Blob,
 			},
 		},
 		{
 			name: "multiple resource contents",
 			content: []vmcp.Content{
-				{Type: vmcp.ContentTypeResource, Text: "First resource", URI: "file://a"},
+				{Type: vmcp.ContentTypeResource, Text: "First resource", URI: testURIFileA},
 				{Type: vmcp.ContentTypeResource, Text: "Second resource", URI: "file://b"},
-				{Type: vmcp.ContentTypeResource, Data: "Third blob", URI: "file://c"},
+				{Type: vmcp.ContentTypeResource, Data: "Third blob", URI: testURIFileC},
 			},
 			expected: map[string]any{
-				"resource":   "First resource",
-				"resource_1": "Second resource",
-				"resource_2": "Third blob",
+				testKeyResource: "First resource",
+				"resource_1":    "Second resource",
+				"resource_2":    "Third blob",
 			},
 		},
 		{
@@ -729,18 +771,18 @@ func TestContentArrayToMap(t *testing.T) {
 				{Type: vmcp.ContentTypeResource, Text: "SBOM JSON", URI: "file://sbom.json"},
 			},
 			expected: map[string]any{
-				"text":     "summary",
-				"resource": "SBOM JSON",
+				"text":          "summary",
+				testKeyResource: "SBOM JSON",
 			},
 		},
 		{
 			name: "resource link content is still ignored",
 			content: []vmcp.Content{
-				{Type: vmcp.ContentTypeText, Text: "Text"},
+				{Type: vmcp.ContentTypeText, Text: testContentTypeText},
 				{Type: vmcp.ContentTypeLink, URI: "file://link", Name: "link"},
 			},
 			expected: map[string]any{
-				"text": "Text",
+				"text": testContentTypeText,
 			},
 		},
 		{
@@ -760,18 +802,18 @@ func TestContentArrayToMap(t *testing.T) {
 				{Type: vmcp.ContentTypeText, Text: "11"},
 			},
 			expected: map[string]any{
-				"text":    "0",
-				"text_1":  "1",
-				"text_2":  "2",
-				"text_3":  "3",
-				"text_4":  "4",
-				"text_5":  "5",
-				"text_6":  "6",
-				"text_7":  "7",
-				"text_8":  "8",
-				"text_9":  "9",
-				"text_10": "10",
-				"text_11": "11",
+				"text":       "0",
+				testKeyText1: "1",
+				"text_2":     "2",
+				"text_3":     "3",
+				"text_4":     "4",
+				"text_5":     "5",
+				"text_6":     "6",
+				"text_7":     "7",
+				"text_8":     "8",
+				"text_9":     "9",
+				"text_10":    "10",
+				"text_11":    "11",
 			},
 		},
 	}
@@ -809,39 +851,39 @@ func TestFromMCPMeta(t *testing.T) {
 		{
 			name: "meta with only progressToken",
 			input: &mcp.Meta{
-				ProgressToken:    "token-123",
+				ProgressToken:    testMetaTokenBase,
 				AdditionalFields: map[string]any{},
 			},
 			expected: map[string]any{
-				"progressToken": "token-123",
+				testMetaKeyProgressToken: testMetaTokenBase,
 			},
 		},
 		{
 			name: "meta with only additional fields",
 			input: &mcp.Meta{
 				AdditionalFields: map[string]any{
-					"traceId": "trace-456",
-					"spanId":  "span-789",
+					"traceId": testMetaTraceID,
+					"spanId":  testMetaSpanID,
 				},
 			},
 			expected: map[string]any{
-				"traceId": "trace-456",
-				"spanId":  "span-789",
+				"traceId": testMetaTraceID,
+				"spanId":  testMetaSpanID,
 			},
 		},
 		{
 			name: "meta with both progressToken and additional fields",
 			input: &mcp.Meta{
-				ProgressToken: "token-abc",
+				ProgressToken: testMetaTokenABC,
 				AdditionalFields: map[string]any{
-					"traceId": "trace-def",
-					"custom":  map[string]any{"nested": "value"},
+					"traceId":         testMetaTraceDef,
+					testMetaKeyCustom: map[string]any{"nested": testValueString},
 				},
 			},
 			expected: map[string]any{
-				"progressToken": "token-abc",
-				"traceId":       "trace-def",
-				"custom":        map[string]any{"nested": "value"},
+				testMetaKeyProgressToken: testMetaTokenABC,
+				"traceId":                testMetaTraceDef,
+				testMetaKeyCustom:        map[string]any{"nested": testValueString},
 			},
 		},
 		{
@@ -851,7 +893,7 @@ func TestFromMCPMeta(t *testing.T) {
 				AdditionalFields: map[string]any{},
 			},
 			expected: map[string]any{
-				"progressToken": 12345,
+				testMetaKeyProgressToken: 12345,
 			},
 		},
 		{
@@ -859,11 +901,11 @@ func TestFromMCPMeta(t *testing.T) {
 			input: &mcp.Meta{
 				ProgressToken: nil,
 				AdditionalFields: map[string]any{
-					"traceId": "trace-123",
+					"traceId": testMetaTrace123,
 				},
 			},
 			expected: map[string]any{
-				"traceId": "trace-123",
+				"traceId": testMetaTrace123,
 			},
 		},
 		{
@@ -871,13 +913,13 @@ func TestFromMCPMeta(t *testing.T) {
 			input: &mcp.Meta{
 				ProgressToken: "correct-token",
 				AdditionalFields: map[string]any{
-					"progressToken": "malicious-token",
-					"traceId":       "trace-456",
+					testMetaKeyProgressToken: "malicious-token",
+					"traceId":                testMetaTraceID,
 				},
 			},
 			expected: map[string]any{
-				"progressToken": "correct-token",
-				"traceId":       "trace-456",
+				testMetaKeyProgressToken: "correct-token",
+				"traceId":                testMetaTraceID,
 			},
 		},
 	}
@@ -918,38 +960,38 @@ func TestToMCPMeta(t *testing.T) {
 		{
 			name: "map with only progressToken",
 			input: map[string]any{
-				"progressToken": "token-123",
+				testMetaKeyProgressToken: testMetaTokenBase,
 			},
 			expected: &mcp.Meta{
-				ProgressToken:    "token-123",
+				ProgressToken:    testMetaTokenBase,
 				AdditionalFields: map[string]any{},
 			},
 		},
 		{
 			name: "map with only additional fields",
 			input: map[string]any{
-				"traceId": "trace-456",
-				"spanId":  "span-789",
+				"traceId": testMetaTraceID,
+				"spanId":  testMetaSpanID,
 			},
 			expected: &mcp.Meta{
 				AdditionalFields: map[string]any{
-					"traceId": "trace-456",
-					"spanId":  "span-789",
+					"traceId": testMetaTraceID,
+					"spanId":  testMetaSpanID,
 				},
 			},
 		},
 		{
 			name: "map with both progressToken and additional fields",
 			input: map[string]any{
-				"progressToken": "token-abc",
-				"traceId":       "trace-def",
-				"custom":        map[string]any{"nested": "value"},
+				testMetaKeyProgressToken: testMetaTokenABC,
+				"traceId":                testMetaTraceDef,
+				testMetaKeyCustom:        map[string]any{"nested": testValueString},
 			},
 			expected: &mcp.Meta{
-				ProgressToken: "token-abc",
+				ProgressToken: testMetaTokenABC,
 				AdditionalFields: map[string]any{
-					"traceId": "trace-def",
-					"custom":  map[string]any{"nested": "value"},
+					"traceId":         testMetaTraceDef,
+					testMetaKeyCustom: map[string]any{"nested": testValueString},
 				},
 			},
 		},
@@ -984,7 +1026,7 @@ func TestMetaRoundTrip(t *testing.T) {
 			meta: &mcp.Meta{
 				ProgressToken: "test-token",
 				AdditionalFields: map[string]any{
-					"traceId":  "trace-123",
+					"traceId":  testMetaTrace123,
 					"spanId":   "span-456",
 					"customId": 789,
 				},
@@ -1037,73 +1079,73 @@ func TestToMCPContent(t *testing.T) {
 	}{
 		{
 			name:     "text content",
-			input:    vmcp.Content{Type: vmcp.ContentTypeText, Text: "Hello, world!"},
-			wantType: "mcp.TextContent",
-			wantText: "Hello, world!",
+			input:    vmcp.Content{Type: vmcp.ContentTypeText, Text: testTextHelloWorld},
+			wantType: testContentTypeMCPText,
+			wantText: testTextHelloWorld,
 		},
 		{
 			name:     "empty text content",
 			input:    vmcp.Content{Type: vmcp.ContentTypeText, Text: ""},
-			wantType: "mcp.TextContent",
+			wantType: testContentTypeMCPText,
 		},
 		{
 			name:     "image content",
-			input:    vmcp.Content{Type: vmcp.ContentTypeImage, Data: "base64data", MimeType: "image/png"},
+			input:    vmcp.Content{Type: vmcp.ContentTypeImage, Data: testDataBase64, MimeType: testMIMEImagePNG},
 			wantType: "mcp.ImageContent",
-			wantData: "base64data",
-			wantMime: "image/png",
+			wantData: testDataBase64,
+			wantMime: testMIMEImagePNG,
 		},
 		{
 			name:     "audio content",
-			input:    vmcp.Content{Type: vmcp.ContentTypeAudio, Data: "audiodata", MimeType: "audio/mpeg"},
+			input:    vmcp.Content{Type: vmcp.ContentTypeAudio, Data: testDataAudio, MimeType: testMIMEAudioMPEG},
 			wantType: "mcp.AudioContent",
-			wantData: "audiodata",
-			wantMime: "audio/mpeg",
+			wantData: testDataAudio,
+			wantMime: testMIMEAudioMPEG,
 		},
 		{
 			name:     "text resource content",
-			input:    vmcp.Content{Type: vmcp.ContentTypeResource, Text: "# README", URI: "file://readme.md", MimeType: "text/markdown"},
-			wantType: "mcp.EmbeddedResource",
+			input:    vmcp.Content{Type: vmcp.ContentTypeResource, Text: "# README", URI: testURIReadmeMD, MimeType: testMIMETextMarkdown},
+			wantType: testContentTypeMCPEmbedded,
 			wantText: "# README",
-			wantURI:  "file://readme.md",
-			wantMime: "text/markdown",
+			wantURI:  testURIReadmeMD,
+			wantMime: testMIMETextMarkdown,
 		},
 		{
 			name:     "blob resource content",
-			input:    vmcp.Content{Type: vmcp.ContentTypeResource, Data: "base64blob", URI: "file://image.png", MimeType: "image/png"},
-			wantType: "mcp.EmbeddedResource",
+			input:    vmcp.Content{Type: vmcp.ContentTypeResource, Data: "base64blob", URI: testURIImagePNG, MimeType: testMIMEImagePNG},
+			wantType: testContentTypeMCPEmbedded,
 			wantData: "base64blob",
-			wantURI:  "file://image.png",
-			wantMime: "image/png",
+			wantURI:  testURIImagePNG,
+			wantMime: testMIMEImagePNG,
 		},
 		{
 			name:     "empty resource content preserves resource type",
 			input:    vmcp.Content{Type: vmcp.ContentTypeResource},
-			wantType: "mcp.EmbeddedResource",
+			wantType: testContentTypeMCPEmbedded,
 			wantText: "", // Empty text but still an EmbeddedResource
 		},
 		{
 			name:     "unknown content type converts to empty text",
 			input:    vmcp.Content{Type: "custom-type"},
-			wantType: "mcp.TextContent",
+			wantType: testContentTypeMCPText,
 		},
 		{
 			name: "resource_link content all fields",
 			input: vmcp.Content{
 				Type:        vmcp.ContentTypeLink,
-				URI:         "file://doc.pdf",
+				URI:         testURIDocPDF,
 				Name:        "My Doc",
 				Description: "A PDF document",
-				MimeType:    "application/pdf",
+				MimeType:    testMIMEAppPDF,
 			},
-			wantType: "mcp.ResourceLink",
-			wantURI:  "file://doc.pdf",
-			wantMime: "application/pdf",
+			wantType: testContentTypeMCPResourceLink,
+			wantURI:  testURIDocPDF,
+			wantMime: testMIMEAppPDF,
 		},
 		{
 			name:     "resource_link with empty fields",
 			input:    vmcp.Content{Type: vmcp.ContentTypeLink},
-			wantType: "mcp.ResourceLink",
+			wantType: testContentTypeMCPResourceLink,
 		},
 	}
 
@@ -1114,7 +1156,7 @@ func TestToMCPContent(t *testing.T) {
 			result := conversion.ToMCPContent(tt.input)
 
 			switch tt.wantType {
-			case "mcp.TextContent":
+			case testContentTypeMCPText:
 				text, ok := result.(mcp.TextContent)
 				require.True(t, ok, "expected TextContent")
 				assert.Equal(t, tt.wantText, text.Text)
@@ -1128,7 +1170,7 @@ func TestToMCPContent(t *testing.T) {
 				require.True(t, ok, "expected AudioContent")
 				assert.Equal(t, tt.wantData, audio.Data)
 				assert.Equal(t, tt.wantMime, audio.MIMEType)
-			case "mcp.EmbeddedResource":
+			case testContentTypeMCPEmbedded:
 				res, ok := mcp.AsEmbeddedResource(result)
 				require.True(t, ok, "expected EmbeddedResource")
 				// Check if it's a text resource or blob resource
@@ -1145,7 +1187,7 @@ func TestToMCPContent(t *testing.T) {
 					assert.Equal(t, tt.wantURI, blobRes.URI)
 					assert.Equal(t, tt.wantMime, blobRes.MIMEType)
 				}
-			case "mcp.ResourceLink":
+			case testContentTypeMCPResourceLink:
 				link, ok := result.(mcp.ResourceLink)
 				require.True(t, ok, "expected ResourceLink")
 				assert.Equal(t, tt.wantURI, link.URI)
@@ -1169,16 +1211,16 @@ func TestResourceContentRoundTrip(t *testing.T) {
 		{
 			name: "text resource round-trip preserves data",
 			initial: mcp.NewEmbeddedResource(mcp.TextResourceContents{
-				URI:      "file://readme.md",
-				MIMEType: "text/markdown",
+				URI:      testURIReadmeMD,
+				MIMEType: testMIMETextMarkdown,
 				Text:     "# README\n\nWelcome!",
 			}),
 		},
 		{
 			name: "blob resource round-trip preserves data",
 			initial: mcp.NewEmbeddedResource(mcp.BlobResourceContents{
-				URI:      "file://image.png",
-				MIMEType: "image/png",
+				URI:      testURIImagePNG,
+				MIMEType: testMIMEImagePNG,
 				Blob:     "base64imagedata",
 			}),
 		},
@@ -1231,7 +1273,7 @@ func TestResourceLinkRoundTrip(t *testing.T) {
 	}{
 		{
 			name:    "resource_link with all fields preserved",
-			initial: mcp.NewResourceLink("file://doc.pdf", "My Doc", "A PDF document", "application/pdf"),
+			initial: mcp.NewResourceLink(testURIDocPDF, "My Doc", "A PDF document", testMIMEAppPDF),
 		},
 		{
 			name:    "resource_link with empty optional fields preserved",

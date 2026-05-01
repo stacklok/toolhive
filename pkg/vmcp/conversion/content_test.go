@@ -13,8 +13,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-// testLastModified is a fixed RFC 3339 timestamp used across annotation test cases.
-const testLastModified = "2025-01-12T15:00:58Z"
+const (
+	// testLastModified is a fixed RFC 3339 timestamp used across annotation test cases.
+	testLastModified   = "2025-01-12T15:00:58Z"
+	testJSONTypeString = "string"
+	testRoleAssistant  = "assistant"
+)
 
 func boolPtr(b bool) *bool          { return &b }
 func float64Ptr(f float64) *float64 { return &f }
@@ -124,15 +128,15 @@ func TestConvertToolOutputSchema(t *testing.T) {
 			input: mcp.ToolOutputSchema{
 				Type: "object",
 				Properties: map[string]any{
-					"result": map[string]any{"type": "string"},
-					"count":  map[string]any{"type": "integer"},
+					"result": map[string]any{jsonTypeKey: testJSONTypeString},
+					"count":  map[string]any{jsonTypeKey: "integer"},
 				},
 			},
 			want: map[string]any{
-				"type": "object",
+				jsonTypeKey: "object",
 				"properties": map[string]any{
-					"result": map[string]any{"type": "string"},
-					"count":  map[string]any{"type": "integer"},
+					"result": map[string]any{jsonTypeKey: testJSONTypeString},
+					"count":  map[string]any{jsonTypeKey: "integer"},
 				},
 			},
 		},
@@ -143,8 +147,8 @@ func TestConvertToolOutputSchema(t *testing.T) {
 		},
 		{
 			name:  "schema with only type field",
-			input: mcp.ToolOutputSchema{Type: "string"},
-			want:  map[string]any{"type": "string"},
+			input: mcp.ToolOutputSchema{Type: testJSONTypeString},
+			want:  map[string]any{jsonTypeKey: testJSONTypeString},
 		},
 	}
 
@@ -157,7 +161,7 @@ func TestConvertToolOutputSchema(t *testing.T) {
 			} else {
 				require.NotNil(t, got)
 				// Check type field
-				assert.Equal(t, tt.want["type"], got["type"])
+				assert.Equal(t, tt.want[jsonTypeKey], got[jsonTypeKey])
 				// Check properties if expected
 				if expectedProps, ok := tt.want["properties"]; ok {
 					assert.Equal(t, expectedProps, got["properties"])
@@ -314,7 +318,7 @@ func TestConvertMCPAnnotations(t *testing.T) {
 				LastModified: testLastModified,
 			},
 			want: &vmcp.ContentAnnotations{
-				Audience:     []string{"user", "assistant"},
+				Audience:     []string{"user", testRoleAssistant},
 				Priority:     float64Ptr(0.8),
 				LastModified: testLastModified,
 			},
@@ -387,7 +391,7 @@ func TestToMCPAnnotations(t *testing.T) {
 		{
 			name: "fully populated",
 			input: &vmcp.ContentAnnotations{
-				Audience:     []string{"user", "assistant"},
+				Audience:     []string{"user", testRoleAssistant},
 				Priority:     float64Ptr(0.8),
 				LastModified: testLastModified,
 			},
@@ -497,7 +501,7 @@ func TestContentAnnotationsRoundTrip_AllTypes(t *testing.T) {
 			t.Parallel()
 			vmcpC := ConvertMCPContent(tt.content)
 			require.NotNil(t, vmcpC.Annotations, "annotations should be preserved")
-			assert.Equal(t, []string{"assistant"}, vmcpC.Annotations.Audience)
+			assert.Equal(t, []string{testRoleAssistant}, vmcpC.Annotations.Audience)
 			assert.Equal(t, float64Ptr(0.5), vmcpC.Annotations.Priority)
 
 			mcpC := ToMCPContent(vmcpC)

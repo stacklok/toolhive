@@ -31,6 +31,7 @@ import (
 const (
 	toolsListMethod = "tools/list"
 	toolsCallMethod = "tools/call"
+	jsonRPCVersion  = "2.0"
 )
 
 type clientType string
@@ -182,7 +183,7 @@ func makeToolsList(tools map[string]tooldef) string {
 	}
 
 	res := map[string]any{
-		"jsonrpc": "2.0",
+		"jsonrpc": jsonRPCVersion,
 		"id":      1,
 		"result": map[string]any{
 			"tools": toolsList,
@@ -214,7 +215,7 @@ func runToolCall(tools map[string]tooldef, mcpRequest map[string]any) string {
 
 	text := tools[toolName].Handler()
 	res := map[string]any{
-		"jsonrpc": "2.0",
+		"jsonrpc": jsonRPCVersion,
 		"id":      1,
 		"result": map[string]any{
 			"content": []map[string]any{{"type": "text", "text": text}},
@@ -231,7 +232,7 @@ func runToolCall(tools map[string]tooldef, mcpRequest map[string]any) string {
 
 func simpleError(message string) string {
 	res := map[string]any{
-		"jsonrpc": "2.0",
+		"jsonrpc": jsonRPCVersion,
 		"id":      1,
 		"error":   map[string]any{"message": message},
 	}

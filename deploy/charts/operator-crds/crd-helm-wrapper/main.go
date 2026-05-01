@@ -32,21 +32,28 @@ import (
 //go:embed templates/*.tpl
 var templateFS embed.FS
 
+const (
+	// featureFlagServer is the Helm values feature flag for standard MCP server CRDs.
+	featureFlagServer = "server"
+	// featureFlagVirtualMcp is the Helm values feature flag for virtual MCP CRDs.
+	featureFlagVirtualMcp = "virtualMcp"
+)
+
 // crdFeatureFlags maps CRD plural names to their Helm values feature flags.
 // CRDs can belong to multiple groups (e.g., mcpexternalauthconfigs is shared).
 var crdFeatureFlags = map[string][]string{
-	"mcpservers":                         {"server"},
-	"mcpremoteproxies":                   {"server"},
-	"mcptoolconfigs":                     {"server"},
-	"mcpgroups":                          {"server"},
-	"embeddingservers":                   {"server"},
+	"mcpservers":                         {featureFlagServer},
+	"mcpremoteproxies":                   {featureFlagServer},
+	"mcptoolconfigs":                     {featureFlagServer},
+	"mcpgroups":                          {featureFlagServer},
+	"embeddingservers":                   {featureFlagServer},
 	"mcpregistries":                      {"registry"},
-	"virtualmcpservers":                  {"virtualMcp"},
-	"virtualmcpcompositetooldefinitions": {"virtualMcp"},
-	"mcpoidcconfigs":                     {"server"},
-	"mcptelemetryconfigs":                {"server"},
-	"mcpexternalauthconfigs":             {"server", "virtualMcp"},
-	"mcpserverentries":                   {"server", "virtualMcp"},
+	"virtualmcpservers":                  {featureFlagVirtualMcp},
+	"virtualmcpcompositetooldefinitions": {featureFlagVirtualMcp},
+	"mcpoidcconfigs":                     {featureFlagServer},
+	"mcptelemetryconfigs":                {featureFlagServer},
+	"mcpexternalauthconfigs":             {featureFlagServer, featureFlagVirtualMcp},
+	"mcpserverentries":                   {featureFlagServer, featureFlagVirtualMcp},
 }
 
 func main() {

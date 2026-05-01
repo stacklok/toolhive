@@ -30,14 +30,14 @@ func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage
 		s := newStorage(t)
 		ctx := context.Background()
 
-		meta := map[string]string{"key": "value", "env": "test"}
+		meta := map[string]string{testMetaKey: testMetaValue, "env": "test"}
 		stored, err := s.Create(ctx, "sess-1", meta)
 		require.NoError(t, err)
 		require.True(t, stored)
 
 		loaded, err := s.Load(ctx, "sess-1")
 		require.NoError(t, err)
-		assert.Equal(t, "value", loaded["key"])
+		assert.Equal(t, testMetaValue, loaded[testMetaKey])
 		assert.Equal(t, "test", loaded["env"])
 	})
 
@@ -91,7 +91,7 @@ func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage
 		s := newStorage(t)
 		ctx := context.Background()
 
-		_, err := s.Create(ctx, "sess-existing", map[string]string{"x": "original"})
+		_, err := s.Create(ctx, "sess-existing", map[string]string{"x": testOriginalValue})
 		require.NoError(t, err)
 
 		stored, err := s.Create(ctx, "sess-existing", map[string]string{"x": "overwrite"})
@@ -100,7 +100,7 @@ func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage
 
 		loaded, err := s.Load(ctx, "sess-existing")
 		require.NoError(t, err)
-		assert.Equal(t, "original", loaded["x"], "original value must be preserved")
+		assert.Equal(t, testOriginalValue, loaded["x"], "original value must be preserved")
 	})
 
 	t.Run("Create is atomic under concurrent callers", func(t *testing.T) {
@@ -181,7 +181,7 @@ func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage
 		s := newStorage(t)
 		ctx := context.Background()
 
-		_, err := s.Create(ctx, "sess-update", map[string]string{"v": "original"})
+		_, err := s.Create(ctx, "sess-update", map[string]string{"v": testOriginalValue})
 		require.NoError(t, err)
 
 		updated, err := s.Update(ctx, "sess-update", map[string]string{"v": "updated"})
@@ -235,7 +235,7 @@ func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage
 		s := newStorage(t)
 		ctx := context.Background()
 
-		_, err := s.Create(ctx, "sess-update-nil", map[string]string{"v": "original"})
+		_, err := s.Create(ctx, "sess-update-nil", map[string]string{"v": testOriginalValue})
 		require.NoError(t, err)
 
 		updated, err := s.Update(ctx, "sess-update-nil", nil)

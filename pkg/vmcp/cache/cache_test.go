@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const testTokenType = "Bearer"
+
 func TestCachedToken_IsExpired(t *testing.T) {
 	t.Parallel()
 
@@ -53,7 +55,7 @@ func TestCachedToken_IsExpired(t *testing.T) {
 
 			token := &CachedToken{
 				Token:     "test-token",
-				TokenType: "Bearer",
+				TokenType: testTokenType,
 				ExpiresAt: tt.expiresAt,
 			}
 
@@ -181,7 +183,7 @@ func TestCachedToken_ShouldRefresh(t *testing.T) {
 
 			token := &CachedToken{
 				Token:     "test-token",
-				TokenType: "Bearer",
+				TokenType: testTokenType,
 				ExpiresAt: tt.expiresAt,
 			}
 
@@ -196,7 +198,7 @@ func TestCachedToken_ShouldRefresh_ConsistentWithIsExpired(t *testing.T) {
 	// If a token is expired, ShouldRefresh should always return true
 	expiredToken := &CachedToken{
 		Token:     "expired-token",
-		TokenType: "Bearer",
+		TokenType: testTokenType,
 		ExpiresAt: time.Now().Add(-1 * time.Hour),
 	}
 
@@ -254,17 +256,17 @@ func TestCachedToken_IndependentExpiry(t *testing.T) {
 	tokens := []*CachedToken{
 		{
 			Token:     "token-1",
-			TokenType: "Bearer",
+			TokenType: testTokenType,
 			ExpiresAt: now.Add(1 * time.Hour),
 		},
 		{
 			Token:     "token-2",
-			TokenType: "Bearer",
+			TokenType: testTokenType,
 			ExpiresAt: now.Add(10 * time.Minute),
 		},
 		{
 			Token:     "token-3",
-			TokenType: "Bearer",
+			TokenType: testTokenType,
 			ExpiresAt: now.Add(-1 * time.Hour),
 		},
 	}

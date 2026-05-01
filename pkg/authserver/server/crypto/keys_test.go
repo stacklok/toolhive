@@ -157,11 +157,11 @@ func TestDeriveAlgorithm(t *testing.T) {
 		wantAlg string
 		wantErr bool
 	}{
-		{"RSA", func() crypto.Signer { k, _ := rsa.GenerateKey(rand.Reader, 2048); return k }, "RS256", false},
-		{"EC P-256", func() crypto.Signer { k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader); return k }, "ES256", false},
-		{"EC P-384", func() crypto.Signer { k, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader); return k }, "ES384", false},
-		{"EC P-521", func() crypto.Signer { k, _ := ecdsa.GenerateKey(elliptic.P521(), rand.Reader); return k }, "ES512", false},
-		{"Ed25519", func() crypto.Signer { _, k, _ := ed25519.GenerateKey(rand.Reader); return k }, "EdDSA", false},
+		{"RSA", func() crypto.Signer { k, _ := rsa.GenerateKey(rand.Reader, 2048); return k }, AlgRS256, false},
+		{"EC P-256", func() crypto.Signer { k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader); return k }, AlgES256, false},
+		{"EC P-384", func() crypto.Signer { k, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader); return k }, AlgES384, false},
+		{"EC P-521", func() crypto.Signer { k, _ := ecdsa.GenerateKey(elliptic.P521(), rand.Reader); return k }, AlgES512, false},
+		{"Ed25519", func() crypto.Signer { _, k, _ := ed25519.GenerateKey(rand.Reader); return k }, AlgEdDSA, false},
 	}
 
 	for _, tt := range tests {
@@ -193,18 +193,18 @@ func TestValidateAlgorithmForKey(t *testing.T) {
 		wantErr string
 	}{
 		// Valid combinations
-		{"RS256 with RSA", "RS256", rsaKey, ""},
-		{"RS384 with RSA", "RS384", rsaKey, ""},
-		{"RS512 with RSA", "RS512", rsaKey, ""},
-		{"ES256 with P-256", "ES256", ecP256, ""},
-		{"ES384 with P-384", "ES384", ecP384, ""},
-		{"EdDSA with Ed25519", "EdDSA", ed25519Key, ""},
+		{"RS256 with RSA", AlgRS256, rsaKey, ""},
+		{"RS384 with RSA", AlgRS384, rsaKey, ""},
+		{"RS512 with RSA", AlgRS512, rsaKey, ""},
+		{"ES256 with P-256", AlgES256, ecP256, ""},
+		{"ES384 with P-384", AlgES384, ecP384, ""},
+		{"EdDSA with Ed25519", AlgEdDSA, ed25519Key, ""},
 		// Invalid combinations
-		{"ES256 with RSA", "ES256", rsaKey, "not compatible with RSA"},
-		{"RS256 with EC", "RS256", ecP256, "not compatible with EC"},
-		{"ES256 with P-384", "ES256", ecP384, "not compatible with EC key"},
-		{"RS256 with Ed25519", "RS256", ed25519Key, "not compatible with Ed25519"},
-		{"ES256 with Ed25519", "ES256", ed25519Key, "not compatible with Ed25519"},
+		{"ES256 with RSA", AlgES256, rsaKey, "not compatible with RSA"},
+		{"RS256 with EC", AlgRS256, ecP256, "not compatible with EC"},
+		{"ES256 with P-384", AlgES256, ecP384, "not compatible with EC key"},
+		{"RS256 with Ed25519", AlgRS256, ed25519Key, "not compatible with Ed25519"},
+		{"ES256 with Ed25519", AlgES256, ed25519Key, "not compatible with Ed25519"},
 	}
 
 	for _, tt := range tests {
@@ -236,14 +236,14 @@ func TestDeriveSigningKeyParams(t *testing.T) {
 		wantAlg   string
 		wantErr   string
 	}{
-		{"derive both for RSA", rsaKey, "", "", "RS256", ""},
-		{"derive both for EC", ecKey, "", "", "ES256", ""},
-		{"derive both for Ed25519", ed25519Key, "", "", "EdDSA", ""},
-		{"use provided values", rsaKey, "my-key", "RS384", "RS384", ""},
-		{"derive alg only", ecKey, "my-key", "", "ES256", ""},
-		{"invalid alg for RSA", rsaKey, "key", "ES256", "", "not compatible with RSA"},
-		{"invalid alg for EC curve", ecKey, "key", "ES384", "", "not compatible with EC"},
-		{"invalid alg for Ed25519", ed25519Key, "key", "RS256", "", "not compatible with Ed25519"},
+		{"derive both for RSA", rsaKey, "", "", AlgRS256, ""},
+		{"derive both for EC", ecKey, "", "", AlgES256, ""},
+		{"derive both for Ed25519", ed25519Key, "", "", AlgEdDSA, ""},
+		{"use provided values", rsaKey, "my-key", AlgRS384, AlgRS384, ""},
+		{"derive alg only", ecKey, "my-key", "", AlgES256, ""},
+		{"invalid alg for RSA", rsaKey, "key", AlgES256, "", "not compatible with RSA"},
+		{"invalid alg for EC curve", ecKey, "key", AlgES384, "", "not compatible with EC"},
+		{"invalid alg for Ed25519", ed25519Key, "key", AlgRS256, "", "not compatible with Ed25519"},
 	}
 
 	for _, tt := range tests {

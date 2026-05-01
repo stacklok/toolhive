@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const testName = "test"
+
 func noopInitializer(_ context.Context) (Runtime, error) {
 	return nil, nil
 }
@@ -38,13 +40,13 @@ func TestRegistry_Register(t *testing.T) {
 		},
 		{
 			name:      "nil initializer panics",
-			info:      &Info{Name: "test", Initializer: nil},
+			info:      &Info{Name: testName, Initializer: nil},
 			wantPanic: true,
 			panicMsg:  "runtime initializer cannot be nil",
 		},
 		{
 			name:      "negative priority panics",
-			info:      &Info{Name: "test", Priority: -1, Initializer: noopInitializer},
+			info:      &Info{Name: testName, Priority: -1, Initializer: noopInitializer},
 			wantPanic: true,
 			panicMsg:  "runtime priority must be non-negative",
 		},

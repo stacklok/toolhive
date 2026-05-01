@@ -13,6 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	testWorkload        = "test-workload"
+	testAnotherWorkload = "another-workload"
+)
+
 func TestNewKubernetesStore(t *testing.T) {
 	t.Parallel()
 	store := NewKubernetesStore()
@@ -27,8 +32,8 @@ func TestKubernetesStore_Exists(t *testing.T) {
 
 	// Test with various names
 	testCases := []string{
-		"test-workload",
-		"another-workload",
+		testWorkload,
+		testAnotherWorkload,
 		"",
 		"workload-with-special-chars-123",
 	}
@@ -61,8 +66,8 @@ func TestKubernetesStore_GetReader(t *testing.T) {
 	ctx := context.Background()
 
 	testCases := []string{
-		"test-workload",
-		"another-workload",
+		testWorkload,
+		testAnotherWorkload,
 		"",
 	}
 
@@ -92,8 +97,8 @@ func TestKubernetesStore_GetWriter(t *testing.T) {
 	ctx := context.Background()
 
 	testCases := []string{
-		"test-workload",
-		"another-workload",
+		testWorkload,
+		testAnotherWorkload,
 		"",
 	}
 
@@ -115,8 +120,8 @@ func TestKubernetesStore_Delete(t *testing.T) {
 	ctx := context.Background()
 
 	testCases := []string{
-		"test-workload",
-		"another-workload",
+		testWorkload,
+		testAnotherWorkload,
 		"",
 		"non-existent-workload",
 	}

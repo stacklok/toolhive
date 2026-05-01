@@ -17,6 +17,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
+const testTransportStdio = "stdio"
+
 // mockMCPPinger implements MCPPinger for testing
 type mockMCPPinger struct {
 	pingDuration time.Duration
@@ -42,7 +44,7 @@ func TestHealthChecker_CheckHealth(t *testing.T) {
 	}{
 		{
 			name:              "healthy with successful MCP ping",
-			transport:         "stdio",
+			transport:         testTransportStdio,
 			pinger:            &mockMCPPinger{pingDuration: 50 * time.Millisecond},
 			expectedStatus:    StatusHealthy,
 			expectedMCPStatus: true,
@@ -56,7 +58,7 @@ func TestHealthChecker_CheckHealth(t *testing.T) {
 		},
 		{
 			name:              "healthy without MCP pinger",
-			transport:         "stdio",
+			transport:         testTransportStdio,
 			pinger:            nil,
 			expectedStatus:    StatusHealthy,
 			expectedMCPStatus: false,
@@ -117,7 +119,7 @@ func TestHealthChecker_ServeHTTP(t *testing.T) {
 				err := json.Unmarshal(body, &response)
 				require.NoError(t, err)
 				assert.Equal(t, StatusHealthy, response.Status)
-				assert.Equal(t, "stdio", response.Transport)
+				assert.Equal(t, testTransportStdio, response.Transport)
 				assert.NotEmpty(t, response.Version.Version)
 				assert.NotNil(t, response.MCP)
 				assert.True(t, response.MCP.Available)
@@ -155,7 +157,7 @@ func TestHealthChecker_ServeHTTP(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			hc := NewHealthChecker("stdio", tt.pinger)
+			hc := NewHealthChecker(testTransportStdio, tt.pinger)
 
 			req := httptest.NewRequest(tt.method, "/health", nil)
 			w := httptest.NewRecorder()
@@ -182,7 +184,7 @@ func TestHealthResponse_JSON(t *testing.T) {
 		Status:    StatusHealthy,
 		Timestamp: time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC),
 		Version:   versions.GetVersionInfo(),
-		Transport: "stdio",
+		Transport: testTransportStdio,
 		MCP: &MCPStatus{
 			Available:    true,
 			ResponseTime: func() *int64 { v := int64(50); return &v }(),

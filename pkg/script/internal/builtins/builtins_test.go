@@ -17,6 +17,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/script/internal/core"
 )
 
+const (
+	testToolName      = "my-tool"
+	testPositionalArg = "arg0"
+)
+
 func TestBuild_ToolCallable(t *testing.T) {
 	t.Parallel()
 
@@ -33,12 +38,12 @@ func TestBuild_ToolCallable(t *testing.T) {
 		{
 			name:       "positional",
 			script:     `return my_tool("hello", "world")`,
-			expectArgs: map[string]interface{}{"arg0": "hello", "arg1": "world"},
+			expectArgs: map[string]interface{}{testPositionalArg: "hello", "arg1": "world"},
 		},
 		{
 			name:       "mixed",
 			script:     `return my_tool("positional", key="named")`,
-			expectArgs: map[string]interface{}{"arg0": "positional", "key": "named"},
+			expectArgs: map[string]interface{}{testPositionalArg: "positional", "key": "named"},
 		},
 	}
 
@@ -48,7 +53,7 @@ func TestBuild_ToolCallable(t *testing.T) {
 
 			var captured map[string]interface{}
 			tools := []ToolDef{{
-				Name: "my-tool",
+				Name: testToolName,
 				Call: func(_ context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
 					captured = args
 					return mcp.NewToolResultText("ok"), nil
@@ -80,7 +85,7 @@ func TestBuild_CallTool(t *testing.T) {
 		{
 			name:       "positional dispatch",
 			script:     `return call_tool("my-tool", "value")`,
-			expectArgs: map[string]interface{}{"arg0": "value"},
+			expectArgs: map[string]interface{}{testPositionalArg: "value"},
 		},
 		{
 			name:    "no arguments",
@@ -100,7 +105,7 @@ func TestBuild_CallTool(t *testing.T) {
 
 			var captured map[string]interface{}
 			tools := []ToolDef{{
-				Name: "my-tool",
+				Name: testToolName,
 				Call: func(_ context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
 					captured = args
 					return mcp.NewToolResultText("ok"), nil
@@ -221,7 +226,7 @@ func TestBuild_GlobalsContainBuiltins(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDef{
-		{Name: "my-tool", Call: func(_ context.Context, _ map[string]interface{}) (*mcp.CallToolResult, error) {
+		{Name: testToolName, Call: func(_ context.Context, _ map[string]interface{}) (*mcp.CallToolResult, error) {
 			return mcp.NewToolResultText("ok"), nil
 		}},
 	}
@@ -237,7 +242,7 @@ func TestBuild_NameCollision(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDef{
-		{Name: "my-tool", Call: func(_ context.Context, _ map[string]interface{}) (*mcp.CallToolResult, error) {
+		{Name: testToolName, Call: func(_ context.Context, _ map[string]interface{}) (*mcp.CallToolResult, error) {
 			return mcp.NewToolResultText("first"), nil
 		}},
 		{Name: "my.tool", Call: func(_ context.Context, _ map[string]interface{}) (*mcp.CallToolResult, error) {

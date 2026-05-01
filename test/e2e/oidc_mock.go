@@ -253,6 +253,7 @@ func (m *OIDCMockServer) handleAuthorize(w http.ResponseWriter, r *http.Request)
 		state := r.URL.Query().Get("state")
 		if redirectURI != "" {
 			callbackURL := fmt.Sprintf("%s?code=test-auth-code&state=%s", redirectURI, state)
+			//nolint:gosec // G710: redirect_uri is always a registered client URI supplied by the test harness
 			http.Redirect(w, r, callbackURL, http.StatusFound)
 			return
 		}

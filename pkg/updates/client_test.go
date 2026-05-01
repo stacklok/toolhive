@@ -20,10 +20,10 @@ func TestNewVersionClientForComponent(t *testing.T) {
 	}{
 		{
 			name:           "CLI component",
-			component:      "CLI",
+			component:      testComponentCLI,
 			version:        "",
 			uiReleaseBuild: false,
-			expected:       "CLI",
+			expected:       testComponentCLI,
 		},
 		{
 			name:           "operator component",
@@ -35,23 +35,23 @@ func TestNewVersionClientForComponent(t *testing.T) {
 		{
 			name:           "UI component with version and release build",
 			component:      "UI",
-			version:        "2.0.0",
+			version:        testDesktopVersion,
 			uiReleaseBuild: true,
 			expected:       "UI",
 		},
 		{
 			name:           "UI component with version and local build",
 			component:      "UI",
-			version:        "2.0.0",
+			version:        testDesktopVersion,
 			uiReleaseBuild: false,
 			expected:       "UI",
 		},
 		{
 			name:           "API component",
-			component:      "API",
+			component:      testComponentAPI,
 			version:        "",
 			uiReleaseBuild: false,
-			expected:       "API",
+			expected:       testComponentAPI,
 		},
 	}
 

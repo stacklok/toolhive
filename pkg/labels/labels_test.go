@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+const (
+	testContainerName     = "test-container"
+	testContainerBaseName = "test-base"
+	testTransportHTTP     = "http"
+	testLabelValue        = "value"
+	testK8sLabelName      = "app.kubernetes.io/name"
+	testLabelKey          = "key"
+	testAppName           = "myapp"
+)
+
 func TestAddStandardLabels(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -19,15 +29,15 @@ func TestAddStandardLabels(t *testing.T) {
 	}{
 		{
 			name:              "Standard labels",
-			containerName:     "test-container",
-			containerBaseName: "test-base",
-			transportType:     "http",
+			containerName:     testContainerName,
+			containerBaseName: testContainerBaseName,
+			transportType:     testTransportHTTP,
 			port:              8080,
 			expected: map[string]string{
-				LabelToolHive:  "true",
-				LabelName:      "test-container",
-				LabelBaseName:  "test-base",
-				LabelTransport: "http",
+				LabelToolHive:  LabelToolHiveValue,
+				LabelName:      testContainerName,
+				LabelBaseName:  testContainerBaseName,
+				LabelTransport: testTransportHTTP,
 				LabelPort:      "8080",
 			},
 		},
@@ -38,7 +48,7 @@ func TestAddStandardLabels(t *testing.T) {
 			transportType:     "https",
 			port:              9090,
 			expected: map[string]string{
-				LabelToolHive:  "true",
+				LabelToolHive:  LabelToolHiveValue,
 				LabelName:      "another-container",
 				LabelBaseName:  "another-base",
 				LabelTransport: "https",
@@ -52,7 +62,7 @@ func TestAddStandardLabels(t *testing.T) {
 			transportType:     "sse",
 			port:              7070,
 			expected: map[string]string{
-				LabelToolHive:  "true",
+				LabelToolHive:  LabelToolHiveValue,
 				LabelName:      "group-container",
 				LabelBaseName:  "group-base",
 				LabelTransport: "sse",
@@ -105,7 +115,7 @@ func TestIsToolHiveContainer(t *testing.T) {
 		{
 			name: "Valid ToolHive container",
 			labels: map[string]string{
-				LabelToolHive: "true",
+				LabelToolHive: LabelToolHiveValue,
 			},
 			expected: true,
 		},
@@ -145,7 +155,7 @@ func TestIsToolHiveContainer(t *testing.T) {
 		{
 			name: "Not a ToolHive container - label missing",
 			labels: map[string]string{
-				"some-other-label": "value",
+				"some-other-label": testLabelValue,
 			},
 			expected: false,
 		},
@@ -172,9 +182,9 @@ func TestGetContainerName(t *testing.T) {
 		{
 			name: "Container name exists",
 			labels: map[string]string{
-				LabelName: "test-container",
+				LabelName: testContainerName,
 			},
-			expected: "test-container",
+			expected: testContainerName,
 		},
 		{
 			name:     "Container name doesn't exist",
@@ -204,9 +214,9 @@ func TestGetContainerBaseName(t *testing.T) {
 		{
 			name: "Container base name exists",
 			labels: map[string]string{
-				LabelBaseName: "test-base",
+				LabelBaseName: testContainerBaseName,
 			},
-			expected: "test-base",
+			expected: testContainerBaseName,
 		},
 		{
 			name:     "Container base name doesn't exist",
@@ -236,9 +246,9 @@ func TestGetTransportType(t *testing.T) {
 		{
 			name: "Transport type exists",
 			labels: map[string]string{
-				LabelTransport: "http",
+				LabelTransport: testTransportHTTP,
 			},
-			expected: "http",
+			expected: testTransportHTTP,
 		},
 		{
 			name:     "Transport type doesn't exist",
@@ -329,7 +339,7 @@ func TestHasNetworkIsolation(t *testing.T) {
 		{
 			name: "Network isolation enabled",
 			labels: map[string]string{
-				LabelNetworkIsolation: "true",
+				LabelNetworkIsolation: LabelToolHiveValue,
 			},
 			expected: true,
 		},
@@ -402,7 +412,7 @@ func TestIsStandardToolHiveLabel(t *testing.T) {
 		},
 		{
 			name:     "Custom application label",
-			key:      "app.kubernetes.io/name",
+			key:      testK8sLabelName,
 			expected: false,
 		},
 		{
@@ -435,38 +445,38 @@ func TestParseLabel(t *testing.T) {
 	}{
 		{
 			name:        "Valid label",
-			label:       "key=value",
-			expectedKey: "key",
-			expectedVal: "value",
+			label:       testLabelKey + "=" + testLabelValue,
+			expectedKey: testLabelKey,
+			expectedVal: testLabelValue,
 			expectError: false,
 		},
 		{
 			name:        "Label with spaces",
-			label:       " key = value ",
-			expectedKey: "key",
-			expectedVal: "value",
+			label:       " " + testLabelKey + " = " + testLabelValue + " ",
+			expectedKey: testLabelKey,
+			expectedVal: testLabelValue,
 			expectError: false,
 		},
 		{
 			name:        "Label with empty value",
-			label:       "key=",
-			expectedKey: "key",
+			label:       testLabelKey + "=",
+			expectedKey: testLabelKey,
 			expectedVal: "",
 			expectError: false,
 		},
 		{
 			name:        "Label with equals in value - should fail validation",
-			label:       "key=value=with=equals",
+			label:       testLabelKey + "=" + testLabelValue + "=with=equals",
 			expectedKey: "",
 			expectedVal: "",
 			expectError: true,
-			errorMsg:    "invalid label value: value must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character",
+			errorMsg:    "invalid label value: value must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character", //nolint:goconst
 		},
 		{
 			name:        "Complex key with prefix",
-			label:       "app.kubernetes.io/name=myapp",
-			expectedKey: "app.kubernetes.io/name",
-			expectedVal: "myapp",
+			label:       testK8sLabelName + "=" + testAppName,
+			expectedKey: testK8sLabelName,
+			expectedVal: testAppName,
 			expectError: false,
 		},
 		{
@@ -536,16 +546,16 @@ func TestParseLabelValidation(t *testing.T) {
 	}{
 		{
 			name:        "Valid simple label",
-			label:       "app=myapp",
+			label:       "app=" + testAppName,
 			expectedKey: "app",
-			expectedVal: "myapp",
+			expectedVal: testAppName,
 			expectError: false,
 		},
 		{
 			name:        "Valid label with prefix",
-			label:       "app.kubernetes.io/name=myapp",
-			expectedKey: "app.kubernetes.io/name",
-			expectedVal: "myapp",
+			label:       testK8sLabelName + "=" + testAppName,
+			expectedKey: testK8sLabelName,
+			expectedVal: testAppName,
 			expectError: false,
 		},
 		{
@@ -584,7 +594,7 @@ func TestParseLabelValidation(t *testing.T) {
 			expectedKey: "",
 			expectedVal: "",
 			expectError: true,
-			errorMsg:    "invalid label key: name part must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character",
+			errorMsg:    "invalid label key: name part must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character", //nolint:goconst
 		},
 		{
 			name:        "Invalid key - ends with non-alphanumeric",
@@ -592,7 +602,7 @@ func TestParseLabelValidation(t *testing.T) {
 			expectedKey: "",
 			expectedVal: "",
 			expectError: true,
-			errorMsg:    "invalid label key: name part must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character",
+			errorMsg:    "invalid label key: name part must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character", //nolint:goconst
 		},
 		{
 			name:        "Invalid key - contains invalid characters",
@@ -600,7 +610,7 @@ func TestParseLabelValidation(t *testing.T) {
 			expectedKey: "",
 			expectedVal: "",
 			expectError: true,
-			errorMsg:    "invalid label key: name part must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character",
+			errorMsg:    "invalid label key: name part must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character", //nolint:goconst
 		},
 		{
 			name:        "Invalid value - too long",
@@ -616,7 +626,7 @@ func TestParseLabelValidation(t *testing.T) {
 			expectedKey: "",
 			expectedVal: "",
 			expectError: true,
-			errorMsg:    "invalid label value: value must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character",
+			errorMsg:    "invalid label value: value must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character", //nolint:goconst
 		},
 		{
 			name:        "Invalid value - ends with non-alphanumeric",
@@ -624,7 +634,7 @@ func TestParseLabelValidation(t *testing.T) {
 			expectedKey: "",
 			expectedVal: "",
 			expectError: true,
-			errorMsg:    "invalid label value: value must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character",
+			errorMsg:    "invalid label value: value must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character", //nolint:goconst
 		},
 		{
 			name:        "Invalid prefix - too long",

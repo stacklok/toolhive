@@ -10,6 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	testBuiltinCallTool = "call_tool"
+	testScriptReturnOne = "return 1"
+)
+
 func TestGenerateToolDescription(t *testing.T) {
 	t.Parallel()
 
@@ -26,7 +31,7 @@ func TestGenerateToolDescription(t *testing.T) {
 			},
 			contains: []string{
 				"github-fetch-prs", "slack-send-message",
-				"Fetch pull requests", "parallel", "call_tool",
+				"Fetch pull requests", "parallel", testBuiltinCallTool,
 			},
 		},
 		{
@@ -39,7 +44,7 @@ func TestGenerateToolDescription(t *testing.T) {
 		{
 			name:     "empty tool list still describes builtins",
 			tools:    nil,
-			contains: []string{"parallel", "call_tool"},
+			contains: []string{"parallel", testBuiltinCallTool},
 		},
 	}
 

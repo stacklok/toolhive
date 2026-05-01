@@ -9,6 +9,11 @@ import (
 	"testing"
 )
 
+const (
+	testPatternSSHDir = ".ssh/"
+	testPatternEnv    = ".env"
+)
+
 func TestNewProcessor(t *testing.T) {
 	t.Parallel()
 	processor := NewProcessor(&Config{
@@ -205,12 +210,12 @@ func TestPatternMatchesInDirectory(t *testing.T) {
 	}{
 		{
 			name:     "directory pattern matches",
-			pattern:  ".ssh/",
+			pattern:  testPatternSSHDir,
 			expected: true,
 		},
 		{
 			name:     "file pattern matches",
-			pattern:  ".env",
+			pattern:  testPatternEnv,
 			expected: true,
 		},
 		{
@@ -264,7 +269,7 @@ func TestGetOverlayPaths(t *testing.T) {
 		PrintOverlays: false,
 	})
 	processor.GlobalPatterns = []string{"node_modules/", ".DS_Store"}
-	processor.LocalPatterns = []string{".ssh/", ".env"}
+	processor.LocalPatterns = []string{testPatternSSHDir, testPatternEnv}
 
 	overlayPaths := processor.GetOverlayPaths(tmpDir, "/app")
 
@@ -320,7 +325,7 @@ func TestGetOverlayMounts(t *testing.T) {
 		PrintOverlays: false,
 	})
 	processor.GlobalPatterns = []string{"node_modules/", ".DS_Store"}
-	processor.LocalPatterns = []string{".ssh/", ".env"}
+	processor.LocalPatterns = []string{testPatternSSHDir, testPatternEnv}
 
 	overlayMounts := processor.GetOverlayMounts(tmpDir, "/app")
 
@@ -331,7 +336,7 @@ func TestGetOverlayMounts(t *testing.T) {
 
 	// Check that all mounts are bind mounts (no more tmpfs)
 	for _, mount := range overlayMounts {
-		if mount.Type != "bind" {
+		if mount.Type != mountTypeBind {
 			t.Errorf("Expected all mounts to be 'bind' type, but got '%s' for %s", mount.Type, mount.ContainerPath)
 		}
 		if mount.HostPath == "" {
@@ -407,7 +412,7 @@ func TestProcessorCleanup(t *testing.T) {
 		LoadGlobal:    true,
 		PrintOverlays: false,
 	})
-	processor.LocalPatterns = []string{".ssh/", ".env"}
+	processor.LocalPatterns = []string{testPatternSSHDir, testPatternEnv}
 
 	// Generate overlay mounts (which creates artifacts)
 	overlayMounts := processor.GetOverlayMounts(tmpDir, "/app")

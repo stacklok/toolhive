@@ -25,7 +25,7 @@ func TestNewManagerWithRedis(t *testing.T) {
 
 		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
 			Addr:      mr.Addr(),
-			KeyPrefix: "test:mgr:",
+			KeyPrefix: testMgrKeyPrefix,
 		})
 		require.NoError(t, err)
 		require.NotNil(t, m)
@@ -39,7 +39,7 @@ func TestNewManagerWithRedis(t *testing.T) {
 		t.Parallel()
 		// Missing KeyPrefix → validateRedisConfig fails before Ping
 		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
-			Addr: "localhost:6379",
+			Addr: testRedisAddr,
 		})
 		require.Error(t, err)
 		assert.Nil(t, m)
@@ -48,8 +48,8 @@ func TestNewManagerWithRedis(t *testing.T) {
 	t.Run("invalid TLS CA cert returns error", func(t *testing.T) {
 		t.Parallel()
 		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
-			Addr:      "localhost:6379",
-			KeyPrefix: "test:mgr:",
+			Addr:      testRedisAddr,
+			KeyPrefix: testMgrKeyPrefix,
 			TLS:       &RedisTLSConfig{CACert: []byte("not-valid-pem")},
 		})
 		require.Error(t, err)
@@ -63,7 +63,7 @@ func TestNewManagerWithRedis(t *testing.T) {
 
 		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
 			Addr:      mr.Addr(),
-			KeyPrefix: "test:mgr:",
+			KeyPrefix: testMgrKeyPrefix,
 		})
 		require.NoError(t, err)
 		defer m.Stop()
@@ -83,7 +83,7 @@ func TestNewManagerWithRedis(t *testing.T) {
 
 		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
 			Addr:      mr.Addr(),
-			KeyPrefix: "test:mgr:",
+			KeyPrefix: testMgrKeyPrefix,
 		})
 		require.NoError(t, err)
 

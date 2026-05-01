@@ -39,6 +39,23 @@ const MinSecretLength = 32
 // NIST recommends at least 2048 bits for RSA keys.
 const MinRSAKeyBits = 2048
 
+const (
+	// AlgRS256 is the JWT signing algorithm identifier for RSA with SHA-256.
+	AlgRS256 = "RS256"
+	// AlgRS384 is the JWT signing algorithm identifier for RSA with SHA-384.
+	AlgRS384 = "RS384"
+	// AlgRS512 is the JWT signing algorithm identifier for RSA with SHA-512.
+	AlgRS512 = "RS512"
+	// AlgES256 is the JWT signing algorithm identifier for ECDSA with P-256 and SHA-256.
+	AlgES256 = "ES256"
+	// AlgES384 is the JWT signing algorithm identifier for ECDSA with P-384 and SHA-384.
+	AlgES384 = "ES384"
+	// AlgES512 is the JWT signing algorithm identifier for ECDSA with P-521 and SHA-512.
+	AlgES512 = "ES512"
+	// AlgEdDSA is the JWT signing algorithm identifier for Ed25519.
+	AlgEdDSA = "EdDSA"
+)
+
 // LoadSigningKey loads a private key from a PEM file.
 // Supports both RSA (PKCS1 and PKCS8) and ECDSA (PKCS8) formats.
 // Returns a crypto.Signer that can be used for JWT signing.
@@ -110,11 +127,11 @@ func DeriveKeyID(key crypto.Signer) (string, error) {
 func DeriveAlgorithm(key crypto.Signer) (string, error) {
 	switch k := key.(type) {
 	case *rsa.PrivateKey:
-		return "RS256", nil
+		return AlgRS256, nil
 	case *ecdsa.PrivateKey:
 		return deriveECAlgorithm(k.Curve)
 	case ed25519.PrivateKey:
-		return "EdDSA", nil
+		return AlgEdDSA, nil
 	default:
 		return "", fmt.Errorf("unsupported key type: %T", key)
 	}
@@ -124,11 +141,11 @@ func DeriveAlgorithm(key crypto.Signer) (string, error) {
 func deriveECAlgorithm(curve elliptic.Curve) (string, error) {
 	switch curve {
 	case elliptic.P256():
-		return "ES256", nil
+		return AlgES256, nil
 	case elliptic.P384():
-		return "ES384", nil
+		return AlgES384, nil
 	case elliptic.P521():
-		return "ES512", nil
+		return AlgES512, nil
 	default:
 		return "", fmt.Errorf("unsupported EC curve: %s", curve.Params().Name)
 	}
@@ -140,7 +157,7 @@ func ValidateAlgorithmForKey(alg string, key crypto.Signer) error {
 	switch k := key.(type) {
 	case *rsa.PrivateKey:
 		switch alg {
-		case "RS256", "RS384", "RS512":
+		case AlgRS256, AlgRS384, AlgRS512:
 			return nil
 		default:
 			return fmt.Errorf("algorithm %s is not compatible with RSA key", alg)
@@ -156,7 +173,7 @@ func ValidateAlgorithmForKey(alg string, key crypto.Signer) error {
 		}
 		return nil
 	case ed25519.PrivateKey:
-		if alg != "EdDSA" {
+		if alg != AlgEdDSA {
 			return fmt.Errorf("algorithm %s is not compatible with Ed25519 key (expected EdDSA)", alg)
 		}
 		return nil

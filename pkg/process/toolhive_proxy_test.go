@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const testThvGithubForeground = "thv start github --foreground"
+
 func TestIsToolHiveProxyForWorkload_InvalidPID(t *testing.T) {
 	t.Parallel()
 	isToolHive, err := IsToolHiveProxyForWorkload(0, "")
@@ -73,9 +75,9 @@ func TestCmdlineContainsWorkload(t *testing.T) {
 		{"matches with debug", "thv start slack --foreground --debug", "slack", true},
 		{"matches at end", "thv start myworkload", "myworkload", true},
 		{"rejects different workload", "/usr/bin/thv start slack --foreground", "github", false},
-		{"rejects partial match", "thv start github --foreground", "git", false},
-		{"rejects suffix match", "thv start github --foreground", "hub", false},
-		{"empty workload", "thv start github --foreground", "", false},
+		{"rejects partial match", testThvGithubForeground, "git", false},
+		{"rejects suffix match", testThvGithubForeground, "hub", false},
+		{"empty workload", testThvGithubForeground, "", false},
 	}
 	for _, tt := range tests {
 		tt := tt

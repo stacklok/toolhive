@@ -311,7 +311,7 @@ func checkStructTags(t reflect.Type, path string, visited map[reflect.Type]bool)
 	t = func() reflect.Type {
 		for {
 			switch t.Kind() { //nolint:exhaustive // Only checking slice, map, and ptr types
-			case reflect.Slice, reflect.Map, reflect.Ptr:
+			case reflect.Slice, reflect.Map, reflect.Pointer:
 				t = t.Elem()
 			default:
 				return t

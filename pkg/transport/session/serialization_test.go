@@ -179,11 +179,11 @@ func TestSerialization(t *testing.T) {
 		// Create a session with complex data
 		original := NewProxySession("test-complex")
 		complexData := map[string]interface{}{
-			"string": "value",
+			"string": testMetaValue,
 			"number": 42,
 			"bool":   true,
 			"nested": map[string]interface{}{
-				"key": "value",
+				testMetaKey: testMetaValue,
 			},
 		}
 		original.SetData(complexData)
@@ -205,7 +205,7 @@ func TestSerialization(t *testing.T) {
 			var parsed map[string]interface{}
 			err = json.Unmarshal(rawData, &parsed)
 			require.NoError(t, err)
-			assert.Equal(t, "value", parsed["string"])
+			assert.Equal(t, testMetaValue, parsed["string"])
 			assert.Equal(t, float64(42), parsed["number"]) // JSON numbers are float64
 			assert.Equal(t, true, parsed["bool"])
 		}

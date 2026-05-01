@@ -9,6 +9,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/security"
 )
 
+const (
+	testSHA256Hash = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3"
+	testShortHash  = "abc123"
+)
+
 func TestConstantTimeHashCompare(t *testing.T) {
 	t.Parallel()
 
@@ -21,21 +26,21 @@ func TestConstantTimeHashCompare(t *testing.T) {
 	}{
 		{
 			name:          "identical SHA256 hashes",
-			hashA:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
-			hashB:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+			hashA:         testSHA256Hash,
+			hashB:         testSHA256Hash,
 			normalizedLen: 64,
 			want:          true,
 		},
 		{
 			name:          "different SHA256 hashes",
-			hashA:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+			hashA:         testSHA256Hash,
 			hashB:         "b665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
 			normalizedLen: 64,
 			want:          false,
 		},
 		{
 			name:          "one byte difference at end",
-			hashA:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+			hashA:         testSHA256Hash,
 			hashB:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae4",
 			normalizedLen: 64,
 			want:          false,
@@ -49,28 +54,28 @@ func TestConstantTimeHashCompare(t *testing.T) {
 		},
 		{
 			name:          "one empty string",
-			hashA:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+			hashA:         testSHA256Hash,
 			hashB:         "",
 			normalizedLen: 64,
 			want:          false,
 		},
 		{
 			name:          "different lengths",
-			hashA:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+			hashA:         testSHA256Hash,
 			hashB:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae",
 			normalizedLen: 64,
 			want:          false,
 		},
 		{
 			name:          "short identical strings (length mismatch)",
-			hashA:         "abc123",
-			hashB:         "abc123",
+			hashA:         testShortHash,
+			hashB:         testShortHash,
 			normalizedLen: 64,
 			want:          false, // Lengths don't match normalizedLen - security fix
 		},
 		{
 			name:          "short different strings",
-			hashA:         "abc123",
+			hashA:         testShortHash,
 			hashB:         "abc124",
 			normalizedLen: 64,
 			want:          false,
@@ -98,12 +103,12 @@ func TestConstantTimeHashCompare_Symmetry(t *testing.T) {
 		hashB string
 	}{
 		{
-			hashA: "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+			hashA: testSHA256Hash,
 			hashB: "b665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
 		},
 		{
 			hashA: "",
-			hashB: "abc123",
+			hashB: testShortHash,
 		},
 		{
 			hashA: "short",
@@ -135,8 +140,8 @@ func TestConstantTimeHashCompare_DifferentNormalizedLengths(t *testing.T) {
 	}{
 		{
 			name:          "SHA256 with correct length",
-			hashA:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
-			hashB:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+			hashA:         testSHA256Hash,
+			hashB:         testSHA256Hash,
 			normalizedLen: 64,
 			want:          true,
 		},
@@ -170,8 +175,8 @@ func TestConstantTimeHashCompare_DifferentNormalizedLengths(t *testing.T) {
 		},
 		{
 			name:          "truncation attack: both longer than normalized length, same prefix",
-			hashA:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3" + "extra",
-			hashB:         "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3" + "different",
+			hashA:         testSHA256Hash + "extra",
+			hashB:         testSHA256Hash + "different",
 			normalizedLen: 64,
 			want:          false, // Prevented: must reject inputs longer than normalizedLen
 		},

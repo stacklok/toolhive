@@ -55,7 +55,7 @@ func TestValidateRedisConfig(t *testing.T) {
 	}{
 		{
 			name:    "both Addr and SentinelConfig set",
-			cfg:     RedisConfig{Addr: "localhost:6379", SentinelConfig: &SentinelConfig{MasterName: "m", SentinelAddrs: []string{"s:26379"}}, KeyPrefix: "p:"},
+			cfg:     RedisConfig{Addr: testRedisAddr, SentinelConfig: &SentinelConfig{MasterName: "m", SentinelAddrs: []string{"s:26379"}}, KeyPrefix: "p:"},
 			wantErr: "mutually exclusive",
 		},
 		{
@@ -75,17 +75,17 @@ func TestValidateRedisConfig(t *testing.T) {
 		},
 		{
 			name:    "empty KeyPrefix",
-			cfg:     RedisConfig{Addr: "localhost:6379"},
+			cfg:     RedisConfig{Addr: testRedisAddr},
 			wantErr: "KeyPrefix",
 		},
 		{
 			name:    "KeyPrefix without trailing colon",
-			cfg:     RedisConfig{Addr: "localhost:6379", KeyPrefix: "thvsession"},
+			cfg:     RedisConfig{Addr: testRedisAddr, KeyPrefix: "thvsession"},
 			wantErr: "must end with ':'",
 		},
 		{
 			name: "valid standalone",
-			cfg:  RedisConfig{Addr: "localhost:6379", KeyPrefix: "thv:vmcp:session:"},
+			cfg:  RedisConfig{Addr: testRedisAddr, KeyPrefix: "thv:vmcp:session:"},
 		},
 		{
 			name: "valid sentinel",

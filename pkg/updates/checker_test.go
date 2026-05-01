@@ -24,6 +24,8 @@ const (
 	testLatestVersion  = "1.1.0"
 	testOldVersion     = "1.0.5"
 	testComponentCLI   = "CLI"
+	testComponentAPI   = "API"
+	testDesktopVersion = "2.0.0"
 )
 
 // MockVersionClient is a mock implementation of the VersionClient interface
@@ -100,7 +102,7 @@ func TestCheckLatestVersion(t *testing.T) {
 
 	t.Run("different components share same file but have independent throttling", func(t *testing.T) {
 		t.Parallel()
-		components := []string{testComponentCLI, "API", "UI"}
+		components := []string{testComponentCLI, testComponentAPI, "UI"}
 
 		for _, component := range components {
 			//nolint:paralleltest // Intentionally not parallel due to shared test setup
@@ -182,7 +184,7 @@ func TestCheckLatestVersion(t *testing.T) {
 		t.Parallel()
 		// Setup
 		mockClient := setupMockVersionClient(t)
-		componentName := "API"
+		componentName := testComponentAPI
 		existingVersion := testOldVersion
 		newVersion := testLatestVersion
 
@@ -360,7 +362,7 @@ func TestNotifyIfUpdateAvailableDesktopManaged(t *testing.T) {
 		"cli_version":     "1.0.0",
 		"symlink_target":  resolvedExe,
 		"installed_at":    "2026-01-22T10:30:00Z",
-		"desktop_version": "2.0.0",
+		"desktop_version": testDesktopVersion,
 	}
 	markerData, err := json.Marshal(marker)
 	require.NoError(t, err)
@@ -426,7 +428,7 @@ func TestCorruptedJSONRecovery(t *testing.T) {
 
 		// Create mock client
 		mockClient := setupMockVersionClient(t)
-		mockClient.On("GetComponent").Return("CLI")
+		mockClient.On("GetComponent").Return(testComponentCLI)
 		mockClient.On("GetLatestVersion", "test-instance-recovery", testCurrentVersion).Return(testLatestVersion, nil)
 
 		// Create update checker - this should recover from corruption during initialization
@@ -435,7 +437,7 @@ func TestCorruptedJSONRecovery(t *testing.T) {
 			updateFilePath:      corruptedFilePath,
 			versionClient:       mockClient,
 			previousAPIResponse: "",
-			component:           "CLI",
+			component:           testComponentCLI,
 		}
 
 		// This should work without error despite corrupted file

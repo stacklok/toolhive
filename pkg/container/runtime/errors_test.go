@@ -68,7 +68,7 @@ func TestContainerError_Unwrap(t *testing.T) {
 	underlying := ErrContainerExited
 	ce := &ContainerError{
 		Err:         underlying,
-		ContainerID: "test",
+		ContainerID: testName,
 		Message:     "some message",
 	}
 

@@ -80,7 +80,7 @@ func HasNetworkIsolation(labels map[string]string) bool {
 	// If the label is not present, assume that network isolation is enabled.
 	// This is to ensure that workloads created before this label was introduced
 	// will be properly cleaned up during stop/rm.
-	return !ok || strings.ToLower(value) == "true"
+	return !ok || strings.ToLower(value) == LabelToolHiveValue
 }
 
 // GetContainerName gets the container name from labels

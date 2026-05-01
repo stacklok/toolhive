@@ -35,7 +35,10 @@ type Config struct {
 	PrintOverlays bool // Whether to print resolved overlay paths for debugging
 }
 
-const ignoreFileName = ".thvignore"
+const (
+	ignoreFileName = ".thvignore"
+	mountTypeBind  = "bind"
+)
 
 // NewProcessor creates a new Processor instance with the given configuration
 func NewProcessor(config *Config) *Processor {
@@ -229,7 +232,7 @@ func (p *Processor) createOverlayMount(
 		return &OverlayMount{
 			ContainerPath: containerOverlayPath,
 			HostPath:      emptyDirPath,
-			Type:          "bind",
+			Type:          mountTypeBind,
 		}
 	}
 
@@ -245,7 +248,7 @@ func (p *Processor) createOverlayMount(
 	return &OverlayMount{
 		ContainerPath: containerOverlayPath,
 		HostPath:      emptyFilePath,
-		Type:          "bind",
+		Type:          mountTypeBind,
 	}
 }
 

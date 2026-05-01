@@ -14,6 +14,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	testCLIVersion     = "1.0.0"
+	testSymlinkTarget  = "/path/to/binary"
+	testInstalledAt    = "2026-01-22T10:30:00Z"
+	testDesktopVersion = "2.0.0"
+	testInstallCopy    = "copy"
+	testCLIChecksum    = "abc123"
+	testLocalBinPath   = "/usr/local/bin/thv"
+)
+
 func TestReadMarkerFileFromPath(t *testing.T) {
 	t.Parallel()
 
@@ -32,10 +42,10 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 					SchemaVersion:  1,
 					Source:         "desktop",
 					InstallMethod:  "symlink",
-					CLIVersion:     "1.0.0",
-					SymlinkTarget:  "/path/to/binary",
-					InstalledAt:    "2026-01-22T10:30:00Z",
-					DesktopVersion: "2.0.0",
+					CLIVersion:     testCLIVersion,
+					SymlinkTarget:  testSymlinkTarget,
+					InstalledAt:    testInstalledAt,
+					DesktopVersion: testDesktopVersion,
 				}
 				return writeMarkerFile(t, dir, marker)
 			},
@@ -46,8 +56,8 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 				assert.Equal(t, 1, marker.SchemaVersion)
 				assert.Equal(t, "desktop", marker.Source)
 				assert.Equal(t, "symlink", marker.InstallMethod)
-				assert.Equal(t, "1.0.0", marker.CLIVersion)
-				assert.Equal(t, "/path/to/binary", marker.SymlinkTarget)
+				assert.Equal(t, testCLIVersion, marker.CLIVersion)
+				assert.Equal(t, testSymlinkTarget, marker.SymlinkTarget)
 			},
 		},
 		{
@@ -78,9 +88,9 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 					"schema_version":  99,
 					"source":          "desktop",
 					"install_method":  "symlink",
-					"cli_version":     "1.0.0",
-					"installed_at":    "2026-01-22T10:30:00Z",
-					"desktop_version": "2.0.0",
+					"cli_version":     testCLIVersion,
+					"installed_at":    testInstalledAt,
+					"desktop_version": testDesktopVersion,
 				}
 				return writeMarkerFileRaw(t, dir, marker)
 			},
@@ -95,9 +105,9 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 					"schema_version":  1,
 					"source":          "manual",
 					"install_method":  "symlink",
-					"cli_version":     "1.0.0",
-					"installed_at":    "2026-01-22T10:30:00Z",
-					"desktop_version": "2.0.0",
+					"cli_version":     testCLIVersion,
+					"installed_at":    testInstalledAt,
+					"desktop_version": testDesktopVersion,
 				}
 				return writeMarkerFileRaw(t, dir, marker)
 			},
@@ -111,11 +121,11 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 				marker := cliSourceMarker{
 					SchemaVersion:  1,
 					Source:         "desktop",
-					InstallMethod:  "copy",
-					CLIVersion:     "1.0.0",
-					CLIChecksum:    "abc123",
-					InstalledAt:    "2026-01-22T10:30:00Z",
-					DesktopVersion: "2.0.0",
+					InstallMethod:  testInstallCopy,
+					CLIVersion:     testCLIVersion,
+					CLIChecksum:    testCLIChecksum,
+					InstalledAt:    testInstalledAt,
+					DesktopVersion: testDesktopVersion,
 				}
 				return writeMarkerFile(t, dir, marker)
 			},
@@ -123,8 +133,8 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 			wantMarker: true,
 			validateFn: func(t *testing.T, marker *cliSourceMarker) {
 				t.Helper()
-				assert.Equal(t, "copy", marker.InstallMethod)
-				assert.Equal(t, "abc123", marker.CLIChecksum)
+				assert.Equal(t, testInstallCopy, marker.InstallMethod)
+				assert.Equal(t, testCLIChecksum, marker.CLIChecksum)
 			},
 		},
 		{
@@ -135,10 +145,10 @@ func TestReadMarkerFileFromPath(t *testing.T) {
 					SchemaVersion:  1,
 					Source:         "desktop",
 					InstallMethod:  "flatpak",
-					CLIVersion:     "1.0.0",
+					CLIVersion:     testCLIVersion,
 					FlatpakTarget:  "/home/user/.local/share/flatpak/app/com.stacklok.ToolHive/x86_64/master/active/files/toolhive/resources/bin/linux-x64/thv",
-					InstalledAt:    "2026-01-22T10:30:00Z",
-					DesktopVersion: "2.0.0",
+					InstalledAt:    testInstalledAt,
+					DesktopVersion: testDesktopVersion,
 				}
 				return writeMarkerFile(t, dir, marker)
 			},
@@ -203,10 +213,10 @@ func TestCheckDesktopAlignment(t *testing.T) {
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "symlink",
-			CLIVersion:     "1.0.0",
+			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  "/nonexistent/path/to/thv",
-			InstalledAt:    "2026-01-22T10:30:00Z",
-			DesktopVersion: "2.0.0",
+			InstalledAt:    testInstalledAt,
+			DesktopVersion: testDesktopVersion,
 		}
 		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
@@ -242,10 +252,10 @@ func TestCheckDesktopAlignment(t *testing.T) {
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "symlink",
-			CLIVersion:     "1.0.0",
+			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  resolvedExe,
-			InstalledAt:    "2026-01-22T10:30:00Z",
-			DesktopVersion: "2.0.0",
+			InstalledAt:    testInstalledAt,
+			DesktopVersion: testDesktopVersion,
 		}
 		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
@@ -276,10 +286,10 @@ func TestCheckDesktopAlignment(t *testing.T) {
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "symlink",
-			CLIVersion:     "1.0.0",
+			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  fakeBinaryPath,
-			InstalledAt:    "2026-01-22T10:30:00Z",
-			DesktopVersion: "2.0.0",
+			InstalledAt:    testInstalledAt,
+			DesktopVersion: testDesktopVersion,
 		}
 		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
@@ -315,10 +325,10 @@ func TestIsDesktopManagedCLI(t *testing.T) {
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "symlink",
-			CLIVersion:     "1.0.0",
+			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  "/nonexistent/path/to/thv",
-			InstalledAt:    "2026-01-22T10:30:00Z",
-			DesktopVersion: "2.0.0",
+			InstalledAt:    testInstalledAt,
+			DesktopVersion: testDesktopVersion,
 		}
 		data, err := json.Marshal(marker)
 		require.NoError(t, err)
@@ -344,10 +354,10 @@ func TestIsDesktopManagedCLI(t *testing.T) {
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "symlink",
-			CLIVersion:     "1.0.0",
+			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  resolvedExe,
-			InstalledAt:    "2026-01-22T10:30:00Z",
-			DesktopVersion: "2.0.0",
+			InstalledAt:    testInstalledAt,
+			DesktopVersion: testDesktopVersion,
 		}
 		data, err := json.Marshal(marker)
 		require.NoError(t, err)
@@ -370,10 +380,10 @@ func TestIsDesktopManagedCLI(t *testing.T) {
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "symlink",
-			CLIVersion:     "1.0.0",
+			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  fakeBinaryPath,
-			InstalledAt:    "2026-01-22T10:30:00Z",
-			DesktopVersion: "2.0.0",
+			InstalledAt:    testInstalledAt,
+			DesktopVersion: testDesktopVersion,
 		}
 		data, err := json.Marshal(marker)
 		require.NoError(t, err)
@@ -432,13 +442,13 @@ func TestPathsEqual(t *testing.T) {
 	}{
 		{
 			name:   "identical paths",
-			path1:  "/usr/local/bin/thv",
-			path2:  "/usr/local/bin/thv",
+			path1:  testLocalBinPath,
+			path2:  testLocalBinPath,
 			expect: true,
 		},
 		{
 			name:   "different paths",
-			path1:  "/usr/local/bin/thv",
+			path1:  testLocalBinPath,
 			path2:  "/opt/homebrew/bin/thv",
 			expect: false,
 		},
@@ -489,20 +499,20 @@ func TestBuildConflictMessage(t *testing.T) {
 		SchemaVersion:  1,
 		Source:         "desktop",
 		InstallMethod:  "symlink",
-		CLIVersion:     "1.0.0",
+		CLIVersion:     testCLIVersion,
 		SymlinkTarget:  "/Applications/ToolHive.app/Contents/Resources/bin/thv",
-		InstalledAt:    "2026-01-22T10:30:00Z",
-		DesktopVersion: "2.0.0",
+		InstalledAt:    testInstalledAt,
+		DesktopVersion: testDesktopVersion,
 	}
 
 	msg := buildConflictMessage(
 		"/Applications/ToolHive.app/Contents/Resources/bin/thv",
-		"/usr/local/bin/thv",
+		testLocalBinPath,
 		marker,
 	)
 
 	assert.Contains(t, msg, "/Applications/ToolHive.app/Contents/Resources/bin/thv")
-	assert.Contains(t, msg, "/usr/local/bin/thv")
+	assert.Contains(t, msg, testLocalBinPath)
 	// Platform-specific path check
 	if runtime.GOOS == "windows" {
 		assert.Contains(t, msg, "ToolHive")
@@ -520,10 +530,10 @@ func TestGetTargetPath(t *testing.T) {
 		t.Parallel()
 		marker := &cliSourceMarker{
 			InstallMethod: "symlink",
-			SymlinkTarget: "/path/to/binary",
+			SymlinkTarget: testSymlinkTarget,
 		}
 		result := getTargetPath(marker)
-		assert.Equal(t, "/path/to/binary", result)
+		assert.Equal(t, testSymlinkTarget, result)
 	})
 
 	t.Run("symlink method without target", func(t *testing.T) {
@@ -559,8 +569,8 @@ func TestGetTargetPath(t *testing.T) {
 	t.Run("copy method", func(t *testing.T) {
 		t.Parallel()
 		marker := &cliSourceMarker{
-			InstallMethod: "copy",
-			CLIChecksum:   "abc123",
+			InstallMethod: testInstallCopy,
+			CLIChecksum:   testCLIChecksum,
 		}
 		result := getTargetPath(marker)
 		// On Windows, copy method returns the expected CLI path
@@ -687,10 +697,10 @@ func TestReadMarkerFile(t *testing.T) {
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "symlink",
-			CLIVersion:     "1.0.0",
-			SymlinkTarget:  "/path/to/binary",
-			InstalledAt:    "2026-01-22T10:30:00Z",
-			DesktopVersion: "2.0.0",
+			CLIVersion:     testCLIVersion,
+			SymlinkTarget:  testSymlinkTarget,
+			InstalledAt:    testInstalledAt,
+			DesktopVersion: testDesktopVersion,
 		}
 		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
@@ -701,7 +711,7 @@ func TestReadMarkerFile(t *testing.T) {
 
 		result, err := readMarkerFile()
 		require.NoError(t, err)
-		assert.Equal(t, "1.0.0", result.CLIVersion)
+		assert.Equal(t, testCLIVersion, result.CLIVersion)
 	})
 
 	t.Run("returns error when marker not found", func(t *testing.T) { //nolint:paralleltest // modifies HOME
@@ -744,10 +754,10 @@ func TestValidateDesktopAlignmentWithConflict(t *testing.T) {
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "symlink",
-			CLIVersion:     "1.0.0",
+			CLIVersion:     testCLIVersion,
 			SymlinkTarget:  fakeBinaryPath,
-			InstalledAt:    "2026-01-22T10:30:00Z",
-			DesktopVersion: "2.0.0",
+			InstalledAt:    testInstalledAt,
+			DesktopVersion: testDesktopVersion,
 		}
 		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
@@ -779,11 +789,11 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
 			Source:         "desktop",
-			InstallMethod:  "copy",
-			CLIVersion:     "1.0.0",
-			CLIChecksum:    "abc123",
-			InstalledAt:    "2026-01-22T10:30:00Z",
-			DesktopVersion: "2.0.0",
+			InstallMethod:  testInstallCopy,
+			CLIVersion:     testCLIVersion,
+			CLIChecksum:    testCLIChecksum,
+			InstalledAt:    testInstalledAt,
+			DesktopVersion: testDesktopVersion,
 		}
 		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
@@ -821,11 +831,11 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
 			Source:         "desktop",
-			InstallMethod:  "copy",
-			CLIVersion:     "1.0.0",
-			CLIChecksum:    "abc123",
-			InstalledAt:    "2026-01-22T10:30:00Z",
-			DesktopVersion: "2.0.0",
+			InstallMethod:  testInstallCopy,
+			CLIVersion:     testCLIVersion,
+			CLIChecksum:    testCLIChecksum,
+			InstalledAt:    testInstalledAt,
+			DesktopVersion: testDesktopVersion,
 		}
 		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
@@ -860,11 +870,11 @@ func TestCheckDesktopAlignmentCopyMethod(t *testing.T) {
 		marker := cliSourceMarker{
 			SchemaVersion:  1,
 			Source:         "desktop",
-			InstallMethod:  "copy",
-			CLIVersion:     "1.0.0",
-			CLIChecksum:    "abc123",
-			InstalledAt:    "2026-01-22T10:30:00Z",
-			DesktopVersion: "2.0.0",
+			InstallMethod:  testInstallCopy,
+			CLIVersion:     testCLIVersion,
+			CLIChecksum:    testCLIChecksum,
+			InstalledAt:    testInstalledAt,
+			DesktopVersion: testDesktopVersion,
 		}
 		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
@@ -900,10 +910,10 @@ func TestCheckDesktopAlignmentFlatpakMethod(t *testing.T) {
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "flatpak",
-			CLIVersion:     "1.0.0",
+			CLIVersion:     testCLIVersion,
 			FlatpakTarget:  fakeFlatpakBinary,
-			InstalledAt:    "2026-01-22T10:30:00Z",
-			DesktopVersion: "2.0.0",
+			InstalledAt:    testInstalledAt,
+			DesktopVersion: testDesktopVersion,
 		}
 		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
@@ -931,10 +941,10 @@ func TestCheckDesktopAlignmentFlatpakMethod(t *testing.T) {
 			SchemaVersion:  1,
 			Source:         "desktop",
 			InstallMethod:  "flatpak",
-			CLIVersion:     "1.0.0",
+			CLIVersion:     testCLIVersion,
 			FlatpakTarget:  "/nonexistent/flatpak/app/thv",
-			InstalledAt:    "2026-01-22T10:30:00Z",
-			DesktopVersion: "2.0.0",
+			InstalledAt:    testInstalledAt,
+			DesktopVersion: testDesktopVersion,
 		}
 		markerPath := filepath.Join(thDir, ".cli-source")
 		data, err := json.Marshal(marker)
@@ -957,20 +967,20 @@ func TestBuildConflictMessageWithoutDesktopVersion(t *testing.T) {
 		SchemaVersion:  1,
 		Source:         "desktop",
 		InstallMethod:  "symlink",
-		CLIVersion:     "1.0.0",
+		CLIVersion:     testCLIVersion,
 		SymlinkTarget:  "/path/to/thv",
-		InstalledAt:    "2026-01-22T10:30:00Z",
+		InstalledAt:    testInstalledAt,
 		DesktopVersion: "", // Empty desktop version
 	}
 
 	msg := buildConflictMessage(
 		"/path/to/thv",
-		"/usr/local/bin/thv",
+		testLocalBinPath,
 		marker,
 	)
 
 	assert.Contains(t, msg, "/path/to/thv")
-	assert.Contains(t, msg, "/usr/local/bin/thv")
+	assert.Contains(t, msg, testLocalBinPath)
 	assert.NotContains(t, msg, "Desktop version:")
 }
 

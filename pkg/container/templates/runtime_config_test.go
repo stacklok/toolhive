@@ -11,6 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	testPackageName = "test-package"
+	testCurlPackage = "curl"
+)
+
 func TestGetDefaultRuntimeConfig(t *testing.T) {
 	t.Parallel()
 
@@ -23,20 +28,20 @@ func TestGetDefaultRuntimeConfig(t *testing.T) {
 		{
 			name:          "Go default config",
 			transportType: TransportTypeGO,
-			wantImage:     "golang:1.26-alpine",
-			wantPackages:  []string{"ca-certificates", "git"},
+			wantImage:     DefaultGoBuilderImage,
+			wantPackages:  []string{DefaultCACertificatesPackage, "git"},
 		},
 		{
 			name:          "NPX default config",
 			transportType: TransportTypeNPX,
-			wantImage:     "node:24-alpine",
-			wantPackages:  []string{"git", "ca-certificates"},
+			wantImage:     DefaultNodeBuilderImage,
+			wantPackages:  []string{"git", DefaultCACertificatesPackage},
 		},
 		{
 			name:          "UVX default config",
 			transportType: TransportTypeUVX,
-			wantImage:     "python:3.14-slim",
-			wantPackages:  []string{"ca-certificates", "git"},
+			wantImage:     DefaultPythonBuilderImage,
+			wantPackages:  []string{DefaultCACertificatesPackage, "git"},
 		},
 	}
 
@@ -77,7 +82,7 @@ func TestGetDockerfileTemplateWithCustomRuntimeConfig(t *testing.T) {
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
 				BuilderImage:       "golang:1.24-alpine",
-				AdditionalPackages: []string{"ca-certificates", "git", "gcc"},
+				AdditionalPackages: []string{DefaultCACertificatesPackage, "git", "gcc"},
 			},
 			wantInContent: "FROM golang:1.24-alpine AS builder",
 		},
@@ -95,7 +100,7 @@ func TestGetDockerfileTemplateWithCustomRuntimeConfig(t *testing.T) {
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
 				BuilderImage:       "python:3.11-slim",
-				AdditionalPackages: []string{"ca-certificates"},
+				AdditionalPackages: []string{DefaultCACertificatesPackage},
 			},
 			wantInContent: "FROM python:3.11-slim AS builder",
 		},
@@ -106,7 +111,7 @@ func TestGetDockerfileTemplateWithCustomRuntimeConfig(t *testing.T) {
 			t.Parallel()
 
 			data := TemplateData{
-				MCPPackage:    "test-package",
+				MCPPackage:    testPackageName,
 				RuntimeConfig: tt.runtimeConfig,
 			}
 
@@ -126,7 +131,7 @@ func TestGetDockerfileTemplateUsesDefaultWhenNil(t *testing.T) {
 	t.Parallel()
 
 	data := TemplateData{
-		MCPPackage:    "test-package",
+		MCPPackage:    testPackageName,
 		RuntimeConfig: nil, // Should use defaults
 	}
 
@@ -146,7 +151,7 @@ func TestRuntimeConfigValidate_ValidPackageNames(t *testing.T) {
 
 	validPackages := []string{
 		"git",
-		"ca-certificates",
+		DefaultCACertificatesPackage,
 		"libssl1.1",
 		"g++",
 		"python3.11",
@@ -154,7 +159,7 @@ func TestRuntimeConfigValidate_ValidPackageNames(t *testing.T) {
 		"gcc",
 		"make",
 		"libc6-dev",
-		"curl",
+		testCurlPackage,
 	}
 
 	for _, pkg := range validPackages {
@@ -162,7 +167,7 @@ func TestRuntimeConfigValidate_ValidPackageNames(t *testing.T) {
 			t.Parallel()
 
 			rc := &RuntimeConfig{
-				BuilderImage:       "golang:1.26-alpine",
+				BuilderImage:       DefaultGoBuilderImage,
 				AdditionalPackages: []string{pkg},
 			}
 			assert.NoError(t, rc.Validate())
@@ -198,7 +203,7 @@ func TestRuntimeConfigValidate_InvalidPackageNames(t *testing.T) {
 			t.Parallel()
 
 			rc := &RuntimeConfig{
-				BuilderImage:       "golang:1.26-alpine",
+				BuilderImage:       DefaultGoBuilderImage,
 				AdditionalPackages: []string{tt.pkg},
 			}
 			err := rc.Validate()
@@ -216,7 +221,7 @@ func TestRuntimeConfigValidate_ValidBuilderImages(t *testing.T) {
 		"docker.io/library/node:20-alpine",
 		"ghcr.io/stacklok/builder:latest",
 		"python:3.13-slim",
-		"node:24-alpine",
+		DefaultNodeBuilderImage,
 		"mcr.microsoft.com/dotnet/sdk:8.0",
 		"registry.example.com/myimage:v1.2.3",
 	}
@@ -287,7 +292,7 @@ func TestRuntimeConfigValidate_MultipleErrors(t *testing.T) {
 
 	rc := &RuntimeConfig{
 		BuilderImage:       "alpine\nRUN evil",
-		AdditionalPackages: []string{"git", "pkg;ls", "curl", "$(evil)"},
+		AdditionalPackages: []string{"git", "pkg;ls", testCurlPackage, "$(evil)"},
 	}
 	err := rc.Validate()
 	require.Error(t, err)

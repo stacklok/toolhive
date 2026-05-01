@@ -42,7 +42,7 @@ func GenerateSchema[T any]() (map[string]any, error) {
 // generateSchemaForType generates schema for a reflect.Type.
 func generateSchemaForType(t reflect.Type) (map[string]any, error) {
 	// Handle pointer types
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 

@@ -32,6 +32,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	errNotCompatibleEd25519 = "not compatible with Ed25519"
+	testKeyID               = "key"
+)
+
 func TestLoadSigningKey(t *testing.T) {
 	t.Parallel()
 
@@ -203,8 +208,8 @@ func TestValidateAlgorithmForKey(t *testing.T) {
 		{"ES256 with RSA", AlgES256, rsaKey, "not compatible with RSA"},
 		{"RS256 with EC", AlgRS256, ecP256, "not compatible with EC"},
 		{"ES256 with P-384", AlgES256, ecP384, "not compatible with EC key"},
-		{"RS256 with Ed25519", AlgRS256, ed25519Key, "not compatible with Ed25519"},
-		{"ES256 with Ed25519", AlgES256, ed25519Key, "not compatible with Ed25519"},
+		{"RS256 with Ed25519", AlgRS256, ed25519Key, errNotCompatibleEd25519},
+		{"ES256 with Ed25519", AlgES256, ed25519Key, errNotCompatibleEd25519},
 	}
 
 	for _, tt := range tests {
@@ -241,9 +246,9 @@ func TestDeriveSigningKeyParams(t *testing.T) {
 		{"derive both for Ed25519", ed25519Key, "", "", AlgEdDSA, ""},
 		{"use provided values", rsaKey, "my-key", AlgRS384, AlgRS384, ""},
 		{"derive alg only", ecKey, "my-key", "", AlgES256, ""},
-		{"invalid alg for RSA", rsaKey, "key", AlgES256, "", "not compatible with RSA"},
-		{"invalid alg for EC curve", ecKey, "key", AlgES384, "", "not compatible with EC"},
-		{"invalid alg for Ed25519", ed25519Key, "key", AlgRS256, "", "not compatible with Ed25519"},
+		{"invalid alg for RSA", rsaKey, testKeyID, AlgES256, "", "not compatible with RSA"},
+		{"invalid alg for EC curve", ecKey, testKeyID, AlgES384, "", "not compatible with EC"},
+		{"invalid alg for Ed25519", ed25519Key, testKeyID, AlgRS256, "", errNotCompatibleEd25519},
 	}
 
 	for _, tt := range tests {

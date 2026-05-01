@@ -9,6 +9,32 @@ import (
 	"testing"
 )
 
+// Test-only constants shared across template test cases.
+const (
+	testExamplePackage      = "example-package"
+	testBarePackageName     = "package"
+	testFromPython          = "FROM python:"
+	testUVInstall           = "uv tool install \"$package_spec\""
+	testPythonBuilderRE     = `FROM python:\d+\.\d+-slim AS builder`
+	testPythonRuntimeRE     = `FROM python:\d+\.\d+-slim`
+	testAddCACert           = "Add custom CA certificate"
+	testUpdateCACerts       = "update-ca-certificates"
+	testCACertBeforeNetwork = "Add custom CA certificate BEFORE any network operations"
+	testCopyCACert          = "COPY ca-cert.crt /tmp/custom-ca.crt"
+	testCatCACert           = "cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt"
+	testFromNode            = "FROM node:"
+	testNPMInstall          = "npm install --save example-package"
+	testNodeBuilderRE       = `FROM node:\d+-alpine AS builder`
+	testNodeRuntimeRE       = `FROM node:\d+-alpine`
+	testFromGolang          = "FROM golang:"
+	testGoInstall           = "go install \"$package\""
+	testCopyMCPServer       = "COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server"
+	testEntrypointMCPServer = "ENTRYPOINT [\"/app/mcp-server\"]"
+	testGolangBuilderRE     = `FROM golang:\d+\.\d+-alpine AS builder`
+	testAlpineRuntimeRE     = `FROM index\.docker\.io/library/alpine:\d+\.\d+@sha256:[0-9a-f]+`
+	testCustomBuildEnvVar   = "# Custom build environment variables"
+)
+
 func TestGetDockerfileTemplate(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -24,24 +50,24 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			name:          "UVX transport",
 			transportType: TransportTypeUVX,
 			data: TemplateData{
-				MCPPackage: "example-package",
+				MCPPackage: testExamplePackage,
 			},
 			wantContains: []string{
-				"FROM python:",
+				testFromPython,
 				"apt-get install -y --no-install-recommends",
 				"pip install --no-cache-dir uv",
 				"package_spec=$(echo \"$package\" | sed 's/@/==/')",
-				"uv tool install \"$package_spec\"",
+				testUVInstall,
 				"COPY --from=builder --chown=appuser:appgroup /opt/uv-tools /opt/uv-tools",
 				"ENTRYPOINT [\"sh\", \"-c\", \"exec 'example-package' \\\"$@\\\"\", \"--\"]",
 			},
 			wantMatches: []string{
-				`FROM python:\d+\.\d+-slim AS builder`, // Match builder stage
-				`FROM python:\d+\.\d+-slim`,            // Match runtime stage
+				testPythonBuilderRE, // Match builder stage
+				testPythonRuntimeRE, // Match runtime stage
 			},
 			wantNotContains: []string{
-				"Add custom CA certificate",
-				"update-ca-certificates",
+				testAddCACert,
+				testUpdateCACerts,
 			},
 			wantErr: false,
 		},
@@ -49,25 +75,25 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			name:          "UVX transport with CA certificate",
 			transportType: TransportTypeUVX,
 			data: TemplateData{
-				MCPPackage:    "example-package",
+				MCPPackage:    testExamplePackage,
 				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
 			},
 			wantContains: []string{
-				"FROM python:",
+				testFromPython,
 				"apt-get install -y --no-install-recommends",
 				"pip install --no-cache-dir uv",
 				"package_spec=$(echo \"$package\" | sed 's/@/==/')",
-				"uv tool install \"$package_spec\"",
+				testUVInstall,
 				"COPY --from=builder --chown=appuser:appgroup /opt/uv-tools /opt/uv-tools",
 				"ENTRYPOINT [\"sh\", \"-c\", \"exec 'example-package' \\\"$@\\\"\", \"--\"]",
-				"Add custom CA certificate BEFORE any network operations",
-				"COPY ca-cert.crt /tmp/custom-ca.crt",
-				"cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt",
-				"update-ca-certificates",
+				testCACertBeforeNetwork,
+				testCopyCACert,
+				testCatCACert,
+				testUpdateCACerts,
 			},
 			wantMatches: []string{
-				`FROM python:\d+\.\d+-slim AS builder`, // Match builder stage
-				`FROM python:\d+\.\d+-slim`,            // Match runtime stage
+				testPythonBuilderRE, // Match builder stage
+				testPythonRuntimeRE, // Match runtime stage
 			},
 			wantNotContains: []string{},
 			wantErr:         false,
@@ -76,21 +102,21 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			name:          "NPX transport",
 			transportType: TransportTypeNPX,
 			data: TemplateData{
-				MCPPackage: "example-package",
+				MCPPackage: testExamplePackage,
 			},
 			wantContains: []string{
-				"FROM node:",
-				"npm install --save example-package",
+				testFromNode,
+				testNPMInstall,
 				"COPY --from=builder --chown=appuser:appgroup /build/node_modules /app/node_modules",
 				`ENTRYPOINT ["npx", "example-package"]`,
 			},
 			wantMatches: []string{
-				`FROM node:\d+-alpine AS builder`, // Match builder stage
-				`FROM node:\d+-alpine`,            // Match runtime stage
+				testNodeBuilderRE, // Match builder stage
+				testNodeRuntimeRE, // Match runtime stage
 			},
 			wantNotContains: []string{
-				"Add custom CA certificate",
-				"update-ca-certificates",
+				testAddCACert,
+				testUpdateCACerts,
 			},
 			wantErr: false,
 		},
@@ -98,21 +124,21 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			name:          "NPX transport with CA certificate",
 			transportType: TransportTypeNPX,
 			data: TemplateData{
-				MCPPackage:    "example-package",
+				MCPPackage:    testExamplePackage,
 				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
 			},
 			wantContains: []string{
-				"FROM node:",
-				"npm install --save example-package",
+				testFromNode,
+				testNPMInstall,
 				`ENTRYPOINT ["npx", "example-package"]`,
-				"Add custom CA certificate BEFORE any network operations",
-				"COPY ca-cert.crt /tmp/custom-ca.crt",
-				"cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt",
-				"update-ca-certificates",
+				testCACertBeforeNetwork,
+				testCopyCACert,
+				testCatCACert,
+				testUpdateCACerts,
 			},
 			wantMatches: []string{
-				`FROM node:\d+-alpine AS builder`, // Match builder stage
-				`FROM node:\d+-alpine`,            // Match runtime stage
+				testNodeBuilderRE, // Match builder stage
+				testNodeRuntimeRE, // Match runtime stage
 			},
 			wantNotContains: []string{},
 			wantErr:         false,
@@ -121,23 +147,23 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			name:          "GO transport",
 			transportType: TransportTypeGO,
 			data: TemplateData{
-				MCPPackage: "example-package",
+				MCPPackage: testExamplePackage,
 			},
 			wantContains: []string{
-				"FROM golang:",
+				testFromGolang,
 				"if ! echo \"$package\" | grep -q '@'; then",
 				"package=\"${package}@latest\"",
-				"go install \"$package\"",
-				"COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server",
-				"ENTRYPOINT [\"/app/mcp-server\"]",
+				testGoInstall,
+				testCopyMCPServer,
+				testEntrypointMCPServer,
 			},
 			wantMatches: []string{
-				`FROM golang:\d+\.\d+-alpine AS builder`,                          // Match builder stage
-				`FROM index\.docker\.io/library/alpine:\d+\.\d+@sha256:[0-9a-f]+`, // Match runtime stage
+				testGolangBuilderRE, // Match builder stage
+				testAlpineRuntimeRE, // Match runtime stage
 			},
 			wantNotContains: []string{
-				"Add custom CA certificate",
-				"update-ca-certificates",
+				testAddCACert,
+				testUpdateCACerts,
 			},
 			wantErr: false,
 		},
@@ -145,23 +171,23 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			name:          "GO transport with CA certificate",
 			transportType: TransportTypeGO,
 			data: TemplateData{
-				MCPPackage:    "example-package",
+				MCPPackage:    testExamplePackage,
 				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
 			},
 			wantContains: []string{
-				"FROM golang:",
+				testFromGolang,
 				"if ! echo \"$package\" | grep -q '@'; then",
 				"package=\"${package}@latest\"",
-				"go install \"$package\"",
-				"ENTRYPOINT [\"/app/mcp-server\"]",
-				"Add custom CA certificate BEFORE any network operations",
-				"COPY ca-cert.crt /tmp/custom-ca.crt",
-				"cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt",
-				"update-ca-certificates",
+				testGoInstall,
+				testEntrypointMCPServer,
+				testCACertBeforeNetwork,
+				testCopyCACert,
+				testCatCACert,
+				testUpdateCACerts,
 			},
 			wantMatches: []string{
-				`FROM golang:\d+\.\d+-alpine AS builder`,                          // Match builder stage
-				`FROM index\.docker\.io/library/alpine:\d+\.\d+@sha256:[0-9a-f]+`, // Match runtime stage
+				testGolangBuilderRE, // Match builder stage
+				testAlpineRuntimeRE, // Match runtime stage
 			},
 			wantNotContains: []string{},
 			wantErr:         false,
@@ -174,19 +200,19 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				IsLocalPath: true,
 			},
 			wantContains: []string{
-				"FROM golang:",
+				testFromGolang,
 				"COPY . /build/",
 				"go build -o /app/mcp-server ./cmd/server",
-				"COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server",
+				testCopyMCPServer,
 				"COPY --from=builder --chown=appuser:appgroup /build/ /app/",
-				"ENTRYPOINT [\"/app/mcp-server\"]",
+				testEntrypointMCPServer,
 			},
 			wantMatches: []string{
-				`FROM golang:\d+\.\d+-alpine AS builder`,                          // Match builder stage
-				`FROM index\.docker\.io/library/alpine:\d+\.\d+@sha256:[0-9a-f]+`, // Match runtime stage
+				testGolangBuilderRE, // Match builder stage
+				testAlpineRuntimeRE, // Match runtime stage
 			},
 			wantNotContains: []string{
-				"Add custom CA certificate",
+				testAddCACert,
 			},
 			wantErr: false,
 		},
@@ -198,18 +224,18 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				IsLocalPath: true,
 			},
 			wantContains: []string{
-				"FROM golang:",
+				testFromGolang,
 				"COPY . /build/",
 				"go build -o /app/mcp-server .",
-				"COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server",
-				"ENTRYPOINT [\"/app/mcp-server\"]",
+				testCopyMCPServer,
+				testEntrypointMCPServer,
 			},
 			wantMatches: []string{
-				`FROM golang:\d+\.\d+-alpine AS builder`,                          // Match builder stage
-				`FROM index\.docker\.io/library/alpine:\d+\.\d+@sha256:[0-9a-f]+`, // Match runtime stage
+				testGolangBuilderRE, // Match builder stage
+				testAlpineRuntimeRE, // Match runtime stage
 			},
 			wantNotContains: []string{
-				"Add custom CA certificate",
+				testAddCACert,
 			},
 			wantErr: false,
 		},
@@ -221,14 +247,14 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				BuildArgs:  []string{"start"},
 			},
 			wantContains: []string{
-				"FROM node:",
+				testFromNode,
 				"npm install --save @launchdarkly/mcp-server",
 				"COPY --from=builder --chown=appuser:appgroup /build/node_modules /app/node_modules",
 				`ENTRYPOINT ["npx", "@launchdarkly/mcp-server", "start"]`,
 			},
 			wantMatches: []string{
-				`FROM node:\d+-alpine AS builder`,
-				`FROM node:\d+-alpine`,
+				testNodeBuilderRE,
+				testNodeRuntimeRE,
 			},
 			wantNotContains: nil,
 			wantErr:         false,
@@ -237,17 +263,17 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			name:          "UVX transport with BuildArgs",
 			transportType: TransportTypeUVX,
 			data: TemplateData{
-				MCPPackage: "example-package",
+				MCPPackage: testExamplePackage,
 				BuildArgs:  []string{"--transport", "stdio"},
 			},
 			wantContains: []string{
-				"FROM python:",
-				"uv tool install \"$package_spec\"",
+				testFromPython,
+				testUVInstall,
 				"ENTRYPOINT [\"sh\", \"-c\", \"exec 'example-package' '--transport' 'stdio' \\\"$@\\\"\", \"--\"]",
 			},
 			wantMatches: []string{
-				`FROM python:\d+\.\d+-slim AS builder`,
-				`FROM python:\d+\.\d+-slim`,
+				testPythonBuilderRE,
+				testPythonRuntimeRE,
 			},
 			wantNotContains: nil,
 			wantErr:         false,
@@ -256,17 +282,17 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			name:          "GO transport with BuildArgs",
 			transportType: TransportTypeGO,
 			data: TemplateData{
-				MCPPackage: "example-package",
+				MCPPackage: testExamplePackage,
 				BuildArgs:  []string{"serve", "--verbose"},
 			},
 			wantContains: []string{
-				"FROM golang:",
-				"go install \"$package\"",
+				testFromGolang,
+				testGoInstall,
 				"ENTRYPOINT [\"/app/mcp-server\", \"serve\", \"--verbose\"]",
 			},
 			wantMatches: []string{
-				`FROM golang:\d+\.\d+-alpine AS builder`,
-				`FROM index\.docker\.io/library/alpine:\d+\.\d+@sha256:[0-9a-f]+`,
+				testGolangBuilderRE,
+				testAlpineRuntimeRE,
 			},
 			wantNotContains: nil,
 			wantErr:         false,
@@ -275,7 +301,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			name:          "Unsupported transport",
 			transportType: "unsupported",
 			data: TemplateData{
-				MCPPackage: "example-package",
+				MCPPackage: testExamplePackage,
 			},
 			wantContains:    nil,
 			wantNotContains: nil,
@@ -285,19 +311,19 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			name:          "NPX transport with BuildEnv",
 			transportType: TransportTypeNPX,
 			data: TemplateData{
-				MCPPackage: "example-package",
+				MCPPackage: testExamplePackage,
 				BuildEnv: map[string]string{
 					"NPM_CONFIG_REGISTRY": "https://npm.corp.example.com",
 				},
 			},
 			wantContains: []string{
-				"FROM node:",
-				"# Custom build environment variables",
+				testFromNode,
+				testCustomBuildEnvVar,
 				`ENV NPM_CONFIG_REGISTRY="https://npm.corp.example.com"`,
-				"npm install --save example-package",
+				testNPMInstall,
 			},
 			wantMatches: []string{
-				`FROM node:\d+-alpine AS builder`,
+				testNodeBuilderRE,
 			},
 			wantNotContains: nil,
 			wantErr:         false,
@@ -306,21 +332,21 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			name:          "UVX transport with BuildEnv",
 			transportType: TransportTypeUVX,
 			data: TemplateData{
-				MCPPackage: "example-package",
+				MCPPackage: testExamplePackage,
 				BuildEnv: map[string]string{
 					"PIP_INDEX_URL":    "https://pypi.corp.example.com/simple",
 					"UV_DEFAULT_INDEX": "https://pypi.corp.example.com/simple",
 				},
 			},
 			wantContains: []string{
-				"FROM python:",
-				"# Custom build environment variables",
+				testFromPython,
+				testCustomBuildEnvVar,
 				`ENV PIP_INDEX_URL="https://pypi.corp.example.com/simple"`,
 				`ENV UV_DEFAULT_INDEX="https://pypi.corp.example.com/simple"`,
 				"uv tool install",
 			},
 			wantMatches: []string{
-				`FROM python:\d+\.\d+-slim AS builder`,
+				testPythonBuilderRE,
 			},
 			wantNotContains: nil,
 			wantErr:         false,
@@ -329,21 +355,21 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			name:          "GO transport with BuildEnv",
 			transportType: TransportTypeGO,
 			data: TemplateData{
-				MCPPackage: "example-package",
+				MCPPackage: testExamplePackage,
 				BuildEnv: map[string]string{
 					"GOPROXY":   "https://goproxy.corp.example.com",
 					"GOPRIVATE": "github.com/myorg/*",
 				},
 			},
 			wantContains: []string{
-				"FROM golang:",
-				"# Custom build environment variables",
+				testFromGolang,
+				testCustomBuildEnvVar,
 				`ENV GOPROXY="https://goproxy.corp.example.com"`,
 				`ENV GOPRIVATE="github.com/myorg/*"`,
 				"go install",
 			},
 			wantMatches: []string{
-				`FROM golang:\d+\.\d+-alpine AS builder`,
+				testGolangBuilderRE,
 			},
 			wantNotContains: nil,
 			wantErr:         false,
@@ -405,28 +431,28 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			name:          "NPX runtime stage installs extra packages",
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "node:24-alpine",
-				AdditionalPackages: []string{"git", "ca-certificates", "curl"},
+				BuilderImage:       DefaultNodeBuilderImage,
+				AdditionalPackages: []string{"git", DefaultCACertificatesPackage, testCurlPackage},
 			},
-			wantInRuntime: "curl",
+			wantInRuntime: testCurlPackage,
 		},
 		{
 			name:          "UVX runtime stage installs extra packages",
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "python:3.14-slim",
-				AdditionalPackages: []string{"ca-certificates", "git", "curl"},
+				BuilderImage:       DefaultPythonBuilderImage,
+				AdditionalPackages: []string{DefaultCACertificatesPackage, "git", testCurlPackage},
 			},
-			wantInRuntime: "curl",
+			wantInRuntime: testCurlPackage,
 		},
 		{
 			name:          "GO runtime stage installs extra packages",
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "golang:1.26-alpine",
-				AdditionalPackages: []string{"ca-certificates", "git", "curl"},
+				BuilderImage:       DefaultGoBuilderImage,
+				AdditionalPackages: []string{DefaultCACertificatesPackage, "git", testCurlPackage},
 			},
-			wantInRuntime: "curl",
+			wantInRuntime: testCurlPackage,
 		},
 	}
 
@@ -435,7 +461,7 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			t.Parallel()
 
 			data := TemplateData{
-				MCPPackage:    "test-package",
+				MCPPackage:    testPackageName,
 				RuntimeConfig: tt.runtimeConfig,
 			}
 
@@ -471,7 +497,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "NPX with empty packages",
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "node:24-alpine",
+				BuilderImage:       DefaultNodeBuilderImage,
 				AdditionalPackages: []string{},
 			},
 		},
@@ -479,7 +505,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "GO with empty packages",
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "golang:1.26-alpine",
+				BuilderImage:       DefaultGoBuilderImage,
 				AdditionalPackages: []string{},
 			},
 		},
@@ -487,7 +513,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "UVX with empty packages",
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "python:3.14-slim",
+				BuilderImage:       DefaultPythonBuilderImage,
 				AdditionalPackages: []string{},
 			},
 		},
@@ -495,7 +521,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "NPX with nil packages",
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "node:24-alpine",
+				BuilderImage:       DefaultNodeBuilderImage,
 				AdditionalPackages: nil,
 			},
 		},
@@ -503,7 +529,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "GO with nil packages",
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "golang:1.26-alpine",
+				BuilderImage:       DefaultGoBuilderImage,
 				AdditionalPackages: nil,
 			},
 		},
@@ -511,7 +537,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "UVX with nil packages",
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "python:3.14-slim",
+				BuilderImage:       DefaultPythonBuilderImage,
 				AdditionalPackages: nil,
 			},
 		},
@@ -522,7 +548,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			t.Parallel()
 
 			data := TemplateData{
-				MCPPackage:    "test-package",
+				MCPPackage:    testPackageName,
 				RuntimeConfig: tt.runtimeConfig,
 			}
 
@@ -616,13 +642,13 @@ func TestStripVersionSuffix(t *testing.T) {
 		},
 		{
 			name:  "regular package without version",
-			input: "package",
-			want:  "package",
+			input: testBarePackageName,
+			want:  testBarePackageName,
 		},
 		{
 			name:  "package with latest tag",
-			input: "package@latest",
-			want:  "package",
+			input: testBarePackageName + "@latest",
+			want:  testBarePackageName,
 		},
 		{
 			name:  "scoped package with semver",
@@ -631,8 +657,8 @@ func TestStripVersionSuffix(t *testing.T) {
 		},
 		{
 			name:  "package with prerelease version",
-			input: "package@1.0.0-beta.1",
-			want:  "package",
+			input: testBarePackageName + "@1.0.0-beta.1",
+			want:  testBarePackageName,
 		},
 	}
 

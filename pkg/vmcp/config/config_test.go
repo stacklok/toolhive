@@ -453,7 +453,7 @@ func collectStructTypes(t reflect.Type, visited map[reflect.Type]bool) []string 
 	var types []string
 
 	// Unwrap pointers, slices, maps
-	for t.Kind() == reflect.Ptr || t.Kind() == reflect.Slice || t.Kind() == reflect.Map {
+	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice || t.Kind() == reflect.Map {
 		if t.Kind() == reflect.Map {
 			// Also check map key/value types
 			types = append(types, collectStructTypes(t.Key(), visited)...)

@@ -15,6 +15,18 @@ import (
 // maxPackageNameLength is the maximum allowed length for a package name.
 const maxPackageNameLength = 128
 
+// Default builder images used in RuntimeDefaults.
+const (
+	// DefaultGoBuilderImage is the default builder image for Go transport.
+	DefaultGoBuilderImage = "golang:1.26-alpine"
+	// DefaultNodeBuilderImage is the default builder image for NPX transport.
+	DefaultNodeBuilderImage = "node:24-alpine"
+	// DefaultPythonBuilderImage is the default builder image for UVX transport.
+	DefaultPythonBuilderImage = "python:3.14-slim"
+	// DefaultCACertificatesPackage is the CA certificates package name used across runtimes.
+	DefaultCACertificatesPackage = "ca-certificates"
+)
+
 // packageNamePattern matches valid Alpine/Debian package names.
 // Must start with an alphanumeric character, followed by alphanumeric characters,
 // dots, underscores, plus signs, or hyphens.
@@ -75,16 +87,16 @@ func (rc *RuntimeConfig) Validate() error {
 // RuntimeDefaults provides default configurations for each runtime type
 var RuntimeDefaults = map[TransportType]RuntimeConfig{
 	TransportTypeGO: {
-		BuilderImage:       "golang:1.26-alpine",
-		AdditionalPackages: []string{"ca-certificates", "git"},
+		BuilderImage:       DefaultGoBuilderImage,
+		AdditionalPackages: []string{DefaultCACertificatesPackage, "git"},
 	},
 	TransportTypeNPX: {
-		BuilderImage:       "node:24-alpine",
-		AdditionalPackages: []string{"git", "ca-certificates"},
+		BuilderImage:       DefaultNodeBuilderImage,
+		AdditionalPackages: []string{"git", DefaultCACertificatesPackage},
 	},
 	TransportTypeUVX: {
-		BuilderImage:       "python:3.14-slim",
-		AdditionalPackages: []string{"ca-certificates", "git"},
+		BuilderImage:       DefaultPythonBuilderImage,
+		AdditionalPackages: []string{DefaultCACertificatesPackage, "git"},
 	},
 }
 

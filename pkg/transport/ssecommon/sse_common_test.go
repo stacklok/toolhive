@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const testSSEData = "some data"
+
 func TestNewSSEMessage(t *testing.T) {
 	t.Parallel()
 
@@ -222,17 +224,17 @@ func TestSSEMessage_EdgeCases(t *testing.T) {
 		{
 			name:      "empty event type",
 			eventType: "",
-			data:      "some data",
+			data:      testSSEData,
 		},
 		{
 			name:      "whitespace event type",
 			eventType: "   ",
-			data:      "some data",
+			data:      testSSEData,
 		},
 		{
 			name:      "event type with spaces",
 			eventType: "my event",
-			data:      "some data",
+			data:      testSSEData,
 		},
 		{
 			name:      "very long data",

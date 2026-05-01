@@ -95,12 +95,14 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	// INFO-level: one success record per DCR registration is useful audit
-	// signal and low enough cardinality to keep at INFO. client_id,
-	// software_id, token_endpoint_auth_method, and scopes are public client
-	// metadata per RFC 7591 and not credentials.
+	// Successful DCR registration is a normal operational event, not a
+	// long-running operation, so it logs at Debug to stay silent at INFO+.
+	// client_id, software_id, token_endpoint_auth_method, and scopes are
+	// public client metadata per RFC 7591 and not credentials. If audit
+	// signal is desired in future, the right home is a dedicated audit-
+	// log emission path rather than promoting this record to INFO.
 	//
-	// Note: the "issuer" attribute here identifies the THIS server (the
+	// Note: the "issuer" attribute here identifies THIS server (the
 	// ToolHive-embedded AS that is performing the registration), not the
 	// upstream AS being registered against. That distinction is important
 	// when correlating these logs with the resolver's logs in
@@ -118,7 +120,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		logAttrs = append(logAttrs, "issuer", issuer)
 	}
 	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
-	slog.Info("registered new DCR client", logAttrs...)
+	slog.Debug("registered new DCR client", logAttrs...)
 
 	// Build response per RFC 7591 Section 3.2.1.
 	// Scope reflects the scopes actually granted to this client (from

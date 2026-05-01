@@ -15,6 +15,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,8 +28,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
@@ -40,6 +42,10 @@ type MCPRemoteProxyReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
+	// operator chart that are merged with the per-CR imagePullSecrets when
+	// constructing workloads. The zero value is a usable empty Defaults.
+	ImagePullSecretsDefaults imagepullsecrets.Defaults
 }
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch;create;update;patch;delete
@@ -64,7 +70,7 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	ctxLogger := log.FromContext(ctx)
 
 	// Fetch the MCPRemoteProxy instance
-	proxy := &mcpv1alpha1.MCPRemoteProxy{}
+	proxy := &mcpv1beta1.MCPRemoteProxy{}
 	err := r.Get(ctx, req.NamespacedName, proxy)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -95,18 +101,18 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 }
 
 // validateAndHandleConfigs validates spec and handles referenced configurations
-func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
 
 	// Validate the spec
 	if err := r.validateSpec(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "MCPRemoteProxy spec validation failed")
-		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
 		proxy.Status.Message = fmt.Sprintf("Validation failed: %v", err)
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionTypeAuthConfigured,
+			Type:    mcpv1beta1.ConditionTypeAuthConfigured,
 			Status:  metav1.ConditionFalse,
-			Reason:  mcpv1alpha1.ConditionReasonAuthInvalid,
+			Reason:  mcpv1beta1.ConditionReasonAuthInvalid,
 			Message: err.Error(),
 		})
 		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
@@ -121,7 +127,7 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Handle MCPToolConfig
 	if err := r.handleToolConfig(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPToolConfig")
-		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
 		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPToolConfig error")
 		}
@@ -131,7 +137,7 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Handle MCPTelemetryConfig
 	if err := r.handleTelemetryConfig(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPTelemetryConfig")
-		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
 		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPTelemetryConfig error")
 		}
@@ -141,7 +147,7 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Handle MCPExternalAuthConfig
 	if err := r.handleExternalAuthConfig(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
-		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
 		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPExternalAuthConfig error")
 		}
@@ -151,7 +157,7 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Handle authServerRef config hash tracking
 	if err := r.handleAuthServerRef(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle authServerRef")
-		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
 		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after authServerRef error")
 		}
@@ -161,7 +167,7 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Handle MCPOIDCConfig
 	if err := r.handleOIDCConfig(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPOIDCConfig")
-		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
 		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPOIDCConfig error")
 		}
@@ -172,7 +178,7 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 }
 
 // ensureAllResources ensures all Kubernetes resources for the proxy
-func (r *MCPRemoteProxyReconciler) ensureAllResources(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+func (r *MCPRemoteProxyReconciler) ensureAllResources(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
 
 	// Ensure RBAC resources
@@ -212,7 +218,7 @@ func (r *MCPRemoteProxyReconciler) ensureAllResources(ctx context.Context, proxy
 }
 
 // ensureAuthzConfigMapForProxy ensures the authorization ConfigMap for inline configuration
-func (r *MCPRemoteProxyReconciler) ensureAuthzConfigMapForProxy(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+func (r *MCPRemoteProxyReconciler) ensureAuthzConfigMapForProxy(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	authzLabels := labelsForMCPRemoteProxy(proxy.Name)
 	authzLabels[authzLabelKey] = authzLabelValueInline
 	return ctrlutil.EnsureAuthzConfigMap(
@@ -223,7 +229,7 @@ func (r *MCPRemoteProxyReconciler) ensureAuthzConfigMapForProxy(ctx context.Cont
 // getRunConfigChecksum fetches the RunConfig ConfigMap checksum annotation for this proxy.
 // Uses the shared RunConfigChecksumFetcher to maintain consistency with MCPServer.
 func (r *MCPRemoteProxyReconciler) getRunConfigChecksum(
-	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
 ) (string, error) {
 	if proxy == nil {
 		return "", fmt.Errorf("proxy cannot be nil")
@@ -245,7 +251,7 @@ func (r *MCPRemoteProxyReconciler) getRunConfigChecksum(
 // the function returns an error that will trigger reconciliation requeue, allowing the
 // ConfigMap to be created first in ensureAllResources().
 func (r *MCPRemoteProxyReconciler) ensureDeployment(
-	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -310,7 +316,7 @@ func (r *MCPRemoteProxyReconciler) ensureDeployment(
 
 // ensureService ensures the Service exists and is up to date
 func (r *MCPRemoteProxyReconciler) ensureService(
-	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -357,7 +363,7 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 }
 
 // ensureServiceURL ensures the service URL is set in the status
-func (r *MCPRemoteProxyReconciler) ensureServiceURL(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+func (r *MCPRemoteProxyReconciler) ensureServiceURL(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	if proxy.Status.URL == "" {
 		// Note: createProxyServiceURL uses the remote-prefixed service name
 		proxy.Status.URL = createProxyServiceURL(proxy.Name, proxy.Namespace, int32(proxy.GetProxyPort()))
@@ -367,19 +373,19 @@ func (r *MCPRemoteProxyReconciler) ensureServiceURL(ctx context.Context, proxy *
 }
 
 // validateSpec validates the MCPRemoteProxy spec
-func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	// Validate external auth config if referenced
 	if proxy.Spec.ExternalAuthConfigRef != nil {
 		externalAuthConfig, err := ctrlutil.GetExternalAuthConfigForMCPRemoteProxy(ctx, r.Client, proxy)
 		if err != nil {
 			return r.failValidation(proxy,
-				mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError,
+				mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError,
 				fmt.Errorf("failed to validate external auth config: %w", err),
 			)
 		}
 		if externalAuthConfig == nil {
 			return r.failValidation(proxy,
-				mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigNotFound,
+				mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigNotFound,
 				fmt.Errorf("referenced MCPExternalAuthConfig %s not found", proxy.Spec.ExternalAuthConfigRef.Name),
 			)
 		}
@@ -387,12 +393,12 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 
 	// Validate remote URL format (also rejects empty URLs)
 	if err := validation.ValidateRemoteURL(proxy.Spec.RemoteURL); err != nil {
-		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonRemoteURLInvalid, err)
+		return r.failValidation(proxy, mcpv1beta1.ConditionReasonRemoteURLInvalid, err)
 	}
 
 	// Validate inline Cedar policy syntax
 	if err := r.validateAuthzPolicySyntax(proxy); err != nil {
-		return r.failValidation(proxy, mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid, err)
+		return r.failValidation(proxy, mcpv1beta1.ConditionReasonAuthzPolicySyntaxInvalid, err)
 	}
 
 	// Validate Kubernetes resource references (ConfigMaps, Secrets)
@@ -402,9 +408,9 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 
 	// All validations passed
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeConfigurationValid,
+		Type:               mcpv1beta1.ConditionTypeConfigurationValid,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonConfigurationValid,
+		Reason:             mcpv1beta1.ConditionReasonConfigurationValid,
 		Message:            "All configuration validations passed",
 		ObservedGeneration: proxy.Generation,
 	})
@@ -414,23 +420,23 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 
 // failValidation records a validation event, sets the ConfigurationValid condition to False,
 // and returns the error. This consolidates the repeated validate → event → condition → return pattern.
-func (r *MCPRemoteProxyReconciler) failValidation(proxy *mcpv1alpha1.MCPRemoteProxy, reason string, err error) error {
+func (r *MCPRemoteProxyReconciler) failValidation(proxy *mcpv1beta1.MCPRemoteProxy, reason string, err error) error {
 	r.recordValidationEvent(proxy, reason, err.Error())
 	setConfigurationInvalidCondition(proxy, reason, err.Error())
 	return err
 }
 
 // recordValidationEvent emits a Warning event for a validation failure.
-func (r *MCPRemoteProxyReconciler) recordValidationEvent(proxy *mcpv1alpha1.MCPRemoteProxy, reason, message string) {
+func (r *MCPRemoteProxyReconciler) recordValidationEvent(proxy *mcpv1beta1.MCPRemoteProxy, reason, message string) {
 	if r.Recorder != nil {
 		r.Recorder.Eventf(proxy, nil, corev1.EventTypeWarning, reason, "ValidateSpec", message)
 	}
 }
 
 // setConfigurationInvalidCondition sets the ConfigurationValid condition to False.
-func setConfigurationInvalidCondition(proxy *mcpv1alpha1.MCPRemoteProxy, reason, message string) {
+func setConfigurationInvalidCondition(proxy *mcpv1beta1.MCPRemoteProxy, reason, message string) {
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeConfigurationValid,
+		Type:               mcpv1beta1.ConditionTypeConfigurationValid,
 		Status:             metav1.ConditionFalse,
 		Reason:             reason,
 		Message:            message,
@@ -440,10 +446,10 @@ func setConfigurationInvalidCondition(proxy *mcpv1alpha1.MCPRemoteProxy, reason,
 
 // validateAuthzPolicySyntax validates inline Cedar authorization policy syntax.
 func (*MCPRemoteProxyReconciler) validateAuthzPolicySyntax(
-	proxy *mcpv1alpha1.MCPRemoteProxy,
+	proxy *mcpv1beta1.MCPRemoteProxy,
 ) error {
 	if proxy.Spec.AuthzConfig == nil ||
-		proxy.Spec.AuthzConfig.Type != mcpv1alpha1.AuthzConfigTypeInline ||
+		proxy.Spec.AuthzConfig.Type != mcpv1beta1.AuthzConfigTypeInline ||
 		proxy.Spec.AuthzConfig.Inline == nil {
 		return nil
 	}
@@ -452,11 +458,11 @@ func (*MCPRemoteProxyReconciler) validateAuthzPolicySyntax(
 
 // validateK8sRefs validates that referenced ConfigMaps and Secrets exist.
 func (r *MCPRemoteProxyReconciler) validateK8sRefs(
-	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
 ) error {
 	// Check authz ConfigMap reference
 	if proxy.Spec.AuthzConfig != nil &&
-		proxy.Spec.AuthzConfig.Type == mcpv1alpha1.AuthzConfigTypeConfigMap &&
+		proxy.Spec.AuthzConfig.Type == mcpv1beta1.AuthzConfigTypeConfigMap &&
 		proxy.Spec.AuthzConfig.ConfigMap != nil {
 		cm := &corev1.ConfigMap{}
 		cmName := proxy.Spec.AuthzConfig.ConfigMap.Name
@@ -471,12 +477,12 @@ func (r *MCPRemoteProxyReconciler) validateK8sRefs(
 				)
 				r.recordValidationEvent(
 					proxy,
-					mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound,
+					mcpv1beta1.ConditionReasonAuthzConfigMapNotFound,
 					msg,
 				)
 				setConfigurationInvalidCondition(
 					proxy,
-					mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound,
+					mcpv1beta1.ConditionReasonAuthzConfigMapNotFound,
 					msg,
 				)
 				return stderrors.New(msg)
@@ -484,8 +490,8 @@ func (r *MCPRemoteProxyReconciler) validateK8sRefs(
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.Error(err, "Failed to fetch authorization ConfigMap", "name", cmName, "namespace", proxy.Namespace)
 			genericMsg := fmt.Sprintf("failed to fetch authorization ConfigMap %q", cmName)
-			r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
-			setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
+			r.recordValidationEvent(proxy, mcpv1beta1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
+			setConfigurationInvalidCondition(proxy, mcpv1beta1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
 			return stderrors.New(genericMsg)
 		}
 	}
@@ -509,12 +515,12 @@ func (r *MCPRemoteProxyReconciler) validateK8sRefs(
 					)
 					r.recordValidationEvent(
 						proxy,
-						mcpv1alpha1.ConditionReasonHeaderSecretNotFound,
+						mcpv1beta1.ConditionReasonHeaderSecretNotFound,
 						msg,
 					)
 					setConfigurationInvalidCondition(
 						proxy,
-						mcpv1alpha1.ConditionReasonHeaderSecretNotFound,
+						mcpv1beta1.ConditionReasonHeaderSecretNotFound,
 						msg,
 					)
 					return stderrors.New(msg)
@@ -522,8 +528,8 @@ func (r *MCPRemoteProxyReconciler) validateK8sRefs(
 				ctxLogger := log.FromContext(ctx)
 				ctxLogger.Error(err, "Failed to fetch secret", "name", secretName, "namespace", proxy.Namespace)
 				genericMsg := fmt.Sprintf("failed to fetch secret %q for header %q", secretName, headerRef.HeaderName)
-				r.recordValidationEvent(proxy, mcpv1alpha1.ConditionReasonHeaderSecretNotFound, genericMsg)
-				setConfigurationInvalidCondition(proxy, mcpv1alpha1.ConditionReasonHeaderSecretNotFound, genericMsg)
+				r.recordValidationEvent(proxy, mcpv1beta1.ConditionReasonHeaderSecretNotFound, genericMsg)
+				setConfigurationInvalidCondition(proxy, mcpv1beta1.ConditionReasonHeaderSecretNotFound, genericMsg)
 				return stderrors.New(genericMsg)
 			}
 		}
@@ -533,11 +539,11 @@ func (r *MCPRemoteProxyReconciler) validateK8sRefs(
 }
 
 // handleToolConfig handles MCPToolConfig reference for an MCPRemoteProxy
-func (r *MCPRemoteProxyReconciler) handleToolConfig(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+func (r *MCPRemoteProxyReconciler) handleToolConfig(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
 	if proxy.Spec.ToolConfigRef == nil {
 		// Remove condition if ToolConfigRef is not set
-		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated)
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyToolConfigValidated)
 		if proxy.Status.ToolConfigHash != "" {
 			proxy.Status.ToolConfigHash = ""
 			if err := r.Status().Update(ctx, proxy); err != nil {
@@ -551,9 +557,9 @@ func (r *MCPRemoteProxyReconciler) handleToolConfig(ctx context.Context, proxy *
 	if err != nil {
 		if errors.IsNotFound(err) {
 			meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-				Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated,
+				Type:   mcpv1beta1.ConditionTypeMCPRemoteProxyToolConfigValidated,
 				Status: metav1.ConditionFalse,
-				Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigNotFound,
+				Reason: mcpv1beta1.ConditionReasonMCPRemoteProxyToolConfigNotFound,
 				Message: fmt.Sprintf("MCPToolConfig '%s' not found in namespace '%s'",
 					proxy.Spec.ToolConfigRef.Name, proxy.Namespace),
 				ObservedGeneration: proxy.Generation,
@@ -562,9 +568,9 @@ func (r *MCPRemoteProxyReconciler) handleToolConfig(ctx context.Context, proxy *
 				proxy.Spec.ToolConfigRef.Name, proxy.Namespace)
 		}
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated,
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyToolConfigValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigFetchError,
+			Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyToolConfigFetchError,
 			Message:            "Failed to fetch MCPToolConfig",
 			ObservedGeneration: proxy.Generation,
 		})
@@ -573,9 +579,9 @@ func (r *MCPRemoteProxyReconciler) handleToolConfig(ctx context.Context, proxy *
 
 	// ToolConfig found and valid
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyToolConfigValidated,
+		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyToolConfigValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyToolConfigValid,
+		Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyToolConfigValid,
 		Message:            fmt.Sprintf("MCPToolConfig '%s' is valid", toolConfig.Name),
 		ObservedGeneration: proxy.Generation,
 	})
@@ -598,12 +604,12 @@ func (r *MCPRemoteProxyReconciler) handleToolConfig(ctx context.Context, proxy *
 
 // handleTelemetryConfig validates and tracks the hash of the referenced MCPTelemetryConfig.
 // It updates the MCPRemoteProxy status when the telemetry configuration changes.
-func (r *MCPRemoteProxyReconciler) handleTelemetryConfig(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+func (r *MCPRemoteProxyReconciler) handleTelemetryConfig(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
 
 	if proxy.Spec.TelemetryConfigRef == nil {
 		// No MCPTelemetryConfig referenced, clear any stored hash and condition.
-		condType := mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated
+		condType := mcpv1beta1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated
 		condRemoved := meta.FindStatusCondition(proxy.Status.Conditions, condType) != nil
 		meta.RemoveStatusCondition(&proxy.Status.Conditions, condType)
 		if condRemoved || proxy.Status.TelemetryConfigHash != "" {
@@ -620,9 +626,9 @@ func (r *MCPRemoteProxyReconciler) handleTelemetryConfig(ctx context.Context, pr
 	if err != nil {
 		// Transient API error (not a NotFound)
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyTelemetryConfigRefFetchError,
+			Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyTelemetryConfigRefFetchError,
 			Message:            err.Error(),
 			ObservedGeneration: proxy.Generation,
 		})
@@ -632,9 +638,9 @@ func (r *MCPRemoteProxyReconciler) handleTelemetryConfig(ctx context.Context, pr
 	if telemetryConfig == nil {
 		// Resource genuinely does not exist
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyTelemetryConfigRefNotFound,
+			Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyTelemetryConfigRefNotFound,
 			Message:            fmt.Sprintf("MCPTelemetryConfig %s not found", proxy.Spec.TelemetryConfigRef.Name),
 			ObservedGeneration: proxy.Generation,
 		})
@@ -644,9 +650,9 @@ func (r *MCPRemoteProxyReconciler) handleTelemetryConfig(ctx context.Context, pr
 	// Validate that the MCPTelemetryConfig is valid (has Valid=True condition)
 	if err := telemetryConfig.Validate(); err != nil {
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyTelemetryConfigRefInvalid,
+			Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyTelemetryConfigRefInvalid,
 			Message:            fmt.Sprintf("MCPTelemetryConfig %s is invalid: %v", proxy.Spec.TelemetryConfigRef.Name, err),
 			ObservedGeneration: proxy.Generation,
 		})
@@ -656,14 +662,14 @@ func (r *MCPRemoteProxyReconciler) handleTelemetryConfig(ctx context.Context, pr
 	// Detect whether the condition is transitioning to True (e.g. recovering from
 	// a transient error). Without this check the status update is skipped when the
 	// hash is unchanged, leaving a stale False condition.
-	condType := mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated
+	condType := mcpv1beta1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated
 	prevCondition := meta.FindStatusCondition(proxy.Status.Conditions, condType)
 	needsUpdate := prevCondition == nil || prevCondition.Status != metav1.ConditionTrue
 
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
+		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyTelemetryConfigRefValid,
+		Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyTelemetryConfigRefValid,
 		Message:            fmt.Sprintf("MCPTelemetryConfig %s is valid", proxy.Spec.TelemetryConfigRef.Name),
 		ObservedGeneration: proxy.Generation,
 	})
@@ -688,11 +694,11 @@ func (r *MCPRemoteProxyReconciler) handleTelemetryConfig(ctx context.Context, pr
 }
 
 // handleExternalAuthConfig validates and tracks the hash of the referenced MCPExternalAuthConfig
-func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
 	if proxy.Spec.ExternalAuthConfigRef == nil {
 		// Remove condition if ExternalAuthConfigRef is not set
-		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
 		if proxy.Status.ExternalAuthConfigHash != "" {
 			proxy.Status.ExternalAuthConfigHash = ""
 			if err := r.Status().Update(ctx, proxy); err != nil {
@@ -706,9 +712,9 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 	if err != nil {
 		if errors.IsNotFound(err) {
 			meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-				Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+				Type:   mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
 				Status: metav1.ConditionFalse,
-				Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigNotFound,
+				Reason: mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigNotFound,
 				Message: fmt.Sprintf("MCPExternalAuthConfig '%s' not found in namespace '%s'",
 					proxy.Spec.ExternalAuthConfigRef.Name, proxy.Namespace),
 				ObservedGeneration: proxy.Generation,
@@ -717,9 +723,9 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 				proxy.Spec.ExternalAuthConfigRef.Name, proxy.Namespace)
 		}
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError,
+			Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError,
 			Message:            "Failed to fetch MCPExternalAuthConfig",
 			ObservedGeneration: proxy.Generation,
 		})
@@ -730,9 +736,9 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 	// Multi-upstream requires VirtualMCPServer.
 	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+			Type:   mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
 			Status: metav1.ConditionFalse,
-			Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream,
+			Reason: mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream,
 			Message: fmt.Sprintf(
 				"MCPRemoteProxy supports only one upstream provider (found %d); "+
 					"use VirtualMCPServer for multi-upstream",
@@ -745,9 +751,9 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 
 	// ExternalAuthConfig found and valid
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
+		Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
 		Message:            fmt.Sprintf("MCPExternalAuthConfig '%s' is valid", externalAuthConfig.Name),
 		ObservedGeneration: proxy.Generation,
 	})
@@ -771,10 +777,10 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 // handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.
 // It updates the MCPRemoteProxy status when the auth server configuration changes and sets
 // the AuthServerRefValidated condition.
-func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
 	if proxy.Spec.AuthServerRef == nil {
-		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated)
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated)
 		if proxy.Status.AuthServerConfigHash != "" {
 			proxy.Status.AuthServerConfigHash = ""
 			if err := r.Status().Update(ctx, proxy); err != nil {
@@ -787,9 +793,9 @@ func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, prox
 	// Only MCPExternalAuthConfig kind is supported
 	if proxy.Spec.AuthServerRef.Kind != "MCPExternalAuthConfig" {
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+			Type:   mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
 			Status: metav1.ConditionFalse,
-			Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefInvalidKind,
+			Reason: mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefInvalidKind,
 			Message: fmt.Sprintf("unsupported authServerRef kind %q: only MCPExternalAuthConfig is supported",
 				proxy.Spec.AuthServerRef.Kind),
 			ObservedGeneration: proxy.Generation,
@@ -803,9 +809,9 @@ func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, prox
 	if err != nil {
 		if errors.IsNotFound(err) {
 			meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-				Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+				Type:   mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
 				Status: metav1.ConditionFalse,
-				Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefNotFound,
+				Reason: mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefNotFound,
 				Message: fmt.Sprintf("MCPExternalAuthConfig '%s' not found in namespace '%s'",
 					proxy.Spec.AuthServerRef.Name, proxy.Namespace),
 				ObservedGeneration: proxy.Generation,
@@ -814,9 +820,9 @@ func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, prox
 				proxy.Spec.AuthServerRef.Name, proxy.Namespace)
 		}
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefFetchError,
+			Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefFetchError,
 			Message:            fmt.Sprintf("Failed to fetch MCPExternalAuthConfig '%s'", proxy.Spec.AuthServerRef.Name),
 			ObservedGeneration: proxy.Generation,
 		})
@@ -824,11 +830,11 @@ func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, prox
 	}
 
 	// Validate the config type is embeddedAuthServer
-	if authConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer {
+	if authConfig.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer {
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+			Type:   mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
 			Status: metav1.ConditionFalse,
-			Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefInvalidType,
+			Reason: mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefInvalidType,
 			Message: fmt.Sprintf("authServerRef '%s' has type %q, but only embeddedAuthServer is supported",
 				proxy.Spec.AuthServerRef.Name, authConfig.Spec.Type),
 			ObservedGeneration: proxy.Generation,
@@ -840,9 +846,9 @@ func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, prox
 	// MCPRemoteProxy supports only single-upstream embedded auth server configs
 	if embeddedCfg := authConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:   mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+			Type:   mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
 			Status: metav1.ConditionFalse,
-			Reason: mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream,
+			Reason: mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream,
 			Message: fmt.Sprintf("MCPRemoteProxy supports only one upstream provider (found %d); "+
 				"use VirtualMCPServer for multi-upstream",
 				len(embeddedCfg.UpstreamProviders)),
@@ -855,9 +861,9 @@ func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, prox
 
 	// AuthServerRef valid
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
+		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefValid,
+		Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefValid,
 		Message:            fmt.Sprintf("AuthServerRef '%s' is valid", authConfig.Name),
 		ObservedGeneration: proxy.Generation,
 	})
@@ -882,12 +888,12 @@ func (r *MCPRemoteProxyReconciler) handleAuthServerRef(ctx context.Context, prox
 // handleOIDCConfig validates and tracks the hash of the referenced MCPOIDCConfig.
 // It updates the MCPRemoteProxy status when the OIDC configuration changes and sets
 // the OIDCConfigRefValidated condition.
-func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
 
 	if proxy.Spec.OIDCConfigRef == nil {
 		// Remove condition if OIDCConfigRef is not set
-		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1beta1.ConditionOIDCConfigRefValidated)
 		if proxy.Status.OIDCConfigHash != "" {
 			proxy.Status.OIDCConfigHash = ""
 			if err := r.Status().Update(ctx, proxy); err != nil {
@@ -912,13 +918,13 @@ func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *
 	// Detect whether the condition is transitioning to True (e.g. recovering from
 	// a transient error). Without this check the status update is skipped when the
 	// hash is unchanged, leaving a stale False condition (#4511).
-	prevCondition := meta.FindStatusCondition(proxy.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
+	prevCondition := meta.FindStatusCondition(proxy.Status.Conditions, mcpv1beta1.ConditionOIDCConfigRefValidated)
 	needsUpdate := prevCondition == nil || prevCondition.Status != metav1.ConditionTrue
 
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,
+		Type:               mcpv1beta1.ConditionOIDCConfigRefValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonOIDCConfigRefValid,
+		Reason:             mcpv1beta1.ConditionReasonOIDCConfigRefValid,
 		Message:            fmt.Sprintf("MCPOIDCConfig %s is valid and ready", proxy.Spec.OIDCConfigRef.Name),
 		ObservedGeneration: proxy.Generation,
 	})
@@ -945,16 +951,16 @@ func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *
 // fetchAndValidateOIDCConfig fetches the referenced MCPOIDCConfig, validates it is
 // ready, and sets appropriate failure conditions on the MCPRemoteProxy if not.
 func (r *MCPRemoteProxyReconciler) fetchAndValidateOIDCConfig(
-	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
-) (*mcpv1alpha1.MCPOIDCConfig, error) {
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
+) (*mcpv1beta1.MCPOIDCConfig, error) {
 	ctxLogger := log.FromContext(ctx)
 
 	oidcConfig, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
 	if err != nil {
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,
+			Type:               mcpv1beta1.ConditionOIDCConfigRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+			Reason:             mcpv1beta1.ConditionReasonOIDCConfigRefNotFound,
 			Message:            fmt.Sprintf("MCPOIDCConfig %s not found: %v", proxy.Spec.OIDCConfigRef.Name, err),
 			ObservedGeneration: proxy.Generation,
 		})
@@ -966,9 +972,9 @@ func (r *MCPRemoteProxyReconciler) fetchAndValidateOIDCConfig(
 
 	if oidcConfig == nil {
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,
+			Type:               mcpv1beta1.ConditionOIDCConfigRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound,
+			Reason:             mcpv1beta1.ConditionReasonOIDCConfigRefNotFound,
 			Message:            fmt.Sprintf("MCPOIDCConfig %s not found", proxy.Spec.OIDCConfigRef.Name),
 			ObservedGeneration: proxy.Generation,
 		})
@@ -978,16 +984,16 @@ func (r *MCPRemoteProxyReconciler) fetchAndValidateOIDCConfig(
 		return nil, fmt.Errorf("MCPOIDCConfig %s not found", proxy.Spec.OIDCConfigRef.Name)
 	}
 
-	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1alpha1.ConditionTypeOIDCConfigValid)
+	validCondition := meta.FindStatusCondition(oidcConfig.Status.Conditions, mcpv1beta1.ConditionTypeOIDCConfigValid)
 	if validCondition == nil || validCondition.Status != metav1.ConditionTrue {
 		msg := fmt.Sprintf("MCPOIDCConfig %s is not valid", proxy.Spec.OIDCConfigRef.Name)
 		if validCondition != nil {
 			msg = fmt.Sprintf("MCPOIDCConfig %s is not valid: %s", proxy.Spec.OIDCConfigRef.Name, validCondition.Message)
 		}
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionOIDCConfigRefValidated,
+			Type:               mcpv1beta1.ConditionOIDCConfigRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonOIDCConfigRefNotValid,
+			Reason:             mcpv1beta1.ConditionReasonOIDCConfigRefNotValid,
 			Message:            msg,
 			ObservedGeneration: proxy.Generation,
 		})
@@ -1004,11 +1010,11 @@ func (r *MCPRemoteProxyReconciler) fetchAndValidateOIDCConfig(
 // the MCPOIDCConfig's ReferencingWorkloads status field.
 func (r *MCPRemoteProxyReconciler) updateOIDCConfigReferencingWorkloads(
 	ctx context.Context,
-	oidcConfig *mcpv1alpha1.MCPOIDCConfig,
+	oidcConfig *mcpv1beta1.MCPOIDCConfig,
 	proxyName string,
 ) error {
-	ref := mcpv1alpha1.WorkloadReference{
-		Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy,
+	ref := mcpv1beta1.WorkloadReference{
+		Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy,
 		Name: proxyName,
 	}
 
@@ -1031,11 +1037,11 @@ func (r *MCPRemoteProxyReconciler) updateOIDCConfigReferencingWorkloads(
 // validateGroupRef validates the GroupRef field of the MCPRemoteProxy.
 // This function only sets conditions on the proxy object - the caller is responsible
 // for persisting the status update to avoid multiple conflicting status updates.
-func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) {
+func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) {
 	if proxy.Spec.GroupRef == nil {
 		// No group reference - remove any existing GroupRefValidated condition
 		// to avoid showing stale info from a previous reconciliation
-		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated)
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyGroupRefValidated)
 		return
 	}
 
@@ -1043,29 +1049,29 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 	groupName := proxy.Spec.GroupRef.Name
 
 	// Find the referenced MCPGroup
-	group := &mcpv1alpha1.MCPGroup{}
+	group := &mcpv1beta1.MCPGroup{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: proxy.Namespace, Name: groupName}, group); err != nil {
 		ctxLogger.Error(err, "Failed to validate GroupRef")
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefNotFound,
+			Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyGroupRefNotFound,
 			Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", groupName, proxy.Namespace),
 			ObservedGeneration: proxy.Generation,
 		})
-	} else if group.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
+	} else if group.Status.Phase != mcpv1beta1.MCPGroupPhaseReady {
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefNotReady,
+			Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyGroupRefNotReady,
 			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", groupName, group.Status.Phase),
 			ObservedGeneration: proxy.Generation,
 		})
 	} else {
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated,
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyGroupRefValidated,
 			Status:             metav1.ConditionTrue,
-			Reason:             mcpv1alpha1.ConditionReasonMCPRemoteProxyGroupRefValidated,
+			Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyGroupRefValidated,
 			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", groupName),
 			ObservedGeneration: proxy.Generation,
 		})
@@ -1075,7 +1081,7 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 // ensureRBACResources ensures that the RBAC resources are in place for the remote proxy.
 // Uses the RBAC client (pkg/kubernetes/rbac) which creates or updates RBAC resources
 // automatically during operator upgrades.
-func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	// If a service account is specified, we don't need to create one
 	if proxy.Spec.ServiceAccount != nil {
 		return nil
@@ -1087,16 +1093,33 @@ func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, prox
 	// Ensure Role with minimal permissions for remote proxies
 	// Remote proxies only need ConfigMap and Secret read access (no StatefulSet/Pod management)
 	_, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
-		Name:      proxyRunnerNameForRBAC,
-		Namespace: proxy.Namespace,
-		Rules:     remoteProxyRBACRules,
-		Owner:     proxy,
+		Name:             proxyRunnerNameForRBAC,
+		Namespace:        proxy.Namespace,
+		Rules:            remoteProxyRBACRules,
+		Owner:            proxy,
+		ImagePullSecrets: r.imagePullSecretsForRemoteProxy(proxy),
 	})
 	return err
 }
 
+// imagePullSecretsForRemoteProxy returns the image pull secrets the operator
+// will set on the workload's PodSpec and ServiceAccount. The list is the merge
+// of cluster-wide chart defaults (from r.ImagePullSecretsDefaults) with the
+// per-CR list from spec.resourceOverrides.proxyDeployment.imagePullSecrets.
+// CR-level entries win on name collisions; chart-level entries are appended
+// additively. Returns nil when both inputs are empty.
+func (r *MCPRemoteProxyReconciler) imagePullSecretsForRemoteProxy(
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) []corev1.LocalObjectReference {
+	var crLevel []corev1.LocalObjectReference
+	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
+		crLevel = proxy.Spec.ResourceOverrides.ProxyDeployment.ImagePullSecrets
+	}
+	return r.ImagePullSecretsDefaults.Merge(crLevel)
+}
+
 // updateMCPRemoteProxyStatus updates the status of the MCPRemoteProxy
-func (r *MCPRemoteProxyReconciler) updateMCPRemoteProxyStatus(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+func (r *MCPRemoteProxyReconciler) updateMCPRemoteProxyStatus(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	// List the pods for this MCPRemoteProxy's deployment
 	podList := &corev1.PodList{}
 	listOpts := []client.ListOption{
@@ -1126,42 +1149,42 @@ func (r *MCPRemoteProxyReconciler) updateMCPRemoteProxyStatus(ctx context.Contex
 
 	// Update the status
 	if running > 0 {
-		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseReady
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseReady
 		proxy.Status.Message = "Remote proxy is running"
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeReady,
+			Type:               mcpv1beta1.ConditionTypeReady,
 			Status:             metav1.ConditionTrue,
-			Reason:             mcpv1alpha1.ConditionReasonDeploymentReady,
+			Reason:             mcpv1beta1.ConditionReasonDeploymentReady,
 			Message:            "Deployment is ready and running",
 			ObservedGeneration: proxy.Generation,
 		})
 	} else if pending > 0 {
-		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhasePending
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhasePending
 		proxy.Status.Message = "Remote proxy is starting"
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeReady,
+			Type:               mcpv1beta1.ConditionTypeReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonDeploymentNotReady,
+			Reason:             mcpv1beta1.ConditionReasonDeploymentNotReady,
 			Message:            "Deployment is not yet ready",
 			ObservedGeneration: proxy.Generation,
 		})
 	} else if failed > 0 {
-		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
 		proxy.Status.Message = "Remote proxy failed to start"
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeReady,
+			Type:               mcpv1beta1.ConditionTypeReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonDeploymentNotReady,
+			Reason:             mcpv1beta1.ConditionReasonDeploymentNotReady,
 			Message:            "Deployment failed",
 			ObservedGeneration: proxy.Generation,
 		})
 	} else {
-		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhasePending
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhasePending
 		proxy.Status.Message = "No pods found for remote proxy"
 		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeReady,
+			Type:               mcpv1beta1.ConditionTypeReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonDeploymentNotReady,
+			Reason:             mcpv1beta1.ConditionReasonDeploymentNotReady,
 			Message:            "No pods found",
 			ObservedGeneration: proxy.Generation,
 		})
@@ -1192,7 +1215,7 @@ func proxyRunnerServiceAccountNameForRemoteProxy(proxyName string) string {
 
 // serviceAccountNameForRemoteProxy returns the service account name for a MCPRemoteProxy
 // If a service account is specified in the spec, it returns that. Otherwise, returns the default.
-func serviceAccountNameForRemoteProxy(proxy *mcpv1alpha1.MCPRemoteProxy) string {
+func serviceAccountNameForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) string {
 	if proxy.Spec.ServiceAccount != nil {
 		return *proxy.Spec.ServiceAccount
 	}
@@ -1221,7 +1244,7 @@ func createProxyServiceURL(proxyName, namespace string, port int32) string {
 func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
+	proxy *mcpv1beta1.MCPRemoteProxy,
 	runConfigChecksum string,
 ) bool {
 	if deployment == nil || proxy == nil {
@@ -1244,6 +1267,10 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	if r.podSpecNeedsUpdate(deployment, proxy) {
+		return true
+	}
+
 	return false
 }
 
@@ -1254,7 +1281,7 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 func (r *MCPRemoteProxyReconciler) containerNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
+	proxy *mcpv1beta1.MCPRemoteProxy,
 ) bool {
 	if deployment == nil || proxy == nil || len(deployment.Spec.Template.Spec.Containers) == 0 {
 		return true
@@ -1274,6 +1301,18 @@ func (r *MCPRemoteProxyReconciler) containerNeedsUpdate(
 
 	// Check if environment variables have changed
 	expectedEnv := r.buildEnvVarsForProxy(ctx, proxy)
+	configName := ctrlutil.EmbeddedAuthServerConfigName(
+		proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef,
+	)
+	if configName != "" {
+		_, _, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigByName(
+			ctx, r.Client, proxy.Namespace, configName,
+		)
+		if err != nil {
+			return true
+		}
+		expectedEnv = append(expectedEnv, authServerEnvVars...)
+	}
 	if !reflect.DeepEqual(container.Env, expectedEnv) {
 		return true
 	}
@@ -1300,7 +1339,7 @@ func (r *MCPRemoteProxyReconciler) containerNeedsUpdate(
 // from ResourceOverrides.ProxyDeployment.
 func (*MCPRemoteProxyReconciler) deploymentMetadataNeedsUpdate(
 	deployment *appsv1.Deployment,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
+	proxy *mcpv1beta1.MCPRemoteProxy,
 ) bool {
 	if deployment == nil || proxy == nil {
 		return true
@@ -1339,7 +1378,7 @@ func (*MCPRemoteProxyReconciler) deploymentMetadataNeedsUpdate(
 // Also includes any user-specified overrides from ResourceOverrides.PodTemplateMetadata.
 func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 	deployment *appsv1.Deployment,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
+	proxy *mcpv1beta1.MCPRemoteProxy,
 	runConfigChecksum string,
 ) bool {
 	if deployment == nil || proxy == nil {
@@ -1361,8 +1400,23 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 	return false
 }
 
+// podSpecNeedsUpdate checks if pod-level fields (not container fields) have drifted.
+//
+// Currently compares ImagePullSecrets — the merge of cluster-wide chart
+// defaults with spec.resourceOverrides.proxyDeployment.imagePullSecrets. Uses
+// equality.Semantic.DeepEqual so nil and empty slices are treated as equal,
+// which matches Kubernetes' own serialization semantics.
+func (r *MCPRemoteProxyReconciler) podSpecNeedsUpdate(
+	deployment *appsv1.Deployment,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) bool {
+	expected := r.imagePullSecretsForRemoteProxy(proxy)
+	current := deployment.Spec.Template.Spec.ImagePullSecrets
+	return !equality.Semantic.DeepEqual(current, expected)
+}
+
 // serviceNeedsUpdate checks if the service needs to be updated
-func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, proxy *mcpv1alpha1.MCPRemoteProxy) bool {
+func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, proxy *mcpv1beta1.MCPRemoteProxy) bool {
 	// Check if port has changed
 	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != int32(proxy.GetProxyPort()) {
 		return true
@@ -1408,13 +1462,13 @@ func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, pro
 func (r *MCPRemoteProxyReconciler) mapOIDCConfigToMCPRemoteProxy(
 	ctx context.Context, obj client.Object,
 ) []reconcile.Request {
-	oidcConfig, ok := obj.(*mcpv1alpha1.MCPOIDCConfig)
+	oidcConfig, ok := obj.(*mcpv1beta1.MCPOIDCConfig)
 	if !ok {
 		return nil
 	}
 
 	// List all MCPRemoteProxies in the same namespace
-	proxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	proxyList := &mcpv1beta1.MCPRemoteProxyList{}
 	if err := r.List(ctx, proxyList, client.InNamespace(oidcConfig.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list MCPRemoteProxies for MCPOIDCConfig watch")
 		return nil
@@ -1441,12 +1495,12 @@ func (r *MCPRemoteProxyReconciler) mapOIDCConfigToMCPRemoteProxy(
 func (r *MCPRemoteProxyReconciler) mapTelemetryConfigToMCPRemoteProxy(
 	ctx context.Context, obj client.Object,
 ) []reconcile.Request {
-	telemetryConfig, ok := obj.(*mcpv1alpha1.MCPTelemetryConfig)
+	telemetryConfig, ok := obj.(*mcpv1beta1.MCPTelemetryConfig)
 	if !ok {
 		return nil
 	}
 
-	proxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	proxyList := &mcpv1beta1.MCPRemoteProxyList{}
 	if err := r.List(ctx, proxyList, client.InNamespace(telemetryConfig.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list MCPRemoteProxies for MCPTelemetryConfig watch")
 		return nil
@@ -1473,13 +1527,13 @@ func (r *MCPRemoteProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPRemoteProxy reconciliation requests
 	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			externalAuthConfig, ok := obj.(*mcpv1alpha1.MCPExternalAuthConfig)
+			externalAuthConfig, ok := obj.(*mcpv1beta1.MCPExternalAuthConfig)
 			if !ok {
 				return nil
 			}
 
 			// List all MCPRemoteProxies in the same namespace
-			proxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+			proxyList := &mcpv1beta1.MCPRemoteProxyList{}
 			if err := r.List(ctx, proxyList, client.InNamespace(externalAuthConfig.Namespace)); err != nil {
 				log.FromContext(ctx).Error(err, "Failed to list MCPRemoteProxies for MCPExternalAuthConfig watch")
 				return nil
@@ -1508,13 +1562,13 @@ func (r *MCPRemoteProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a handler that maps MCPToolConfig changes to MCPRemoteProxy reconciliation requests
 	toolConfigHandler := handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			toolConfig, ok := obj.(*mcpv1alpha1.MCPToolConfig)
+			toolConfig, ok := obj.(*mcpv1beta1.MCPToolConfig)
 			if !ok {
 				return nil
 			}
 
 			// List all MCPRemoteProxies in the same namespace
-			proxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+			proxyList := &mcpv1beta1.MCPRemoteProxyList{}
 			if err := r.List(ctx, proxyList, client.InNamespace(toolConfig.Namespace)); err != nil {
 				log.FromContext(ctx).Error(err, "Failed to list MCPRemoteProxies for MCPToolConfig watch")
 				return nil
@@ -1539,17 +1593,17 @@ func (r *MCPRemoteProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	)
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&mcpv1alpha1.MCPRemoteProxy{}).
+		For(&mcpv1beta1.MCPRemoteProxy{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
-		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
-		Watches(&mcpv1alpha1.MCPToolConfig{}, toolConfigHandler).
+		Watches(&mcpv1beta1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
+		Watches(&mcpv1beta1.MCPToolConfig{}, toolConfigHandler).
 		Watches(
-			&mcpv1alpha1.MCPOIDCConfig{},
+			&mcpv1beta1.MCPOIDCConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.mapOIDCConfigToMCPRemoteProxy),
 		).
 		Watches(
-			&mcpv1alpha1.MCPTelemetryConfig{},
+			&mcpv1beta1.MCPTelemetryConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.mapTelemetryConfigToMCPRemoteProxy),
 		).
 		Complete(r)

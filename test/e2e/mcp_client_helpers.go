@@ -6,10 +6,13 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck // Standard practice for Ginkgo
 	. "github.com/onsi/gomega"    //nolint:staticcheck // Standard practice for Gomega
@@ -44,6 +47,61 @@ func NewMCPClientForStreamableHTTP(config *TestConfig, serverURL string) (*MCPCl
 		client: mcpClient,
 		config: config,
 	}, nil
+}
+
+// NewMCPClientForStreamableHTTPWithToken creates a new MCP client for streamable HTTP
+// transport that sends an Authorization Bearer token on every request. Use this when
+// the vMCP server has OIDC incoming auth enabled.
+func NewMCPClientForStreamableHTTPWithToken(config *TestConfig, serverURL, token string) (*MCPClientHelper, error) {
+	mcpClient, err := client.NewStreamableHttpClient(serverURL,
+		transport.WithHTTPHeaders(map[string]string{
+			"Authorization": "Bearer " + token,
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Streamable HTTP MCP client: %w", err)
+	}
+	return &MCPClientHelper{client: mcpClient, config: config}, nil
+}
+
+// WaitForVMCPHealthReady polls the vMCP /health endpoint until it returns 200 OK or
+// the timeout is reached. Use this instead of WaitForMCPServerReady when incoming auth
+// is configured (MCP Initialize would fail with 401 for unauthenticated probes).
+func WaitForVMCPHealthReady(healthURL string, timeout time.Duration) error {
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	var lastErr error
+	var lastStatus int
+	var lastBody string
+	for {
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return fmt.Errorf("timeout waiting for vMCP health endpoint at %s: last error: %w", healthURL, lastErr)
+			}
+			return fmt.Errorf("timeout waiting for vMCP health endpoint at %s: last status: %d, body: %s", healthURL, lastStatus, lastBody)
+		case <-ticker.C:
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil) //nolint:gosec // URL is test-controlled
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			resp, err := httpClient.Do(req)
+			if resp != nil {
+				lastStatus = resp.StatusCode
+				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+				_ = resp.Body.Close()
+				lastBody = string(bodyBytes)
+			}
+			lastErr = err
+			if err == nil && resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+	}
 }
 
 // Initialize initializes the MCP connection

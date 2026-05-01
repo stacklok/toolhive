@@ -12,7 +12,7 @@ import (
 	"log/slog"
 
 	"github.com/stacklok/toolhive-core/permissions"
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
@@ -48,6 +48,12 @@ const CurrentSchemaVersion = "v0.1.0"
 type RunConfig struct {
 	// SchemaVersion is the version of the RunConfig schema
 	SchemaVersion string `json:"schema_version" yaml:"schema_version"`
+
+	// MCPServerGeneration is the K8s .metadata.generation of the MCPServer CR that rendered
+	// this RunConfig. The Kubernetes runtime uses it as a monotonic version to prevent stale
+	// rolling-update pods from overwriting a newer RunConfig's StatefulSet apply. Zero value
+	// means unversioned (backward-compat with older operators, or non-operator callers).
+	MCPServerGeneration int64 `json:"mcpserver_generation,omitempty" yaml:"mcpserver_generation,omitempty"`
 
 	// Image is the Docker image to run
 	Image string `json:"image" yaml:"image"`
@@ -160,7 +166,7 @@ type RunConfig struct {
 
 	// RateLimitConfig contains the CRD rate limiting configuration.
 	// When set, rate limiting middleware is added to the proxy middleware chain.
-	RateLimitConfig *v1alpha1.RateLimitConfig `json:"rate_limit_config,omitempty" yaml:"rate_limit_config,omitempty"`
+	RateLimitConfig *v1beta1.RateLimitConfig `json:"rate_limit_config,omitempty" yaml:"rate_limit_config,omitempty"`
 
 	// RateLimitNamespace is the Kubernetes namespace for Redis key derivation.
 	RateLimitNamespace string `json:"rate_limit_namespace,omitempty" yaml:"rate_limit_namespace,omitempty"`

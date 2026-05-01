@@ -44,6 +44,9 @@ const (
 	// WorkloadStatusUnauthenticated indicates that the workload is running but
 	// cannot authenticate with the remote MCP server (e.g., expired refresh token).
 	WorkloadStatusUnauthenticated WorkloadStatus = "unauthenticated"
+	// WorkloadStatusPolicyStopped indicates that the workload was stopped by
+	// policy enforcement. The StatusContext field carries the human-readable reason.
+	WorkloadStatusPolicyStopped WorkloadStatus = "policy_stopped"
 )
 
 // ContainerInfo represents information about a container
@@ -274,6 +277,11 @@ type DeployWorkloadOptions struct {
 	// blocked by default in the egress proxy even when InsecureAllowAll is set.
 	// Only applicable to Docker deployments with network isolation enabled.
 	AllowDockerGateway bool
+
+	// RunConfigMCPServerGeneration is the monotonic version stamp from the source RunConfig
+	// (the MCPServer .metadata.generation). K8s runtime uses it to refuse apply when the
+	// StatefulSet is already stamped with a strictly greater value.
+	RunConfigMCPServerGeneration int64
 }
 
 // ScalingConfig holds horizontal-scaling knobs threaded from RunConfig down to

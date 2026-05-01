@@ -521,6 +521,65 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 		assert.Equal(t, map[string]string{"access_type": "offline"},
 			cfg.AdditionalAuthorizationParams)
 	})
+
+	t.Run("rejects config with neither ClientID nor DCRConfig", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				RedirectURI:           "https://my-app.com/callback",
+			},
+		}
+
+		_, err := buildPureOAuth2Config(rc)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "client_id or dcr_config is required")
+	})
+
+	t.Run("rejects config with both ClientID and DCRConfig", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				ClientID:              "my-client-id",
+				RedirectURI:           "https://my-app.com/callback",
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://example.com/register",
+				},
+			},
+		}
+
+		_, err := buildPureOAuth2Config(rc)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "mutually exclusive")
+	})
+
+	t.Run("accepts DCRConfig without ClientID", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				RedirectURI:           "https://my-app.com/callback",
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://example.com/register",
+				},
+			},
+		}
+
+		cfg, err := buildPureOAuth2Config(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Empty(t, cfg.ClientID)
+	})
 }
 
 // TestBuildPureOAuth2ConfigWithEnvVar tests buildPureOAuth2Config with environment variables.
@@ -1039,7 +1098,7 @@ func TestCreateStorage(t *testing.T) {
 			},
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "sentinel config is required")
+		assert.Contains(t, err.Error(), "one of addr (standalone) or sentinel_config (sentinel) is required")
 	})
 }
 
@@ -1063,7 +1122,7 @@ func TestConvertRedisRunConfig(t *testing.T) {
 			},
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "sentinel config is required")
+		assert.Contains(t, err.Error(), "one of addr (standalone) or sentinel_config (sentinel) is required")
 	})
 
 	t.Run("missing ACL user config returns error", func(t *testing.T) {
@@ -1076,7 +1135,7 @@ func TestConvertRedisRunConfig(t *testing.T) {
 			},
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "ACL user config is required")
+		assert.Contains(t, err.Error(), "acl user config is required")
 	})
 
 	t.Run("unset username env var returns error", func(t *testing.T) {
@@ -1094,6 +1153,37 @@ func TestConvertRedisRunConfig(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to resolve Redis username")
+	})
+
+	t.Run("addr and sentinel config both set returns error", func(t *testing.T) {
+		t.Parallel()
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr: "redis.example.com:6379",
+			SentinelConfig: &storage.SentinelRunConfig{
+				MasterName:    "mymaster",
+				SentinelAddrs: []string{"sentinel:26379"},
+			},
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "USER",
+				PasswordEnvVar: "PASS",
+			},
+			KeyPrefix: "thv:",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "mutually exclusive")
+	})
+
+	t.Run("neither addr nor sentinel config returns error", func(t *testing.T) {
+		t.Parallel()
+		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "USER",
+				PasswordEnvVar: "PASS",
+			},
+			KeyPrefix: "thv:",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "one of addr")
 	})
 }
 
@@ -1175,6 +1265,39 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 		assert.Zero(t, cfg.DialTimeout)
 		assert.Zero(t, cfg.ReadTimeout)
 		assert.Zero(t, cfg.WriteTimeout)
+	})
+
+	t.Run("standalone addr, no sentinel config", func(t *testing.T) {
+		t.Setenv("TOOLHIVE_AUTH_SERVER_REDIS_USERNAME", "user")
+		t.Setenv("TOOLHIVE_AUTH_SERVER_REDIS_PASSWORD", "pass")
+		cfg, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr: "redis.example.com:6379",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "TOOLHIVE_AUTH_SERVER_REDIS_USERNAME",
+				PasswordEnvVar: "TOOLHIVE_AUTH_SERVER_REDIS_PASSWORD",
+			},
+			KeyPrefix: "thv:auth:ns:name:",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "redis.example.com:6379", cfg.Addr)
+		assert.Nil(t, cfg.SentinelConfig)
+	})
+
+	t.Run("empty UsernameEnvVar uses legacy password-only auth", func(t *testing.T) {
+		t.Setenv("TEST_REDIS_PASS_LEGACY", "mypass")
+
+		cfg, err := convertRedisRunConfig(&storage.RedisRunConfig{
+			Addr:      "memorystore.example.com:6379",
+			KeyPrefix: "thv:auth:ns:name:",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "", // omitted: triggers legacy AUTH <password>
+				PasswordEnvVar: "TEST_REDIS_PASS_LEGACY",
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, cfg.ACLUserConfig)
+		assert.Empty(t, cfg.ACLUserConfig.Username)
+		assert.Equal(t, "mypass", cfg.ACLUserConfig.Password)
 	})
 }
 

@@ -6,6 +6,7 @@ package kubernetes
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -193,7 +194,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 
 			// Deploy the workload
 			_, err := client.DeployWorkload(
-				context.Background(),
+				t.Context(),
 				"test-image",
 				"test-container",
 				[]string{"test-command"},
@@ -215,7 +216,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 
 			// Get the created StatefulSet
 			statefulSet, err := clientset.AppsV1().StatefulSets("default").Get(
-				context.Background(),
+				t.Context(),
 				"test-container",
 				metav1.GetOptions{},
 			)
@@ -729,7 +730,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 
 			// Deploy the workload
 			_, err := client.DeployWorkload(
-				context.Background(),
+				t.Context(),
 				tc.image,
 				"test-container",
 				tc.command,
@@ -751,7 +752,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 
 			// Get the created StatefulSet
 			statefulSet, err := clientset.AppsV1().StatefulSets("default").Get(
-				context.Background(),
+				t.Context(),
 				"test-container",
 				metav1.GetOptions{},
 			)
@@ -959,7 +960,7 @@ func TestAttachToWorkloadNoPodFound(t *testing.T) {
 	client.namespaceFunc = func() string { return defaultNamespace }
 
 	// Call AttachToWorkload with a workload that has no pods
-	_, _, err := client.AttachToWorkload(context.Background(), "nonexistent-workload")
+	_, _, err := client.AttachToWorkload(t.Context(), "nonexistent-workload")
 
 	// Should return error immediately (no pods found)
 	require.Error(t, err)
@@ -1302,7 +1303,7 @@ func TestDeployWorkloadBackendReplicas(t *testing.T) {
 		client.namespaceFunc = func() string { return defaultNamespace }
 
 		_, err := client.DeployWorkload(
-			context.Background(),
+			t.Context(),
 			"test-image", "test-container", nil,
 			map[string]string{}, map[string]string{},
 			nil, "streamable-http", options, false,
@@ -1310,7 +1311,7 @@ func TestDeployWorkloadBackendReplicas(t *testing.T) {
 		require.NoError(t, err)
 
 		sts, err := clientset.AppsV1().StatefulSets(defaultNamespace).Get(
-			context.Background(), "test-container", metav1.GetOptions{},
+			t.Context(), "test-container", metav1.GetOptions{},
 		)
 		require.NoError(t, err)
 		return sts
@@ -1366,4 +1367,193 @@ func TestDeployWorkloadBackendReplicas(t *testing.T) {
 		require.NotNil(t, sts.Spec.Replicas)
 		assert.Equal(t, int32(0), *sts.Spec.Replicas)
 	})
+}
+
+func TestDeployWorkload_RunConfigMCPServerGenerationGate(t *testing.T) {
+	t.Parallel()
+
+	const containerName = "test-container"
+	const oursGen = int64(100)
+	oursFormatted := strconv.FormatInt(oursGen, 10)
+
+	// seededImage is distinct from the image passed to DeployWorkload so the
+	// "skipped apply" case can assert the seeded spec was NOT overwritten.
+	const seededImage = "seeded-image:pre-existing"
+	const deployImage = "test-image"
+
+	newSeededSTS := func(annotation string) *appsv1.StatefulSet {
+		sts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      containerName,
+				Namespace: defaultNamespace,
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: ptr.To(int32(1)),
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{
+							Name:  mcpContainerName,
+							Image: seededImage,
+						}},
+					},
+				},
+			},
+			Status: appsv1.StatefulSetStatus{ReadyReplicas: 1},
+		}
+		if annotation != "" {
+			sts.Spec.Template.Annotations = map[string]string{
+				RunConfigMCPServerGenerationAnnotation: annotation,
+			}
+		}
+		return sts
+	}
+
+	testCases := []struct {
+		name             string
+		seedSTS          bool
+		seedAnnotation   string
+		optionsGen       int64
+		expectApply      bool
+		wantAnnotation   string // expected annotation value on STS after call
+		wantAnnotationIs string // "missing" | "equal" — how to interpret wantAnnotation
+	}{
+		{
+			name:             "no_existing_sts",
+			seedSTS:          false,
+			optionsGen:       oursGen,
+			expectApply:      true,
+			wantAnnotation:   oursFormatted,
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "existing_sts_no_annotation",
+			seedSTS:          true,
+			seedAnnotation:   "",
+			optionsGen:       oursGen,
+			expectApply:      true,
+			wantAnnotation:   oursFormatted,
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "existing_sts_older_annotation",
+			seedSTS:          true,
+			seedAnnotation:   strconv.FormatInt(int64(50), 10),
+			optionsGen:       oursGen,
+			expectApply:      true,
+			wantAnnotation:   oursFormatted,
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "existing_sts_equal_annotation",
+			seedSTS:          true,
+			seedAnnotation:   oursFormatted,
+			optionsGen:       oursGen,
+			expectApply:      true,
+			wantAnnotation:   oursFormatted,
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "existing_sts_newer_annotation",
+			seedSTS:          true,
+			seedAnnotation:   strconv.FormatInt(int64(200), 10),
+			optionsGen:       oursGen,
+			expectApply:      false,
+			wantAnnotation:   strconv.FormatInt(int64(200), 10),
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "existing_sts_unparsable_annotation",
+			seedSTS:          true,
+			seedAnnotation:   "not-a-number",
+			optionsGen:       oursGen,
+			expectApply:      true,
+			wantAnnotation:   oursFormatted,
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "zero_options_generation",
+			seedSTS:          true,
+			seedAnnotation:   strconv.FormatInt(int64(200), 10),
+			optionsGen:       int64(0),
+			expectApply:      true,
+			wantAnnotation:   strconv.FormatInt(int64(200), 10),
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "zero_options_generation_no_existing_sts",
+			seedSTS:          false,
+			optionsGen:       int64(0),
+			expectApply:      true,
+			wantAnnotationIs: "missing",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var clientset *fake.Clientset
+			if tc.seedSTS {
+				clientset = fake.NewClientset(newSeededSTS(tc.seedAnnotation))
+			} else {
+				clientset = fake.NewClientset()
+			}
+
+			client := NewClientWithConfigAndPlatformDetector(
+				clientset,
+				&rest.Config{Host: "https://fake-k8s-api.example.com"},
+				&mockPlatformDetector{platform: PlatformKubernetes},
+			)
+			client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
+			client.namespaceFunc = func() string { return defaultNamespace }
+
+			options := runtime.NewDeployWorkloadOptions()
+			options.RunConfigMCPServerGeneration = tc.optionsGen
+
+			_, err := client.DeployWorkload(
+				t.Context(),
+				deployImage, containerName, nil,
+				map[string]string{}, map[string]string{},
+				nil, "streamable-http", options, false,
+			)
+			require.NoError(t, err)
+
+			sts, getErr := clientset.AppsV1().StatefulSets(defaultNamespace).Get(
+				t.Context(), containerName, metav1.GetOptions{},
+			)
+
+			if !tc.expectApply {
+				// Apply was gated off. The seeded STS should still exist with its
+				// original image and annotation untouched.
+				require.NoError(t, getErr)
+				require.NotEmpty(t, sts.Spec.Template.Spec.Containers)
+				assert.Equal(t, seededImage, sts.Spec.Template.Spec.Containers[0].Image,
+					"seeded image should be preserved when apply is gated")
+				assert.Equal(t, tc.seedAnnotation,
+					sts.Spec.Template.Annotations[RunConfigMCPServerGenerationAnnotation],
+					"seeded annotation should be preserved when apply is gated")
+				return
+			}
+
+			// Apply should have occurred.
+			require.NoError(t, getErr)
+			switch tc.wantAnnotationIs {
+			case "missing":
+				_, present := sts.Spec.Template.Annotations[RunConfigMCPServerGenerationAnnotation]
+				assert.False(t, present,
+					"annotation should not be added when options.RunConfigMCPServerGeneration is zero")
+			case "equal":
+				got := sts.Spec.Template.Annotations[RunConfigMCPServerGenerationAnnotation]
+				// Compare as int64 so a formatting mismatch (e.g. "+100" vs "100") doesn't
+				// cause a false positive; the canonical representation is strconv.FormatInt.
+				wantInt, werr := strconv.ParseInt(tc.wantAnnotation, 10, 64)
+				require.NoError(t, werr, "test expected annotation must be a parseable int64")
+				gotInt, gerr := strconv.ParseInt(got, 10, 64)
+				require.NoError(t, gerr, "annotation on STS must be a parseable int64, got %q", got)
+				assert.Equal(t, wantInt, gotInt,
+					"annotation value mismatch: got %q, want %q", got, tc.wantAnnotation)
+			}
+		})
+	}
 }

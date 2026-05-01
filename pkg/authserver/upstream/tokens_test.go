@@ -63,6 +63,11 @@ func TestTokens_IsExpired(t *testing.T) {
 			expiresAt: now.Add(1 * time.Hour),
 			want:      false,
 		},
+		{
+			name:      "zero ExpiresAt treated as non-expiring",
+			expiresAt: time.Time{},
+			want:      false,
+		},
 	}
 
 	for _, tt := range tests {

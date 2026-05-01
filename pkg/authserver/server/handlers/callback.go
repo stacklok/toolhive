@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -105,39 +106,59 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// This was generated in authorize.go and will be reused across all legs of the chain.
 	sessionID := pending.SessionID
 
-	// Determine identity: first leg resolves from upstream, subsequent legs carry from pending
+	// Determine identity: first leg resolves from upstream, subsequent legs
+	// carry from pending. Synthetic identities (see upstream.Identity.Synthetic)
+	// bypass UserResolver — the synthesized subject rotates per re-auth and
+	// would otherwise grow `users` monotonically. We use the synthesized value
+	// directly as an ephemeral session key and skip the LastAuthenticated
+	// update (no provider_identities row to bump).
 	var subject, userName, userEmail string
 	if pending.ResolvedUserID == "" {
 		// First leg — this is the identity provider
-		user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
-		if err != nil {
-			slog.Error("failed to resolve user", "error", err)
-			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to resolve user"))
-			return
+		if result.Synthetic {
+			subject = result.Subject
+		} else {
+			user, err := h.userResolver.ResolveUser(ctx, providerID, providerSubject)
+			if err != nil {
+				slog.Error("failed to resolve user", "error", err)
+				h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to resolve user"))
+				return
+			}
+			subject = user.ID
+			h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
 		}
-		subject = user.ID
 		userName = result.Name
 		userEmail = result.Email
-		h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
 	} else {
 		// Subsequent leg — use identity carried from first leg
 		subject = pending.ResolvedUserID
 		userName = pending.ResolvedUserName
 		userEmail = pending.ResolvedUserEmail
-		h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
+		if !result.Synthetic {
+			h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
+		}
 	}
 
-	// Convert IDP tokens to storage tokens with binding fields
+	// Convert IDP tokens to storage tokens with binding fields.
+	// SessionExpiresAt is set unconditionally as the Fosite session bound. Storage
+	// backends use it as a fallback storage lifetime when ExpiresAt is zero (a
+	// non-expiring upstream token). Setting it on every write — even when ExpiresAt
+	// is non-zero — protects the refresh path: if the upstream provider stops
+	// asserting expires_in on a later refresh, the carried-forward SessionExpiresAt
+	// still bounds the storage lifetime instead of leaving the row indefinitely.
 	storageTokens := &storage.UpstreamTokens{
-		ProviderID:      providerID,
-		AccessToken:     idpTokens.AccessToken,
-		RefreshToken:    idpTokens.RefreshToken,
-		IDToken:         idpTokens.IDToken,
-		ExpiresAt:       idpTokens.ExpiresAt,
-		ClientID:        pending.ClientID,
-		UserID:          subject,         // Internal ToolHive user ID
-		UpstreamSubject: providerSubject, // Upstream IDP's subject claim
+		ProviderID:       providerID,
+		AccessToken:      idpTokens.AccessToken,
+		RefreshToken:     idpTokens.RefreshToken,
+		IDToken:          idpTokens.IDToken,
+		ExpiresAt:        idpTokens.ExpiresAt,
+		SessionExpiresAt: time.Now().Add(h.config.RefreshTokenLifespan),
+		ClientID:         pending.ClientID,
+		UserID:           subject,         // Internal ToolHive user ID
+		UpstreamSubject:  providerSubject, // Upstream IDP's subject claim
 	}
+
+	h.maybeCarryForwardRefreshToken(ctx, storageTokens, subject, providerSubject, providerID)
 
 	if err := h.storage.StoreUpstreamTokens(ctx, sessionID, providerID, storageTokens); err != nil {
 		slog.Error("failed to store upstream tokens",
@@ -150,6 +171,45 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, subject, userName, userEmail)
+}
+
+// maybeCarryForwardRefreshToken preserves a prior refresh token when the upstream IdP
+// omits refresh_token on re-authorization (a common behavior, e.g. Google without
+// prompt=consent). Without this, the new row would be written with an empty RefreshToken,
+// orphaning the previously-issued RT and forcing the next refresh attempt to fail.
+// Mirrors the preservation pattern in upstreamTokenRefresher.RefreshAndStore.
+//
+// The UpstreamSubject == providerSubject guard is defense-in-depth against account-linking
+// edge cases where one internal user might have two distinct upstream subjects on the
+// same provider.
+//
+// storageTokens is mutated in-place only when a carry-forward is warranted.
+func (h *Handler) maybeCarryForwardRefreshToken(
+	ctx context.Context,
+	storageTokens *storage.UpstreamTokens,
+	subject, providerSubject, providerID string,
+) {
+	if storageTokens.RefreshToken != "" {
+		return
+	}
+	prior, err := h.storage.GetLatestUpstreamTokensForUser(ctx, subject, providerID)
+	switch {
+	case err == nil:
+		if prior != nil && prior.UpstreamSubject == providerSubject && prior.RefreshToken != "" {
+			storageTokens.RefreshToken = prior.RefreshToken
+			slog.Debug("preserved upstream refresh token from prior row",
+				"user_id", subject, "provider_id", providerID,
+			)
+		}
+	case errors.Is(err, storage.ErrNotFound):
+		// First authorization for this user/provider — nothing to preserve.
+	default:
+		// Storage error — log and continue with empty RT. Failing the callback
+		// would be a worse user experience than the (already broken) status quo.
+		slog.Warn("failed to look up prior upstream tokens for RT preservation",
+			"error", err, "user_id", subject, "provider_id", providerID,
+		)
+	}
 }
 
 // writeAuthorizationResponse generates an authorization code and writes the redirect response.

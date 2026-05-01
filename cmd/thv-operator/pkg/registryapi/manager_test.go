@@ -21,7 +21,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 )
 
 func TestNewManager(t *testing.T) {
@@ -46,7 +47,7 @@ func TestNewManager(t *testing.T) {
 			scheme := runtime.NewScheme()
 
 			// Create manager
-			manager := NewManager(nil, scheme)
+			manager := NewManager(nil, scheme, imagepullsecrets.Defaults{})
 
 			// Verify manager is created
 			assert.NotNil(t, manager)
@@ -67,7 +68,7 @@ func TestReconcileAPIService(t *testing.T) {
 
 		// Create scheme and fake client
 		scheme := runtime.NewScheme()
-		_ = mcpv1alpha1.AddToScheme(scheme)
+		_ = mcpv1beta1.AddToScheme(scheme)
 		_ = appsv1.AddToScheme(scheme)
 		_ = corev1.AddToScheme(scheme)
 		_ = rbacv1.AddToScheme(scheme)
@@ -77,18 +78,18 @@ func TestReconcileAPIService(t *testing.T) {
 			Build()
 
 		// Create test MCPRegistry with configYAML
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+		mcpRegistry := &mcpv1beta1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-registry",
 				Namespace: "test-namespace",
 			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
+			Spec: mcpv1beta1.MCPRegistrySpec{
 				ConfigYAML: "sources:\n  - name: default\n    format: toolhive\n    syncPolicy:\n      interval: 10m\nregistries:\n  - name: default\n    sources: [\"default\"]\n",
 			},
 		}
 
 		// Create manager
-		manager := NewManager(fakeClient, scheme)
+		manager := NewManager(fakeClient, scheme, imagepullsecrets.Defaults{})
 		// Execute
 		result := manager.ReconcileAPIService(context.Background(), mcpRegistry)
 
@@ -131,7 +132,7 @@ func TestReconcileAPIService(t *testing.T) {
 
 		// Create scheme and a client that will fail on ConfigMap operations
 		scheme := runtime.NewScheme()
-		_ = mcpv1alpha1.AddToScheme(scheme)
+		_ = mcpv1beta1.AddToScheme(scheme)
 		_ = appsv1.AddToScheme(scheme)
 		_ = corev1.AddToScheme(scheme)
 
@@ -148,18 +149,18 @@ func TestReconcileAPIService(t *testing.T) {
 			Build()
 
 		// Create test MCPRegistry with configYAML
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+		mcpRegistry := &mcpv1beta1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-registry",
 				Namespace: "test-namespace",
 			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
+			Spec: mcpv1beta1.MCPRegistrySpec{
 				ConfigYAML: "sources:\n  - name: default\n    format: toolhive\n",
 			},
 		}
 
 		// Create manager
-		manager := NewManager(fakeClient, scheme)
+		manager := NewManager(fakeClient, scheme, imagepullsecrets.Defaults{})
 		// Execute
 		result := manager.ReconcileAPIService(context.Background(), mcpRegistry)
 

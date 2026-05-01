@@ -4,23 +4,28 @@
 package authserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/oauth2-proxy/mockoidc"
 	"github.com/ory/fosite"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -44,11 +49,29 @@ const (
 )
 
 // testServer bundles all test server components together.
+//
+// The mr field is non-nil only when the test server was constructed
+// with withRedisBackedStorage(); otherwise it is nil and the in-memory
+// backend is used. Tests that need to advance Redis time call Miniredis(t)
+// rather than dereferencing this field directly so a misconfigured test
+// fails loudly instead of nil-panicking.
 type testServer struct {
 	Server     *httptest.Server
 	PrivateKey *rsa.PrivateKey
 	authServer Server
 	storage    storage.UpstreamTokenStorage
+	mr         *miniredis.Miniredis
+}
+
+// Miniredis returns the miniredis instance backing this test server. Fails
+// the test loudly with a useful message if the server was not constructed
+// with withRedisBackedStorage(). Use this rather than dereferencing the
+// field directly.
+func (ts *testServer) Miniredis(t *testing.T) *miniredis.Miniredis {
+	t.Helper()
+	require.NotNil(t, ts.mr,
+		"testServer was not constructed with withRedisBackedStorage(); call setupTestServer*(..., withRedisBackedStorage()) to enable miniredis access")
+	return ts.mr
 }
 
 // testServerOptions configures the test server setup.
@@ -56,6 +79,13 @@ type testServerOptions struct {
 	upstream            upstream.OAuth2Provider
 	scopes              []string
 	accessTokenLifespan time.Duration
+	// storageFactory, when non-nil, supplies the storage backend instead of
+	// the default in-memory implementation. The factory may also return a
+	// *miniredis.Miniredis instance; when it does, the setup helper stashes
+	// it on testServer.mr (accessed via testServer.Miniredis()) so tests can drive its clock. A nil
+	// miniredis return value is valid (e.g., for non-Redis alternative
+	// backends).
+	storageFactory func(t *testing.T) (storage.Storage, *miniredis.Miniredis)
 }
 
 // testServerOption is a functional option for test server setup.
@@ -79,6 +109,31 @@ func withScopes(scopes []string) testServerOption {
 func withAccessTokenLifespan(d time.Duration) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.accessTokenLifespan = d
+	}
+}
+
+// withRedisBackedStorage swaps the default in-memory storage for a
+// miniredis-backed *RedisStorage. This exercises the same Lua scripts and
+// Redis-shape key layout used in production, while remaining hermetic and
+// fast: each test gets its own miniredis instance with no external
+// dependencies. The {ns:test} hash tag in the key prefix matches the
+// production-shape cluster routing so multi-key Lua operations target the
+// same hash slot.
+//
+// The setup helper stashes the *miniredis.Miniredis on testServer.mr (accessed via testServer.Miniredis())
+// so tests can call FastForward(d) to advance Redis-side TTLs without
+// real-world sleeping.
+func withRedisBackedStorage() testServerOption {
+	return func(opts *testServerOptions) {
+		opts.storageFactory = func(t *testing.T) (storage.Storage, *miniredis.Miniredis) {
+			t.Helper()
+			mr := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			t.Cleanup(func() {
+				_ = client.Close()
+			})
+			return storage.NewRedisStorageWithClient(client, "test:auth:{ns:test}:"), mr
+		}
 	}
 }
 
@@ -128,8 +183,17 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 	_, err = rand.Read(secret)
 	require.NoError(t, err)
 
-	// 3. Create storage
-	stor := storage.NewMemoryStorage()
+	// 3. Create storage. Tests opting into withRedisBackedStorage() get a
+	// miniredis-backed *RedisStorage; everyone else keeps the default
+	// in-memory backend. The mr return value is preserved so tests can
+	// FastForward Redis-side TTLs.
+	var (
+		stor storage.Storage = storage.NewMemoryStorage()
+		mr   *miniredis.Miniredis
+	)
+	if options.storageFactory != nil {
+		stor, mr = options.storageFactory(t)
+	}
 
 	// 4. Register test client (public client for PKCE)
 	err = stor.RegisterClient(ctx, &fosite.DefaultClient{
@@ -196,6 +260,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		PrivateKey: privateKey,
 		authServer: srv,
 		storage:    srv.IDPTokenStorage(),
+		mr:         mr,
 	}
 }
 
@@ -840,9 +905,18 @@ func TestIntegration_FullPKCEFlow_DefaultAudience(t *testing.T) {
 //   - UpstreamConfig{Type: OIDC, OIDCConfig: ...}
 //   - defaultUpstreamFactory dispatching to NewOIDCProvider
 //   - OIDCProviderImpl with OIDC discovery, ID token validation, and nonce support
-func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC) *testServerWithUpstream {
+//
+// Variadic opts allow swapping the storage backend (e.g. withRedisBackedStorage);
+// the upstream is fixed because this helper exists specifically to exercise the
+// real OIDC factory path. Other testServerOptions are silently ignored.
+func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ...testServerOption) *testServerWithUpstream {
 	t.Helper()
 	ctx := context.Background()
+
+	options := &testServerOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
 
 	cfg := m.Config()
 
@@ -855,8 +929,14 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC) *testSe
 	_, err = rand.Read(secret)
 	require.NoError(t, err)
 
-	// 3. Create storage
-	stor := storage.NewMemoryStorage()
+	// 3. Create storage. See setupTestServer for the factory contract.
+	var (
+		stor storage.Storage = storage.NewMemoryStorage()
+		mr   *miniredis.Miniredis
+	)
+	if options.storageFactory != nil {
+		stor, mr = options.storageFactory(t)
+	}
 
 	// 4. Register test client (public client for PKCE)
 	err = stor.RegisterClient(ctx, &fosite.DefaultClient{
@@ -915,6 +995,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC) *testSe
 			PrivateKey: privateKey,
 			authServer: srv,
 			storage:    srv.IDPTokenStorage(),
+			mr:         mr,
 		},
 		mockOIDC: m,
 	}
@@ -1329,6 +1410,72 @@ func TestIntegration_UpstreamTokenService_RefreshExpiredTokens(t *testing.T) {
 	_ = originalAccessToken // used only to confirm the flow completed
 }
 
+// TestIntegration_UpstreamTokenService_NonExpiringToken verifies that a token with
+// a zero ExpiresAt is treated as non-expiring: GetValidTokens must return the
+// stored access token unchanged and must not attempt a refresh. If a refresh were
+// triggered, mockoidc would return an error because no user is queued — that
+// outcome is the failure signal for this test.
+func TestIntegration_UpstreamTokenService_NonExpiringToken(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "upstream-nonexpiring-test",
+		Challenge:    challenge,
+		Scope:        "openid profile offline_access",
+		ResponseType: "code",
+	})
+
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok)
+	tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+
+	stor := ts.authServer.IDPTokenStorage()
+
+	// Read the tokens stored during the OAuth callback.
+	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, original)
+
+	// Overwrite storage with a copy where ExpiresAt is zero (non-expiring).
+	// No mockoidc user is queued — if a refresh is attempted, the test will fail.
+	nonExpiring := &storage.UpstreamTokens{
+		ProviderID:      original.ProviderID,
+		AccessToken:     original.AccessToken,
+		RefreshToken:    original.RefreshToken,
+		IDToken:         original.IDToken,
+		ExpiresAt:       time.Time{},
+		UserID:          original.UserID,
+		UpstreamSubject: original.UpstreamSubject,
+		ClientID:        original.ClientID,
+	}
+	require.NoError(t, stor.StoreUpstreamTokens(context.Background(), tsid, "default", nonExpiring))
+
+	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
+
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, cred)
+	assert.NotEmpty(t, cred.AccessToken)
+
+	// Confirm the token in storage still has a zero ExpiresAt — no refresh occurred.
+	refreshed, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	assert.True(t, refreshed.ExpiresAt.IsZero(),
+		"non-expiring token must not gain an ExpiresAt after GetValidTokens")
+	assert.Equal(t, original.AccessToken, cred.AccessToken,
+		"access token must be unchanged — no refresh occurred")
+}
+
 // TestIntegration_UpstreamTokenService_SessionNotFound verifies that the service
 // returns ErrSessionNotFound for a non-existent session.
 func TestIntegration_UpstreamTokenService_SessionNotFound(t *testing.T) {
@@ -1566,9 +1713,18 @@ func TestIntegration_RefreshPreservesUpstreamTokenBinding(t *testing.T) {
 // configured as sequential upstream providers. This exercises the multi-upstream
 // authorization chain where the callback handler redirects to the next upstream
 // after each successful code exchange.
-func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC) *testServer {
+//
+// Variadic opts allow swapping the storage backend (e.g. withRedisBackedStorage)
+// without affecting the rest of the chain wiring. Upstream-related options are
+// silently ignored because the helper hard-wires the two providers itself.
+func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC, opts ...testServerOption) *testServer {
 	t.Helper()
 	ctx := context.Background()
+
+	options := &testServerOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
 
 	// 1. Generate RSA key for signing
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -1579,8 +1735,14 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC) *t
 	_, err = rand.Read(secret)
 	require.NoError(t, err)
 
-	// 3. Create storage
-	stor := storage.NewMemoryStorage()
+	// 3. Create storage. See setupTestServer for the factory contract.
+	var (
+		stor storage.Storage = storage.NewMemoryStorage()
+		mr   *miniredis.Miniredis
+	)
+	if options.storageFactory != nil {
+		stor, mr = options.storageFactory(t)
+	}
 
 	// 4. Register test client (public client for PKCE)
 	err = stor.RegisterClient(ctx, &fosite.DefaultClient{
@@ -1682,7 +1844,9 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC) *t
 	return &testServer{
 		Server:     httpServer,
 		PrivateKey: privateKey,
+		authServer: srv,
 		storage:    srv.IDPTokenStorage(),
+		mr:         mr,
 	}
 }
 
@@ -1718,92 +1882,15 @@ func TestIntegration_MultiUpstreamSequentialChain(t *testing.T) {
 	})
 
 	ts := setupTestServerWithTwoUpstreams(t, m1, m2)
-	client := noRedirectClient()
 
 	verifier := servercrypto.GeneratePKCEVerifier()
 	challenge := servercrypto.ComputePKCEChallenge(verifier)
 	clientState := "multi-upstream-client-state"
 
-	parsedServerURL, err := url.Parse(ts.Server.URL)
-	require.NoError(t, err)
-
-	// === Leg 1: Client -> /authorize -> provider-1 ===
-
-	// Step 1: Start authorization flow on our server
-	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
-		"client_id":             {testClientID},
-		"redirect_uri":          {testRedirectURI},
-		"state":                 {clientState},
-		"code_challenge":        {challenge},
-		"code_challenge_method": {"S256"},
-		"response_type":         {"code"},
-		"scope":                 {"openid profile"},
-	}.Encode()
-
-	resp, err := client.Get(authorizeURL)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, resp.StatusCode, "expected redirect to provider-1")
-	m1Location, err := resp.Location()
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// Step 2: Follow redirect to provider-1's authorization endpoint (mockoidc auto-approves)
-	resp, err = client.Get(m1Location.String())
-	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, resp.StatusCode, "expected redirect from provider-1 to our callback")
-	callbackFromM1, err := resp.Location()
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// Step 3: Rewrite callback URL to use actual test server (mockoidc redirects to localhost)
-	callbackFromM1.Scheme = parsedServerURL.Scheme
-	callbackFromM1.Host = parsedServerURL.Host
-
-	// Step 4: Call our /callback with provider-1's code
-	// This should NOT redirect to the client yet — it should redirect to provider-2
-	resp, err = client.Get(callbackFromM1.String())
-	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, resp.StatusCode,
-		"expected 302 redirect to provider-2 (chain continues), not 303 to client")
-	m2Location, err := resp.Location()
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// === Leg 2: provider-2 ===
-
-	// Step 5: Follow redirect to provider-2's authorization endpoint (mockoidc auto-approves)
-	resp, err = client.Get(m2Location.String())
-	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, resp.StatusCode, "expected redirect from provider-2 to our callback")
-	callbackFromM2, err := resp.Location()
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// Step 6: Rewrite callback URL to use actual test server
-	callbackFromM2.Scheme = parsedServerURL.Scheme
-	callbackFromM2.Host = parsedServerURL.Host
-
-	// Step 7: Call our /callback with provider-2's code
-	// All upstreams are now satisfied, so this should redirect to the client with an auth code (303)
-	resp, err = client.Get(callbackFromM2.String())
-	require.NoError(t, err)
-	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
-		"expected 303 redirect to client with auth code (all upstreams satisfied)")
-	clientLocation, err := resp.Location()
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// === Verify the final redirect to the client ===
-
-	// Verify the original client state was preserved through the entire chain
-	returnedState := clientLocation.Query().Get("state")
-	assert.Equal(t, clientState, returnedState, "client state should be preserved through the multi-upstream chain")
-
-	// Extract authorization code
-	authCode := clientLocation.Query().Get("code")
-	require.NotEmpty(t, authCode, "authorization code should be present in the final redirect")
-
-	// === Exchange code for tokens ===
+	// runChainFlow drives the two-leg chain (authorize → provider-1 callback →
+	// provider-2 callback → 303 to client) and asserts the chain-level invariants:
+	// each leg returns the expected redirect, and client state is preserved end-to-end.
+	authCode := runChainFlow(t, ts.Server.URL, challenge, clientState)
 
 	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
 
@@ -1865,4 +1952,834 @@ func TestIntegration_MultiUpstreamSequentialChain(t *testing.T) {
 		"provider-2 UpstreamSubject should come from m2's queued user")
 	assert.NotEqual(t, tokens1.UpstreamSubject, tokens2.UpstreamSubject,
 		"upstream subjects should differ (different IDPs)")
+}
+
+// ============================================================================
+// Non-Expiring Upstream Token Regression Tests
+// ============================================================================
+
+// captureResponseWriter buffers a handler's HTTP response so a middleware can
+// inspect or rewrite it before flushing to the real ResponseWriter.
+type captureResponseWriter struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func newCaptureResponseWriter() *captureResponseWriter {
+	return &captureResponseWriter{header: http.Header{}, status: http.StatusOK}
+}
+
+func (c *captureResponseWriter) Header() http.Header { return c.header }
+
+func (c *captureResponseWriter) WriteHeader(status int) { c.status = status }
+
+func (c *captureResponseWriter) Write(b []byte) (int, error) { return c.body.Write(b) }
+
+// stripExpiresInMiddleware returns a middleware that, for token-endpoint
+// responses, removes the `expires_in` field from the JSON body. This emulates
+// upstream IDPs that issue non-expiring access tokens (e.g., long-lived PATs)
+// without requiring a fork of mockoidc.
+//
+// Important: this exercises the same wire shape a real provider would emit, so
+// our auth server's `convertOAuth2Token` runs with `oauth2.Token.Expiry ==
+// time.Time{}`. A regression that re-introduces a synthetic expiry there would
+// produce a non-zero `ExpiresAt` in storage and is caught by callers of this
+// helper.
+func stripExpiresInMiddleware(tokenPath string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+			if req.URL.Path != tokenPath {
+				next.ServeHTTP(rw, req)
+				return
+			}
+
+			capture := newCaptureResponseWriter()
+			next.ServeHTTP(capture, req)
+
+			// Only rewrite successful JSON token responses. Errors and
+			// non-JSON bodies are passed through unchanged.
+			body := capture.body.Bytes()
+			contentType := capture.header.Get("Content-Type")
+			if capture.status == http.StatusOK && strings.Contains(contentType, "json") {
+				var payload map[string]interface{}
+				if err := json.Unmarshal(body, &payload); err == nil {
+					delete(payload, "expires_in")
+					if rewritten, err := json.Marshal(payload); err == nil {
+						body = rewritten
+						capture.header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+					}
+				}
+			}
+
+			for k, v := range capture.header {
+				rw.Header()[k] = v
+			}
+			rw.WriteHeader(capture.status)
+			_, _ = rw.Write(body)
+		})
+	}
+}
+
+// startMockOIDCNoExpiresIn starts a mockoidc instance whose token endpoint
+// responses have `expires_in` stripped, so the upstream OAuth2 client parses
+// `Expiry == time.Time{}`. The test still gets a fully working OIDC server
+// for the rest of the flow (authorize, userinfo, JWKS).
+//
+// No default user is queued; callers must call QueueUser themselves so the
+// failure mode for an unintended refresh (mockoidc returning an error because
+// no user is queued) is preserved.
+func startMockOIDCNoExpiresIn(t *testing.T) *mockoidc.MockOIDC {
+	t.Helper()
+
+	m, err := mockoidc.NewServer(nil)
+	require.NoError(t, err)
+
+	require.NoError(t, m.AddMiddleware(stripExpiresInMiddleware(mockoidc.TokenEndpoint)))
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	require.NoError(t, m.Start(ln, nil))
+
+	t.Cleanup(func() {
+		require.NoError(t, m.Shutdown())
+	})
+
+	return m
+}
+
+// TestIntegration_FullFlow_NonExpiringUpstreamToken drives the full HTTP flow
+// (authorize -> callback -> token) against an upstream IDP whose token
+// endpoint omits `expires_in`. It asserts that the upstream tokens reach
+// storage with `ExpiresAt.IsZero()` and that GetValidTokens does not trigger
+// a refresh on a non-expiring token.
+//
+// This pins the end-to-end behavior of `convertOAuth2Token`: a regression
+// that re-introduces a synthetic expiry (e.g., defaulting to time.Hour) would
+// fail the IsZero assertion below. The single queued mockoidc user is
+// consumed during /authorize; if GetValidTokens accidentally triggered a
+// refresh, mockoidc would error because no further user is queued — that
+// outcome is the failure signal.
+func TestIntegration_FullFlow_NonExpiringUpstreamToken(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDCNoExpiresIn(t)
+	m.QueueUser(&mockoidc.MockUser{
+		Subject: "non-expiring-user",
+		Email:   "non-expiring@example.com",
+	})
+
+	ts := setupTestServerWithMockOIDC(t, m)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "non-expiring-full-flow",
+		Challenge:    challenge,
+		Scope:        "openid profile offline_access",
+		ResponseType: "code",
+	})
+
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok)
+	tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+
+	stor := ts.authServer.IDPTokenStorage()
+
+	// The upstream tokens written during /callback must carry a zero ExpiresAt:
+	// the upstream response had no expires_in, so convertOAuth2Token must
+	// preserve the zero value all the way into storage.
+	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, original)
+	require.NotEmpty(t, original.AccessToken)
+	assert.True(t, original.ExpiresAt.IsZero(),
+		"upstream ExpiresAt must be zero for a token response without expires_in (got %v)",
+		original.ExpiresAt)
+
+	// GetValidTokens on a non-expiring token must return the stored access
+	// token unchanged. No refresh user is queued — a refresh attempt would
+	// cause mockoidc to return an error and fail the assertion below.
+	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, cred)
+	assert.Equal(t, original.AccessToken, cred.AccessToken,
+		"non-expiring access token must be returned unchanged (no refresh)")
+
+	// Re-read storage: ExpiresAt must still be zero, confirming no refresh
+	// side effect rewrote the row.
+	after, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	assert.True(t, after.ExpiresAt.IsZero(),
+		"non-expiring token must keep zero ExpiresAt after GetValidTokens (got %v)",
+		after.ExpiresAt)
+	assert.Equal(t, original.AccessToken, after.AccessToken,
+		"access token in storage must be unchanged after GetValidTokens")
+}
+
+// runChainFlow performs the two-leg multi-upstream authorization chain and
+// returns the final authorization code redirected to the client. It mirrors
+// the hand-crafted flow in TestIntegration_MultiUpstreamSequentialChain but
+// is reused by the mixed-expiry orderings test. The PKCE verifier is the
+// caller's responsibility — it's only needed at the final /token exchange.
+func runChainFlow(
+	t *testing.T,
+	serverURL string,
+	challenge string,
+	clientState string,
+) string {
+	t.Helper()
+	client := noRedirectClient()
+
+	parsedServerURL, err := url.Parse(serverURL)
+	require.NoError(t, err)
+
+	// Leg 1: client -> /authorize -> first upstream
+	authorizeURL := serverURL + "/oauth/authorize?" + url.Values{
+		"client_id":             {testClientID},
+		"redirect_uri":          {testRedirectURI},
+		"state":                 {clientState},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"response_type":         {"code"},
+		"scope":                 {"openid profile"},
+	}.Encode()
+
+	resp, err := client.Get(authorizeURL)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	firstUpstreamLocation, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	resp, err = client.Get(firstUpstreamLocation.String())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	firstCallback, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+	firstCallback.Scheme = parsedServerURL.Scheme
+	firstCallback.Host = parsedServerURL.Host
+
+	resp, err = client.Get(firstCallback.String())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusFound, resp.StatusCode,
+		"expected redirect to second upstream, not 303 to client")
+	secondUpstreamLocation, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	// Leg 2: second upstream -> callback -> client
+	resp, err = client.Get(secondUpstreamLocation.String())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	secondCallback, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+	secondCallback.Scheme = parsedServerURL.Scheme
+	secondCallback.Host = parsedServerURL.Host
+
+	resp, err = client.Get(secondCallback.String())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
+		"expected 303 to client after both upstreams satisfied")
+	clientLocation, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	// Client state must be preserved through the entire chain — universal
+	// invariant of the authorization chain, asserted here so every caller benefits.
+	require.Equal(t, clientState, clientLocation.Query().Get("state"),
+		"client state should be preserved through the multi-upstream chain")
+
+	authCode := clientLocation.Query().Get("code")
+	require.NotEmpty(t, authCode)
+	return authCode
+}
+
+// TestIntegration_MultiUpstreamChain_MixedExpiryOrderings exercises the two-leg
+// authorization chain with one upstream returning expires_in and the other
+// omitting it. Both orderings must succeed and both providers' tokens must be
+// retrievable via GetAllValidTokens.
+//
+// This pins the chain handler's per-leg storage write and the
+// convertOAuth2Token zero-Expiry path through the full HTTP flow, in both
+// orderings. It does NOT exercise the Redis Lua TTL inversion fix
+// (commit fec89b040) because the in-process integration harness uses
+// storage.NewMemoryStorage(); the Lua semantics are covered directly by
+// pkg/authserver/storage/redis_test.go via miniredis.
+func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name                 string
+		firstUpstreamExpires bool // true => provider-1 returns expires_in; false => provider-1 omits it
+	}{
+		{name: "non_expiring_then_expiring", firstUpstreamExpires: false},
+		{name: "expiring_then_non_expiring", firstUpstreamExpires: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Build provider-1 and provider-2 mockoidc instances so the
+			// non-expiring one matches tc.firstUpstreamExpires.
+			var m1, m2 *mockoidc.MockOIDC
+			if tc.firstUpstreamExpires {
+				m1 = startMockOIDC(t)
+				m2 = startMockOIDCNoExpiresIn(t)
+			} else {
+				m1 = startMockOIDCNoExpiresIn(t)
+				m2 = startMockOIDC(t)
+			}
+
+			// Each mockoidc consumes one queued user during /authorize.
+			// startMockOIDC queues a default user; startMockOIDCNoExpiresIn
+			// does not, so we queue explicitly. Use distinct emails so the
+			// per-provider UpstreamSubject is observably different.
+			m1.QueueUser(&mockoidc.MockUser{
+				Subject: "user-from-m1-" + tc.name,
+				Email:   "u1-" + tc.name + "@m1.example.com",
+			})
+			m2.QueueUser(&mockoidc.MockUser{
+				Subject: "user-from-m2-" + tc.name,
+				Email:   "u2-" + tc.name + "@m2.example.com",
+			})
+
+			ts := setupTestServerWithTwoUpstreams(t, m1, m2)
+
+			verifier := servercrypto.GeneratePKCEVerifier()
+			challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+			authCode := runChainFlow(t, ts.Server.URL, challenge, "mixed-expiry-"+tc.name)
+			tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+
+			accessToken, ok := tokenData["access_token"].(string)
+			require.True(t, ok)
+			tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+
+			ctx := context.Background()
+			stor := ts.authServer.IDPTokenStorage()
+
+			// Both providers' tokens must be in storage. The non-expiring
+			// one must have a zero ExpiresAt; the expiring one must have a
+			// future ExpiresAt. This pins the per-leg storage write path.
+			tokens1, err := stor.GetUpstreamTokens(ctx, tsid, "provider-1")
+			require.NoError(t, err, "provider-1 tokens must be retrievable")
+			require.NotNil(t, tokens1)
+			tokens2, err := stor.GetUpstreamTokens(ctx, tsid, "provider-2")
+			require.NoError(t, err, "provider-2 tokens must be retrievable")
+			require.NotNil(t, tokens2)
+
+			if tc.firstUpstreamExpires {
+				assert.False(t, tokens1.ExpiresAt.IsZero(),
+					"provider-1 (expiring) must carry a non-zero ExpiresAt")
+				assert.True(t, tokens2.ExpiresAt.IsZero(),
+					"provider-2 (non-expiring) must carry a zero ExpiresAt")
+			} else {
+				assert.True(t, tokens1.ExpiresAt.IsZero(),
+					"provider-1 (non-expiring) must carry a zero ExpiresAt")
+				assert.False(t, tokens2.ExpiresAt.IsZero(),
+					"provider-2 (expiring) must carry a non-zero ExpiresAt")
+			}
+
+			// GetAllValidTokens must return both providers' access tokens.
+			// Before the Lua TTL fix, the non-expiring provider's index could
+			// be evicted prematurely depending on chain ordering, so this
+			// would have returned an empty or incomplete map for one
+			// ordering.
+			svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
+			all, err := svc.GetAllValidTokens(ctx, tsid)
+			require.NoError(t, err)
+			require.Len(t, all, 2, "GetAllValidTokens must return both providers regardless of expiry ordering")
+			assert.NotEmpty(t, all["provider-1"], "provider-1 access token must be present")
+			assert.NotEmpty(t, all["provider-2"], "provider-2 access token must be present")
+		})
+	}
+}
+
+// ============================================================================
+// Redis-Backed Integration Variants
+// ============================================================================
+//
+// These tests run the same end-to-end flows as their in-memory counterparts
+// but against a miniredis-backed *RedisStorage. They are smoke tests for the
+// chain handler ↔ Redis storage path: the Redis backend executes Lua scripts,
+// performs JSON round-trips, and maintains the per-session index set — none of
+// which the in-memory backend exercises. A regression where the chain handler
+// invokes Redis with the wrong inputs (wrong key, wrong serialization, wrong
+// index update) would surface here.
+//
+// The harness (withRedisBackedStorage(), testServer.Miniredis(t)) is reusable
+// for any future test that needs to drive the full HTTP flow against Redis or
+// advance Redis-side time via FastForward without real-world sleeping.
+//
+// What these tests do NOT cover: the Lua TTL inversion regression (commit
+// fec89b040). That bug only fires when marshalUpstreamTokensWithTTL produces
+// ttlMs == 0, which requires both ExpiresAt and SessionExpiresAt to be zero.
+// Since callback.go unconditionally sets SessionExpiresAt = now +
+// RefreshTokenLifespan (commit 1b3bc81e2), the integration flow always
+// produces ttlMs > 0 and the buggy Lua branch is unreachable. The Lua
+// invariant is locked down at unit level by
+// pkg/authserver/storage/redis_test.go, which can construct UpstreamTokens
+// with both fields zero directly.
+
+// TestIntegration_FullFlow_NonExpiringUpstreamToken_Redis is the Redis-backed
+// twin of TestIntegration_FullFlow_NonExpiringUpstreamToken. The unit-level
+// Redis test of Store/GetUpstreamTokens already covers the round-trip; this
+// subtest exists for symmetry — it confirms convertOAuth2Token's zero-Expiry
+// preservation reaches Redis storage when the request originates from the
+// real HTTP chain.
+func TestIntegration_FullFlow_NonExpiringUpstreamToken_Redis(t *testing.T) {
+	t.Parallel()
+
+	m := startMockOIDCNoExpiresIn(t)
+	m.QueueUser(&mockoidc.MockUser{
+		Subject: "non-expiring-user-redis",
+		Email:   "non-expiring-redis@example.com",
+	})
+
+	ts := setupTestServerWithMockOIDC(t, m, withRedisBackedStorage())
+	ts.Miniredis(t) // assert harness was wired with withRedisBackedStorage
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+	authCode, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "non-expiring-redis",
+		Challenge:    challenge,
+		Scope:        "openid profile offline_access",
+		ResponseType: "code",
+	})
+
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok)
+	tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+
+	stor := ts.authServer.IDPTokenStorage()
+
+	// Same invariants as the memory-backed twin: zero ExpiresAt in storage,
+	// no refresh on read, no rewrite of the stored row.
+	original, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, original)
+	require.NotEmpty(t, original.AccessToken)
+	assert.True(t, original.ExpiresAt.IsZero(),
+		"upstream ExpiresAt must be zero for a token response without expires_in (got %v)",
+		original.ExpiresAt)
+
+	svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
+	cred, err := svc.GetValidTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	require.NotNil(t, cred)
+	assert.Equal(t, original.AccessToken, cred.AccessToken,
+		"non-expiring access token must be returned unchanged (no refresh)")
+
+	after, err := stor.GetUpstreamTokens(context.Background(), tsid, "default")
+	require.NoError(t, err)
+	assert.True(t, after.ExpiresAt.IsZero(),
+		"non-expiring token must keep zero ExpiresAt after GetValidTokens (got %v)",
+		after.ExpiresAt)
+	assert.Equal(t, original.AccessToken, after.AccessToken,
+		"access token in storage must be unchanged after GetValidTokens")
+}
+
+// TestIntegration_MultiUpstreamChain_MixedExpiryOrderings_Redis is the Redis-
+// backed smoke test for the two-leg chain with one upstream returning expires_in
+// and the other omitting it. It exercises the chain handler ↔ Redis storage
+// path through real Redis Lua execution in both orderings: a regression where
+// the chain handler invokes Redis with the wrong inputs (wrong key, wrong
+// serialization, wrong index update) would surface here.
+//
+// This test does NOT cover the Lua TTL inversion regression (commit fec89b040)
+// at integration level. That bug only fires when marshalUpstreamTokensWithTTL
+// produces ttlMs == 0, which requires both ExpiresAt and SessionExpiresAt to
+// be zero on the UpstreamTokens. Since callback.go unconditionally sets
+// SessionExpiresAt = now + RefreshTokenLifespan (commit 1b3bc81e2), the
+// integration flow always produces ttlMs > 0 and the buggy Lua branch is
+// unreachable from a real auth chain. The Lua invariant is locked down at
+// unit level by pkg/authserver/storage/redis_test.go.
+func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings_Redis(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name                 string
+		firstUpstreamExpires bool
+	}{
+		{name: "non_expiring_then_expiring", firstUpstreamExpires: false},
+		{name: "expiring_then_non_expiring", firstUpstreamExpires: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Build provider-1 and provider-2 mockoidc instances so the
+			// non-expiring one matches tc.firstUpstreamExpires.
+			var m1, m2 *mockoidc.MockOIDC
+			if tc.firstUpstreamExpires {
+				m1 = startMockOIDC(t)
+				m2 = startMockOIDCNoExpiresIn(t)
+			} else {
+				m1 = startMockOIDCNoExpiresIn(t)
+				m2 = startMockOIDC(t)
+			}
+
+			m1.QueueUser(&mockoidc.MockUser{
+				Subject: "user-from-m1-redis-" + tc.name,
+				Email:   "u1-redis-" + tc.name + "@m1.example.com",
+			})
+			m2.QueueUser(&mockoidc.MockUser{
+				Subject: "user-from-m2-redis-" + tc.name,
+				Email:   "u2-redis-" + tc.name + "@m2.example.com",
+			})
+
+			ts := setupTestServerWithTwoUpstreams(t, m1, m2, withRedisBackedStorage())
+			ts.Miniredis(t) // assert harness was wired with withRedisBackedStorage
+
+			verifier := servercrypto.GeneratePKCEVerifier()
+			challenge := servercrypto.ComputePKCEChallenge(verifier)
+
+			authCode := runChainFlow(t, ts.Server.URL, challenge, "mixed-expiry-redis-"+tc.name)
+			tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+
+			accessToken, ok := tokenData["access_token"].(string)
+			require.True(t, ok)
+			tsid := extractTSID(t, accessToken, ts.PrivateKey.Public())
+
+			ctx := context.Background()
+			stor := ts.authServer.IDPTokenStorage()
+
+			// Sanity: both providers' tokens must be in storage immediately
+			// after the chain, with the expected ExpiresAt shapes. This is
+			// the same per-leg storage invariant the memory-backed twin
+			// asserts; replicated here so a Redis-only divergence in the
+			// chain handler's storage write would surface.
+			tokens1, err := stor.GetUpstreamTokens(ctx, tsid, "provider-1")
+			require.NoError(t, err, "provider-1 tokens must be retrievable")
+			require.NotNil(t, tokens1)
+			tokens2, err := stor.GetUpstreamTokens(ctx, tsid, "provider-2")
+			require.NoError(t, err, "provider-2 tokens must be retrievable")
+			require.NotNil(t, tokens2)
+
+			if tc.firstUpstreamExpires {
+				assert.False(t, tokens1.ExpiresAt.IsZero(),
+					"provider-1 (expiring) must carry a non-zero ExpiresAt")
+				assert.True(t, tokens2.ExpiresAt.IsZero(),
+					"provider-2 (non-expiring) must carry a zero ExpiresAt")
+			} else {
+				assert.True(t, tokens1.ExpiresAt.IsZero(),
+					"provider-1 (non-expiring) must carry a zero ExpiresAt")
+				assert.False(t, tokens2.ExpiresAt.IsZero(),
+					"provider-2 (expiring) must carry a non-zero ExpiresAt")
+			}
+
+			svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
+
+			// Both providers' tokens must be retrievable through Redis after the chain.
+			// This is a smoke test for the chain-handler ↔ Redis storage path: a
+			// regression where the chain handler invokes Redis storage with the wrong
+			// inputs (wrong key, wrong serialization, wrong index update) would fail here.
+			//
+			// Note: this test does NOT exercise the Lua TTL inversion bug. That bug
+			// only manifests when marshalUpstreamTokensWithTTL produces ttlMs == 0,
+			// which requires both ExpiresAt and SessionExpiresAt to be zero. Since
+			// the callback unconditionally sets SessionExpiresAt = now + RefreshTokenLifespan
+			// (commit 1b3bc81e2), the integration flow always produces ttlMs > 0 and
+			// the buggy Lua branch is unreachable from a real auth chain. The Lua
+			// invariant is exercised at unit level by pkg/authserver/storage/redis_test.go.
+			tokensMap, err := svc.GetAllValidTokens(ctx, tsid)
+			require.NoError(t, err)
+			require.Len(t, tokensMap, 2, "GetAllValidTokens must return both providers after chain")
+			assert.NotEmpty(t, tokensMap["provider-1"], "provider-1 access token must be present")
+			assert.NotEmpty(t, tokensMap["provider-2"], "provider-2 access token must be present")
+		})
+	}
+}
+
+// ============================================================================
+// Callback Refresh-Token Carry-Forward Integration Tests
+// ============================================================================
+
+// rtStrippingProxy wraps a mockoidc server and intercepts its token endpoint.
+// When stripRT is true the proxy omits the "refresh_token" field from every
+// token-endpoint response, replicating the common IdP behavior where the RT
+// is only issued on the first authorization (e.g. Google without prompt=consent).
+//
+// All other endpoints (authorize, userinfo, jwks, discovery) are forwarded
+// verbatim so that the real mockoidc can still sign tokens and serve user info.
+//
+// We use this proxy instead of the real mockoidc token endpoint for the second
+// authorize → callback leg because mockoidc's setTokens() always generates a
+// refresh_token for authorization_code grants and offers no API to suppress it.
+type rtStrippingProxy struct {
+	stripRT atomic.Bool
+	target  string // real mockoidc base URL (e.g. "http://127.0.0.1:PORT")
+}
+
+func (p *rtStrippingProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Forward the request to the real mockoidc.
+	proxyURL := p.target + r.URL.RequestURI()
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, proxyURL, r.Body)
+	if err != nil {
+		http.Error(w, "proxy: failed to build request", http.StatusInternalServerError)
+		return
+	}
+	proxyReq.Header = r.Header.Clone()
+
+	resp, err := http.DefaultTransport.RoundTrip(proxyReq)
+	if err != nil {
+		http.Error(w, "proxy: upstream request failed", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "proxy: failed to read response", http.StatusInternalServerError)
+		return
+	}
+
+	// Strip refresh_token when the flag is set and this is the token endpoint.
+	if p.stripRT.Load() && r.URL.Path == "/oidc/token" {
+		var m map[string]json.RawMessage
+		if jsonErr := json.Unmarshal(body, &m); jsonErr == nil {
+			delete(m, "refresh_token")
+			if rewritten, jsonErr := json.Marshal(m); jsonErr == nil {
+				body = rewritten
+			}
+		}
+	}
+
+	// Copy response headers and status code.
+	for k, vs := range resp.Header {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	// Drop the upstream Content-Length; the body may have been rewritten (RT
+	// stripped) so the original length is stale. net/http will set it correctly
+	// from the buffered body.
+	w.Header().Del("Content-Length")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(body)
+}
+
+// setupTestServerWithRTProxy creates a test server backed by a real mockoidc but
+// with the upstream OAuth2 provider pointing to the rtStrippingProxy instead of
+// the mockoidc server directly. This allows toggling RT suppression mid-test.
+func setupTestServerWithRTProxy(t *testing.T, m *mockoidc.MockOIDC, proxy *rtStrippingProxy) *testServerWithUpstream {
+	t.Helper()
+
+	proxyServer := httptest.NewServer(proxy)
+	t.Cleanup(proxyServer.Close)
+
+	cfg := m.Config()
+
+	upstreamCfg := &upstream.OAuth2Config{
+		CommonOAuthConfig: upstream.CommonOAuthConfig{
+			ClientID:     cfg.ClientID,
+			ClientSecret: cfg.ClientSecret,
+			Scopes:       []string{"openid", "profile", "email"},
+			// RedirectURI must point at our auth server (resolved below after httptest.NewServer).
+			RedirectURI: testIssuer + "/oauth/callback",
+		},
+		// Authorization and token go through the proxy; userinfo comes from the proxy too.
+		AuthorizationEndpoint: proxyServer.URL + "/oidc/authorize",
+		TokenEndpoint:         proxyServer.URL + "/oidc/token",
+		UserInfo: &upstream.UserInfoConfig{
+			EndpointURL: proxyServer.URL + "/oidc/userinfo",
+			FieldMapping: &upstream.UserInfoFieldMapping{
+				SubjectFields: []string{"sub", "email"},
+			},
+		},
+	}
+	upstreamProvider, err := upstream.NewOAuth2Provider(upstreamCfg)
+	require.NoError(t, err)
+
+	ts := setupTestServer(t,
+		withUpstream(upstreamProvider),
+		withScopes(registration.DefaultScopes),
+	)
+
+	return &testServerWithUpstream{
+		testServer:       ts,
+		mockOIDC:         m,
+		upstreamProvider: upstreamProvider,
+	}
+}
+
+// TestIntegration_Callback_PreservesRefreshTokenOnReauth verifies the carry-forward
+// behavior introduced in the CallbackHandler: when an upstream IdP omits refresh_token
+// on re-authorization, the callback must copy the RT from the most-recent prior row
+// for the same (userID, providerID) pair rather than leaving it empty.
+//
+// Flow summary:
+//  1. First authorize → callback: IdP issues an RT → stored normally.
+//  2. Second authorize → callback (same user): IdP omits RT → callback carries forward
+//     the RT from the first row. Canonical regression assertion: new row's RT == priorRT.
+//  3. Third authorize → callback (different user): no prior row exists for the new user →
+//     new row has empty RT. This exercises the ErrNotFound branch of the guard
+//     (GetLatestUpstreamTokensForUser returns ErrNotFound → nothing to carry).
+//     Note: the handler-level unit tests in callback_handler_test.go cover the
+//     UpstreamSubject mismatch guard directly; this leg covers the natural not-found path.
+func TestIntegration_Callback_PreservesRefreshTokenOnReauth(t *testing.T) {
+	t.Parallel()
+
+	const providerName = "default"
+	const userSubject = "reauth-user-001"
+	const userEmail = "reauth@example.com"
+
+	// Step 1: Stand up a real mockoidc server.
+	m, err := mockoidc.Run()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, m.Shutdown()) })
+
+	// Step 2: Build the RT-stripping proxy (initially pass-through).
+	proxy := &rtStrippingProxy{
+		target: m.Addr(),
+	}
+
+	// Step 3: Stand up the auth server with the upstream pointing at the proxy.
+	ts := setupTestServerWithRTProxy(t, m, proxy)
+
+	ctx := context.Background()
+
+	// =========================================================================
+	// Leg 1: First authorize → callback (normal — IdP issues a refresh_token)
+	// =========================================================================
+
+	// Queue the test user for the first flow.
+	m.QueueUser(&mockoidc.MockUser{
+		Subject: userSubject,
+		Email:   userEmail,
+	})
+
+	verifier1 := servercrypto.GeneratePKCEVerifier()
+	challenge1 := servercrypto.ComputePKCEChallenge(verifier1)
+
+	authCode1, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "rt-carry-leg1",
+		Challenge:    challenge1,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+
+	tokenData1 := exchangeCodeForTokens(t, ts.Server.URL, authCode1, verifier1, testAudience)
+	accessToken1, ok := tokenData1["access_token"].(string)
+	require.True(t, ok, "leg 1: access_token should be present")
+
+	sessionID1 := extractTSID(t, accessToken1, ts.PrivateKey.Public())
+
+	// Verify the first leg stored a non-empty RT (mockoidc always issues one).
+	tokens1, err := ts.storage.GetUpstreamTokens(ctx, sessionID1, providerName)
+	require.NoError(t, err, "leg 1: upstream tokens should be stored")
+	require.NotEmpty(t, tokens1.RefreshToken, "leg 1: RT must be non-empty (sanity check)")
+
+	priorRT := tokens1.RefreshToken
+
+	// =========================================================================
+	// Leg 2: Second authorize → callback (re-auth, same user, IdP omits RT)
+	// =========================================================================
+
+	// Enable RT stripping: the proxy will now remove "refresh_token" from the
+	// token endpoint JSON before the oauth2 library sees it. This replicates
+	// the real-world behavior of IdPs that do not re-issue refresh_tokens on
+	// subsequent authorizations (e.g. Google without prompt=consent).
+	proxy.stripRT.Store(true)
+
+	// Queue the same user again so the auth server resolves the same internal UserID.
+	m.QueueUser(&mockoidc.MockUser{
+		Subject: userSubject,
+		Email:   userEmail,
+	})
+
+	verifier2 := servercrypto.GeneratePKCEVerifier()
+	challenge2 := servercrypto.ComputePKCEChallenge(verifier2)
+
+	authCode2, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "rt-carry-leg2",
+		Challenge:    challenge2,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+
+	tokenData2 := exchangeCodeForTokens(t, ts.Server.URL, authCode2, verifier2, testAudience)
+	accessToken2, ok := tokenData2["access_token"].(string)
+	require.True(t, ok, "leg 2: access_token should be present")
+
+	sessionID2 := extractTSID(t, accessToken2, ts.PrivateKey.Public())
+
+	// The second authorize flow must create a new session (new TSID).
+	require.NotEqual(t, sessionID1, sessionID2, "leg 2: must use a distinct session ID")
+
+	// Canonical regression assertion: the new row's RT was carried forward from
+	// the prior session even though the IdP omitted it in the token response.
+	tokens2, err := ts.storage.GetUpstreamTokens(ctx, sessionID2, providerName)
+	require.NoError(t, err, "leg 2: upstream tokens should be stored")
+	assert.Equal(t, priorRT, tokens2.RefreshToken,
+		"leg 2: RT must be carried forward from the prior session (regression assertion)")
+
+	// =========================================================================
+	// Leg 3: Third authorize → callback (different user — no prior row)
+	// =========================================================================
+	// A different upstream subject causes ResolveUser to create a NEW internal user
+	// (new UserID). GetLatestUpstreamTokensForUser returns ErrNotFound for this new
+	// user, so the carry-forward guard is not triggered and the new row's RT is empty.
+	//
+	// This leg exercises the ErrNotFound branch in maybeCarryForwardRefreshToken.
+	// The UpstreamSubject mismatch guard is covered by handler-level unit tests.
+
+	const otherUserSubject = "reauth-other-user-999"
+	const otherUserEmail = "other@example.com"
+
+	// Keep RT stripping enabled for the third leg as well.
+	m.QueueUser(&mockoidc.MockUser{
+		Subject: otherUserSubject,
+		Email:   otherUserEmail,
+	})
+
+	verifier3 := servercrypto.GeneratePKCEVerifier()
+	challenge3 := servercrypto.ComputePKCEChallenge(verifier3)
+
+	authCode3, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "rt-carry-leg3",
+		Challenge:    challenge3,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+
+	tokenData3 := exchangeCodeForTokens(t, ts.Server.URL, authCode3, verifier3, testAudience)
+	accessToken3, ok := tokenData3["access_token"].(string)
+	require.True(t, ok, "leg 3: access_token should be present")
+
+	sessionID3 := extractTSID(t, accessToken3, ts.PrivateKey.Public())
+	require.NotEqual(t, sessionID2, sessionID3, "leg 3: must use a distinct session ID from leg 2")
+	require.NotEqual(t, sessionID1, sessionID3, "leg 3: must use a distinct session ID from leg 1")
+
+	// No carry-forward: RT stripping is still on, so storageTokens.RefreshToken is
+	// empty when we enter maybeCarryForwardRefreshToken. The new user has no prior
+	// row either, so GetLatestUpstreamTokensForUser returns ErrNotFound and the
+	// guard returns early — the stored RT stays empty (ErrNotFound branch).
+	tokens3, err := ts.storage.GetUpstreamTokens(ctx, sessionID3, providerName)
+	require.NoError(t, err, "leg 3: upstream tokens should be stored")
+	assert.Empty(t, tokens3.RefreshToken,
+		"leg 3: no RT carry-forward for a new user with no prior row (ErrNotFound path)")
 }

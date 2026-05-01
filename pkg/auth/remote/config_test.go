@@ -204,6 +204,37 @@ func TestConfig_HasCachedClientCredentials(t *testing.T) {
 	}
 }
 
+func TestConfig_HasCachedCIMDClientID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		config   Config
+		expected bool
+	}{
+		{
+			name:     "no cached CIMD client_id",
+			config:   Config{},
+			expected: false,
+		},
+		{
+			name: "has cached CIMD client_id",
+			config: Config{
+				CachedCIMDClientID: "https://toolhive.dev/oauth/client-metadata.json",
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := tt.config.HasCachedCIMDClientID()
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 func TestConfig_ClearCachedClientCredentials(t *testing.T) {
 	t.Parallel()
 

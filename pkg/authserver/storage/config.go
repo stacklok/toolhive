@@ -12,7 +12,7 @@ const (
 	// TypeMemory uses in-memory storage (default).
 	TypeMemory Type = "memory"
 
-	// TypeRedis uses Redis Sentinel-backed storage for distributed deployments.
+	// TypeRedis uses Redis-backed storage for distributed deployments.
 	TypeRedis Type = "redis"
 
 	// AuthTypeACLUser is the Redis ACL user authentication type.
@@ -67,9 +67,14 @@ type RunConfig struct {
 }
 
 // RedisRunConfig is the serializable Redis configuration for RunConfig.
-// This is designed for Sentinel-only deployments with ACL user authentication.
+// Exactly one of Addr (standalone) or SentinelConfig (Sentinel) must be set.
 type RedisRunConfig struct {
+	// Addr is the Redis server address for standalone mode (e.g., "host:port").
+	// Mutually exclusive with SentinelConfig.
+	Addr string `json:"addr,omitempty" yaml:"addr,omitempty"`
+
 	// SentinelConfig contains Sentinel-specific configuration.
+	// Mutually exclusive with Addr.
 	SentinelConfig *SentinelRunConfig `json:"sentinel_config,omitempty" yaml:"sentinel_config,omitempty"`
 
 	// AuthType must be "aclUser" - only ACL user authentication is supported.
@@ -93,8 +98,7 @@ type RedisRunConfig struct {
 	// TLS configures TLS for Redis/Valkey master connections.
 	TLS *RedisTLSRunConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
 
-	// SentinelTLS configures TLS for Sentinel connections.
-	// Falls back to TLS config when nil.
+	// SentinelTLS configures TLS for Sentinel connections. Only applies when SentinelConfig is set.
 	SentinelTLS *RedisTLSRunConfig `json:"sentinel_tls,omitempty" yaml:"sentinel_tls,omitempty"`
 }
 

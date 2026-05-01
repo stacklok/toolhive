@@ -13,7 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
@@ -24,7 +24,7 @@ import (
 )
 
 // ensureRunConfigConfigMap ensures the RunConfig ConfigMap exists and is up to date for MCPRemoteProxy
-func (r *MCPRemoteProxyReconciler) ensureRunConfigConfigMap(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+func (r *MCPRemoteProxyReconciler) ensureRunConfigConfigMap(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	runConfig, err := r.createRunConfigFromMCPRemoteProxy(ctx, proxy)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig from MCPRemoteProxy: %w", err)
@@ -72,7 +72,7 @@ func (r *MCPRemoteProxyReconciler) ensureRunConfigConfigMap(ctx context.Context,
 // Key difference from MCPServer: Sets RemoteURL instead of Image, and Deployer remains nil
 func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	ctx context.Context,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
+	proxy *mcpv1beta1.MCPRemoteProxy,
 ) (*runner.RunConfig, error) {
 	proxyHost := defaultProxyHost
 	if envHost := os.Getenv("TOOLHIVE_PROXY_HOST"); envHost != "" {
@@ -180,7 +180,7 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 // adds the appropriate runner options, and returns the resolved config.
 func (r *MCPRemoteProxyReconciler) resolveAndAddOIDCConfig(
 	ctx context.Context,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
+	proxy *mcpv1beta1.MCPRemoteProxy,
 	options *[]runner.RunConfigBuilderOption,
 ) (*oidc.OIDCConfig, error) {
 	if proxy.Spec.OIDCConfigRef == nil {
@@ -270,7 +270,7 @@ func labelsForRunConfigRemoteProxy(proxyName string) map[string]string {
 // addHeaderForwardConfigOptions adds header forward configuration options to the builder options slice.
 // This handles both plaintext headers (stored directly in RunConfig) and secret-backed headers
 // (which are mounted as env vars and referenced by identifier in RunConfig).
-func addHeaderForwardConfigOptions(proxy *mcpv1alpha1.MCPRemoteProxy, options *[]runner.RunConfigBuilderOption) {
+func addHeaderForwardConfigOptions(proxy *mcpv1beta1.MCPRemoteProxy, options *[]runner.RunConfigBuilderOption) {
 	if proxy.Spec.HeaderForward == nil {
 		return
 	}
@@ -301,7 +301,7 @@ func addHeaderForwardConfigOptions(proxy *mcpv1alpha1.MCPRemoteProxy, options *[
 // resolveToolConfig fetches the MCPToolConfig referenced by the proxy and
 // returns the tools filter and override map.
 func (r *MCPRemoteProxyReconciler) resolveToolConfig(
-	proxy *mcpv1alpha1.MCPRemoteProxy,
+	proxy *mcpv1beta1.MCPRemoteProxy,
 ) ([]string, map[string]runner.ToolOverride, error) {
 	if proxy.Spec.ToolConfigRef == nil {
 		return nil, nil, nil
@@ -332,7 +332,7 @@ func (r *MCPRemoteProxyReconciler) resolveToolConfig(
 // addTelemetryOptions resolves telemetry configuration for the RunConfig.
 func (r *MCPRemoteProxyReconciler) addTelemetryOptions(
 	ctx context.Context,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
+	proxy *mcpv1beta1.MCPRemoteProxy,
 	options *[]runner.RunConfigBuilderOption,
 ) error {
 	if proxy.Spec.TelemetryConfigRef != nil {

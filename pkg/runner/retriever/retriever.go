@@ -117,7 +117,7 @@ func ResolveMCPServer(
 	}
 
 	// Verify the image against the expected provenance info (if applicable)
-	if err := verifyImage(imageToUse, imageMetadata, verificationType); err != nil {
+	if err := VerifyImage(imageToUse, imageMetadata, verificationType); err != nil {
 		return "", nil, err
 	}
 
@@ -341,8 +341,10 @@ func resolveCACertPath(flagValue string) string {
 	return ""
 }
 
-// verifyImage verifies the image using the specified verification setting (warn, enabled, or disabled)
-func verifyImage(image string, server *types.ImageMetadata, verifySetting string) error {
+// VerifyImage checks the provenance/signature of a container image.
+// The verifySetting controls behavior: VerifyImageDisabled skips checks,
+// VerifyImageWarn logs warnings but continues, VerifyImageEnabled fails on issues.
+func VerifyImage(image string, server *types.ImageMetadata, verifySetting string) error {
 	switch verifySetting {
 	case VerifyImageDisabled:
 		slog.Warn("Image verification is disabled")

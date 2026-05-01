@@ -16,7 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -25,8 +25,8 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		mcpServer       func() *mcpv1alpha1.MCPServer
-		authConfig      func() *mcpv1alpha1.MCPExternalAuthConfig
+		mcpServer       func() *mcpv1beta1.MCPServer
+		authConfig      func() *mcpv1beta1.MCPExternalAuthConfig
 		expectError     bool
 		errContains     string
 		expectHash      string
@@ -35,11 +35,11 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 	}{
 		{
 			name: "nil authServerRef removes condition and clears hash",
-			mcpServer: func() *mcpv1alpha1.MCPServer {
-				return &mcpv1alpha1.MCPServer{
+			mcpServer: func() *mcpv1beta1.MCPServer {
+				return &mcpv1beta1.MCPServer{
 					ObjectMeta: metav1.ObjectMeta{Name: "server", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPServerSpec{Image: "test"},
-					Status: mcpv1alpha1.MCPServerStatus{
+					Spec:       mcpv1beta1.MCPServerSpec{Image: "test"},
+					Status: mcpv1beta1.MCPServerStatus{
 						AuthServerConfigHash: "old-hash",
 					},
 				}
@@ -48,53 +48,53 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 		},
 		{
 			name: "unsupported kind sets InvalidKind condition",
-			mcpServer: func() *mcpv1alpha1.MCPServer {
-				return &mcpv1alpha1.MCPServer{
+			mcpServer: func() *mcpv1beta1.MCPServer {
+				return &mcpv1beta1.MCPServer{
 					ObjectMeta: metav1.ObjectMeta{Name: "server", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerSpec{
+					Spec: mcpv1beta1.MCPServerSpec{
 						Image:         "test",
-						AuthServerRef: &mcpv1alpha1.AuthServerRef{Kind: "Secret", Name: "foo"},
+						AuthServerRef: &mcpv1beta1.AuthServerRef{Kind: "Secret", Name: "foo"},
 					},
 				}
 			},
 			expectError:     true,
 			errContains:     "unsupported authServerRef kind",
 			conditionStatus: metav1.ConditionFalse,
-			conditionReason: mcpv1alpha1.ConditionReasonAuthServerRefInvalidKind,
+			conditionReason: mcpv1beta1.ConditionReasonAuthServerRefInvalidKind,
 		},
 		{
 			name: "not found sets NotFound condition",
-			mcpServer: func() *mcpv1alpha1.MCPServer {
-				return &mcpv1alpha1.MCPServer{
+			mcpServer: func() *mcpv1beta1.MCPServer {
+				return &mcpv1beta1.MCPServer{
 					ObjectMeta: metav1.ObjectMeta{Name: "server", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerSpec{
+					Spec: mcpv1beta1.MCPServerSpec{
 						Image:         "test",
-						AuthServerRef: &mcpv1alpha1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "missing"},
+						AuthServerRef: &mcpv1beta1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "missing"},
 					},
 				}
 			},
 			expectError:     true,
 			errContains:     "not found",
 			conditionStatus: metav1.ConditionFalse,
-			conditionReason: mcpv1alpha1.ConditionReasonAuthServerRefNotFound,
+			conditionReason: mcpv1beta1.ConditionReasonAuthServerRefNotFound,
 		},
 		{
 			name: "wrong type sets InvalidType condition",
-			mcpServer: func() *mcpv1alpha1.MCPServer {
-				return &mcpv1alpha1.MCPServer{
+			mcpServer: func() *mcpv1beta1.MCPServer {
+				return &mcpv1beta1.MCPServer{
 					ObjectMeta: metav1.ObjectMeta{Name: "server", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerSpec{
+					Spec: mcpv1beta1.MCPServerSpec{
 						Image:         "test",
-						AuthServerRef: &mcpv1alpha1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "sts-config"},
+						AuthServerRef: &mcpv1beta1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "sts-config"},
 					},
 				}
 			},
-			authConfig: func() *mcpv1alpha1.MCPExternalAuthConfig {
-				return &mcpv1alpha1.MCPExternalAuthConfig{
+			authConfig: func() *mcpv1beta1.MCPExternalAuthConfig {
+				return &mcpv1beta1.MCPExternalAuthConfig{
 					ObjectMeta: metav1.ObjectMeta{Name: "sts-config", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-						Type: mcpv1alpha1.ExternalAuthTypeAWSSts,
-						AWSSts: &mcpv1alpha1.AWSStsConfig{
+					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+						Type: mcpv1beta1.ExternalAuthTypeAWSSts,
+						AWSSts: &mcpv1beta1.AWSStsConfig{
 							Region: "us-east-1",
 						},
 					},
@@ -103,69 +103,69 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 			expectError:     true,
 			errContains:     "only embeddedAuthServer is supported",
 			conditionStatus: metav1.ConditionFalse,
-			conditionReason: mcpv1alpha1.ConditionReasonAuthServerRefInvalidType,
+			conditionReason: mcpv1beta1.ConditionReasonAuthServerRefInvalidType,
 		},
 		{
 			name: "multi-upstream sets MultiUpstream condition",
-			mcpServer: func() *mcpv1alpha1.MCPServer {
-				return &mcpv1alpha1.MCPServer{
+			mcpServer: func() *mcpv1beta1.MCPServer {
+				return &mcpv1beta1.MCPServer{
 					ObjectMeta: metav1.ObjectMeta{Name: "server", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerSpec{
+					Spec: mcpv1beta1.MCPServerSpec{
 						Image:         "test",
-						AuthServerRef: &mcpv1alpha1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "multi"},
+						AuthServerRef: &mcpv1beta1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "multi"},
 					},
 				}
 			},
-			authConfig: func() *mcpv1alpha1.MCPExternalAuthConfig {
-				return &mcpv1alpha1.MCPExternalAuthConfig{
+			authConfig: func() *mcpv1beta1.MCPExternalAuthConfig {
+				return &mcpv1beta1.MCPExternalAuthConfig{
 					ObjectMeta: metav1.ObjectMeta{Name: "multi", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-						Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-						EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+						Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
 							Issuer: "https://auth.example.com",
-							UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
-								{Name: "a", Type: mcpv1alpha1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{IssuerURL: "https://a.com", ClientID: "a"}},
-								{Name: "b", Type: mcpv1alpha1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{IssuerURL: "https://b.com", ClientID: "b"}},
+							UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+								{Name: "a", Type: mcpv1beta1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{IssuerURL: "https://a.com", ClientID: "a"}},
+								{Name: "b", Type: mcpv1beta1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{IssuerURL: "https://b.com", ClientID: "b"}},
 							},
 						},
 					},
-					Status: mcpv1alpha1.MCPExternalAuthConfigStatus{ConfigHash: "multi-hash"},
+					Status: mcpv1beta1.MCPExternalAuthConfigStatus{ConfigHash: "multi-hash"},
 				}
 			},
 			expectError:     true,
 			errContains:     "only 1 is supported",
 			conditionStatus: metav1.ConditionFalse,
-			conditionReason: mcpv1alpha1.ConditionReasonAuthServerRefMultiUpstream,
+			conditionReason: mcpv1beta1.ConditionReasonAuthServerRefMultiUpstream,
 		},
 		{
 			name: "valid ref sets Valid condition and updates hash",
-			mcpServer: func() *mcpv1alpha1.MCPServer {
-				return &mcpv1alpha1.MCPServer{
+			mcpServer: func() *mcpv1beta1.MCPServer {
+				return &mcpv1beta1.MCPServer{
 					ObjectMeta: metav1.ObjectMeta{Name: "server", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerSpec{
+					Spec: mcpv1beta1.MCPServerSpec{
 						Image:         "test",
-						AuthServerRef: &mcpv1alpha1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "valid"},
+						AuthServerRef: &mcpv1beta1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "valid"},
 					},
 				}
 			},
-			authConfig: func() *mcpv1alpha1.MCPExternalAuthConfig {
-				return &mcpv1alpha1.MCPExternalAuthConfig{
+			authConfig: func() *mcpv1beta1.MCPExternalAuthConfig {
+				return &mcpv1beta1.MCPExternalAuthConfig{
 					ObjectMeta: metav1.ObjectMeta{Name: "valid", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-						Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-						EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+						Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
 							Issuer:                       "https://auth.example.com",
 							AuthorizationEndpointBaseURL: "https://auth.example.com",
-							SigningKeySecretRefs:         []mcpv1alpha1.SecretKeyRef{{Name: "key", Key: "pem"}},
-							HMACSecretRefs:               []mcpv1alpha1.SecretKeyRef{{Name: "hmac", Key: "secret"}},
+							SigningKeySecretRefs:         []mcpv1beta1.SecretKeyRef{{Name: "key", Key: "pem"}},
+							HMACSecretRefs:               []mcpv1beta1.SecretKeyRef{{Name: "hmac", Key: "secret"}},
 						},
 					},
-					Status: mcpv1alpha1.MCPExternalAuthConfigStatus{ConfigHash: "valid-hash"},
+					Status: mcpv1beta1.MCPExternalAuthConfigStatus{ConfigHash: "valid-hash"},
 				}
 			},
 			expectHash:      "valid-hash",
 			conditionStatus: metav1.ConditionTrue,
-			conditionReason: mcpv1alpha1.ConditionReasonAuthServerRefValid,
+			conditionReason: mcpv1beta1.ConditionReasonAuthServerRefValid,
 		},
 	}
 
@@ -176,7 +176,7 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 			defer cancel()
 
 			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 			require.NoError(t, corev1.AddToScheme(scheme))
 
 			server := tt.mcpServer()
@@ -188,7 +188,7 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithRuntimeObjects(objs...).
-				WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{}).
 				Build()
 
 			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
@@ -202,7 +202,7 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 				assert.Equal(t, tt.expectHash, server.Status.AuthServerConfigHash)
 			}
 
-			cond := meta.FindStatusCondition(server.Status.Conditions, mcpv1alpha1.ConditionTypeAuthServerRefValidated)
+			cond := meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerRefValidated)
 			if tt.conditionStatus != "" {
 				require.NotNil(t, cond, "AuthServerRefValidated condition should be present")
 				assert.Equal(t, tt.conditionStatus, cond.Status)

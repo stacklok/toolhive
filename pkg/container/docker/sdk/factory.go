@@ -39,6 +39,10 @@ const (
 	DockerSocketPath = "/var/run/docker.sock"
 	// DockerDesktopMacSocketPath is the Docker Desktop socket path on macOS
 	DockerDesktopMacSocketPath = ".docker/run/docker.sock"
+	// DockerDesktopLinuxSocketPath is the Docker Desktop socket path on Linux
+	// (relative to $HOME). Docker Desktop on Linux registers a "desktop-linux"
+	// Docker context that points to this socket.
+	DockerDesktopLinuxSocketPath = ".docker/desktop/docker.sock"
 	// RancherDesktopMacSocketPath is the Docker socket path for Rancher Desktop on macOS
 	RancherDesktopMacSocketPath = ".rd/docker.sock"
 	// OrbStackMacSocketPath is the Docker socket path for OrbStack on macOS

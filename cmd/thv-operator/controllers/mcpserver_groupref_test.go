@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // TestMCPServerReconciler_ValidateGroupRef tests the validateGroupRef function
@@ -25,32 +25,32 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 
 	tests := []struct {
 		name                    string
-		mcpServer               *mcpv1alpha1.MCPServer
-		mcpGroups               []*mcpv1alpha1.MCPGroup
+		mcpServer               *mcpv1beta1.MCPServer
+		mcpGroups               []*mcpv1beta1.MCPGroup
 		expectedConditionStatus metav1.ConditionStatus
 		expectedConditionReason string
 		expectedConditionMsg    string
 	}{
 		{
 			name: "GroupRef validated when group exists and is Ready",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 				},
 			},
-			mcpGroups: []*mcpv1alpha1.MCPGroup{
+			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-group",
 						Namespace: "default",
 					},
-					Status: mcpv1alpha1.MCPGroupStatus{
-						Phase: mcpv1alpha1.MCPGroupPhaseReady,
+					Status: mcpv1beta1.MCPGroupStatus{
+						Phase: mcpv1beta1.MCPGroupPhaseReady,
 					},
 				},
 			},
@@ -59,94 +59,94 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 		},
 		{
 			name: "GroupRef not validated when group does not exist",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "non-existent-group"},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "non-existent-group"},
 				},
 			},
-			mcpGroups:               []*mcpv1alpha1.MCPGroup{},
+			mcpGroups:               []*mcpv1beta1.MCPGroup{},
 			expectedConditionStatus: metav1.ConditionFalse,
-			expectedConditionReason: mcpv1alpha1.ConditionReasonGroupRefNotFound,
+			expectedConditionReason: mcpv1beta1.ConditionReasonGroupRefNotFound,
 		},
 		{
 			name: "GroupRef not validated when group is Pending",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 				},
 			},
-			mcpGroups: []*mcpv1alpha1.MCPGroup{
+			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-group",
 						Namespace: "default",
 					},
-					Status: mcpv1alpha1.MCPGroupStatus{
-						Phase: mcpv1alpha1.MCPGroupPhasePending,
+					Status: mcpv1beta1.MCPGroupStatus{
+						Phase: mcpv1beta1.MCPGroupPhasePending,
 					},
 				},
 			},
 			expectedConditionStatus: metav1.ConditionFalse,
-			expectedConditionReason: mcpv1alpha1.ConditionReasonGroupRefNotReady,
+			expectedConditionReason: mcpv1beta1.ConditionReasonGroupRefNotReady,
 			expectedConditionMsg:    "MCPGroup 'test-group' is not ready (current phase: Pending)",
 		},
 		{
 			name: "GroupRef not validated when group is Failed",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 				},
 			},
-			mcpGroups: []*mcpv1alpha1.MCPGroup{
+			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-group",
 						Namespace: "default",
 					},
-					Status: mcpv1alpha1.MCPGroupStatus{
-						Phase: mcpv1alpha1.MCPGroupPhaseFailed,
+					Status: mcpv1beta1.MCPGroupStatus{
+						Phase: mcpv1beta1.MCPGroupPhaseFailed,
 					},
 				},
 			},
 			expectedConditionStatus: metav1.ConditionFalse,
-			expectedConditionReason: mcpv1alpha1.ConditionReasonGroupRefNotReady,
+			expectedConditionReason: mcpv1beta1.ConditionReasonGroupRefNotReady,
 			expectedConditionMsg:    "MCPGroup 'test-group' is not ready (current phase: Failed)",
 		},
 		{
 			name: "No validation when GroupRef is empty",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
 					// No GroupRef
 				},
 			},
-			mcpGroups: []*mcpv1alpha1.MCPGroup{
+			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-group",
 						Namespace: "default",
 					},
-					Status: mcpv1alpha1.MCPGroupStatus{
-						Phase: mcpv1alpha1.MCPGroupPhaseReady,
+					Status: mcpv1beta1.MCPGroupStatus{
+						Phase: mcpv1beta1.MCPGroupPhaseReady,
 					},
 				},
 			},
@@ -160,7 +160,7 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 
 			ctx := context.Background()
 			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 			require.NoError(t, corev1.AddToScheme(scheme))
 
 			objs := []client.Object{}
@@ -171,7 +171,7 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(objs...).
-				WithStatusSubresource(&mcpv1alpha1.MCPGroup{}).
+				WithStatusSubresource(&mcpv1beta1.MCPGroup{}).
 				Build()
 
 			r := &MCPServerReconciler{
@@ -183,7 +183,7 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 
 			// Check the condition if we expected one
 			if tt.expectedConditionStatus != "" {
-				condition := meta.FindStatusCondition(tt.mcpServer.Status.Conditions, mcpv1alpha1.ConditionGroupRefValidated)
+				condition := meta.FindStatusCondition(tt.mcpServer.Status.Conditions, mcpv1beta1.ConditionGroupRefValidated)
 				require.NotNil(t, condition, "GroupRefValidated condition should be present")
 				assert.Equal(t, tt.expectedConditionStatus, condition.Status)
 				if tt.expectedConditionReason != "" {
@@ -194,7 +194,7 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 				}
 			} else {
 				// No condition should be set when GroupRef is empty
-				condition := meta.FindStatusCondition(tt.mcpServer.Status.Conditions, mcpv1alpha1.ConditionGroupRefValidated)
+				condition := meta.FindStatusCondition(tt.mcpServer.Status.Conditions, mcpv1beta1.ConditionGroupRefValidated)
 				assert.Nil(t, condition, "GroupRefValidated condition should not be present when GroupRef is empty")
 			}
 		})
@@ -207,57 +207,57 @@ func TestMCPServerReconciler_GroupRefValidation_Integration(t *testing.T) {
 
 	tests := []struct {
 		name                    string
-		mcpServer               *mcpv1alpha1.MCPServer
-		mcpGroup                *mcpv1alpha1.MCPGroup
+		mcpServer               *mcpv1beta1.MCPServer
+		mcpGroup                *mcpv1beta1.MCPGroup
 		expectedConditionStatus metav1.ConditionStatus
 		expectedConditionReason string
 	}{
 		{
 			name: "Server with valid GroupRef gets validated condition",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 				},
 			},
-			mcpGroup: &mcpv1alpha1.MCPGroup{
+			mcpGroup: &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-group",
 					Namespace: "default",
 				},
-				Status: mcpv1alpha1.MCPGroupStatus{
-					Phase: mcpv1alpha1.MCPGroupPhaseReady,
+				Status: mcpv1beta1.MCPGroupStatus{
+					Phase: mcpv1beta1.MCPGroupPhaseReady,
 				},
 			},
 			expectedConditionStatus: metav1.ConditionTrue,
 		},
 		{
 			name: "Server with GroupRef to non-Ready group gets failed condition",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "test-image",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 				},
 			},
-			mcpGroup: &mcpv1alpha1.MCPGroup{
+			mcpGroup: &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-group",
 					Namespace: "default",
 				},
-				Status: mcpv1alpha1.MCPGroupStatus{
-					Phase: mcpv1alpha1.MCPGroupPhasePending,
+				Status: mcpv1beta1.MCPGroupStatus{
+					Phase: mcpv1beta1.MCPGroupPhasePending,
 				},
 			},
 			expectedConditionStatus: metav1.ConditionFalse,
-			expectedConditionReason: mcpv1alpha1.ConditionReasonGroupRefNotReady,
+			expectedConditionReason: mcpv1beta1.ConditionReasonGroupRefNotReady,
 		},
 	}
 
@@ -267,7 +267,7 @@ func TestMCPServerReconciler_GroupRefValidation_Integration(t *testing.T) {
 
 			ctx := context.Background()
 			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 			require.NoError(t, corev1.AddToScheme(scheme))
 
 			objs := []client.Object{tt.mcpServer}
@@ -278,7 +278,7 @@ func TestMCPServerReconciler_GroupRefValidation_Integration(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(objs...).
-				WithStatusSubresource(&mcpv1alpha1.MCPServer{}, &mcpv1alpha1.MCPGroup{}).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{}, &mcpv1beta1.MCPGroup{}).
 				Build()
 
 			r := &MCPServerReconciler{
@@ -288,7 +288,7 @@ func TestMCPServerReconciler_GroupRefValidation_Integration(t *testing.T) {
 
 			r.validateGroupRef(ctx, tt.mcpServer)
 
-			condition := meta.FindStatusCondition(tt.mcpServer.Status.Conditions, mcpv1alpha1.ConditionGroupRefValidated)
+			condition := meta.FindStatusCondition(tt.mcpServer.Status.Conditions, mcpv1beta1.ConditionGroupRefValidated)
 			require.NotNil(t, condition, "GroupRefValidated condition should be present")
 			assert.Equal(t, tt.expectedConditionStatus, condition.Status)
 			if tt.expectedConditionReason != "" {
@@ -304,34 +304,34 @@ func TestMCPServerReconciler_GroupRefCrossNamespace(t *testing.T) {
 
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "namespace-a",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
+		Spec: mcpv1beta1.MCPServerSpec{
 			Image:    "test-image",
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-group",
 			Namespace: "namespace-b", // Different namespace
 		},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhaseReady,
 		},
 	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(mcpServer, mcpGroup).
-		WithStatusSubresource(&mcpv1alpha1.MCPServer{}, &mcpv1alpha1.MCPGroup{}).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}, &mcpv1beta1.MCPGroup{}).
 		Build()
 
 	r := &MCPServerReconciler{
@@ -342,8 +342,8 @@ func TestMCPServerReconciler_GroupRefCrossNamespace(t *testing.T) {
 	r.validateGroupRef(ctx, mcpServer)
 
 	// Should fail to find the group because it's in a different namespace
-	condition := meta.FindStatusCondition(mcpServer.Status.Conditions, mcpv1alpha1.ConditionGroupRefValidated)
+	condition := meta.FindStatusCondition(mcpServer.Status.Conditions, mcpv1beta1.ConditionGroupRefValidated)
 	require.NotNil(t, condition, "GroupRefValidated condition should be present")
 	assert.Equal(t, metav1.ConditionFalse, condition.Status)
-	assert.Equal(t, mcpv1alpha1.ConditionReasonGroupRefNotFound, condition.Reason)
+	assert.Equal(t, mcpv1beta1.ConditionReasonGroupRefNotFound, condition.Reason)
 }

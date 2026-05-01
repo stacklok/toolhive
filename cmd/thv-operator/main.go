@@ -30,8 +30,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"                      // Import for webhook
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
 )
 
@@ -55,6 +57,7 @@ var controllerDependencies = map[string][]string{
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(mcpv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(mcpv1beta1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -96,7 +99,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := setupControllersAndWebhooks(mgr); err != nil {
+	// Parse cluster-wide default imagePullSecrets once at startup. The Defaults
+	// value is shared (by copy) with every reconciler that constructs workloads.
+	imagePullSecretsDefaults := imagepullsecrets.LoadDefaultsFromEnv()
+	if defaults := imagePullSecretsDefaults.List(); len(defaults) > 0 {
+		names := make([]string, 0, len(defaults))
+		for _, ref := range defaults {
+			names = append(names, ref.Name)
+		}
+		setupLog.Info("loaded cluster-wide default imagePullSecrets", "imagePullSecrets", names)
+	} else if rawValue, set := os.LookupEnv(imagepullsecrets.EnvVar); set && rawValue != "" {
+		// The env var was set but parsed to nothing — likely a typo such as
+		// " , " or ",,,". Surface this so the misconfiguration is diagnosable
+		// instead of being silently ignored.
+		setupLog.Info(
+			"TOOLHIVE_DEFAULT_IMAGE_PULL_SECRETS is set but contains no valid secret names; "+
+				"chart-level defaults will not be applied",
+			"imagePullSecrets", rawValue,
+		)
+	}
+
+	if err := setupControllersAndWebhooks(mgr, imagePullSecretsDefaults); err != nil {
 		setupLog.Error(err, "unable to setup controllers and webhooks")
 		os.Exit(1)
 	}
@@ -125,8 +148,10 @@ func main() {
 	}
 }
 
-// setupControllersAndWebhooks sets up all controllers and webhooks with the manager
-func setupControllersAndWebhooks(mgr ctrl.Manager) error {
+// setupControllersAndWebhooks sets up all controllers and webhooks with the manager.
+// The imagePullSecretsDefaults are propagated to controllers that construct
+// workloads so that chart-level defaults are applied alongside per-CR overrides.
+func setupControllersAndWebhooks(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
 	// Check feature flags
 	enableServer := isFeatureEnabled(featureServer, true)
 	enableRegistry := isFeatureEnabled(featureRegistry, true)
@@ -159,7 +184,7 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 
 	// Set up server-related controllers
 	if enabledFeatures[featureServer] {
-		if err := setupServerControllers(mgr); err != nil {
+		if err := setupServerControllers(mgr, imagePullSecretsDefaults); err != nil {
 			return err
 		}
 	} else {
@@ -168,7 +193,7 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 
 	// Set up registry controller
 	if enabledFeatures[featureRegistry] {
-		if err := setupRegistryController(mgr); err != nil {
+		if err := setupRegistryController(mgr, imagePullSecretsDefaults); err != nil {
 			return err
 		}
 	} else {
@@ -177,7 +202,7 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 
 	// Set up Virtual MCP controllers and webhooks
 	if enabledFeatures[featureVMCP] {
-		if err := setupAggregationControllers(mgr); err != nil {
+		if err := setupAggregationControllers(mgr, imagePullSecretsDefaults); err != nil {
 			return err
 		}
 	} else {
@@ -194,10 +219,10 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 	// MCPServer.Spec.GroupRef
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&mcpv1alpha1.MCPServer{},
+		&mcpv1beta1.MCPServer{},
 		"spec.groupRef",
 		func(obj client.Object) []string {
-			mcpServer := obj.(*mcpv1alpha1.MCPServer)
+			mcpServer := obj.(*mcpv1beta1.MCPServer)
 			name := mcpServer.Spec.GroupRef.GetName()
 			if name == "" {
 				return nil
@@ -211,10 +236,10 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 	// MCPRemoteProxy.Spec.GroupRef
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&mcpv1alpha1.MCPRemoteProxy{},
+		&mcpv1beta1.MCPRemoteProxy{},
 		"spec.groupRef",
 		func(obj client.Object) []string {
-			mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
+			mcpRemoteProxy := obj.(*mcpv1beta1.MCPRemoteProxy)
 			name := mcpRemoteProxy.Spec.GroupRef.GetName()
 			if name == "" {
 				return nil
@@ -228,10 +253,10 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 	// MCPServerEntry.Spec.GroupRef
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&mcpv1alpha1.MCPServerEntry{},
+		&mcpv1beta1.MCPServerEntry{},
 		"spec.groupRef",
 		func(obj client.Object) []string {
-			mcpServerEntry := obj.(*mcpv1alpha1.MCPServerEntry)
+			mcpServerEntry := obj.(*mcpv1beta1.MCPServerEntry)
 			name := mcpServerEntry.Spec.GroupRef.GetName()
 			if name == "" {
 				return nil
@@ -247,17 +272,20 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 
 // setupServerControllers sets up server-related controllers
 // (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, MCPServerEntry, ToolConfig).
-func setupServerControllers(mgr ctrl.Manager) error {
+// imagePullSecretsDefaults are merged with per-CR imagePullSecrets when
+// reconcilers construct workloads.
+func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
 	if err := setupGroupRefFieldIndexes(mgr); err != nil {
 		return err
 	}
 
 	// Set up MCPServer controller
 	rec := &controllers.MCPServerReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorder("mcpserver-controller"),
-		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		Client:                   mgr.GetClient(),
+		Scheme:                   mgr.GetScheme(),
+		Recorder:                 mgr.GetEventRecorder("mcpserver-controller"),
+		PlatformDetector:         ctrlutil.NewSharedPlatformDetector(),
+		ImagePullSecretsDefaults: imagePullSecretsDefaults,
 	}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPServer: %w", err)
@@ -297,20 +325,22 @@ func setupServerControllers(mgr ctrl.Manager) error {
 
 	// Set up MCPRemoteProxy controller
 	if err := (&controllers.MCPRemoteProxyReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorder("mcpremoteproxy-controller"),
-		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		Client:                   mgr.GetClient(),
+		Scheme:                   mgr.GetScheme(),
+		Recorder:                 mgr.GetEventRecorder("mcpremoteproxy-controller"),
+		PlatformDetector:         ctrlutil.NewSharedPlatformDetector(),
+		ImagePullSecretsDefaults: imagePullSecretsDefaults,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPRemoteProxy: %w", err)
 	}
 
 	// Set up EmbeddingServer controller
 	if err := (&controllers.EmbeddingServerReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorder("embeddingserver-controller"),
-		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		Client:                   mgr.GetClient(),
+		Scheme:                   mgr.GetScheme(),
+		Recorder:                 mgr.GetEventRecorder("embeddingserver-controller"),
+		PlatformDetector:         ctrlutil.NewSharedPlatformDetector(),
+		ImagePullSecretsDefaults: imagePullSecretsDefaults,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller EmbeddingServer: %w", err)
 	}
@@ -325,19 +355,24 @@ func setupServerControllers(mgr ctrl.Manager) error {
 	return nil
 }
 
-// setupRegistryController sets up the MCPRegistry controller
-func setupRegistryController(mgr ctrl.Manager) error {
-	if err := (controllers.NewMCPRegistryReconciler(mgr.GetClient(), mgr.GetScheme())).SetupWithManager(mgr); err != nil {
+// setupRegistryController sets up the MCPRegistry controller.
+// imagePullSecretsDefaults are merged with mcpRegistry.Spec.ImagePullSecrets
+// when the registry-api workload is constructed.
+func setupRegistryController(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
+	rec := controllers.NewMCPRegistryReconciler(mgr.GetClient(), mgr.GetScheme(), imagePullSecretsDefaults)
+	if err := rec.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPRegistry: %w", err)
 	}
 	return nil
 }
 
 // setupAggregationControllers sets up Virtual MCP-related controllers and webhooks
-// (MCPGroup, VirtualMCPServer, and their webhooks)
-// Note: This function assumes server controllers are enabled (enforced by dependency check)
-// The field index for MCPServer.Spec.GroupRef is created in setupServerControllers
-func setupAggregationControllers(mgr ctrl.Manager) error {
+// (MCPGroup, VirtualMCPServer, and their webhooks).
+// Note: This function assumes server controllers are enabled (enforced by dependency check).
+// The field index for MCPServer.Spec.GroupRef is created in setupServerControllers.
+// imagePullSecretsDefaults are merged with vmcp.Spec.ImagePullSecrets when the
+// VirtualMCPServer Deployment is constructed.
+func setupAggregationControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
 	// Set up MCPGroup controller
 	if err := (&controllers.MCPGroupReconciler{
 		Client: mgr.GetClient(),
@@ -347,10 +382,11 @@ func setupAggregationControllers(mgr ctrl.Manager) error {
 
 	// Set up VirtualMCPServer controller
 	if err := (&controllers.VirtualMCPServerReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorder("virtualmcpserver-controller"),
-		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		Client:                   mgr.GetClient(),
+		Scheme:                   mgr.GetScheme(),
+		Recorder:                 mgr.GetEventRecorder("virtualmcpserver-controller"),
+		PlatformDetector:         ctrlutil.NewSharedPlatformDetector(),
+		ImagePullSecretsDefaults: imagePullSecretsDefaults,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller VirtualMCPServer: %w", err)
 	}

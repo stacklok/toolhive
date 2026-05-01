@@ -35,7 +35,574 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    deprecated: true
+    deprecationWarning: toolhive.stacklok.dev/v1alpha1 is deprecated; use v1beta1
     name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: MCPRemoteProxy is the deprecated v1alpha1 version of the MCPRemoteProxy
+          resource.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
+            properties:
+              audit:
+                description: Audit defines audit logging configuration for the proxy
+                properties:
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled controls whether audit logging is enabled
+                      When true, enables audit logging with default configuration
+                    type: boolean
+                type: object
+              authServerRef:
+                description: |-
+                  AuthServerRef optionally references a resource that configures an embedded
+                  OAuth 2.0/OIDC authorization server to authenticate MCP clients.
+                  Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer).
+                properties:
+                  kind:
+                    default: MCPExternalAuthConfig
+                    description: Kind identifies the type of the referenced resource.
+                    enum:
+                    - MCPExternalAuthConfig
+                    type: string
+                  name:
+                    description: Name is the name of the referenced resource in the
+                      same namespace.
+                    minLength: 1
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              authzConfig:
+                description: AuthzConfig defines authorization policy configuration
+                  for the proxy
+                properties:
+                  configMap:
+                    description: |-
+                      ConfigMap references a ConfigMap containing authorization configuration
+                      Only used when Type is "configMap"
+                    properties:
+                      key:
+                        default: authz.json
+                        description: Key is the key in the ConfigMap that contains
+                          the authorization configuration
+                        type: string
+                      name:
+                        description: Name is the name of the ConfigMap
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  inline:
+                    description: |-
+                      Inline contains direct authorization configuration
+                      Only used when Type is "inline"
+                    properties:
+                      entitiesJson:
+                        default: '[]'
+                        description: EntitiesJSON is a JSON string representing Cedar
+                          entities
+                        type: string
+                      policies:
+                        description: Policies is a list of Cedar policy strings
+                        items:
+                          type: string
+                        minItems: 1
+                        type: array
+                        x-kubernetes-list-type: atomic
+                    required:
+                    - policies
+                    type: object
+                  type:
+                    default: configMap
+                    description: Type is the type of authorization configuration
+                    enum:
+                    - configMap
+                    - inline
+                    type: string
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: configMap must be set when type is 'configMap', and must
+                    not be set otherwise
+                  rule: 'self.type == ''configMap'' ? has(self.configMap) : !has(self.configMap)'
+                - message: inline must be set when type is 'inline', and must not
+                    be set otherwise
+                  rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+              endpointPrefix:
+                description: |-
+                  EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
+                  This is used to handle path-based ingress routing scenarios where the ingress
+                  strips a path prefix before forwarding to the backend.
+                type: string
+              externalAuthConfigRef:
+                description: |-
+                  ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.
+                  When specified, the proxy will exchange validated incoming tokens for remote service tokens.
+                  The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy.
+                properties:
+                  name:
+                    description: Name is the name of the MCPExternalAuthConfig resource
+                    type: string
+                required:
+                - name
+                type: object
+              groupRef:
+                description: |-
+                  GroupRef references the MCPGroup this proxy belongs to.
+                  The referenced MCPGroup must be in the same namespace.
+                properties:
+                  name:
+                    description: Name is the name of the MCPGroup resource in the
+                      same namespace
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              headerForward:
+                description: |-
+                  HeaderForward configures headers to inject into requests to the remote MCP server.
+                  Use this to add custom headers like X-Tenant-ID or correlation IDs.
+                properties:
+                  addHeadersFromSecret:
+                    description: AddHeadersFromSecret references Kubernetes Secrets
+                      for sensitive header values.
+                    items:
+                      description: HeaderFromSecret defines a header whose value comes
+                        from a Kubernetes Secret.
+                      properties:
+                        headerName:
+                          description: HeaderName is the HTTP header name (e.g., "X-API-Key")
+                          maxLength: 255
+                          minLength: 1
+                          type: string
+                        valueSecretRef:
+                          description: ValueSecretRef references the Secret and key
+                            containing the header value
+                          properties:
+                            key:
+                              description: Key is the key within the secret
+                              type: string
+                            name:
+                              description: Name is the name of the secret
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                      required:
+                      - headerName
+                      - valueSecretRef
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - headerName
+                    x-kubernetes-list-type: map
+                  addPlaintextHeaders:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      AddPlaintextHeaders is a map of header names to literal values to inject into requests.
+                      WARNING: Values are stored in plaintext and visible via kubectl commands.
+                      Use addHeadersFromSecret for sensitive data like API keys or tokens.
+                    type: object
+                type: object
+              oidcConfigRef:
+                description: |-
+                  OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
+                  The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.
+                  Per-server overrides (audience, scopes) are specified here; shared provider config
+                  lives in the MCPOIDCConfig resource.
+                properties:
+                  audience:
+                    description: |-
+                      Audience is the expected audience for token validation.
+                      This MUST be unique per server to prevent token replay attacks.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the name of the MCPOIDCConfig resource
+                    minLength: 1
+                    type: string
+                  resourceUrl:
+                    description: |-
+                      ResourceURL is the public URL for OAuth protected resource metadata (RFC 9728).
+                      When the server is exposed via Ingress or gateway, set this to the external
+                      URL that MCP clients connect to. If not specified, defaults to the internal
+                      Kubernetes service URL.
+                    type: string
+                  scopes:
+                    description: |-
+                      Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728).
+                      If empty, defaults to ["openid"].
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - audience
+                - name
+                type: object
+              proxyPort:
+                default: 8080
+                description: ProxyPort is the port to expose the MCP proxy on
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              remoteUrl:
+                description: RemoteURL is the URL of the remote MCP server to proxy
+                pattern: ^https?://
+                type: string
+              resourceOverrides:
+                description: ResourceOverrides allows overriding annotations and labels
+                  for resources created by the operator
+                properties:
+                  proxyDeployment:
+                    description: ProxyDeployment defines overrides for the Proxy Deployment
+                      resource (toolhive proxy)
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: Annotations to add or override on the resource
+                        type: object
+                      env:
+                        description: |-
+                          Env are environment variables to set in the proxy container (thv run process)
+                          These affect the toolhive proxy itself, not the MCP server it manages
+                          Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy
+                        items:
+                          description: EnvVar represents an environment variable in
+                            a container
+                          properties:
+                            name:
+                              description: Name of the environment variable
+                              type: string
+                            value:
+                              description: Value of the environment variable
+                              type: string
+                          required:
+                          - name
+                          - value
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      imagePullSecrets:
+                        description: |-
+                          ImagePullSecrets allows specifying image pull secrets for the proxy runner
+                          These are applied to both the Deployment and the ServiceAccount
+                        items:
+                          description: |-
+                            LocalObjectReference contains enough information to let you locate the
+                            referenced object inside the same namespace.
+                          properties:
+                            name:
+                              default: ""
+                              description: |-
+                                Name of the referent.
+                                This field is effectively required, but due to backwards compatibility is
+                                allowed to be empty. Instances of this type with an empty value here are
+                                almost certainly wrong.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                              type: string
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels to add or override on the resource
+                        type: object
+                      podTemplateMetadataOverrides:
+                        description: ResourceMetadataOverrides defines metadata overrides
+                          for a resource
+                        properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: Annotations to add or override on the resource
+                            type: object
+                          labels:
+                            additionalProperties:
+                              type: string
+                            description: Labels to add or override on the resource
+                            type: object
+                        type: object
+                    type: object
+                  proxyService:
+                    description: ProxyService defines overrides for the Proxy Service
+                      resource (points to the proxy deployment)
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: Annotations to add or override on the resource
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels to add or override on the resource
+                        type: object
+                    type: object
+                type: object
+              resources:
+                description: Resources defines the resource requirements for the proxy
+                  container
+                properties:
+                  limits:
+                    description: Limits describes the maximum amount of compute resources
+                      allowed
+                    properties:
+                      cpu:
+                        description: CPU is the CPU limit in cores (e.g., "500m" for
+                          0.5 cores)
+                        type: string
+                      memory:
+                        description: Memory is the memory limit in bytes (e.g., "64Mi"
+                          for 64 megabytes)
+                        type: string
+                    type: object
+                  requests:
+                    description: Requests describes the minimum amount of compute
+                      resources required
+                    properties:
+                      cpu:
+                        description: CPU is the CPU limit in cores (e.g., "500m" for
+                          0.5 cores)
+                        type: string
+                      memory:
+                        description: Memory is the memory limit in bytes (e.g., "64Mi"
+                          for 64 megabytes)
+                        type: string
+                    type: object
+                type: object
+              serviceAccount:
+                description: |-
+                  ServiceAccount is the name of an already existing service account to use by the proxy.
+                  If not specified, a ServiceAccount will be created automatically and used by the proxy.
+                type: string
+              sessionAffinity:
+                default: ClientIP
+                description: |-
+                  SessionAffinity controls whether the Service routes repeated client connections to the same pod.
+                  MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
+                  Set to "None" for stateless servers or when using an external load balancer with its own affinity.
+                enum:
+                - ClientIP
+                - None
+                type: string
+              telemetryConfigRef:
+                description: |-
+                  TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
+                  The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.
+                  Cross-namespace references are not supported for security and isolation reasons.
+                properties:
+                  name:
+                    description: Name is the name of the MCPTelemetryConfig resource
+                    minLength: 1
+                    type: string
+                  serviceName:
+                    description: |-
+                      ServiceName overrides the telemetry service name for this specific server.
+                      This MUST be unique per server for proper observability (e.g., distinguishing
+                      traces and metrics from different servers sharing the same collector).
+                      If empty, defaults to the server name with "thv-" prefix at runtime.
+                    type: string
+                required:
+                - name
+                type: object
+              toolConfigRef:
+                description: |-
+                  ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.
+                  The referenced MCPToolConfig must exist in the same namespace as this MCPRemoteProxy.
+                  Cross-namespace references are not supported for security and isolation reasons.
+                  If specified, this allows filtering and overriding tools from the remote MCP server.
+                properties:
+                  name:
+                    description: Name is the name of the MCPToolConfig resource in
+                      the same namespace
+                    type: string
+                required:
+                - name
+                type: object
+              transport:
+                default: streamable-http
+                description: Transport is the transport method for the remote proxy
+                  (sse or streamable-http)
+                enum:
+                - sse
+                - streamable-http
+                type: string
+              trustProxyHeaders:
+                default: false
+                description: |-
+                  TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
+                  When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,
+                  and X-Forwarded-Prefix headers to construct endpoint URLs
+                type: boolean
+            required:
+            - remoteUrl
+            type: object
+          status:
+            description: MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
+            properties:
+              authServerConfigHash:
+                description: |-
+                  AuthServerConfigHash is the hash of the referenced authServerRef spec,
+                  used to detect configuration changes and trigger reconciliation.
+                type: string
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the MCPRemoteProxy's state
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              externalAuthConfigHash:
+                description: ExternalAuthConfigHash is the hash of the referenced
+                  MCPExternalAuthConfig spec
+                type: string
+              externalUrl:
+                description: ExternalURL is the external URL where the proxy can be
+                  accessed (if exposed externally)
+                type: string
+              message:
+                description: Message provides additional information about the current
+                  phase
+                type: string
+              observedGeneration:
+                description: ObservedGeneration reflects the generation of the most
+                  recently observed MCPRemoteProxy
+                format: int64
+                type: integer
+              oidcConfigHash:
+                description: OIDCConfigHash is the hash of the referenced MCPOIDCConfig
+                  spec for change detection
+                type: string
+              phase:
+                description: Phase is the current phase of the MCPRemoteProxy
+                enum:
+                - Pending
+                - Ready
+                - Failed
+                - Terminating
+                type: string
+              telemetryConfigHash:
+                description: TelemetryConfigHash stores the hash of the referenced
+                  MCPTelemetryConfig for change detection
+                type: string
+              toolConfigHash:
+                description: ToolConfigHash stores the hash of the referenced ToolConfig
+                  for change detection
+                type: string
+              url:
+                description: URL is the internal cluster URL where the proxy can be
+                  accessed
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: false
+    subresources:
+      status: {}
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.remoteUrl
+      name: Remote URL
+      type: string
+    - jsonPath: .status.url
+      name: URL
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1beta1
     schema:
       openAPIV3Schema:
         description: |-

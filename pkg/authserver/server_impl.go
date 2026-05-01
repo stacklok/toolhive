@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
@@ -24,6 +25,10 @@ type server struct {
 	handler   http.Handler
 	storage   storage.Storage
 	upstreams []handlers.NamedUpstream
+	// refreshTokenLifespan mirrors the validated Config.RefreshTokenLifespan.
+	// It is threaded into upstreamTokenRefresher so the refresh path can
+	// re-anchor SessionExpiresAt for legacy storage rows missing that field.
+	refreshTokenLifespan time.Duration
 }
 
 // upstreamProviderFactory creates an upstream OAuth2Provider from configuration.
@@ -165,9 +170,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	)
 
 	return &server{
-		handler:   router,
-		storage:   stor,
-		upstreams: upstreams,
+		handler:              router,
+		storage:              stor,
+		upstreams:            upstreams,
+		refreshTokenLifespan: cfg.RefreshTokenLifespan,
 	}, nil
 }
 
@@ -193,8 +199,9 @@ func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
 		providers[u.Name] = u.Provider
 	}
 	return &upstreamTokenRefresher{
-		providers: providers,
-		storage:   s.storage,
+		providers:            providers,
+		storage:              s.storage,
+		refreshTokenLifespan: s.refreshTokenLifespan,
 	}
 }
 

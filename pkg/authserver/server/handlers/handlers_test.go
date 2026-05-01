@@ -32,7 +32,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
-	sharedobauth "github.com/stacklok/toolhive/pkg/oauth"
+	sharedobauth "github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // testSetupOptions allows customizing the test handler setup.

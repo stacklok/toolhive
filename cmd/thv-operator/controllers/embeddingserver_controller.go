@@ -27,8 +27,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 )
 
 // EmbeddingServerReconciler reconciles a EmbeddingServer object
@@ -37,6 +38,13 @@ type EmbeddingServerReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
+	// operator chart, applied to the StatefulSet's PodSpec before the
+	// user-provided PodTemplateSpec strategic-merge patch runs. The strategic
+	// merge with the user PTS continues to additively merge the user's
+	// imagePullSecrets entries on top, with the user's entries winning on
+	// name collisions per Kubernetes' strategic-merge semantics.
+	ImagePullSecretsDefaults imagepullsecrets.Defaults
 }
 
 const (
@@ -67,7 +75,7 @@ func (r *EmbeddingServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	ctxLogger := log.FromContext(ctx)
 
 	// Fetch the EmbeddingServer instance
-	embedding := &mcpv1alpha1.EmbeddingServer{}
+	embedding := &mcpv1beta1.EmbeddingServer{}
 	err := r.Get(ctx, req.NamespacedName, embedding)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -127,7 +135,7 @@ func (r *EmbeddingServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 //nolint:unparam // error return kept for consistency with reconciler pattern
 func (r *EmbeddingServerReconciler) performValidations(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -149,7 +157,7 @@ func (r *EmbeddingServerReconciler) performValidations(
 //nolint:unparam // ctrl.Result return kept for consistency with reconciler pattern
 func (r *EmbeddingServerReconciler) handleDeletion(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) (ctrl.Result, bool, error) {
 	if embedding.GetDeletionTimestamp() == nil {
 		return ctrl.Result{}, false, nil
@@ -172,7 +180,7 @@ func (r *EmbeddingServerReconciler) handleDeletion(
 //nolint:unparam // ctrl.Result return kept for consistency with reconciler pattern
 func (r *EmbeddingServerReconciler) ensureFinalizer(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) (ctrl.Result, bool, error) {
 	if controllerutil.ContainsFinalizer(embedding, embeddingFinalizerName) {
 		return ctrl.Result{}, false, nil
@@ -189,7 +197,7 @@ func (r *EmbeddingServerReconciler) ensureFinalizer(
 // ensureStatefulSet ensures the statefulset exists and is up to date
 func (r *EmbeddingServerReconciler) ensureStatefulSet(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -250,7 +258,7 @@ func (r *EmbeddingServerReconciler) ensureStatefulSet(
 //nolint:unparam // ctrl.Result return kept for consistency with reconciler pattern
 func (r *EmbeddingServerReconciler) ensureService(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -298,7 +306,7 @@ func (r *EmbeddingServerReconciler) ensureService(
 // serviceNeedsUpdate checks if the service needs to be updated based on the embedding spec
 func (*EmbeddingServerReconciler) serviceNeedsUpdate(
 	service *corev1.Service,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) bool {
 	desiredPort := embedding.GetPort()
 
@@ -343,15 +351,15 @@ func (*EmbeddingServerReconciler) serviceNeedsUpdate(
 // Status is not updated here - it will be updated at the end of reconciliation
 func (r *EmbeddingServerReconciler) validateAndUpdatePodTemplateStatus(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) bool {
 	ctxLogger := log.FromContext(ctx)
 
 	if embedding.Spec.PodTemplateSpec == nil {
 		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionPodTemplateValid,
+			Type:               mcpv1beta1.ConditionPodTemplateValid,
 			Status:             metav1.ConditionTrue,
-			Reason:             mcpv1alpha1.ConditionReasonPodTemplateValid,
+			Reason:             mcpv1beta1.ConditionReasonPodTemplateValid,
 			Message:            "No PodTemplateSpec provided",
 			ObservedGeneration: embedding.Generation,
 		})
@@ -362,12 +370,12 @@ func (r *EmbeddingServerReconciler) validateAndUpdatePodTemplateStatus(
 	_, err := ctrlutil.NewPodTemplateSpecBuilder(embedding.Spec.PodTemplateSpec, embeddingContainerName)
 	if err != nil {
 		ctxLogger.Error(err, "Invalid PodTemplateSpec")
-		embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhaseFailed
+		embedding.Status.Phase = mcpv1beta1.EmbeddingServerPhaseFailed
 		embedding.Status.Message = fmt.Sprintf("Invalid PodTemplateSpec: %v", err)
 		meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionPodTemplateValid,
+			Type:               mcpv1beta1.ConditionPodTemplateValid,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonPodTemplateInvalid,
+			Reason:             mcpv1beta1.ConditionReasonPodTemplateInvalid,
 			Message:            fmt.Sprintf("Invalid PodTemplateSpec: %v", err),
 			ObservedGeneration: embedding.Generation,
 		})
@@ -384,9 +392,9 @@ func (r *EmbeddingServerReconciler) validateAndUpdatePodTemplateStatus(
 	}
 
 	meta.SetStatusCondition(&embedding.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionPodTemplateValid,
+		Type:               mcpv1beta1.ConditionPodTemplateValid,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonPodTemplateValid,
+		Reason:             mcpv1beta1.ConditionReasonPodTemplateValid,
 		Message:            "PodTemplateSpec is valid",
 		ObservedGeneration: embedding.Generation,
 	})
@@ -396,8 +404,8 @@ func (r *EmbeddingServerReconciler) validateAndUpdatePodTemplateStatus(
 
 // statefulSetForEmbedding creates a StatefulSet for the embedding server
 func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
-	_ context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	ctx context.Context,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) *appsv1.StatefulSet {
 	replicas := embedding.GetReplicas()
 	labels := r.labelsForEmbedding(embedding)
@@ -406,7 +414,7 @@ func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
 	container := r.buildEmbeddingContainer(embedding)
 
 	// Build pod template
-	podTemplate := r.buildPodTemplate(embedding, labels, container)
+	podTemplate := r.buildPodTemplate(labels, container)
 
 	// Apply statefulset overrides
 	stsAnnotations, stsLabels := r.applyStatefulSetOverrides(embedding, &podTemplate)
@@ -438,6 +446,13 @@ func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
 		statefulSet.Spec.VolumeClaimTemplates = r.buildVolumeClaimTemplates(embedding)
 	}
 
+	// Apply user-provided PodTemplateSpec customizations via strategic merge patch.
+	// This must happen after the controller-generated template is fully populated so
+	// that user fields override controller defaults rather than the other way around.
+	// The merge is soft-fail: invalid input is logged and the StatefulSet is built
+	// from controller defaults. See applyPodTemplateSpecToStatefulSet's godoc.
+	r.applyPodTemplateSpecToStatefulSet(ctx, embedding, statefulSet)
+
 	if err := ctrl.SetControllerReference(embedding, statefulSet, r.Scheme); err != nil {
 		return nil
 	}
@@ -446,7 +461,7 @@ func (r *EmbeddingServerReconciler) statefulSetForEmbedding(
 
 // buildVolumeClaimTemplates builds the volumeClaimTemplates for the StatefulSet
 func (r *EmbeddingServerReconciler) buildVolumeClaimTemplates(
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) []corev1.PersistentVolumeClaim {
 	size := "10Gi"
 	if embedding.Spec.ModelCache.Size != "" {
@@ -494,7 +509,7 @@ func (r *EmbeddingServerReconciler) buildVolumeClaimTemplates(
 }
 
 // buildEmbeddingContainer builds the container spec for the embedding server
-func (r *EmbeddingServerReconciler) buildEmbeddingContainer(embedding *mcpv1alpha1.EmbeddingServer) corev1.Container {
+func (r *EmbeddingServerReconciler) buildEmbeddingContainer(embedding *mcpv1beta1.EmbeddingServer) corev1.Container {
 	// Build container args
 	args := []string{
 		"--model-id", embedding.Spec.Model,
@@ -544,7 +559,7 @@ func (r *EmbeddingServerReconciler) buildEmbeddingContainer(embedding *mcpv1alph
 }
 
 // buildEnvVars builds environment variables for the container
-func (*EmbeddingServerReconciler) buildEnvVars(embedding *mcpv1alpha1.EmbeddingServer) []corev1.EnvVar {
+func (*EmbeddingServerReconciler) buildEnvVars(embedding *mcpv1beta1.EmbeddingServer) []corev1.EnvVar {
 	envVars := []corev1.EnvVar{
 		{
 			Name:  "MODEL_ID",
@@ -577,7 +592,7 @@ func (*EmbeddingServerReconciler) buildEnvVars(embedding *mcpv1alpha1.EmbeddingS
 }
 
 // buildLivenessProbe builds the liveness probe for the container
-func (*EmbeddingServerReconciler) buildLivenessProbe(embedding *mcpv1alpha1.EmbeddingServer) *corev1.Probe {
+func (*EmbeddingServerReconciler) buildLivenessProbe(embedding *mcpv1beta1.EmbeddingServer) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
@@ -593,7 +608,7 @@ func (*EmbeddingServerReconciler) buildLivenessProbe(embedding *mcpv1alpha1.Embe
 }
 
 // buildReadinessProbe builds the readiness probe for the container
-func (*EmbeddingServerReconciler) buildReadinessProbe(embedding *mcpv1alpha1.EmbeddingServer) *corev1.Probe {
+func (*EmbeddingServerReconciler) buildReadinessProbe(embedding *mcpv1beta1.EmbeddingServer) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
@@ -609,7 +624,7 @@ func (*EmbeddingServerReconciler) buildReadinessProbe(embedding *mcpv1alpha1.Emb
 }
 
 // applyResourceRequirements applies resource requirements to the container
-func (*EmbeddingServerReconciler) applyResourceRequirements(embedding *mcpv1alpha1.EmbeddingServer, container *corev1.Container) {
+func (*EmbeddingServerReconciler) applyResourceRequirements(embedding *mcpv1beta1.EmbeddingServer, container *corev1.Container) {
 	if embedding.Spec.Resources.Limits.CPU == "" && embedding.Spec.Resources.Limits.Memory == "" &&
 		embedding.Spec.Resources.Requests.CPU == "" && embedding.Spec.Resources.Requests.Memory == "" {
 		return
@@ -634,92 +649,95 @@ func (*EmbeddingServerReconciler) applyResourceRequirements(embedding *mcpv1alph
 	}
 }
 
-// buildPodTemplate builds the pod template for the statefulset
+// buildPodTemplate builds the pod template for the statefulset.
+// User-provided PodTemplateSpec customizations are applied later in
+// statefulSetForEmbedding via strategic merge patch.
+//
+// Cluster-wide chart defaults for imagePullSecrets are placed on the base
+// PodSpec here so that a subsequent strategic-merge with the user PTS
+// additively unions the lists (Kubernetes treats PodSpec.ImagePullSecrets
+// as a merge list keyed on Name; user entries win on name collisions).
 func (r *EmbeddingServerReconciler) buildPodTemplate(
-	embedding *mcpv1alpha1.EmbeddingServer,
 	labels map[string]string,
 	container corev1.Container,
 ) corev1.PodTemplateSpec {
-	podTemplate := corev1.PodTemplateSpec{
+	// Note: Volumes for model cache are managed by StatefulSet volumeClaimTemplates
+	// and will be automatically mounted with the name "model-cache"
+	return corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: labels,
 		},
 		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{container},
+			ImagePullSecrets: r.ImagePullSecretsDefaults.List(),
+			Containers:       []corev1.Container{container},
 		},
 	}
-
-	// Note: Volumes for model cache are managed by StatefulSet volumeClaimTemplates
-	// and will be automatically mounted with the name "model-cache"
-
-	// Merge with user-provided PodTemplateSpec if specified
-	r.mergePodTemplateSpec(embedding, &podTemplate)
-
-	return podTemplate
 }
 
-// mergePodTemplateSpec merges user-provided PodTemplateSpec customizations
-func (r *EmbeddingServerReconciler) mergePodTemplateSpec(
-	embedding *mcpv1alpha1.EmbeddingServer,
-	podTemplate *corev1.PodTemplateSpec,
+// applyPodTemplateSpecToStatefulSet applies user-provided PodTemplateSpec customizations
+// to the StatefulSet's pod template using strategic merge patch. This preserves every
+// user-supplied PodSpec field (imagePullSecrets, additional volumes, priorityClassName,
+// topologySpreadConstraints, init containers, sidecars, etc.) while keeping controller
+// defaults for fields the user did not set.
+//
+// The merge itself is delegated to ctrlutil.ApplyPodTemplateSpecPatch — which is
+// policy-neutral. Invalid user input is treated here as a soft failure: the merge is
+// skipped and the StatefulSet is built from controller defaults. The user-facing signal
+// lives on the EmbeddingServer status (set by validateAndUpdatePodTemplateStatus):
+// Phase=Failed and ConditionPodTemplateValid=False. This mirrors the pre-existing
+// tolerant behavior — refusing to create the StatefulSet would leave the resource stuck
+// with no pod and no observable controller-side state, while the validation condition
+// already tells the user exactly why their input was rejected. The vMCP controller
+// makes the opposite choice (hard-fail) for the same helper; both are documented on
+// ApplyPodTemplateSpecPatch's godoc.
+//
+// The function does not return an error: every failure mode is converted to a log line
+// plus controller-default fallback at this call site.
+func (*EmbeddingServerReconciler) applyPodTemplateSpecToStatefulSet(
+	ctx context.Context,
+	embedding *mcpv1beta1.EmbeddingServer,
+	statefulSet *appsv1.StatefulSet,
 ) {
-	if embedding.Spec.PodTemplateSpec == nil {
+	if embedding.Spec.PodTemplateSpec == nil || len(embedding.Spec.PodTemplateSpec.Raw) == 0 {
 		return
 	}
 
-	builder, err := ctrlutil.NewPodTemplateSpecBuilder(embedding.Spec.PodTemplateSpec, embeddingContainerName)
+	logger := log.FromContext(ctx)
+
+	// Validate the user-provided PodTemplateSpec is well-formed.
+	// We don't check builder.Build() == nil for "empty" customizations: that helper
+	// only enumerates a subset of PodSpec fields and would skip the patch for
+	// fields like runtimeClassName or topologySpreadConstraints. Strategic merge
+	// patch is a no-op for `{}` anyway, so always running it is safe.
+	if _, err := ctrlutil.NewPodTemplateSpecBuilder(embedding.Spec.PodTemplateSpec, embeddingContainerName); err != nil {
+		logger.Info("Skipping PodTemplateSpec merge: input is invalid; StatefulSet will use controller defaults",
+			"error", err.Error(),
+			"embeddingserver", embedding.Name,
+			"namespace", embedding.Namespace)
+		return
+	}
+
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(statefulSet.Spec.Template, embedding.Spec.PodTemplateSpec.Raw)
 	if err != nil {
+		// Soft failure: log and fall back to controller defaults. See function
+		// godoc above for the rationale and the contrast with the vMCP caller.
+		logger.Info("Skipping PodTemplateSpec merge: strategic merge patch failed; StatefulSet will use controller defaults",
+			"error", err.Error(),
+			"embeddingserver", embedding.Name,
+			"namespace", embedding.Namespace)
 		return
 	}
 
-	userTemplate := builder.Build()
-	if userTemplate == nil {
-		return
-	}
+	statefulSet.Spec.Template = merged
 
-	// Merge user customizations into base pod template
-	if userTemplate.Spec.NodeSelector != nil {
-		podTemplate.Spec.NodeSelector = userTemplate.Spec.NodeSelector
-	}
-	if userTemplate.Spec.Affinity != nil {
-		podTemplate.Spec.Affinity = userTemplate.Spec.Affinity
-	}
-	if len(userTemplate.Spec.Tolerations) > 0 {
-		podTemplate.Spec.Tolerations = userTemplate.Spec.Tolerations
-	}
-	if userTemplate.Spec.SecurityContext != nil {
-		podTemplate.Spec.SecurityContext = userTemplate.Spec.SecurityContext
-	}
-	if userTemplate.Spec.ServiceAccountName != "" {
-		podTemplate.Spec.ServiceAccountName = userTemplate.Spec.ServiceAccountName
-	}
-
-	// Merge container-level customizations
-	r.mergeContainerSecurityContext(podTemplate, userTemplate)
-}
-
-// mergeContainerSecurityContext merges container-level security context
-func (*EmbeddingServerReconciler) mergeContainerSecurityContext(
-	podTemplate *corev1.PodTemplateSpec,
-	userTemplate *corev1.PodTemplateSpec,
-) {
-	for i := range podTemplate.Spec.Containers {
-		if podTemplate.Spec.Containers[i].Name != embeddingContainerName {
-			continue
-		}
-		for _, userContainer := range userTemplate.Spec.Containers {
-			if userContainer.Name == embeddingContainerName && userContainer.SecurityContext != nil {
-				podTemplate.Spec.Containers[i].SecurityContext = userContainer.SecurityContext
-				break
-			}
-		}
-		break
-	}
+	logger.V(1).Info("Applied PodTemplateSpec customizations to StatefulSet",
+		"embeddingserver", embedding.Name,
+		"namespace", embedding.Namespace)
 }
 
 // applyStatefulSetOverrides applies statefulset-level overrides and returns annotations and labels
 func (*EmbeddingServerReconciler) applyStatefulSetOverrides(
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 	podTemplate *corev1.PodTemplateSpec,
 ) (map[string]string, map[string]string) {
 	annotations := make(map[string]string)
@@ -758,7 +776,7 @@ func (*EmbeddingServerReconciler) applyStatefulSetOverrides(
 // serviceForEmbedding creates a Service for the embedding server
 func (r *EmbeddingServerReconciler) serviceForEmbedding(
 	_ context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) *corev1.Service {
 	labels := r.labelsForEmbedding(embedding)
 	annotations := make(map[string]string)
@@ -803,7 +821,7 @@ func (r *EmbeddingServerReconciler) serviceForEmbedding(
 }
 
 // labelsForEmbedding returns the labels for the embedding resources
-func (*EmbeddingServerReconciler) labelsForEmbedding(embedding *mcpv1alpha1.EmbeddingServer) map[string]string {
+func (*EmbeddingServerReconciler) labelsForEmbedding(embedding *mcpv1beta1.EmbeddingServer) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":       "embeddingserver",
 		"app.kubernetes.io/instance":   embedding.Name,
@@ -816,7 +834,7 @@ func (*EmbeddingServerReconciler) labelsForEmbedding(embedding *mcpv1alpha1.Embe
 func (r *EmbeddingServerReconciler) statefulSetNeedsUpdate(
 	ctx context.Context,
 	currentSts *appsv1.StatefulSet,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) bool {
 	// Generate the expected StatefulSet from the current spec
 	newSts := r.statefulSetForEmbedding(ctx, embedding)
@@ -922,7 +940,7 @@ func (*EmbeddingServerReconciler) podTemplateMetadataChanged(currentSts, newSts 
 // updateEmbeddingServerStatus updates the status based on statefulset state
 func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 	ctx context.Context,
-	embedding *mcpv1alpha1.EmbeddingServer,
+	embedding *mcpv1beta1.EmbeddingServer,
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
@@ -936,7 +954,7 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 	err := r.Get(ctx, types.NamespacedName{Name: embedding.Name, Namespace: embedding.Namespace}, statefulSet)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhasePending
+			embedding.Status.Phase = mcpv1beta1.EmbeddingServerPhasePending
 			embedding.Status.ReadyReplicas = 0
 		} else {
 			return err
@@ -947,26 +965,26 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 
 		// Determine phase and message based on statefulset status using immutable assignment
 		type phaseInfo struct {
-			phase   mcpv1alpha1.EmbeddingServerPhase
+			phase   mcpv1beta1.EmbeddingServerPhase
 			message string
 		}
 
 		info := func() phaseInfo {
 			if statefulSet.Status.ReadyReplicas > 0 {
 				return phaseInfo{
-					phase:   mcpv1alpha1.EmbeddingServerPhaseReady,
+					phase:   mcpv1beta1.EmbeddingServerPhaseReady,
 					message: "Embedding server is running",
 				}
 			}
 			if statefulSet.Status.Replicas > 0 && statefulSet.Status.ReadyReplicas == 0 {
 				// Check if pods are downloading the model
 				return phaseInfo{
-					phase:   mcpv1alpha1.EmbeddingServerPhaseDownloading,
+					phase:   mcpv1beta1.EmbeddingServerPhaseDownloading,
 					message: "Downloading embedding model",
 				}
 			}
 			return phaseInfo{
-				phase:   mcpv1alpha1.EmbeddingServerPhasePending,
+				phase:   mcpv1beta1.EmbeddingServerPhasePending,
 				message: "Waiting for statefulset",
 			}
 		}()
@@ -985,12 +1003,12 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 }
 
 // finalizeEmbeddingServer performs cleanup before the EmbeddingServer is deleted
-func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context, embedding *mcpv1alpha1.EmbeddingServer) {
+func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context, embedding *mcpv1beta1.EmbeddingServer) {
 	ctxLogger := log.FromContext(ctx)
 	ctxLogger.Info("Finalizing EmbeddingServer", "name", embedding.Name)
 
 	// Update status to Terminating
-	embedding.Status.Phase = mcpv1alpha1.EmbeddingServerPhaseTerminating
+	embedding.Status.Phase = mcpv1beta1.EmbeddingServerPhaseTerminating
 	if err := r.Status().Update(ctx, embedding); err != nil {
 		ctxLogger.Error(err, "Failed to update EmbeddingServer status to Terminating")
 	}
@@ -1004,7 +1022,7 @@ func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context,
 // SetupWithManager sets up the controller with the Manager.
 func (r *EmbeddingServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&mcpv1alpha1.EmbeddingServer{}).
+		For(&mcpv1beta1.EmbeddingServer{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.PersistentVolumeClaim{}).

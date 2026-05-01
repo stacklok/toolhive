@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
@@ -22,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -63,6 +66,10 @@ type WorkloadService struct {
 	imageRetriever   retriever.Retriever
 	imagePuller      retriever.ImagePuller
 	configProvider   config.Provider
+	// imageVerification is the mode (warn/enabled/disabled) used when verifying
+	// image provenance for both the registry-resolved path and the imageRetriever
+	// path. Kept as a single field so the two paths can't drift.
+	imageVerification string
 }
 
 // NewWorkloadService creates a new WorkloadService instance
@@ -73,13 +80,14 @@ func NewWorkloadService(
 	debugMode bool,
 ) *WorkloadService {
 	return &WorkloadService{
-		workloadManager:  workloadManager,
-		groupManager:     groupManager,
-		containerRuntime: containerRuntime,
-		debugMode:        debugMode,
-		imageRetriever:   retriever.ResolveMCPServer,
-		imagePuller:      retriever.PullMCPServerImage,
-		configProvider:   config.NewProvider(),
+		workloadManager:   workloadManager,
+		groupManager:      groupManager,
+		containerRuntime:  containerRuntime,
+		debugMode:         debugMode,
+		imageRetriever:    retriever.ResolveMCPServer,
+		imagePuller:       retriever.PullMCPServerImage,
+		configProvider:    config.NewProvider(),
+		imageVerification: retriever.VerifyImageWarn,
 	}
 }
 
@@ -142,6 +150,20 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 func (s *WorkloadService) BuildFullRunConfig(
 	ctx context.Context, req *createRequest, existingPort int,
 ) (*runner.RunConfig, error) {
+	// If registry+server specified, resolve from registry and fill defaults.
+	// The returned metadata is assigned to the local variables so the rest of
+	// BuildFullRunConfig (registry info, tool validation, remote auth, etc.)
+	// has access to it without re-looking up the server. The route handler
+	// already rejects partial registry+server pairs with a 400.
+	var registryResolvedMetadata regtypes.ServerMetadata
+	if req.Registry != "" && req.Server != "" {
+		var err error
+		registryResolvedMetadata, err = s.resolveRegistryServer(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve server from registry: %w", err)
+		}
+	}
+
 	// Default proxy mode to streamable-http if not specified (SSE is deprecated)
 	if !types.IsValidProxyMode(req.ProxyMode) {
 		if req.ProxyMode == "" {
@@ -190,30 +212,65 @@ func (s *WorkloadService) BuildFullRunConfig(
 	var imageMetadata *regtypes.ImageMetadata
 	var serverMetadata regtypes.ServerMetadata
 	var registryProxyPort int
+
+	// If we resolved metadata from a registry reference, assign it to the
+	// local variables so downstream code (registry info, tool validation,
+	// remote auth config, proxy port) picks it up automatically.
+	if registryResolvedMetadata != nil {
+		serverMetadata = registryResolvedMetadata
+		switch md := registryResolvedMetadata.(type) {
+		case *regtypes.ImageMetadata:
+			imageMetadata = md
+			imageURL = md.Image
+		case *regtypes.RemoteServerMetadata:
+			if req.ProxyPort == 0 && md.ProxyPort > 0 {
+				registryProxyPort = md.ProxyPort
+			}
+			remoteAuthConfig = buildRemoteAuthConfigFromMetadata(req, md)
+		}
+	}
+
+	// Verify image provenance for registry-resolved image servers.
+	// The normal imageRetriever path calls verifyImage internally, but
+	// we bypass it for registry references, so we must verify here.
+	// Both paths use s.imageVerification so their behavior stays in sync.
+	if imageMetadata != nil && registryResolvedMetadata != nil {
+		if err := retriever.VerifyImage(imageURL, imageMetadata, s.imageVerification); err != nil {
+			return nil, fmt.Errorf("image verification failed: %w", err)
+		}
+	}
+
 	runtimeConfigOverride := runtimeConfigFromRequest(req)
 	retrievalRuntimeConfig, err := runtimeConfigForImageBuild(req, runtimeConfigOverride)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", retriever.ErrInvalidRunConfig, err)
 	}
 
-	if req.URL != "" {
-		// Configure remote authentication if OAuth config is provided
+	if req.URL != "" && registryResolvedMetadata == nil {
+		// Direct URL from user (not resolved from registry) — build auth from request fields.
 		if req.Transport == "" {
 			req.Transport = types.TransportTypeStreamableHTTP.String()
 		}
 		remoteAuthConfig = createRequestToRemoteAuthConfig(ctx, req)
-	} else {
-		// Create a dedicated context with longer timeout for image retrieval
+	} else if req.URL != "" && registryResolvedMetadata != nil {
+		// URL was filled by registry resolution — remoteAuthConfig was already built
+		// in the assignment block above. Just ensure transport has a default.
+		if req.Transport == "" {
+			req.Transport = types.TransportTypeStreamableHTTP.String()
+		}
+	} else if registryResolvedMetadata == nil {
+		// Only call imageRetriever if we didn't already resolve from a registry
+		// reference. When registry+server was used, serverMetadata and imageMetadata
+		// are already populated above and re-looking up by bare image ref would fail
+		// (the image ref doesn't match any server name in the registry).
 		imageCtx, cancel := context.WithTimeout(ctx, imageRetrievalTimeout)
 		defer cancel()
 
-		// Resolve the requested image from the registry without pulling it.
-		// The actual pull is deferred until after the policy check.
 		imageURL, serverMetadata, err = s.imageRetriever(
 			imageCtx,
 			req.Image,
 			"", // We do not let the user specify a CA cert path here.
-			retriever.VerifyImageWarn,
+			s.imageVerification,
 			"", // Registry-based group lookups are not supported
 			retrievalRuntimeConfig,
 		)
@@ -231,41 +288,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			if req.ProxyPort == 0 && remoteServerMetadata.ProxyPort > 0 {
 				registryProxyPort = remoteServerMetadata.ProxyPort
 			}
-
-			if remoteServerMetadata.OAuthConfig != nil {
-				// Default resource: user-provided > registry metadata > derived from remote URL
-				resource := req.OAuthConfig.Resource
-				if resource == "" {
-					resource = remoteServerMetadata.OAuthConfig.Resource
-				}
-				if resource == "" && remoteServerMetadata.URL != "" {
-					resource = remote.DefaultResourceIndicator(remoteServerMetadata.URL)
-				}
-
-				remoteAuthConfig = &remote.Config{
-					ClientID:     req.OAuthConfig.ClientID,
-					Scopes:       remoteServerMetadata.OAuthConfig.Scopes,
-					CallbackPort: remoteServerMetadata.OAuthConfig.CallbackPort,
-					Issuer:       remoteServerMetadata.OAuthConfig.Issuer,
-					AuthorizeURL: remoteServerMetadata.OAuthConfig.AuthorizeURL,
-					TokenURL:     remoteServerMetadata.OAuthConfig.TokenURL,
-					UsePKCE:      remoteServerMetadata.OAuthConfig.UsePKCE,
-					Resource:     resource,
-					OAuthParams:  remoteServerMetadata.OAuthConfig.OAuthParams,
-					Headers:      remoteServerMetadata.Headers,
-					EnvVars:      remoteServerMetadata.EnvVars,
-				}
-
-				// Store the client secret in CLI format if provided
-				if req.OAuthConfig.ClientSecret != nil {
-					remoteAuthConfig.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
-				}
-
-				// Store the bearer token in CLI format if provided
-				if req.OAuthConfig.BearerToken != nil {
-					remoteAuthConfig.BearerToken = req.OAuthConfig.BearerToken.ToCLIString()
-				}
-			}
+			remoteAuthConfig = buildRemoteAuthConfigFromMetadata(req, remoteServerMetadata)
 		}
 		// Handle server metadata - API only supports container servers.
 		// Use type assertion with nil check to guard against typed nil pointers.
@@ -395,6 +418,46 @@ func (s *WorkloadService) BuildFullRunConfig(
 	}
 
 	return runConfig, nil
+}
+
+// buildRemoteAuthConfigFromMetadata builds a remote.Config from registry
+// RemoteServerMetadata, layering user-provided secrets (ClientSecret,
+// BearerToken) and an optional user-provided Resource on top. Returns nil
+// if the metadata has no OAuthConfig.
+func buildRemoteAuthConfigFromMetadata(req *createRequest, md *regtypes.RemoteServerMetadata) *remote.Config {
+	if md.OAuthConfig == nil {
+		return nil
+	}
+
+	// Default resource: user-provided > registry metadata > derived from remote URL
+	resource := req.OAuthConfig.Resource
+	if resource == "" {
+		resource = md.OAuthConfig.Resource
+	}
+	if resource == "" && md.URL != "" {
+		resource = remote.DefaultResourceIndicator(md.URL)
+	}
+
+	cfg := &remote.Config{
+		ClientID:     req.OAuthConfig.ClientID,
+		Scopes:       md.OAuthConfig.Scopes,
+		CallbackPort: md.OAuthConfig.CallbackPort,
+		Issuer:       md.OAuthConfig.Issuer,
+		AuthorizeURL: md.OAuthConfig.AuthorizeURL,
+		TokenURL:     md.OAuthConfig.TokenURL,
+		UsePKCE:      md.OAuthConfig.UsePKCE,
+		Resource:     resource,
+		OAuthParams:  md.OAuthConfig.OAuthParams,
+		Headers:      md.Headers,
+		EnvVars:      md.EnvVars,
+	}
+	if req.OAuthConfig.ClientSecret != nil {
+		cfg.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
+	}
+	if req.OAuthConfig.BearerToken != nil {
+		cfg.BearerToken = req.OAuthConfig.BearerToken.ToCLIString()
+	}
+	return cfg
 }
 
 // createRequestToRemoteAuthConfig converts API request to runner RemoteAuthConfig
@@ -556,4 +619,95 @@ func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req b
 	}
 
 	return workloadNames, nil
+}
+
+// resolveRegistryServer resolves a server from the registry and fills in
+// default values on the request. User-provided fields are not overwritten.
+func (s *WorkloadService) resolveRegistryServer(req *createRequest) (regtypes.ServerMetadata, error) {
+	// Only "default" registry is currently supported.
+	if req.Registry != "default" {
+		return nil, httperr.WithCode(
+			fmt.Errorf("unknown registry %q; only \"default\" is currently supported", req.Registry),
+			http.StatusBadRequest,
+		)
+	}
+
+	provider, err := registry.GetDefaultProviderWithConfig(
+		s.configProvider,
+		registry.WithInteractive(false),
+	)
+	if err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("failed to get registry provider: %w", err),
+			http.StatusServiceUnavailable,
+		)
+	}
+
+	metadata, err := provider.GetServer(req.Server)
+	if err != nil {
+		if errors.Is(err, registry.ErrServerNotFound) {
+			return nil, httperr.WithCode(
+				fmt.Errorf("server %q not found in registry: %w", req.Server, err),
+				http.StatusNotFound,
+			)
+		}
+		return nil, httperr.WithCode(
+			fmt.Errorf("failed to look up server %q in registry: %w", req.Server, err),
+			http.StatusServiceUnavailable,
+		)
+	}
+
+	applyRegistryDefaults(req, metadata)
+	return metadata, nil
+}
+
+func applyRegistryDefaults(req *createRequest, metadata regtypes.ServerMetadata) {
+	if req.Transport == "" {
+		req.Transport = metadata.GetTransport()
+	}
+	if req.Name == "" {
+		req.Name = metadata.GetName()
+	}
+
+	switch md := metadata.(type) {
+	case *regtypes.ImageMetadata:
+		applyImageDefaults(req, md)
+	case *regtypes.RemoteServerMetadata:
+		applyRemoteDefaults(req, md)
+	}
+}
+
+func applyImageDefaults(req *createRequest, md *regtypes.ImageMetadata) {
+	if req.Image == "" {
+		req.Image = md.Image
+	}
+	if req.TargetPort == 0 && md.TargetPort != 0 {
+		req.TargetPort = md.TargetPort
+	}
+	if len(req.CmdArguments) == 0 && len(md.Args) > 0 {
+		req.CmdArguments = md.Args
+	}
+	if req.PermissionProfile == nil && md.Permissions != nil {
+		req.PermissionProfile = md.Permissions
+	}
+	// Merge env vars: registry defaults first, user overrides take precedence
+	if req.EnvVars == nil {
+		req.EnvVars = make(map[string]string)
+	}
+	for _, ev := range md.EnvVars {
+		if ev.Default != "" {
+			if _, userSet := req.EnvVars[ev.Name]; !userSet {
+				req.EnvVars[ev.Name] = ev.Default
+			}
+		}
+	}
+}
+
+func applyRemoteDefaults(req *createRequest, md *regtypes.RemoteServerMetadata) {
+	if req.URL == "" {
+		req.URL = md.URL
+	}
+	if len(req.Headers) == 0 && len(md.Headers) > 0 {
+		req.Headers = md.Headers
+	}
 }

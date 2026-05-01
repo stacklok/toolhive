@@ -14,7 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/yaml"
 
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/test/e2e"
 )
@@ -95,12 +95,12 @@ var _ = Describe("Export Command", Label("core", "export", "e2e"), func() {
 				fileContent, err := os.ReadFile(exportPath)
 				Expect(err).ToNot(HaveOccurred())
 
-				var mcpServer v1alpha1.MCPServer
+				var mcpServer v1beta1.MCPServer
 				err = yaml.Unmarshal(fileContent, &mcpServer)
 				Expect(err).ToNot(HaveOccurred(), "Exported file should be valid YAML")
 
 				By("Verifying the exported MCPServer has correct structure")
-				Expect(mcpServer.APIVersion).To(Equal("toolhive.stacklok.dev/v1alpha1"))
+				Expect(mcpServer.APIVersion).To(Equal("toolhive.stacklok.dev/v1beta1"))
 				Expect(mcpServer.Kind).To(Equal("MCPServer"))
 				Expect(mcpServer.Name).ToNot(BeEmpty(), "Name should be set")
 				Expect(mcpServer.Spec.Image).ToNot(BeEmpty(), "Image should be set")
@@ -145,7 +145,7 @@ var _ = Describe("Export Command", Label("core", "export", "e2e"), func() {
 				fileContent, err = os.ReadFile(yamlPath)
 				Expect(err).ToNot(HaveOccurred())
 
-				var mcpServer v1alpha1.MCPServer
+				var mcpServer v1beta1.MCPServer
 				err = yaml.Unmarshal(fileContent, &mcpServer)
 				Expect(err).ToNot(HaveOccurred())
 

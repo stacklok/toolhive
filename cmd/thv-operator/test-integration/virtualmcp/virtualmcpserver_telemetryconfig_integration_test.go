@@ -16,7 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/yaml"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -30,9 +30,9 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 
 		Context("VirtualMCPServer with TelemetryConfigRef should track config hash in status", Ordered, func() {
 			var (
-				mcpGroup         *mcpv1alpha1.MCPGroup
-				telemetryConfig  *mcpv1alpha1.MCPTelemetryConfig
-				virtualMCPServer *mcpv1alpha1.VirtualMCPServer
+				mcpGroup         *mcpv1beta1.MCPGroup
+				telemetryConfig  *mcpv1beta1.MCPTelemetryConfig
+				virtualMCPServer *mcpv1beta1.VirtualMCPServer
 			)
 
 			BeforeAll(func() {
@@ -44,34 +44,34 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 					Expect(err).NotTo(HaveOccurred())
 				}
 
-				mcpGroup = &mcpv1alpha1.MCPGroup{
+				mcpGroup = &mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-group-telemetry-hash",
 						Namespace: namespace,
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
+					Spec: mcpv1beta1.MCPGroupSpec{
 						Description: "Test group for telemetry config hash test",
 					},
 				}
 				Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
 
-				telemetryConfig = &mcpv1alpha1.MCPTelemetryConfig{
+				telemetryConfig = &mcpv1beta1.MCPTelemetryConfig{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-telemetry-vmcp-hash",
 						Namespace: namespace,
 					},
 				}
-				telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+				telemetryConfig.Spec.OpenTelemetry = &mcpv1beta1.MCPTelemetryOTelConfig{
 					Enabled:  true,
 					Endpoint: "https://otel-collector:4317",
-					Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
-					Metrics:  &mcpv1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+					Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
+					Metrics:  &mcpv1beta1.OpenTelemetryMetricsConfig{Enabled: true},
 				}
 				Expect(k8sClient.Create(ctx, telemetryConfig)).Should(Succeed())
 
 				// Wait for the MCPTelemetryConfig controller to set ConfigHash
 				Eventually(func() bool {
-					fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+					fetched := &mcpv1beta1.MCPTelemetryConfig{}
 					err := k8sClient.Get(ctx, types.NamespacedName{
 						Name:      telemetryConfig.Name,
 						Namespace: namespace,
@@ -79,18 +79,18 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 					return err == nil && fetched.Status.ConfigHash != ""
 				}, timeout, interval).Should(BeTrue())
 
-				virtualMCPServer = &mcpv1alpha1.VirtualMCPServer{
+				virtualMCPServer = &mcpv1beta1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-vmcp-telemetry-hash",
 						Namespace: namespace,
 					},
-					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group-telemetry-hash"},
+					Spec: mcpv1beta1.VirtualMCPServerSpec{
+						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group-telemetry-hash"},
 						Config:   vmcpconfig.Config{Group: "test-group-telemetry-hash"},
-						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 							Type: "anonymous",
 						},
-						TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+						TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
 							Name: "test-telemetry-vmcp-hash",
 						},
 					},
@@ -111,7 +111,7 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 
 			It("should set status.telemetryConfigHash to a non-empty value", func() {
 				Eventually(func() string {
-					fetched := &mcpv1alpha1.VirtualMCPServer{}
+					fetched := &mcpv1beta1.VirtualMCPServer{}
 					err := k8sClient.Get(ctx, types.NamespacedName{
 						Name:      virtualMCPServer.Name,
 						Namespace: namespace,
@@ -125,7 +125,7 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 
 			It("should set TelemetryConfigRefValidated condition to True", func() {
 				Eventually(func() bool {
-					fetched := &mcpv1alpha1.VirtualMCPServer{}
+					fetched := &mcpv1beta1.VirtualMCPServer{}
 					err := k8sClient.Get(ctx, types.NamespacedName{
 						Name:      virtualMCPServer.Name,
 						Namespace: namespace,
@@ -134,9 +134,9 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 						return false
 					}
 					for _, cond := range fetched.Status.Conditions {
-						if cond.Type == mcpv1alpha1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated {
+						if cond.Type == mcpv1beta1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated {
 							return cond.Status == metav1.ConditionTrue &&
-								cond.Reason == mcpv1alpha1.ConditionReasonVirtualMCPServerTelemetryConfigRefValid
+								cond.Reason == mcpv1beta1.ConditionReasonVirtualMCPServerTelemetryConfigRefValid
 						}
 					}
 					return false
@@ -173,40 +173,40 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 
 		Context("VirtualMCPServer should update when MCPTelemetryConfig spec changes", Ordered, func() {
 			var (
-				mcpGroup         *mcpv1alpha1.MCPGroup
-				telemetryConfig  *mcpv1alpha1.MCPTelemetryConfig
-				virtualMCPServer *mcpv1alpha1.VirtualMCPServer
+				mcpGroup         *mcpv1beta1.MCPGroup
+				telemetryConfig  *mcpv1beta1.MCPTelemetryConfig
+				virtualMCPServer *mcpv1beta1.VirtualMCPServer
 				initialHash      string
 			)
 
 			BeforeAll(func() {
-				mcpGroup = &mcpv1alpha1.MCPGroup{
+				mcpGroup = &mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-group-telemetry-update",
 						Namespace: namespace,
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
+					Spec: mcpv1beta1.MCPGroupSpec{
 						Description: "Test group for telemetry config update test",
 					},
 				}
 				Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
 
-				telemetryConfig = &mcpv1alpha1.MCPTelemetryConfig{
+				telemetryConfig = &mcpv1beta1.MCPTelemetryConfig{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-telemetry-vmcp-update",
 						Namespace: namespace,
 					},
 				}
-				telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+				telemetryConfig.Spec.OpenTelemetry = &mcpv1beta1.MCPTelemetryOTelConfig{
 					Enabled:  true,
 					Endpoint: "https://otel-collector:4317",
-					Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+					Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
 				}
 				Expect(k8sClient.Create(ctx, telemetryConfig)).Should(Succeed())
 
 				// Wait for the MCPTelemetryConfig controller to set ConfigHash
 				Eventually(func() bool {
-					fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+					fetched := &mcpv1beta1.MCPTelemetryConfig{}
 					err := k8sClient.Get(ctx, types.NamespacedName{
 						Name:      telemetryConfig.Name,
 						Namespace: namespace,
@@ -214,18 +214,18 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 					return err == nil && fetched.Status.ConfigHash != ""
 				}, timeout, interval).Should(BeTrue())
 
-				virtualMCPServer = &mcpv1alpha1.VirtualMCPServer{
+				virtualMCPServer = &mcpv1beta1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-vmcp-telemetry-update",
 						Namespace: namespace,
 					},
-					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group-telemetry-update"},
+					Spec: mcpv1beta1.VirtualMCPServerSpec{
+						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group-telemetry-update"},
 						Config:   vmcpconfig.Config{Group: "test-group-telemetry-update"},
-						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 							Type: "anonymous",
 						},
-						TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+						TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
 							Name: "test-telemetry-vmcp-update",
 						},
 					},
@@ -234,7 +234,7 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 
 				// Wait for the initial hash to be propagated to the VirtualMCPServer
 				Eventually(func() bool {
-					fetched := &mcpv1alpha1.VirtualMCPServer{}
+					fetched := &mcpv1beta1.VirtualMCPServer{}
 					err := k8sClient.Get(ctx, types.NamespacedName{
 						Name:      virtualMCPServer.Name,
 						Namespace: namespace,
@@ -259,7 +259,7 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 			It("should update telemetryConfigHash when MCPTelemetryConfig spec changes", func() {
 				// Update the MCPTelemetryConfig endpoint to trigger a hash change
 				Eventually(func() error {
-					fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+					fetched := &mcpv1beta1.MCPTelemetryConfig{}
 					if err := k8sClient.Get(ctx, types.NamespacedName{
 						Name:      telemetryConfig.Name,
 						Namespace: namespace,
@@ -272,7 +272,7 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 
 				// Verify the VirtualMCPServer's telemetryConfigHash changes
 				Eventually(func() bool {
-					fetched := &mcpv1alpha1.VirtualMCPServer{}
+					fetched := &mcpv1beta1.VirtualMCPServer{}
 					err := k8sClient.Get(ctx, types.NamespacedName{
 						Name:      virtualMCPServer.Name,
 						Namespace: namespace,
@@ -308,34 +308,34 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 
 		Context("VirtualMCPServer referencing non-existent MCPTelemetryConfig", Ordered, func() {
 			var (
-				mcpGroup         *mcpv1alpha1.MCPGroup
-				virtualMCPServer *mcpv1alpha1.VirtualMCPServer
+				mcpGroup         *mcpv1beta1.MCPGroup
+				virtualMCPServer *mcpv1beta1.VirtualMCPServer
 			)
 
 			BeforeAll(func() {
-				mcpGroup = &mcpv1alpha1.MCPGroup{
+				mcpGroup = &mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-group-telemetry-notfound",
 						Namespace: namespace,
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
+					Spec: mcpv1beta1.MCPGroupSpec{
 						Description: "Test group for telemetry config not found test",
 					},
 				}
 				Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
 
-				virtualMCPServer = &mcpv1alpha1.VirtualMCPServer{
+				virtualMCPServer = &mcpv1beta1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-vmcp-telemetry-notfound",
 						Namespace: namespace,
 					},
-					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group-telemetry-notfound"},
+					Spec: mcpv1beta1.VirtualMCPServerSpec{
+						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group-telemetry-notfound"},
 						Config:   vmcpconfig.Config{Group: "test-group-telemetry-notfound"},
-						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 							Type: "anonymous",
 						},
-						TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+						TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
 							Name: "nonexistent-telemetry-config",
 						},
 					},
@@ -350,7 +350,7 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 
 			It("should set TelemetryConfigRefValidated condition to False with reason TelemetryConfigRefNotFound", func() {
 				Eventually(func() bool {
-					fetched := &mcpv1alpha1.VirtualMCPServer{}
+					fetched := &mcpv1beta1.VirtualMCPServer{}
 					err := k8sClient.Get(ctx, types.NamespacedName{
 						Name:      virtualMCPServer.Name,
 						Namespace: namespace,
@@ -359,9 +359,9 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 						return false
 					}
 					for _, cond := range fetched.Status.Conditions {
-						if cond.Type == mcpv1alpha1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated {
+						if cond.Type == mcpv1beta1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated {
 							return cond.Status == metav1.ConditionFalse &&
-								cond.Reason == mcpv1alpha1.ConditionReasonVirtualMCPServerTelemetryConfigRefNotFound
+								cond.Reason == mcpv1beta1.ConditionReasonVirtualMCPServerTelemetryConfigRefNotFound
 						}
 					}
 					return false

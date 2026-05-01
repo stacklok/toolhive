@@ -37,7 +37,7 @@ stringData:
     postgres:5432:registry:db_migrator:mymigrationpassword
 
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: pgpass-configyaml
@@ -47,7 +47,6 @@ spec:
   configYAML: |
     sources:
       - name: production
-        format: toolhive
         file:
           path: /config/registry/production/registry.json
     registries:

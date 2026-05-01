@@ -14,7 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 func TestGetRegistryAPIImage(t *testing.T) {
@@ -534,12 +534,12 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 	t.Run("no podtemplatespec has no hash annotation", func(t *testing.T) {
 		t.Parallel()
 		mgr := &manager{}
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+		mcpRegistry := &mcpv1beta1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-registry",
 				Namespace: "test-namespace",
 			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
+			Spec: mcpv1beta1.MCPRegistrySpec{
 				ConfigYAML: baseConfigYAML,
 			},
 		}
@@ -554,12 +554,12 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 	t.Run("with podtemplatespec has hash annotation", func(t *testing.T) {
 		t.Parallel()
 		mgr := &manager{}
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+		mcpRegistry := &mcpv1beta1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-registry",
 				Namespace: "test-namespace",
 			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
+			Spec: mcpv1beta1.MCPRegistrySpec{
 				ConfigYAML: baseConfigYAML,
 				PodTemplateSpec: &runtime.RawExtension{
 					Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"registry-creds"}]}}`),
@@ -579,16 +579,16 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 		t.Parallel()
 		mgr := &manager{}
 
-		registry1 := &mcpv1alpha1.MCPRegistry{
+		registry1 := &mcpv1beta1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "ns"},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
+			Spec: mcpv1beta1.MCPRegistrySpec{
 				ConfigYAML:      baseConfigYAML,
 				PodTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"creds-a"}]}}`)},
 			},
 		}
-		registry2 := &mcpv1alpha1.MCPRegistry{
+		registry2 := &mcpv1beta1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "ns"},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
+			Spec: mcpv1beta1.MCPRegistrySpec{
 				ConfigYAML:      baseConfigYAML,
 				PodTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"creds-b"}]}}`)},
 			},
@@ -603,4 +603,89 @@ func TestBuildRegistryAPIDeployment_PodTemplateSpecHash(t *testing.T) {
 		require.NotNil(t, d2)
 		assert.NotEqual(t, d1.Annotations[podTemplateSpecHashAnnotation], d2.Annotations[podTemplateSpecHashAnnotation])
 	})
+}
+
+func TestBuildRegistryAPIDeployment_ImagePullSecrets(t *testing.T) {
+	t.Parallel()
+
+	const baseConfigYAML = "sources:\n  - name: k8s\n    kubernetes: {}\n"
+
+	tests := []struct {
+		name     string
+		spec     mcpv1beta1.MCPRegistrySpec
+		expected []corev1.LocalObjectReference
+	}{
+		{
+			name: "explicit field propagates to deployment",
+			spec: mcpv1beta1.MCPRegistrySpec{
+				ConfigYAML: baseConfigYAML,
+				ImagePullSecrets: []corev1.LocalObjectReference{
+					{Name: "registry-creds"},
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "registry-creds"}},
+		},
+		{
+			name: "no explicit field and no podtemplatespec yields empty",
+			spec: mcpv1beta1.MCPRegistrySpec{
+				ConfigYAML: baseConfigYAML,
+			},
+			expected: nil,
+		},
+		{
+			name: "podtemplatespec value wins on overlap (atomic replace)",
+			spec: mcpv1beta1.MCPRegistrySpec{
+				ConfigYAML: baseConfigYAML,
+				ImagePullSecrets: []corev1.LocalObjectReference{
+					{Name: "explicit-creds"},
+				},
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"override-creds"}]}}`),
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "override-creds"}},
+		},
+		{
+			name: "podtemplatespec without imagePullSecrets preserves explicit field",
+			spec: mcpv1beta1.MCPRegistrySpec{
+				ConfigYAML: baseConfigYAML,
+				ImagePullSecrets: []corev1.LocalObjectReference{
+					{Name: "explicit-creds"},
+				},
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"nodeSelector":{"disktype":"ssd"}}}`),
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "explicit-creds"}},
+		},
+		{
+			name: "podtemplatespec only (legacy behavior preserved)",
+			spec: mcpv1beta1.MCPRegistrySpec{
+				ConfigYAML: baseConfigYAML,
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"legacy-creds"}]}}`),
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "legacy-creds"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mgr := &manager{}
+			mcpRegistry := &mcpv1beta1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-registry",
+					Namespace: "test-namespace",
+				},
+				Spec: tt.spec,
+			}
+			deployment, err := mgr.buildRegistryAPIDeployment(t.Context(), mcpRegistry, "test-registry-server-config")
+			require.NoError(t, err)
+			require.NotNil(t, deployment)
+
+			assert.Equal(t, tt.expected, deployment.Spec.Template.Spec.ImagePullSecrets)
+		})
+	}
 }

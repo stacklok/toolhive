@@ -35,14 +35,13 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    deprecated: true
+    deprecationWarning: toolhive.stacklok.dev/v1alpha1 is deprecated; use v1beta1
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: |-
-          MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.
-          MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
-          MCPServer resources within the same namespace. Cross-namespace references
-          are not supported for security and isolation reasons.
+        description: MCPExternalAuthConfig is the deprecated v1alpha1 version of the
+          MCPExternalAuthConfig resource.
         properties:
           apiVersion:
             description: |-
@@ -162,6 +161,20 @@ spec:
                     description: |-
                       SessionNameClaim is the JWT claim to use for role session name
                       Defaults to "sub" to use the subject claim
+                    type: string
+                  subjectProviderName:
+                    description: |-
+                      SubjectProviderName is the name of the upstream provider whose access token
+                      is used as the web identity token for STS AssumeRoleWithWebIdentity.
+                      This field is used exclusively by VirtualMCPServer, where there is no
+                      upstream swap middleware to replace the bearer token before the strategy runs.
+                      When left empty and an embedded authorization server is configured on the
+                      VirtualMCPServer, the controller automatically populates this field with
+                      the first configured upstream provider name. Set it explicitly to override
+                      that default or to select a specific provider when multiple upstreams are
+                      configured.
+                      When no embedded auth server is present, the bearer token from the incoming
+                      request's Authorization header is used instead.
                     type: string
                 required:
                 - region
@@ -284,8 +297,12 @@ spec:
                                 - name
                                 type: object
                               usernameSecretRef:
-                                description: UsernameSecretRef references a Secret
-                                  containing the Redis ACL username.
+                                description: |-
+                                  UsernameSecretRef references a Secret containing the Redis ACL username.
+                                  When omitted, connections use legacy password-only AUTH. Omit for managed
+                                  Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard
+                                  HA, Azure Cache for Redis). Set for services that support ACL users (e.g. AWS
+                                  ElastiCache non-cluster with Redis 6+ RBAC).
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -299,8 +316,13 @@ spec:
                                 type: object
                             required:
                             - passwordSecretRef
-                            - usernameSecretRef
                             type: object
+                          addr:
+                            description: |-
+                              Addr is the Redis server address for standalone mode (e.g., "host:port").
+                              Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present
+                              a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig.
+                            type: string
                           dialTimeout:
                             default: 5s
                             description: |-
@@ -316,7 +338,9 @@ spec:
                             pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                             type: string
                           sentinelConfig:
-                            description: SentinelConfig holds Redis Sentinel configuration.
+                            description: |-
+                              SentinelConfig holds Redis Sentinel configuration.
+                              Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr.
                             properties:
                               db:
                                 default: 0
@@ -361,8 +385,7 @@ spec:
                           sentinelTls:
                             description: |-
                               SentinelTLS configures TLS for connections to Sentinel instances.
-                              Presence of this field enables TLS. Omit to use plaintext.
-                              When omitted, sentinel connections use plaintext (no fallback to TLS config).
+                              Only applies when sentinelConfig is set. Presence of this field enables TLS.
                             properties:
                               caCertSecretRef:
                                 description: |-
@@ -420,8 +443,11 @@ spec:
                             type: string
                         required:
                         - aclUserConfig
-                        - sentinelConfig
                         type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of addr (standalone) or sentinelConfig
+                            (Sentinel) must be set
+                          rule: (self.addr.size() > 0) != has(self.sentinelConfig)
                       type:
                         default: memory
                         description: |-
@@ -571,7 +597,10 @@ spec:
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.
-                                Required for OAuth2 providers to resolve user identity.
+                                When omitted, the embedded auth server runs in synthesis mode for this
+                                upstream: a non-PII subject derived from the access token, no Name/Email.
+                                Use this shape for upstreams with no userinfo surface (e.g., MCP
+                                authorization servers per the MCP spec).
                               properties:
                                 additionalHeaders:
                                   additionalProperties:
@@ -633,7 +662,1054 @@ spec:
                           - authorizationEndpoint
                           - clientId
                           - tokenEndpoint
-                          - userInfo
+                          type: object
+                        oidcConfig:
+                          description: |-
+                            OIDCConfig contains OIDC-specific configuration.
+                            Required when Type is "oidc", must be nil when Type is "oauth2".
+                          properties:
+                            additionalAuthorizationParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalAuthorizationParams are extra query parameters to include in
+                                authorization requests sent to the upstream provider.
+                                This is useful for providers that require custom parameters, such as
+                                Google's access_type=offline for obtaining refresh tokens.
+                                Note: when using access_type=offline, also set explicit scopes to avoid
+                                the default offline_access scope being sent alongside it.
+                                Framework-managed parameters (response_type, client_id, redirect_uri,
+                                scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+                              maxProperties: 16
+                              type: object
+                            clientId:
+                              description: ClientID is the OAuth 2.0 client identifier
+                                registered with the upstream IDP.
+                              type: string
+                            clientSecretRef:
+                              description: |-
+                                ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.
+                                Optional for public clients using PKCE instead of client secret.
+                              properties:
+                                key:
+                                  description: Key is the key within the secret
+                                  type: string
+                                name:
+                                  description: Name is the name of the secret
+                                  type: string
+                              required:
+                              - key
+                              - name
+                              type: object
+                            issuerUrl:
+                              description: |-
+                                IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
+                                Must be a valid HTTPS URL.
+                              pattern: ^https://.*$
+                              type: string
+                            redirectUri:
+                              description: |-
+                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
+                                URL associated with the resource (e.g., MCPServer or vMCP) using this config.
+                              type: string
+                            scopes:
+                              description: |-
+                                Scopes are the OAuth scopes to request from the upstream IDP.
+                                If not specified, defaults to ["openid", "offline_access"].
+                                When using additionalAuthorizationParams with provider-specific refresh token
+                                mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
+                                sending both offline_access and the provider-specific parameter.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            userInfoOverride:
+                              description: |-
+                                UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.
+                                By default, the UserInfo endpoint is discovered automatically via OIDC discovery.
+                                Use this to override the endpoint URL, HTTP method, or field mappings for providers
+                                that return non-standard claim names in their UserInfo response.
+                              properties:
+                                additionalHeaders:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    AdditionalHeaders contains extra headers to include in the userinfo request.
+                                    Useful for providers that require specific headers (e.g., GitHub's Accept header).
+                                  type: object
+                                endpointUrl:
+                                  description: EndpointURL is the URL of the userinfo
+                                    endpoint.
+                                  pattern: ^https?://.*$
+                                  type: string
+                                fieldMapping:
+                                  description: |-
+                                    FieldMapping contains custom field mapping configuration for non-standard providers.
+                                    If nil, standard OIDC field names are used ("sub", "name", "email").
+                                  properties:
+                                    emailFields:
+                                      description: |-
+                                        EmailFields is an ordered list of field names to try for the email address.
+                                        The first non-empty value found will be used.
+                                        Default: ["email"]
+                                      items:
+                                        type: string
+                                      type: array
+                                      x-kubernetes-list-type: atomic
+                                    nameFields:
+                                      description: |-
+                                        NameFields is an ordered list of field names to try for the display name.
+                                        The first non-empty value found will be used.
+                                        Default: ["name"]
+                                      items:
+                                        type: string
+                                      type: array
+                                      x-kubernetes-list-type: atomic
+                                    subjectFields:
+                                      description: |-
+                                        SubjectFields is an ordered list of field names to try for the user ID.
+                                        The first non-empty value found will be used.
+                                        Default: ["sub"]
+                                      items:
+                                        type: string
+                                      type: array
+                                      x-kubernetes-list-type: atomic
+                                  type: object
+                                httpMethod:
+                                  description: |-
+                                    HTTPMethod is the HTTP method to use for the userinfo request.
+                                    If not specified, defaults to GET.
+                                  enum:
+                                  - GET
+                                  - POST
+                                  type: string
+                              required:
+                              - endpointUrl
+                              type: object
+                          required:
+                          - clientId
+                          - issuerUrl
+                          type: object
+                        type:
+                          description: 'Type specifies the provider type: "oidc" or
+                            "oauth2"'
+                          enum:
+                          - oidc
+                          - oauth2
+                          type: string
+                      required:
+                      - name
+                      - type
+                      type: object
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                required:
+                - issuer
+                - upstreamProviders
+                type: object
+              headerInjection:
+                description: |-
+                  HeaderInjection configures custom HTTP header injection
+                  Only used when Type is "headerInjection"
+                properties:
+                  headerName:
+                    description: HeaderName is the name of the HTTP header to inject
+                    minLength: 1
+                    type: string
+                  valueSecretRef:
+                    description: ValueSecretRef references a Kubernetes Secret containing
+                      the header value
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                required:
+                - headerName
+                - valueSecretRef
+                type: object
+              tokenExchange:
+                description: |-
+                  TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange
+                  Only used when Type is "tokenExchange"
+                properties:
+                  audience:
+                    description: Audience is the target audience for the exchanged
+                      token
+                    type: string
+                  clientId:
+                    description: |-
+                      ClientID is the OAuth 2.0 client identifier
+                      Optional for some token exchange flows (e.g., Google Cloud Workforce Identity)
+                    type: string
+                  clientSecretRef:
+                    description: |-
+                      ClientSecretRef is a reference to a secret containing the OAuth 2.0 client secret
+                      Optional for some token exchange flows (e.g., Google Cloud Workforce Identity)
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  externalTokenHeaderName:
+                    description: |-
+                      ExternalTokenHeaderName is the name of the custom header to use for the exchanged token.
+                      If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").
+                      If empty or not set, the exchanged token will replace the Authorization header (default behavior).
+                    type: string
+                  scopes:
+                    description: Scopes is a list of OAuth 2.0 scopes to request for
+                      the exchanged token
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  subjectProviderName:
+                    description: |-
+                      SubjectProviderName is the name of the upstream provider whose token is used as the
+                      RFC 8693 subject token instead of identity.Token when performing token exchange.
+                      When left empty and an embedded authorization server is configured on the VirtualMCPServer,
+                      the controller automatically populates this field with the first configured upstream
+                      provider name. Set it explicitly to override that default or to select a specific
+                      provider when multiple upstreams are configured.
+                    type: string
+                  subjectTokenType:
+                    description: |-
+                      SubjectTokenType is the type of the incoming subject token.
+                      Accepts short forms: "access_token" (default), "id_token", "jwt"
+                      Or full URNs: "urn:ietf:params:oauth:token-type:access_token",
+                                    "urn:ietf:params:oauth:token-type:id_token",
+                                    "urn:ietf:params:oauth:token-type:jwt"
+                      For Google Workload Identity Federation with OIDC providers (like Okta), use "id_token"
+                    pattern: ^(access_token|id_token|jwt|urn:ietf:params:oauth:token-type:(access_token|id_token|jwt))?$
+                    type: string
+                  tokenUrl:
+                    description: TokenURL is the OAuth 2.0 token endpoint URL for
+                      token exchange
+                    type: string
+                required:
+                - audience
+                - tokenUrl
+                type: object
+              type:
+                description: Type is the type of external authentication to configure
+                enum:
+                - tokenExchange
+                - headerInjection
+                - bearerToken
+                - unauthenticated
+                - embeddedAuthServer
+                - awsSts
+                - upstreamInject
+                type: string
+              upstreamInject:
+                description: |-
+                  UpstreamInject configures upstream token injection for backend requests.
+                  Only used when Type is "upstreamInject".
+                properties:
+                  providerName:
+                    description: |-
+                      ProviderName is the name of the upstream IDP provider whose access token
+                      should be injected as the Authorization: Bearer header.
+                    minLength: 1
+                    type: string
+                required:
+                - providerName
+                type: object
+            required:
+            - type
+            type: object
+            x-kubernetes-validations:
+            - message: tokenExchange configuration must be set if and only if type
+                is 'tokenExchange'
+              rule: 'self.type == ''tokenExchange'' ? has(self.tokenExchange) : !has(self.tokenExchange)'
+            - message: headerInjection configuration must be set if and only if type
+                is 'headerInjection'
+              rule: 'self.type == ''headerInjection'' ? has(self.headerInjection)
+                : !has(self.headerInjection)'
+            - message: bearerToken configuration must be set if and only if type is
+                'bearerToken'
+              rule: 'self.type == ''bearerToken'' ? has(self.bearerToken) : !has(self.bearerToken)'
+            - message: embeddedAuthServer configuration must be set if and only if
+                type is 'embeddedAuthServer'
+              rule: 'self.type == ''embeddedAuthServer'' ? has(self.embeddedAuthServer)
+                : !has(self.embeddedAuthServer)'
+            - message: awsSts configuration must be set if and only if type is 'awsSts'
+              rule: 'self.type == ''awsSts'' ? has(self.awsSts) : !has(self.awsSts)'
+            - message: upstreamInject configuration must be set if and only if type
+                is 'upstreamInject'
+              rule: 'self.type == ''upstreamInject'' ? has(self.upstreamInject) :
+                !has(self.upstreamInject)'
+            - message: no configuration must be set when type is 'unauthenticated'
+              rule: 'self.type == ''unauthenticated'' ? (!has(self.tokenExchange)
+                && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer)
+                && !has(self.awsSts) && !has(self.upstreamInject)) : true'
+          status:
+            description: MCPExternalAuthConfigStatus defines the observed state of
+              MCPExternalAuthConfig
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the MCPExternalAuthConfig's state
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              configHash:
+                description: ConfigHash is a hash of the current configuration for
+                  change detection
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the most recent generation observed for this MCPExternalAuthConfig.
+                  It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server.
+                format: int64
+                type: integer
+              referencingWorkloads:
+                description: |-
+                  ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.
+                  Each entry identifies the workload by kind and name.
+                items:
+                  description: |-
+                    WorkloadReference identifies a workload that references a shared configuration resource.
+                    Namespace is implicit — cross-namespace references are not supported.
+                  properties:
+                    kind:
+                      description: Kind is the type of workload resource
+                      enum:
+                      - MCPServer
+                      - VirtualMCPServer
+                      - MCPRemoteProxy
+                      type: string
+                    name:
+                      description: Name is the name of the workload resource
+                      minLength: 1
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+            type: object
+        type: object
+    served: true
+    storage: false
+    subresources:
+      status: {}
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Valid')].status
+      name: Valid
+      type: string
+    - jsonPath: .status.referencingWorkloads
+      name: References
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.
+          MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
+          MCPServer resources within the same namespace. Cross-namespace references
+          are not supported for security and isolation reasons.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              MCPExternalAuthConfigSpec defines the desired state of MCPExternalAuthConfig.
+              MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
+              MCPServer resources in the same namespace.
+            properties:
+              awsSts:
+                description: |-
+                  AWSSts configures AWS STS authentication with SigV4 request signing
+                  Only used when Type is "awsSts"
+                properties:
+                  fallbackRoleArn:
+                    description: |-
+                      FallbackRoleArn is the IAM role ARN to assume when no role mappings match
+                      Used as the default role when RoleMappings is empty or no mapping matches
+                      At least one of FallbackRoleArn or RoleMappings must be configured (enforced by webhook)
+                    pattern: ^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:role/[\w+=,.@\-_/]+$
+                    type: string
+                  region:
+                    description: Region is the AWS region for the STS endpoint and
+                      service (e.g., "us-east-1", "eu-west-1")
+                    minLength: 1
+                    pattern: ^[a-z]{2}(-[a-z]+)+-\d+$
+                    type: string
+                  roleClaim:
+                    default: groups
+                    description: |-
+                      RoleClaim is the JWT claim to use for role mapping evaluation
+                      Defaults to "groups" to match common OIDC group claims
+                    type: string
+                  roleMappings:
+                    description: |-
+                      RoleMappings defines claim-based role selection rules
+                      Allows mapping JWT claims (e.g., groups, roles) to specific IAM roles
+                      Lower priority values are evaluated first (higher priority)
+                    items:
+                      description: |-
+                        RoleMapping defines a rule for mapping JWT claims to IAM roles.
+                        Mappings are evaluated in priority order (lower number = higher priority), and the first
+                        matching rule determines which IAM role to assume.
+                        Exactly one of Claim or Matcher must be specified.
+                      properties:
+                        claim:
+                          description: |-
+                            Claim is a simple claim value to match against
+                            The claim type is specified by AWSStsConfig.RoleClaim
+                            For example, if RoleClaim is "groups", this would be a group name
+                            Internally compiled to a CEL expression: "<claim_value>" in claims["<role_claim>"]
+                            Mutually exclusive with Matcher
+                          minLength: 1
+                          type: string
+                        matcher:
+                          description: |-
+                            Matcher is a CEL expression for complex matching against JWT claims
+                            The expression has access to a "claims" variable containing all JWT claims as map[string]any
+                            Examples:
+                              - "admins" in claims["groups"]
+                              - claims["sub"] == "user123" && !("act" in claims)
+                            Mutually exclusive with Claim
+                          minLength: 1
+                          type: string
+                        priority:
+                          description: |-
+                            Priority determines evaluation order (lower values = higher priority)
+                            Allows fine-grained control over role selection precedence
+                            When omitted, this mapping has the lowest possible priority and
+                            configuration order acts as tie-breaker via stable sort
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        roleArn:
+                          description: RoleArn is the IAM role ARN to assume when
+                            this mapping matches
+                          pattern: ^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:role/[\w+=,.@\-_/]+$
+                          type: string
+                      required:
+                      - roleArn
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  service:
+                    default: aws-mcp
+                    description: |-
+                      Service is the AWS service name for SigV4 signing
+                      Defaults to "aws-mcp" for AWS MCP Server endpoints
+                    type: string
+                  sessionDuration:
+                    default: 3600
+                    description: |-
+                      SessionDuration is the duration in seconds for the STS session
+                      Must be between 900 (15 minutes) and 43200 (12 hours)
+                      Defaults to 3600 (1 hour) if not specified
+                    format: int32
+                    maximum: 43200
+                    minimum: 900
+                    type: integer
+                  sessionNameClaim:
+                    default: sub
+                    description: |-
+                      SessionNameClaim is the JWT claim to use for role session name
+                      Defaults to "sub" to use the subject claim
+                    type: string
+                  subjectProviderName:
+                    description: |-
+                      SubjectProviderName is the name of the upstream provider whose access token
+                      is used as the web identity token for STS AssumeRoleWithWebIdentity.
+                      This field is used exclusively by VirtualMCPServer, where there is no
+                      upstream swap middleware to replace the bearer token before the strategy runs.
+                      When left empty and an embedded authorization server is configured on the
+                      VirtualMCPServer, the controller automatically populates this field with
+                      the first configured upstream provider name. Set it explicitly to override
+                      that default or to select a specific provider when multiple upstreams are
+                      configured.
+                      When no embedded auth server is present, the bearer token from the incoming
+                      request's Authorization header is used instead.
+                    type: string
+                required:
+                - region
+                type: object
+              bearerToken:
+                description: |-
+                  BearerToken configures bearer token authentication
+                  Only used when Type is "bearerToken"
+                properties:
+                  tokenSecretRef:
+                    description: TokenSecretRef references a Kubernetes Secret containing
+                      the bearer token
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                required:
+                - tokenSecretRef
+                type: object
+              embeddedAuthServer:
+                description: |-
+                  EmbeddedAuthServer configures an embedded OAuth2/OIDC authorization server
+                  Only used when Type is "embeddedAuthServer"
+                properties:
+                  authorizationEndpointBaseUrl:
+                    description: |-
+                      AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint
+                      in the OAuth discovery document. When set, the discovery document will advertise
+                      `{authorizationEndpointBaseUrl}/oauth/authorize` instead of `{issuer}/oauth/authorize`.
+                      All other endpoints (token, registration, JWKS) remain derived from the issuer.
+                      This is useful when the browser-facing authorization endpoint needs to be on a
+                      different host than the issuer used for backend-to-backend calls.
+                      Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
+                    pattern: ^https?://[^\s?#]+[^/\s?#]$
+                    type: string
+                  hmacSecretRefs:
+                    description: |-
+                      HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
+                      authorization codes and refresh tokens (opaque tokens).
+                      Current secret must be at least 32 bytes and cryptographically random.
+                      Supports secret rotation via multiple entries (first is current, rest are for verification).
+                      If not specified, an ephemeral secret will be auto-generated (development only -
+                      auth codes and refresh tokens will be invalid after restart).
+                    items:
+                      description: SecretKeyRef is a reference to a key within a Secret
+                      properties:
+                        key:
+                          description: Key is the key within the secret
+                          type: string
+                        name:
+                          description: Name is the name of the secret
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  issuer:
+                    description: |-
+                      Issuer is the issuer identifier for this authorization server.
+                      This will be included in the "iss" claim of issued tokens.
+                      Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
+                    pattern: ^https?://[^\s?#]+[^/\s?#]$
+                    type: string
+                  signingKeySecretRefs:
+                    description: |-
+                      SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
+                      Supports key rotation by allowing multiple keys (oldest keys are used for verification only).
+                      If not specified, an ephemeral signing key will be auto-generated (development only -
+                      JWTs will be invalid after restart).
+                    items:
+                      description: SecretKeyRef is a reference to a key within a Secret
+                      properties:
+                        key:
+                          description: Key is the key within the secret
+                          type: string
+                        name:
+                          description: Name is the name of the secret
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                    maxItems: 5
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  storage:
+                    description: |-
+                      Storage configures the storage backend for the embedded auth server.
+                      If not specified, defaults to in-memory storage.
+                    properties:
+                      redis:
+                        description: |-
+                          Redis configures the Redis storage backend.
+                          Required when type is "redis".
+                        properties:
+                          aclUserConfig:
+                            description: ACLUserConfig configures Redis ACL user authentication.
+                            properties:
+                              passwordSecretRef:
+                                description: PasswordSecretRef references a Secret
+                                  containing the Redis ACL password.
+                                properties:
+                                  key:
+                                    description: Key is the key within the secret
+                                    type: string
+                                  name:
+                                    description: Name is the name of the secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              usernameSecretRef:
+                                description: |-
+                                  UsernameSecretRef references a Secret containing the Redis ACL username.
+                                  When omitted, connections use legacy password-only AUTH. Omit for managed
+                                  Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard
+                                  HA, Azure Cache for Redis). Set for services that support ACL users (e.g. AWS
+                                  ElastiCache non-cluster with Redis 6+ RBAC).
+                                properties:
+                                  key:
+                                    description: Key is the key within the secret
+                                    type: string
+                                  name:
+                                    description: Name is the name of the secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                            required:
+                            - passwordSecretRef
+                            type: object
+                          addr:
+                            description: |-
+                              Addr is the Redis server address for standalone mode (e.g., "host:port").
+                              Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present
+                              a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig.
+                            type: string
+                          dialTimeout:
+                            default: 5s
+                            description: |-
+                              DialTimeout is the timeout for establishing connections.
+                              Format: Go duration string (e.g., "5s", "1m").
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
+                          readTimeout:
+                            default: 3s
+                            description: |-
+                              ReadTimeout is the timeout for socket reads.
+                              Format: Go duration string (e.g., "3s", "1m").
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
+                          sentinelConfig:
+                            description: |-
+                              SentinelConfig holds Redis Sentinel configuration.
+                              Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr.
+                            properties:
+                              db:
+                                default: 0
+                                description: DB is the Redis database number.
+                                format: int32
+                                type: integer
+                              masterName:
+                                description: MasterName is the name of the Redis master
+                                  monitored by Sentinel.
+                                type: string
+                              sentinelAddrs:
+                                description: |-
+                                  SentinelAddrs is a list of Sentinel host:port addresses.
+                                  Mutually exclusive with SentinelService.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              sentinelService:
+                                description: |-
+                                  SentinelService enables automatic discovery from a Kubernetes Service.
+                                  Mutually exclusive with SentinelAddrs.
+                                properties:
+                                  name:
+                                    description: Name of the Sentinel Service.
+                                    type: string
+                                  namespace:
+                                    description: Namespace of the Sentinel Service
+                                      (defaults to same namespace).
+                                    type: string
+                                  port:
+                                    default: 26379
+                                    description: Port of the Sentinel service.
+                                    format: int32
+                                    type: integer
+                                required:
+                                - name
+                                type: object
+                            required:
+                            - masterName
+                            type: object
+                          sentinelTls:
+                            description: |-
+                              SentinelTLS configures TLS for connections to Sentinel instances.
+                              Only applies when sentinelConfig is set. Presence of this field enables TLS.
+                            properties:
+                              caCertSecretRef:
+                                description: |-
+                                  CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+                                  for verifying the server. When not specified, system root CAs are used.
+                                properties:
+                                  key:
+                                    description: Key is the key within the secret
+                                    type: string
+                                  name:
+                                    description: Name is the name of the secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              insecureSkipVerify:
+                                description: |-
+                                  InsecureSkipVerify skips TLS certificate verification.
+                                  Use when connecting to services with self-signed certificates.
+                                type: boolean
+                            type: object
+                          tls:
+                            description: |-
+                              TLS configures TLS for connections to the Redis/Valkey master.
+                              Presence of this field enables TLS. Omit to use plaintext.
+                            properties:
+                              caCertSecretRef:
+                                description: |-
+                                  CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+                                  for verifying the server. When not specified, system root CAs are used.
+                                properties:
+                                  key:
+                                    description: Key is the key within the secret
+                                    type: string
+                                  name:
+                                    description: Name is the name of the secret
+                                    type: string
+                                required:
+                                - key
+                                - name
+                                type: object
+                              insecureSkipVerify:
+                                description: |-
+                                  InsecureSkipVerify skips TLS certificate verification.
+                                  Use when connecting to services with self-signed certificates.
+                                type: boolean
+                            type: object
+                          writeTimeout:
+                            default: 3s
+                            description: |-
+                              WriteTimeout is the timeout for socket writes.
+                              Format: Go duration string (e.g., "3s", "1m").
+                            pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                            type: string
+                        required:
+                        - aclUserConfig
+                        type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of addr (standalone) or sentinelConfig
+                            (Sentinel) must be set
+                          rule: (self.addr.size() > 0) != has(self.sentinelConfig)
+                      type:
+                        default: memory
+                        description: |-
+                          Type specifies the storage backend type.
+                          Valid values: "memory" (default), "redis".
+                        enum:
+                        - memory
+                        - redis
+                        type: string
+                    type: object
+                  tokenLifespans:
+                    description: |-
+                      TokenLifespans configures the duration that various tokens are valid.
+                      If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m).
+                    properties:
+                      accessTokenLifespan:
+                        description: |-
+                          AccessTokenLifespan is the duration that access tokens are valid.
+                          Format: Go duration string (e.g., "1h", "30m", "24h").
+                          If empty, defaults to 1 hour.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                      authCodeLifespan:
+                        description: |-
+                          AuthCodeLifespan is the duration that authorization codes are valid.
+                          Format: Go duration string (e.g., "10m", "5m").
+                          If empty, defaults to 10 minutes.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                      refreshTokenLifespan:
+                        description: |-
+                          RefreshTokenLifespan is the duration that refresh tokens are valid.
+                          Format: Go duration string (e.g., "168h", "7d" as "168h").
+                          If empty, defaults to 7 days (168h).
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                    type: object
+                  upstreamProviders:
+                    description: |-
+                      UpstreamProviders configures connections to upstream Identity Providers.
+                      The embedded auth server delegates authentication to these providers.
+                      MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
+                    items:
+                      description: UpstreamProviderConfig defines configuration for
+                        an upstream Identity Provider.
+                      properties:
+                        name:
+                          description: |-
+                            Name uniquely identifies this upstream provider.
+                            Used for routing decisions and session binding in multi-upstream scenarios.
+                            Must be lowercase alphanumeric with hyphens (DNS-label-like).
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                          type: string
+                        oauth2Config:
+                          description: |-
+                            OAuth2Config contains OAuth 2.0-specific configuration.
+                            Required when Type is "oauth2", must be nil when Type is "oidc".
+                          properties:
+                            additionalAuthorizationParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalAuthorizationParams are extra query parameters to include in
+                                authorization requests sent to the upstream provider.
+                                This is useful for providers that require custom parameters, such as
+                                Google's access_type=offline for obtaining refresh tokens.
+                                Framework-managed parameters (response_type, client_id, redirect_uri,
+                                scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
+                              maxProperties: 16
+                              type: object
+                            authorizationEndpoint:
+                              description: AuthorizationEndpoint is the URL for the
+                                OAuth authorization endpoint.
+                              pattern: ^https?://.*$
+                              type: string
+                            clientId:
+                              description: ClientID is the OAuth 2.0 client identifier
+                                registered with the upstream IDP.
+                              type: string
+                            clientSecretRef:
+                              description: |-
+                                ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.
+                                Optional for public clients using PKCE instead of client secret.
+                              properties:
+                                key:
+                                  description: Key is the key within the secret
+                                  type: string
+                                name:
+                                  description: Name is the name of the secret
+                                  type: string
+                              required:
+                              - key
+                              - name
+                              type: object
+                            redirectUri:
+                              description: |-
+                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
+                                URL associated with the resource (e.g., MCPServer or vMCP) using this config.
+                              type: string
+                            scopes:
+                              description: Scopes are the OAuth scopes to request
+                                from the upstream IDP.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            tokenEndpoint:
+                              description: TokenEndpoint is the URL for the OAuth
+                                token endpoint.
+                              pattern: ^https?://.*$
+                              type: string
+                            tokenResponseMapping:
+                              description: |-
+                                TokenResponseMapping configures custom field extraction from non-standard token responses.
+                                Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths
+                                instead of returning them at the top level. When set, ToolHive performs the token
+                                exchange HTTP call directly and extracts fields using the configured dot-notation paths.
+                                If nil, standard OAuth 2.0 token response parsing is used.
+                              properties:
+                                accessTokenPath:
+                                  description: |-
+                                    AccessTokenPath is the dot-notation path to the access token in the response.
+                                    Example: "authed_user.access_token"
+                                  minLength: 1
+                                  type: string
+                                expiresInPath:
+                                  description: |-
+                                    ExpiresInPath is the dot-notation path to the expires_in value (in seconds).
+                                    If not specified, defaults to "expires_in".
+                                  type: string
+                                refreshTokenPath:
+                                  description: |-
+                                    RefreshTokenPath is the dot-notation path to the refresh token in the response.
+                                    If not specified, defaults to "refresh_token".
+                                  type: string
+                                scopePath:
+                                  description: |-
+                                    ScopePath is the dot-notation path to the scope string in the response.
+                                    If not specified, defaults to "scope".
+                                  type: string
+                              required:
+                              - accessTokenPath
+                              type: object
+                            userInfo:
+                              description: |-
+                                UserInfo contains configuration for fetching user information from the upstream provider.
+                                When omitted, the embedded auth server runs in synthesis mode for this
+                                upstream: a non-PII subject derived from the access token, no Name/Email.
+                                Use this shape for upstreams with no userinfo surface (e.g., MCP
+                                authorization servers per the MCP spec).
+                              properties:
+                                additionalHeaders:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    AdditionalHeaders contains extra headers to include in the userinfo request.
+                                    Useful for providers that require specific headers (e.g., GitHub's Accept header).
+                                  type: object
+                                endpointUrl:
+                                  description: EndpointURL is the URL of the userinfo
+                                    endpoint.
+                                  pattern: ^https?://.*$
+                                  type: string
+                                fieldMapping:
+                                  description: |-
+                                    FieldMapping contains custom field mapping configuration for non-standard providers.
+                                    If nil, standard OIDC field names are used ("sub", "name", "email").
+                                  properties:
+                                    emailFields:
+                                      description: |-
+                                        EmailFields is an ordered list of field names to try for the email address.
+                                        The first non-empty value found will be used.
+                                        Default: ["email"]
+                                      items:
+                                        type: string
+                                      type: array
+                                      x-kubernetes-list-type: atomic
+                                    nameFields:
+                                      description: |-
+                                        NameFields is an ordered list of field names to try for the display name.
+                                        The first non-empty value found will be used.
+                                        Default: ["name"]
+                                      items:
+                                        type: string
+                                      type: array
+                                      x-kubernetes-list-type: atomic
+                                    subjectFields:
+                                      description: |-
+                                        SubjectFields is an ordered list of field names to try for the user ID.
+                                        The first non-empty value found will be used.
+                                        Default: ["sub"]
+                                      items:
+                                        type: string
+                                      type: array
+                                      x-kubernetes-list-type: atomic
+                                  type: object
+                                httpMethod:
+                                  description: |-
+                                    HTTPMethod is the HTTP method to use for the userinfo request.
+                                    If not specified, defaults to GET.
+                                  enum:
+                                  - GET
+                                  - POST
+                                  type: string
+                              required:
+                              - endpointUrl
+                              type: object
+                          required:
+                          - authorizationEndpoint
+                          - clientId
+                          - tokenEndpoint
                           type: object
                         oidcConfig:
                           description: |-

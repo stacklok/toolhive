@@ -74,6 +74,12 @@ jobs:
           - title: api-misc
             label_filter: api-misc
             artifact: e2e-test-results-api-misc
+          - title: vmcp
+            label_filter: vmcp
+            artifact: e2e-test-results-vmcp
+          - title: llm
+            label_filter: llm
+            artifact: e2e-test-results-llm
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -115,9 +121,13 @@ jobs:
           docker pull ghcr.io/stackloklabs/osv-mcp/server:0.1.0 &
           docker pull ghcr.io/stackloklabs/gofetch/server:1.0.2 &
           docker pull ghcr.io/stacklok/toolhive/egress-proxy:latest &
+          # yardstick is only needed for the vmcp test suite
+          if [ "${{ matrix.label_filter }}" = "vmcp" ]; then
+            docker pull ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1 &
+          fi
           wait
           echo "Pre-pulled images:"
-          docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'osv-mcp|gofetch|egress-proxy'
+          docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'osv-mcp|gofetch|egress-proxy|yardstick'
 
       - name: Run E2E tests (${{ matrix.title }})
         env:

@@ -15,7 +15,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -39,11 +39,11 @@ const (
 
 // MiddlewareParams holds the parameters for the rate limit middleware factory.
 type MiddlewareParams struct {
-	Namespace  string                    `json:"namespace"`
-	ServerName string                    `json:"server_name"`
-	Config     *v1alpha1.RateLimitConfig `json:"config"`
-	RedisAddr  string                    `json:"redis_addr,omitempty"`
-	RedisDB    int32                     `json:"redis_db,omitempty"`
+	Namespace  string                   `json:"namespace"`
+	ServerName string                   `json:"server_name"`
+	Config     *v1beta1.RateLimitConfig `json:"config"`
+	RedisAddr  string                   `json:"redis_addr,omitempty"`
+	RedisDB    int32                    `json:"redis_db,omitempty"`
 }
 
 // rateLimitMiddleware wraps rate limiting functionality for the factory pattern.

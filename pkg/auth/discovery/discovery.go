@@ -29,7 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/networking"
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // Default timeout constants for authentication operations
@@ -53,10 +53,11 @@ type AuthInfo struct {
 
 // AuthServerInfo contains information about a validated authorization server
 type AuthServerInfo struct {
-	Issuer               string
-	AuthorizationURL     string
-	TokenURL             string
-	RegistrationEndpoint string
+	Issuer                            string
+	AuthorizationURL                  string
+	TokenURL                          string
+	RegistrationEndpoint              string
+	ClientIDMetadataDocumentSupported bool
 }
 
 // Config holds configuration for authentication discovery
@@ -539,9 +540,10 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		return nil, fmt.Errorf("OAuth flow config cannot be nil")
 	}
 
-	// Resolve port availability BEFORE dynamic registration
-	// This ensures we register the OAuth client with the same port we'll actually use
-
+	// Resolve port availability before registration. DCR clients allow port fallback
+	// because the actual port is registered after selection. Pre-registered and CIMD
+	// clients require the configured port to be available as-is — it is already
+	// published in their IdP application or metadata document redirect URI.
 	if shouldDynamicallyRegisterClient(config) {
 		// For dynamic registration, we can allow fallback to alternative ports
 		// since we can register the client with the actual port we'll use
@@ -555,8 +557,9 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		}
 		config.CallbackPort = port
 	} else {
-		// For pre-registered clients, use strict port checking
-		// The user likely configured this port in their IdP/app
+		// For pre-registered clients and CIMD, use strict port checking.
+		// The port is either configured in the IdP app or baked into the
+		// redirect URI in the hosted metadata document.
 		if !networking.IsAvailable(config.CallbackPort) {
 			return nil, fmt.Errorf(
 				"specified auth callback port %d is not available - please choose a different port or ensure it's not in use",
@@ -721,20 +724,28 @@ func registerDynamicClient(
 	ctx context.Context,
 	config *OAuthFlowConfig,
 	discoveredDoc *oauthproto.OIDCDiscoveryDocument,
-) (*oauth.DynamicClientRegistrationResponse, error) {
+) (*oauthproto.DynamicClientRegistrationResponse, error) {
 
-	// Check if the provider supports Dynamic Client Registration
+	// Check if the provider supports Dynamic Client Registration.
+	// The CLI-flag hint below is intentional: this function is CLI-facing
+	// (pkg/auth/discovery is not a protocol-level package) and the flags
+	// named here are the correct fallback for operators who need to supply
+	// credentials manually. The protocol-neutral version of this message lives
+	// in pkg/oauthproto.handleHTTPResponse for the HTTP 404/405/501 paths.
+	// TODO(#4978): when authserver wiring is added, consider surfacing a
+	// more structured error type here so non-CLI consumers can inspect the cause.
 	if discoveredDoc.RegistrationEndpoint == "" {
 		return nil, fmt.Errorf("this provider does not support Dynamic Client Registration (DCR). " +
 			"Please configure OAuth client credentials using --remote-auth-client-id and --remote-auth-client-secret flags, " +
 			"or register a client manually with the provider")
 	}
 
-	// Use default client name if not provided
-	registrationRequest := oauth.NewDynamicClientRegistrationRequest(config.Scopes, config.CallbackPort)
+	// Build the CLI-specific DCR request (loopback redirect URI per RFC 8252 Section 7.3)
+	registrationRequest := NewDynamicClientRegistrationRequest(config.Scopes, config.CallbackPort)
 
-	// Perform dynamic client registration
-	registrationResponse, err := oauth.RegisterClientDynamically(ctx, discoveredDoc.RegistrationEndpoint, registrationRequest)
+	// Perform dynamic client registration; nil client uses the default HTTP client.
+	registrationResponse, err := oauthproto.RegisterClientDynamically(
+		ctx, discoveredDoc.RegistrationEndpoint, registrationRequest, nil)
 	if err != nil {
 		return nil, fmt.Errorf("dynamic client registration failed: %w", err)
 	}
@@ -828,10 +839,11 @@ func ValidateAndDiscoverAuthServer(ctx context.Context, potentialIssuer string) 
 		}
 
 		return &AuthServerInfo{
-			Issuer:               doc.Issuer,
-			AuthorizationURL:     doc.AuthorizationEndpoint,
-			TokenURL:             doc.TokenEndpoint,
-			RegistrationEndpoint: doc.RegistrationEndpoint,
+			Issuer:                            doc.Issuer,
+			AuthorizationURL:                  doc.AuthorizationEndpoint,
+			TokenURL:                          doc.TokenEndpoint,
+			RegistrationEndpoint:              doc.RegistrationEndpoint,
+			ClientIDMetadataDocumentSupported: doc.ClientIDMetadataDocumentSupported,
 		}, nil
 	}
 

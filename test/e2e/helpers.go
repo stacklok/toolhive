@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -328,4 +329,35 @@ func RemoveGroup(config *TestConfig, groupName string) error {
 func CreateAndTrackGroup(config *TestConfig, groupName string, createdGroups *[]string) {
 	NewTHVCommand(config, "group", "create", groupName).ExpectSuccess()
 	*createdGroups = append(*createdGroups, groupName)
+}
+
+// CreateFakeBrowserDir writes stub open/xdg-open scripts into a "fakebin"
+// subdirectory of tempDir. The stubs GET the auth URL without following the
+// redirect, so the OIDC mock server receives the request and populates
+// authRequestChan while CompleteAuthRequest drives the callback.
+// Returns the directory so callers can prepend it to PATH.
+func CreateFakeBrowserDir(tempDir string) (string, error) {
+	dir := filepath.Join(tempDir, "fakebin")
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return "", err
+	}
+	// curl: -sf = silent + fail-on-HTTP-error; no -L so 302 is not followed.
+	// wget: --max-redirect=0 prevents following the 302 to the callback URL,
+	//       which would race with CompleteAuthRequest and make the test flaky.
+	// If neither tool is available the script exits 1 with a clear message so
+	// the test fails fast instead of hanging until WaitForAuthRequest times out.
+	script := []byte("#!/bin/sh\n" +
+		"if command -v curl >/dev/null 2>&1; then\n" +
+		"  curl -sf \"$1\" >/dev/null 2>&1\n" +
+		"elif command -v wget >/dev/null 2>&1; then\n" +
+		"  wget -q --max-redirect=0 \"$1\" -O /dev/null 2>&1\n" +
+		"else\n" +
+		"  echo 'fake-browser: neither curl nor wget found' >&2; exit 1\n" +
+		"fi\n")
+	for _, name := range []string{"open", "xdg-open"} {
+		if err := os.WriteFile(filepath.Join(dir, name), script, 0750); err != nil { //nolint:gosec // shell scripts must be executable
+			return "", err
+		}
+	}
+	return dir, nil
 }

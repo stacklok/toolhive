@@ -177,6 +177,27 @@ func TestRemoteRegistryProvider_CreationError(t *testing.T) {
 func TestRemoteRegistryProvider_ValidateConnectivity(t *testing.T) {
 	t.Parallel()
 
+	const upstreamWithServer = `{
+		"$schema": "https://example.com/schema.json",
+		"version": "1.0.0",
+		"meta": {"last_updated": "2025-01-01T00:00:00Z"},
+		"data": {
+			"servers": [
+				{
+					"name": "io.example.test-server",
+					"description": "Test server",
+					"packages": [
+						{
+							"registryType": "oci",
+							"identifier": "example/test-server:latest",
+							"transport": {"type": "stdio"}
+						}
+					]
+				}
+			]
+		}
+	}`
+
 	tests := []struct {
 		name           string
 		responseBody   string
@@ -185,17 +206,8 @@ func TestRemoteRegistryProvider_ValidateConnectivity(t *testing.T) {
 		errorContains  string
 	}{
 		{
-			name: "valid registry JSON",
-			responseBody: `{
-				"version": "1.0.0",
-				"last_updated": "2023-01-01T00:00:00Z",
-				"servers": {
-					"test-server": {
-						"image": "test/image:latest",
-						"description": "Test server"
-					}
-				}
-			}`,
+			name:           "valid upstream registry",
+			responseBody:   upstreamWithServer,
 			responseStatus: 200,
 			expectError:    false,
 		},
@@ -204,44 +216,21 @@ func TestRemoteRegistryProvider_ValidateConnectivity(t *testing.T) {
 			responseBody:   `{"not valid json`,
 			responseStatus: 200,
 			expectError:    true,
-			errorContains:  "invalid JSON",
+			errorContains:  "invalid upstream JSON",
 		},
 		{
-			name:           "valid JSON but not registry structure",
-			responseBody:   `{"some": "other", "data": "here"}`,
+			name:           "upstream format with empty servers and groups",
+			responseBody:   `{"$schema": "x", "version": "1.0", "meta": {}, "data": {"servers": []}}`,
 			responseStatus: 200,
 			expectError:    true,
-			errorContains:  "invalid structure",
+			errorContains:  "no servers or groups",
 		},
 		{
-			name: "registry with only remote servers",
-			responseBody: `{
-				"version": "1.0.0",
-				"last_updated": "2023-01-01T00:00:00Z",
-				"remote_servers": {
-					"test-remote": {
-						"url": "https://example.com",
-						"description": "Test remote server"
-					}
-				}
-			}`,
+			name:           "legacy format surfaces migration hint",
+			responseBody:   `{"version": "1.0.0", "servers": {"x": {"image": "x:latest"}}}`,
 			responseStatus: 200,
-			expectError:    false,
-		},
-		{
-			name: "registry with groups",
-			responseBody: `{
-				"version": "1.0.0",
-				"last_updated": "2023-01-01T00:00:00Z",
-				"groups": [
-					{
-						"name": "test-group",
-						"servers": {}
-					}
-				]
-			}`,
-			responseStatus: 200,
-			expectError:    false,
+			expectError:    true,
+			errorContains:  "legacy ToolHive format",
 		},
 		{
 			name:           "non-200 status code",
@@ -274,72 +263,6 @@ func TestRemoteRegistryProvider_ValidateConnectivity(t *testing.T) {
 				assert.NotNil(t, provider)
 			}
 		})
-	}
-}
-
-func TestLocalRegistryProviderWithLocalFile(t *testing.T) {
-	t.Parallel()
-
-	// Create a temporary registry file
-	tempDir := t.TempDir()
-	registryFile := filepath.Join(tempDir, "test_registry.json")
-
-	// Write test registry data
-	testRegistry := `{
-		"version": "1.0.0",
-		"last_updated": "2023-01-01T00:00:00Z",
-		"servers": {
-			"test-server": {
-				"image": "test/image:latest",
-				"description": "Test server",
-				"tier": "community",
-				"status": "active",
-				"transport": "stdio",
-				"permissions": {
-					"allow_local_resource_access": false,
-					"allow_internet_access": false
-				},
-				"tools": ["test-tool"],
-				"env_vars": [],
-				"args": []
-			}
-		}
-	}`
-
-	err := os.WriteFile(registryFile, []byte(testRegistry), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write test registry file: %v", err)
-	}
-
-	// Test with local file path
-	provider := NewLocalRegistryProvider(registryFile)
-
-	// Test GetRegistry
-	registry, err := provider.GetRegistry()
-	if err != nil {
-		t.Fatalf("GetRegistry() error = %v", err)
-	}
-
-	if registry == nil {
-		t.Fatal("GetRegistry() returned nil registry")
-		return
-	}
-
-	if len(registry.Servers) != 1 {
-		t.Errorf("Expected 1 server, got %d", len(registry.Servers))
-	}
-
-	server, exists := registry.Servers["test-server"]
-	if !exists {
-		t.Error("Expected test-server to exist in registry")
-	}
-
-	if server.Name != "test-server" {
-		t.Errorf("Expected server name 'test-server', got '%s'", server.Name)
-	}
-
-	if server.Image != "test/image:latest" {
-		t.Errorf("Expected image 'test/image:latest', got '%s'", server.Image)
 	}
 }
 
@@ -385,39 +308,6 @@ func TestLocalRegistryProviderWithUpstreamFormatFile(t *testing.T) {
 	require.NotNil(t, registry)
 
 	assert.NotEmpty(t, registry.Servers, "Should have at least one container server")
-}
-
-func TestLocalRegistryProviderLegacyFormatFallback(t *testing.T) {
-	t.Parallel()
-
-	// Create a legacy-format registry file
-	tempDir := t.TempDir()
-	registryFile := filepath.Join(tempDir, "legacy_registry.json")
-
-	testRegistry := `{
-		"version": "1.0.0",
-		"last_updated": "2023-01-01T00:00:00Z",
-		"servers": {
-			"test-server": {
-				"image": "test/image:latest",
-				"description": "Test server"
-			}
-		}
-	}`
-
-	err := os.WriteFile(registryFile, []byte(testRegistry), 0644)
-	require.NoError(t, err)
-
-	provider := NewLocalRegistryProvider(registryFile)
-
-	registry, err := provider.GetRegistry()
-	require.NoError(t, err)
-	require.NotNil(t, registry)
-
-	assert.Len(t, registry.Servers, 1)
-	server, exists := registry.Servers["test-server"]
-	assert.True(t, exists)
-	assert.Equal(t, "test/image:latest", server.Image)
 }
 
 func TestRemoteRegistryProvider_UpstreamFormat(t *testing.T) {
@@ -742,57 +632,6 @@ func TestListServers(t *testing.T) {
 	}
 }
 
-func TestParseRegistryData(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		data        []byte
-		expectError bool
-	}{
-		{
-			name: "valid registry data",
-			data: []byte(`{
-				"version": "1.0.0",
-				"last_updated": "2023-01-01T00:00:00Z",
-				"servers": {
-					"test-server": {
-						"image": "test/image:latest",
-						"description": "Test server"
-					}
-				}
-			}`),
-			expectError: false,
-		},
-		{
-			name:        "invalid JSON",
-			data:        []byte(`invalid json`),
-			expectError: true,
-		},
-		{
-			name:        "empty data",
-			data:        []byte(``),
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			registry, err := parseRegistryData(tt.data)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				assert.Nil(t, registry)
-			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, registry)
-			}
-		})
-	}
-}
-
 func TestLocalRegistryProvider_FileReadError(t *testing.T) {
 	t.Parallel()
 
@@ -804,6 +643,27 @@ func TestLocalRegistryProvider_FileReadError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, registry)
 	assert.Contains(t, err.Error(), "failed to read local registry file")
+}
+
+// TestLocalRegistryProvider_LegacyFileReturnsMigrationHint covers the upgrade
+// scenario: a user with a legacy --local-registry-path on disk should get a
+// clear migration hint, not an empty registry.
+func TestLocalRegistryProvider_LegacyFileReturnsMigrationHint(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "registry.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+		"version": "1.0.0",
+		"servers": {"test": {"image": "test:latest"}}
+	}`), 0o600))
+
+	provider := NewLocalRegistryProvider(path)
+	registry, err := provider.GetRegistry()
+
+	require.Error(t, err)
+	assert.Nil(t, registry)
+	assert.ErrorIs(t, err, errLegacyFormat)
 }
 
 // createTestServer creates a test HTTP server that returns the specified response

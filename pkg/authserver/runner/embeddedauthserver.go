@@ -366,12 +366,20 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 }
 
 // buildPureOAuth2Config builds an upstream.OAuth2Config for a pure OAuth2 provider.
+//
+// Run-config-specific invariants (e.g. ClientID/DCRConfig mutual exclusion) are
+// enforced here via OAuth2UpstreamRunConfig.Validate before secrets are
+// resolved, since the downstream upstream.OAuth2Config validator only sees the
+// flattened runtime shape and cannot observe DCR fields.
 func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Config, error) {
 	if rc.OAuth2Config == nil {
 		return nil, fmt.Errorf("oauth2_config required for OAuth2 provider")
 	}
 
 	oauth2 := rc.OAuth2Config
+	if err := oauth2.Validate(); err != nil {
+		return nil, err
+	}
 	clientSecret, err := resolveSecret(oauth2.ClientSecretFile, oauth2.ClientSecretEnvVar)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve OAuth2 client secret: %w", err)
@@ -473,58 +481,35 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (*storage.RedisConfig, er
 		return nil, fmt.Errorf("redis config is required when storage type is redis")
 	}
 
+	if rc.Addr != "" && rc.SentinelConfig != nil {
+		return nil, fmt.Errorf("addr and sentinel_config are mutually exclusive")
+	}
+	if rc.Addr == "" && rc.SentinelConfig == nil {
+		return nil, fmt.Errorf("one of addr (standalone) or sentinel_config (sentinel) is required")
+	}
+
 	cfg := &storage.RedisConfig{
 		KeyPrefix: rc.KeyPrefix,
 	}
 
-	// Convert Sentinel config
-	if rc.SentinelConfig == nil {
-		return nil, fmt.Errorf("sentinel config is required")
-	}
-	cfg.SentinelConfig = &storage.SentinelConfig{
-		MasterName:    rc.SentinelConfig.MasterName,
-		SentinelAddrs: rc.SentinelConfig.SentinelAddrs,
-		DB:            rc.SentinelConfig.DB,
+	if rc.Addr != "" {
+		cfg.Addr = rc.Addr
+	} else {
+		cfg.SentinelConfig = &storage.SentinelConfig{
+			MasterName:    rc.SentinelConfig.MasterName,
+			SentinelAddrs: rc.SentinelConfig.SentinelAddrs,
+			DB:            rc.SentinelConfig.DB,
+		}
 	}
 
-	// Resolve ACL credentials from environment variables
-	if rc.ACLUserConfig == nil {
-		return nil, fmt.Errorf("ACL user config is required")
-	}
-	username, err := resolveEnvVar(rc.ACLUserConfig.UsernameEnvVar)
+	aclCfg, err := convertRedisACLConfig(rc.ACLUserConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve Redis username: %w", err)
+		return nil, fmt.Errorf("failed to convert ACL config: %w", err)
 	}
-	password, err := resolveEnvVar(rc.ACLUserConfig.PasswordEnvVar)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve Redis password: %w", err)
-	}
-	cfg.ACLUserConfig = &storage.ACLUserConfig{
-		Username: username,
-		Password: password,
-	}
+	cfg.ACLUserConfig = aclCfg
 
-	// Parse optional timeouts
-	if rc.DialTimeout != "" {
-		d, err := time.ParseDuration(rc.DialTimeout)
-		if err != nil {
-			return nil, fmt.Errorf("invalid dial timeout: %w", err)
-		}
-		cfg.DialTimeout = d
-	}
-	if rc.ReadTimeout != "" {
-		d, err := time.ParseDuration(rc.ReadTimeout)
-		if err != nil {
-			return nil, fmt.Errorf("invalid read timeout: %w", err)
-		}
-		cfg.ReadTimeout = d
-	}
-	if rc.WriteTimeout != "" {
-		d, err := time.ParseDuration(rc.WriteTimeout)
-		if err != nil {
-			return nil, fmt.Errorf("invalid write timeout: %w", err)
-		}
-		cfg.WriteTimeout = d
+	if err := applyRedisTimeouts(rc, cfg); err != nil {
+		return nil, fmt.Errorf("failed to apply redis timeouts: %w", err)
 	}
 
 	tlsCfg, err := convertRedisTLSRunConfig(rc.TLS)
@@ -533,13 +518,70 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (*storage.RedisConfig, er
 	}
 	cfg.TLS = tlsCfg
 
-	sentinelTLSCfg, err := convertRedisTLSRunConfig(rc.SentinelTLS)
-	if err != nil {
-		return nil, fmt.Errorf("sentinel TLS config: %w", err)
+	// SentinelTLS only applies in Sentinel mode
+	if rc.SentinelConfig != nil {
+		sentinelTLSCfg, err := convertRedisTLSRunConfig(rc.SentinelTLS)
+		if err != nil {
+			return nil, fmt.Errorf("sentinel TLS config: %w", err)
+		}
+		cfg.SentinelTLS = sentinelTLSCfg
 	}
-	cfg.SentinelTLS = sentinelTLSCfg
 
 	return cfg, nil
+}
+
+// convertRedisACLConfig resolves ACL user credentials from environment variables.
+// When UsernameEnvVar is empty, no username is resolved; go-redis then sends
+// HELLO with "default" as the username (or falls back to legacy AUTH <password>
+// for servers that do not support HELLO). This is required for managed Redis
+// tiers without ACL users (e.g. GCP Memorystore Basic/Standard HA, Azure Cache
+// for Redis).
+func convertRedisACLConfig(rc *storage.ACLUserRunConfig) (*storage.ACLUserConfig, error) {
+	if rc == nil {
+		return nil, fmt.Errorf("acl user config is required")
+	}
+	var username string
+	if rc.UsernameEnvVar != "" {
+		var err error
+		username, err = resolveEnvVar(rc.UsernameEnvVar)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve Redis username: %w", err)
+		}
+	}
+	password, err := resolveEnvVar(rc.PasswordEnvVar)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve Redis password: %w", err)
+	}
+	return &storage.ACLUserConfig{
+		Username: username,
+		Password: password,
+	}, nil
+}
+
+// applyRedisTimeouts parses and applies optional timeout duration strings to cfg.
+func applyRedisTimeouts(rc *storage.RedisRunConfig, cfg *storage.RedisConfig) error {
+	if rc.DialTimeout != "" {
+		d, err := time.ParseDuration(rc.DialTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid dial timeout: %w", err)
+		}
+		cfg.DialTimeout = d
+	}
+	if rc.ReadTimeout != "" {
+		d, err := time.ParseDuration(rc.ReadTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid read timeout: %w", err)
+		}
+		cfg.ReadTimeout = d
+	}
+	if rc.WriteTimeout != "" {
+		d, err := time.ParseDuration(rc.WriteTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid write timeout: %w", err)
+		}
+		cfg.WriteTimeout = d
+	}
+	return nil
 }
 
 // convertRedisTLSRunConfig converts a RedisTLSRunConfig to runtime RedisTLSConfig.

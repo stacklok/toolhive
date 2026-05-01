@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 
@@ -22,6 +23,7 @@ type ClientManager struct {
 	groupManager       groups.Manager
 	clientIntegrations []clientAppConfig
 	configProvider     config.Provider
+	lookPath           func(string) (string, error)
 }
 
 // NewClientManager creates a new ClientManager with default dependencies
@@ -42,6 +44,7 @@ func NewClientManager() (*ClientManager, error) {
 		groupManager:       groupManager,
 		clientIntegrations: supportedClientIntegrations,
 		configProvider:     config.NewDefaultProvider(),
+		lookPath:           exec.LookPath,
 	}, nil
 }
 
@@ -57,6 +60,7 @@ func NewTestClientManager(
 		groupManager:       groupManager,
 		clientIntegrations: clientIntegrations,
 		configProvider:     configProvider,
+		lookPath:           exec.LookPath,
 	}
 }
 
@@ -82,7 +86,7 @@ type ClientAppStatus struct {
 // configuration directory (or settings file when no relative path is defined).
 func (cm *ClientManager) IsClientInstalled(clientType ClientApp) bool {
 	cfg := cm.lookupClientAppConfig(clientType)
-	if cfg == nil {
+	if cfg == nil || cfg.LLMGatewayOnly {
 		return false
 	}
 	var pathToCheck string
@@ -122,6 +126,9 @@ func (cm *ClientManager) GetClientStatus(ctx context.Context) ([]ClientAppStatus
 	}
 
 	for _, cfg := range cm.clientIntegrations {
+		if cfg.LLMGatewayOnly {
+			continue
+		}
 		status := ClientAppStatus{
 			ClientType:     cfg.ClientType,
 			Installed:      cm.IsClientInstalled(cfg.ClientType),

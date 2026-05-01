@@ -6,6 +6,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
 )
@@ -797,6 +799,88 @@ func TestAuthenticate_BearerTokenPriority(t *testing.T) {
 	assert.Equal(t, "Bearer", token.TokenType)
 }
 
+// retrieveErr constructs an *oauth2.RetrieveError with the given error code,
+// matching what golang.org/x/oauth2 returns for token endpoint errors.
+func retrieveErr(code string) *oauth2.RetrieveError {
+	return &oauth2.RetrieveError{ErrorCode: code}
+}
+
+// TestIsCIMDRejectionError covers the isCIMDRejectionError helper used in the CIMD retry path.
+func TestIsCIMDRejectionError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error returns false",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "invalid_client triggers retry",
+			err:  retrieveErr("invalid_client"),
+			want: true,
+		},
+		{
+			name: "unauthorized_client triggers retry",
+			err:  retrieveErr("unauthorized_client"),
+			want: true,
+		},
+		{
+			name: "invalid_request does not trigger retry",
+			err:  retrieveErr("invalid_request"),
+			want: false,
+		},
+		{
+			name: "access_denied does not trigger retry",
+			err:  retrieveErr("access_denied"),
+			want: false,
+		},
+		// Authorization-endpoint rejections — flow.go format: "OAuth error: <code> - <desc>"
+		{
+			name: "auth callback invalid_client triggers retry",
+			err:  fmt.Errorf("OAuth error: invalid_client - client not recognised"),
+			want: true,
+		},
+		{
+			name: "auth callback unauthorized_client triggers retry",
+			err:  fmt.Errorf("OAuth error: unauthorized_client - not allowed"),
+			want: true,
+		},
+		{
+			name: "auth callback invalid_request does not trigger retry",
+			err:  fmt.Errorf("OAuth error: invalid_request - missing param"),
+			want: false,
+		},
+		{
+			name: "auth callback access_denied does not trigger retry",
+			err:  fmt.Errorf("OAuth error: access_denied - user denied"),
+			want: false,
+		},
+		// Non-OAuth errors must not trigger retry.
+		{
+			name: "network error does not trigger retry",
+			err:  fmt.Errorf("dial tcp: connection refused"),
+			want: false,
+		},
+		{
+			name: "timeout error does not trigger retry",
+			err:  fmt.Errorf("OAuth flow timed out after 5m0s - user did not complete authentication"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isCIMDRejectionError(tt.err))
+		})
+	}
+}
+
 // TestAuthenticate_BearerTokenDiscovery tests that bearer token discovery works correctly
 func TestAuthenticate_BearerTokenDiscovery(t *testing.T) {
 	t.Parallel()
@@ -852,4 +936,78 @@ func TestAuthenticate_BearerTokenDiscovery(t *testing.T) {
 		assert.Equal(t, "my-configured-token", token.AccessToken)
 		assert.Equal(t, "Bearer", token.TokenType)
 	})
+}
+
+// TestResolveClientCredentials verifies the credential selection priority in
+// resolveClientCredentials: CachedCIMDClientID > CachedClientID (DCR) >
+// statically-configured ClientID.
+func TestResolveClientCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		config           *Config
+		wantClientID     string
+		wantClientSecret string
+	}{
+		{
+			name: "CachedCIMDClientID takes precedence over DCR and static credentials",
+			config: &Config{
+				ClientID:           "static-client-id",
+				ClientSecret:       "static-secret",
+				CachedClientID:     "dcr-client-id",
+				CachedCIMDClientID: "https://toolhive.dev/oauth/client-metadata.json",
+			},
+			wantClientID:     "https://toolhive.dev/oauth/client-metadata.json",
+			wantClientSecret: "",
+		},
+		{
+			name: "CachedCIMDClientID returns empty secret (token_endpoint_auth_method=none)",
+			config: &Config{
+				CachedCIMDClientID: "https://toolhive.dev/oauth/client-metadata.json",
+			},
+			wantClientID:     "https://toolhive.dev/oauth/client-metadata.json",
+			wantClientSecret: "",
+		},
+		{
+			// When CachedClientID is set the DCR client_id is used, but because
+			// CachedClientSecretRef is empty (no secret reference stored) the
+			// function falls through to the statically-configured ClientSecret.
+			name: "CachedClientID used when CachedCIMDClientID is empty",
+			config: &Config{
+				ClientID:       "static-client-id",
+				ClientSecret:   "static-secret",
+				CachedClientID: "dcr-client-id",
+			},
+			wantClientID:     "dcr-client-id",
+			wantClientSecret: "static-secret",
+		},
+		{
+			name: "static credentials used when no cached credentials exist",
+			config: &Config{
+				ClientID:     "static-client-id",
+				ClientSecret: "static-secret",
+			},
+			wantClientID:     "static-client-id",
+			wantClientSecret: "static-secret",
+		},
+		{
+			name:             "all empty returns empty strings",
+			config:           &Config{},
+			wantClientID:     "",
+			wantClientSecret: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &Handler{config: tt.config}
+			gotClientID, gotClientSecret := h.resolveClientCredentials(context.Background())
+
+			assert.Equal(t, tt.wantClientID, gotClientID, "clientID mismatch")
+			assert.Equal(t, tt.wantClientSecret, gotClientSecret, "clientSecret mismatch")
+		})
+	}
 }

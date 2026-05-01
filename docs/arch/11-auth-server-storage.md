@@ -7,7 +7,7 @@ The embedded authorization server uses a pluggable storage backend to persist OA
 The auth server stores OAuth 2.0 protocol state including access tokens, refresh tokens, authorization codes, PKCE challenges, client registrations, user accounts, and upstream IDP tokens. Two storage backends are available:
 
 1. **Memory** (default): In-process storage with mutex-based concurrency. Suitable for single-instance deployments.
-2. **Redis Sentinel**: Shared storage using Redis with Sentinel for high availability. Required for horizontal scaling across multiple auth server replicas.
+2. **Redis**: Shared storage backed by Redis. Supports standalone mode (single endpoint, suitable for managed services like GCP Memorystore and AWS ElastiCache) and Sentinel mode (high-availability with automatic failover). Required for horizontal scaling across multiple auth server replicas.
 
 ```mermaid
 graph TB
@@ -20,7 +20,7 @@ graph TB
     subgraph "Storage Backend"
         direction TB
         Memory[In-Memory Storage<br/>Single instance only]
-        Redis[Redis Sentinel<br/>Shared state]
+        Redis[Redis<br/>Standalone or Sentinel<br/>Shared state]
     end
 
     AS1 -.->|single instance| Memory
@@ -28,27 +28,18 @@ graph TB
     AS2 -->|distributed| Redis
     AS3 -->|distributed| Redis
 
-    subgraph "Redis Sentinel Cluster"
-        S1[Sentinel 1]
-        S2[Sentinel 2]
-        S3[Sentinel 3]
-        RM[Redis Master]
-        RR1[Redis Replica]
-        RR2[Redis Replica]
+    subgraph "Redis Deployment Options"
+        Standalone[Standalone<br/>Managed services]
+        Sentinel[Sentinel Cluster<br/>Self-managed HA]
     end
 
-    Redis --> S1
-    Redis --> S2
-    Redis --> S3
-    S1 -.->|monitors| RM
-    S2 -.->|monitors| RM
-    S3 -.->|monitors| RM
-    RM -->|replicates| RR1
-    RM -->|replicates| RR2
+    Redis --> Standalone
+    Redis --> Sentinel
 
     style Memory fill:#fff3e0
     style Redis fill:#e1f5fe
-    style RM fill:#ffb74d
+    style Standalone fill:#e8f5e9
+    style Sentinel fill:#e8f5e9
 ```
 
 ## Storage Interface
@@ -73,6 +64,26 @@ The storage layer implements multiple interfaces from the [fosite](https://githu
 - Memory backend: `pkg/authserver/storage/memory.go`
 - Redis backend: `pkg/authserver/storage/redis.go`
 
+## Synthesis-mode subjects
+
+OAuth2 upstreams configured without a userInfo endpoint use a fallback identity-resolution mode: the embedded auth server synthesizes a non-PII subject by hashing the upstream access token. The mode changes what `UserStorage` and `UpstreamTokenStorage` see and is observable to operators inspecting stored state.
+
+**When the path triggers.** Pure OAuth 2.0 upstream provider (`OAuth2Config`) configured with `userInfo == nil`. Reached at `BaseOAuth2Provider.ExchangeCodeForIdentity` after token exchange when no userInfo endpoint is available to consult. OIDC providers and OAuth2 providers with `userInfo` configured continue to resolve identity normally and are not affected.
+
+**Subject format.** `tk-` followed by 32 lowercase hex characters (the first 16 bytes of `SHA-256(accessToken)`), e.g. `tk-89abcdef0123456789abcdef01234567`. The output is opaque: assuming the upstream issues opaque (non-JWT) bearer tokens, the digest reveals nothing about the input that an attacker holding a candidate token could not already confirm by re-hashing. The returned `*Identity` carries `Synthetic = true`; the `upstream.IsSynthesizedSubject(string)` predicate lets bare-string consumers recognize the prefix.
+
+**`UserResolver` bypass.** Synthetic identities skip `UserResolver.ResolveUser` entirely — no row is created in `UserStorage`, no entry is written to provider-identities, and `UpdateLastAuthenticated` is not called. The synthesized subject rotates per access token, so persisting it would create a fresh `users` row on every re-authentication. `UpstreamTokens.UserID` therefore carries the `tk-…` value directly rather than a stable internal UUID.
+
+**Reverse-index implication (Redis backend).** The `KeyTypeUserUpstream` secondary-index set under `thv:auth:{ns:name}:user:upstream:{userID}` is designed around stable user IDs — one set per user, holding all of that user's session IDs. Under synthesis the userID rotates with every re-authentication, so each session lands in its own one-element set. Reads continue to work, but set churn is much higher than under OIDC. The existing TODO at `pkg/authserver/storage/redis.go:43-45` to scan and clean up stale secondary-index entries applies, and synthesis-mode workloads make a periodic scan more important.
+
+**Operator visibility.** When at least one configured OAuth2 upstream has `userInfo == nil`, the controller surfaces the `IdentitySynthesized` condition on the `MCPExternalAuthConfig` and `VirtualMCPServer` status (Reason `IdentitySynthesizedActive`, naming the affected upstreams). The condition flips to `False` (Reason `IdentitySynthesizedInactive`) once every upstream has `userInfo` configured.
+
+**Implementation.**
+- `pkg/authserver/upstream/oauth2.go` — `synthesizeIdentity`, `synthesizeSubjectFromAccessToken`, `IsSynthesizedSubject`
+- `pkg/authserver/upstream/types.go` — `Identity.Synthetic`
+- `pkg/authserver/server/handlers/callback.go` — `UserResolver` bypass on `Identity.Synthetic`
+- `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go` and `cmd/thv-operator/controllers/virtualmcpserver_controller.go` — `IdentitySynthesized` advisory condition
+
 ## Memory Backend
 
 The in-memory backend uses Go maps protected by `sync.RWMutex` for thread safety. A background goroutine runs periodic cleanup of expired entries.
@@ -85,16 +96,16 @@ The in-memory backend uses Go maps protected by `sync.RWMutex` for thread safety
 
 **Implementation:** `pkg/authserver/storage/memory.go`
 
-## Redis Sentinel Backend
+## Redis Backend
 
-The Redis backend stores all OAuth 2.0 state as JSON-serialized values in Redis, using the Sentinel protocol for automatic master discovery and failover.
+The Redis backend stores all OAuth 2.0 state as JSON-serialized values in Redis.
 
 ### Connection Architecture
 
-The client connects to Redis through Sentinel using `redis.NewFailoverClient()` from the `go-redis` library. Sentinel handles:
-- Master discovery: Finding the current master node
-- Automatic failover: Detecting master failure and promoting a replica
-- Configuration notification: Updating clients when the master changes
+Two connection modes are supported:
+
+- **Standalone** (`redis.NewClient()`): A single endpoint for managed Redis services. The caller is responsible for endpoint availability (the managed service handles HA internally).
+- **Sentinel** (`redis.NewFailoverClient()`): Connects via Sentinel for self-managed high-availability deployments. Sentinel handles master discovery, automatic failover, and configuration updates.
 
 ### Multi-Tenancy
 
@@ -104,7 +115,7 @@ Each auth server instance has a unique key prefix derived from its Kubernetes na
 thv:auth:{namespace:name}:
 ```
 
-The `{namespace:name}` portion is a Redis hash tag. Although ToolHive only supports Sentinel deployments, the hash tag format ensures keys remain co-located in the same hash slot if the deployment were ever migrated to Redis Cluster. In Sentinel mode, hash tags have no functional effect but impose no overhead.
+The `{namespace:name}` portion is a Redis hash tag. In standalone and Sentinel modes, hash tags have no functional effect but impose no overhead. The format ensures keys remain co-located in the same hash slot if the deployment were ever migrated to Redis Cluster.
 
 **Implementation:** `pkg/authserver/storage/redis_keys.go`
 
@@ -162,17 +173,20 @@ MCPExternalAuthConfig
   └── spec.embeddedAuthServer.storage
         ├── type: "memory" | "redis"
         └── redis
-              ├── sentinelConfig
-              │     ├── masterName
-              │     ├── sentinelAddrs[] (or sentinelService)
-              │     └── db
+              ├── addr (standalone)  ─── mutually exclusive ───  sentinelConfig
+              │                                                         ├── masterName
+              │                                                         ├── sentinelAddrs[] (or sentinelService)
+              │                                                         └── db
               ├── aclUserConfig
-              │     ├── usernameSecretRef
+              │     ├── usernameSecretRef  (optional; omit for password-only AUTH)
               │     └── passwordSecretRef
+              ├── tls (optional)
+              │     ├── caCertSecretRef
+              │     └── insecureSkipVerify
               └── timeouts (dial, read, write)
 ```
 
-**Implementation:** `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
+**Implementation:** `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`
 
 ### RunConfig Serialization
 
@@ -182,10 +196,10 @@ When passing configuration across process boundaries (operator → proxy-runner)
 
 ## Security Considerations
 
-- **ACL authentication only**: Redis ACL users (Redis 6+) provide fine-grained access control. Legacy `requirepass` authentication is not supported.
+- **ACL or legacy authentication**: Redis ACL users (Redis 6+) provide fine-grained access control. When a username is omitted, go-redis sends legacy password-only `AUTH`, which is required for managed Redis tiers that do not expose an ACL subsystem (e.g. GCP Memorystore Basic/Standard HA, Azure Cache for Redis).
 - **Key prefix isolation**: Each auth server is restricted to its own key prefix via Redis ACL rules (`~thv:auth:*`).
 - **Credential handling**: In Kubernetes, credentials are stored in Secrets and injected as environment variables. They are never written to disk or logged.
-- **No TLS currently**: TLS/mTLS for Redis connections is not yet supported and is planned as a future enhancement.
+- **TLS support**: TLS is supported for both master and Sentinel connections via `tls` and `sentinelTLS` in the CRD. For managed services with private CAs (e.g. GCP Memorystore), provide the CA certificate via `caCertSecretRef`.
 
 ## Related Documentation
 

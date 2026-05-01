@@ -1,6 +1,6 @@
 # Basic MCPExternalAuthConfig example with token exchange
 # This configures external authentication using OAuth2 token exchange
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPExternalAuthConfig
 metadata:
   name: oauth-token-exchange

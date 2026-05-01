@@ -8,20 +8,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
-	"github.com/stacklok/toolhive/pkg/transport/streamable"
-	"github.com/stacklok/toolhive/pkg/transport/types"
-	"github.com/stacklok/toolhive/pkg/versions"
+	thclient "github.com/stacklok/toolhive/pkg/mcp/client"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -109,7 +104,7 @@ func mcpListCmdFunc(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	mcpClient, needsInit, err := createOrAutoDetectMCPClient(ctx, serverURL)
+	mcpClient, err := thclient.Connect(ctx, serverURL, mcpTransport, "toolhive-cli")
 	if err != nil {
 		return err
 	}
@@ -119,12 +114,6 @@ func mcpListCmdFunc(cmd *cobra.Command, _ []string) error {
 			slog.Warn(fmt.Sprintf("Failed to close MCP client: %v", err))
 		}
 	}()
-
-	if needsInit {
-		if err := initializeMCPClient(ctx, mcpClient); err != nil {
-			return err
-		}
-	}
 
 	// Collect all data
 	data := make(map[string]interface{})
@@ -167,7 +156,7 @@ func mcpListToolsCmdFunc(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	mcpClient, needsInit, err := createOrAutoDetectMCPClient(ctx, serverURL)
+	mcpClient, err := thclient.Connect(ctx, serverURL, mcpTransport, "toolhive-cli")
 	if err != nil {
 		return err
 	}
@@ -177,12 +166,6 @@ func mcpListToolsCmdFunc(cmd *cobra.Command, _ []string) error {
 			slog.Warn(fmt.Sprintf("Failed to close MCP client: %v", err))
 		}
 	}()
-
-	if needsInit {
-		if err := initializeMCPClient(ctx, mcpClient); err != nil {
-			return err
-		}
-	}
 
 	result, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
 	if err != nil {
@@ -203,7 +186,7 @@ func mcpListResourcesCmdFunc(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	mcpClient, needsInit, err := createOrAutoDetectMCPClient(ctx, serverURL)
+	mcpClient, err := thclient.Connect(ctx, serverURL, mcpTransport, "toolhive-cli")
 	if err != nil {
 		return err
 	}
@@ -213,12 +196,6 @@ func mcpListResourcesCmdFunc(cmd *cobra.Command, _ []string) error {
 			slog.Warn(fmt.Sprintf("Failed to close MCP client: %v", err))
 		}
 	}()
-
-	if needsInit {
-		if err := initializeMCPClient(ctx, mcpClient); err != nil {
-			return err
-		}
-	}
 
 	result, err := mcpClient.ListResources(ctx, mcp.ListResourcesRequest{})
 	if err != nil {
@@ -239,7 +216,7 @@ func mcpListPromptsCmdFunc(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	mcpClient, needsInit, err := createOrAutoDetectMCPClient(ctx, serverURL)
+	mcpClient, err := thclient.Connect(ctx, serverURL, mcpTransport, "toolhive-cli")
 	if err != nil {
 		return err
 	}
@@ -249,12 +226,6 @@ func mcpListPromptsCmdFunc(cmd *cobra.Command, _ []string) error {
 			slog.Warn(fmt.Sprintf("Failed to close MCP client: %v", err))
 		}
 	}()
-
-	if needsInit {
-		if err := initializeMCPClient(ctx, mcpClient); err != nil {
-			return err
-		}
-	}
 
 	result, err := mcpClient.ListPrompts(ctx, mcp.ListPromptsRequest{})
 	if err != nil {
@@ -291,159 +262,6 @@ func resolveServerURL(ctx context.Context, serverInput string) (string, error) {
 	}
 
 	return workload.URL, nil
-}
-
-// createOrAutoDetectMCPClient creates an MCP client, using auto-detection if transport is "auto"
-// Returns the client, whether it needs initialization, and any error
-func createOrAutoDetectMCPClient(ctx context.Context, serverURL string) (*client.Client, bool, error) {
-	if mcpTransport == "auto" {
-		// Auto-detect: try streamable HTTP first, fall back to SSE
-		// The client is already initialized during auto-detection
-		mcpClient, err := createMCPClientWithAutoDetect(ctx, serverURL)
-		return mcpClient, false, err
-	}
-	// Explicit transport specified, needs initialization
-	mcpClient, err := createMCPClient(serverURL)
-	return mcpClient, true, err
-}
-
-// createMCPClient creates an MCP client based on the server URL and transport type
-func createMCPClient(serverURL string) (*client.Client, error) {
-	transportType := determineTransportType(serverURL, mcpTransport)
-
-	switch transportType {
-	case types.TransportTypeSSE:
-		mcpClient, err := client.NewSSEMCPClient(serverURL)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create SSE MCP client: %w", err)
-		}
-		return mcpClient, nil
-	case types.TransportTypeStreamableHTTP:
-		mcpClient, err := client.NewStreamableHttpClient(serverURL)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Streamable HTTP MCP client: %w", err)
-		}
-		return mcpClient, nil
-	case types.TransportTypeStdio:
-		return nil, fmt.Errorf("stdio transport is not supported for MCP client connections")
-	case types.TransportTypeInspector:
-		return nil, fmt.Errorf("inspector transport is not supported for MCP client connections")
-	default:
-		return nil, fmt.Errorf("unsupported transport type: %s", transportType)
-	}
-}
-
-// createMCPClientWithAutoDetect tries streamable HTTP first, then falls back to SSE
-func createMCPClientWithAutoDetect(ctx context.Context, serverURL string) (*client.Client, error) {
-	// Try streamable HTTP first
-	slog.Debug(fmt.Sprintf("Trying streamable HTTP transport for %s", serverURL))
-	streamableClient, err := client.NewStreamableHttpClient(serverURL)
-	if err == nil {
-		if err := tryInitializeClient(ctx, streamableClient); err == nil {
-			slog.Debug("successfully connected using streamable HTTP transport")
-			return streamableClient, nil
-		}
-		_ = streamableClient.Close()
-		slog.Debug("streamable HTTP transport failed, trying SSE fallback")
-	}
-
-	// Fall back to SSE
-	slog.Debug(fmt.Sprintf("Trying SSE transport for %s", serverURL))
-	sseClient, err := client.NewSSEMCPClient(serverURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create MCP client (tried streamable HTTP and SSE): %w", err)
-	}
-
-	if err := tryInitializeClient(ctx, sseClient); err != nil {
-		_ = sseClient.Close()
-		return nil, fmt.Errorf("failed to connect using both streamable HTTP and SSE transports: %w", err)
-	}
-
-	slog.Debug("successfully connected using SSE transport")
-	return sseClient, nil
-}
-
-// tryInitializeClient attempts to start and initialize an MCP client
-func tryInitializeClient(ctx context.Context, mcpClient *client.Client) error {
-	if err := mcpClient.Start(ctx); err != nil {
-		return err
-	}
-
-	initRequest := mcp.InitializeRequest{}
-	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initRequest.Params.Capabilities = mcp.ClientCapabilities{}
-	versionInfo := versions.GetVersionInfo()
-	initRequest.Params.ClientInfo = mcp.Implementation{
-		Name:    "toolhive-cli",
-		Version: versionInfo.Version,
-	}
-
-	_, err := mcpClient.Initialize(ctx, initRequest)
-	return err
-}
-
-// determineTransportType determines the transport type based on URL path and user preference
-func determineTransportType(serverURL, transportFlag string) types.TransportType {
-	// If user explicitly specified a transport type, use it (unless it's "auto")
-	if transportFlag != "auto" {
-		switch transportFlag {
-		case string(types.TransportTypeSSE):
-			return types.TransportTypeSSE
-		case string(types.TransportTypeStreamableHTTP):
-			return types.TransportTypeStreamableHTTP
-		}
-	}
-
-	// Auto-detect based on URL path
-	parsedURL, err := url.Parse(serverURL)
-	if err != nil {
-		// If we can't parse the URL, default to streamable-http (SSE is deprecated)
-		slog.Warn(fmt.Sprintf("Failed to parse server URL %s, defaulting to streamable-http transport: %v", serverURL, err))
-		return types.TransportTypeStreamableHTTP
-	}
-
-	path := parsedURL.Path
-
-	// Check for streamable HTTP endpoint (/mcp)
-	if strings.HasSuffix(path, "/"+streamable.HTTPStreamableHTTPEndpoint) ||
-		strings.HasSuffix(path, streamable.HTTPStreamableHTTPEndpoint) {
-		return types.TransportTypeStreamableHTTP
-	}
-
-	// Check for SSE endpoint (/sse)
-	if strings.HasSuffix(path, ssecommon.HTTPSSEEndpoint) {
-		return types.TransportTypeSSE
-	}
-
-	// Default to streamable-http (SSE is deprecated)
-	return types.TransportTypeStreamableHTTP
-}
-
-// initializeMCPClient initializes the MCP client connection
-func initializeMCPClient(ctx context.Context, mcpClient *client.Client) error {
-	// Start the transport
-	if err := mcpClient.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start MCP transport: %w", err)
-	}
-
-	// Initialize the connection
-	initRequest := mcp.InitializeRequest{}
-	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initRequest.Params.Capabilities = mcp.ClientCapabilities{
-		// Basic client capabilities for listing
-	}
-	versionInfo := versions.GetVersionInfo()
-	initRequest.Params.ClientInfo = mcp.Implementation{
-		Name:    "toolhive-cli",
-		Version: versionInfo.Version,
-	}
-
-	_, err := mcpClient.Initialize(ctx, initRequest)
-	if err != nil {
-		return fmt.Errorf("failed to initialize MCP client: %w", err)
-	}
-
-	return nil
 }
 
 // outputMCPData outputs the MCP data in the specified format

@@ -8,7 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 const (
@@ -19,6 +19,11 @@ const (
 	RegistryAPIPort = 8080
 	// RegistryAPIPortName is the name assigned to the registry API port
 	RegistryAPIPortName = "http"
+	// RegistryAPIHealthPort is the port of the registry API's internal HTTP
+	// listener that serves liveness and readiness probes. Introduced in
+	// toolhive-registry-server v1.1.0 to separate probe traffic from the
+	// public API listener on RegistryAPIPort.
+	RegistryAPIHealthPort = 8081
 
 	// DefaultCPURequest is the default CPU request for the registry API container
 	DefaultCPURequest = "100m"
@@ -102,23 +107,23 @@ func (e *Error) Unwrap() error {
 // Manager handles registry API deployment operations
 type Manager interface {
 	// ReconcileAPIService orchestrates the deployment, service creation, and readiness checking for the registry API
-	ReconcileAPIService(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) *Error
+	ReconcileAPIService(ctx context.Context, mcpRegistry *mcpv1beta1.MCPRegistry) *Error
 
 	// CheckAPIReadiness verifies that the deployed registry-API Deployment is ready
 	CheckAPIReadiness(ctx context.Context, deployment *appsv1.Deployment) bool
 
 	// IsAPIReady checks if the registry API deployment is ready and serving requests
-	IsAPIReady(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) bool
+	IsAPIReady(ctx context.Context, mcpRegistry *mcpv1beta1.MCPRegistry) bool
 
 	// GetReadyReplicas returns the number of ready replicas for the registry API deployment
-	GetReadyReplicas(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) int32
+	GetReadyReplicas(ctx context.Context, mcpRegistry *mcpv1beta1.MCPRegistry) int32
 
 	// GetAPIStatus returns the readiness state and ready replica count from a single Deployment fetch
-	GetAPIStatus(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ready bool, readyReplicas int32)
+	GetAPIStatus(ctx context.Context, mcpRegistry *mcpv1beta1.MCPRegistry) (ready bool, readyReplicas int32)
 }
 
 // GetServiceAccountName returns the service account name for a given MCPRegistry.
 // The name follows the pattern: {registry-name}-registry-api
-func GetServiceAccountName(mcpRegistry *mcpv1alpha1.MCPRegistry) string {
+func GetServiceAccountName(mcpRegistry *mcpv1beta1.MCPRegistry) string {
 	return mcpRegistry.Name + registryAPIResourceSuffix
 }

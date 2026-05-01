@@ -44,7 +44,7 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket": {
+            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket": {
                 "description": "PerUser token bucket configuration for this tool.\n+optional",
                 "properties": {
                     "maxTokens": {
@@ -57,19 +57,19 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig": {
+            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitConfig": {
                 "description": "RateLimitConfig contains the CRD rate limiting configuration.\nWhen set, rate limiting middleware is added to the proxy middleware chain.",
                 "properties": {
                     "perUser": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket"
                     },
                     "shared": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket"
                     },
                     "tools": {
                         "description": "Tools defines per-tool rate limit overrides.\nEach entry applies additional rate limits to calls targeting a specific tool name.\nA request must pass both the server-level limit and the per-tool limit.\n+listType=map\n+listMapKey=name\n+optional",
                         "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig"
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.ToolRateLimitConfig"
                         },
                         "type": "array",
                         "uniqueItems": false
@@ -77,17 +77,17 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig": {
+            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.ToolRateLimitConfig": {
                 "properties": {
                     "name": {
                         "description": "Name is the MCP tool name this limit applies to.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1",
                         "type": "string"
                     },
                     "perUser": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket"
                     },
                     "shared": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket"
                     }
                 },
                 "type": "object"
@@ -233,6 +233,10 @@ const docTemplate = `{
                     "session_name_claim": {
                         "description": "SessionNameClaim is the JWT claim to use for role session name (default: \"sub\").",
                         "type": "string"
+                    },
+                    "subject_provider_name": {
+                        "description": "SubjectProviderName identifies which upstream provider's access token to use\nfor STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer\ntoken from the incoming HTTP request is used.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -269,6 +273,10 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "bearer_token_file": {
+                        "type": "string"
+                    },
+                    "cached_cimd_client_id": {
+                        "description": "CachedCIMDClientID stores the CIMD metadata URL used as client_id when CIMD\nauthentication was used. Kept separate from CachedClientID (which holds\nDCR-issued IDs) so the two can have independent lifecycles — DCR credential\nrotation clears CachedClientID without touching the stable CIMD URL.\nRead by resolveClientCredentials to send the correct client_id on token refresh.",
                         "type": "string"
                     },
                     "cached_client_id": {
@@ -379,7 +387,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "subject_token_type": {
-                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.\nIf empty, defaults to tokenTypeAccessToken.",
+                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.\nIf empty, defaults to oauthproto.TokenTypeAccessToken.",
                         "type": "string"
                     },
                     "token_url": {
@@ -407,6 +415,36 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig": {
+                "description": "DCRConfig enables RFC 7591 Dynamic Client Registration against the\nupstream authorization server. When set, the client credentials are\nobtained at runtime rather than being pre-provisioned via ClientID /\nClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.\nMutually exclusive with ClientID.",
+                "properties": {
+                    "discovery_url": {
+                        "description": "DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to\nfetch at runtime. The resolver issues a single GET against this URL\n(no well-known-path fallback) and reads registration_endpoint,\nauthorization_endpoint, token_endpoint,\ntoken_endpoint_auth_methods_supported, and scopes_supported from the\nresponse. Per RFC 8414 §3.3, the document's \"issuer\" field must\nexactly match the upstream issuer configured on the parent\nrun-config.\n\nUse this field when the upstream publishes discovery metadata at a\npath that differs from the issuer-derived well-known paths — for\nexample a multi-tenant IdP whose metadata lives at\nhttps://idp.example.com/tenants/acme/.well-known/openid-configuration.\n\nMutually exclusive with RegistrationEndpoint.",
+                        "type": "string"
+                    },
+                    "initial_access_token_env_var": {
+                        "description": "InitialAccessTokenEnvVar is the name of an environment variable\ncontaining the RFC 7591 initial access token. Mutually exclusive with\nInitialAccessTokenFile.",
+                        "type": "string"
+                    },
+                    "initial_access_token_file": {
+                        "description": "InitialAccessTokenFile is the path to a file containing the RFC 7591\ninitial access token presented to the registration endpoint. Mutually\nexclusive with InitialAccessTokenEnvVar. Both may be omitted for open\nregistration endpoints.",
+                        "type": "string"
+                    },
+                    "registration_endpoint": {
+                        "description": "RegistrationEndpoint is the RFC 7591 registration endpoint URL used\ndirectly, bypassing discovery. Because no discovery is performed,\nserver-capability fields (token_endpoint_auth_methods_supported,\nscopes_supported) are unavailable on this code path; the caller is\nexpected to also supply AuthorizationEndpoint, TokenEndpoint, and an\nexplicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth\nmethod falls back to the resolver's default (client_secret_basic).\n\nMutually exclusive with DiscoveryURL.",
+                        "type": "string"
+                    },
+                    "software_id": {
+                        "description": "SoftwareID is the RFC 7591 \"software_id\" registration metadata value,\nidentifying the client software independent of any particular\nregistration instance.",
+                        "type": "string"
+                    },
+                    "software_statement": {
+                        "description": "SoftwareStatement is the RFC 7591 \"software_statement\" JWT asserting\nmetadata about the client software, signed by a party the authorization\nserver trusts.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig": {
                 "description": "OAuth2Config contains OAuth 2.0-specific configuration.\nRequired when Type is \"oauth2\", must be nil when Type is \"oidc\".",
                 "properties": {
@@ -422,7 +460,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "client_id": {
-                        "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.",
+                        "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.\nMutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained\nat runtime via RFC 7591 Dynamic Client Registration and must be left empty.",
                         "type": "string"
                     },
                     "client_secret_env_var": {
@@ -432,6 +470,9 @@ const docTemplate = `{
                     "client_secret_file": {
                         "description": "ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.\nMutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.",
                         "type": "string"
+                    },
+                    "dcr_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig"
                     },
                     "redirect_uri": {
                         "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nWhen not specified, defaults to ` + "`" + `{issuer}/oauth/callback` + "`" + `.",
@@ -684,7 +725,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig": {
-                "description": "UserInfo contains configuration for fetching user information (required for OAuth2).",
+                "description": "UserInfo contains configuration for fetching user information.\nOptional: when nil, the upstream OAuth2 provider derives a deterministic\nsubject by SHA-256-hashing the access token (with a \"tk-\" prefix) instead\nof calling a userinfo endpoint. OIDC providers always derive Subject from\nthe ID token and are unaffected.",
                 "properties": {
                     "additional_headers": {
                         "additionalProperties": {
@@ -727,6 +768,10 @@ const docTemplate = `{
                     "acl_user_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig"
                     },
+                    "addr": {
+                        "description": "Addr is the Redis server address for standalone mode (e.g., \"host:port\").\nMutually exclusive with SentinelConfig.",
+                        "type": "string"
+                    },
                     "auth_type": {
                         "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
                         "type": "string"
@@ -760,7 +805,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig": {
-                "description": "SentinelTLS configures TLS for Sentinel connections.\nFalls back to TLS config when nil.",
+                "description": "SentinelTLS configures TLS for Sentinel connections. Only applies when SentinelConfig is set.",
                 "properties": {
                     "ca_cert_file": {
                         "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
@@ -787,7 +832,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig": {
-                "description": "SentinelConfig contains Sentinel-specific configuration.",
+                "description": "SentinelConfig contains Sentinel-specific configuration.\nMutually exclusive with Addr.",
                 "properties": {
                     "db": {
                         "description": "DB is the Redis database number (default: 0).",
@@ -931,6 +976,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "policy_stopped",
                     "running",
                     "stopped",
                     "error",
@@ -940,6 +986,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "policy_stopped",
                     "running",
                     "stopped",
                     "error",
@@ -948,7 +995,8 @@ const docTemplate = `{
                     "unhealthy",
                     "removing",
                     "unknown",
-                    "unauthenticated"
+                    "unauthenticated",
+                    "policy_stopped"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -960,7 +1008,8 @@ const docTemplate = `{
                     "WorkloadStatusUnhealthy",
                     "WorkloadStatusRemoving",
                     "WorkloadStatusUnknown",
-                    "WorkloadStatusUnauthenticated"
+                    "WorkloadStatusUnauthenticated",
+                    "WorkloadStatusPolicyStopped"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig": {
@@ -975,7 +1024,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "builder_image": {
-                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.25-alpine\", \"node:22-alpine\", \"python:3.13-slim\"",
+                        "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.26-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
                         "type": "string"
                     }
                 },
@@ -1223,6 +1272,10 @@ const docTemplate = `{
                         "description": "K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template\nOnly applicable when using Kubernetes runtime",
                         "type": "string"
                     },
+                    "mcpserver_generation": {
+                        "description": "MCPServerGeneration is the K8s .metadata.generation of the MCPServer CR that rendered\nthis RunConfig. The Kubernetes runtime uses it as a monotonic version to prevent stale\nrolling-update pods from overwriting a newer RunConfig's StatefulSet apply. Zero value\nmeans unversioned (backward-compat with older operators, or non-operator callers).",
+                        "type": "integer"
+                    },
                     "middleware_configs": {
                         "description": "MiddlewareConfigs contains the list of middleware to apply to the transport\nand the configuration for each middleware.",
                         "items": {
@@ -1266,7 +1319,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "rate_limit_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitConfig"
                     },
                     "rate_limit_namespace": {
                         "description": "RateLimitNamespace is the Kubernetes namespace for Redis key derivation.",
@@ -2511,6 +2564,10 @@ const docTemplate = `{
                         "description": "Port for the HTTP proxy to listen on",
                         "type": "integer"
                     },
+                    "registry": {
+                        "description": "Registry is the optional registry name to resolve the server from (e.g. \"default\").",
+                        "type": "string"
+                    },
                     "runtime_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig"
                     },
@@ -2521,6 +2578,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "server": {
+                        "description": "Server is the optional server name in the registry (e.g. \"io.github.stacklok/fetch\").\nWhen both Registry and Server are set, thv resolves the server metadata\nserver-side, filling in image, transport, env vars, permissions, etc.\nUser-provided fields always override registry defaults.",
+                        "type": "string"
                     },
                     "target_port": {
                         "description": "Port to expose from the container",
@@ -5397,6 +5458,26 @@ const docTemplate = `{
                         },
                         "description": "Bad Request"
                     },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized (registry refused credentials)"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found (artifact not present in registry)"
+                    },
                     "409": {
                         "content": {
                             "application/json": {
@@ -5407,6 +5488,16 @@ const docTemplate = `{
                         },
                         "description": "Conflict"
                     },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Too Many Requests (registry rate limit)"
+                    },
                     "500": {
                         "content": {
                             "application/json": {
@@ -5416,6 +5507,26 @@ const docTemplate = `{
                             }
                         },
                         "description": "Internal Server Error"
+                    },
+                    "502": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Gateway (upstream registry failure)"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Gateway Timeout (upstream pull timed out)"
                     }
                 },
                 "summary": "Install a skill",
@@ -5603,6 +5714,36 @@ const docTemplate = `{
                         },
                         "description": "Bad Request"
                     },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized (registry refused credentials)"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found (artifact not present in registry)"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Too Many Requests (registry rate limit)"
+                    },
                     "500": {
                         "content": {
                             "application/json": {
@@ -5621,7 +5762,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Bad Gateway"
+                        "description": "Bad Gateway (upstream registry or git resolver failure)"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Gateway Timeout (upstream pull timed out)"
                     }
                 },
                 "summary": "Get skill content",

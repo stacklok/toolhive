@@ -290,14 +290,29 @@ vMCP monitors backend health with configurable intervals. Health status (healthy
 
 ## Deployment
 
-vMCP can be deployed two ways:
+vMCP can be deployed in three ways:
 
 - **Kubernetes** - Via the VirtualMCPServer CRD managed by the operator
-- **CLI** - Standalone via the `vmcp` binary for development or non-Kubernetes environments
+- **Local CLI (`thv vmcp`)** - Recommended path for local and non-Kubernetes use; built into the main `thv` binary
+- **Standalone `vmcp` binary** - Preserved for backwards compatibility and advanced CLI use
 
 **Implementation**:
 - Kubernetes: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
-- CLI: `cmd/vmcp/`
+- Local CLI: `cmd/thv/app/vmcp.go`, `pkg/vmcp/cli/`
+- Standalone binary: `cmd/vmcp/`
+
+## Local CLI Mode
+
+`thv vmcp` is the recommended way to run a vMCP server outside of Kubernetes. It provides the same aggregation, tool routing, and optimizer capabilities as the Kubernetes-managed VirtualMCPServer, but runs as a local foreground process driven by Cobra CLI flags.
+
+Key features:
+
+- **Zero-config quick mode**: `thv vmcp serve --group <name>` generates an in-memory config from a running ToolHive group — no YAML file required.
+- **Config-file workflow**: `thv vmcp init` → `thv vmcp validate` → `thv vmcp serve --config` for reproducible deployments.
+- **Optimizer tiers**: optional FTS5 keyword search (Tier 1) and managed TEI semantic search (Tier 2) reduce tool count for MCP clients.
+- **Loopback-only binding**: quick mode enforces a loopback-only host via `ServeConfig.validateQuickModeHost` — `localhost`, `127.0.0.1`, `::1`, or any other loopback IP is accepted; non-loopback addresses are rejected.
+
+See [Local vMCP CLI Mode](vmcp-local.md) for the full architecture, optimizer tier table, and TEI container lifecycle documentation.
 
 ## Status Reporting
 
@@ -339,3 +354,6 @@ Status reporting enables vMCP runtime to report operational status directly inst
 - [Operator Architecture](09-operator-architecture.md) - CRD details
 - [Transport Architecture](03-transport-architecture.md) - Transport types used by backends
 - [Middleware Architecture](../middleware.md) - Shared middleware system (Authentication, Audit, Telemetry, etc.)
+- [Local vMCP CLI Mode](vmcp-local.md) - `thv vmcp` CLI surface, optimizer tiers, and TEI lifecycle
+- [vMCP Library Embedding](vmcp-library.md) - Embedding `pkg/vmcp/` in downstream Go projects
+- [vMCP Scalability Limits and Constraints](13-vmcp-scalability.md) - Per-pod session cap, TTL mechanics, Redis sizing, and pod restart behaviour

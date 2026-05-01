@@ -15,7 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
@@ -33,7 +33,7 @@ const defaultProxyHost = "0.0.0.0"
 const defaultAPITimeout = 15 * time.Second
 
 // ensureRunConfigConfigMap ensures the RunConfig ConfigMap exists and is up to date
-func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	runConfig, err := r.createRunConfigFromMCPServer(m)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig from MCPServer: %w", err)
@@ -81,7 +81,7 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *m
 // This creates a RunConfig for serialization to ConfigMap, not for direct execution
 //
 //nolint:gocyclo
-func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPServer) (*runner.RunConfig, error) {
+func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServer) (*runner.RunConfig, error) {
 	ctx := context.Background()
 	ctxLogger := log.FromContext(ctx)
 
@@ -144,6 +144,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	options := []runner.RunConfigBuilderOption{
 		runner.WithName(m.Name),
 		runner.WithImage(m.Spec.Image),
+		runner.WithMCPServerGeneration(m.Generation),
 		runner.WithCmdArgs(m.Spec.Args),
 		runner.WithTransportAndPorts(m.Spec.Transport, int(m.GetProxyPort()), int(m.GetMCPPort())),
 		runner.WithProxyMode(transporttypes.ProxyMode(effectiveProxyMode)),
@@ -165,13 +166,13 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	// Add permission profile if specified
 	if m.Spec.PermissionProfile != nil {
 		switch m.Spec.PermissionProfile.Type {
-		case mcpv1alpha1.PermissionProfileTypeBuiltin:
+		case mcpv1beta1.PermissionProfileTypeBuiltin:
 			options = append(options,
 				runner.WithPermissionProfileNameOrPath(
 					m.Spec.PermissionProfile.Name,
 				),
 			)
-		case mcpv1alpha1.PermissionProfileTypeConfigMap:
+		case mcpv1beta1.PermissionProfileTypeConfigMap:
 			// For ConfigMap-based permission profiles, we store the path
 			options = append(options,
 				runner.WithPermissionProfileNameOrPath(
@@ -290,9 +291,9 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 
 // populateScalingConfig sets BackendReplicas and SessionRedis on the RunConfig from the MCPServer spec.
 // Fields are only set when present in the spec; nil means "not configured" and is left as-is.
-func populateScalingConfig(runConfig *runner.RunConfig, m *mcpv1alpha1.MCPServer) {
+func populateScalingConfig(runConfig *runner.RunConfig, m *mcpv1beta1.MCPServer) {
 	hasBackendReplicas := m.Spec.BackendReplicas != nil
-	hasRedis := m.Spec.SessionStorage != nil && m.Spec.SessionStorage.Provider == mcpv1alpha1.SessionStorageProviderRedis
+	hasRedis := m.Spec.SessionStorage != nil && m.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis
 
 	if !hasBackendReplicas && !hasRedis {
 		return
@@ -551,7 +552,7 @@ func (*MCPServerReconciler) validateToolsFilter(config *runner.RunConfig) error 
 }
 
 // convertEnvVarsFromMCPServer converts MCPServer environment variables to builder format
-func convertEnvVarsFromMCPServer(envs []mcpv1alpha1.EnvVar) map[string]string {
+func convertEnvVarsFromMCPServer(envs []mcpv1beta1.EnvVar) map[string]string {
 	if len(envs) == 0 {
 		return nil
 	}
@@ -563,7 +564,7 @@ func convertEnvVarsFromMCPServer(envs []mcpv1alpha1.EnvVar) map[string]string {
 }
 
 // convertVolumesFromMCPServer converts MCPServer volumes to builder format
-func convertVolumesFromMCPServer(vols []mcpv1alpha1.Volume) []string {
+func convertVolumesFromMCPServer(vols []mcpv1beta1.Volume) []string {
 	if len(vols) == 0 {
 		return nil
 	}

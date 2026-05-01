@@ -21,8 +21,8 @@ import (
 //     ends and the name begins.
 //
 // All constants declared in this package (ScopeRegistry, ScopeWorkloads,
-// ScopeAuth) satisfy these invariants. Custom scopes introduced in the future
-// must be validated against them.
+// ScopeAuth, ScopeLLM) satisfy these invariants. Custom scopes introduced in
+// the future must be validated against them.
 type SecretScope string
 
 const (
@@ -42,6 +42,9 @@ const (
 
 	// ScopeAuth is reserved for enterprise CLI/Desktop login tokens.
 	ScopeAuth SecretScope = "auth"
+
+	// ScopeLLM is the scope for LLM gateway OIDC refresh tokens.
+	ScopeLLM SecretScope = "llm"
 )
 
 // ErrReservedKeyName is returned when a user command attempts to manage a
@@ -192,7 +195,7 @@ func NewUserProvider(inner Provider) Provider {
 // GetSecret returns the secret for name, or ErrReservedKeyName if the name is
 // a system-reserved key.
 func (u *UserProvider) GetSecret(ctx context.Context, name string) (string, error) {
-	if isSystemKey(name) {
+	if IsSystemKey(name) {
 		return "", fmt.Errorf("%w: cannot get %q", ErrReservedKeyName, name)
 	}
 	return u.provider.GetSecret(ctx, name)
@@ -201,7 +204,7 @@ func (u *UserProvider) GetSecret(ctx context.Context, name string) (string, erro
 // SetSecret stores value under name, or returns ErrReservedKeyName if the name
 // is system-reserved.
 func (u *UserProvider) SetSecret(ctx context.Context, name, value string) error {
-	if isSystemKey(name) {
+	if IsSystemKey(name) {
 		return fmt.Errorf("%w: cannot set %q", ErrReservedKeyName, name)
 	}
 	return u.provider.SetSecret(ctx, name, value)
@@ -210,7 +213,7 @@ func (u *UserProvider) SetSecret(ctx context.Context, name, value string) error 
 // DeleteSecret removes name from the underlying store, or returns
 // ErrReservedKeyName if the name is system-reserved.
 func (u *UserProvider) DeleteSecret(ctx context.Context, name string) error {
-	if isSystemKey(name) {
+	if IsSystemKey(name) {
 		return fmt.Errorf("%w: cannot delete %q", ErrReservedKeyName, name)
 	}
 	return u.provider.DeleteSecret(ctx, name)
@@ -226,7 +229,7 @@ func (u *UserProvider) ListSecrets(ctx context.Context) ([]SecretDescription, er
 
 	var result []SecretDescription
 	for _, desc := range all {
-		if !isSystemKey(desc.Key) {
+		if !IsSystemKey(desc.Key) {
 			result = append(result, desc)
 		}
 	}
@@ -239,7 +242,7 @@ func (u *UserProvider) ListSecrets(ctx context.Context) ([]SecretDescription, er
 // ErrReservedKeyName is returned without deleting anything.
 func (u *UserProvider) DeleteSecrets(ctx context.Context, names []string) error {
 	for _, name := range names {
-		if isSystemKey(name) {
+		if IsSystemKey(name) {
 			return fmt.Errorf("%w: cannot delete %q", ErrReservedKeyName, name)
 		}
 	}
@@ -259,7 +262,7 @@ func (u *UserProvider) Cleanup() error {
 
 	var toDelete []string
 	for _, desc := range all {
-		if !isSystemKey(desc.Key) {
+		if !IsSystemKey(desc.Key) {
 			toDelete = append(toDelete, desc.Key)
 		}
 	}
@@ -274,8 +277,20 @@ func (u *UserProvider) Capabilities() ProviderCapabilities {
 	return u.provider.Capabilities()
 }
 
-// isSystemKey reports whether name is reserved for system use, i.e. whether it
+// IsSystemKey reports whether name is reserved for system use, i.e. whether it
 // starts with the system key prefix "__thv_".
-func isSystemKey(name string) bool {
+func IsSystemKey(name string) bool {
 	return strings.HasPrefix(name, SystemKeyPrefix)
+}
+
+// ParseSystemKey parses a system-managed key of the form "__thv_<scope>_<name>"
+// and returns its scope and name components. ok is false if key does not start
+// with SystemKeyPrefix or contains no scope separator.
+func ParseSystemKey(key string) (scope, name string, ok bool) {
+	rest, found := strings.CutPrefix(key, SystemKeyPrefix)
+	if !found {
+		return "", "", false
+	}
+	scope, name, ok = strings.Cut(rest, "_")
+	return scope, name, ok
 }

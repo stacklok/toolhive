@@ -15,7 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // WaitForDeployment waits for a Deployment to be created and returns it.
@@ -169,12 +169,12 @@ func (h *MCPRemoteProxyTestHelper) WaitForToolConfigHashChange(
 }
 
 // verifyRemoteProxyOwnerReference verifies that the owner reference matches the expected MCPRemoteProxy.
-func verifyRemoteProxyOwnerReference(ownerRefs []metav1.OwnerReference, proxy *mcpv1alpha1.MCPRemoteProxy, resourceType string) {
+func verifyRemoteProxyOwnerReference(ownerRefs []metav1.OwnerReference, proxy *mcpv1beta1.MCPRemoteProxy, resourceType string) {
 	gomega.ExpectWithOffset(1, ownerRefs).To(gomega.HaveLen(1),
 		fmt.Sprintf("%s should have exactly one owner reference", resourceType))
 
 	ownerRef := ownerRefs[0]
-	gomega.ExpectWithOffset(1, ownerRef.APIVersion).To(gomega.Equal("toolhive.stacklok.dev/v1alpha1"),
+	gomega.ExpectWithOffset(1, ownerRef.APIVersion).To(gomega.Equal("toolhive.stacklok.dev/v1beta1"),
 		fmt.Sprintf("%s owner reference should have correct APIVersion", resourceType))
 	gomega.ExpectWithOffset(1, ownerRef.Kind).To(gomega.Equal("MCPRemoteProxy"),
 		fmt.Sprintf("%s owner reference should have correct Kind", resourceType))

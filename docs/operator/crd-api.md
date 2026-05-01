@@ -6,6 +6,7 @@
 - [toolhive.stacklok.dev/config](#toolhivestacklokdevconfig)
 - [toolhive.stacklok.dev/telemetry](#toolhivestacklokdevtelemetry)
 - [toolhive.stacklok.dev/v1alpha1](#toolhivestacklokdevv1alpha1)
+- [toolhive.stacklok.dev/v1beta1](#toolhivestacklokdevv1beta1)
 
 
 ## toolhive.stacklok.dev/audit
@@ -55,6 +56,30 @@ _Appears in:_
 ## toolhive.stacklok.dev/authtypes
 
 
+#### auth.types.AwsStsConfig
+
+
+
+AwsStsConfig configures AWS STS authentication with SigV4 request signing.
+This strategy exchanges incoming tokens for AWS STS temporary credentials.
+
+
+
+_Appears in:_
+- [auth.types.BackendAuthStrategy](#authtypesbackendauthstrategy)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `region` _string_ | Region is the AWS region for the STS endpoint and service. |  |  |
+| `service` _string_ | Service is the AWS service name for SigV4 signing. |  |  |
+| `fallbackRoleArn` _string_ | FallbackRoleArn is the IAM role ARN to assume when no role mappings match. |  |  |
+| `roleMappings` _[auth.types.RoleMapping](#authtypesrolemapping) array_ | RoleMappings defines claim-based role selection rules. |  |  |
+| `roleClaim` _string_ | RoleClaim is the JWT claim to use for role mapping evaluation. |  |  |
+| `sessionDuration` _integer_ | SessionDuration is the duration in seconds for the STS session. |  |  |
+| `sessionNameClaim` _string_ | SessionNameClaim is the JWT claim to use for the role session name. |  |  |
+| `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's token to use as the<br />web identity token for AssumeRoleWithWebIdentity. When set, the token is<br />looked up from Identity.UpstreamTokens instead of the request's<br />Authorization header. |  |  |
+
+
 #### auth.types.BackendAuthStrategy
 
 
@@ -71,10 +96,11 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject" |  |  |
+| `type` _string_ | Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts" |  |  |
 | `headerInjection` _[auth.types.HeaderInjectionConfig](#authtypesheaderinjectionconfig)_ | HeaderInjection contains configuration for header injection auth strategy.<br />Used when Type = "header_injection". |  |  |
 | `tokenExchange` _[auth.types.TokenExchangeConfig](#authtypestokenexchangeconfig)_ | TokenExchange contains configuration for token exchange auth strategy.<br />Used when Type = "token_exchange". |  |  |
 | `upstreamInject` _[auth.types.UpstreamInjectConfig](#authtypesupstreaminjectconfig)_ | UpstreamInject contains configuration for upstream inject auth strategy.<br />Used when Type = "upstream_inject". |  |  |
+| `awsSts` _[auth.types.AwsStsConfig](#authtypesawsstsconfig)_ | AwsSts contains configuration for AWS STS auth strategy.<br />Used when Type = "aws_sts". |  |  |
 
 
 #### auth.types.HeaderInjectionConfig
@@ -94,6 +120,26 @@ _Appears in:_
 | `headerName` _string_ | HeaderName is the name of the header to inject (e.g., "Authorization"). |  |  |
 | `headerValue` _string_ | HeaderValue is the static header value to inject.<br />Either HeaderValue or HeaderValueEnv should be set, not both. |  |  |
 | `headerValueEnv` _string_ | HeaderValueEnv is the environment variable name containing the header value.<br />The value will be resolved at runtime from this environment variable.<br />Either HeaderValue or HeaderValueEnv should be set, not both. |  |  |
+
+
+#### auth.types.RoleMapping
+
+
+
+RoleMapping defines a rule for mapping JWT claims to IAM roles.
+Mappings are evaluated in priority order (lower number = higher priority).
+
+
+
+_Appears in:_
+- [auth.types.AwsStsConfig](#authtypesawsstsconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `claim` _string_ | Claim is a simple claim value to match against the RoleClaim field. |  |  |
+| `matcher` _string_ | Matcher is a CEL expression for complex matching against JWT claims. |  |  |
+| `roleArn` _string_ | RoleArn is the IAM role ARN to assume when this mapping matches. |  |  |
+| `priority` _integer_ | Priority determines evaluation order (lower values = higher priority).<br />Mirrors awssts.RoleMapping.Priority, which is *int because the role mapper<br />uses math.MaxInt for nil-priority semantics in effectivePriority. |  |  |
 
 
 #### auth.types.TokenExchangeConfig
@@ -216,7 +262,7 @@ This matches the YAML structure from the proposal (lines 173-255).
 
 _Appears in:_
 - [vmcp.config.Config](#vmcpconfigconfig)
-- [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
+- [api.v1beta1.VirtualMCPCompositeToolDefinitionSpec](#apiv1beta1virtualmcpcompositetooldefinitionspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -259,7 +305,7 @@ _Validation:_
 - Type: object
 
 _Appears in:_
-- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
+- [api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -470,7 +516,7 @@ MCP output schema (type, description) and runtime value construction (value, def
 
 _Appears in:_
 - [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
-- [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
+- [api.v1beta1.VirtualMCPCompositeToolDefinitionSpec](#apiv1beta1virtualmcpcompositetooldefinitionspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -662,7 +708,7 @@ This matches the proposal's step configuration (lines 180-255).
 
 _Appears in:_
 - [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
-- [api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)
+- [api.v1beta1.VirtualMCPCompositeToolDefinitionSpec](#apiv1beta1virtualmcpcompositetooldefinitionspec)
 - [vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig)
 
 | Field | Description | Default | Validation |
@@ -781,7 +827,85 @@ _Appears in:_
 
 
 
-#### api.v1alpha1.AWSStsConfig
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## toolhive.stacklok.dev/v1beta1
+### Resource Types
+- [api.v1beta1.EmbeddingServer](#apiv1beta1embeddingserver)
+- [api.v1beta1.EmbeddingServerList](#apiv1beta1embeddingserverlist)
+- [api.v1beta1.MCPExternalAuthConfig](#apiv1beta1mcpexternalauthconfig)
+- [api.v1beta1.MCPExternalAuthConfigList](#apiv1beta1mcpexternalauthconfiglist)
+- [api.v1beta1.MCPGroup](#apiv1beta1mcpgroup)
+- [api.v1beta1.MCPGroupList](#apiv1beta1mcpgrouplist)
+- [api.v1beta1.MCPOIDCConfig](#apiv1beta1mcpoidcconfig)
+- [api.v1beta1.MCPOIDCConfigList](#apiv1beta1mcpoidcconfiglist)
+- [api.v1beta1.MCPRegistry](#apiv1beta1mcpregistry)
+- [api.v1beta1.MCPRegistryList](#apiv1beta1mcpregistrylist)
+- [api.v1beta1.MCPRemoteProxy](#apiv1beta1mcpremoteproxy)
+- [api.v1beta1.MCPRemoteProxyList](#apiv1beta1mcpremoteproxylist)
+- [api.v1beta1.MCPServer](#apiv1beta1mcpserver)
+- [api.v1beta1.MCPServerEntry](#apiv1beta1mcpserverentry)
+- [api.v1beta1.MCPServerEntryList](#apiv1beta1mcpserverentrylist)
+- [api.v1beta1.MCPServerList](#apiv1beta1mcpserverlist)
+- [api.v1beta1.MCPTelemetryConfig](#apiv1beta1mcptelemetryconfig)
+- [api.v1beta1.MCPTelemetryConfigList](#apiv1beta1mcptelemetryconfiglist)
+- [api.v1beta1.MCPToolConfig](#apiv1beta1mcptoolconfig)
+- [api.v1beta1.MCPToolConfigList](#apiv1beta1mcptoolconfiglist)
+- [api.v1beta1.VirtualMCPCompositeToolDefinition](#apiv1beta1virtualmcpcompositetooldefinition)
+- [api.v1beta1.VirtualMCPCompositeToolDefinitionList](#apiv1beta1virtualmcpcompositetooldefinitionlist)
+- [api.v1beta1.VirtualMCPServer](#apiv1beta1virtualmcpserver)
+- [api.v1beta1.VirtualMCPServerList](#apiv1beta1virtualmcpserverlist)
+
+
+
+#### api.v1beta1.AWSStsConfig
 
 
 
@@ -792,20 +916,21 @@ temporary credentials, then signs requests to AWS services using SigV4.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPExternalAuthConfigSpec](#apiv1alpha1mcpexternalauthconfigspec)
+- [api.v1beta1.MCPExternalAuthConfigSpec](#apiv1beta1mcpexternalauthconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `region` _string_ | Region is the AWS region for the STS endpoint and service (e.g., "us-east-1", "eu-west-1") |  | MinLength: 1 <br />Pattern: `^[a-z]\{2\}(-[a-z]+)+-\d+$` <br />Required: \{\} <br /> |
 | `service` _string_ | Service is the AWS service name for SigV4 signing<br />Defaults to "aws-mcp" for AWS MCP Server endpoints | aws-mcp | Optional: \{\} <br /> |
 | `fallbackRoleArn` _string_ | FallbackRoleArn is the IAM role ARN to assume when no role mappings match<br />Used as the default role when RoleMappings is empty or no mapping matches<br />At least one of FallbackRoleArn or RoleMappings must be configured (enforced by webhook) |  | Pattern: `^arn:(aws\|aws-cn\|aws-us-gov):iam::\d\{12\}:role/[\w+=,.@\-_/]+$` <br />Optional: \{\} <br /> |
-| `roleMappings` _[api.v1alpha1.RoleMapping](#apiv1alpha1rolemapping) array_ | RoleMappings defines claim-based role selection rules<br />Allows mapping JWT claims (e.g., groups, roles) to specific IAM roles<br />Lower priority values are evaluated first (higher priority) |  | Optional: \{\} <br /> |
+| `roleMappings` _[api.v1beta1.RoleMapping](#apiv1beta1rolemapping) array_ | RoleMappings defines claim-based role selection rules<br />Allows mapping JWT claims (e.g., groups, roles) to specific IAM roles<br />Lower priority values are evaluated first (higher priority) |  | Optional: \{\} <br /> |
 | `roleClaim` _string_ | RoleClaim is the JWT claim to use for role mapping evaluation<br />Defaults to "groups" to match common OIDC group claims | groups | Optional: \{\} <br /> |
 | `sessionDuration` _integer_ | SessionDuration is the duration in seconds for the STS session<br />Must be between 900 (15 minutes) and 43200 (12 hours)<br />Defaults to 3600 (1 hour) if not specified | 3600 | Maximum: 43200 <br />Minimum: 900 <br />Optional: \{\} <br /> |
 | `sessionNameClaim` _string_ | SessionNameClaim is the JWT claim to use for role session name<br />Defaults to "sub" to use the subject claim | sub | Optional: \{\} <br /> |
+| `subjectProviderName` _string_ | SubjectProviderName is the name of the upstream provider whose access token<br />is used as the web identity token for STS AssumeRoleWithWebIdentity.<br />This field is used exclusively by VirtualMCPServer, where there is no<br />upstream swap middleware to replace the bearer token before the strategy runs.<br />When left empty and an embedded authorization server is configured on the<br />VirtualMCPServer, the controller automatically populates this field with<br />the first configured upstream provider name. Set it explicitly to override<br />that default or to select a specific provider when multiple upstreams are<br />configured.<br />When no embedded auth server is present, the bearer token from the incoming<br />request's Authorization header is used instead. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.AuditConfig
+#### api.v1beta1.AuditConfig
 
 
 
@@ -814,15 +939,15 @@ AuditConfig defines audit logging configuration for the MCP server
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled controls whether audit logging is enabled<br />When true, enables audit logging with default configuration | false | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.AuthServerRef
+#### api.v1beta1.AuthServerRef
 
 
 
@@ -833,8 +958,8 @@ the enum will be extended when a dedicated auth server CRD is introduced.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -842,7 +967,7 @@ _Appears in:_
 | `name` _string_ | Name is the name of the referenced resource in the same namespace. |  | MinLength: 1 <br />Required: \{\} <br /> |
 
 
-#### api.v1alpha1.AuthServerStorageConfig
+#### api.v1beta1.AuthServerStorageConfig
 
 
 
@@ -851,15 +976,15 @@ AuthServerStorageConfig configures the storage backend for the embedded auth ser
 
 
 _Appears in:_
-- [api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1alpha1.AuthServerStorageType](#apiv1alpha1authserverstoragetype)_ | Type specifies the storage backend type.<br />Valid values: "memory" (default), "redis". | memory | Enum: [memory redis] <br /> |
-| `redis` _[api.v1alpha1.RedisStorageConfig](#apiv1alpha1redisstorageconfig)_ | Redis configures the Redis storage backend.<br />Required when type is "redis". |  | Optional: \{\} <br /> |
+| `type` _[api.v1beta1.AuthServerStorageType](#apiv1beta1authserverstoragetype)_ | Type specifies the storage backend type.<br />Valid values: "memory" (default), "redis". | memory | Enum: [memory redis] <br /> |
+| `redis` _[api.v1beta1.RedisStorageConfig](#apiv1beta1redisstorageconfig)_ | Redis configures the Redis storage backend.<br />Required when type is "redis". |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.AuthServerStorageType
+#### api.v1beta1.AuthServerStorageType
 
 _Underlying type:_ _string_
 
@@ -868,7 +993,7 @@ AuthServerStorageType represents the type of storage backend for the embedded au
 
 
 _Appears in:_
-- [api.v1alpha1.AuthServerStorageConfig](#apiv1alpha1authserverstorageconfig)
+- [api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)
 
 | Field | Description |
 | --- | --- |
@@ -876,7 +1001,7 @@ _Appears in:_
 | `redis` | AuthServerStorageTypeRedis is the Redis storage backend<br /> |
 
 
-#### api.v1alpha1.AuthzConfigRef
+#### api.v1beta1.AuthzConfigRef
 
 
 
@@ -885,18 +1010,18 @@ AuthzConfigRef defines a reference to authorization configuration
 
 
 _Appears in:_
-- [api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1beta1.IncomingAuthConfig](#apiv1beta1incomingauthconfig)
+- [api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `type` _string_ | Type is the type of authorization configuration | configMap | Enum: [configMap inline] <br /> |
-| `configMap` _[api.v1alpha1.ConfigMapAuthzRef](#apiv1alpha1configmapauthzref)_ | ConfigMap references a ConfigMap containing authorization configuration<br />Only used when Type is "configMap" |  | Optional: \{\} <br /> |
-| `inline` _[api.v1alpha1.InlineAuthzConfig](#apiv1alpha1inlineauthzconfig)_ | Inline contains direct authorization configuration<br />Only used when Type is "inline" |  | Optional: \{\} <br /> |
+| `configMap` _[api.v1beta1.ConfigMapAuthzRef](#apiv1beta1configmapauthzref)_ | ConfigMap references a ConfigMap containing authorization configuration<br />Only used when Type is "configMap" |  | Optional: \{\} <br /> |
+| `inline` _[api.v1beta1.InlineAuthzConfig](#apiv1beta1inlineauthzconfig)_ | Inline contains direct authorization configuration<br />Only used when Type is "inline" |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.BackendAuthConfig
+#### api.v1beta1.BackendAuthConfig
 
 
 
@@ -905,15 +1030,15 @@ BackendAuthConfig defines authentication configuration for a backend MCPServer
 
 
 _Appears in:_
-- [api.v1alpha1.OutgoingAuthConfig](#apiv1alpha1outgoingauthconfig)
+- [api.v1beta1.OutgoingAuthConfig](#apiv1beta1outgoingauthconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `type` _string_ | Type defines the authentication type |  | Enum: [discovered externalAuthConfigRef] <br />Required: \{\} <br /> |
-| `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "externalAuthConfigRef" |  | Optional: \{\} <br /> |
+| `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "externalAuthConfigRef" |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.BearerTokenConfig
+#### api.v1beta1.BearerTokenConfig
 
 
 
@@ -924,14 +1049,14 @@ For security reasons, only secret references are supported (no plaintext values)
 
 
 _Appears in:_
-- [api.v1alpha1.MCPExternalAuthConfigSpec](#apiv1alpha1mcpexternalauthconfigspec)
+- [api.v1beta1.MCPExternalAuthConfigSpec](#apiv1beta1mcpexternalauthconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `tokenSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | TokenSecretRef references a Kubernetes Secret containing the bearer token |  | Required: \{\} <br /> |
+| `tokenSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | TokenSecretRef references a Kubernetes Secret containing the bearer token |  | Required: \{\} <br /> |
 
 
-#### api.v1alpha1.CABundleSource
+#### api.v1beta1.CABundleSource
 
 
 
@@ -940,16 +1065,16 @@ CABundleSource defines a source for CA certificate bundles.
 
 
 _Appears in:_
-- [api.v1alpha1.InlineOIDCSharedConfig](#apiv1alpha1inlineoidcsharedconfig)
-- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
-- [api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)
+- [api.v1beta1.InlineOIDCSharedConfig](#apiv1beta1inlineoidcsharedconfig)
+- [api.v1beta1.MCPServerEntrySpec](#apiv1beta1mcpserverentryspec)
+- [api.v1beta1.MCPTelemetryOTelConfig](#apiv1beta1mcptelemetryotelconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef references a ConfigMap containing the CA certificate bundle.<br />If Key is not specified, it defaults to "ca.crt". |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.ConfigMapAuthzRef
+#### api.v1beta1.ConfigMapAuthzRef
 
 
 
@@ -958,7 +1083,7 @@ ConfigMapAuthzRef references a ConfigMap containing authorization configuration
 
 
 _Appears in:_
-- [api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)
+- [api.v1beta1.AuthzConfigRef](#apiv1beta1authzconfigref)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -968,7 +1093,7 @@ _Appears in:_
 
 
 
-#### api.v1alpha1.EmbeddedAuthServerConfig
+#### api.v1beta1.EmbeddedAuthServerConfig
 
 
 
@@ -978,21 +1103,21 @@ This enables running an authorization server that delegates authentication to up
 
 
 _Appears in:_
-- [api.v1alpha1.MCPExternalAuthConfigSpec](#apiv1alpha1mcpexternalauthconfigspec)
-- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
+- [api.v1beta1.MCPExternalAuthConfigSpec](#apiv1beta1mcpexternalauthconfigspec)
+- [api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `issuer` _string_ | Issuer is the issuer identifier for this authorization server.<br />This will be included in the "iss" claim of issued tokens.<br />Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414). |  | Pattern: `^https?://[^\s?#]+[^/\s?#]$` <br />Required: \{\} <br /> |
 | `authorizationEndpointBaseUrl` _string_ | AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint<br />in the OAuth discovery document. When set, the discovery document will advertise<br />`\{authorizationEndpointBaseUrl\}/oauth/authorize` instead of `\{issuer\}/oauth/authorize`.<br />All other endpoints (token, registration, JWKS) remain derived from the issuer.<br />This is useful when the browser-facing authorization endpoint needs to be on a<br />different host than the issuer used for backend-to-backend calls.<br />Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash. |  | Pattern: `^https?://[^\s?#]+[^/\s?#]$` <br />Optional: \{\} <br /> |
-| `signingKeySecretRefs` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref) array_ | SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.<br />Supports key rotation by allowing multiple keys (oldest keys are used for verification only).<br />If not specified, an ephemeral signing key will be auto-generated (development only -<br />JWTs will be invalid after restart). |  | MaxItems: 5 <br />Optional: \{\} <br /> |
-| `hmacSecretRefs` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  | Optional: \{\} <br /> |
-| `tokenLifespans` _[api.v1alpha1.TokenLifespanConfig](#apiv1alpha1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
-| `upstreamProviders` _[api.v1alpha1.UpstreamProviderConfig](#apiv1alpha1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />The embedded auth server delegates authentication to these providers.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | MinItems: 1 <br />Required: \{\} <br /> |
-| `storage` _[api.v1alpha1.AuthServerStorageConfig](#apiv1alpha1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
+| `signingKeySecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.<br />Supports key rotation by allowing multiple keys (oldest keys are used for verification only).<br />If not specified, an ephemeral signing key will be auto-generated (development only -<br />JWTs will be invalid after restart). |  | MaxItems: 5 <br />Optional: \{\} <br /> |
+| `hmacSecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  | Optional: \{\} <br /> |
+| `tokenLifespans` _[api.v1beta1.TokenLifespanConfig](#apiv1beta1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
+| `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />The embedded auth server delegates authentication to these providers.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | MinItems: 1 <br />Required: \{\} <br /> |
+| `storage` _[api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.EmbeddingResourceOverrides
+#### api.v1beta1.EmbeddingResourceOverrides
 
 
 
@@ -1001,16 +1126,16 @@ EmbeddingResourceOverrides defines overrides for annotations and labels on creat
 
 
 _Appears in:_
-- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
+- [api.v1beta1.EmbeddingServerSpec](#apiv1beta1embeddingserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `statefulSet` _[api.v1alpha1.EmbeddingStatefulSetOverrides](#apiv1alpha1embeddingstatefulsetoverrides)_ | StatefulSet defines overrides for the StatefulSet resource |  | Optional: \{\} <br /> |
-| `service` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | Service defines overrides for the Service resource |  | Optional: \{\} <br /> |
-| `persistentVolumeClaim` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | PersistentVolumeClaim defines overrides for the PVC resource |  | Optional: \{\} <br /> |
+| `statefulSet` _[api.v1beta1.EmbeddingStatefulSetOverrides](#apiv1beta1embeddingstatefulsetoverrides)_ | StatefulSet defines overrides for the StatefulSet resource |  | Optional: \{\} <br /> |
+| `service` _[api.v1beta1.ResourceMetadataOverrides](#apiv1beta1resourcemetadataoverrides)_ | Service defines overrides for the Service resource |  | Optional: \{\} <br /> |
+| `persistentVolumeClaim` _[api.v1beta1.ResourceMetadataOverrides](#apiv1beta1resourcemetadataoverrides)_ | PersistentVolumeClaim defines overrides for the PVC resource |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.EmbeddingServer
+#### api.v1beta1.EmbeddingServer
 
 
 
@@ -1019,20 +1144,20 @@ EmbeddingServer is the Schema for the embeddingservers API
 
 
 _Appears in:_
-- [api.v1alpha1.EmbeddingServerList](#apiv1alpha1embeddingserverlist)
+- [api.v1beta1.EmbeddingServerList](#apiv1beta1embeddingserverlist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `EmbeddingServer` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)_ |  |  |  |
-| `status` _[api.v1alpha1.EmbeddingServerStatus](#apiv1alpha1embeddingserverstatus)_ |  |  |  |
+| `spec` _[api.v1beta1.EmbeddingServerSpec](#apiv1beta1embeddingserverspec)_ |  |  |  |
+| `status` _[api.v1beta1.EmbeddingServerStatus](#apiv1beta1embeddingserverstatus)_ |  |  |  |
 
 
-#### api.v1alpha1.EmbeddingServerList
+#### api.v1beta1.EmbeddingServerList
 
 
 
@@ -1044,15 +1169,15 @@ EmbeddingServerList contains a list of EmbeddingServer
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `EmbeddingServerList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1alpha1.EmbeddingServer](#apiv1alpha1embeddingserver) array_ |  |  |  |
+| `items` _[api.v1beta1.EmbeddingServer](#apiv1beta1embeddingserver) array_ |  |  |  |
 
 
-#### api.v1alpha1.EmbeddingServerPhase
+#### api.v1beta1.EmbeddingServerPhase
 
 _Underlying type:_ _string_
 
@@ -1062,7 +1187,7 @@ _Validation:_
 - Enum: [Pending Downloading Ready Failed Terminating]
 
 _Appears in:_
-- [api.v1alpha1.EmbeddingServerStatus](#apiv1alpha1embeddingserverstatus)
+- [api.v1beta1.EmbeddingServerStatus](#apiv1beta1embeddingserverstatus)
 
 | Field | Description |
 | --- | --- |
@@ -1073,7 +1198,7 @@ _Appears in:_
 | `Terminating` | EmbeddingServerPhaseTerminating means the EmbeddingServer is being deleted<br /> |
 
 
-#### api.v1alpha1.EmbeddingServerRef
+#### api.v1beta1.EmbeddingServerRef
 
 
 
@@ -1083,14 +1208,14 @@ This follows the same pattern as ExternalAuthConfigRef and ToolConfigRef.
 
 
 _Appears in:_
-- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
+- [api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the EmbeddingServer resource |  | Required: \{\} <br /> |
 
 
-#### api.v1alpha1.EmbeddingServerSpec
+#### api.v1beta1.EmbeddingServerSpec
 
 
 
@@ -1099,25 +1224,25 @@ EmbeddingServerSpec defines the desired state of EmbeddingServer
 
 
 _Appears in:_
-- [api.v1alpha1.EmbeddingServer](#apiv1alpha1embeddingserver)
+- [api.v1beta1.EmbeddingServer](#apiv1beta1embeddingserver)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `model` _string_ | Model is the HuggingFace embedding model to use (e.g., "sentence-transformers/all-MiniLM-L6-v2") | BAAI/bge-small-en-v1.5 | Optional: \{\} <br /> |
-| `hfTokenSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | HFTokenSecretRef is a reference to a Kubernetes Secret containing the huggingface token.<br />If provided, the secret value will be provided to the embedding server for authentication with huggingface. |  | Optional: \{\} <br /> |
+| `hfTokenSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | HFTokenSecretRef is a reference to a Kubernetes Secret containing the huggingface token.<br />If provided, the secret value will be provided to the embedding server for authentication with huggingface. |  | Optional: \{\} <br /> |
 | `image` _string_ | Image is the container image for the embedding inference server.<br />Images must be from HuggingFace Text Embeddings Inference (https://github.com/huggingface/text-embeddings-inference). | ghcr.io/huggingface/text-embeddings-inference:cpu-latest | Optional: \{\} <br /> |
 | `imagePullPolicy` _string_ | ImagePullPolicy defines the pull policy for the container image | IfNotPresent | Enum: [Always Never IfNotPresent] <br />Optional: \{\} <br /> |
 | `port` _integer_ | Port is the port to expose the embedding service on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `args` _string array_ | Args are additional arguments to pass to the embedding inference server |  | Optional: \{\} <br /> |
-| `env` _[api.v1alpha1.EnvVar](#apiv1alpha1envvar) array_ | Env are environment variables to set in the container |  | Optional: \{\} <br /> |
-| `resources` _[api.v1alpha1.ResourceRequirements](#apiv1alpha1resourcerequirements)_ | Resources defines compute resources for the embedding server |  | Optional: \{\} <br /> |
-| `modelCache` _[api.v1alpha1.ModelCacheConfig](#apiv1alpha1modelcacheconfig)_ | ModelCache configures persistent storage for downloaded models<br />When enabled, models are cached in a PVC and reused across pod restarts |  | Optional: \{\} <br /> |
+| `env` _[api.v1beta1.EnvVar](#apiv1beta1envvar) array_ | Env are environment variables to set in the container |  | Optional: \{\} <br /> |
+| `resources` _[api.v1beta1.ResourceRequirements](#apiv1beta1resourcerequirements)_ | Resources defines compute resources for the embedding server |  | Optional: \{\} <br /> |
+| `modelCache` _[api.v1beta1.ModelCacheConfig](#apiv1beta1modelcacheconfig)_ | ModelCache configures persistent storage for downloaded models<br />When enabled, models are cached in a PVC and reused across pod restarts |  | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec allows customizing the pod (node selection, tolerations, etc.)<br />This field accepts a PodTemplateSpec object as JSON/YAML.<br />Note that to modify the specific container the embedding server runs in, you must specify<br />the 'embedding' container name in the PodTemplateSpec. |  | Type: object <br />Optional: \{\} <br /> |
-| `resourceOverrides` _[api.v1alpha1.EmbeddingResourceOverrides](#apiv1alpha1embeddingresourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  | Optional: \{\} <br /> |
+| `resourceOverrides` _[api.v1beta1.EmbeddingResourceOverrides](#apiv1beta1embeddingresourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  | Optional: \{\} <br /> |
 | `replicas` _integer_ | Replicas is the number of embedding server replicas to run | 1 | Minimum: 1 <br />Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.EmbeddingServerStatus
+#### api.v1beta1.EmbeddingServerStatus
 
 
 
@@ -1126,19 +1251,19 @@ EmbeddingServerStatus defines the observed state of EmbeddingServer
 
 
 _Appears in:_
-- [api.v1alpha1.EmbeddingServer](#apiv1alpha1embeddingserver)
+- [api.v1beta1.EmbeddingServer](#apiv1beta1embeddingserver)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the EmbeddingServer's state |  | Optional: \{\} <br /> |
-| `phase` _[api.v1alpha1.EmbeddingServerPhase](#apiv1alpha1embeddingserverphase)_ | Phase is the current phase of the EmbeddingServer |  | Enum: [Pending Downloading Ready Failed Terminating] <br />Optional: \{\} <br /> |
+| `phase` _[api.v1beta1.EmbeddingServerPhase](#apiv1beta1embeddingserverphase)_ | Phase is the current phase of the EmbeddingServer |  | Enum: [Pending Downloading Ready Failed Terminating] <br />Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
 | `url` _string_ | URL is the URL where the embedding service can be accessed |  | Optional: \{\} <br /> |
 | `readyReplicas` _integer_ | ReadyReplicas is the number of ready replicas |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.EmbeddingStatefulSetOverrides
+#### api.v1beta1.EmbeddingStatefulSetOverrides
 
 
 
@@ -1147,16 +1272,16 @@ EmbeddingStatefulSetOverrides defines overrides specific to the embedding statef
 
 
 _Appears in:_
-- [api.v1alpha1.EmbeddingResourceOverrides](#apiv1alpha1embeddingresourceoverrides)
+- [api.v1beta1.EmbeddingResourceOverrides](#apiv1beta1embeddingresourceoverrides)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `annotations` _object (keys:string, values:string)_ | Annotations to add or override on the resource |  | Optional: \{\} <br /> |
 | `labels` _object (keys:string, values:string)_ | Labels to add or override on the resource |  | Optional: \{\} <br /> |
-| `podTemplateMetadataOverrides` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | PodTemplateMetadataOverrides defines metadata overrides for the pod template |  | Optional: \{\} <br /> |
+| `podTemplateMetadataOverrides` _[api.v1beta1.ResourceMetadataOverrides](#apiv1beta1resourcemetadataoverrides)_ | PodTemplateMetadataOverrides defines metadata overrides for the pod template |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.EnvVar
+#### api.v1beta1.EnvVar
 
 
 
@@ -1165,9 +1290,9 @@ EnvVar represents an environment variable in a container
 
 
 _Appears in:_
-- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
-- [api.v1alpha1.ProxyDeploymentOverrides](#apiv1alpha1proxydeploymentoverrides)
+- [api.v1beta1.EmbeddingServerSpec](#apiv1beta1embeddingserverspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
+- [api.v1beta1.ProxyDeploymentOverrides](#apiv1beta1proxydeploymentoverrides)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1175,7 +1300,7 @@ _Appears in:_
 | `value` _string_ | Value of the environment variable |  | Required: \{\} <br /> |
 
 
-#### api.v1alpha1.ExternalAuthConfigRef
+#### api.v1beta1.ExternalAuthConfigRef
 
 
 
@@ -1185,17 +1310,17 @@ The referenced MCPExternalAuthConfig must be in the same namespace as the MCPSer
 
 
 _Appears in:_
-- [api.v1alpha1.BackendAuthConfig](#apiv1alpha1backendauthconfig)
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1beta1.BackendAuthConfig](#apiv1beta1backendauthconfig)
+- [api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)
+- [api.v1beta1.MCPServerEntrySpec](#apiv1beta1mcpserverentryspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the MCPExternalAuthConfig resource |  | Required: \{\} <br /> |
 
 
-#### api.v1alpha1.ExternalAuthType
+#### api.v1beta1.ExternalAuthType
 
 _Underlying type:_ _string_
 
@@ -1204,7 +1329,7 @@ ExternalAuthType represents the type of external authentication
 
 
 _Appears in:_
-- [api.v1alpha1.MCPExternalAuthConfigSpec](#apiv1alpha1mcpexternalauthconfigspec)
+- [api.v1beta1.MCPExternalAuthConfigSpec](#apiv1beta1mcpexternalauthconfigspec)
 
 | Field | Description |
 | --- | --- |
@@ -1217,7 +1342,7 @@ _Appears in:_
 | `upstreamInject` | ExternalAuthTypeUpstreamInject is the type for upstream token injection<br />This injects an upstream IDP access token as the Authorization: Bearer header<br /> |
 
 
-#### api.v1alpha1.HeaderForwardConfig
+#### api.v1beta1.HeaderForwardConfig
 
 
 
@@ -1226,16 +1351,16 @@ HeaderForwardConfig defines header forward configuration for remote servers.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
+- [api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)
+- [api.v1beta1.MCPServerEntrySpec](#apiv1beta1mcpserverentryspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `addPlaintextHeaders` _object (keys:string, values:string)_ | AddPlaintextHeaders is a map of header names to literal values to inject into requests.<br />WARNING: Values are stored in plaintext and visible via kubectl commands.<br />Use addHeadersFromSecret for sensitive data like API keys or tokens. |  | Optional: \{\} <br /> |
-| `addHeadersFromSecret` _[api.v1alpha1.HeaderFromSecret](#apiv1alpha1headerfromsecret) array_ | AddHeadersFromSecret references Kubernetes Secrets for sensitive header values. |  | Optional: \{\} <br /> |
+| `addHeadersFromSecret` _[api.v1beta1.HeaderFromSecret](#apiv1beta1headerfromsecret) array_ | AddHeadersFromSecret references Kubernetes Secrets for sensitive header values. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.HeaderFromSecret
+#### api.v1beta1.HeaderFromSecret
 
 
 
@@ -1244,15 +1369,15 @@ HeaderFromSecret defines a header whose value comes from a Kubernetes Secret.
 
 
 _Appears in:_
-- [api.v1alpha1.HeaderForwardConfig](#apiv1alpha1headerforwardconfig)
+- [api.v1beta1.HeaderForwardConfig](#apiv1beta1headerforwardconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `headerName` _string_ | HeaderName is the HTTP header name (e.g., "X-API-Key") |  | MaxLength: 255 <br />MinLength: 1 <br />Required: \{\} <br /> |
-| `valueSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ValueSecretRef references the Secret and key containing the header value |  | Required: \{\} <br /> |
+| `valueSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ValueSecretRef references the Secret and key containing the header value |  | Required: \{\} <br /> |
 
 
-#### api.v1alpha1.HeaderInjectionConfig
+#### api.v1beta1.HeaderInjectionConfig
 
 
 
@@ -1263,15 +1388,15 @@ For security reasons, only secret references are supported (no plaintext values)
 
 
 _Appears in:_
-- [api.v1alpha1.MCPExternalAuthConfigSpec](#apiv1alpha1mcpexternalauthconfigspec)
+- [api.v1beta1.MCPExternalAuthConfigSpec](#apiv1beta1mcpexternalauthconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `headerName` _string_ | HeaderName is the name of the HTTP header to inject |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `valueSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ValueSecretRef references a Kubernetes Secret containing the header value |  | Required: \{\} <br /> |
+| `valueSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ValueSecretRef references a Kubernetes Secret containing the header value |  | Required: \{\} <br /> |
 
 
-#### api.v1alpha1.IncomingAuthConfig
+#### api.v1beta1.IncomingAuthConfig
 
 
 
@@ -1280,16 +1405,16 @@ IncomingAuthConfig configures authentication for clients connecting to the Virtu
 
 
 _Appears in:_
-- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
+- [api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `type` _string_ | Type defines the authentication type: anonymous or oidc<br />When no authentication is required, explicitly set this to "anonymous" |  | Enum: [anonymous oidc] <br />Required: \{\} <br /> |
-| `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
-| `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration<br />Reuses MCPServer authz patterns |  | Optional: \{\} <br /> |
+| `oidcConfigRef` _[api.v1beta1.MCPOIDCConfigReference](#apiv1beta1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this VirtualMCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
+| `authzConfig` _[api.v1beta1.AuthzConfigRef](#apiv1beta1authzconfigref)_ | AuthzConfig defines authorization policy configuration<br />Reuses MCPServer authz patterns |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.InlineAuthzConfig
+#### api.v1beta1.InlineAuthzConfig
 
 
 
@@ -1298,7 +1423,7 @@ InlineAuthzConfig contains direct authorization configuration
 
 
 _Appears in:_
-- [api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)
+- [api.v1beta1.AuthzConfigRef](#apiv1beta1authzconfigref)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1306,7 +1431,7 @@ _Appears in:_
 | `entitiesJson` _string_ | EntitiesJSON is a JSON string representing Cedar entities | [] | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.InlineOIDCSharedConfig
+#### api.v1beta1.InlineOIDCSharedConfig
 
 
 
@@ -1317,7 +1442,7 @@ via MCPOIDCConfigReference.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPOIDCConfigSpec](#apiv1alpha1mcpoidcconfigspec)
+- [api.v1beta1.MCPOIDCConfigSpec](#apiv1beta1mcpoidcconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1325,15 +1450,15 @@ _Appears in:_
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from |  | Optional: \{\} <br /> |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint |  | Optional: \{\} <br /> |
 | `clientId` _string_ | ClientID is the OIDC client ID |  | Optional: \{\} <br /> |
-| `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef is a reference to a Kubernetes Secret containing the client secret |  | Optional: \{\} <br /> |
-| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing the CA certificate bundle.<br />When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath. |  | Optional: \{\} <br /> |
+| `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef is a reference to a Kubernetes Secret containing the client secret |  | Optional: \{\} <br /> |
+| `caBundleRef` _[api.v1beta1.CABundleSource](#apiv1beta1cabundlesource)_ | CABundleRef references a ConfigMap containing the CA certificate bundle.<br />When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath. |  | Optional: \{\} <br /> |
 | `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests |  | Optional: \{\} <br /> |
 | `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses.<br />Note: at runtime, if either JWKSAllowPrivateIP or ProtectedResourceAllowPrivateIP<br />is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection). | false | Optional: \{\} <br /> |
 | `protectedResourceAllowPrivateIP` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses.<br />Note: at runtime, if either ProtectedResourceAllowPrivateIP or JWKSAllowPrivateIP<br />is true, private IPs are allowed for all OIDC HTTP requests (JWKS, discovery, introspection). | false | Optional: \{\} <br /> |
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing.<br />WARNING: This is insecure and should NEVER be used in production. | false | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.KubernetesServiceAccountOIDCConfig
+#### api.v1beta1.KubernetesServiceAccountOIDCConfig
 
 
 
@@ -1343,7 +1468,7 @@ This contains shared fields without audience, which is specified per-server via 
 
 
 _Appears in:_
-- [api.v1alpha1.MCPOIDCConfigSpec](#apiv1alpha1mcpoidcconfigspec)
+- [api.v1beta1.MCPOIDCConfigSpec](#apiv1beta1mcpoidcconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1355,7 +1480,7 @@ _Appears in:_
 | `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token.<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication.<br />Defaults to true if not specified. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPExternalAuthConfig
+#### api.v1beta1.MCPExternalAuthConfig
 
 
 
@@ -1367,20 +1492,20 @@ are not supported for security and isolation reasons.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPExternalAuthConfigList](#apiv1alpha1mcpexternalauthconfiglist)
+- [api.v1beta1.MCPExternalAuthConfigList](#apiv1beta1mcpexternalauthconfiglist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPExternalAuthConfig` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1alpha1.MCPExternalAuthConfigSpec](#apiv1alpha1mcpexternalauthconfigspec)_ |  |  |  |
-| `status` _[api.v1alpha1.MCPExternalAuthConfigStatus](#apiv1alpha1mcpexternalauthconfigstatus)_ |  |  |  |
+| `spec` _[api.v1beta1.MCPExternalAuthConfigSpec](#apiv1beta1mcpexternalauthconfigspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPExternalAuthConfigStatus](#apiv1beta1mcpexternalauthconfigstatus)_ |  |  |  |
 
 
-#### api.v1alpha1.MCPExternalAuthConfigList
+#### api.v1beta1.MCPExternalAuthConfigList
 
 
 
@@ -1392,15 +1517,15 @@ MCPExternalAuthConfigList contains a list of MCPExternalAuthConfig
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPExternalAuthConfigList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1alpha1.MCPExternalAuthConfig](#apiv1alpha1mcpexternalauthconfig) array_ |  |  |  |
+| `items` _[api.v1beta1.MCPExternalAuthConfig](#apiv1beta1mcpexternalauthconfig) array_ |  |  |  |
 
 
-#### api.v1alpha1.MCPExternalAuthConfigSpec
+#### api.v1beta1.MCPExternalAuthConfigSpec
 
 
 
@@ -1411,20 +1536,20 @@ MCPServer resources in the same namespace.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPExternalAuthConfig](#apiv1alpha1mcpexternalauthconfig)
+- [api.v1beta1.MCPExternalAuthConfig](#apiv1beta1mcpexternalauthconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1alpha1.ExternalAuthType](#apiv1alpha1externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated embeddedAuthServer awsSts upstreamInject] <br />Required: \{\} <br /> |
-| `tokenExchange` _[api.v1alpha1.TokenExchangeConfig](#apiv1alpha1tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  | Optional: \{\} <br /> |
-| `headerInjection` _[api.v1alpha1.HeaderInjectionConfig](#apiv1alpha1headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  | Optional: \{\} <br /> |
-| `bearerToken` _[api.v1alpha1.BearerTokenConfig](#apiv1alpha1bearertokenconfig)_ | BearerToken configures bearer token authentication<br />Only used when Type is "bearerToken" |  | Optional: \{\} <br /> |
-| `embeddedAuthServer` _[api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)_ | EmbeddedAuthServer configures an embedded OAuth2/OIDC authorization server<br />Only used when Type is "embeddedAuthServer" |  | Optional: \{\} <br /> |
-| `awsSts` _[api.v1alpha1.AWSStsConfig](#apiv1alpha1awsstsconfig)_ | AWSSts configures AWS STS authentication with SigV4 request signing<br />Only used when Type is "awsSts" |  | Optional: \{\} <br /> |
-| `upstreamInject` _[api.v1alpha1.UpstreamInjectSpec](#apiv1alpha1upstreaminjectspec)_ | UpstreamInject configures upstream token injection for backend requests.<br />Only used when Type is "upstreamInject". |  | Optional: \{\} <br /> |
+| `type` _[api.v1beta1.ExternalAuthType](#apiv1beta1externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated embeddedAuthServer awsSts upstreamInject] <br />Required: \{\} <br /> |
+| `tokenExchange` _[api.v1beta1.TokenExchangeConfig](#apiv1beta1tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  | Optional: \{\} <br /> |
+| `headerInjection` _[api.v1beta1.HeaderInjectionConfig](#apiv1beta1headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  | Optional: \{\} <br /> |
+| `bearerToken` _[api.v1beta1.BearerTokenConfig](#apiv1beta1bearertokenconfig)_ | BearerToken configures bearer token authentication<br />Only used when Type is "bearerToken" |  | Optional: \{\} <br /> |
+| `embeddedAuthServer` _[api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)_ | EmbeddedAuthServer configures an embedded OAuth2/OIDC authorization server<br />Only used when Type is "embeddedAuthServer" |  | Optional: \{\} <br /> |
+| `awsSts` _[api.v1beta1.AWSStsConfig](#apiv1beta1awsstsconfig)_ | AWSSts configures AWS STS authentication with SigV4 request signing<br />Only used when Type is "awsSts" |  | Optional: \{\} <br /> |
+| `upstreamInject` _[api.v1beta1.UpstreamInjectSpec](#apiv1beta1upstreaminjectspec)_ | UpstreamInject configures upstream token injection for backend requests.<br />Only used when Type is "upstreamInject". |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPExternalAuthConfigStatus
+#### api.v1beta1.MCPExternalAuthConfigStatus
 
 
 
@@ -1433,17 +1558,17 @@ MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
 
 
 _Appears in:_
-- [api.v1alpha1.MCPExternalAuthConfig](#apiv1alpha1mcpexternalauthconfig)
+- [api.v1beta1.MCPExternalAuthConfig](#apiv1beta1mcpexternalauthconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPExternalAuthConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPExternalAuthConfig.<br />It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
-| `referencingWorkloads` _[api.v1alpha1.WorkloadReference](#apiv1alpha1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
+| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPGroup
+#### api.v1beta1.MCPGroup
 
 
 
@@ -1452,20 +1577,20 @@ MCPGroup is the Schema for the mcpgroups API
 
 
 _Appears in:_
-- [api.v1alpha1.MCPGroupList](#apiv1alpha1mcpgrouplist)
+- [api.v1beta1.MCPGroupList](#apiv1beta1mcpgrouplist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPGroup` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1alpha1.MCPGroupSpec](#apiv1alpha1mcpgroupspec)_ |  |  |  |
-| `status` _[api.v1alpha1.MCPGroupStatus](#apiv1alpha1mcpgroupstatus)_ |  |  |  |
+| `spec` _[api.v1beta1.MCPGroupSpec](#apiv1beta1mcpgroupspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPGroupStatus](#apiv1beta1mcpgroupstatus)_ |  |  |  |
 
 
-#### api.v1alpha1.MCPGroupList
+#### api.v1beta1.MCPGroupList
 
 
 
@@ -1477,15 +1602,15 @@ MCPGroupList contains a list of MCPGroup
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPGroupList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1alpha1.MCPGroup](#apiv1alpha1mcpgroup) array_ |  |  |  |
+| `items` _[api.v1beta1.MCPGroup](#apiv1beta1mcpgroup) array_ |  |  |  |
 
 
-#### api.v1alpha1.MCPGroupPhase
+#### api.v1beta1.MCPGroupPhase
 
 _Underlying type:_ _string_
 
@@ -1495,7 +1620,7 @@ _Validation:_
 - Enum: [Ready Pending Failed]
 
 _Appears in:_
-- [api.v1alpha1.MCPGroupStatus](#apiv1alpha1mcpgroupstatus)
+- [api.v1beta1.MCPGroupStatus](#apiv1beta1mcpgroupstatus)
 
 | Field | Description |
 | --- | --- |
@@ -1504,7 +1629,7 @@ _Appears in:_
 | `Failed` | MCPGroupPhaseFailed indicates the MCPGroup has failed<br /> |
 
 
-#### api.v1alpha1.MCPGroupRef
+#### api.v1beta1.MCPGroupRef
 
 
 
@@ -1514,17 +1639,17 @@ The referenced MCPGroup must be in the same namespace.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
-- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
+- [api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)
+- [api.v1beta1.MCPServerEntrySpec](#apiv1beta1mcpserverentryspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
+- [api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the MCPGroup resource in the same namespace |  | MinLength: 1 <br />Required: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPGroupSpec
+#### api.v1beta1.MCPGroupSpec
 
 
 
@@ -1533,14 +1658,14 @@ MCPGroupSpec defines the desired state of MCPGroup
 
 
 _Appears in:_
-- [api.v1alpha1.MCPGroup](#apiv1alpha1mcpgroup)
+- [api.v1beta1.MCPGroup](#apiv1beta1mcpgroup)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `description` _string_ | Description provides human-readable context |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPGroupStatus
+#### api.v1beta1.MCPGroupStatus
 
 
 
@@ -1549,12 +1674,12 @@ MCPGroupStatus defines observed state
 
 
 _Appears in:_
-- [api.v1alpha1.MCPGroup](#apiv1alpha1mcpgroup)
+- [api.v1beta1.MCPGroup](#apiv1beta1mcpgroup)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller |  | Optional: \{\} <br /> |
-| `phase` _[api.v1alpha1.MCPGroupPhase](#apiv1alpha1mcpgroupphase)_ | Phase indicates current state | Pending | Enum: [Ready Pending Failed] <br />Optional: \{\} <br /> |
+| `phase` _[api.v1beta1.MCPGroupPhase](#apiv1beta1mcpgroupphase)_ | Phase indicates current state | Pending | Enum: [Ready Pending Failed] <br />Optional: \{\} <br /> |
 | `servers` _string array_ | Servers lists MCPServer names in this group |  | Optional: \{\} <br /> |
 | `serverCount` _integer_ | ServerCount is the number of MCPServers |  | Optional: \{\} <br /> |
 | `remoteProxies` _string array_ | RemoteProxies lists MCPRemoteProxy names in this group |  | Optional: \{\} <br /> |
@@ -1564,7 +1689,7 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent observations |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPOIDCConfig
+#### api.v1beta1.MCPOIDCConfig
 
 
 
@@ -1576,20 +1701,20 @@ are not supported for security and isolation reasons.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPOIDCConfigList](#apiv1alpha1mcpoidcconfiglist)
+- [api.v1beta1.MCPOIDCConfigList](#apiv1beta1mcpoidcconfiglist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPOIDCConfig` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1alpha1.MCPOIDCConfigSpec](#apiv1alpha1mcpoidcconfigspec)_ |  |  |  |
-| `status` _[api.v1alpha1.MCPOIDCConfigStatus](#apiv1alpha1mcpoidcconfigstatus)_ |  |  |  |
+| `spec` _[api.v1beta1.MCPOIDCConfigSpec](#apiv1beta1mcpoidcconfigspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPOIDCConfigStatus](#apiv1beta1mcpoidcconfigstatus)_ |  |  |  |
 
 
-#### api.v1alpha1.MCPOIDCConfigList
+#### api.v1beta1.MCPOIDCConfigList
 
 
 
@@ -1601,15 +1726,15 @@ MCPOIDCConfigList contains a list of MCPOIDCConfig
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPOIDCConfigList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1alpha1.MCPOIDCConfig](#apiv1alpha1mcpoidcconfig) array_ |  |  |  |
+| `items` _[api.v1beta1.MCPOIDCConfig](#apiv1beta1mcpoidcconfig) array_ |  |  |  |
 
 
-#### api.v1alpha1.MCPOIDCConfigReference
+#### api.v1beta1.MCPOIDCConfigReference
 
 
 
@@ -1619,9 +1744,9 @@ The referenced MCPOIDCConfig must be in the same namespace as the MCPServer.
 
 
 _Appears in:_
-- [api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1beta1.IncomingAuthConfig](#apiv1beta1incomingauthconfig)
+- [api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1631,7 +1756,7 @@ _Appears in:_
 | `resourceUrl` _string_ | ResourceURL is the public URL for OAuth protected resource metadata (RFC 9728).<br />When the server is exposed via Ingress or gateway, set this to the external<br />URL that MCP clients connect to. If not specified, defaults to the internal<br />Kubernetes service URL. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPOIDCConfigSourceType
+#### api.v1beta1.MCPOIDCConfigSourceType
 
 _Underlying type:_ _string_
 
@@ -1640,7 +1765,7 @@ MCPOIDCConfigSourceType represents the type of OIDC configuration source for MCP
 
 
 _Appears in:_
-- [api.v1alpha1.MCPOIDCConfigSpec](#apiv1alpha1mcpoidcconfigspec)
+- [api.v1beta1.MCPOIDCConfigSpec](#apiv1beta1mcpoidcconfigspec)
 
 | Field | Description |
 | --- | --- |
@@ -1648,7 +1773,7 @@ _Appears in:_
 | `inline` | MCPOIDCConfigTypeInline is the type for inline OIDC configuration<br /> |
 
 
-#### api.v1alpha1.MCPOIDCConfigSpec
+#### api.v1beta1.MCPOIDCConfigSpec
 
 
 
@@ -1659,16 +1784,16 @@ MCPServer resources in the same namespace.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPOIDCConfig](#apiv1alpha1mcpoidcconfig)
+- [api.v1beta1.MCPOIDCConfig](#apiv1beta1mcpoidcconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1alpha1.MCPOIDCConfigSourceType](#apiv1alpha1mcpoidcconfigsourcetype)_ | Type is the type of OIDC configuration source |  | Enum: [kubernetesServiceAccount inline] <br />Required: \{\} <br /> |
-| `kubernetesServiceAccount` _[api.v1alpha1.KubernetesServiceAccountOIDCConfig](#apiv1alpha1kubernetesserviceaccountoidcconfig)_ | KubernetesServiceAccount configures OIDC for Kubernetes service account token validation.<br />Only used when Type is "kubernetesServiceAccount". |  | Optional: \{\} <br /> |
-| `inline` _[api.v1alpha1.InlineOIDCSharedConfig](#apiv1alpha1inlineoidcsharedconfig)_ | Inline contains direct OIDC configuration.<br />Only used when Type is "inline". |  | Optional: \{\} <br /> |
+| `type` _[api.v1beta1.MCPOIDCConfigSourceType](#apiv1beta1mcpoidcconfigsourcetype)_ | Type is the type of OIDC configuration source |  | Enum: [kubernetesServiceAccount inline] <br />Required: \{\} <br /> |
+| `kubernetesServiceAccount` _[api.v1beta1.KubernetesServiceAccountOIDCConfig](#apiv1beta1kubernetesserviceaccountoidcconfig)_ | KubernetesServiceAccount configures OIDC for Kubernetes service account token validation.<br />Only used when Type is "kubernetesServiceAccount". |  | Optional: \{\} <br /> |
+| `inline` _[api.v1beta1.InlineOIDCSharedConfig](#apiv1beta1inlineoidcsharedconfig)_ | Inline contains direct OIDC configuration.<br />Only used when Type is "inline". |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPOIDCConfigStatus
+#### api.v1beta1.MCPOIDCConfigStatus
 
 
 
@@ -1677,17 +1802,17 @@ MCPOIDCConfigStatus defines the observed state of MCPOIDCConfig
 
 
 _Appears in:_
-- [api.v1alpha1.MCPOIDCConfig](#apiv1alpha1mcpoidcconfig)
+- [api.v1beta1.MCPOIDCConfig](#apiv1beta1mcpoidcconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPOIDCConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPOIDCConfig. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
-| `referencingWorkloads` _[api.v1alpha1.WorkloadReference](#apiv1alpha1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
+| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPRegistry
+#### api.v1beta1.MCPRegistry
 
 
 
@@ -1696,20 +1821,20 @@ MCPRegistry is the Schema for the mcpregistries API
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRegistryList](#apiv1alpha1mcpregistrylist)
+- [api.v1beta1.MCPRegistryList](#apiv1beta1mcpregistrylist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPRegistry` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1alpha1.MCPRegistrySpec](#apiv1alpha1mcpregistryspec)_ |  |  |  |
-| `status` _[api.v1alpha1.MCPRegistryStatus](#apiv1alpha1mcpregistrystatus)_ |  |  |  |
+| `spec` _[api.v1beta1.MCPRegistrySpec](#apiv1beta1mcpregistryspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPRegistryStatus](#apiv1beta1mcpregistrystatus)_ |  |  |  |
 
 
-#### api.v1alpha1.MCPRegistryList
+#### api.v1beta1.MCPRegistryList
 
 
 
@@ -1721,15 +1846,15 @@ MCPRegistryList contains a list of MCPRegistry
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPRegistryList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1alpha1.MCPRegistry](#apiv1alpha1mcpregistry) array_ |  |  |  |
+| `items` _[api.v1beta1.MCPRegistry](#apiv1beta1mcpregistry) array_ |  |  |  |
 
 
-#### api.v1alpha1.MCPRegistryPhase
+#### api.v1beta1.MCPRegistryPhase
 
 _Underlying type:_ _string_
 
@@ -1739,7 +1864,7 @@ _Validation:_
 - Enum: [Pending Ready Failed Terminating]
 
 _Appears in:_
-- [api.v1alpha1.MCPRegistryStatus](#apiv1alpha1mcpregistrystatus)
+- [api.v1beta1.MCPRegistryStatus](#apiv1beta1mcpregistrystatus)
 
 | Field | Description |
 | --- | --- |
@@ -1749,7 +1874,7 @@ _Appears in:_
 | `Terminating` | MCPRegistryPhaseTerminating means the MCPRegistry is being deleted<br /> |
 
 
-#### api.v1alpha1.MCPRegistrySpec
+#### api.v1beta1.MCPRegistrySpec
 
 
 
@@ -1758,7 +1883,7 @@ MCPRegistrySpec defines the desired state of MCPRegistry
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRegistry](#apiv1alpha1mcpregistry)
+- [api.v1beta1.MCPRegistry](#apiv1beta1mcpregistry)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1768,9 +1893,10 @@ _Appears in:_
 | `pgpassSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | PGPassSecretRef references a Secret containing a pre-created pgpass file.<br />Why this is a dedicated field instead of a regular volume/volumeMount:<br />PostgreSQL's libpq rejects pgpass files that aren't mode 0600. Kubernetes<br />secret volumes mount files as root-owned, and the registry-api container<br />runs as non-root (UID 65532). A root-owned 0600 file is unreadable by<br />UID 65532, and using fsGroup changes permissions to 0640 which libpq also<br />rejects. The only solution is an init container that copies the file to an<br />emptyDir as the app user and runs chmod 0600. This cannot be expressed<br />through volumes/volumeMounts alone -- it requires an init container, two<br />extra volumes (secret + emptyDir), a subPath mount, and an environment<br />variable, all wired together correctly.<br />When specified, the operator generates all of that plumbing invisibly.<br />The user creates the Secret with pgpass-formatted content; the operator<br />handles only the Kubernetes permission mechanics.<br />Example Secret:<br />	apiVersion: v1<br />	kind: Secret<br />	metadata:<br />	  name: my-pgpass<br />	stringData:<br />	  .pgpass: \|<br />	    postgres:5432:registry:db_app:mypassword<br />	    postgres:5432:registry:db_migrator:otherpassword<br />Then reference it:<br />	pgpassSecretRef:<br />	  name: my-pgpass<br />	  key: .pgpass |  | Optional: \{\} <br /> |
 | `displayName` _string_ | DisplayName is a human-readable name for the registry. |  | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the registry API server.<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the registry API server runs in, you must specify<br />the `registry-api` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
+| `imagePullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core) array_ | ImagePullSecrets allows specifying image pull secrets for the registry API workload.<br />These are applied to both the registry-api Deployment's PodSpec.ImagePullSecrets<br />and to the operator-managed ServiceAccount the registry API runs as, so private<br />images are pullable through either path.<br />Use this field for new manifests.<br />Important: this is the ONLY way to attach image-pull credentials to the<br />operator-managed ServiceAccount. The legacy<br />spec.podTemplateSpec.spec.imagePullSecrets path populates the Deployment's pod<br />spec ONLY — it does NOT touch the ServiceAccount. On managed Kubernetes<br />platforms that rely on ServiceAccount-level credential injection (for example<br />GKE Workload Identity, OpenShift's per-SA dockercfg secrets, EKS IRSA), using<br />only the legacy PodTemplateSpec path can fail to pull private images even when<br />the secret exists in the namespace. Always set spec.imagePullSecrets when<br />SA-level credentials matter.<br />Precedence with PodTemplateSpec:<br />  - This field is applied first as the controller-generated default.<br />  - Values set under spec.podTemplateSpec.spec.imagePullSecrets are user overrides<br />    and win on overlap. If the user supplies imagePullSecrets via PodTemplateSpec,<br />    those replace the default list on the Deployment (the list is treated atomically).<br />  - The ServiceAccount is always populated from this field — PodTemplateSpec does not<br />    affect the ServiceAccount.<br />An omitted field and an explicitly empty list are equivalent: both leave the<br />ServiceAccount's existing ImagePullSecrets unchanged. This preserves<br />platform-managed pull secrets (for example OpenShift's per-SA dockercfg<br />entries) when overlays or patches emit an empty list. Truly clearing the<br />ServiceAccount's pull secrets requires recreating the resource. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPRegistryStatus
+#### api.v1beta1.MCPRegistryStatus
 
 
 
@@ -1779,19 +1905,19 @@ MCPRegistryStatus defines the observed state of MCPRegistry
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRegistry](#apiv1alpha1mcpregistry)
+- [api.v1beta1.MCPRegistry](#apiv1beta1mcpregistry)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRegistry's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller |  | Optional: \{\} <br /> |
-| `phase` _[api.v1alpha1.MCPRegistryPhase](#apiv1alpha1mcpregistryphase)_ | Phase represents the current overall phase of the MCPRegistry |  | Enum: [Pending Ready Failed Terminating] <br />Optional: \{\} <br /> |
+| `phase` _[api.v1beta1.MCPRegistryPhase](#apiv1beta1mcpregistryphase)_ | Phase represents the current overall phase of the MCPRegistry |  | Enum: [Pending Ready Failed Terminating] <br />Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
 | `url` _string_ | URL is the URL where the registry API can be accessed |  | Optional: \{\} <br /> |
 | `readyReplicas` _integer_ | ReadyReplicas is the number of ready registry API replicas |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPRemoteProxy
+#### api.v1beta1.MCPRemoteProxy
 
 
 
@@ -1801,20 +1927,20 @@ It enables proxying remote MCP servers with authentication, authorization, audit
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRemoteProxyList](#apiv1alpha1mcpremoteproxylist)
+- [api.v1beta1.MCPRemoteProxyList](#apiv1beta1mcpremoteproxylist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPRemoteProxy` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)_ |  |  |  |
-| `status` _[api.v1alpha1.MCPRemoteProxyStatus](#apiv1alpha1mcpremoteproxystatus)_ |  |  |  |
+| `spec` _[api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPRemoteProxyStatus](#apiv1beta1mcpremoteproxystatus)_ |  |  |  |
 
 
-#### api.v1alpha1.MCPRemoteProxyList
+#### api.v1beta1.MCPRemoteProxyList
 
 
 
@@ -1826,15 +1952,15 @@ MCPRemoteProxyList contains a list of MCPRemoteProxy
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPRemoteProxyList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1alpha1.MCPRemoteProxy](#apiv1alpha1mcpremoteproxy) array_ |  |  |  |
+| `items` _[api.v1beta1.MCPRemoteProxy](#apiv1beta1mcpremoteproxy) array_ |  |  |  |
 
 
-#### api.v1alpha1.MCPRemoteProxyPhase
+#### api.v1beta1.MCPRemoteProxyPhase
 
 _Underlying type:_ _string_
 
@@ -1844,7 +1970,7 @@ _Validation:_
 - Enum: [Pending Ready Failed Terminating]
 
 _Appears in:_
-- [api.v1alpha1.MCPRemoteProxyStatus](#apiv1alpha1mcpremoteproxystatus)
+- [api.v1beta1.MCPRemoteProxyStatus](#apiv1beta1mcpremoteproxystatus)
 
 | Field | Description |
 | --- | --- |
@@ -1854,7 +1980,7 @@ _Appears in:_
 | `Terminating` | MCPRemoteProxyPhaseTerminating means the proxy is being deleted<br /> |
 
 
-#### api.v1alpha1.MCPRemoteProxySpec
+#### api.v1beta1.MCPRemoteProxySpec
 
 
 
@@ -1863,31 +1989,31 @@ MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRemoteProxy](#apiv1alpha1mcpremoteproxy)
+- [api.v1beta1.MCPRemoteProxy](#apiv1beta1mcpremoteproxy)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `remoteUrl` _string_ | RemoteURL is the URL of the remote MCP server to proxy |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
 | `proxyPort` _integer_ | ProxyPort is the port to expose the MCP proxy on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `transport` _string_ | Transport is the transport method for the remote proxy (sse or streamable-http) | streamable-http | Enum: [sse streamable-http] <br /> |
-| `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
-| `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.<br />When specified, the proxy will exchange validated incoming tokens for remote service tokens.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy. |  | Optional: \{\} <br /> |
-| `authServerRef` _[api.v1alpha1.AuthServerRef](#apiv1alpha1authserverref)_ | AuthServerRef optionally references a resource that configures an embedded<br />OAuth 2.0/OIDC authorization server to authenticate MCP clients.<br />Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer). |  | Optional: \{\} <br /> |
-| `headerForward` _[api.v1alpha1.HeaderForwardConfig](#apiv1alpha1headerforwardconfig)_ | HeaderForward configures headers to inject into requests to the remote MCP server.<br />Use this to add custom headers like X-Tenant-ID or correlation IDs. |  | Optional: \{\} <br /> |
-| `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the proxy |  | Optional: \{\} <br /> |
-| `audit` _[api.v1alpha1.AuditConfig](#apiv1alpha1auditconfig)_ | Audit defines audit logging configuration for the proxy |  | Optional: \{\} <br /> |
-| `toolConfigRef` _[api.v1alpha1.ToolConfigRef](#apiv1alpha1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this allows filtering and overriding tools from the remote MCP server. |  | Optional: \{\} <br /> |
-| `telemetryConfigRef` _[api.v1alpha1.MCPTelemetryConfigReference](#apiv1alpha1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
-| `resources` _[api.v1alpha1.ResourceRequirements](#apiv1alpha1resourcerequirements)_ | Resources defines the resource requirements for the proxy container |  | Optional: \{\} <br /> |
+| `oidcConfigRef` _[api.v1beta1.MCPOIDCConfigReference](#apiv1beta1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
+| `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.<br />When specified, the proxy will exchange validated incoming tokens for remote service tokens.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy. |  | Optional: \{\} <br /> |
+| `authServerRef` _[api.v1beta1.AuthServerRef](#apiv1beta1authserverref)_ | AuthServerRef optionally references a resource that configures an embedded<br />OAuth 2.0/OIDC authorization server to authenticate MCP clients.<br />Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer). |  | Optional: \{\} <br /> |
+| `headerForward` _[api.v1beta1.HeaderForwardConfig](#apiv1beta1headerforwardconfig)_ | HeaderForward configures headers to inject into requests to the remote MCP server.<br />Use this to add custom headers like X-Tenant-ID or correlation IDs. |  | Optional: \{\} <br /> |
+| `authzConfig` _[api.v1beta1.AuthzConfigRef](#apiv1beta1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the proxy |  | Optional: \{\} <br /> |
+| `audit` _[api.v1beta1.AuditConfig](#apiv1beta1auditconfig)_ | Audit defines audit logging configuration for the proxy |  | Optional: \{\} <br /> |
+| `toolConfigRef` _[api.v1beta1.ToolConfigRef](#apiv1beta1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this allows filtering and overriding tools from the remote MCP server. |  | Optional: \{\} <br /> |
+| `telemetryConfigRef` _[api.v1beta1.MCPTelemetryConfigReference](#apiv1beta1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
+| `resources` _[api.v1beta1.ResourceRequirements](#apiv1beta1resourcerequirements)_ | Resources defines the resource requirements for the proxy container |  | Optional: \{\} <br /> |
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the proxy.<br />If not specified, a ServiceAccount will be created automatically and used by the proxy. |  | Optional: \{\} <br /> |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false | Optional: \{\} <br /> |
 | `endpointPrefix` _string_ | EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.<br />This is used to handle path-based ingress routing scenarios where the ingress<br />strips a path prefix before forwarding to the backend. |  | Optional: \{\} <br /> |
-| `resourceOverrides` _[api.v1alpha1.ResourceOverrides](#apiv1alpha1resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  | Optional: \{\} <br /> |
-| `groupRef` _[api.v1alpha1.MCPGroupRef](#apiv1alpha1mcpgroupref)_ | GroupRef references the MCPGroup this proxy belongs to.<br />The referenced MCPGroup must be in the same namespace. |  | Optional: \{\} <br /> |
+| `resourceOverrides` _[api.v1beta1.ResourceOverrides](#apiv1beta1resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  | Optional: \{\} <br /> |
+| `groupRef` _[api.v1beta1.MCPGroupRef](#apiv1beta1mcpgroupref)_ | GroupRef references the MCPGroup this proxy belongs to.<br />The referenced MCPGroup must be in the same namespace. |  | Optional: \{\} <br /> |
 | `sessionAffinity` _string_ | SessionAffinity controls whether the Service routes repeated client connections to the same pod.<br />MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.<br />Set to "None" for stateless servers or when using an external load balancer with its own affinity. | ClientIP | Enum: [ClientIP None] <br />Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPRemoteProxyStatus
+#### api.v1beta1.MCPRemoteProxyStatus
 
 
 
@@ -1896,11 +2022,11 @@ MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRemoteProxy](#apiv1alpha1mcpremoteproxy)
+- [api.v1beta1.MCPRemoteProxy](#apiv1beta1mcpremoteproxy)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `phase` _[api.v1alpha1.MCPRemoteProxyPhase](#apiv1alpha1mcpremoteproxyphase)_ | Phase is the current phase of the MCPRemoteProxy |  | Enum: [Pending Ready Failed Terminating] <br />Optional: \{\} <br /> |
+| `phase` _[api.v1beta1.MCPRemoteProxyPhase](#apiv1beta1mcpremoteproxyphase)_ | Phase is the current phase of the MCPRemoteProxy |  | Enum: [Pending Ready Failed Terminating] <br />Optional: \{\} <br /> |
 | `url` _string_ | URL is the internal cluster URL where the proxy can be accessed |  | Optional: \{\} <br /> |
 | `externalUrl` _string_ | ExternalURL is the external URL where the proxy can be accessed (if exposed externally) |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration reflects the generation of the most recently observed MCPRemoteProxy |  | Optional: \{\} <br /> |
@@ -1913,7 +2039,7 @@ _Appears in:_
 | `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPServer
+#### api.v1beta1.MCPServer
 
 
 
@@ -1922,20 +2048,20 @@ MCPServer is the Schema for the mcpservers API
 
 
 _Appears in:_
-- [api.v1alpha1.MCPServerList](#apiv1alpha1mcpserverlist)
+- [api.v1beta1.MCPServerList](#apiv1beta1mcpserverlist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPServer` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)_ |  |  |  |
-| `status` _[api.v1alpha1.MCPServerStatus](#apiv1alpha1mcpserverstatus)_ |  |  |  |
+| `spec` _[api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPServerStatus](#apiv1beta1mcpserverstatus)_ |  |  |  |
 
 
-#### api.v1alpha1.MCPServerEntry
+#### api.v1beta1.MCPServerEntry
 
 
 
@@ -1946,20 +2072,20 @@ without deploying any infrastructure.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPServerEntryList](#apiv1alpha1mcpserverentrylist)
+- [api.v1beta1.MCPServerEntryList](#apiv1beta1mcpserverentrylist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPServerEntry` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1alpha1.MCPServerEntrySpec](#apiv1alpha1mcpserverentryspec)_ |  |  |  |
-| `status` _[api.v1alpha1.MCPServerEntryStatus](#apiv1alpha1mcpserverentrystatus)_ |  |  |  |
+| `spec` _[api.v1beta1.MCPServerEntrySpec](#apiv1beta1mcpserverentryspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPServerEntryStatus](#apiv1beta1mcpserverentrystatus)_ |  |  |  |
 
 
-#### api.v1alpha1.MCPServerEntryList
+#### api.v1beta1.MCPServerEntryList
 
 
 
@@ -1971,15 +2097,15 @@ MCPServerEntryList contains a list of MCPServerEntry.
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPServerEntryList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1alpha1.MCPServerEntry](#apiv1alpha1mcpserverentry) array_ |  |  |  |
+| `items` _[api.v1beta1.MCPServerEntry](#apiv1beta1mcpserverentry) array_ |  |  |  |
 
 
-#### api.v1alpha1.MCPServerEntryPhase
+#### api.v1beta1.MCPServerEntryPhase
 
 _Underlying type:_ _string_
 
@@ -1989,7 +2115,7 @@ _Validation:_
 - Enum: [Valid Pending Failed]
 
 _Appears in:_
-- [api.v1alpha1.MCPServerEntryStatus](#apiv1alpha1mcpserverentrystatus)
+- [api.v1beta1.MCPServerEntryStatus](#apiv1beta1mcpserverentrystatus)
 
 | Field | Description |
 | --- | --- |
@@ -1998,7 +2124,7 @@ _Appears in:_
 | `Failed` | MCPServerEntryPhaseFailed indicates one or more referenced resources are missing or invalid.<br /> |
 
 
-#### api.v1alpha1.MCPServerEntrySpec
+#### api.v1beta1.MCPServerEntrySpec
 
 
 
@@ -2009,19 +2135,19 @@ server endpoint. Unlike MCPRemoteProxy, it creates no pods, services, or deploym
 
 
 _Appears in:_
-- [api.v1alpha1.MCPServerEntry](#apiv1alpha1mcpserverentry)
+- [api.v1beta1.MCPServerEntry](#apiv1beta1mcpserverentry)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `remoteUrl` _string_ | RemoteURL is the URL of the remote MCP server.<br />Both HTTP and HTTPS schemes are accepted at admission time. |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
 | `transport` _string_ | Transport is the transport method for the remote server (sse or streamable-http).<br />No default is set (unlike MCPRemoteProxy) because MCPServerEntry points at external<br />servers the user doesn't control — requiring explicit transport avoids silent mismatches. |  | Enum: [sse streamable-http] <br />Required: \{\} <br /> |
-| `groupRef` _[api.v1alpha1.MCPGroupRef](#apiv1alpha1mcpgroupref)_ | GroupRef references the MCPGroup this entry belongs to.<br />Required — every MCPServerEntry must be part of a group for vMCP discovery. |  | Required: \{\} <br /> |
-| `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange<br />when connecting to the remote MCP server. The referenced MCPExternalAuthConfig must<br />exist in the same namespace as this MCPServerEntry. |  | Optional: \{\} <br /> |
-| `headerForward` _[api.v1alpha1.HeaderForwardConfig](#apiv1alpha1headerforwardconfig)_ | HeaderForward configures headers to inject into requests to the remote MCP server.<br />Use this to add custom headers like API keys or correlation IDs. |  | Optional: \{\} <br /> |
-| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing CA certificates for TLS verification<br />when connecting to the remote MCP server. |  | Optional: \{\} <br /> |
+| `groupRef` _[api.v1beta1.MCPGroupRef](#apiv1beta1mcpgroupref)_ | GroupRef references the MCPGroup this entry belongs to.<br />Required — every MCPServerEntry must be part of a group for vMCP discovery. |  | Required: \{\} <br /> |
+| `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange<br />when connecting to the remote MCP server. The referenced MCPExternalAuthConfig must<br />exist in the same namespace as this MCPServerEntry. |  | Optional: \{\} <br /> |
+| `headerForward` _[api.v1beta1.HeaderForwardConfig](#apiv1beta1headerforwardconfig)_ | HeaderForward configures headers to inject into requests to the remote MCP server.<br />Use this to add custom headers like API keys or correlation IDs. |  | Optional: \{\} <br /> |
+| `caBundleRef` _[api.v1beta1.CABundleSource](#apiv1beta1cabundlesource)_ | CABundleRef references a ConfigMap containing CA certificates for TLS verification<br />when connecting to the remote MCP server. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPServerEntryStatus
+#### api.v1beta1.MCPServerEntryStatus
 
 
 
@@ -2030,16 +2156,16 @@ MCPServerEntryStatus defines the observed state of MCPServerEntry.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPServerEntry](#apiv1alpha1mcpserverentry)
+- [api.v1beta1.MCPServerEntry](#apiv1beta1mcpserverentry)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `observedGeneration` _integer_ | ObservedGeneration reflects the generation most recently observed by the controller. |  | Optional: \{\} <br /> |
-| `phase` _[api.v1alpha1.MCPServerEntryPhase](#apiv1alpha1mcpserverentryphase)_ | Phase indicates the current lifecycle phase of the MCPServerEntry. | Pending | Enum: [Valid Pending Failed] <br />Optional: \{\} <br /> |
+| `phase` _[api.v1beta1.MCPServerEntryPhase](#apiv1beta1mcpserverentryphase)_ | Phase indicates the current lifecycle phase of the MCPServerEntry. | Pending | Enum: [Valid Pending Failed] <br />Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPServerEntry's state. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPServerList
+#### api.v1beta1.MCPServerList
 
 
 
@@ -2051,15 +2177,15 @@ MCPServerList contains a list of MCPServer
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPServerList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1alpha1.MCPServer](#apiv1alpha1mcpserver) array_ |  |  |  |
+| `items` _[api.v1beta1.MCPServer](#apiv1beta1mcpserver) array_ |  |  |  |
 
 
-#### api.v1alpha1.MCPServerPhase
+#### api.v1beta1.MCPServerPhase
 
 _Underlying type:_ _string_
 
@@ -2069,7 +2195,7 @@ _Validation:_
 - Enum: [Pending Ready Failed Terminating Stopped]
 
 _Appears in:_
-- [api.v1alpha1.MCPServerStatus](#apiv1alpha1mcpserverstatus)
+- [api.v1beta1.MCPServerStatus](#apiv1beta1mcpserverstatus)
 
 | Field | Description |
 | --- | --- |
@@ -2080,7 +2206,7 @@ _Appears in:_
 | `Stopped` | MCPServerPhaseStopped means the MCPServer is scaled to zero<br /> |
 
 
-#### api.v1alpha1.MCPServerSpec
+#### api.v1beta1.MCPServerSpec
 
 
 
@@ -2089,7 +2215,7 @@ MCPServerSpec defines the desired state of MCPServer
 
 
 _Appears in:_
-- [api.v1alpha1.MCPServer](#apiv1alpha1mcpserver)
+- [api.v1beta1.MCPServer](#apiv1beta1mcpserver)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2099,32 +2225,32 @@ _Appears in:_
 | `proxyPort` _integer_ | ProxyPort is the port to expose the proxy runner on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `mcpPort` _integer_ | MCPPort is the port that MCP server listens to |  | Maximum: 65535 <br />Minimum: 1 <br />Optional: \{\} <br /> |
 | `args` _string array_ | Args are additional arguments to pass to the MCP server |  | Optional: \{\} <br /> |
-| `env` _[api.v1alpha1.EnvVar](#apiv1alpha1envvar) array_ | Env are environment variables to set in the MCP server container |  | Optional: \{\} <br /> |
-| `volumes` _[api.v1alpha1.Volume](#apiv1alpha1volume) array_ | Volumes are volumes to mount in the MCP server container |  | Optional: \{\} <br /> |
-| `resources` _[api.v1alpha1.ResourceRequirements](#apiv1alpha1resourcerequirements)_ | Resources defines the resource requirements for the MCP server container |  | Optional: \{\} <br /> |
-| `secrets` _[api.v1alpha1.SecretRef](#apiv1alpha1secretref) array_ | Secrets are references to secrets to mount in the MCP server container |  | Optional: \{\} <br /> |
+| `env` _[api.v1beta1.EnvVar](#apiv1beta1envvar) array_ | Env are environment variables to set in the MCP server container |  | Optional: \{\} <br /> |
+| `volumes` _[api.v1beta1.Volume](#apiv1beta1volume) array_ | Volumes are volumes to mount in the MCP server container |  | Optional: \{\} <br /> |
+| `resources` _[api.v1beta1.ResourceRequirements](#apiv1beta1resourcerequirements)_ | Resources defines the resource requirements for the MCP server container |  | Optional: \{\} <br /> |
+| `secrets` _[api.v1beta1.SecretRef](#apiv1beta1secretref) array_ | Secrets are references to secrets to mount in the MCP server container |  | Optional: \{\} <br /> |
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the MCP server.<br />If not specified, a ServiceAccount will be created automatically and used by the MCP server. |  | Optional: \{\} <br /> |
-| `permissionProfile` _[api.v1alpha1.PermissionProfileRef](#apiv1alpha1permissionprofileref)_ | PermissionProfile defines the permission profile to use |  | Optional: \{\} <br /> |
+| `permissionProfile` _[api.v1beta1.PermissionProfileRef](#apiv1beta1permissionprofileref)_ | PermissionProfile defines the permission profile to use |  | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the MCP server runs in, you must specify<br />the `mcp` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
-| `resourceOverrides` _[api.v1alpha1.ResourceOverrides](#apiv1alpha1resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  | Optional: \{\} <br /> |
-| `oidcConfigRef` _[api.v1alpha1.MCPOIDCConfigReference](#apiv1alpha1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
-| `authzConfig` _[api.v1alpha1.AuthzConfigRef](#apiv1alpha1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server |  | Optional: \{\} <br /> |
-| `audit` _[api.v1alpha1.AuditConfig](#apiv1alpha1auditconfig)_ | Audit defines audit logging configuration for the MCP server |  | Optional: \{\} <br /> |
-| `toolConfigRef` _[api.v1alpha1.ToolConfigRef](#apiv1alpha1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
-| `externalAuthConfigRef` _[api.v1alpha1.ExternalAuthConfigRef](#apiv1alpha1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer. |  | Optional: \{\} <br /> |
-| `authServerRef` _[api.v1alpha1.AuthServerRef](#apiv1alpha1authserverref)_ | AuthServerRef optionally references a resource that configures an embedded<br />OAuth 2.0/OIDC authorization server to authenticate MCP clients.<br />Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer). |  | Optional: \{\} <br /> |
-| `telemetryConfigRef` _[api.v1alpha1.MCPTelemetryConfigReference](#apiv1alpha1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
+| `resourceOverrides` _[api.v1beta1.ResourceOverrides](#apiv1beta1resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  | Optional: \{\} <br /> |
+| `oidcConfigRef` _[api.v1beta1.MCPOIDCConfigReference](#apiv1beta1mcpoidcconfigreference)_ | OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.<br />The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.<br />Per-server overrides (audience, scopes) are specified here; shared provider config<br />lives in the MCPOIDCConfig resource. |  | Optional: \{\} <br /> |
+| `authzConfig` _[api.v1beta1.AuthzConfigRef](#apiv1beta1authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server |  | Optional: \{\} <br /> |
+| `audit` _[api.v1beta1.AuditConfig](#apiv1beta1auditconfig)_ | Audit defines audit logging configuration for the MCP server |  | Optional: \{\} <br /> |
+| `toolConfigRef` _[api.v1beta1.ToolConfigRef](#apiv1beta1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
+| `externalAuthConfigRef` _[api.v1beta1.ExternalAuthConfigRef](#apiv1beta1externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer. |  | Optional: \{\} <br /> |
+| `authServerRef` _[api.v1beta1.AuthServerRef](#apiv1beta1authserverref)_ | AuthServerRef optionally references a resource that configures an embedded<br />OAuth 2.0/OIDC authorization server to authenticate MCP clients.<br />Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer). |  | Optional: \{\} <br /> |
+| `telemetryConfigRef` _[api.v1beta1.MCPTelemetryConfigReference](#apiv1beta1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false | Optional: \{\} <br /> |
 | `endpointPrefix` _string_ | EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.<br />This is used to handle path-based ingress routing scenarios where the ingress<br />strips a path prefix before forwarding to the backend. |  | Optional: \{\} <br /> |
-| `groupRef` _[api.v1alpha1.MCPGroupRef](#apiv1alpha1mcpgroupref)_ | GroupRef references the MCPGroup this server belongs to.<br />The referenced MCPGroup must be in the same namespace. |  | Optional: \{\} <br /> |
+| `groupRef` _[api.v1beta1.MCPGroupRef](#apiv1beta1mcpgroupref)_ | GroupRef references the MCPGroup this server belongs to.<br />The referenced MCPGroup must be in the same namespace. |  | Optional: \{\} <br /> |
 | `sessionAffinity` _string_ | SessionAffinity controls whether the Service routes repeated client connections to the same pod.<br />MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.<br />Set to "None" for stateless servers or when using an external load balancer with its own affinity. | ClientIP | Enum: [ClientIP None] <br />Optional: \{\} <br /> |
 | `replicas` _integer_ | Replicas is the desired number of proxy runner (thv run) pod replicas.<br />MCPServer creates two separate Deployments: one for the proxy runner and one<br />for the MCP server backend. This field controls the proxy runner Deployment.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `backendReplicas` _integer_ | BackendReplicas is the desired number of MCP server backend pod replicas.<br />This controls the backend Deployment (the MCP server container itself),<br />independent of the proxy runner controlled by Replicas.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
-| `sessionStorage` _[api.v1alpha1.SessionStorageConfig](#apiv1alpha1sessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When nil, no session storage is configured. |  | Optional: \{\} <br /> |
-| `rateLimiting` _[api.v1alpha1.RateLimitConfig](#apiv1alpha1ratelimitconfig)_ | RateLimiting defines rate limiting configuration for the MCP server.<br />Requires Redis session storage to be configured for distributed rate limiting. |  | Optional: \{\} <br /> |
+| `sessionStorage` _[api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When nil, no session storage is configured. |  | Optional: \{\} <br /> |
+| `rateLimiting` _[api.v1beta1.RateLimitConfig](#apiv1beta1ratelimitconfig)_ | RateLimiting defines rate limiting configuration for the MCP server.<br />Requires Redis session storage to be configured for distributed rate limiting. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPServerStatus
+#### api.v1beta1.MCPServerStatus
 
 
 
@@ -2133,7 +2259,7 @@ MCPServerStatus defines the observed state of MCPServer
 
 
 _Appears in:_
-- [api.v1alpha1.MCPServer](#apiv1alpha1mcpserver)
+- [api.v1beta1.MCPServer](#apiv1beta1mcpserver)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2145,12 +2271,12 @@ _Appears in:_
 | `oidcConfigHash` _string_ | OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection |  | Optional: \{\} <br /> |
 | `telemetryConfigHash` _string_ | TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection |  | Optional: \{\} <br /> |
 | `url` _string_ | URL is the URL where the MCP server can be accessed |  | Optional: \{\} <br /> |
-| `phase` _[api.v1alpha1.MCPServerPhase](#apiv1alpha1mcpserverphase)_ | Phase is the current phase of the MCPServer |  | Enum: [Pending Ready Failed Terminating Stopped] <br />Optional: \{\} <br /> |
+| `phase` _[api.v1beta1.MCPServerPhase](#apiv1beta1mcpserverphase)_ | Phase is the current phase of the MCPServer |  | Enum: [Pending Ready Failed Terminating Stopped] <br />Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
 | `readyReplicas` _integer_ | ReadyReplicas is the number of ready proxy replicas |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPTelemetryConfig
+#### api.v1beta1.MCPTelemetryConfig
 
 
 
@@ -2162,20 +2288,20 @@ are not supported for security and isolation reasons.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPTelemetryConfigList](#apiv1alpha1mcptelemetryconfiglist)
+- [api.v1beta1.MCPTelemetryConfigList](#apiv1beta1mcptelemetryconfiglist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPTelemetryConfig` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1alpha1.MCPTelemetryConfigSpec](#apiv1alpha1mcptelemetryconfigspec)_ |  |  |  |
-| `status` _[api.v1alpha1.MCPTelemetryConfigStatus](#apiv1alpha1mcptelemetryconfigstatus)_ |  |  |  |
+| `spec` _[api.v1beta1.MCPTelemetryConfigSpec](#apiv1beta1mcptelemetryconfigspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPTelemetryConfigStatus](#apiv1beta1mcptelemetryconfigstatus)_ |  |  |  |
 
 
-#### api.v1alpha1.MCPTelemetryConfigList
+#### api.v1beta1.MCPTelemetryConfigList
 
 
 
@@ -2187,15 +2313,15 @@ MCPTelemetryConfigList contains a list of MCPTelemetryConfig
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPTelemetryConfigList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1alpha1.MCPTelemetryConfig](#apiv1alpha1mcptelemetryconfig) array_ |  |  |  |
+| `items` _[api.v1beta1.MCPTelemetryConfig](#apiv1beta1mcptelemetryconfig) array_ |  |  |  |
 
 
-#### api.v1alpha1.MCPTelemetryConfigReference
+#### api.v1beta1.MCPTelemetryConfigReference
 
 
 
@@ -2206,9 +2332,9 @@ same namespace as the MCPServer.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
-- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
+- [api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
+- [api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2216,7 +2342,7 @@ _Appears in:_
 | `serviceName` _string_ | ServiceName overrides the telemetry service name for this specific server.<br />This MUST be unique per server for proper observability (e.g., distinguishing<br />traces and metrics from different servers sharing the same collector).<br />If empty, defaults to the server name with "thv-" prefix at runtime. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPTelemetryConfigSpec
+#### api.v1beta1.MCPTelemetryConfigSpec
 
 
 
@@ -2227,15 +2353,15 @@ for clear separation of concerns.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPTelemetryConfig](#apiv1alpha1mcptelemetryconfig)
+- [api.v1beta1.MCPTelemetryConfig](#apiv1beta1mcptelemetryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `openTelemetry` _[api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)_ | OpenTelemetry defines OpenTelemetry configuration (OTLP endpoint, tracing, metrics) |  | Optional: \{\} <br /> |
-| `prometheus` _[api.v1alpha1.PrometheusConfig](#apiv1alpha1prometheusconfig)_ | Prometheus defines Prometheus-specific configuration |  | Optional: \{\} <br /> |
+| `openTelemetry` _[api.v1beta1.MCPTelemetryOTelConfig](#apiv1beta1mcptelemetryotelconfig)_ | OpenTelemetry defines OpenTelemetry configuration (OTLP endpoint, tracing, metrics) |  | Optional: \{\} <br /> |
+| `prometheus` _[api.v1beta1.PrometheusConfig](#apiv1beta1prometheusconfig)_ | Prometheus defines Prometheus-specific configuration |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPTelemetryConfigStatus
+#### api.v1beta1.MCPTelemetryConfigStatus
 
 
 
@@ -2244,17 +2370,17 @@ MCPTelemetryConfigStatus defines the observed state of MCPTelemetryConfig
 
 
 _Appears in:_
-- [api.v1alpha1.MCPTelemetryConfig](#apiv1alpha1mcptelemetryconfig)
+- [api.v1beta1.MCPTelemetryConfig](#apiv1beta1mcptelemetryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPTelemetryConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPTelemetryConfig. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
-| `referencingWorkloads` _[api.v1alpha1.WorkloadReference](#apiv1alpha1workloadreference) array_ | ReferencingWorkloads lists workloads that reference this MCPTelemetryConfig |  | Optional: \{\} <br /> |
+| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads lists workloads that reference this MCPTelemetryConfig |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPTelemetryOTelConfig
+#### api.v1beta1.MCPTelemetryOTelConfig
 
 
 
@@ -2268,7 +2394,7 @@ Unlike OpenTelemetryConfig (used by inline MCPServer telemetry), this type:
 
 
 _Appears in:_
-- [api.v1alpha1.MCPTelemetryConfigSpec](#apiv1alpha1mcptelemetryconfigspec)
+- [api.v1beta1.MCPTelemetryConfigSpec](#apiv1beta1mcptelemetryconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2276,15 +2402,15 @@ _Appears in:_
 | `endpoint` _string_ | Endpoint is the OTLP endpoint URL for tracing and metrics |  | Optional: \{\} <br /> |
 | `insecure` _boolean_ | Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint | false | Optional: \{\} <br /> |
 | `headers` _object (keys:string, values:string)_ | Headers contains authentication headers for the OTLP endpoint.<br />For secret-backed credentials, use sensitiveHeaders instead. |  | Optional: \{\} <br /> |
-| `sensitiveHeaders` _[api.v1alpha1.SensitiveHeader](#apiv1alpha1sensitiveheader) array_ | SensitiveHeaders contains headers whose values are stored in Kubernetes Secrets.<br />Use this for credential headers (e.g., API keys, bearer tokens) instead of<br />embedding secrets in the headers field. |  | Optional: \{\} <br /> |
+| `sensitiveHeaders` _[api.v1beta1.SensitiveHeader](#apiv1beta1sensitiveheader) array_ | SensitiveHeaders contains headers whose values are stored in Kubernetes Secrets.<br />Use this for credential headers (e.g., API keys, bearer tokens) instead of<br />embedding secrets in the headers field. |  | Optional: \{\} <br /> |
 | `resourceAttributes` _object (keys:string, values:string)_ | ResourceAttributes contains custom resource attributes to be added to all telemetry signals.<br />These become OTel resource attributes (e.g., deployment.environment, service.namespace).<br />Note: service.name is intentionally excluded — it is set per-server via<br />MCPTelemetryConfigReference.ServiceName. |  | Optional: \{\} <br /> |
-| `metrics` _[api.v1alpha1.OpenTelemetryMetricsConfig](#apiv1alpha1opentelemetrymetricsconfig)_ | Metrics defines OpenTelemetry metrics-specific configuration |  | Optional: \{\} <br /> |
-| `tracing` _[api.v1alpha1.OpenTelemetryTracingConfig](#apiv1alpha1opentelemetrytracingconfig)_ | Tracing defines OpenTelemetry tracing configuration |  | Optional: \{\} <br /> |
+| `metrics` _[api.v1beta1.OpenTelemetryMetricsConfig](#apiv1beta1opentelemetrymetricsconfig)_ | Metrics defines OpenTelemetry metrics-specific configuration |  | Optional: \{\} <br /> |
+| `tracing` _[api.v1beta1.OpenTelemetryTracingConfig](#apiv1beta1opentelemetrytracingconfig)_ | Tracing defines OpenTelemetry tracing configuration |  | Optional: \{\} <br /> |
 | `useLegacyAttributes` _boolean_ | UseLegacyAttributes controls whether legacy attribute names are emitted alongside<br />the new MCP OTEL semantic convention names. Defaults to true for backward compatibility.<br />This will change to false in a future release and eventually be removed. | true | Optional: \{\} <br /> |
-| `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing a CA certificate bundle for the OTLP endpoint.<br />When specified, the operator mounts the ConfigMap into the proxyrunner pod and configures<br />the OTLP exporters to trust the custom CA. This is useful when the OTLP collector uses<br />TLS with certificates signed by an internal or private CA. |  | Optional: \{\} <br /> |
+| `caBundleRef` _[api.v1beta1.CABundleSource](#apiv1beta1cabundlesource)_ | CABundleRef references a ConfigMap containing a CA certificate bundle for the OTLP endpoint.<br />When specified, the operator mounts the ConfigMap into the proxyrunner pod and configures<br />the OTLP exporters to trust the custom CA. This is useful when the OTLP collector uses<br />TLS with certificates signed by an internal or private CA. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPToolConfig
+#### api.v1beta1.MCPToolConfig
 
 
 
@@ -2296,20 +2422,20 @@ are not supported for security and isolation reasons.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPToolConfigList](#apiv1alpha1mcptoolconfiglist)
+- [api.v1beta1.MCPToolConfigList](#apiv1beta1mcptoolconfiglist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPToolConfig` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1alpha1.MCPToolConfigSpec](#apiv1alpha1mcptoolconfigspec)_ |  |  |  |
-| `status` _[api.v1alpha1.MCPToolConfigStatus](#apiv1alpha1mcptoolconfigstatus)_ |  |  |  |
+| `spec` _[api.v1beta1.MCPToolConfigSpec](#apiv1beta1mcptoolconfigspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPToolConfigStatus](#apiv1beta1mcptoolconfigstatus)_ |  |  |  |
 
 
-#### api.v1alpha1.MCPToolConfigList
+#### api.v1beta1.MCPToolConfigList
 
 
 
@@ -2321,15 +2447,15 @@ MCPToolConfigList contains a list of MCPToolConfig
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `MCPToolConfigList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1alpha1.MCPToolConfig](#apiv1alpha1mcptoolconfig) array_ |  |  |  |
+| `items` _[api.v1beta1.MCPToolConfig](#apiv1beta1mcptoolconfig) array_ |  |  |  |
 
 
-#### api.v1alpha1.MCPToolConfigSpec
+#### api.v1beta1.MCPToolConfigSpec
 
 
 
@@ -2340,15 +2466,15 @@ MCPServer resources in the same namespace.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPToolConfig](#apiv1alpha1mcptoolconfig)
+- [api.v1beta1.MCPToolConfig](#apiv1beta1mcptoolconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `toolsFilter` _string array_ | ToolsFilter is a list of tool names to filter (allow list).<br />Only tools in this list will be exposed by the MCP server.<br />If empty, all tools are exposed. |  | Optional: \{\} <br /> |
-| `toolsOverride` _object (keys:string, values:[api.v1alpha1.ToolOverride](#apiv1alpha1tooloverride))_ | ToolsOverride is a map from actual tool names to their overridden configuration.<br />This allows renaming tools and/or changing their descriptions. |  | Optional: \{\} <br /> |
+| `toolsOverride` _object (keys:string, values:[api.v1beta1.ToolOverride](#apiv1beta1tooloverride))_ | ToolsOverride is a map from actual tool names to their overridden configuration.<br />This allows renaming tools and/or changing their descriptions. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.MCPToolConfigStatus
+#### api.v1beta1.MCPToolConfigStatus
 
 
 
@@ -2357,17 +2483,17 @@ MCPToolConfigStatus defines the observed state of MCPToolConfig
 
 
 _Appears in:_
-- [api.v1alpha1.MCPToolConfig](#apiv1alpha1mcptoolconfig)
+- [api.v1beta1.MCPToolConfig](#apiv1beta1mcptoolconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPToolConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPToolConfig.<br />It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
-| `referencingWorkloads` _[api.v1alpha1.WorkloadReference](#apiv1alpha1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
+| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.ModelCacheConfig
+#### api.v1beta1.ModelCacheConfig
 
 
 
@@ -2376,7 +2502,7 @@ ModelCacheConfig configures persistent storage for model caching
 
 
 _Appears in:_
-- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
+- [api.v1beta1.EmbeddingServerSpec](#apiv1beta1embeddingserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2386,7 +2512,7 @@ _Appears in:_
 | `accessMode` _string_ | AccessMode is the access mode for the PVC | ReadWriteOnce | Enum: [ReadWriteOnce ReadWriteMany ReadOnlyMany] <br />Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.NetworkPermissions
+#### api.v1beta1.NetworkPermissions
 
 
 
@@ -2395,15 +2521,15 @@ NetworkPermissions defines the network permissions for an MCP server
 
 
 _Appears in:_
-- [api.v1alpha1.PermissionProfileSpec](#apiv1alpha1permissionprofilespec)
+- [api.v1beta1.PermissionProfileSpec](#apiv1beta1permissionprofilespec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `mode` _string_ | Mode specifies the network mode for the container (e.g., "host", "bridge", "none")<br />When empty, the default container runtime network mode is used |  | Optional: \{\} <br /> |
-| `outbound` _[api.v1alpha1.OutboundNetworkPermissions](#apiv1alpha1outboundnetworkpermissions)_ | Outbound defines the outbound network permissions |  | Optional: \{\} <br /> |
+| `outbound` _[api.v1beta1.OutboundNetworkPermissions](#apiv1beta1outboundnetworkpermissions)_ | Outbound defines the outbound network permissions |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.OAuth2UpstreamConfig
+#### api.v1beta1.OAuth2UpstreamConfig
 
 
 
@@ -2413,22 +2539,22 @@ OAuth 2.0 providers require explicit endpoint configuration.
 
 
 _Appears in:_
-- [api.v1alpha1.UpstreamProviderConfig](#apiv1alpha1upstreamproviderconfig)
+- [api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `authorizationEndpoint` _string_ | AuthorizationEndpoint is the URL for the OAuth authorization endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
 | `tokenEndpoint` _string_ | TokenEndpoint is the URL for the OAuth token endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
-| `userInfo` _[api.v1alpha1.UserInfoConfig](#apiv1alpha1userinfoconfig)_ | UserInfo contains configuration for fetching user information from the upstream provider.<br />Required for OAuth2 providers to resolve user identity. |  | Required: \{\} <br /> |
+| `userInfo` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfo contains configuration for fetching user information from the upstream provider.<br />When omitted, the embedded auth server runs in synthesis mode for this<br />upstream: a non-PII subject derived from the access token, no Name/Email.<br />Use this shape for upstreams with no userinfo surface (e.g., MCP<br />authorization servers per the MCP spec). |  | Optional: \{\} <br /> |
 | `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IDP. |  | Required: \{\} <br /> |
-| `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
+| `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
 | `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IDP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IDP. |  | Optional: \{\} <br /> |
-| `tokenResponseMapping` _[api.v1alpha1.TokenResponseMapping](#apiv1alpha1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used. |  | Optional: \{\} <br /> |
+| `tokenResponseMapping` _[api.v1beta1.TokenResponseMapping](#apiv1beta1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.OIDCUpstreamConfig
+#### api.v1beta1.OIDCUpstreamConfig
 
 
 
@@ -2438,20 +2564,20 @@ OIDC providers support automatic endpoint discovery via the issuer URL.
 
 
 _Appears in:_
-- [api.v1alpha1.UpstreamProviderConfig](#apiv1alpha1upstreamproviderconfig)
+- [api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `issuerUrl` _string_ | IssuerURL is the OIDC issuer URL for automatic endpoint discovery.<br />Must be a valid HTTPS URL. |  | Pattern: `^https://.*$` <br />Required: \{\} <br /> |
 | `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IDP. |  | Required: \{\} <br /> |
-| `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
+| `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
 | `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IDP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IDP.<br />If not specified, defaults to ["openid", "offline_access"].<br />When using additionalAuthorizationParams with provider-specific refresh token<br />mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid<br />sending both offline_access and the provider-specific parameter. |  | Optional: \{\} <br /> |
-| `userInfoOverride` _[api.v1alpha1.UserInfoConfig](#apiv1alpha1userinfoconfig)_ | UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.<br />By default, the UserInfo endpoint is discovered automatically via OIDC discovery.<br />Use this to override the endpoint URL, HTTP method, or field mappings for providers<br />that return non-standard claim names in their UserInfo response. |  | Optional: \{\} <br /> |
+| `userInfoOverride` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.<br />By default, the UserInfo endpoint is discovered automatically via OIDC discovery.<br />Use this to override the endpoint URL, HTTP method, or field mappings for providers<br />that return non-standard claim names in their UserInfo response. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Note: when using access_type=offline, also set explicit scopes to avoid<br />the default offline_access scope being sent alongside it.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.OpenTelemetryMetricsConfig
+#### api.v1beta1.OpenTelemetryMetricsConfig
 
 
 
@@ -2460,14 +2586,14 @@ OpenTelemetryMetricsConfig defines OpenTelemetry metrics configuration
 
 
 _Appears in:_
-- [api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)
+- [api.v1beta1.MCPTelemetryOTelConfig](#apiv1beta1mcptelemetryotelconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled controls whether OTLP metrics are sent | false | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.OpenTelemetryTracingConfig
+#### api.v1beta1.OpenTelemetryTracingConfig
 
 
 
@@ -2476,7 +2602,7 @@ OpenTelemetryTracingConfig defines OpenTelemetry tracing configuration
 
 
 _Appears in:_
-- [api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)
+- [api.v1beta1.MCPTelemetryOTelConfig](#apiv1beta1mcptelemetryotelconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2484,7 +2610,7 @@ _Appears in:_
 | `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) | 0.05 | Pattern: `^(0(\.\d+)?\|1(\.0+)?)$` <br />Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.OutboundNetworkPermissions
+#### api.v1beta1.OutboundNetworkPermissions
 
 
 
@@ -2493,7 +2619,7 @@ OutboundNetworkPermissions defines the outbound network permissions
 
 
 _Appears in:_
-- [api.v1alpha1.NetworkPermissions](#apiv1alpha1networkpermissions)
+- [api.v1beta1.NetworkPermissions](#apiv1beta1networkpermissions)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2502,7 +2628,7 @@ _Appears in:_
 | `allowPort` _integer array_ | AllowPort is a list of ports to allow connections to |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.OutgoingAuthConfig
+#### api.v1beta1.OutgoingAuthConfig
 
 
 
@@ -2511,16 +2637,16 @@ OutgoingAuthConfig configures authentication from Virtual MCP to backend MCPServ
 
 
 _Appears in:_
-- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
+- [api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `source` _string_ | Source defines how backend authentication configurations are determined<br />- discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef<br />- inline: Explicit per-backend configuration in VirtualMCPServer | discovered | Enum: [discovered inline] <br />Optional: \{\} <br /> |
-| `default` _[api.v1alpha1.BackendAuthConfig](#apiv1alpha1backendauthconfig)_ | Default defines default behavior for backends without explicit auth config |  | Optional: \{\} <br /> |
-| `backends` _object (keys:string, values:[api.v1alpha1.BackendAuthConfig](#apiv1alpha1backendauthconfig))_ | Backends defines per-backend authentication overrides<br />Works in all modes (discovered, inline) |  | Optional: \{\} <br /> |
+| `default` _[api.v1beta1.BackendAuthConfig](#apiv1beta1backendauthconfig)_ | Default defines default behavior for backends without explicit auth config |  | Optional: \{\} <br /> |
+| `backends` _object (keys:string, values:[api.v1beta1.BackendAuthConfig](#apiv1beta1backendauthconfig))_ | Backends defines per-backend authentication overrides<br />Works in all modes (discovered, inline) |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.PermissionProfileRef
+#### api.v1beta1.PermissionProfileRef
 
 
 
@@ -2529,7 +2655,7 @@ PermissionProfileRef defines a reference to a permission profile
 
 
 _Appears in:_
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2540,7 +2666,7 @@ _Appears in:_
 
 
 
-#### api.v1alpha1.PrometheusConfig
+#### api.v1beta1.PrometheusConfig
 
 
 
@@ -2549,14 +2675,14 @@ PrometheusConfig defines Prometheus-specific configuration
 
 
 _Appears in:_
-- [api.v1alpha1.MCPTelemetryConfigSpec](#apiv1alpha1mcptelemetryconfigspec)
+- [api.v1beta1.MCPTelemetryConfigSpec](#apiv1beta1mcptelemetryconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `enabled` _boolean_ | Enabled controls whether Prometheus metrics endpoint is exposed | false | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.ProxyDeploymentOverrides
+#### api.v1beta1.ProxyDeploymentOverrides
 
 
 
@@ -2565,18 +2691,18 @@ ProxyDeploymentOverrides defines overrides specific to the proxy deployment
 
 
 _Appears in:_
-- [api.v1alpha1.ResourceOverrides](#apiv1alpha1resourceoverrides)
+- [api.v1beta1.ResourceOverrides](#apiv1beta1resourceoverrides)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `annotations` _object (keys:string, values:string)_ | Annotations to add or override on the resource |  | Optional: \{\} <br /> |
 | `labels` _object (keys:string, values:string)_ | Labels to add or override on the resource |  | Optional: \{\} <br /> |
-| `podTemplateMetadataOverrides` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ |  |  |  |
-| `env` _[api.v1alpha1.EnvVar](#apiv1alpha1envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages<br />Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy |  | Optional: \{\} <br /> |
+| `podTemplateMetadataOverrides` _[api.v1beta1.ResourceMetadataOverrides](#apiv1beta1resourcemetadataoverrides)_ |  |  |  |
+| `env` _[api.v1beta1.EnvVar](#apiv1beta1envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages<br />Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy |  | Optional: \{\} <br /> |
 | `imagePullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core) array_ | ImagePullSecrets allows specifying image pull secrets for the proxy runner<br />These are applied to both the Deployment and the ServiceAccount |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.RateLimitBucket
+#### api.v1beta1.RateLimitBucket
 
 
 
@@ -2586,8 +2712,8 @@ and a refill period. Used by both shared (global) and per-user rate limits.
 
 
 _Appears in:_
-- [api.v1alpha1.RateLimitConfig](#apiv1alpha1ratelimitconfig)
-- [api.v1alpha1.ToolRateLimitConfig](#apiv1alpha1toolratelimitconfig)
+- [api.v1beta1.RateLimitConfig](#apiv1beta1ratelimitconfig)
+- [api.v1beta1.ToolRateLimitConfig](#apiv1beta1toolratelimitconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2595,7 +2721,7 @@ _Appears in:_
 | `refillPeriod` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.<br />The effective refill rate is maxTokens / refillPeriod tokens per second.<br />Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s"). |  | Required: \{\} <br /> |
 
 
-#### api.v1alpha1.RateLimitConfig
+#### api.v1beta1.RateLimitConfig
 
 
 
@@ -2605,16 +2731,16 @@ At least one of shared, perUser, or tools must be configured.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `shared` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | Shared is a token bucket shared across all users for the entire server. |  | Optional: \{\} <br /> |
-| `perUser` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | PerUser is a token bucket applied independently to each authenticated user<br />at the server level. Requires authentication to be enabled.<br />Each unique userID creates Redis keys that expire after 2x refillPeriod.<br />Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys. |  | Optional: \{\} <br /> |
-| `tools` _[api.v1alpha1.ToolRateLimitConfig](#apiv1alpha1toolratelimitconfig) array_ | Tools defines per-tool rate limit overrides.<br />Each entry applies additional rate limits to calls targeting a specific tool name.<br />A request must pass both the server-level limit and the per-tool limit. |  | Optional: \{\} <br /> |
+| `shared` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Shared is a token bucket shared across all users for the entire server. |  | Optional: \{\} <br /> |
+| `perUser` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | PerUser is a token bucket applied independently to each authenticated user<br />at the server level. Requires authentication to be enabled.<br />Each unique userID creates Redis keys that expire after 2x refillPeriod.<br />Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys. |  | Optional: \{\} <br /> |
+| `tools` _[api.v1beta1.ToolRateLimitConfig](#apiv1beta1toolratelimitconfig) array_ | Tools defines per-tool rate limit overrides.<br />Each entry applies additional rate limits to calls targeting a specific tool name.<br />A request must pass both the server-level limit and the per-tool limit. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.RedisACLUserConfig
+#### api.v1beta1.RedisACLUserConfig
 
 
 
@@ -2623,15 +2749,15 @@ RedisACLUserConfig configures Redis ACL user authentication.
 
 
 _Appears in:_
-- [api.v1alpha1.RedisStorageConfig](#apiv1alpha1redisstorageconfig)
+- [api.v1beta1.RedisStorageConfig](#apiv1beta1redisstorageconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `usernameSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | UsernameSecretRef references a Secret containing the Redis ACL username. |  | Required: \{\} <br /> |
-| `passwordSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | PasswordSecretRef references a Secret containing the Redis ACL password. |  | Required: \{\} <br /> |
+| `usernameSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | UsernameSecretRef references a Secret containing the Redis ACL username.<br />When omitted, connections use legacy password-only AUTH. Omit for managed<br />Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard<br />HA, Azure Cache for Redis). Set for services that support ACL users (e.g. AWS<br />ElastiCache non-cluster with Redis 6+ RBAC). |  | Optional: \{\} <br /> |
+| `passwordSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PasswordSecretRef references a Secret containing the Redis ACL password. |  | Required: \{\} <br /> |
 
 
-#### api.v1alpha1.RedisSentinelConfig
+#### api.v1beta1.RedisSentinelConfig
 
 
 
@@ -2640,40 +2766,41 @@ RedisSentinelConfig configures Redis Sentinel connection.
 
 
 _Appears in:_
-- [api.v1alpha1.RedisStorageConfig](#apiv1alpha1redisstorageconfig)
+- [api.v1beta1.RedisStorageConfig](#apiv1beta1redisstorageconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `masterName` _string_ | MasterName is the name of the Redis master monitored by Sentinel. |  | Required: \{\} <br /> |
 | `sentinelAddrs` _string array_ | SentinelAddrs is a list of Sentinel host:port addresses.<br />Mutually exclusive with SentinelService. |  | Optional: \{\} <br /> |
-| `sentinelService` _[api.v1alpha1.SentinelServiceRef](#apiv1alpha1sentinelserviceref)_ | SentinelService enables automatic discovery from a Kubernetes Service.<br />Mutually exclusive with SentinelAddrs. |  | Optional: \{\} <br /> |
+| `sentinelService` _[api.v1beta1.SentinelServiceRef](#apiv1beta1sentinelserviceref)_ | SentinelService enables automatic discovery from a Kubernetes Service.<br />Mutually exclusive with SentinelAddrs. |  | Optional: \{\} <br /> |
 | `db` _integer_ | DB is the Redis database number. | 0 | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.RedisStorageConfig
+#### api.v1beta1.RedisStorageConfig
 
 
 
 RedisStorageConfig configures Redis connection for auth server storage.
-Redis is deployed in Sentinel mode with ACL user authentication (the only supported configuration).
+Exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set.
 
 
 
 _Appears in:_
-- [api.v1alpha1.AuthServerStorageConfig](#apiv1alpha1authserverstorageconfig)
+- [api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `sentinelConfig` _[api.v1alpha1.RedisSentinelConfig](#apiv1alpha1redissentinelconfig)_ | SentinelConfig holds Redis Sentinel configuration. |  | Required: \{\} <br /> |
-| `aclUserConfig` _[api.v1alpha1.RedisACLUserConfig](#apiv1alpha1redisacluserconfig)_ | ACLUserConfig configures Redis ACL user authentication. |  | Required: \{\} <br /> |
+| `addr` _string_ | Addr is the Redis server address for standalone mode (e.g., "host:port").<br />Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present<br />a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig. |  | Optional: \{\} <br /> |
+| `sentinelConfig` _[api.v1beta1.RedisSentinelConfig](#apiv1beta1redissentinelconfig)_ | SentinelConfig holds Redis Sentinel configuration.<br />Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr. |  | Optional: \{\} <br /> |
+| `aclUserConfig` _[api.v1beta1.RedisACLUserConfig](#apiv1beta1redisacluserconfig)_ | ACLUserConfig configures Redis ACL user authentication. |  | Required: \{\} <br /> |
 | `dialTimeout` _string_ | DialTimeout is the timeout for establishing connections.<br />Format: Go duration string (e.g., "5s", "1m"). | 5s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `readTimeout` _string_ | ReadTimeout is the timeout for socket reads.<br />Format: Go duration string (e.g., "3s", "1m"). | 3s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `writeTimeout` _string_ | WriteTimeout is the timeout for socket writes.<br />Format: Go duration string (e.g., "3s", "1m"). | 3s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
-| `tls` _[api.v1alpha1.RedisTLSConfig](#apiv1alpha1redistlsconfig)_ | TLS configures TLS for connections to the Redis/Valkey master.<br />Presence of this field enables TLS. Omit to use plaintext. |  | Optional: \{\} <br /> |
-| `sentinelTls` _[api.v1alpha1.RedisTLSConfig](#apiv1alpha1redistlsconfig)_ | SentinelTLS configures TLS for connections to Sentinel instances.<br />Presence of this field enables TLS. Omit to use plaintext.<br />When omitted, sentinel connections use plaintext (no fallback to TLS config). |  | Optional: \{\} <br /> |
+| `tls` _[api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)_ | TLS configures TLS for connections to the Redis/Valkey master.<br />Presence of this field enables TLS. Omit to use plaintext. |  | Optional: \{\} <br /> |
+| `sentinelTls` _[api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)_ | SentinelTLS configures TLS for connections to Sentinel instances.<br />Only applies when sentinelConfig is set. Presence of this field enables TLS. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.RedisTLSConfig
+#### api.v1beta1.RedisTLSConfig
 
 
 
@@ -2683,15 +2810,15 @@ Presence of this struct on a connection type enables TLS for that connection.
 
 
 _Appears in:_
-- [api.v1alpha1.RedisStorageConfig](#apiv1alpha1redisstorageconfig)
+- [api.v1beta1.RedisStorageConfig](#apiv1beta1redisstorageconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `insecureSkipVerify` _boolean_ | InsecureSkipVerify skips TLS certificate verification.<br />Use when connecting to services with self-signed certificates. |  | Optional: \{\} <br /> |
-| `caCertSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | CACertSecretRef references a Secret containing a PEM-encoded CA certificate<br />for verifying the server. When not specified, system root CAs are used. |  | Optional: \{\} <br /> |
+| `caCertSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | CACertSecretRef references a Secret containing a PEM-encoded CA certificate<br />for verifying the server. When not specified, system root CAs are used. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.ResourceList
+#### api.v1beta1.ResourceList
 
 
 
@@ -2700,7 +2827,7 @@ ResourceList is a set of (resource name, quantity) pairs
 
 
 _Appears in:_
-- [api.v1alpha1.ResourceRequirements](#apiv1alpha1resourcerequirements)
+- [api.v1beta1.ResourceRequirements](#apiv1beta1resourcerequirements)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2708,7 +2835,7 @@ _Appears in:_
 | `memory` _string_ | Memory is the memory limit in bytes (e.g., "64Mi" for 64 megabytes) |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.ResourceMetadataOverrides
+#### api.v1beta1.ResourceMetadataOverrides
 
 
 
@@ -2717,10 +2844,10 @@ ResourceMetadataOverrides defines metadata overrides for a resource
 
 
 _Appears in:_
-- [api.v1alpha1.EmbeddingResourceOverrides](#apiv1alpha1embeddingresourceoverrides)
-- [api.v1alpha1.EmbeddingStatefulSetOverrides](#apiv1alpha1embeddingstatefulsetoverrides)
-- [api.v1alpha1.ProxyDeploymentOverrides](#apiv1alpha1proxydeploymentoverrides)
-- [api.v1alpha1.ResourceOverrides](#apiv1alpha1resourceoverrides)
+- [api.v1beta1.EmbeddingResourceOverrides](#apiv1beta1embeddingresourceoverrides)
+- [api.v1beta1.EmbeddingStatefulSetOverrides](#apiv1beta1embeddingstatefulsetoverrides)
+- [api.v1beta1.ProxyDeploymentOverrides](#apiv1beta1proxydeploymentoverrides)
+- [api.v1beta1.ResourceOverrides](#apiv1beta1resourceoverrides)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2728,7 +2855,7 @@ _Appears in:_
 | `labels` _object (keys:string, values:string)_ | Labels to add or override on the resource |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.ResourceOverrides
+#### api.v1beta1.ResourceOverrides
 
 
 
@@ -2737,16 +2864,16 @@ ResourceOverrides defines overrides for annotations and labels on created resour
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `proxyDeployment` _[api.v1alpha1.ProxyDeploymentOverrides](#apiv1alpha1proxydeploymentoverrides)_ | ProxyDeployment defines overrides for the Proxy Deployment resource (toolhive proxy) |  | Optional: \{\} <br /> |
-| `proxyService` _[api.v1alpha1.ResourceMetadataOverrides](#apiv1alpha1resourcemetadataoverrides)_ | ProxyService defines overrides for the Proxy Service resource (points to the proxy deployment) |  | Optional: \{\} <br /> |
+| `proxyDeployment` _[api.v1beta1.ProxyDeploymentOverrides](#apiv1beta1proxydeploymentoverrides)_ | ProxyDeployment defines overrides for the Proxy Deployment resource (toolhive proxy) |  | Optional: \{\} <br /> |
+| `proxyService` _[api.v1beta1.ResourceMetadataOverrides](#apiv1beta1resourcemetadataoverrides)_ | ProxyService defines overrides for the Proxy Service resource (points to the proxy deployment) |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.ResourceRequirements
+#### api.v1beta1.ResourceRequirements
 
 
 
@@ -2755,17 +2882,17 @@ ResourceRequirements describes the compute resource requirements
 
 
 _Appears in:_
-- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1beta1.EmbeddingServerSpec](#apiv1beta1embeddingserverspec)
+- [api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `limits` _[api.v1alpha1.ResourceList](#apiv1alpha1resourcelist)_ | Limits describes the maximum amount of compute resources allowed |  | Optional: \{\} <br /> |
-| `requests` _[api.v1alpha1.ResourceList](#apiv1alpha1resourcelist)_ | Requests describes the minimum amount of compute resources required |  | Optional: \{\} <br /> |
+| `limits` _[api.v1beta1.ResourceList](#apiv1beta1resourcelist)_ | Limits describes the maximum amount of compute resources allowed |  | Optional: \{\} <br /> |
+| `requests` _[api.v1beta1.ResourceList](#apiv1beta1resourcelist)_ | Requests describes the minimum amount of compute resources required |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.RoleMapping
+#### api.v1beta1.RoleMapping
 
 
 
@@ -2777,7 +2904,7 @@ Exactly one of Claim or Matcher must be specified.
 
 
 _Appears in:_
-- [api.v1alpha1.AWSStsConfig](#apiv1alpha1awsstsconfig)
+- [api.v1beta1.AWSStsConfig](#apiv1beta1awsstsconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2787,7 +2914,7 @@ _Appears in:_
 | `priority` _integer_ | Priority determines evaluation order (lower values = higher priority)<br />Allows fine-grained control over role selection precedence<br />When omitted, this mapping has the lowest possible priority and<br />configuration order acts as tie-breaker via stable sort |  | Minimum: 0 <br />Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.SecretKeyRef
+#### api.v1beta1.SecretKeyRef
 
 
 
@@ -2796,19 +2923,19 @@ SecretKeyRef is a reference to a key within a Secret
 
 
 _Appears in:_
-- [api.v1alpha1.BearerTokenConfig](#apiv1alpha1bearertokenconfig)
-- [api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)
-- [api.v1alpha1.EmbeddingServerSpec](#apiv1alpha1embeddingserverspec)
-- [api.v1alpha1.HeaderFromSecret](#apiv1alpha1headerfromsecret)
-- [api.v1alpha1.HeaderInjectionConfig](#apiv1alpha1headerinjectionconfig)
-- [api.v1alpha1.InlineOIDCSharedConfig](#apiv1alpha1inlineoidcsharedconfig)
-- [api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)
-- [api.v1alpha1.OIDCUpstreamConfig](#apiv1alpha1oidcupstreamconfig)
-- [api.v1alpha1.RedisACLUserConfig](#apiv1alpha1redisacluserconfig)
-- [api.v1alpha1.RedisTLSConfig](#apiv1alpha1redistlsconfig)
-- [api.v1alpha1.SensitiveHeader](#apiv1alpha1sensitiveheader)
-- [api.v1alpha1.SessionStorageConfig](#apiv1alpha1sessionstorageconfig)
-- [api.v1alpha1.TokenExchangeConfig](#apiv1alpha1tokenexchangeconfig)
+- [api.v1beta1.BearerTokenConfig](#apiv1beta1bearertokenconfig)
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+- [api.v1beta1.EmbeddingServerSpec](#apiv1beta1embeddingserverspec)
+- [api.v1beta1.HeaderFromSecret](#apiv1beta1headerfromsecret)
+- [api.v1beta1.HeaderInjectionConfig](#apiv1beta1headerinjectionconfig)
+- [api.v1beta1.InlineOIDCSharedConfig](#apiv1beta1inlineoidcsharedconfig)
+- [api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)
+- [api.v1beta1.OIDCUpstreamConfig](#apiv1beta1oidcupstreamconfig)
+- [api.v1beta1.RedisACLUserConfig](#apiv1beta1redisacluserconfig)
+- [api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)
+- [api.v1beta1.SensitiveHeader](#apiv1beta1sensitiveheader)
+- [api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)
+- [api.v1beta1.TokenExchangeConfig](#apiv1beta1tokenexchangeconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2816,7 +2943,7 @@ _Appears in:_
 | `key` _string_ | Key is the key within the secret |  | Required: \{\} <br /> |
 
 
-#### api.v1alpha1.SecretRef
+#### api.v1beta1.SecretRef
 
 
 
@@ -2825,7 +2952,7 @@ SecretRef is a reference to a secret
 
 
 _Appears in:_
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2834,7 +2961,7 @@ _Appears in:_
 | `targetEnvName` _string_ | TargetEnvName is the environment variable to be used when setting up the secret in the MCP server<br />If left unspecified, it defaults to the key |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.SensitiveHeader
+#### api.v1beta1.SensitiveHeader
 
 
 
@@ -2845,28 +2972,28 @@ referenced without embedding secrets inline in the MCPTelemetryConfig resource.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPTelemetryOTelConfig](#apiv1alpha1mcptelemetryotelconfig)
+- [api.v1beta1.MCPTelemetryOTelConfig](#apiv1beta1mcptelemetryotelconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the header name (e.g., "Authorization", "X-API-Key") |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `secretKeyRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | SecretKeyRef is a reference to a Kubernetes Secret key containing the header value |  | Required: \{\} <br /> |
+| `secretKeyRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | SecretKeyRef is a reference to a Kubernetes Secret key containing the header value |  | Required: \{\} <br /> |
 
 
-#### api.v1alpha1.SentinelServiceRef
+#### api.v1beta1.SentinelServiceRef
 
-_Underlying type:_ _[api.v1alpha1.struct{Name string "json:\"name\""; Namespace string "json:\"namespace,omitempty\""; Port int32 "json:\"port,omitempty\""}](#apiv1alpha1struct{name string "json:\"name\""; namespace string "json:\"namespace,omitempty\""; port int32 "json:\"port,omitempty\""})_
+_Underlying type:_ _[api.v1beta1.struct{Name string "json:\"name\""; Namespace string "json:\"namespace,omitempty\""; Port int32 "json:\"port,omitempty\""}](#apiv1beta1struct{name string "json:\"name\""; namespace string "json:\"namespace,omitempty\""; port int32 "json:\"port,omitempty\""})_
 
 SentinelServiceRef references a Kubernetes Service for Sentinel discovery.
 
 
 
 _Appears in:_
-- [api.v1alpha1.RedisSentinelConfig](#apiv1alpha1redissentinelconfig)
+- [api.v1beta1.RedisSentinelConfig](#apiv1beta1redissentinelconfig)
 
 
 
-#### api.v1alpha1.SessionStorageConfig
+#### api.v1beta1.SessionStorageConfig
 
 
 
@@ -2881,8 +3008,8 @@ into the vMCP ConfigMap so the vMCP process receives connection parameters at st
 
 
 _Appears in:_
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
-- [api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
+- [api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2890,10 +3017,10 @@ _Appears in:_
 | `address` _string_ | Address is the Redis server address (required when provider is redis) |  | MinLength: 1 <br />Optional: \{\} <br /> |
 | `db` _integer_ | DB is the Redis database number | 0 | Minimum: 0 <br />Optional: \{\} <br /> |
 | `keyPrefix` _string_ | KeyPrefix is an optional prefix for all Redis keys used by ToolHive |  | Optional: \{\} <br /> |
-| `passwordRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | PasswordRef is a reference to a Secret key containing the Redis password |  | Optional: \{\} <br /> |
+| `passwordRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PasswordRef is a reference to a Secret key containing the Redis password |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.TokenExchangeConfig
+#### api.v1beta1.TokenExchangeConfig
 
 
 
@@ -2905,13 +3032,13 @@ The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middl
 
 
 _Appears in:_
-- [api.v1alpha1.MCPExternalAuthConfigSpec](#apiv1alpha1mcpexternalauthconfigspec)
+- [api.v1beta1.MCPExternalAuthConfigSpec](#apiv1beta1mcpexternalauthconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `tokenUrl` _string_ | TokenURL is the OAuth 2.0 token endpoint URL for token exchange |  | Required: \{\} <br /> |
 | `clientId` _string_ | ClientID is the OAuth 2.0 client identifier<br />Optional for some token exchange flows (e.g., Google Cloud Workforce Identity) |  | Optional: \{\} <br /> |
-| `clientSecretRef` _[api.v1alpha1.SecretKeyRef](#apiv1alpha1secretkeyref)_ | ClientSecretRef is a reference to a secret containing the OAuth 2.0 client secret<br />Optional for some token exchange flows (e.g., Google Cloud Workforce Identity) |  | Optional: \{\} <br /> |
+| `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef is a reference to a secret containing the OAuth 2.0 client secret<br />Optional for some token exchange flows (e.g., Google Cloud Workforce Identity) |  | Optional: \{\} <br /> |
 | `audience` _string_ | Audience is the target audience for the exchanged token |  | Required: \{\} <br /> |
 | `scopes` _string array_ | Scopes is a list of OAuth 2.0 scopes to request for the exchanged token |  | Optional: \{\} <br /> |
 | `subjectTokenType` _string_ | SubjectTokenType is the type of the incoming subject token.<br />Accepts short forms: "access_token" (default), "id_token", "jwt"<br />Or full URNs: "urn:ietf:params:oauth:token-type:access_token",<br />              "urn:ietf:params:oauth:token-type:id_token",<br />              "urn:ietf:params:oauth:token-type:jwt"<br />For Google Workload Identity Federation with OIDC providers (like Okta), use "id_token" |  | Pattern: `^(access_token\|id_token\|jwt\|urn:ietf:params:oauth:token-type:(access_token\|id_token\|jwt))?$` <br />Optional: \{\} <br /> |
@@ -2919,7 +3046,7 @@ _Appears in:_
 | `subjectProviderName` _string_ | SubjectProviderName is the name of the upstream provider whose token is used as the<br />RFC 8693 subject token instead of identity.Token when performing token exchange.<br />When left empty and an embedded authorization server is configured on the VirtualMCPServer,<br />the controller automatically populates this field with the first configured upstream<br />provider name. Set it explicitly to override that default or to select a specific<br />provider when multiple upstreams are configured. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.TokenLifespanConfig
+#### api.v1beta1.TokenLifespanConfig
 
 
 
@@ -2928,7 +3055,7 @@ TokenLifespanConfig holds configuration for token lifetimes.
 
 
 _Appears in:_
-- [api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2937,7 +3064,7 @@ _Appears in:_
 | `authCodeLifespan` _string_ | AuthCodeLifespan is the duration that authorization codes are valid.<br />Format: Go duration string (e.g., "10m", "5m").<br />If empty, defaults to 10 minutes. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.TokenResponseMapping
+#### api.v1beta1.TokenResponseMapping
 
 
 
@@ -2948,7 +3075,7 @@ the access token under paths like "authed_user.access_token".
 
 
 _Appears in:_
-- [api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)
+- [api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2958,7 +3085,7 @@ _Appears in:_
 | `expiresInPath` _string_ | ExpiresInPath is the dot-notation path to the expires_in value (in seconds).<br />If not specified, defaults to "expires_in". |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.ToolAnnotationsOverride
+#### api.v1beta1.ToolAnnotationsOverride
 
 
 
@@ -2969,7 +3096,7 @@ All fields use pointers so nil means "don't override" while zero values
 
 
 _Appears in:_
-- [api.v1alpha1.ToolOverride](#apiv1alpha1tooloverride)
+- [api.v1beta1.ToolOverride](#apiv1beta1tooloverride)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2980,7 +3107,7 @@ _Appears in:_
 | `openWorldHint` _boolean_ | OpenWorldHint overrides the open-world hint annotation. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.ToolConfigRef
+#### api.v1beta1.ToolConfigRef
 
 
 
@@ -2990,15 +3117,15 @@ The referenced MCPToolConfig must be in the same namespace as the MCPServer.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPRemoteProxySpec](#apiv1alpha1mcpremoteproxyspec)
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the MCPToolConfig resource in the same namespace |  | Required: \{\} <br /> |
 
 
-#### api.v1alpha1.ToolOverride
+#### api.v1beta1.ToolOverride
 
 
 
@@ -3009,16 +3136,16 @@ they can't be both empty.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPToolConfigSpec](#apiv1alpha1mcptoolconfigspec)
+- [api.v1beta1.MCPToolConfigSpec](#apiv1beta1mcptoolconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the redefined name of the tool |  | Optional: \{\} <br /> |
 | `description` _string_ | Description is the redefined description of the tool |  | Optional: \{\} <br /> |
-| `annotations` _[api.v1alpha1.ToolAnnotationsOverride](#apiv1alpha1toolannotationsoverride)_ | Annotations overrides specific tool annotation fields.<br />Only specified fields are overridden; others pass through from the backend. |  | Optional: \{\} <br /> |
+| `annotations` _[api.v1beta1.ToolAnnotationsOverride](#apiv1beta1toolannotationsoverride)_ | Annotations overrides specific tool annotation fields.<br />Only specified fields are overridden; others pass through from the backend. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.ToolRateLimitConfig
+#### api.v1beta1.ToolRateLimitConfig
 
 
 
@@ -3028,16 +3155,16 @@ At least one of shared or perUser must be configured.
 
 
 _Appears in:_
-- [api.v1alpha1.RateLimitConfig](#apiv1alpha1ratelimitconfig)
+- [api.v1beta1.RateLimitConfig](#apiv1beta1ratelimitconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the MCP tool name this limit applies to. |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `shared` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | Shared token bucket for this specific tool. |  | Optional: \{\} <br /> |
-| `perUser` _[api.v1alpha1.RateLimitBucket](#apiv1alpha1ratelimitbucket)_ | PerUser token bucket configuration for this tool. |  | Optional: \{\} <br /> |
+| `shared` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Shared token bucket for this specific tool. |  | Optional: \{\} <br /> |
+| `perUser` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | PerUser token bucket configuration for this tool. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.UpstreamInjectSpec
+#### api.v1beta1.UpstreamInjectSpec
 
 
 
@@ -3048,14 +3175,14 @@ authorization server into backend requests as the Authorization: Bearer header.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPExternalAuthConfigSpec](#apiv1alpha1mcpexternalauthconfigspec)
+- [api.v1beta1.MCPExternalAuthConfigSpec](#apiv1beta1mcpexternalauthconfigspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `providerName` _string_ | ProviderName is the name of the upstream IDP provider whose access token<br />should be injected as the Authorization: Bearer header. |  | MinLength: 1 <br />Required: \{\} <br /> |
 
 
-#### api.v1alpha1.UpstreamProviderConfig
+#### api.v1beta1.UpstreamProviderConfig
 
 
 
@@ -3064,17 +3191,17 @@ UpstreamProviderConfig defines configuration for an upstream Identity Provider.
 
 
 _Appears in:_
-- [api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name uniquely identifies this upstream provider.<br />Used for routing decisions and session binding in multi-upstream scenarios.<br />Must be lowercase alphanumeric with hyphens (DNS-label-like). |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Required: \{\} <br /> |
-| `type` _[api.v1alpha1.UpstreamProviderType](#apiv1alpha1upstreamprovidertype)_ | Type specifies the provider type: "oidc" or "oauth2" |  | Enum: [oidc oauth2] <br />Required: \{\} <br /> |
-| `oidcConfig` _[api.v1alpha1.OIDCUpstreamConfig](#apiv1alpha1oidcupstreamconfig)_ | OIDCConfig contains OIDC-specific configuration.<br />Required when Type is "oidc", must be nil when Type is "oauth2". |  | Optional: \{\} <br /> |
-| `oauth2Config` _[api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)_ | OAuth2Config contains OAuth 2.0-specific configuration.<br />Required when Type is "oauth2", must be nil when Type is "oidc". |  | Optional: \{\} <br /> |
+| `type` _[api.v1beta1.UpstreamProviderType](#apiv1beta1upstreamprovidertype)_ | Type specifies the provider type: "oidc" or "oauth2" |  | Enum: [oidc oauth2] <br />Required: \{\} <br /> |
+| `oidcConfig` _[api.v1beta1.OIDCUpstreamConfig](#apiv1beta1oidcupstreamconfig)_ | OIDCConfig contains OIDC-specific configuration.<br />Required when Type is "oidc", must be nil when Type is "oauth2". |  | Optional: \{\} <br /> |
+| `oauth2Config` _[api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)_ | OAuth2Config contains OAuth 2.0-specific configuration.<br />Required when Type is "oauth2", must be nil when Type is "oidc". |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.UpstreamProviderType
+#### api.v1beta1.UpstreamProviderType
 
 _Underlying type:_ _string_
 
@@ -3083,7 +3210,7 @@ UpstreamProviderType identifies the type of upstream Identity Provider.
 
 
 _Appears in:_
-- [api.v1alpha1.UpstreamProviderConfig](#apiv1alpha1upstreamproviderconfig)
+- [api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig)
 
 | Field | Description |
 | --- | --- |
@@ -3091,7 +3218,7 @@ _Appears in:_
 | `oauth2` | UpstreamProviderTypeOAuth2 is for pure OAuth 2.0 providers with explicit endpoints<br /> |
 
 
-#### api.v1alpha1.UserInfoConfig
+#### api.v1beta1.UserInfoConfig
 
 
 
@@ -3102,20 +3229,20 @@ like GitHub's /user API.
 
 
 _Appears in:_
-- [api.v1alpha1.OAuth2UpstreamConfig](#apiv1alpha1oauth2upstreamconfig)
-- [api.v1alpha1.OIDCUpstreamConfig](#apiv1alpha1oidcupstreamconfig)
+- [api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)
+- [api.v1beta1.OIDCUpstreamConfig](#apiv1beta1oidcupstreamconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `endpointUrl` _string_ | EndpointURL is the URL of the userinfo endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
 | `httpMethod` _string_ | HTTPMethod is the HTTP method to use for the userinfo request.<br />If not specified, defaults to GET. |  | Enum: [GET POST] <br />Optional: \{\} <br /> |
 | `additionalHeaders` _object (keys:string, values:string)_ | AdditionalHeaders contains extra headers to include in the userinfo request.<br />Useful for providers that require specific headers (e.g., GitHub's Accept header). |  | Optional: \{\} <br /> |
-| `fieldMapping` _[api.v1alpha1.UserInfoFieldMapping](#apiv1alpha1userinfofieldmapping)_ | FieldMapping contains custom field mapping configuration for non-standard providers.<br />If nil, standard OIDC field names are used ("sub", "name", "email"). |  | Optional: \{\} <br /> |
+| `fieldMapping` _[api.v1beta1.UserInfoFieldMapping](#apiv1beta1userinfofieldmapping)_ | FieldMapping contains custom field mapping configuration for non-standard providers.<br />If nil, standard OIDC field names are used ("sub", "name", "email"). |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.UserInfoFieldMapping
+#### api.v1beta1.UserInfoFieldMapping
 
-_Underlying type:_ _[api.v1alpha1.struct{SubjectFields []string "json:\"subjectFields,omitempty\""; NameFields []string "json:\"nameFields,omitempty\""; EmailFields []string "json:\"emailFields,omitempty\""}](#apiv1alpha1struct{subjectfields []string "json:\"subjectfields,omitempty\""; namefields []string "json:\"namefields,omitempty\""; emailfields []string "json:\"emailfields,omitempty\""})_
+_Underlying type:_ _[api.v1beta1.struct{SubjectFields []string "json:\"subjectFields,omitempty\""; NameFields []string "json:\"nameFields,omitempty\""; EmailFields []string "json:\"emailFields,omitempty\""}](#apiv1beta1struct{subjectfields []string "json:\"subjectfields,omitempty\""; namefields []string "json:\"namefields,omitempty\""; emailfields []string "json:\"emailfields,omitempty\""})_
 
 UserInfoFieldMapping maps provider-specific field names to standard UserInfo fields.
 This allows adapting non-standard provider responses to the canonical UserInfo structure.
@@ -3132,11 +3259,11 @@ Example for GitHub:
 
 
 _Appears in:_
-- [api.v1alpha1.UserInfoConfig](#apiv1alpha1userinfoconfig)
+- [api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)
 
 
 
-#### api.v1alpha1.ValidationStatus
+#### api.v1beta1.ValidationStatus
 
 _Underlying type:_ _string_
 
@@ -3146,7 +3273,7 @@ _Validation:_
 - Enum: [Valid Invalid Unknown]
 
 _Appears in:_
-- [api.v1alpha1.VirtualMCPCompositeToolDefinitionStatus](#apiv1alpha1virtualmcpcompositetooldefinitionstatus)
+- [api.v1beta1.VirtualMCPCompositeToolDefinitionStatus](#apiv1beta1virtualmcpcompositetooldefinitionstatus)
 
 | Field | Description |
 | --- | --- |
@@ -3155,7 +3282,7 @@ _Appears in:_
 | `Unknown` | ValidationStatusUnknown indicates validation hasn't been performed yet<br /> |
 
 
-#### api.v1alpha1.VirtualMCPCompositeToolDefinition
+#### api.v1beta1.VirtualMCPCompositeToolDefinition
 
 
 
@@ -3166,20 +3293,20 @@ by multiple VirtualMCPServer instances
 
 
 _Appears in:_
-- [api.v1alpha1.VirtualMCPCompositeToolDefinitionList](#apiv1alpha1virtualmcpcompositetooldefinitionlist)
+- [api.v1beta1.VirtualMCPCompositeToolDefinitionList](#apiv1beta1virtualmcpcompositetooldefinitionlist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `VirtualMCPCompositeToolDefinition` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec](#apiv1alpha1virtualmcpcompositetooldefinitionspec)_ |  |  |  |
-| `status` _[api.v1alpha1.VirtualMCPCompositeToolDefinitionStatus](#apiv1alpha1virtualmcpcompositetooldefinitionstatus)_ |  |  |  |
+| `spec` _[api.v1beta1.VirtualMCPCompositeToolDefinitionSpec](#apiv1beta1virtualmcpcompositetooldefinitionspec)_ |  |  |  |
+| `status` _[api.v1beta1.VirtualMCPCompositeToolDefinitionStatus](#apiv1beta1virtualmcpcompositetooldefinitionstatus)_ |  |  |  |
 
 
-#### api.v1alpha1.VirtualMCPCompositeToolDefinitionList
+#### api.v1beta1.VirtualMCPCompositeToolDefinitionList
 
 
 
@@ -3191,15 +3318,15 @@ VirtualMCPCompositeToolDefinitionList contains a list of VirtualMCPCompositeTool
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `VirtualMCPCompositeToolDefinitionList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1alpha1.VirtualMCPCompositeToolDefinition](#apiv1alpha1virtualmcpcompositetooldefinition) array_ |  |  |  |
+| `items` _[api.v1beta1.VirtualMCPCompositeToolDefinition](#apiv1beta1virtualmcpcompositetooldefinition) array_ |  |  |  |
 
 
-#### api.v1alpha1.VirtualMCPCompositeToolDefinitionSpec
+#### api.v1beta1.VirtualMCPCompositeToolDefinitionSpec
 
 
 
@@ -3210,7 +3337,7 @@ between CLI and operator usage.
 
 
 _Appears in:_
-- [api.v1alpha1.VirtualMCPCompositeToolDefinition](#apiv1alpha1virtualmcpcompositetooldefinition)
+- [api.v1beta1.VirtualMCPCompositeToolDefinition](#apiv1beta1virtualmcpcompositetooldefinition)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -3222,7 +3349,7 @@ _Appears in:_
 | `output` _[vmcp.config.OutputConfig](#vmcpconfigoutputconfig)_ | Output defines the structured output schema for this workflow.<br />If not specified, the workflow returns the last step's output (backward compatible). |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.VirtualMCPCompositeToolDefinitionStatus
+#### api.v1beta1.VirtualMCPCompositeToolDefinitionStatus
 
 
 
@@ -3231,18 +3358,18 @@ VirtualMCPCompositeToolDefinitionStatus defines the observed state of VirtualMCP
 
 
 _Appears in:_
-- [api.v1alpha1.VirtualMCPCompositeToolDefinition](#apiv1alpha1virtualmcpcompositetooldefinition)
+- [api.v1beta1.VirtualMCPCompositeToolDefinition](#apiv1beta1virtualmcpcompositetooldefinition)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `validationStatus` _[api.v1alpha1.ValidationStatus](#apiv1alpha1validationstatus)_ | ValidationStatus indicates the validation state of the workflow<br />- Valid: Workflow structure is valid<br />- Invalid: Workflow has validation errors |  | Enum: [Valid Invalid Unknown] <br />Optional: \{\} <br /> |
+| `validationStatus` _[api.v1beta1.ValidationStatus](#apiv1beta1validationstatus)_ | ValidationStatus indicates the validation state of the workflow<br />- Valid: Workflow structure is valid<br />- Invalid: Workflow has validation errors |  | Enum: [Valid Invalid Unknown] <br />Optional: \{\} <br /> |
 | `validationErrors` _string array_ | ValidationErrors contains validation error messages if ValidationStatus is Invalid |  | Optional: \{\} <br /> |
 | `referencingVirtualServers` _string array_ | ReferencingVirtualServers lists VirtualMCPServer resources that reference this workflow<br />This helps track which servers need to be reconciled when this workflow changes |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this VirtualMCPCompositeToolDefinition<br />It corresponds to the resource's generation, which is updated on mutation by the API Server |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the workflow's state |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.VirtualMCPServer
+#### api.v1beta1.VirtualMCPServer
 
 
 
@@ -3252,20 +3379,20 @@ VirtualMCPServer aggregates multiple backend MCPServers into a unified endpoint
 
 
 _Appears in:_
-- [api.v1alpha1.VirtualMCPServerList](#apiv1alpha1virtualmcpserverlist)
+- [api.v1beta1.VirtualMCPServerList](#apiv1beta1virtualmcpserverlist)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `VirtualMCPServer` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1alpha1.VirtualMCPServerSpec](#apiv1alpha1virtualmcpserverspec)_ |  |  |  |
-| `status` _[api.v1alpha1.VirtualMCPServerStatus](#apiv1alpha1virtualmcpserverstatus)_ |  |  |  |
+| `spec` _[api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)_ |  |  |  |
+| `status` _[api.v1beta1.VirtualMCPServerStatus](#apiv1beta1virtualmcpserverstatus)_ |  |  |  |
 
 
-#### api.v1alpha1.VirtualMCPServerList
+#### api.v1beta1.VirtualMCPServerList
 
 
 
@@ -3277,15 +3404,15 @@ VirtualMCPServerList contains a list of VirtualMCPServer
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
 | `kind` _string_ | `VirtualMCPServerList` | | |
 | `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1alpha1.VirtualMCPServer](#apiv1alpha1virtualmcpserver) array_ |  |  |  |
+| `items` _[api.v1beta1.VirtualMCPServer](#apiv1beta1virtualmcpserver) array_ |  |  |  |
 
 
-#### api.v1alpha1.VirtualMCPServerPhase
+#### api.v1beta1.VirtualMCPServerPhase
 
 _Underlying type:_ _string_
 
@@ -3295,7 +3422,7 @@ _Validation:_
 - Enum: [Pending Ready Degraded Failed]
 
 _Appears in:_
-- [api.v1alpha1.VirtualMCPServerStatus](#apiv1alpha1virtualmcpserverstatus)
+- [api.v1beta1.VirtualMCPServerStatus](#apiv1beta1virtualmcpserverstatus)
 
 | Field | Description |
 | --- | --- |
@@ -3305,7 +3432,7 @@ _Appears in:_
 | `Failed` | VirtualMCPServerPhaseFailed indicates the VirtualMCPServer has failed<br /> |
 
 
-#### api.v1alpha1.VirtualMCPServerSpec
+#### api.v1beta1.VirtualMCPServerSpec
 
 
 
@@ -3314,26 +3441,27 @@ VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 
 
 _Appears in:_
-- [api.v1alpha1.VirtualMCPServer](#apiv1alpha1virtualmcpserver)
+- [api.v1beta1.VirtualMCPServer](#apiv1beta1virtualmcpserver)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `incomingAuth` _[api.v1alpha1.IncomingAuthConfig](#apiv1alpha1incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server.<br />Must be explicitly set - use "anonymous" type when no authentication is required.<br />This field takes precedence over config.IncomingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  | Required: \{\} <br /> |
-| `outgoingAuth` _[api.v1alpha1.OutgoingAuthConfig](#apiv1alpha1outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.<br />This field takes precedence over config.OutgoingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  | Optional: \{\} <br /> |
+| `incomingAuth` _[api.v1beta1.IncomingAuthConfig](#apiv1beta1incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server.<br />Must be explicitly set - use "anonymous" type when no authentication is required.<br />This field takes precedence over config.IncomingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  | Required: \{\} <br /> |
+| `outgoingAuth` _[api.v1beta1.OutgoingAuthConfig](#apiv1beta1outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.<br />This field takes precedence over config.OutgoingAuth and should be preferred because it<br />supports Kubernetes-native secret references (SecretKeyRef, ConfigMapRef) for secure<br />dynamic discovery of credentials, rather than requiring secrets to be embedded in config. |  | Optional: \{\} <br /> |
 | `serviceType` _string_ | ServiceType specifies the Kubernetes service type for the Virtual MCP server | ClusterIP | Enum: [ClusterIP NodePort LoadBalancer] <br />Optional: \{\} <br /> |
 | `sessionAffinity` _string_ | SessionAffinity controls whether the Service routes repeated client connections to the same pod.<br />MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.<br />Set to "None" for stateless servers or when using an external load balancer with its own affinity. | ClientIP | Enum: [ClientIP None] <br />Optional: \{\} <br /> |
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the Virtual MCP server.<br />If not specified, a ServiceAccount will be created automatically and used by the Virtual MCP server. |  | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
-| `groupRef` _[api.v1alpha1.MCPGroupRef](#apiv1alpha1mcpgroupref)_ | GroupRef references the MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace. |  | Required: \{\} <br /> |
+| `groupRef` _[api.v1beta1.MCPGroupRef](#apiv1beta1mcpgroupref)_ | GroupRef references the MCPGroup that defines backend workloads.<br />The referenced MCPGroup must exist in the same namespace. |  | Required: \{\} <br /> |
 | `config` _[vmcp.config.Config](#vmcpconfigconfig)_ | Config is the Virtual MCP server configuration.<br />The audit config from here is also supported, but not required. |  | Type: object <br />Optional: \{\} <br /> |
-| `telemetryConfigRef` _[api.v1alpha1.MCPTelemetryConfigReference](#apiv1alpha1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this VirtualMCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
-| `embeddingServerRef` _[api.v1alpha1.EmbeddingServerRef](#apiv1alpha1embeddingserverref)_ | EmbeddingServerRef references an existing EmbeddingServer resource by name.<br />When the optimizer is enabled, this field is required to point to a ready EmbeddingServer<br />that provides embedding capabilities.<br />The referenced EmbeddingServer must exist in the same namespace and be ready. |  | Optional: \{\} <br /> |
-| `authServerConfig` _[api.v1alpha1.EmbeddedAuthServerConfig](#apiv1alpha1embeddedauthserverconfig)_ | AuthServerConfig configures an embedded OAuth authorization server.<br />When set, the vMCP server acts as an OIDC issuer, drives users through<br />upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the<br />IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfigRef<br />so that tokens it issues are accepted by the vMCP's incoming auth middleware.<br />When nil, IncomingAuth uses an external IDP and behavior is unchanged. |  | Optional: \{\} <br /> |
+| `telemetryConfigRef` _[api.v1beta1.MCPTelemetryConfigReference](#apiv1beta1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this VirtualMCPServer.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
+| `embeddingServerRef` _[api.v1beta1.EmbeddingServerRef](#apiv1beta1embeddingserverref)_ | EmbeddingServerRef references an existing EmbeddingServer resource by name.<br />When the optimizer is enabled, this field is required to point to a ready EmbeddingServer<br />that provides embedding capabilities.<br />The referenced EmbeddingServer must exist in the same namespace and be ready. |  | Optional: \{\} <br /> |
+| `authServerConfig` _[api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)_ | AuthServerConfig configures an embedded OAuth authorization server.<br />When set, the vMCP server acts as an OIDC issuer, drives users through<br />upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the<br />IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfigRef<br />so that tokens it issues are accepted by the vMCP's incoming auth middleware.<br />When nil, IncomingAuth uses an external IDP and behavior is unchanged. |  | Optional: \{\} <br /> |
 | `replicas` _integer_ | Replicas is the desired number of vMCP pod replicas.<br />VirtualMCPServer creates a single Deployment for the vMCP aggregator process,<br />so there is only one replicas field (unlike MCPServer which has separate<br />Replicas and BackendReplicas for its two Deployments).<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
-| `sessionStorage` _[api.v1alpha1.SessionStorageConfig](#apiv1alpha1sessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When nil, no session storage is configured. |  | Optional: \{\} <br /> |
+| `sessionStorage` _[api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When nil, no session storage is configured. |  | Optional: \{\} <br /> |
+| `imagePullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core) array_ | ImagePullSecrets allows specifying image pull secrets for the vMCP workload.<br />These are applied to both the vMCP Deployment's PodSpec.ImagePullSecrets<br />and to the operator-managed ServiceAccount the vMCP server runs as, so private<br />images are pullable through either path.<br />Merge semantics with PodTemplateSpec:<br />The deployed PodSpec.ImagePullSecrets is the Kubernetes-native strategic-merge<br />union of this field and spec.podTemplateSpec.spec.imagePullSecrets, merged by<br />the patchStrategy:"merge" / patchMergeKey:"name" tags on corev1.PodSpec.<br />  - This field is rendered first as the controller-generated default.<br />  - spec.podTemplateSpec.spec.imagePullSecrets is then strategic-merge-patched<br />    on top, keyed by Name. Distinct names from the two sources are unioned in<br />    the resulting list; entries with the same Name are deduplicated and the<br />    PodTemplateSpec entry wins on overlap (user override).<br />  - Order in the resulting list is not guaranteed and should not be relied on:<br />    strategic merge by name is order-insensitive.<br />  - The operator-managed ServiceAccount's imagePullSecrets list is populated<br />    ONLY from this field. spec.podTemplateSpec.spec.imagePullSecrets does not<br />    reach the ServiceAccount because PodTemplateSpec has no notion of a<br />    ServiceAccount. To make a secret usable via the ServiceAccount path<br />    (e.g. for sidecars or init containers that pull images independently),<br />    list it here rather than under spec.podTemplateSpec.<br />Note on cross-CRD consistency:<br />MCPRegistry currently uses an atomic-replace strategy for its imagePullSecrets<br />(the user-provided value replaces the controller-generated list rather than<br />being merged on top). VirtualMCPServer follows the Kubernetes-native<br />strategic-merge-by-name behavior described above. Aligning the two is tracked<br />as a separate follow-up; until then, manifests that set imagePullSecrets on<br />both CRDs will see different override behavior between them. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.VirtualMCPServerStatus
+#### api.v1beta1.VirtualMCPServerStatus
 
 
 
@@ -3342,22 +3470,22 @@ VirtualMCPServerStatus defines the observed state of VirtualMCPServer
 
 
 _Appears in:_
-- [api.v1alpha1.VirtualMCPServer](#apiv1alpha1virtualmcpserver)
+- [api.v1beta1.VirtualMCPServer](#apiv1beta1virtualmcpserver)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the VirtualMCPServer's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this VirtualMCPServer |  | Optional: \{\} <br /> |
-| `phase` _[api.v1alpha1.VirtualMCPServerPhase](#apiv1alpha1virtualmcpserverphase)_ | Phase is the current phase of the VirtualMCPServer | Pending | Enum: [Pending Ready Degraded Failed] <br />Optional: \{\} <br /> |
+| `phase` _[api.v1beta1.VirtualMCPServerPhase](#apiv1beta1virtualmcpserverphase)_ | Phase is the current phase of the VirtualMCPServer | Pending | Enum: [Pending Ready Degraded Failed] <br />Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  | Optional: \{\} <br /> |
 | `url` _string_ | URL is the URL where the Virtual MCP server can be accessed |  | Optional: \{\} <br /> |
-| `discoveredBackends` _[api.v1alpha1.DiscoveredBackend](#apiv1alpha1discoveredbackend) array_ | DiscoveredBackends lists discovered backend configurations from the MCPGroup |  | Optional: \{\} <br /> |
-| `backendCount` _integer_ | BackendCount is the number of healthy/ready backends<br />(excludes unavailable, degraded, and unknown backends) |  | Optional: \{\} <br /> |
+| `discoveredBackends` _[api.v1beta1.DiscoveredBackend](#apiv1beta1discoveredbackend) array_ | DiscoveredBackends lists discovered backend configurations from the MCPGroup |  | Optional: \{\} <br /> |
+| `backendCount` _integer_ | BackendCount is the number of routable backends (ready + unauthenticated).<br />Excludes unavailable, degraded, and unknown backends. |  | Optional: \{\} <br /> |
 | `oidcConfigHash` _string_ | OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection.<br />Only populated when IncomingAuth.OIDCConfigRef is set. |  | Optional: \{\} <br /> |
 | `telemetryConfigHash` _string_ | TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection.<br />Only populated when TelemetryConfigRef is set. |  | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.Volume
+#### api.v1beta1.Volume
 
 
 
@@ -3366,7 +3494,7 @@ Volume represents a volume to mount in a container
 
 
 _Appears in:_
-- [api.v1alpha1.MCPServerSpec](#apiv1alpha1mcpserverspec)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -3376,7 +3504,7 @@ _Appears in:_
 | `readOnly` _boolean_ | ReadOnly specifies whether the volume should be mounted read-only | false | Optional: \{\} <br /> |
 
 
-#### api.v1alpha1.WorkloadReference
+#### api.v1beta1.WorkloadReference
 
 
 
@@ -3386,10 +3514,10 @@ Namespace is implicit — cross-namespace references are not supported.
 
 
 _Appears in:_
-- [api.v1alpha1.MCPExternalAuthConfigStatus](#apiv1alpha1mcpexternalauthconfigstatus)
-- [api.v1alpha1.MCPOIDCConfigStatus](#apiv1alpha1mcpoidcconfigstatus)
-- [api.v1alpha1.MCPTelemetryConfigStatus](#apiv1alpha1mcptelemetryconfigstatus)
-- [api.v1alpha1.MCPToolConfigStatus](#apiv1alpha1mcptoolconfigstatus)
+- [api.v1beta1.MCPExternalAuthConfigStatus](#apiv1beta1mcpexternalauthconfigstatus)
+- [api.v1beta1.MCPOIDCConfigStatus](#apiv1beta1mcpoidcconfigstatus)
+- [api.v1beta1.MCPTelemetryConfigStatus](#apiv1beta1mcptelemetryconfigstatus)
+- [api.v1beta1.MCPToolConfigStatus](#apiv1beta1mcptoolconfigstatus)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |

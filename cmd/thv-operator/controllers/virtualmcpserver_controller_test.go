@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
@@ -51,42 +51,42 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		vmcp           *mcpv1alpha1.VirtualMCPServer
-		mcpGroup       *mcpv1alpha1.MCPGroup
-		mcpServers     []mcpv1alpha1.MCPServer
+		vmcp           *mcpv1beta1.VirtualMCPServer
+		mcpGroup       *mcpv1beta1.MCPGroup
+		mcpServers     []mcpv1beta1.MCPServer
 		expectError    bool
-		expectedPhase  mcpv1alpha1.VirtualMCPServerPhase
+		expectedPhase  mcpv1beta1.VirtualMCPServerPhase
 		expectedReason string
 	}{
 		{
 			name: "valid group ref with ready group",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 				},
 			},
-			mcpGroup: &mcpv1alpha1.MCPGroup{
+			mcpGroup: &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testGroupName,
 					Namespace: "default",
 				},
-				Status: mcpv1alpha1.MCPGroupStatus{
-					Phase:   mcpv1alpha1.MCPGroupPhaseReady,
+				Status: mcpv1beta1.MCPGroupStatus{
+					Phase:   mcpv1beta1.MCPGroupPhaseReady,
 					Servers: []string{"backend-1", "backend-2"},
 				},
 			},
-			mcpServers: []mcpv1alpha1.MCPServer{
+			mcpServers: []mcpv1beta1.MCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "backend-1",
 						Namespace: "default",
 					},
-					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseReady,
+					Status: mcpv1beta1.MCPServerStatus{
+						Phase: mcpv1beta1.MCPServerPhaseReady,
 						URL:   "http://backend-1.default.svc.cluster.local:8080",
 					},
 				},
@@ -95,53 +95,53 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 						Name:      "backend-2",
 						Namespace: "default",
 					},
-					Status: mcpv1alpha1.MCPServerStatus{
-						Phase: mcpv1alpha1.MCPServerPhaseReady,
+					Status: mcpv1beta1.MCPServerStatus{
+						Phase: mcpv1beta1.MCPServerPhaseReady,
 						URL:   "http://backend-2.default.svc.cluster.local:8080",
 					},
 				},
 			},
 			expectError:    false,
-			expectedReason: mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefValid,
+			expectedReason: mcpv1beta1.ConditionReasonVirtualMCPServerGroupRefValid,
 		},
 		{
 			name: "group ref not found",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "missing-group"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "missing-group"},
 				},
 			},
 			expectError:    true,
-			expectedPhase:  mcpv1alpha1.VirtualMCPServerPhaseFailed,
-			expectedReason: mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefNotFound,
+			expectedPhase:  mcpv1beta1.VirtualMCPServerPhaseFailed,
+			expectedReason: mcpv1beta1.ConditionReasonVirtualMCPServerGroupRefNotFound,
 		},
 		{
 			name: "group ref not ready",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "pending-group"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "pending-group"},
 				},
 			},
-			mcpGroup: &mcpv1alpha1.MCPGroup{
+			mcpGroup: &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "pending-group",
 					Namespace: "default",
 				},
-				Status: mcpv1alpha1.MCPGroupStatus{
-					Phase: mcpv1alpha1.MCPGroupPhasePending,
+				Status: mcpv1beta1.MCPGroupStatus{
+					Phase: mcpv1beta1.MCPGroupPhasePending,
 				},
 			},
 			expectError:    true,
-			expectedPhase:  mcpv1alpha1.VirtualMCPServerPhasePending,
-			expectedReason: mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefNotReady,
+			expectedPhase:  mcpv1beta1.VirtualMCPServerPhasePending,
+			expectedReason: mcpv1beta1.ConditionReasonVirtualMCPServerGroupRefNotReady,
 		},
 	}
 
@@ -151,7 +151,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 
 			// Setup fake client with resources
 			scheme := runtime.NewScheme()
-			_ = mcpv1alpha1.AddToScheme(scheme)
+			_ = mcpv1beta1.AddToScheme(scheme)
 			_ = corev1.AddToScheme(scheme)
 			_ = appsv1.AddToScheme(scheme)
 			_ = rbacv1.AddToScheme(scheme)
@@ -167,7 +167,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(objs...).
-				WithStatusSubresource(&mcpv1alpha1.VirtualMCPServer{}).
+				WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
 				Build()
 
 			r := &VirtualMCPServerReconciler{
@@ -187,7 +187,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 
 				// Check condition reason
 				for _, cond := range tt.vmcp.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeVirtualMCPServerGroupRefValidated {
+					if cond.Type == mcpv1beta1.ConditionTypeVirtualMCPServerGroupRefValidated {
 						assert.Equal(t, tt.expectedReason, cond.Reason)
 					}
 				}
@@ -197,7 +197,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 				// Check condition is set to true
 				foundCondition := false
 				for _, cond := range tt.vmcp.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeVirtualMCPServerGroupRefValidated {
+					if cond.Type == mcpv1beta1.ConditionTypeVirtualMCPServerGroupRefValidated {
 						foundCondition = true
 						assert.Equal(t, metav1.ConditionTrue, cond.Status)
 						assert.Equal(t, tt.expectedReason, cond.Reason)
@@ -213,18 +213,18 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
 
@@ -288,22 +288,71 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 	assert.Equal(t, vmcpServiceAccountName(vmcp.Name), rb.Subjects[0].Name)
 }
 
+// TestVirtualMCPServerEnsureRBACResources_ImagePullSecrets verifies that
+// spec.imagePullSecrets propagates to the operator-managed ServiceAccount.
+func TestVirtualMCPServerEnsureRBACResources_ImagePullSecrets(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testVmcpName,
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+			ImagePullSecrets: []corev1.LocalObjectReference{
+				{Name: "vmcp-creds"},
+				{Name: "extra-creds"},
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, rbacv1.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	require.NoError(t, r.ensureRBACResources(t.Context(), vmcp))
+
+	sa := &corev1.ServiceAccount{}
+	require.NoError(t, fakeClient.Get(t.Context(), types.NamespacedName{
+		Name:      vmcpServiceAccountName(vmcp.Name),
+		Namespace: vmcp.Namespace,
+	}, sa))
+
+	expected := []corev1.LocalObjectReference{
+		{Name: "vmcp-creds"},
+		{Name: "extra-creds"},
+	}
+	assert.Equal(t, expected, sa.ImagePullSecrets)
+}
+
 func TestVirtualMCPServerEnsureRBACResources_Update(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "update-vmcp",
 			Namespace: "default",
 			UID:       "test-uid",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
 
@@ -375,18 +424,18 @@ func TestVirtualMCPServerEnsureRBACResources_Update(t *testing.T) {
 func TestVirtualMCPServerEnsureRBACResources_Idempotency(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "idempotent-vmcp",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
 
@@ -437,22 +486,22 @@ func TestVirtualMCPServerEnsureRBACResources_Idempotency(t *testing.T) {
 func TestVirtualMCPServerEnsureRBACResources_InlineMode(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "inline-mode-vmcp",
 			Namespace: "default",
 			UID:       "test-uid",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
 				Source: "inline",
 			},
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
 
@@ -507,22 +556,22 @@ func TestVirtualMCPServerEnsureRBACResources_InlineMode(t *testing.T) {
 func TestVirtualMCPServerEnsureRBACResources_DiscoveredMode(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "discovered-mode-vmcp",
 			Namespace: "default",
 			UID:       "test-uid",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
 				Source: "discovered",
 			},
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
 
@@ -575,20 +624,20 @@ func TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount(t *testing.T) 
 	t.Parallel()
 
 	customSA := "custom-vmcp-sa"
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "custom-sa-vmcp",
 			Namespace: "default",
 			UID:       "test-uid",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef:       &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef:       &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 			ServiceAccount: &customSA,
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
 
@@ -635,24 +684,24 @@ func TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount(t *testing.T) 
 func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
 	// Create MCPGroup that the VirtualMCPServer references
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testGroupName,
 			Namespace: "default",
 		},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhaseReady,
 		},
 	}
 
@@ -671,7 +720,7 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
@@ -718,18 +767,18 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 func TestVirtualMCPServerEnsureService(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 
 	fakeClient := fake.NewClientBuilder().
@@ -797,19 +846,19 @@ func TestVirtualMCPServerServiceType(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcp := &mcpv1alpha1.VirtualMCPServer{
+			vmcp := &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef:    &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:    &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 					ServiceType: tt.serviceType,
 				},
 			}
 
 			scheme := runtime.NewScheme()
-			_ = mcpv1alpha1.AddToScheme(scheme)
+			_ = mcpv1beta1.AddToScheme(scheme)
 			_ = corev1.AddToScheme(scheme)
 
 			r := &VirtualMCPServerReconciler{
@@ -828,13 +877,13 @@ func TestVirtualMCPServerServiceType(t *testing.T) {
 func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 	t.Parallel()
 
-	baseVmcp := &mcpv1alpha1.VirtualMCPServer{
+	baseVmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef:    &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef:    &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 			ServiceType: "ClusterIP",
 		},
 	}
@@ -857,7 +906,7 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 	tests := []struct {
 		name        string
 		service     *corev1.Service
-		vmcp        *mcpv1alpha1.VirtualMCPServer
+		vmcp        *mcpv1beta1.VirtualMCPServer
 		needsUpdate bool
 	}{
 		{
@@ -869,7 +918,7 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 		{
 			name:    "service type changed to LoadBalancer",
 			service: baseService.DeepCopy(),
-			vmcp: func() *mcpv1alpha1.VirtualMCPServer {
+			vmcp: func() *mcpv1beta1.VirtualMCPServer {
 				v := baseVmcp.DeepCopy()
 				v.Spec.ServiceType = "LoadBalancer"
 				return v
@@ -879,7 +928,7 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 		{
 			name:    "service type changed to NodePort",
 			service: baseService.DeepCopy(),
-			vmcp: func() *mcpv1alpha1.VirtualMCPServer {
+			vmcp: func() *mcpv1beta1.VirtualMCPServer {
 				v := baseVmcp.DeepCopy()
 				v.Spec.ServiceType = "NodePort"
 				return v
@@ -913,7 +962,7 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 				s.Spec.SessionAffinity = corev1.ServiceAffinityClientIP
 				return s
 			}(),
-			vmcp: func() *mcpv1alpha1.VirtualMCPServer {
+			vmcp: func() *mcpv1beta1.VirtualMCPServer {
 				v := baseVmcp.DeepCopy()
 				v.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
 				return v
@@ -927,7 +976,7 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 				s.Spec.SessionAffinity = corev1.ServiceAffinityNone
 				return s
 			}(),
-			vmcp: func() *mcpv1alpha1.VirtualMCPServer {
+			vmcp: func() *mcpv1beta1.VirtualMCPServer {
 				v := baseVmcp.DeepCopy()
 				v.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
 				return v
@@ -953,13 +1002,13 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		vmcp          *mcpv1alpha1.VirtualMCPServer
+		vmcp          *mcpv1beta1.VirtualMCPServer
 		pods          []corev1.Pod
-		expectedPhase mcpv1alpha1.VirtualMCPServerPhase
+		expectedPhase mcpv1beta1.VirtualMCPServerPhase
 	}{
 		{
 			name: "ready pods",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
@@ -983,11 +1032,11 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 					},
 				},
 			},
-			expectedPhase: mcpv1alpha1.VirtualMCPServerPhaseReady,
+			expectedPhase: mcpv1beta1.VirtualMCPServerPhaseReady,
 		},
 		{
 			name: "running but not ready pods",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
@@ -1012,11 +1061,11 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 					},
 				},
 			},
-			expectedPhase: mcpv1alpha1.VirtualMCPServerPhasePending,
+			expectedPhase: mcpv1beta1.VirtualMCPServerPhasePending,
 		},
 		{
 			name: "pending pods",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
@@ -1034,11 +1083,11 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 					},
 				},
 			},
-			expectedPhase: mcpv1alpha1.VirtualMCPServerPhasePending,
+			expectedPhase: mcpv1beta1.VirtualMCPServerPhasePending,
 		},
 		{
 			name: "failed pods",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
@@ -1056,7 +1105,7 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 					},
 				},
 			},
-			expectedPhase: mcpv1alpha1.VirtualMCPServerPhaseFailed,
+			expectedPhase: mcpv1beta1.VirtualMCPServerPhaseFailed,
 		},
 	}
 
@@ -1065,7 +1114,7 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 			t.Parallel()
 
 			scheme := runtime.NewScheme()
-			_ = mcpv1alpha1.AddToScheme(scheme)
+			_ = mcpv1beta1.AddToScheme(scheme)
 			_ = corev1.AddToScheme(scheme)
 
 			objs := []client.Object{tt.vmcp}
@@ -1076,7 +1125,7 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(objs...).
-				WithStatusSubresource(&mcpv1alpha1.VirtualMCPServer{}).
+				WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
 				Build()
 
 			r := &VirtualMCPServerReconciler{
@@ -1137,12 +1186,12 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 
 	tests := []struct {
 		name                string
-		vmcp                *mcpv1alpha1.VirtualMCPServer
+		vmcp                *mcpv1beta1.VirtualMCPServer
 		secrets             []client.Object
 		expectAuthCondition bool
 		expectedAuthStatus  metav1.ConditionStatus
@@ -1151,14 +1200,14 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 	}{
 		{
 			name: "valid auth with no secrets required (anonymous)",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
 				},
@@ -1166,32 +1215,32 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			secrets:             []client.Object{},
 			expectAuthCondition: true,
 			expectedAuthStatus:  metav1.ConditionTrue,
-			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthValid,
+			expectedAuthReason:  mcpv1beta1.ConditionReasonAuthValid,
 			expectError:         false,
 		},
 		{
 			name: "OIDC with missing client secret via MCPOIDCConfig",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type:          "oidc",
-						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
+						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
 					},
 				},
 			},
 			secrets: []client.Object{
-				&mcpv1alpha1.MCPOIDCConfig{
+				&mcpv1beta1.MCPOIDCConfig{
 					ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-						Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+					Spec: mcpv1beta1.MCPOIDCConfigSpec{
+						Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+						Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 							Issuer: "https://issuer.example.com",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 								Name: "missing-secret",
 								Key:  "client-secret",
 							},
@@ -1201,32 +1250,32 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			},
 			expectAuthCondition: true,
 			expectedAuthStatus:  metav1.ConditionFalse,
-			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthInvalid,
+			expectedAuthReason:  mcpv1beta1.ConditionReasonAuthInvalid,
 			expectError:         true,
 		},
 		{
 			name: "OIDC with valid client secret via MCPOIDCConfig",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type:          "oidc",
-						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
+						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
 					},
 				},
 			},
 			secrets: []client.Object{
-				&mcpv1alpha1.MCPOIDCConfig{
+				&mcpv1beta1.MCPOIDCConfig{
 					ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-						Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+					Spec: mcpv1beta1.MCPOIDCConfigSpec{
+						Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+						Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 							Issuer: "https://issuer.example.com",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 								Name: "oidc-secret",
 								Key:  "client-secret",
 							},
@@ -1245,32 +1294,32 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			},
 			expectAuthCondition: true,
 			expectedAuthStatus:  metav1.ConditionTrue,
-			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthValid,
+			expectedAuthReason:  mcpv1beta1.ConditionReasonAuthValid,
 			expectError:         false,
 		},
 		{
 			name: "OIDC secret exists but missing required key via MCPOIDCConfig",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type:          "oidc",
-						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
+						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "test-audience"},
 					},
 				},
 			},
 			secrets: []client.Object{
-				&mcpv1alpha1.MCPOIDCConfig{
+				&mcpv1beta1.MCPOIDCConfig{
 					ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-						Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-						Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+					Spec: mcpv1beta1.MCPOIDCConfigSpec{
+						Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+						Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 							Issuer: "https://issuer.example.com",
-							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 								Name: "oidc-secret",
 								Key:  "client-secret",
 							},
@@ -1289,7 +1338,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			},
 			expectAuthCondition: true,
 			expectedAuthStatus:  metav1.ConditionFalse,
-			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthInvalid,
+			expectedAuthReason:  mcpv1beta1.ConditionReasonAuthInvalid,
 			expectError:         true,
 		},
 	}
@@ -1303,7 +1352,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(objs...).
-				WithStatusSubresource(&mcpv1alpha1.VirtualMCPServer{}).
+				WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
 				Build()
 
 			r := &VirtualMCPServerReconciler{
@@ -1328,7 +1377,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 				// Find AuthConfigured condition
 				var authCondition *metav1.Condition
 				for i := range tt.vmcp.Status.Conditions {
-					if tt.vmcp.Status.Conditions[i].Type == mcpv1alpha1.ConditionTypeAuthConfigured {
+					if tt.vmcp.Status.Conditions[i].Type == mcpv1beta1.ConditionTypeAuthConfigured {
 						authCondition = &tt.vmcp.Status.Conditions[i]
 						break
 					}
@@ -1347,7 +1396,7 @@ func TestVirtualMCPServerReconcile_NotFound(t *testing.T) {
 
 	// Setup
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
@@ -1379,28 +1428,28 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		setupVMCP      func() *mcpv1alpha1.VirtualMCPServer
-		setupCollector func(vmcp *mcpv1alpha1.VirtualMCPServer) virtualmcpserverstatus.StatusManager
+		setupVMCP      func() *mcpv1beta1.VirtualMCPServer
+		setupCollector func(vmcp *mcpv1beta1.VirtualMCPServer) virtualmcpserverstatus.StatusManager
 		expectUpdate   bool
 		expectError    bool
 	}{
 		{
 			name: "successful status update",
-			setupVMCP: func() *mcpv1alpha1.VirtualMCPServer {
-				return &mcpv1alpha1.VirtualMCPServer{
+			setupVMCP: func() *mcpv1beta1.VirtualMCPServer {
+				return &mcpv1beta1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:       testVmcpName,
 						Namespace:  "default",
 						Generation: 1,
 					},
-					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+					Spec: mcpv1beta1.VirtualMCPServerSpec{
+						GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 					},
 				}
 			},
-			setupCollector: func(vmcp *mcpv1alpha1.VirtualMCPServer) virtualmcpserverstatus.StatusManager {
+			setupCollector: func(vmcp *mcpv1beta1.VirtualMCPServer) virtualmcpserverstatus.StatusManager {
 				collector := virtualmcpserverstatus.NewStatusManager(vmcp)
-				collector.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseReady)
+				collector.SetPhase(mcpv1beta1.VirtualMCPServerPhaseReady)
 				collector.SetMessage("All resources ready")
 				return collector
 			},
@@ -1409,19 +1458,19 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 		},
 		{
 			name: "no changes to apply",
-			setupVMCP: func() *mcpv1alpha1.VirtualMCPServer {
-				return &mcpv1alpha1.VirtualMCPServer{
+			setupVMCP: func() *mcpv1beta1.VirtualMCPServer {
+				return &mcpv1beta1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:       testVmcpName,
 						Namespace:  "default",
 						Generation: 1,
 					},
-					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+					Spec: mcpv1beta1.VirtualMCPServerSpec{
+						GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 					},
 				}
 			},
-			setupCollector: func(vmcp *mcpv1alpha1.VirtualMCPServer) virtualmcpserverstatus.StatusManager {
+			setupCollector: func(vmcp *mcpv1beta1.VirtualMCPServer) virtualmcpserverstatus.StatusManager {
 				return virtualmcpserverstatus.NewStatusManager(vmcp)
 			},
 			expectUpdate: false,
@@ -1429,21 +1478,21 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 		},
 		{
 			name: "batch update with multiple changes",
-			setupVMCP: func() *mcpv1alpha1.VirtualMCPServer {
-				return &mcpv1alpha1.VirtualMCPServer{
+			setupVMCP: func() *mcpv1beta1.VirtualMCPServer {
+				return &mcpv1beta1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:       testVmcpName,
 						Namespace:  "default",
 						Generation: 1,
 					},
-					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+					Spec: mcpv1beta1.VirtualMCPServerSpec{
+						GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 					},
 				}
 			},
-			setupCollector: func(vmcp *mcpv1alpha1.VirtualMCPServer) virtualmcpserverstatus.StatusManager {
+			setupCollector: func(vmcp *mcpv1beta1.VirtualMCPServer) virtualmcpserverstatus.StatusManager {
 				collector := virtualmcpserverstatus.NewStatusManager(vmcp)
-				collector.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseReady)
+				collector.SetPhase(mcpv1beta1.VirtualMCPServerPhaseReady)
 				collector.SetMessage("All resources ready")
 				collector.SetURL("http://test.example.com")
 				collector.SetObservedGeneration(1)
@@ -1462,7 +1511,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 			t.Parallel()
 
 			scheme := runtime.NewScheme()
-			_ = mcpv1alpha1.AddToScheme(scheme)
+			_ = mcpv1beta1.AddToScheme(scheme)
 			_ = corev1.AddToScheme(scheme)
 			_ = appsv1.AddToScheme(scheme)
 			_ = rbacv1.AddToScheme(scheme)
@@ -1489,7 +1538,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 				assert.NoError(t, err)
 
 				// Verify the status was updated
-				updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
+				updatedVMCP := &mcpv1beta1.VirtualMCPServer{}
 				err := k8sClient.Get(context.Background(), types.NamespacedName{
 					Name:      vmcp.Name,
 					Namespace: vmcp.Namespace,
@@ -1498,7 +1547,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 
 				if tt.expectUpdate {
 					// Verify updates were applied
-					assert.NotEqual(t, mcpv1alpha1.VirtualMCPServerPhase(""), updatedVMCP.Status.Phase)
+					assert.NotEqual(t, mcpv1beta1.VirtualMCPServerPhase(""), updatedVMCP.Status.Phase)
 				}
 			}
 		})
@@ -1509,19 +1558,19 @@ func TestVirtualMCPServerApplyStatusUpdates_ResourceNotFound(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       testVmcpName,
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -1536,7 +1585,7 @@ func TestVirtualMCPServerApplyStatusUpdates_ResourceNotFound(t *testing.T) {
 	}
 
 	collector := virtualmcpserverstatus.NewStatusManager(vmcp)
-	collector.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseReady)
+	collector.SetPhase(mcpv1beta1.VirtualMCPServerPhaseReady)
 
 	err := reconciler.applyStatusUpdates(context.Background(), vmcp, collector)
 
@@ -1549,38 +1598,38 @@ func TestVirtualMCPServerEnsureAllResources_Errors(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		setupVMCP   func() *mcpv1alpha1.VirtualMCPServer
-		setupClient func(t *testing.T, vmcp *mcpv1alpha1.VirtualMCPServer) client.Client
+		setupVMCP   func() *mcpv1beta1.VirtualMCPServer
+		setupClient func(t *testing.T, vmcp *mcpv1beta1.VirtualMCPServer) client.Client
 		expectError bool
 	}{
 		{
 			name: "no auth configured - valid",
-			setupVMCP: func() *mcpv1alpha1.VirtualMCPServer {
-				return &mcpv1alpha1.VirtualMCPServer{
+			setupVMCP: func() *mcpv1beta1.VirtualMCPServer {
+				return &mcpv1beta1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:       testVmcpName,
 						Namespace:  "default",
 						Generation: 1,
 					},
-					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+					Spec: mcpv1beta1.VirtualMCPServerSpec{
+						GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 					},
 				}
 			},
-			setupClient: func(_ *testing.T, vmcp *mcpv1alpha1.VirtualMCPServer) client.Client {
+			setupClient: func(_ *testing.T, vmcp *mcpv1beta1.VirtualMCPServer) client.Client {
 				scheme := runtime.NewScheme()
-				_ = mcpv1alpha1.AddToScheme(scheme)
+				_ = mcpv1beta1.AddToScheme(scheme)
 				_ = corev1.AddToScheme(scheme)
 				_ = appsv1.AddToScheme(scheme)
 				_ = rbacv1.AddToScheme(scheme)
 
-				mcpGroup := &mcpv1alpha1.MCPGroup{
+				mcpGroup := &mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      testGroupName,
 						Namespace: "default",
 					},
-					Status: mcpv1alpha1.MCPGroupStatus{
-						Phase: mcpv1alpha1.MCPGroupPhaseReady,
+					Status: mcpv1beta1.MCPGroupStatus{
+						Phase: mcpv1beta1.MCPGroupPhaseReady,
 					},
 				}
 				return fake.NewClientBuilder().
@@ -1622,7 +1671,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
@@ -1630,20 +1679,20 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
 	tests := []struct {
 		name           string
 		deployment     *appsv1.Deployment
-		vmcp           *mcpv1alpha1.VirtualMCPServer
+		vmcp           *mcpv1beta1.VirtualMCPServer
 		expectedUpdate bool
 	}{
 		{
@@ -1806,13 +1855,13 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 					},
 				},
 			},
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 					Config: vmcpconfig.Config{
 						Group: testGroupName,
 						Operational: &vmcpconfig.OperationalConfig{
@@ -1890,7 +1939,7 @@ func TestVirtualMCPServerDeploymentMetadataNeedsUpdate(t *testing.T) {
 
 	reconciler := &VirtualMCPServerReconciler{}
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
@@ -1900,7 +1949,7 @@ func TestVirtualMCPServerDeploymentMetadataNeedsUpdate(t *testing.T) {
 	tests := []struct {
 		name           string
 		deployment     *appsv1.Deployment
-		vmcp           *mcpv1alpha1.VirtualMCPServer
+		vmcp           *mcpv1beta1.VirtualMCPServer
 		expectedUpdate bool
 	}{
 		{
@@ -1972,13 +2021,13 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 
 	reconciler := &VirtualMCPServerReconciler{
 		Scheme: scheme,
 	}
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
@@ -1993,7 +2042,7 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 	tests := []struct {
 		name           string
 		deployment     *appsv1.Deployment
-		vmcp           *mcpv1alpha1.VirtualMCPServer
+		vmcp           *mcpv1beta1.VirtualMCPServer
 		checksum       string
 		expectedUpdate bool
 	}{
@@ -2106,7 +2155,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
@@ -2114,13 +2163,13 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2280,29 +2329,29 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       testVmcpName,
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testGroupName,
 			Namespace: "default",
 		},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhaseReady,
 		},
 	}
 
@@ -2398,7 +2447,7 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 
 	// Verify status was updated
-	updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
+	updatedVMCP := &mcpv1beta1.VirtualMCPServer{}
 	err = k8sClient.Get(context.Background(), types.NamespacedName{
 		Name:      vmcp.Name,
 		Namespace: vmcp.Namespace,
@@ -2413,19 +2462,19 @@ func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       testVmcpName,
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "nonexistent-group"},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "nonexistent-group"},
 		},
 	}
 
@@ -2454,14 +2503,14 @@ func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 
 	// Verify status was updated with error condition
-	updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
+	updatedVMCP := &mcpv1beta1.VirtualMCPServer{}
 	err = k8sClient.Get(context.Background(), types.NamespacedName{
 		Name:      vmcp.Name,
 		Namespace: vmcp.Namespace,
 	}, updatedVMCP)
 	require.NoError(t, err)
 
-	assert.Equal(t, mcpv1alpha1.VirtualMCPServerPhaseFailed, updatedVMCP.Status.Phase)
+	assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, updatedVMCP.Status.Phase)
 	assert.NotEmpty(t, updatedVMCP.Status.Message)
 }
 
@@ -2469,29 +2518,29 @@ func TestVirtualMCPServerReconcile_GroupNotReady(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       testVmcpName,
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testGroupName,
 			Namespace: "default",
 		},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase: mcpv1alpha1.MCPGroupPhasePending, // Not ready
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhasePending, // Not ready
 		},
 	}
 
@@ -2520,21 +2569,21 @@ func TestVirtualMCPServerReconcile_GroupNotReady(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 
 	// Verify status was updated
-	updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
+	updatedVMCP := &mcpv1beta1.VirtualMCPServer{}
 	err = k8sClient.Get(context.Background(), types.NamespacedName{
 		Name:      vmcp.Name,
 		Namespace: vmcp.Namespace,
 	}, updatedVMCP)
 	require.NoError(t, err)
 
-	assert.Equal(t, mcpv1alpha1.VirtualMCPServerPhasePending, updatedVMCP.Status.Phase)
+	assert.Equal(t, mcpv1beta1.VirtualMCPServerPhasePending, updatedVMCP.Status.Phase)
 }
 
 func TestVirtualMCPServerReconcile_GetError(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 
 	// Create empty client - resource won't be found but we'll test non-NotFound errors
 	// by using a client that returns a generic error
@@ -2565,17 +2614,17 @@ func TestVirtualMCPServerEnsureDeployment_ConfigMapNotFound(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2601,17 +2650,17 @@ func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2658,17 +2707,17 @@ func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2741,17 +2790,17 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2828,16 +2877,16 @@ func TestVirtualMCPServerEnsureService_CreateService(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2870,16 +2919,16 @@ func TestVirtualMCPServerEnsureService_UpdateService(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef:    &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef:    &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 			ServiceType: "LoadBalancer",
 		},
 	}
@@ -2932,16 +2981,16 @@ func TestVirtualMCPServerEnsureService_NoUpdateNeeded(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testVmcpName,
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 		},
 	}
 
@@ -2989,46 +3038,46 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		vmcp            *mcpv1alpha1.VirtualMCPServer
-		embeddingServer *mcpv1alpha1.EmbeddingServer
+		vmcp            *mcpv1beta1.VirtualMCPServer
+		embeddingServer *mcpv1beta1.EmbeddingServer
 		expectError     bool
-		expectedPhase   mcpv1alpha1.VirtualMCPServerPhase
+		expectedPhase   mcpv1beta1.VirtualMCPServerPhase
 		expectedReason  string
 	}{
 		{
 			name: "no ref configured (skip validation)",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 				},
 			},
 			expectError: false,
 		},
 		{
 			name: "referenced EmbeddingServer exists and is running",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					EmbeddingServerRef: &mcpv1beta1.EmbeddingServerRef{
 						Name: "shared-embedding",
 					},
 				},
 			},
-			embeddingServer: &mcpv1alpha1.EmbeddingServer{
+			embeddingServer: &mcpv1beta1.EmbeddingServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "shared-embedding",
 					Namespace: "default",
 				},
-				Status: mcpv1alpha1.EmbeddingServerStatus{
-					Phase:         mcpv1alpha1.EmbeddingServerPhaseReady,
+				Status: mcpv1beta1.EmbeddingServerStatus{
+					Phase:         mcpv1beta1.EmbeddingServerPhaseReady,
 					ReadyReplicas: 1,
 				},
 			},
@@ -3036,43 +3085,43 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 		},
 		{
 			name: "referenced EmbeddingServer not found",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					EmbeddingServerRef: &mcpv1beta1.EmbeddingServerRef{
 						Name: "missing-embedding",
 					},
 				},
 			},
 			expectError:    true,
-			expectedPhase:  mcpv1alpha1.VirtualMCPServerPhaseFailed,
-			expectedReason: mcpv1alpha1.ConditionReasonEmbeddingServerNotFound,
+			expectedPhase:  mcpv1beta1.VirtualMCPServerPhaseFailed,
+			expectedReason: mcpv1beta1.ConditionReasonEmbeddingServerNotFound,
 		},
 		{
 			name: "referenced EmbeddingServer exists but not ready (pending) - existence validated",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					EmbeddingServerRef: &mcpv1beta1.EmbeddingServerRef{
 						Name: "pending-embedding",
 					},
 				},
 			},
-			embeddingServer: &mcpv1alpha1.EmbeddingServer{
+			embeddingServer: &mcpv1beta1.EmbeddingServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "pending-embedding",
 					Namespace: "default",
 				},
-				Status: mcpv1alpha1.EmbeddingServerStatus{
-					Phase:         mcpv1alpha1.EmbeddingServerPhasePending,
+				Status: mcpv1beta1.EmbeddingServerStatus{
+					Phase:         mcpv1beta1.EmbeddingServerPhasePending,
 					ReadyReplicas: 0,
 				},
 			},
@@ -3080,25 +3129,25 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 		},
 		{
 			name: "referenced EmbeddingServer running but zero ready replicas - existence validated",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
-					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					EmbeddingServerRef: &mcpv1beta1.EmbeddingServerRef{
 						Name: "no-replicas-embedding",
 					},
 				},
 			},
-			embeddingServer: &mcpv1alpha1.EmbeddingServer{
+			embeddingServer: &mcpv1beta1.EmbeddingServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "no-replicas-embedding",
 					Namespace: "default",
 				},
-				Status: mcpv1alpha1.EmbeddingServerStatus{
-					Phase:         mcpv1alpha1.EmbeddingServerPhaseReady,
+				Status: mcpv1beta1.EmbeddingServerStatus{
+					Phase:         mcpv1beta1.EmbeddingServerPhaseReady,
 					ReadyReplicas: 0,
 				},
 			},
@@ -3112,7 +3161,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 
 			// Setup fake client with resources
 			scheme := runtime.NewScheme()
-			_ = mcpv1alpha1.AddToScheme(scheme)
+			_ = mcpv1beta1.AddToScheme(scheme)
 			_ = corev1.AddToScheme(scheme)
 			_ = appsv1.AddToScheme(scheme)
 			_ = rbacv1.AddToScheme(scheme)
@@ -3126,8 +3175,8 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 				WithScheme(scheme).
 				WithObjects(objs...).
 				WithStatusSubresource(
-					&mcpv1alpha1.VirtualMCPServer{},
-					&mcpv1alpha1.EmbeddingServer{},
+					&mcpv1beta1.VirtualMCPServer{},
+					&mcpv1beta1.EmbeddingServer{},
 				).
 				Build()
 
@@ -3148,7 +3197,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 
 				// Check condition reason
 				for _, cond := range tt.vmcp.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeEmbeddingServerReady {
+					if cond.Type == mcpv1beta1.ConditionTypeEmbeddingServerReady {
 						assert.Equal(t, tt.expectedReason, cond.Reason)
 						assert.Equal(t, metav1.ConditionFalse, cond.Status)
 					}
@@ -3166,20 +3215,20 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_SpecDriven(t *testing.T) {
 	t.Parallel()
 
 	specReplicas := int32(3)
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "vmcp-replica-sync",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 			Replicas: &specReplicas,
 		},
 	}
 
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{Name: testGroupName, Namespace: "default"},
-		Status:     mcpv1alpha1.MCPGroupStatus{Phase: mcpv1alpha1.MCPGroupPhaseReady},
+		Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
 	}
 
 	configMap := &corev1.ConfigMap{
@@ -3212,7 +3261,7 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_SpecDriven(t *testing.T) {
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
@@ -3245,20 +3294,20 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_SpecDriven(t *testing.T) {
 func TestVirtualMCPServerEnsureDeployment_ReplicaSync_NilPassthrough(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "vmcp-nil-passthrough",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroupName},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 			Replicas: nil, // HPA manages replicas
 		},
 	}
 
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{Name: testGroupName, Namespace: "default"},
-		Status:     mcpv1alpha1.MCPGroupStatus{Phase: mcpv1alpha1.MCPGroupPhaseReady},
+		Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
 	}
 
 	configMap := &corev1.ConfigMap{
@@ -3291,7 +3340,7 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_NilPassthrough(t *testing.
 	}
 
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
@@ -3322,7 +3371,7 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_NilPassthrough(t *testing.
 
 // mustBuildEnvVarsForVmcp is a test helper that calls buildEnvVarsForVmcp and panics on error.
 // All test VirtualMCPServers use anonymous auth (no OIDCConfigRef), so the error path is unreachable.
-func mustBuildEnvVarsForVmcp(r *VirtualMCPServerReconciler, vmcp *mcpv1alpha1.VirtualMCPServer) []corev1.EnvVar {
+func mustBuildEnvVarsForVmcp(r *VirtualMCPServerReconciler, vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
 	env, err := r.buildEnvVarsForVmcp(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
 	if err != nil {
 		panic("mustBuildEnvVarsForVmcp: " + err.Error())
@@ -3334,39 +3383,39 @@ func mustBuildEnvVarsForVmcp(r *VirtualMCPServerReconciler, vmcp *mcpv1alpha1.Vi
 func TestGetExternalAuthConfigNameFromWorkload(t *testing.T) {
 	t.Parallel()
 
-	mcpServerMap := map[string]*mcpv1alpha1.MCPServer{
+	mcpServerMap := map[string]*mcpv1beta1.MCPServer{
 		"server-with-auth": {
-			Spec: mcpv1alpha1.MCPServerSpec{
-				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			Spec: mcpv1beta1.MCPServerSpec{
+				ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 					Name: "server-auth-config",
 				},
 			},
 		},
 		"server-no-auth": {
-			Spec: mcpv1alpha1.MCPServerSpec{},
+			Spec: mcpv1beta1.MCPServerSpec{},
 		},
 	}
 
-	mcpRemoteProxyMap := map[string]*mcpv1alpha1.MCPRemoteProxy{
+	mcpRemoteProxyMap := map[string]*mcpv1beta1.MCPRemoteProxy{
 		"proxy-with-auth": {
-			Spec: mcpv1alpha1.MCPRemoteProxySpec{
-				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			Spec: mcpv1beta1.MCPRemoteProxySpec{
+				ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 					Name: "proxy-auth-config",
 				},
 			},
 		},
 	}
 
-	mcpServerEntryMap := map[string]*mcpv1alpha1.MCPServerEntry{
+	mcpServerEntryMap := map[string]*mcpv1beta1.MCPServerEntry{
 		"entry-with-auth": {
-			Spec: mcpv1alpha1.MCPServerEntrySpec{
-				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			Spec: mcpv1beta1.MCPServerEntrySpec{
+				ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 					Name: "entry-auth-config",
 				},
 			},
 		},
 		"entry-no-auth": {
-			Spec: mcpv1alpha1.MCPServerEntrySpec{},
+			Spec: mcpv1beta1.MCPServerEntrySpec{},
 		},
 	}
 
@@ -3475,4 +3524,410 @@ func TestDiscoveredRBACRulesIncludeMCPServerEntries(t *testing.T) {
 		}
 	}
 	assert.True(t, foundMCPServerEntries, "vmcpDiscoveredRBACRules should include mcpserverentries")
+}
+
+// TestVirtualMCPServerValidateAuthzUpstreamAvailable verifies that the
+// validator fires only when the embedded AuthServer is configured without any
+// upstream providers alongside AuthzConfig. Direct-IdP flows (clients present
+// an already-validated IdP token) leave AuthServerConfig nil and are valid —
+// Cedar evaluates against the identity's claims via the default branch.
+//
+// The validator also emits an advisory AuthzUpstreamSelectionWarning condition
+// when multiple upstreams are declared, naming the auto-selected provider.
+func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
+	t.Parallel()
+
+	inlineAuthzRef := &mcpv1beta1.AuthzConfigRef{
+		Type: "inline",
+		Inline: &mcpv1beta1.InlineAuthzConfig{
+			Policies: []string{`permit(principal, action, resource);`},
+		},
+	}
+
+	// warningExpectation captures the expected state of the advisory
+	// AuthzUpstreamSelectionWarning condition after validation. When
+	// expectPresent is false the condition must not appear in status at
+	// all — the advisory only applies to the narrow multi-upstream slice.
+	type warningExpectation struct {
+		expectPresent bool
+		status        metav1.ConditionStatus
+		reason        string
+		messageSubstr string // empty when we don't care about the message
+	}
+
+	tests := []struct {
+		name             string
+		incomingAuth     *mcpv1beta1.IncomingAuthConfig
+		authServerConfig *mcpv1beta1.EmbeddedAuthServerConfig
+		expectError      bool
+		expectedReason   string
+		expectedWarning  warningExpectation
+	}{
+		{
+			name:            "no incoming auth is valid",
+			incomingAuth:    nil,
+			expectedWarning: warningExpectation{expectPresent: false},
+		},
+		{
+			name: "incoming auth without authz is valid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			},
+			expectedWarning: warningExpectation{expectPresent: false},
+		},
+		{
+			name: "authz with nil auth server config is valid (direct IdP flow)",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: nil,
+			expectError:      false,
+			expectedWarning:  warningExpectation{expectPresent: false},
+		},
+		{
+			name: "authz with empty upstream providers is invalid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:            "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{},
+			},
+			expectError:     true,
+			expectedReason:  mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
+			expectedWarning: warningExpectation{expectPresent: false},
+		},
+		{
+			name: "authz with single upstream is valid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			expectedWarning: warningExpectation{expectPresent: false},
+		},
+		{
+			name: "authz with multiple upstreams emits advisory warning",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+					{Name: "entra", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			expectedWarning: warningExpectation{
+				expectPresent: true,
+				status:        metav1.ConditionTrue,
+				reason:        mcpv1beta1.ConditionReasonAuthzUpstreamAutoSelected,
+				messageSubstr: `"okta"`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := &mcpv1beta1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testVmcpName,
+					Namespace:  "default",
+					Generation: 1,
+				},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:         &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					IncomingAuth:     tt.incomingAuth,
+					AuthServerConfig: tt.authServerConfig,
+				},
+			}
+
+			r := &VirtualMCPServerReconciler{}
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+			err := r.validateAuthzUpstreamAvailable(t.Context(), vmcp, statusManager)
+
+			if tt.expectError {
+				require.Error(t, err)
+				// Error path writes phase, message, and the AuthServerConfigValidated
+				// condition — UpdateStatus must report a change.
+				assert.True(t, statusManager.UpdateStatus(t.Context(), &vmcp.Status))
+				assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase)
+				assert.NotEmpty(t, vmcp.Status.Message)
+
+				found := false
+				for _, cond := range vmcp.Status.Conditions {
+					if cond.Type == mcpv1beta1.ConditionTypeAuthServerConfigValidated {
+						found = true
+						assert.Equal(t, metav1.ConditionFalse, cond.Status)
+						assert.Equal(t, tt.expectedReason, cond.Reason)
+					}
+				}
+				assert.True(t, found, "AuthServerConfigValidated condition should be set to False")
+			} else {
+				require.NoError(t, err)
+				// Positive path: apply any pending status changes (only the
+				// multi-upstream case emits the advisory; other valid paths
+				// leave the collector unchanged).
+				_ = statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+				assert.NotEqual(t, mcpv1beta1.VirtualMCPServerPhaseFailed, vmcp.Status.Phase)
+				for _, cond := range vmcp.Status.Conditions {
+					if cond.Type == mcpv1beta1.ConditionTypeAuthServerConfigValidated {
+						assert.NotEqual(t, mcpv1beta1.ConditionReasonAuthzRequiresUpstream, cond.Reason)
+					}
+				}
+			}
+
+			// The advisory AuthzUpstreamSelectionWarning condition should only
+			// appear on the narrow multi-upstream path. Every other path must
+			// leave it absent so kubectl describe stays clean.
+			var warning *metav1.Condition
+			for i := range vmcp.Status.Conditions {
+				if vmcp.Status.Conditions[i].Type == mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning {
+					warning = &vmcp.Status.Conditions[i]
+					break
+				}
+			}
+			if !tt.expectedWarning.expectPresent {
+				assert.Nil(t, warning, "AuthzUpstreamSelectionWarning condition should not be present")
+				return
+			}
+			require.NotNil(t, warning, "AuthzUpstreamSelectionWarning condition should be present")
+			assert.Equal(t, tt.expectedWarning.status, warning.Status)
+			assert.Equal(t, tt.expectedWarning.reason, warning.Reason)
+			if tt.expectedWarning.messageSubstr != "" {
+				assert.Contains(t, warning.Message, tt.expectedWarning.messageSubstr)
+			}
+		})
+	}
+}
+
+// TestVirtualMCPServerValidateAuthzUpstreamAvailable_ClearsStaleWarning verifies
+// the transition case: a VMCP that was previously multi-upstream (advisory True
+// on its status) is reconfigured to a single upstream, and the stale advisory
+// condition must be removed after the next validation pass.
+func TestVirtualMCPServerValidateAuthzUpstreamAvailable_ClearsStaleWarning(t *testing.T) {
+	t.Parallel()
+
+	inlineAuthzRef := &mcpv1beta1.AuthzConfigRef{
+		Type: "inline",
+		Inline: &mcpv1beta1.InlineAuthzConfig{
+			Policies: []string{`permit(principal, action, resource);`},
+		},
+	}
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       testVmcpName,
+			Namespace:  "default",
+			Generation: 2,
+		},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			// Single upstream now — the advisory should be cleared.
+			AuthServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+		},
+		Status: mcpv1beta1.VirtualMCPServerStatus{
+			// Simulate a stale True advisory from a previous multi-upstream
+			// reconciliation.
+			Conditions: []metav1.Condition{
+				{
+					Type:    mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning,
+					Status:  metav1.ConditionTrue,
+					Reason:  mcpv1beta1.ConditionReasonAuthzUpstreamAutoSelected,
+					Message: `multiple upstreamProviders configured; Cedar policies will evaluate claims from the first upstream ("okta").`,
+				},
+			},
+		},
+	}
+
+	r := &VirtualMCPServerReconciler{}
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+	require.NoError(t, r.validateAuthzUpstreamAvailable(t.Context(), vmcp, statusManager))
+
+	// Applying the status should remove the stale condition.
+	assert.True(t, statusManager.UpdateStatus(t.Context(), &vmcp.Status),
+		"UpdateStatus must report a change because a stale condition was removed")
+
+	for _, cond := range vmcp.Status.Conditions {
+		assert.NotEqual(t, mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, cond.Type,
+			"stale AuthzUpstreamSelectionWarning condition should have been removed")
+	}
+}
+
+// TestVirtualMCPServerValidateAuthServerConfig_IdentitySynthesizedCondition
+// is the parity test: same condition shape as MCPExternalAuthConfig emits
+// for the same upstreamProviders, on a VirtualMCPServer's inline AuthServerConfig.
+func TestVirtualMCPServerValidateAuthServerConfig_IdentitySynthesizedCondition(t *testing.T) {
+	t.Parallel()
+
+	oauth2Upstream := func(name string, withUserInfo bool) mcpv1beta1.UpstreamProviderConfig {
+		cfg := &mcpv1beta1.OAuth2UpstreamConfig{
+			AuthorizationEndpoint: "https://idp.example.com/authorize",
+			TokenEndpoint:         "https://idp.example.com/token",
+			ClientID:              "client",
+		}
+		if withUserInfo {
+			cfg.UserInfo = &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"}
+		}
+		return mcpv1beta1.UpstreamProviderConfig{
+			Name:         name,
+			Type:         mcpv1beta1.UpstreamProviderTypeOAuth2,
+			OAuth2Config: cfg,
+		}
+	}
+
+	tests := []struct {
+		name           string
+		upstreams      []mcpv1beta1.UpstreamProviderConfig
+		wantStatus     metav1.ConditionStatus
+		wantReason     string
+		wantNamesInMsg []string
+	}{
+		{
+			name:       "all OAuth2 upstreams have userInfo: condition False",
+			upstreams:  []mcpv1beta1.UpstreamProviderConfig{oauth2Upstream("primary", true)},
+			wantStatus: metav1.ConditionFalse,
+			wantReason: mcpv1beta1.ConditionReasonIdentitySynthesizedInactive,
+		},
+		{
+			name: "one OAuth2 upstream missing userInfo: condition True with name in message",
+			upstreams: []mcpv1beta1.UpstreamProviderConfig{
+				oauth2Upstream("primary", true),
+				oauth2Upstream("atlassian", false),
+			},
+			wantStatus:     metav1.ConditionTrue,
+			wantReason:     mcpv1beta1.ConditionReasonIdentitySynthesizedActive,
+			wantNamesInMsg: []string{"atlassian"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := &mcpv1beta1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testVmcpName,
+					Namespace:  "default",
+					Generation: 1,
+				},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					AuthServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+						Issuer:            "https://authserver.example.com",
+						UpstreamProviders: tt.upstreams,
+					},
+				},
+			}
+
+			r := &VirtualMCPServerReconciler{}
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+			// runAuthValidations runs the synthesis advisory before
+			// validateAuthServerConfig so the condition tracks the spec on both
+			// pass and fail paths. Mirror that ordering here.
+			r.applyAuthServerIdentitySynthesizedCondition(vmcp, statusManager)
+			require.NoError(t, r.validateAuthServerConfig(vmcp, statusManager))
+			statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+			cond := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized)
+			require.NotNil(t, cond, "IdentitySynthesized condition should be set on a valid AuthServerConfig")
+			assert.Equal(t, tt.wantStatus, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			for _, name := range tt.wantNamesInMsg {
+				assert.Contains(t, cond.Message, name,
+					"upstream %q should be named in the condition message", name)
+			}
+		})
+	}
+}
+
+// TestVirtualMCPServerReconciler_IdentitySynthesizedTransitionsOnValidationFailure
+// pins the contract that the IdentitySynthesized advisory is recomputed from
+// the current spec on every reconcile, including paths where
+// validateAuthServerConfig early-returns (Issuer == "", empty UpstreamProviders,
+// invalid AdditionalAuthorizationParams). Without this, breaking the spec
+// after a synthesizing upstream was reported leaves a stale True/upstream-name
+// dangling next to the new AuthServerConfigValidated=False.
+func TestVirtualMCPServerReconciler_IdentitySynthesizedTransitionsOnValidationFailure(t *testing.T) {
+	t.Parallel()
+
+	syntheticUpstream := mcpv1beta1.UpstreamProviderConfig{
+		Name: "atlassian",
+		Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+		OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
+			AuthorizationEndpoint: "https://idp.example.com/authorize",
+			TokenEndpoint:         "https://idp.example.com/token",
+			ClientID:              "client",
+			// UserInfo intentionally nil — synthesizes identity.
+		},
+	}
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       testVmcpName,
+			Namespace:  "default",
+			Generation: 1,
+		},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+			AuthServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:            "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{syntheticUpstream},
+			},
+		},
+	}
+
+	r := &VirtualMCPServerReconciler{}
+
+	// Pass 1: valid spec with synthesizing upstream.
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+	r.applyAuthServerIdentitySynthesizedCondition(vmcp, statusManager)
+	require.NoError(t, r.validateAuthServerConfig(vmcp, statusManager))
+	statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+	cond := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized)
+	require.NotNil(t, cond, "synthesizing upstream should produce IdentitySynthesized condition")
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonIdentitySynthesizedActive, cond.Reason)
+	assert.Contains(t, cond.Message, "atlassian", "initial message must name the synthesizing upstream")
+
+	// Pass 2: mutate the spec to break validation. Empty Issuer triggers the
+	// first early-return in validateAuthServerConfig and removes the
+	// synthesizing upstream that the prior message names.
+	vmcp.Spec.AuthServerConfig.Issuer = ""
+	vmcp.Spec.AuthServerConfig.UpstreamProviders = nil
+	vmcp.Generation = 2
+
+	statusManager = virtualmcpserverstatus.NewStatusManager(vmcp)
+	r.applyAuthServerIdentitySynthesizedCondition(vmcp, statusManager)
+	require.Error(t, r.validateAuthServerConfig(vmcp, statusManager),
+		"empty Issuer must fail validation")
+	statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+	cond = findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized)
+	require.NotNil(t, cond, "advisory must be recomputed on the validation-failure path, not left stale")
+	assert.Equal(t, metav1.ConditionFalse, cond.Status,
+		"empty upstream list has no synthesizing providers; advisory must flip to False")
+	assert.Equal(t, mcpv1beta1.ConditionReasonIdentitySynthesizedInactive, cond.Reason)
+	assert.NotContains(t, cond.Message, "atlassian",
+		"stale message naming the now-removed upstream must not survive the broken edit")
 }

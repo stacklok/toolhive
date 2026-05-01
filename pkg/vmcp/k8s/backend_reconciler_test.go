@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
@@ -112,16 +112,16 @@ func TestReconcile_MCPServer_Success(t *testing.T) {
 
 	// Create test scheme with MCPServer CRD
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	// Create MCPServer with matching groupRef
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -169,16 +169,16 @@ func TestReconcile_GroupRefMismatch(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	// Create MCPServer with DIFFERENT groupRef
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "different-group"}, // Does NOT match reconciler's groupRef
+		Spec: mcpv1beta1.MCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "different-group"}, // Does NOT match reconciler's groupRef
 		},
 	}
 
@@ -214,7 +214,7 @@ func TestReconcile_Deleted(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	// Create fake K8s client WITHOUT the MCPServer (simulates deletion)
 	k8sClient := fake.NewClientBuilder().
@@ -249,15 +249,15 @@ func TestReconcile_AuthFailure(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -294,16 +294,16 @@ func TestReconcile_MCPRemoteProxy_Success(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	// Create MCPRemoteProxy with matching groupRef
-	mcpRemoteProxy := &mcpv1alpha1.MCPRemoteProxy{
+	mcpRemoteProxy := &mcpv1beta1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-proxy",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -344,15 +344,15 @@ func TestReconcile_ConversionError(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-	mcpServer := &mcpv1alpha1.MCPServer{
+	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -390,7 +390,7 @@ func TestSetupWithManager_RegistersWatches(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	// This test validates the structure without actually registering controllers
 	// Full integration testing of watches requires envtest and is covered by integration tests
@@ -416,17 +416,17 @@ func TestReconcile_MCPServerEntry_Success(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-	mcpServerEntry := &mcpv1alpha1.MCPServerEntry{
+	mcpServerEntry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "remote-mcp",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/mcp",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -468,17 +468,17 @@ func TestReconcile_MCPServerEntry_GroupRefMismatch(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-	mcpServerEntry := &mcpv1alpha1.MCPServerEntry{
+	mcpServerEntry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "remote-mcp",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPServerEntrySpec{
+		Spec: mcpv1beta1.MCPServerEntrySpec{
 			RemoteURL: "https://mcp.example.com/mcp",
 			Transport: "streamable-http",
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "other-group"},
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "other-group"},
 		},
 	}
 
@@ -512,7 +512,7 @@ func TestReconcile_MCPServerEntry_Deleted(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	// No MCPServerEntry created — simulates deletion
 	k8sClient := fake.NewClientBuilder().
@@ -545,26 +545,26 @@ func TestMapAuthConfigToEntries(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	tests := []struct {
 		name           string
 		authConfigName string
-		entries        []mcpv1alpha1.MCPServerEntry
+		entries        []mcpv1beta1.MCPServerEntry
 		groupRef       string
 		wantNames      []string
 	}{
 		{
 			name:           "matches entry referencing auth config",
 			authConfigName: "my-auth",
-			entries: []mcpv1alpha1.MCPServerEntry{
+			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-1", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
-						GroupRef:              &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						GroupRef:              &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 						RemoteURL:             "https://example.com",
 						Transport:             "streamable-http",
-						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{Name: "my-auth"},
+						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "my-auth"},
 					},
 				},
 			},
@@ -574,14 +574,14 @@ func TestMapAuthConfigToEntries(t *testing.T) {
 		{
 			name:           "skips entry with different group",
 			authConfigName: "my-auth",
-			entries: []mcpv1alpha1.MCPServerEntry{
+			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-1", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
-						GroupRef:              &mcpv1alpha1.MCPGroupRef{Name: "other-group"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						GroupRef:              &mcpv1beta1.MCPGroupRef{Name: "other-group"},
 						RemoteURL:             "https://example.com",
 						Transport:             "streamable-http",
-						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{Name: "my-auth"},
+						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "my-auth"},
 					},
 				},
 			},
@@ -591,14 +591,14 @@ func TestMapAuthConfigToEntries(t *testing.T) {
 		{
 			name:           "skips entry referencing different auth config",
 			authConfigName: "my-auth",
-			entries: []mcpv1alpha1.MCPServerEntry{
+			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-1", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
-						GroupRef:              &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						GroupRef:              &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 						RemoteURL:             "https://example.com",
 						Transport:             "streamable-http",
-						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{Name: "other-auth"},
+						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "other-auth"},
 					},
 				},
 			},
@@ -608,11 +608,11 @@ func TestMapAuthConfigToEntries(t *testing.T) {
 		{
 			name:           "skips entry with no auth config ref",
 			authConfigName: "my-auth",
-			entries: []mcpv1alpha1.MCPServerEntry{
+			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-1", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
-						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+					Spec: mcpv1beta1.MCPServerEntrySpec{
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 						RemoteURL: "https://example.com",
 						Transport: "streamable-http",
 					},

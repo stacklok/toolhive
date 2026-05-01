@@ -33,7 +33,8 @@
 # The ACL entry grants the toolhive-auth user access to:
 #   ~thv:auth:*  — keys with the ToolHive auth prefix
 #   &*           — all Pub/Sub channels (required for Sentinel failover notifications)
-#   +GET +SET …  — only the commands the auth server uses (principle of least privilege)
+#   +@read +@write +@keyspace +@scripting +@transaction +@connection
+#                — command categories the auth server uses (principle of least privilege)
 apiVersion: v1
 kind: Secret
 metadata:
@@ -41,7 +42,7 @@ metadata:
   namespace: redis
 type: Opaque
 stringData:
-  users.acl: "user toolhive-auth on ><your-redis-password> ~thv:auth:* &* +GET +SET +SETNX +DEL +EXISTS +EXPIRE +PEXPIRE +PTTL +MGET +SADD +SREM +SMEMBERS +EVAL +MULTI +EXEC +EVALSHA +PING"
+  users.acl: "user toolhive-auth on ><your-redis-password> ~thv:auth:* &* +@read +@write +@keyspace +@scripting +@transaction +@connection"
 ---
 # Headless Service gives Redis pods stable, individually addressable DNS names:
 #   redis-0.redis.redis.svc.cluster.local

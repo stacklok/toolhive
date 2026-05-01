@@ -19,17 +19,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
-func createTestMCPRegistry() *mcpv1alpha1.MCPRegistry {
-	return &mcpv1alpha1.MCPRegistry{
+func createTestMCPRegistry() *mcpv1beta1.MCPRegistry {
+	return &mcpv1beta1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-registry",
 			Namespace: "test-namespace",
 			UID:       types.UID("test-uid"),
 		},
-		Spec: mcpv1alpha1.MCPRegistrySpec{
+		Spec: mcpv1beta1.MCPRegistrySpec{
 			ConfigYAML: "sources:\n  - name: default\n    format: toolhive\nregistries:\n  - name: default\n    sources: [\"default\"]\n",
 		},
 	}
@@ -37,7 +37,7 @@ func createTestMCPRegistry() *mcpv1alpha1.MCPRegistry {
 
 func createTestScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = mcpv1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
 	return scheme
@@ -48,10 +48,10 @@ func TestEnsureRBACResources(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		mcpRegistry   *mcpv1alpha1.MCPRegistry
+		mcpRegistry   *mcpv1beta1.MCPRegistry
 		setupClient   func(*testing.T) client.Client
 		expectedError string
-		validate      func(*testing.T, client.Client, *mcpv1alpha1.MCPRegistry)
+		validate      func(*testing.T, client.Client, *mcpv1beta1.MCPRegistry)
 	}{
 		{
 			name:        "creates all RBAC resources when none exist",
@@ -60,7 +60,7 @@ func TestEnsureRBACResources(t *testing.T) {
 				t.Helper()
 				return fake.NewClientBuilder().WithScheme(createTestScheme()).Build()
 			},
-			validate: func(t *testing.T, c client.Client, mcpRegistry *mcpv1alpha1.MCPRegistry) {
+			validate: func(t *testing.T, c client.Client, mcpRegistry *mcpv1beta1.MCPRegistry) {
 				t.Helper()
 				ctx := context.Background()
 				resourceName := mcpRegistry.Name + "-registry-api"
@@ -107,7 +107,7 @@ func TestEnsureRBACResources(t *testing.T) {
 						&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: mcpRegistry.Namespace}, RoleRef: rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: resourceName}},
 					).Build()
 			},
-			validate: func(t *testing.T, c client.Client, mcpRegistry *mcpv1alpha1.MCPRegistry) {
+			validate: func(t *testing.T, c client.Client, mcpRegistry *mcpv1beta1.MCPRegistry) {
 				t.Helper()
 				ctx := context.Background()
 				resourceName := mcpRegistry.Name + "-registry-api"
@@ -226,4 +226,77 @@ func TestRegistryAPIRBACRules(t *testing.T) {
 	assert.ElementsMatch(t, []string{""}, registryAPIRBACRules[5].APIGroups)
 	assert.ElementsMatch(t, []string{"events"}, registryAPIRBACRules[5].Resources)
 	assert.ElementsMatch(t, []string{"create", "patch"}, registryAPIRBACRules[5].Verbs)
+}
+
+func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
+	t.Parallel()
+
+	mcpRegistry := createTestMCPRegistry()
+	mcpRegistry.Spec.ImagePullSecrets = []corev1.LocalObjectReference{
+		{Name: "registry-creds"},
+		{Name: "extra-creds"},
+	}
+
+	scheme := createTestScheme()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	m := &manager{client: c, scheme: scheme}
+
+	require.NoError(t, m.ensureRBACResources(t.Context(), mcpRegistry))
+
+	resourceName := mcpRegistry.Name + "-registry-api"
+	sa := &corev1.ServiceAccount{}
+	require.NoError(t, c.Get(t.Context(), types.NamespacedName{
+		Name:      resourceName,
+		Namespace: mcpRegistry.Namespace,
+	}, sa))
+
+	expected := []corev1.LocalObjectReference{
+		{Name: "registry-creds"},
+		{Name: "extra-creds"},
+	}
+	assert.Equal(t, expected, sa.ImagePullSecrets)
+}
+
+// TestEnsureRBACResources_EmptyImagePullSecretsPreservesSAPullSecrets verifies that an
+// explicit empty list (spec.imagePullSecrets: []) does not wipe pre-existing
+// ServiceAccount-level ImagePullSecrets such as OpenShift's auto-managed dockercfg
+// entries. Empty slice and omitted field must behave identically.
+func TestEnsureRBACResources_EmptyImagePullSecretsPreservesSAPullSecrets(t *testing.T) {
+	t.Parallel()
+
+	mcpRegistry := createTestMCPRegistry()
+	mcpRegistry.Spec.ImagePullSecrets = []corev1.LocalObjectReference{} // explicit empty
+
+	resourceName := mcpRegistry.Name + "-registry-api"
+
+	// Pre-populate a ServiceAccount with platform-managed pull secrets
+	// (simulating OpenShift's openshift-controller-manager).
+	preexistingSA := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      resourceName,
+			Namespace: mcpRegistry.Namespace,
+		},
+		ImagePullSecrets: []corev1.LocalObjectReference{
+			{Name: resourceName + "-dockercfg-platform"},
+		},
+	}
+
+	scheme := createTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(mcpRegistry, preexistingSA).
+		Build()
+	m := &manager{client: c, scheme: scheme}
+
+	require.NoError(t, m.ensureRBACResources(t.Context(), mcpRegistry))
+
+	sa := &corev1.ServiceAccount{}
+	require.NoError(t, c.Get(t.Context(), types.NamespacedName{
+		Name:      resourceName,
+		Namespace: mcpRegistry.Namespace,
+	}, sa))
+
+	// The platform-managed pull secret must still be present.
+	require.Len(t, sa.ImagePullSecrets, 1, "platform-managed pull secret should be preserved")
+	assert.Equal(t, resourceName+"-dockercfg-platform", sa.ImagePullSecrets[0].Name)
 }

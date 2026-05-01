@@ -52,13 +52,12 @@ func TestNewResourceTokenSource(t *testing.T) {
 		ts := NewResourceTokenSource(config, validToken, "https://api.example.com")
 		require.NotNil(t, ts)
 
-		// Should be our custom type
 		rts, ok := ts.(*resourceTokenSource)
 		require.True(t, ok, "expected resourceTokenSource type")
-		assert.Equal(t, "https://api.example.com", rts.resource)
-		assert.Equal(t, config, rts.config)
-		assert.NotNil(t, rts.httpClient)
-		assert.Equal(t, 30*time.Second, rts.httpClient.Timeout)
+		assert.Equal(t, "https://api.example.com", rts.ncr.resource)
+		assert.Equal(t, config, rts.ncr.cfg)
+		assert.NotNil(t, rts.ncr.httpClient)
+		assert.Equal(t, 30*time.Second, rts.ncr.httpClient.Timeout)
 	})
 
 	t.Run("stores token reference", func(t *testing.T) {
@@ -300,7 +299,7 @@ func TestResourceTokenSource_RefreshErrors(t *testing.T) {
 		ts := NewResourceTokenSource(config, expiredToken, "https://api.example.com")
 		_, err := ts.Token()
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "token refresh with resource parameter failed")
+		assert.Contains(t, err.Error(), "token refresh failed")
 	})
 
 	t.Run("returns error on invalid JSON response", func(t *testing.T) {
@@ -328,7 +327,7 @@ func TestResourceTokenSource_RefreshErrors(t *testing.T) {
 		ts := NewResourceTokenSource(config, expiredToken, "https://api.example.com")
 		_, err := ts.Token()
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "token refresh with resource parameter failed")
+		assert.Contains(t, err.Error(), "token refresh failed")
 	})
 
 	t.Run("returns error when token endpoint is unreachable", func(t *testing.T) {
@@ -350,7 +349,7 @@ func TestResourceTokenSource_RefreshErrors(t *testing.T) {
 		ts := NewResourceTokenSource(config, expiredToken, "https://api.example.com")
 		_, err := ts.Token()
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "token refresh with resource parameter failed")
+		assert.Contains(t, err.Error(), "token refresh failed")
 	})
 
 	t.Run("returns error on non-200 status codes", func(t *testing.T) {
@@ -391,7 +390,7 @@ func TestResourceTokenSource_RefreshErrors(t *testing.T) {
 				ts := NewResourceTokenSource(config, expiredToken, "https://api.example.com")
 				_, err := ts.Token()
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "token refresh with resource parameter failed")
+				assert.Contains(t, err.Error(), "token refresh failed")
 			})
 		}
 	})
@@ -434,15 +433,15 @@ func TestResourceTokenSource_HTTPClientReuse(t *testing.T) {
 		rts := ts.(*resourceTokenSource)
 
 		// Verify HTTP client is created
-		require.NotNil(t, rts.httpClient)
-		client1 := rts.httpClient
+		require.NotNil(t, rts.ncr.httpClient)
+		client1 := rts.ncr.httpClient
 
 		// First refresh
 		_, err := ts.Token()
 		require.NoError(t, err)
 
 		// Verify same client instance
-		assert.Same(t, client1, rts.httpClient, "HTTP client should be reused")
+		assert.Same(t, client1, rts.ncr.httpClient, "HTTP client should be reused")
 		assert.Equal(t, 1, callCount)
 	})
 
@@ -465,7 +464,7 @@ func TestResourceTokenSource_HTTPClientReuse(t *testing.T) {
 		ts := NewResourceTokenSource(config, token, "https://api.example.com")
 		rts := ts.(*resourceTokenSource)
 
-		assert.Equal(t, 30*time.Second, rts.httpClient.Timeout)
+		assert.Equal(t, 30*time.Second, rts.ncr.httpClient.Timeout)
 	})
 }
 

@@ -15,6 +15,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -71,8 +72,8 @@ type Config struct {
 	Scopes []string `json:"scopes,omitempty"`
 
 	// SubjectTokenType specifies the type of the subject token being exchanged.
-	// Common values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.
-	// If empty, defaults to tokenTypeAccessToken.
+	// Common values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.
+	// If empty, defaults to oauthproto.TokenTypeAccessToken.
 	SubjectTokenType string `json:"subject_token_type,omitempty"`
 
 	// HeaderStrategy determines how to inject the token
@@ -194,8 +195,8 @@ func CreateMiddlewareFromHeader(config Config) (types.MiddlewareFunction, error)
 // This is the recommended approach for external authentication flows (OAuth/OIDC).
 //
 // The middleware will automatically select the appropriate token based on config.SubjectTokenType:
-//   - tokenTypeAccessToken: Uses token.AccessToken
-//   - tokenTypeIDToken or tokenTypeJWT: Uses token.Extra("id_token")
+//   - oauthproto.TokenTypeAccessToken: Uses token.AccessToken
+//   - oauthproto.TokenTypeIDToken or oauthproto.TokenTypeJWT: Uses token.Extra("id_token")
 //
 // This moves the token selection logic into the middleware where it belongs,
 // keeping the command layer focused on configuration.
@@ -209,11 +210,11 @@ func CreateMiddlewareFromTokenSource(
 
 	// Validate SubjectTokenType early to catch configuration errors at startup
 	if config.SubjectTokenType != "" &&
-		config.SubjectTokenType != tokenTypeAccessToken &&
-		config.SubjectTokenType != tokenTypeIDToken &&
-		config.SubjectTokenType != tokenTypeJWT {
+		config.SubjectTokenType != oauthproto.TokenTypeAccessToken &&
+		config.SubjectTokenType != oauthproto.TokenTypeIDToken &&
+		config.SubjectTokenType != oauthproto.TokenTypeJWT {
 		return nil, fmt.Errorf("invalid SubjectTokenType: %s (must be one of: %s, %s, %s)",
-			config.SubjectTokenType, tokenTypeAccessToken, tokenTypeIDToken, tokenTypeJWT)
+			config.SubjectTokenType, oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT)
 	}
 
 	// Create a SubjectTokenProvider that handles token selection based on config
@@ -225,7 +226,7 @@ func CreateMiddlewareFromTokenSource(
 
 		// Select appropriate token based on configured type
 		switch config.SubjectTokenType {
-		case tokenTypeIDToken:
+		case oauthproto.TokenTypeIDToken:
 			// Extract ID token from Extra field (standard OIDC approach)
 			idToken, ok := token.Extra("id_token").(string)
 			if !ok || idToken == "" {
@@ -234,7 +235,7 @@ func CreateMiddlewareFromTokenSource(
 			}
 			return idToken, nil
 
-		case "", tokenTypeAccessToken:
+		case "", oauthproto.TokenTypeAccessToken:
 			// Use access token (default)
 			if token.AccessToken == "" {
 				slog.Error("Access token not available")

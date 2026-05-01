@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/migration"
@@ -52,9 +54,15 @@ import (
 
 // ServeConfig holds all parameters needed to start the vMCP server.
 // Populated by the caller from Cobra flag values or equivalent.
+// At least one of ConfigPath or GroupRef must be non-empty; ConfigPath takes
+// precedence when both are provided.
 type ServeConfig struct {
 	// ConfigPath is the path to the vMCP YAML configuration file.
+	// When set, takes precedence over GroupRef.
 	ConfigPath string
+	// GroupRef is a ToolHive group name used for zero-config quick mode when
+	// ConfigPath is empty. A minimal in-memory config is generated from this value.
+	GroupRef string
 	// Host is the address the server binds to (e.g. "127.0.0.1").
 	Host string
 	// Port is the TCP port the server listens on.
@@ -62,6 +70,41 @@ type ServeConfig struct {
 	// EnableAudit enables audit logging with default configuration when
 	// the loaded config does not already define an audit section.
 	EnableAudit bool
+
+	// Optimizer tier selection (Phase 4 — flag-driven).
+	// EnableOptimizer enables Tier 1 FTS5 keyword search (find_tool / call_tool).
+	EnableOptimizer bool
+	// EnableEmbedding enables Tier 2 TEI semantic search; implies EnableOptimizer.
+	EnableEmbedding bool
+	// EmbeddingModel is the HuggingFace model name for the managed TEI container.
+	// Defaults to "BAAI/bge-small-en-v1.5" when empty.
+	EmbeddingModel string
+	// EmbeddingImage is the TEI container image.
+	// Defaults to the CPU TEI image when empty.
+	EmbeddingImage string
+}
+
+// validateQuickModeHost returns an error when the config represents quick mode
+// (GroupRef set, ConfigPath empty) and Host is not a loopback address. Quick
+// mode always uses anonymous auth, so binding to a non-loopback interface would
+// expose an unauthenticated server on the network. Empty host is treated as the
+// default loopback address; "localhost" is accepted as a known loopback name.
+func (c ServeConfig) validateQuickModeHost() error {
+	if c.ConfigPath != "" || c.GroupRef == "" {
+		return nil
+	}
+	h := c.Host
+	if h == "" {
+		h = "127.0.0.1"
+	}
+	if h == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(h)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("quick mode (--group) only supports loopback bind addresses (e.g. 127.0.0.1); got %q", c.Host)
+	}
+	return nil
 }
 
 // Serve loads configuration, initializes all subsystems, and starts the vMCP
@@ -69,12 +112,21 @@ type ServeConfig struct {
 //
 //nolint:gocyclo // Complexity from server initialization sequence is acceptable here.
 func Serve(ctx context.Context, cfg ServeConfig) error {
-	if cfg.ConfigPath == "" {
-		return fmt.Errorf("no configuration file specified, use --config flag")
+	if err := cfg.validateQuickModeHost(); err != nil {
+		return err
 	}
 
-	// Load and validate configuration
-	vmcpCfg, err := loadAndValidateConfig(cfg.ConfigPath)
+	// Load and validate configuration — file path takes precedence over group quick mode.
+	vmcpCfg, err := func() (*config.Config, error) {
+		switch {
+		case cfg.ConfigPath != "":
+			return loadAndValidateConfig(cfg.ConfigPath)
+		case cfg.GroupRef != "":
+			return generateQuickModeConfig(cfg.GroupRef)
+		default:
+			return nil, fmt.Errorf("either --config or --group must be specified")
+		}
+	}()
 	if err != nil {
 		return err
 	}
@@ -87,9 +139,13 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 
 	// Load auth server config from sibling file if present.
-	authServerRC, err := loadAuthServerConfig(cfg.ConfigPath)
-	if err != nil {
-		return err
+	// Skip in quick mode (no config file) — there is no sibling directory to search.
+	var authServerRC *authserverconfig.RunConfig
+	if cfg.ConfigPath != "" {
+		authServerRC, err = loadAuthServerConfig(cfg.ConfigPath)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Auto-populate SubjectProviderName on any token_exchange strategy that
@@ -239,6 +295,36 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return fmt.Errorf("failed to create status reporter: %w", err)
 	}
 
+	// Optimizer wiring — Phase 4: flag-driven Tier 1 (FTS5) and Tier 2 (TEI).
+	// Build the embedding manager only when Tier 2 is requested, to avoid
+	// unnecessary Docker / Kubernetes API calls for Tier 0 and Tier 1.
+	var embMgr embeddingManager
+	if cfg.EnableEmbedding {
+		model := cfg.EmbeddingModel
+		if model == "" {
+			model = DefaultEmbeddingModel
+		}
+		image := cfg.EmbeddingImage
+		if image == "" {
+			image = DefaultEmbeddingImage
+		}
+		m, err := NewEmbeddingServiceManager(container.NewFactory(), EmbeddingServiceManagerConfig{
+			Model: model,
+			Image: image,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create embedding service manager: %w", err)
+		}
+		embMgr = m
+	}
+	teiCleanup, err := injectOptimizerConfig(ctx, cfg, vmcpCfg, embMgr)
+	if err != nil {
+		return err
+	}
+	if teiCleanup != nil {
+		defer teiCleanup()
+	}
+
 	optCfg, err := optimizer.GetAndValidateConfig(vmcpCfg.Optimizer)
 	if err != nil {
 		return fmt.Errorf("failed to validate optimizer config: %w", err)
@@ -331,6 +417,42 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	return srv.Start(ctx)
 }
 
+// embeddingManager is the minimal interface over *EmbeddingServiceManager needed
+// by the Serve lifecycle. Defined here to allow stub injection in unit tests;
+// production code passes a *EmbeddingServiceManager.
+type embeddingManager interface {
+	Start(ctx context.Context) (string, error)
+	Stop(ctx context.Context) error
+}
+
+// injectOptimizerConfig ensures vmcpCfg.Optimizer is non-nil when flag-driven
+// optimizer tiers are active, and starts the TEI container when EnableEmbedding
+// is true. Returns a non-nil cleanup func only when a TEI container was started;
+// the caller must defer it. mgr must be non-nil when cfg.EnableEmbedding is true.
+func injectOptimizerConfig(ctx context.Context, cfg ServeConfig, vmcpCfg *config.Config, mgr embeddingManager) (func(), error) {
+	if !cfg.EnableOptimizer && !cfg.EnableEmbedding {
+		return nil, nil
+	}
+	if vmcpCfg.Optimizer == nil {
+		vmcpCfg.Optimizer = &config.OptimizerConfig{}
+	}
+	if !cfg.EnableEmbedding {
+		return nil, nil
+	}
+	if mgr == nil {
+		return nil, fmt.Errorf("embedding manager must not be nil when EnableEmbedding is true")
+	}
+	teiURL, err := mgr.Start(ctx)
+	if err != nil {
+		// Best-effort cleanup: a Start failure can still leave a partial
+		// container behind (created but health poll timed out, etc.).
+		_ = mgr.Stop(context.Background())
+		return nil, fmt.Errorf("failed to start TEI embedding service: %w", err)
+	}
+	vmcpCfg.Optimizer.EmbeddingService = teiURL
+	return func() { _ = mgr.Stop(context.Background()) }, nil
+}
+
 // getStatusReportingInterval extracts the status reporting interval from config.
 // Returns 0 if not configured, which uses the default interval.
 func getStatusReportingInterval(cfg *config.Config) time.Duration {
@@ -368,6 +490,37 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 		slog.Info(fmt.Sprintf("  Composite Tools: %d defined", len(cfg.CompositeTools)))
 	}
 
+	return cfg, nil
+}
+
+// generateQuickModeConfig constructs a minimal in-memory config for zero-config
+// quick mode (thv vmcp serve --group <name>). It sets groupRef from groupRef,
+// incomingAuth to anonymous, and outgoingAuth.source to "inline" so no
+// Kubernetes API access is required. The generated config is validated before
+// being returned; returns an error if groupRef is empty or validation fails.
+func generateQuickModeConfig(groupRef string) (*config.Config, error) {
+	if groupRef == "" {
+		return nil, fmt.Errorf("--group must not be empty")
+	}
+	cfg := &config.Config{
+		Name:  groupRef,
+		Group: groupRef,
+		IncomingAuth: &config.IncomingAuthConfig{
+			Type: config.IncomingAuthTypeAnonymous,
+		},
+		OutgoingAuth: &config.OutgoingAuthConfig{
+			Source: "inline",
+		},
+		Aggregation: &config.AggregationConfig{
+			ConflictResolution: vmcp.ConflictStrategyPrefix,
+			ConflictResolutionConfig: &config.ConflictResolutionConfig{
+				PrefixFormat: "{workload}_",
+			},
+		},
+	}
+	if err := config.NewValidator().Validate(cfg); err != nil {
+		return nil, fmt.Errorf("quick-mode config validation failed: %w", err)
+	}
 	return cfg, nil
 }
 

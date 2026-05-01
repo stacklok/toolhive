@@ -22,8 +22,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 )
 
 var (
@@ -82,7 +83,7 @@ var _ = BeforeSuite(func() {
 	Expect(cfg).NotTo(BeNil())
 
 	// Add MCPRegistry scheme
-	err = mcpv1alpha1.AddToScheme(scheme.Scheme)
+	err = mcpv1beta1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// Create controller-runtime client
@@ -93,7 +94,7 @@ var _ = BeforeSuite(func() {
 	// Verify MCPRegistry CRD is available
 	By("verifying MCPRegistry CRD is available")
 	Eventually(func() error {
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{}
+		mcpRegistry := &mcpv1beta1.MCPRegistry{}
 		return k8sClient.Get(ctx, client.ObjectKey{
 			Namespace: "default",
 			Name:      "test-availability-check",
@@ -114,7 +115,9 @@ var _ = BeforeSuite(func() {
 
 		// Set up MCPRegistry controller
 		By("setting up MCPRegistry controller")
-		err = controllers.NewMCPRegistryReconciler(testMgr.GetClient(), testMgr.GetScheme()).SetupWithManager(testMgr)
+		err = controllers.NewMCPRegistryReconciler(
+			testMgr.GetClient(), testMgr.GetScheme(), imagepullsecrets.Defaults{},
+		).SetupWithManager(testMgr)
 		Expect(err).NotTo(HaveOccurred())
 
 		// Start the manager in the background

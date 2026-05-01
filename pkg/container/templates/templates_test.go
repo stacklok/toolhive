@@ -405,7 +405,7 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			name:          "NPX runtime stage installs extra packages",
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "node:22-alpine",
+				BuilderImage:       "node:24-alpine",
 				AdditionalPackages: []string{"git", "ca-certificates", "curl"},
 			},
 			wantInRuntime: "curl",
@@ -414,7 +414,7 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			name:          "UVX runtime stage installs extra packages",
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "python:3.13-slim",
+				BuilderImage:       "python:3.14-slim",
 				AdditionalPackages: []string{"ca-certificates", "git", "curl"},
 			},
 			wantInRuntime: "curl",
@@ -423,7 +423,7 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			name:          "GO runtime stage installs extra packages",
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "golang:1.25-alpine",
+				BuilderImage:       "golang:1.26-alpine",
 				AdditionalPackages: []string{"ca-certificates", "git", "curl"},
 			},
 			wantInRuntime: "curl",
@@ -471,7 +471,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "NPX with empty packages",
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "node:22-alpine",
+				BuilderImage:       "node:24-alpine",
 				AdditionalPackages: []string{},
 			},
 		},
@@ -479,7 +479,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "GO with empty packages",
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "golang:1.25-alpine",
+				BuilderImage:       "golang:1.26-alpine",
 				AdditionalPackages: []string{},
 			},
 		},
@@ -487,7 +487,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "UVX with empty packages",
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "python:3.13-slim",
+				BuilderImage:       "python:3.14-slim",
 				AdditionalPackages: []string{},
 			},
 		},
@@ -495,7 +495,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "NPX with nil packages",
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "node:22-alpine",
+				BuilderImage:       "node:24-alpine",
 				AdditionalPackages: nil,
 			},
 		},
@@ -503,7 +503,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "GO with nil packages",
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "golang:1.25-alpine",
+				BuilderImage:       "golang:1.26-alpine",
 				AdditionalPackages: nil,
 			},
 		},
@@ -511,7 +511,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "UVX with nil packages",
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "python:3.13-slim",
+				BuilderImage:       "python:3.14-slim",
 				AdditionalPackages: nil,
 			},
 		},

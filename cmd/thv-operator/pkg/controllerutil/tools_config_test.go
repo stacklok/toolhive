@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 func TestGetToolConfigForMCPServer(t *testing.T) {
@@ -25,19 +25,19 @@ func TestGetToolConfigForMCPServer(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		mcpServer      *mcpv1alpha1.MCPServer
-		existingConfig *mcpv1alpha1.MCPToolConfig
+		mcpServer      *mcpv1beta1.MCPServer
+		existingConfig *mcpv1beta1.MCPToolConfig
 		expectConfig   bool
 		expectError    bool
 	}{
 		{
 			name: "mcpserver without toolconfig ref",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
 				},
 			},
@@ -46,24 +46,24 @@ func TestGetToolConfigForMCPServer(t *testing.T) {
 		},
 		{
 			name: "mcpserver with existing toolconfig",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 						Name: "test-config",
 					},
 				},
 			},
-			existingConfig: &mcpv1alpha1.MCPToolConfig{
+			existingConfig: &mcpv1beta1.MCPToolConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPToolConfigSpec{
+				Spec: mcpv1beta1.MCPToolConfigSpec{
 					ToolsFilter: []string{"tool1"},
 				},
 			},
@@ -72,14 +72,14 @@ func TestGetToolConfigForMCPServer(t *testing.T) {
 		},
 		{
 			name: "mcpserver with non-existent toolconfig",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "test-image",
-					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 						Name: "non-existent",
 					},
 				},
@@ -96,7 +96,7 @@ func TestGetToolConfigForMCPServer(t *testing.T) {
 			ctx := t.Context()
 
 			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 			objs := []client.Object{}
 			if tt.existingConfig != nil {
@@ -151,16 +151,16 @@ func TestGetToolConfigForMCPServer_ErrorScenarios(t *testing.T) {
 		ctx := t.Context()
 
 		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-		mcpServer := &mcpv1alpha1.MCPServer{
+		mcpServer := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-server",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPServerSpec{
+			Spec: mcpv1beta1.MCPServerSpec{
 				Image: "test-image",
-				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 					Name: "missing-config",
 				},
 			},
@@ -183,16 +183,16 @@ func TestGetToolConfigForMCPServer_ErrorScenarios(t *testing.T) {
 		ctx := t.Context()
 
 		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-		mcpServer := &mcpv1alpha1.MCPServer{
+		mcpServer := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-server",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPServerSpec{
+			Spec: mcpv1beta1.MCPServerSpec{
 				Image: "test-image",
-				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
 					Name: "test-config",
 				},
 			},

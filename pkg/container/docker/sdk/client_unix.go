@@ -166,17 +166,22 @@ func findPodmanSocket() (string, error) {
 	return "", fmt.Errorf("podman socket not found in standard locations")
 }
 
+// systemDockerSocketPath is the system-wide Docker socket path probed by
+// findDockerSocket. It defaults to DockerSocketPath and is package-private so
+// tests can redirect the system check to a sandbox path.
+var systemDockerSocketPath = DockerSocketPath
+
 // findDockerSocket attempts to locate a Docker socket
 func findDockerSocket() (string, error) {
 	// Try Docker socket as fallback
-	_, err := os.Stat(DockerSocketPath)
+	_, err := os.Stat(systemDockerSocketPath)
 
 	if err == nil {
-		slog.Debug("found Docker socket", "path", DockerSocketPath)
-		return DockerSocketPath, nil
+		slog.Debug("found Docker socket", "path", systemDockerSocketPath)
+		return systemDockerSocketPath, nil
 	}
 
-	slog.Debug("failed to check Docker socket", "path", DockerSocketPath, "error", err)
+	slog.Debug("failed to check Docker socket", "path", systemDockerSocketPath, "error", err)
 
 	// Try Docker Desktop socket path on macOS
 	if home := os.Getenv("HOME"); home != "" {
@@ -191,6 +196,21 @@ func findDockerSocket() (string, error) {
 
 		//nolint:gosec // G706: socket path derived from HOME env var
 		slog.Debug("failed to check Docker Desktop socket", "path", dockerDesktopPath, "error", err)
+	}
+
+	// Try Docker Desktop socket path on Linux
+	if home := os.Getenv("HOME"); home != "" {
+		dockerDesktopLinuxPath := filepath.Join(home, DockerDesktopLinuxSocketPath)
+		_, err := os.Stat(dockerDesktopLinuxPath) // #nosec G703 -- path is built from HOME + constant socket path
+
+		if err == nil {
+			//nolint:gosec // G706: socket path derived from HOME env var
+			slog.Debug("found Docker Desktop socket", "path", dockerDesktopLinuxPath)
+			return dockerDesktopLinuxPath, nil
+		}
+
+		//nolint:gosec // G706: socket path derived from HOME env var
+		slog.Debug("failed to check Docker Desktop socket", "path", dockerDesktopLinuxPath, "error", err)
 	}
 
 	// Try Rancher Desktop socket path on macOS

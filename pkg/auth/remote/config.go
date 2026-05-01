@@ -71,6 +71,13 @@ type Config struct {
 	// RegistrationAccessToken is used to update/delete the client registration.
 	// Stored as a secret reference since it's sensitive.
 	CachedRegTokenRef string `json:"cached_reg_token_ref,omitempty" yaml:"cached_reg_token_ref,omitempty"`
+
+	// CachedCIMDClientID stores the CIMD metadata URL used as client_id when CIMD
+	// authentication was used. Kept separate from CachedClientID (which holds
+	// DCR-issued IDs) so the two can have independent lifecycles — DCR credential
+	// rotation clears CachedClientID without touching the stable CIMD URL.
+	// Read by resolveClientCredentials to send the correct client_id on token refresh.
+	CachedCIMDClientID string `json:"cached_cimd_client_id,omitempty" yaml:"cached_cimd_client_id,omitempty"`
 }
 
 // BearerTokenEnvVarName is the environment variable name used for bearer token authentication.
@@ -164,7 +171,14 @@ func (c *Config) HasCachedClientCredentials() bool {
 	return c.CachedClientID != ""
 }
 
+// HasCachedCIMDClientID returns true if a CIMD client_id was cached from a prior session.
+func (c *Config) HasCachedCIMDClientID() bool {
+	return c.CachedCIMDClientID != ""
+}
+
 // ClearCachedClientCredentials removes any cached DCR client credential references from the config.
+// It does not clear CachedCIMDClientID — the CIMD URL is a stable constant that does not
+// need to be rotated alongside DCR secrets.
 func (c *Config) ClearCachedClientCredentials() {
 	c.CachedClientID = ""
 	c.CachedClientSecretRef = ""

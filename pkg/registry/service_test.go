@@ -36,13 +36,10 @@ func TestConfigurator_SetRegistryFromInput(t *testing.T) {
 				t.Helper()
 				tmpFile := filepath.Join(t.TempDir(), "test-registry.json")
 				content := []byte(`{
+					"$schema": "https://example.com/schema.json",
 					"version": "0.1",
-					"servers": {
-						"test": {
-							"command": ["test"],
-							"args": []
-						}
-					}
+					"meta": {"last_updated": "2025-01-01T00:00:00Z"},
+					"data": {"servers": [{"name": "io.example.test"}]}
 				}`)
 				require.NoError(t, os.WriteFile(tmpFile, content, 0600))
 				return tmpFile
@@ -115,13 +112,10 @@ func TestConfigurator_UnsetRegistry(t *testing.T) {
 
 	// Create a valid registry file
 	content := []byte(`{
+		"$schema": "https://example.com/schema.json",
 		"version": "0.1",
-		"servers": {
-			"test": {
-				"command": ["test"],
-				"args": []
-			}
-		}
+		"meta": {"last_updated": "2025-01-01T00:00:00Z"},
+		"data": {"servers": [{"name": "io.example.test"}]}
 	}`)
 	require.NoError(t, os.WriteFile(tmpFile, content, 0600))
 
@@ -168,13 +162,10 @@ func TestConfigurator_GetRegistryInfo(t *testing.T) {
 				t.Helper()
 				tmpFile := filepath.Join(t.TempDir(), "test-registry.json")
 				content := []byte(`{
+					"$schema": "https://example.com/schema.json",
 					"version": "0.1",
-					"servers": {
-						"test": {
-							"command": ["test"],
-							"args": []
-						}
-					}
+					"meta": {"last_updated": "2025-01-01T00:00:00Z"},
+					"data": {"servers": [{"name": "io.example.test"}]}
 				}`)
 				require.NoError(t, os.WriteFile(tmpFile, content, 0600))
 				_, err := service.SetRegistryFromInput(tmpFile, false)

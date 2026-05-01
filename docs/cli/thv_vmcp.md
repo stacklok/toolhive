@@ -34,6 +34,7 @@ servers from a ToolHive group into a single unified endpoint.
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
+* [thv vmcp init](thv_vmcp_init.md)	 - Generate a starter vMCP configuration file
 * [thv vmcp serve](thv_vmcp_serve.md)	 - Start the Virtual MCP Server
 * [thv vmcp validate](thv_vmcp_validate.md)	 - Validate a vMCP configuration file
 

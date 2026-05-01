@@ -12,7 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 const (
@@ -22,13 +22,13 @@ const (
 
 // newTestMCPRemoteProxy creates an MCPRemoteProxy with an optional OIDCConfigRef pointing
 // to a shared MCPOIDCConfig (when oidcConfigRefName is non-empty).
-func newTestMCPRemoteProxy(name, namespace string, oidcConfigRefName string) *mcpv1alpha1.MCPRemoteProxy {
-	proxy := &mcpv1alpha1.MCPRemoteProxy{
+func newTestMCPRemoteProxy(name, namespace string, oidcConfigRefName string) *mcpv1beta1.MCPRemoteProxy {
+	proxy := &mcpv1beta1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
 			RemoteURL: testRemoteURL,
 			ProxyPort: 8080,
 			Transport: "streamable-http",
@@ -36,7 +36,7 @@ func newTestMCPRemoteProxy(name, namespace string, oidcConfigRefName string) *mc
 	}
 
 	if oidcConfigRefName != "" {
-		proxy.Spec.OIDCConfigRef = &mcpv1alpha1.MCPOIDCConfigReference{
+		proxy.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{
 			Name:     oidcConfigRefName,
 			Audience: "test-proxy-audience",
 			Scopes:   []string{"openid"},
@@ -52,8 +52,8 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			namespace  string
 			configName string
 			proxyName  string
-			oidcConfig *mcpv1alpha1.MCPOIDCConfig
-			proxy      *mcpv1alpha1.MCPRemoteProxy
+			oidcConfig *mcpv1beta1.MCPOIDCConfig
+			proxy      *mcpv1beta1.MCPRemoteProxy
 			ns         *corev1.Namespace
 		)
 
@@ -70,14 +70,14 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			proxyName = testRemoteProxyName
 
 			// Create MCPOIDCConfig
-			oidcConfig = &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig = &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      configName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:   "https://accounts.google.com",
 						ClientID: "test-client",
 					},
@@ -87,7 +87,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Wait for Ready condition and ConfigHash to be set
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -99,7 +99,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 					return false
 				}
 				for _, cond := range updated.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
+					if cond.Type == mcpv1beta1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
 						return true
 					}
 				}
@@ -119,7 +119,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 		It("should set OIDCConfigRefValidated condition to True", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPRemoteProxy{}
+				updated := &mcpv1beta1.MCPRemoteProxy{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      proxyName,
 					Namespace: namespace,
@@ -127,18 +127,18 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
+				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1beta1.ConditionOIDCConfigRefValidated)
 				if condition == nil {
 					return false
 				}
 				return condition.Status == metav1.ConditionTrue &&
-					condition.Reason == mcpv1alpha1.ConditionReasonOIDCConfigRefValid
+					condition.Reason == mcpv1beta1.ConditionReasonOIDCConfigRefValid
 			}, timeout, interval).Should(BeTrue())
 		})
 
 		It("should set OIDCConfigHash in MCPRemoteProxy status", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPRemoteProxy{}
+				updated := &mcpv1beta1.MCPRemoteProxy{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      proxyName,
 					Namespace: namespace,
@@ -152,7 +152,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 		It("should track MCPRemoteProxy in MCPOIDCConfig ReferencingWorkloads", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -160,7 +160,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxyName}
+				expectedRef := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyName}
 				for _, ref := range updated.Status.ReferencingWorkloads {
 					if ref == expectedRef {
 						return true
@@ -175,7 +175,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 		var (
 			namespace string
 			proxyName string
-			proxy     *mcpv1alpha1.MCPRemoteProxy
+			proxy     *mcpv1beta1.MCPRemoteProxy
 			ns        *corev1.Namespace
 		)
 
@@ -202,7 +202,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 		It("should enter Failed phase", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPRemoteProxy{}
+				updated := &mcpv1beta1.MCPRemoteProxy{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      proxyName,
 					Namespace: namespace,
@@ -210,13 +210,13 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				return updated.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhaseFailed
+				return updated.Status.Phase == mcpv1beta1.MCPRemoteProxyPhaseFailed
 			}, timeout, interval).Should(BeTrue())
 		})
 
 		It("should set OIDCConfigRefValidated condition to False with NotFound reason", func() {
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPRemoteProxy{}
+				updated := &mcpv1beta1.MCPRemoteProxy{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      proxyName,
 					Namespace: namespace,
@@ -224,12 +224,12 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
+				condition := meta.FindStatusCondition(updated.Status.Conditions, mcpv1beta1.ConditionOIDCConfigRefValidated)
 				if condition == nil {
 					return false
 				}
 				return condition.Status == metav1.ConditionFalse &&
-					condition.Reason == mcpv1alpha1.ConditionReasonOIDCConfigRefNotFound
+					condition.Reason == mcpv1beta1.ConditionReasonOIDCConfigRefNotFound
 			}, timeout, interval).Should(BeTrue())
 		})
 	})
@@ -239,8 +239,8 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			namespace       string
 			configName      string
 			proxyName       string
-			oidcConfig      *mcpv1alpha1.MCPOIDCConfig
-			proxy           *mcpv1alpha1.MCPRemoteProxy
+			oidcConfig      *mcpv1beta1.MCPOIDCConfig
+			proxy           *mcpv1beta1.MCPRemoteProxy
 			ns              *corev1.Namespace
 			originalHash    string
 			originalCfgHash string
@@ -259,14 +259,14 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			proxyName = testRemoteProxyName
 
 			// Create MCPOIDCConfig
-			oidcConfig = &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig = &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      configName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:   "https://accounts.google.com",
 						ClientID: "test-client",
 					},
@@ -276,7 +276,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Wait for Ready condition and ConfigHash to be set
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -289,7 +289,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				}
 				originalCfgHash = updated.Status.ConfigHash
 				for _, cond := range updated.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
+					if cond.Type == mcpv1beta1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
 						return true
 					}
 				}
@@ -302,7 +302,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Wait for the proxy to pick up the original hash
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPRemoteProxy{}
+				updated := &mcpv1beta1.MCPRemoteProxy{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      proxyName,
 					Namespace: namespace,
@@ -326,7 +326,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 		It("should update MCPRemoteProxy OIDCConfigHash when MCPOIDCConfig spec changes", func() {
 			// Update the MCPOIDCConfig spec to trigger a hash change
-			updated := &mcpv1alpha1.MCPOIDCConfig{}
+			updated := &mcpv1beta1.MCPOIDCConfig{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      configName,
 				Namespace: namespace,
@@ -337,7 +337,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Wait for MCPOIDCConfig ConfigHash to change
 			Eventually(func() bool {
-				cfg := &mcpv1alpha1.MCPOIDCConfig{}
+				cfg := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -350,7 +350,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Eventually the MCPRemoteProxy should pick up the new hash
 			Eventually(func() bool {
-				proxyUpdated := &mcpv1alpha1.MCPRemoteProxy{}
+				proxyUpdated := &mcpv1beta1.MCPRemoteProxy{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      proxyName,
 					Namespace: namespace,
@@ -369,8 +369,8 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			namespace  string
 			configName string
 			proxyName  string
-			oidcConfig *mcpv1alpha1.MCPOIDCConfig
-			proxy      *mcpv1alpha1.MCPRemoteProxy
+			oidcConfig *mcpv1beta1.MCPOIDCConfig
+			proxy      *mcpv1beta1.MCPRemoteProxy
 			ns         *corev1.Namespace
 		)
 
@@ -387,14 +387,14 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			proxyName = testRemoteProxyName
 
 			// Create MCPOIDCConfig
-			oidcConfig = &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig = &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      configName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:   "https://accounts.google.com",
 						ClientID: "test-client",
 					},
@@ -404,7 +404,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Wait for ready
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -421,7 +421,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Wait for ReferencingWorkloads to be populated
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -429,7 +429,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxyName}
+				expectedRef := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyName}
 				for _, ref := range updated.Status.ReferencingWorkloads {
 					if ref == expectedRef {
 						return true
@@ -449,7 +449,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Wait for MCPOIDCConfig to be fully removed
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -463,7 +463,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 		It("should not be deleted while referenced by MCPRemoteProxy", func() {
 			// The object should still exist because the finalizer blocks deletion
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -481,7 +481,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// The MCPOIDCConfig should eventually be fully deleted
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -496,8 +496,8 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			namespace  string
 			configName string
 			proxyName  string
-			oidcConfig *mcpv1alpha1.MCPOIDCConfig
-			proxy      *mcpv1alpha1.MCPRemoteProxy
+			oidcConfig *mcpv1beta1.MCPOIDCConfig
+			proxy      *mcpv1beta1.MCPRemoteProxy
 			ns         *corev1.Namespace
 		)
 
@@ -514,14 +514,14 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			proxyName = testRemoteProxyName
 
 			// Create MCPOIDCConfig
-			oidcConfig = &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig = &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      configName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:   "https://accounts.google.com",
 						ClientID: "test-client",
 					},
@@ -531,7 +531,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Wait for ready
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -543,7 +543,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 					return false
 				}
 				for _, cond := range updated.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
+					if cond.Type == mcpv1beta1.ConditionTypeOIDCConfigValid && cond.Status == metav1.ConditionTrue {
 						return true
 					}
 				}
@@ -556,7 +556,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Wait for ReferencingWorkloads to contain the proxy
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -564,7 +564,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxyName}
+				expectedRef := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyName}
 				for _, ref := range updated.Status.ReferencingWorkloads {
 					if ref == expectedRef {
 						return true
@@ -575,7 +575,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Wait for the proxy OIDCConfigHash to be populated
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPRemoteProxy{}
+				updated := &mcpv1beta1.MCPRemoteProxy{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      proxyName,
 					Namespace: namespace,
@@ -595,7 +595,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 		It("should clean up ReferencingWorkloads and clear OIDCConfigHash after ref removal", func() {
 			// Remove the OIDCConfigRef from the MCPRemoteProxy
-			updated := &mcpv1alpha1.MCPRemoteProxy{}
+			updated := &mcpv1beta1.MCPRemoteProxy{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      proxyName,
 				Namespace: namespace,
@@ -607,7 +607,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// MCPOIDCConfig should no longer list MCPRemoteProxy in ReferencingWorkloads
 			Eventually(func() bool {
-				cfg := &mcpv1alpha1.MCPOIDCConfig{}
+				cfg := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -615,7 +615,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxyName}
+				expectedRef := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyName}
 				for _, ref := range cfg.Status.ReferencingWorkloads {
 					if ref == expectedRef {
 						return false
@@ -626,7 +626,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// MCPRemoteProxy OIDCConfigHash should be cleared and condition removed
 			Eventually(func() bool {
-				proxyUpdated := &mcpv1alpha1.MCPRemoteProxy{}
+				proxyUpdated := &mcpv1beta1.MCPRemoteProxy{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      proxyName,
 					Namespace: namespace,
@@ -638,7 +638,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 					return false
 				}
 				// Verify the OIDCConfigRefValidated condition was removed
-				cond := meta.FindStatusCondition(proxyUpdated.Status.Conditions, mcpv1alpha1.ConditionOIDCConfigRefValidated)
+				cond := meta.FindStatusCondition(proxyUpdated.Status.Conditions, mcpv1beta1.ConditionOIDCConfigRefValidated)
 				return cond == nil
 			}, timeout, interval).Should(BeTrue())
 		})
@@ -649,8 +649,8 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			namespace  string
 			configName string
 			proxyName  string
-			oidcConfig *mcpv1alpha1.MCPOIDCConfig
-			proxy      *mcpv1alpha1.MCPRemoteProxy
+			oidcConfig *mcpv1beta1.MCPOIDCConfig
+			proxy      *mcpv1beta1.MCPRemoteProxy
 			ns         *corev1.Namespace
 		)
 
@@ -667,14 +667,14 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 			proxyName = testRemoteProxyName
 
 			// Create MCPOIDCConfig
-			oidcConfig = &mcpv1alpha1.MCPOIDCConfig{
+			oidcConfig = &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      configName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:   "https://accounts.google.com",
 						ClientID: "test-client",
 					},
@@ -684,7 +684,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Wait for ready
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -701,7 +701,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Wait for ReferencingWorkloads to contain the proxy
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -709,7 +709,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxyName}
+				expectedRef := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyName}
 				for _, ref := range updated.Status.ReferencingWorkloads {
 					if ref == expectedRef {
 						return true
@@ -730,7 +730,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 
 			// Eventually the referencing workloads list should not contain the proxy
 			Eventually(func() bool {
-				updated := &mcpv1alpha1.MCPOIDCConfig{}
+				updated := &mcpv1beta1.MCPOIDCConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      configName,
 					Namespace: namespace,
@@ -738,7 +738,7 @@ var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Te
 				if err != nil {
 					return false
 				}
-				expectedRef := mcpv1alpha1.WorkloadReference{Kind: mcpv1alpha1.WorkloadKindMCPRemoteProxy, Name: proxyName}
+				expectedRef := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyName}
 				for _, ref := range updated.Status.ReferencingWorkloads {
 					if ref == expectedRef {
 						return false

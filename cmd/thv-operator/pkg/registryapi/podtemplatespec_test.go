@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
@@ -253,6 +254,10 @@ func TestBuildRegistryAPIContainer(t *testing.T) {
 	assert.NotNil(t, container.ReadinessProbe)
 	assert.Equal(t, HealthCheckPath, container.LivenessProbe.HTTPGet.Path)
 	assert.Equal(t, ReadinessCheckPath, container.ReadinessProbe.HTTPGet.Path)
+	// Probes hit the internal health listener on RegistryAPIHealthPort,
+	// not the public API port. See toolhive-registry-server v1.1.0+.
+	assert.Equal(t, intstr.FromInt32(RegistryAPIHealthPort), container.LivenessProbe.HTTPGet.Port)
+	assert.Equal(t, intstr.FromInt32(RegistryAPIHealthPort), container.ReadinessProbe.HTTPGet.Port)
 }
 
 func TestMergePodTemplateSpecs(t *testing.T) {

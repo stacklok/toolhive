@@ -29,7 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -40,18 +40,18 @@ import (
 func TestDeploymentForVirtualMCPServer(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	r := &VirtualMCPServerReconciler{
 		Scheme:           scheme,
@@ -96,17 +96,17 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 func TestDeploymentForVirtualMCPServer_WithRedisPassword(t *testing.T) {
 	t.Parallel()
 
-	passwordRef := &mcpv1alpha1.SecretKeyRef{Name: "redis-secret", Key: "password"}
+	passwordRef := &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "password"}
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp-redis",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-				Provider:    mcpv1alpha1.SessionStorageProviderRedis,
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			SessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider:    mcpv1beta1.SessionStorageProviderRedis,
 				Address:     "redis:6379",
 				PasswordRef: passwordRef,
 			},
@@ -114,7 +114,7 @@ func TestDeploymentForVirtualMCPServer_WithRedisPassword(t *testing.T) {
 	}
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	r := &VirtualMCPServerReconciler{
 		Scheme:           scheme,
@@ -146,31 +146,31 @@ func TestBuildContainerArgsForVmcp(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		vmcp     *mcpv1alpha1.VirtualMCPServer
+		vmcp     *mcpv1beta1.VirtualMCPServer
 		wantArgs []string
 	}{
 		{
 			name: "without log level",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-vmcp",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 				},
 			},
 			wantArgs: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483"},
 		},
 		{
 			name: "with log level debug",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
+			vmcp: &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-vmcp",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 					Config: vmcpconfig.Config{
 						Operational: &vmcpconfig.OperationalConfig{
 							LogLevel: "debug",
@@ -198,13 +198,13 @@ func TestBuildContainerArgsForVmcp(t *testing.T) {
 func TestBuildVolumesForVmcp(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -228,13 +228,13 @@ func TestBuildVolumesForVmcp(t *testing.T) {
 func TestBuildEnvVarsForVmcp(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "test-namespace",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
@@ -267,11 +267,11 @@ func TestBuildRedisPasswordEnvVar(t *testing.T) {
 
 	r := &VirtualMCPServerReconciler{}
 
-	passwordRef := &mcpv1alpha1.SecretKeyRef{Name: "redis-secret", Key: "password"}
+	passwordRef := &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "password"}
 
 	tests := []struct {
 		name        string
-		storage     *mcpv1alpha1.SessionStorageConfig
+		storage     *mcpv1beta1.SessionStorageConfig
 		expectEnVar bool
 	}{
 		{
@@ -281,17 +281,17 @@ func TestBuildRedisPasswordEnvVar(t *testing.T) {
 		},
 		{
 			name:        "memory provider produces no env var",
-			storage:     &mcpv1alpha1.SessionStorageConfig{Provider: "memory"},
+			storage:     &mcpv1beta1.SessionStorageConfig{Provider: "memory"},
 			expectEnVar: false,
 		},
 		{
 			name:        "redis without passwordRef produces no env var",
-			storage:     &mcpv1alpha1.SessionStorageConfig{Provider: mcpv1alpha1.SessionStorageProviderRedis, Address: "redis:6379"},
+			storage:     &mcpv1beta1.SessionStorageConfig{Provider: mcpv1beta1.SessionStorageProviderRedis, Address: "redis:6379"},
 			expectEnVar: false,
 		},
 		{
 			name:        "redis with passwordRef produces THV_SESSION_REDIS_PASSWORD",
-			storage:     &mcpv1alpha1.SessionStorageConfig{Provider: mcpv1alpha1.SessionStorageProviderRedis, Address: "redis:6379", PasswordRef: passwordRef},
+			storage:     &mcpv1beta1.SessionStorageConfig{Provider: mcpv1beta1.SessionStorageProviderRedis, Address: "redis:6379", PasswordRef: passwordRef},
 			expectEnVar: true,
 		},
 	}
@@ -299,9 +299,9 @@ func TestBuildRedisPasswordEnvVar(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			vmcp := &mcpv1alpha1.VirtualMCPServer{
+			vmcp := &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec:       mcpv1alpha1.VirtualMCPServerSpec{SessionStorage: tc.storage},
+				Spec:       mcpv1beta1.VirtualMCPServerSpec{SessionStorage: tc.storage},
 			}
 			env := r.buildRedisPasswordEnvVar(vmcp)
 			if tc.expectEnVar {
@@ -324,7 +324,7 @@ func TestBuildDeploymentMetadataForVmcp(t *testing.T) {
 	t.Parallel()
 
 	baseLabels := labelsForVirtualMCPServer("test-vmcp")
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "default",
@@ -343,7 +343,7 @@ func TestBuildPodTemplateMetadata(t *testing.T) {
 	t.Parallel()
 
 	baseLabels := labelsForVirtualMCPServer("test-vmcp")
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "default",
@@ -362,7 +362,7 @@ func TestBuildPodTemplateMetadata(t *testing.T) {
 func TestBuildSecurityContextsForVmcp(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "default",
@@ -383,7 +383,7 @@ func TestBuildSecurityContextsForVmcp(t *testing.T) {
 func TestBuildContainerPortsForVmcp(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "default",
@@ -403,18 +403,18 @@ func TestBuildContainerPortsForVmcp(t *testing.T) {
 func TestServiceForVirtualMCPServer(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	r := &VirtualMCPServerReconciler{
@@ -443,19 +443,19 @@ func TestServiceForVirtualMCPServer(t *testing.T) {
 func TestServiceForVirtualMCPServerSessionAffinityNone(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef:        &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef:        &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 			SessionAffinity: string(corev1.ServiceAffinityNone),
 		},
 	}
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	r := &VirtualMCPServerReconciler{
@@ -473,7 +473,7 @@ func TestBuildServiceMetadataForVmcp(t *testing.T) {
 	t.Parallel()
 
 	baseLabels := labelsForVirtualMCPServer("test-vmcp")
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "default",
@@ -538,7 +538,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	// Test nil inputs
 	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", nil, []workloads.TypedWorkload{}))
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "default",
@@ -558,7 +558,7 @@ func TestServiceNeedsUpdate(t *testing.T) {
 	// Test nil inputs
 	assert.True(t, r.serviceNeedsUpdate(nil, nil))
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "default",
@@ -584,13 +584,13 @@ func TestCABundleMountPath(t *testing.T) {
 	tests := []struct {
 		name         string
 		entryName    string
-		caBundleRef  *mcpv1alpha1.CABundleSource
+		caBundleRef  *mcpv1beta1.CABundleSource
 		expectedPath string
 	}{
 		{
 			name:      "default key (no key specified)",
 			entryName: "my-entry",
-			caBundleRef: &mcpv1alpha1.CABundleSource{
+			caBundleRef: &mcpv1beta1.CABundleSource{
 				ConfigMapRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: "ca-configmap"},
 				},
@@ -600,7 +600,7 @@ func TestCABundleMountPath(t *testing.T) {
 		{
 			name:      "custom key specified",
 			entryName: "my-entry",
-			caBundleRef: &mcpv1alpha1.CABundleSource{
+			caBundleRef: &mcpv1beta1.CABundleSource{
 				ConfigMapRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: "ca-configmap"},
 					Key:                  "custom-ca.pem",
@@ -611,7 +611,7 @@ func TestCABundleMountPath(t *testing.T) {
 		{
 			name:      "nil configMapRef uses default key",
 			entryName: "another-entry",
-			caBundleRef: &mcpv1alpha1.CABundleSource{
+			caBundleRef: &mcpv1beta1.CABundleSource{
 				ConfigMapRef: nil,
 			},
 			expectedPath: "/etc/toolhive/ca-bundles/another-entry/ca.crt",
@@ -699,7 +699,7 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		entries         []mcpv1alpha1.MCPServerEntry
+		entries         []mcpv1beta1.MCPServerEntry
 		workloads       []workloads.TypedWorkload
 		expectedVolumes int
 		expectedMounts  int
@@ -716,13 +716,13 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 		},
 		{
 			name: "entry without caBundleRef yields no volumes",
-			entries: []mcpv1alpha1.MCPServerEntry{
+			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-no-ca", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
+					Spec: mcpv1beta1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -734,14 +734,14 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 		},
 		{
 			name: "entry with caBundleRef produces volume and mount",
-			entries: []mcpv1alpha1.MCPServerEntry{
+			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-with-ca", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
+					Spec: mcpv1beta1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-						CABundleRef: &mcpv1alpha1.CABundleSource{
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+						CABundleRef: &mcpv1beta1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "my-ca-configmap"},
 								Key:                  "ca.crt",
@@ -770,14 +770,14 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 		},
 		{
 			name: "entry with custom key in caBundleRef",
-			entries: []mcpv1alpha1.MCPServerEntry{
+			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "custom-key-entry", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
+					Spec: mcpv1beta1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-						CABundleRef: &mcpv1alpha1.CABundleSource{
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+						CABundleRef: &mcpv1beta1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "custom-ca"},
 								Key:                  "custom-cert.pem",
@@ -800,14 +800,14 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 		},
 		{
 			name: "mixed workload types only produces volumes for entries with CA bundles",
-			entries: []mcpv1alpha1.MCPServerEntry{
+			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-with-ca", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
+					Spec: mcpv1beta1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-						CABundleRef: &mcpv1alpha1.CABundleSource{
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+						CABundleRef: &mcpv1beta1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
 							},
@@ -816,10 +816,10 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 				},
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-without-ca", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
+					Spec: mcpv1beta1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp2.example.com",
 						Transport: "streamable-http",
-						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -838,7 +838,7 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 			t.Parallel()
 
 			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 			require.NoError(t, corev1.AddToScheme(scheme))
 
 			objs := make([]client.Object, 0, len(tt.entries))
@@ -867,4 +867,257 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDeploymentForVirtualMCPServer_ImagePullSecrets verifies that
+// spec.imagePullSecrets propagates to the Deployment's PodSpec.ImagePullSecrets,
+// and that user-provided spec.podTemplateSpec.spec.imagePullSecrets are merged
+// on top via strategic merge patch.
+func TestDeploymentForVirtualMCPServer_ImagePullSecrets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		spec     mcpv1beta1.VirtualMCPServerSpec
+		expected []corev1.LocalObjectReference
+	}{
+		{
+			name: "explicit field propagates to deployment",
+			spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+				ImagePullSecrets: []corev1.LocalObjectReference{
+					{Name: "vmcp-creds"},
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "vmcp-creds"}},
+		},
+		{
+			name: "no field, no podtemplatespec yields empty",
+			spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			},
+			expected: nil,
+		},
+		{
+			name: "podtemplatespec entry wins on overlap by name (strategic merge)",
+			spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+				ImagePullSecrets: []corev1.LocalObjectReference{
+					{Name: "shared-creds"},
+					{Name: "explicit-only"},
+				},
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"shared-creds"},{"name":"podtemplate-only"}]}}`),
+				},
+			},
+			// Strategic merge with patchMergeKey=name: same names dedup (PodTemplateSpec wins),
+			// distinct names are unioned.
+			expected: []corev1.LocalObjectReference{
+				{Name: "shared-creds"},
+				{Name: "explicit-only"},
+				{Name: "podtemplate-only"},
+			},
+		},
+		{
+			name: "podtemplatespec without imagePullSecrets preserves explicit field",
+			spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+				ImagePullSecrets: []corev1.LocalObjectReference{
+					{Name: "explicit-creds"},
+				},
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"nodeSelector":{"disktype":"ssd"}}}`),
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "explicit-creds"}},
+		},
+		{
+			name: "podtemplatespec only (legacy behavior preserved)",
+			spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"legacy-creds"}]}}`),
+				},
+			},
+			expected: []corev1.LocalObjectReference{{Name: "legacy-creds"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
+
+			vmcp := &mcpv1beta1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: tt.spec,
+			}
+
+			r := &VirtualMCPServerReconciler{
+				Scheme:           scheme,
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			deployment := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+			require.NotNil(t, deployment)
+
+			assert.ElementsMatch(t, tt.expected, deployment.Spec.Template.Spec.ImagePullSecrets)
+		})
+	}
+}
+
+// TestDeploymentForVirtualMCPServer_ImagePullSecrets_UpdatePath verifies that edits
+// to spec.imagePullSecrets on an existing CR are detected by deploymentNeedsUpdate
+// and propagated through to the live Deployment. Regression test for the gap where
+// the drift-detection chain compared individual container fields but never the
+// PodSpec.ImagePullSecrets list, leaving the running pod with stale credentials.
+func TestDeploymentForVirtualMCPServer_ImagePullSecrets_UpdatePath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                   string
+		initial                []corev1.LocalObjectReference
+		updated                []corev1.LocalObjectReference
+		podTemplateRaw         []byte
+		expectedDeployedSecret []corev1.LocalObjectReference
+	}{
+		{
+			name:                   "pure add",
+			initial:                nil,
+			updated:                []corev1.LocalObjectReference{{Name: "secret-a"}},
+			expectedDeployedSecret: []corev1.LocalObjectReference{{Name: "secret-a"}},
+		},
+		{
+			name:                   "pure remove",
+			initial:                []corev1.LocalObjectReference{{Name: "secret-a"}},
+			updated:                nil,
+			expectedDeployedSecret: nil,
+		},
+		{
+			name:                   "replace",
+			initial:                []corev1.LocalObjectReference{{Name: "secret-a"}},
+			updated:                []corev1.LocalObjectReference{{Name: "secret-b"}},
+			expectedDeployedSecret: []corev1.LocalObjectReference{{Name: "secret-b"}},
+		},
+		{
+			name:                   "extend",
+			initial:                []corev1.LocalObjectReference{{Name: "secret-a"}},
+			updated:                []corev1.LocalObjectReference{{Name: "secret-a"}, {Name: "secret-b"}},
+			expectedDeployedSecret: []corev1.LocalObjectReference{{Name: "secret-a"}, {Name: "secret-b"}},
+		},
+		{
+			name:           "replace combined with podtemplatespec union",
+			initial:        []corev1.LocalObjectReference{{Name: "explicit-a"}},
+			updated:        []corev1.LocalObjectReference{{Name: "explicit-b"}},
+			podTemplateRaw: []byte(`{"spec":{"imagePullSecrets":[{"name":"podtemplate-c"}]}}`),
+			// Strategic merge unions distinct names; explicit-b is the new explicit field
+			// and podtemplate-c comes from PodTemplateSpec.
+			expectedDeployedSecret: []corev1.LocalObjectReference{{Name: "explicit-b"}, {Name: "podtemplate-c"}},
+		},
+		{
+			name:    "reorder is a no-op (no spurious update)",
+			initial: []corev1.LocalObjectReference{{Name: "secret-a"}, {Name: "secret-b"}},
+			updated: []corev1.LocalObjectReference{{Name: "secret-b"}, {Name: "secret-a"}},
+			// Same set of names, just reordered. The hash normalizes order so the
+			// drift check should NOT trigger an update.
+			expectedDeployedSecret: nil, // sentinel: see assertion below
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
+
+			r := &VirtualMCPServerReconciler{
+				Scheme:           scheme,
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			vmcp := &mcpv1beta1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:         &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+					ImagePullSecrets: tt.initial,
+				},
+			}
+			if tt.podTemplateRaw != nil {
+				vmcp.Spec.PodTemplateSpec = &runtime.RawExtension{Raw: tt.podTemplateRaw}
+			}
+
+			// Step 1: build the initial Deployment, simulating the create path.
+			initialDep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+			require.NotNil(t, initialDep)
+
+			// Step 2: mutate the spec, then assert drift detection.
+			vmcp.Spec.ImagePullSecrets = tt.updated
+
+			needsUpdate := r.imagePullSecretsNeedsUpdate(t.Context(), initialDep, vmcp)
+			if tt.name == "reorder is a no-op (no spurious update)" {
+				assert.False(t, needsUpdate, "reordering same names must not trigger drift")
+				return
+			}
+			assert.True(t, needsUpdate, "imagePullSecrets edit must be detected as drift")
+
+			// Also assert the parent deploymentNeedsUpdate flags the change. Stub
+			// out env/checksum so the rest of the chain doesn't trigger drift on
+			// other axes for unrelated reasons.
+			parentNeedsUpdate := r.deploymentNeedsUpdate(
+				t.Context(), initialDep, vmcp, "test-checksum", nil, []workloads.TypedWorkload{},
+			)
+			assert.True(t, parentNeedsUpdate, "deploymentNeedsUpdate must propagate imagePullSecrets drift")
+
+			// Step 3: rebuild the Deployment with the updated spec and assert the
+			// live PodSpec.ImagePullSecrets reflects the new value.
+			updatedDep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+			require.NotNil(t, updatedDep)
+			assert.ElementsMatch(t, tt.expectedDeployedSecret, updatedDep.Spec.Template.Spec.ImagePullSecrets)
+
+			// Step 4: a second drift check against the freshly-built Deployment must
+			// return false — once the new annotation is on the Deployment, we are
+			// in steady state and must not loop.
+			settled := r.imagePullSecretsNeedsUpdate(t.Context(), updatedDep, vmcp)
+			assert.False(t, settled, "drift check must settle once Deployment is rebuilt")
+		})
+	}
+}
+
+// TestImagePullSecretsHash verifies the hash helper normalizes order, treats an
+// empty list as the sentinel "" hash, and produces stable hashes across calls.
+func TestImagePullSecretsHash(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty list returns empty hash", func(t *testing.T) {
+		t.Parallel()
+		hash, err := imagePullSecretsHash(nil)
+		require.NoError(t, err)
+		assert.Empty(t, hash)
+	})
+
+	t.Run("order-insensitive", func(t *testing.T) {
+		t.Parallel()
+		a, err := imagePullSecretsHash([]corev1.LocalObjectReference{{Name: "x"}, {Name: "y"}})
+		require.NoError(t, err)
+		b, err := imagePullSecretsHash([]corev1.LocalObjectReference{{Name: "y"}, {Name: "x"}})
+		require.NoError(t, err)
+		assert.Equal(t, a, b, "reordering must not change the hash")
+	})
+
+	t.Run("different sets produce different hashes", func(t *testing.T) {
+		t.Parallel()
+		a, err := imagePullSecretsHash([]corev1.LocalObjectReference{{Name: "x"}})
+		require.NoError(t, err)
+		b, err := imagePullSecretsHash([]corev1.LocalObjectReference{{Name: "y"}})
+		require.NoError(t, err)
+		assert.NotEqual(t, a, b)
+	})
 }

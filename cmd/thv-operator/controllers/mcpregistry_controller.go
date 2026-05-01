@@ -21,7 +21,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
@@ -47,9 +48,16 @@ type MCPRegistryReconciler struct {
 	registryAPIManager registryapi.Manager
 }
 
-// NewMCPRegistryReconciler creates a new MCPRegistryReconciler with required dependencies
-func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme) *MCPRegistryReconciler {
-	registryAPIManager := registryapi.NewManager(k8sClient, scheme)
+// NewMCPRegistryReconciler creates a new MCPRegistryReconciler with required
+// dependencies. imagePullSecretsDefaults are cluster-wide pull-secret defaults
+// from the operator chart that are merged with the per-CR list at registry-api
+// workload-construction time.
+func NewMCPRegistryReconciler(
+	k8sClient client.Client,
+	scheme *runtime.Scheme,
+	imagePullSecretsDefaults imagepullsecrets.Defaults,
+) *MCPRegistryReconciler {
+	registryAPIManager := registryapi.NewManager(k8sClient, scheme, imagePullSecretsDefaults)
 	return &MCPRegistryReconciler{
 		Client:             k8sClient,
 		Scheme:             scheme,
@@ -85,7 +93,7 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	ctxLogger := log.FromContext(ctx)
 
 	// 1. Fetch MCPRegistry instance
-	mcpRegistry := &mcpv1alpha1.MCPRegistry{}
+	mcpRegistry := &mcpv1beta1.MCPRegistry{}
 	err := r.Get(ctx, req.NamespacedName, mcpRegistry)
 	if err != nil {
 		if kerrors.IsNotFound(err) {
@@ -109,7 +117,7 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		podTemplateCondition = cond
 		if !valid {
 			// Write status immediately for the failure case since we return early
-			mcpRegistry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
+			mcpRegistry.Status.Phase = mcpv1beta1.MCPRegistryPhaseFailed
 			mcpRegistry.Status.Message = fmt.Sprintf("Invalid PodTemplateSpec: %v", cond.Message)
 			meta.SetStatusCondition(&mcpRegistry.Status.Conditions, *cond)
 			if statusErr := r.Status().Update(ctx, mcpRegistry); statusErr != nil {
@@ -123,7 +131,7 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Validate spec fields (reserved names, mount paths, pgpassSecretRef)
 	if err := validateSpec(mcpRegistry); err != nil {
-		mcpRegistry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
+		mcpRegistry.Status.Phase = mcpv1beta1.MCPRegistryPhaseFailed
 		mcpRegistry.Status.Message = fmt.Sprintf("Spec validation failed: %v", err)
 		setRegistryReadyCondition(mcpRegistry, metav1.ConditionFalse,
 			"ValidationFailed", err.Error())
@@ -215,7 +223,7 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPRegistryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&mcpv1alpha1.MCPRegistry{}).
+		For(&mcpv1beta1.MCPRegistry{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
@@ -229,10 +237,10 @@ func (r *MCPRegistryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // and persists it with a single status update. Returns whether the API is ready and any
 // error from the status update.
 func (r *MCPRegistryReconciler) updateRegistryStatus(
-	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, reconcileErr error, podTemplateCond *metav1.Condition,
+	ctx context.Context, mcpRegistry *mcpv1beta1.MCPRegistry, reconcileErr error, podTemplateCond *metav1.Condition,
 ) (bool, error) {
 	// Refetch the latest version to avoid conflicts
-	latest := &mcpv1alpha1.MCPRegistry{}
+	latest := &mcpv1beta1.MCPRegistry{}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(mcpRegistry), latest); err != nil {
 		return false, fmt.Errorf("failed to fetch latest MCPRegistry version: %w", err)
 	}
@@ -240,7 +248,7 @@ func (r *MCPRegistryReconciler) updateRegistryStatus(
 	var isReady bool
 
 	if reconcileErr != nil {
-		latest.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
+		latest.Status.Phase = mcpv1beta1.MCPRegistryPhaseFailed
 		latest.Status.ReadyReplicas = 0
 		// Use structured error fields if available
 		var apiErr *registryapi.Error
@@ -250,7 +258,7 @@ func (r *MCPRegistryReconciler) updateRegistryStatus(
 		} else {
 			latest.Status.Message = reconcileErr.Error()
 			setRegistryReadyCondition(latest, metav1.ConditionFalse,
-				mcpv1alpha1.ConditionReasonRegistryNotReady, reconcileErr.Error())
+				mcpv1beta1.ConditionReasonRegistryNotReady, reconcileErr.Error())
 		}
 	} else {
 		var readyReplicas int32
@@ -260,16 +268,16 @@ func (r *MCPRegistryReconciler) updateRegistryStatus(
 		if isReady {
 			endpoint := fmt.Sprintf("http://%s.%s:8080",
 				mcpRegistry.GetAPIResourceName(), mcpRegistry.Namespace)
-			latest.Status.Phase = mcpv1alpha1.MCPRegistryPhaseReady
+			latest.Status.Phase = mcpv1beta1.MCPRegistryPhaseReady
 			latest.Status.Message = "Registry API is ready and serving requests"
 			latest.Status.URL = endpoint
 			setRegistryReadyCondition(latest, metav1.ConditionTrue,
-				mcpv1alpha1.ConditionReasonRegistryReady, "Registry API is ready and serving requests")
+				mcpv1beta1.ConditionReasonRegistryReady, "Registry API is ready and serving requests")
 		} else {
-			latest.Status.Phase = mcpv1alpha1.MCPRegistryPhasePending
+			latest.Status.Phase = mcpv1beta1.MCPRegistryPhasePending
 			latest.Status.Message = "Registry API deployment is not ready yet"
 			setRegistryReadyCondition(latest, metav1.ConditionFalse,
-				mcpv1alpha1.ConditionReasonRegistryNotReady, "Registry API deployment is not ready yet")
+				mcpv1beta1.ConditionReasonRegistryNotReady, "Registry API deployment is not ready yet")
 		}
 	}
 
@@ -286,9 +294,9 @@ func (r *MCPRegistryReconciler) updateRegistryStatus(
 }
 
 // setRegistryReadyCondition sets the top-level Ready condition on an MCPRegistry.
-func setRegistryReadyCondition(registry *mcpv1alpha1.MCPRegistry, status metav1.ConditionStatus, reason, message string) {
+func setRegistryReadyCondition(registry *mcpv1beta1.MCPRegistry, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&registry.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeReady,
+		Type:               mcpv1beta1.ConditionTypeReady,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -297,14 +305,14 @@ func setRegistryReadyCondition(registry *mcpv1alpha1.MCPRegistry, status metav1.
 }
 
 // finalizeMCPRegistry performs the finalizer logic for the MCPRegistry
-func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registry *mcpv1alpha1.MCPRegistry) error {
+func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registry *mcpv1beta1.MCPRegistry) error {
 	ctxLogger := log.FromContext(ctx)
 
 	// Update the MCPRegistry status to indicate termination - immediate update needed since object is being deleted
-	registry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseTerminating
+	registry.Status.Phase = mcpv1beta1.MCPRegistryPhaseTerminating
 	registry.Status.Message = "MCPRegistry is being terminated"
 	setRegistryReadyCondition(registry, metav1.ConditionFalse,
-		mcpv1alpha1.ConditionReasonRegistryNotReady, "MCPRegistry is being terminated")
+		mcpv1beta1.ConditionReasonRegistryNotReady, "MCPRegistry is being terminated")
 	if err := r.Status().Update(ctx, registry); err != nil {
 		ctxLogger.Error(err, "Failed to update MCPRegistry status during finalization")
 		return err
@@ -319,7 +327,7 @@ func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registr
 // nil if the spec is valid or a descriptive error if validation fails. CEL
 // admission rules cover the common cases; this is defense-in-depth inside the
 // reconciler.
-func validateSpec(mcpRegistry *mcpv1alpha1.MCPRegistry) error {
+func validateSpec(mcpRegistry *mcpv1beta1.MCPRegistry) error {
 	spec := &mcpRegistry.Spec
 
 	// Parse user PodTemplateSpec once for subsequent checks
@@ -358,7 +366,7 @@ func validatePGPassSecretRef(ref *corev1.SecretKeySelector) error {
 
 // validateReservedNames checks that user-provided volumes and init containers do not
 // collide with operator-reserved names.
-func validateReservedNames(spec *mcpv1alpha1.MCPRegistrySpec, userPTS *corev1.PodTemplateSpec) error {
+func validateReservedNames(spec *mcpv1beta1.MCPRegistrySpec, userPTS *corev1.PodTemplateSpec) error {
 	reservedVolumeNames := map[string]bool{
 		registryapi.RegistryServerConfigVolumeName: true,
 	}
@@ -400,7 +408,7 @@ func validateReservedNames(spec *mcpv1alpha1.MCPRegistrySpec, userPTS *corev1.Po
 
 // validateMountPathCollisions detects duplicate mount paths across operator-generated mounts,
 // spec.VolumeMounts, and user PodTemplateSpec container mounts.
-func validateMountPathCollisions(spec *mcpv1alpha1.MCPRegistrySpec, userPTS *corev1.PodTemplateSpec) error {
+func validateMountPathCollisions(spec *mcpv1beta1.MCPRegistrySpec, userPTS *corev1.PodTemplateSpec) error {
 	mountPaths := make(map[string]struct{})
 
 	// Operator-generated mounts
@@ -440,23 +448,23 @@ func validateMountPathCollisions(spec *mcpv1alpha1.MCPRegistrySpec, userPTS *cor
 // validatePodTemplate validates the PodTemplateSpec and returns a condition reflecting the result.
 // Returns true if validation passes, and a condition to apply during the next status update.
 func (*MCPRegistryReconciler) validatePodTemplate(
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	mcpRegistry *mcpv1beta1.MCPRegistry,
 ) (bool, *metav1.Condition) {
 	err := registryapi.ValidatePodTemplateSpec(mcpRegistry.GetPodTemplateSpecRaw())
 	if err != nil {
 		return false, &metav1.Condition{
-			Type:               mcpv1alpha1.ConditionPodTemplateValid,
+			Type:               mcpv1beta1.ConditionPodTemplateValid,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: mcpRegistry.Generation,
-			Reason:             mcpv1alpha1.ConditionReasonPodTemplateInvalid,
+			Reason:             mcpv1beta1.ConditionReasonPodTemplateInvalid,
 			Message:            fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
 		}
 	}
 	return true, &metav1.Condition{
-		Type:               mcpv1alpha1.ConditionPodTemplateValid,
+		Type:               mcpv1beta1.ConditionPodTemplateValid,
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: mcpRegistry.Generation,
-		Reason:             mcpv1alpha1.ConditionReasonPodTemplateValid,
+		Reason:             mcpv1beta1.ConditionReasonPodTemplateValid,
 		Message:            "PodTemplateSpec is valid",
 	}
 }

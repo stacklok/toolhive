@@ -818,6 +818,11 @@ components:
       properties:
         acl_user_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig'
+        addr:
+          description: |-
+            Addr is the Redis server address for standalone mode (e.g., "host:port").
+            Mutually exclusive with SentinelConfig.
+          type: string
         auth_type:
           description: AuthType must be "aclUser" - only ACL user authentication is
             supported.
@@ -843,9 +848,8 @@ components:
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig:
-      description: |-
-        SentinelTLS configures TLS for Sentinel connections.
-        Falls back to TLS config when nil.
+      description: SentinelTLS configures TLS for Sentinel connections. Only applies
+        when SentinelConfig is set.
       properties:
         ca_cert_file:
           description: CACertFile is the path to a PEM-encoded CA certificate file.
@@ -866,7 +870,9 @@ components:
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig:
-      description: SentinelConfig contains Sentinel-specific configuration.
+      description: |-
+        SentinelConfig contains Sentinel-specific configuration.
+        Mutually exclusive with Addr.
       properties:
         db:
           description: 'DB is the Redis database number (default: 0).'

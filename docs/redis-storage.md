@@ -1,67 +1,98 @@
-# Redis Sentinel Storage for Auth Server
+# Redis Storage for Auth Server
 
-This guide explains how to configure Redis Sentinel as the storage backend for ToolHive's embedded authorization server, enabling horizontal scaling across multiple auth server replicas.
+This guide explains how to configure Redis as the storage backend for ToolHive's embedded authorization server, enabling horizontal scaling across multiple auth server replicas.
 
 ## Overview
 
-By default, ToolHive's embedded auth server uses in-memory storage. This works well for single-instance deployments but does not support horizontal scaling since each replica has its own isolated state. Redis Sentinel provides a shared, highly available storage backend that enables multiple auth server replicas to share OAuth 2.0 state (tokens, authorization codes, clients, and user data).
+By default, ToolHive's embedded auth server uses in-memory storage. This works well for single-instance deployments but does not support horizontal scaling since each replica has its own isolated state. Redis provides a shared storage backend that enables multiple auth server replicas to share OAuth 2.0 state (tokens, authorization codes, clients, and user data).
 
 **Key design decisions:**
 
-- **Sentinel-only**: Only Redis Sentinel deployments are supported (not standalone or cluster mode). Sentinel provides automatic failover and high availability without the complexity of Redis Cluster.
-- **ACL user authentication**: Only Redis ACL user authentication is supported. This is the modern Redis authentication mechanism (Redis 6+) that provides fine-grained access control.
+- **Standalone or Sentinel**: Both standalone Redis (single endpoint) and Redis Sentinel (high-availability with automatic failover) are supported. Use standalone for managed Redis services that expose a single endpoint (GCP Memorystore Basic/Standard HA, Azure Cache for Redis, AWS ElastiCache non-cluster); use Sentinel for self-managed HA clusters. Redis Cluster mode is not supported.
+- **ACL or legacy authentication**: Redis ACL user authentication (Redis 6+) is supported for fine-grained access control. For managed Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard HA, Azure Cache for Redis), omit the username to use legacy password-only `AUTH`.
 - **Multi-tenancy via key prefixes**: Each auth server instance uses a unique key prefix (`thv:auth:{namespace:name}:`) to isolate its data, allowing multiple auth servers to share the same Redis deployment.
 
 ## Prerequisites
 
-- A running Redis Sentinel deployment (Redis 6+ for ACL support)
-- Redis ACL user configured with appropriate permissions
+- A running Redis deployment accessible from the auth server pod
+- Redis credentials (password, and optionally a username for ACL-based access)
 - For Kubernetes: Secrets containing Redis credentials
 
 ## Configuration
 
-> **Note: No TLS support.** Redis connections are currently unencrypted. All traffic — including OAuth tokens, authorization codes, and credentials — is transmitted in plaintext between the auth server and Redis.
-> In shared network environments, use Kubernetes NetworkPolicies to restrict access to Redis pods, or deploy a service mesh (e.g., Istio, Linkerd) for transparent mTLS. TLS support is planned as a future enhancement.
+> **TLS support:** TLS is supported for both standalone and Sentinel connections. To enable TLS, set `tls.caCertSecretRef` to a Secret containing the CA certificate. For managed services with private CAs (e.g. GCP Memorystore), retrieve the CA certificate first:
+> ```bash
+> gcloud redis instances get-server-ca-certs INSTANCE_NAME --region=REGION --format=json
+> ```
+> For connections without a custom CA, TLS uses the system root CAs. To skip verification (self-signed certs only, not for production), set `tls.insecureSkipVerify: true`.
 
 ### Kubernetes (MCPExternalAuthConfig CRD)
 
 When using the ToolHive operator, Redis storage is configured through the `storage` field in the embedded auth server section of `MCPExternalAuthConfig`.
 
+#### Standalone Redis (Managed Services)
+
+Use `addr` for single-endpoint Redis services such as GCP Memorystore, AWS ElastiCache, or Azure Cache for Redis.
+
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1beta1
-kind: MCPExternalAuthConfig
-metadata:
-  name: my-auth-config
-  namespace: default
-spec:
-  type: embeddedAuthServer
-  embeddedAuthServer:
-    # ... other auth server config ...
+storage:
+  type: redis
+  redis:
+    addr: "10.0.0.3:6379"   # Redis endpoint
 
-    storage:
-      type: redis
-      redis:
-        sentinelConfig:
-          masterName: mymaster
-          # Option 1: Direct Sentinel addresses
-          sentinelAddrs:
-            - "redis-sentinel-0.redis-sentinel:26379"
-            - "redis-sentinel-1.redis-sentinel:26379"
-            - "redis-sentinel-2.redis-sentinel:26379"
-          db: 0
+    aclUserConfig:
+      # Omit usernameSecretRef for managed Redis tiers that use password-only
+      # AUTH (e.g. GCP Memorystore Basic/Standard HA, Azure Cache for Redis).
+      # Include it for services that support ACL users (e.g. AWS ElastiCache
+      # non-cluster with Redis 6+ RBAC).
+      usernameSecretRef:         # optional
+        name: redis-credentials
+        key: username
+      passwordSecretRef:
+        name: redis-credentials
+        key: password
 
-        aclUserConfig:
-          usernameSecretRef:
-            name: redis-credentials
-            key: username
-          passwordSecretRef:
-            name: redis-credentials
-            key: password
+    # Optional: TLS for managed services with private CAs (e.g. GCP Memorystore)
+    tls:
+      caCertSecretRef:
+        name: redis-tls-ca
+        key: ca.crt
 
-        # Optional timeouts (shown with defaults)
-        dialTimeout: "5s"
-        readTimeout: "3s"
-        writeTimeout: "3s"
+    # Optional timeouts (shown with defaults)
+    dialTimeout: "5s"
+    readTimeout: "3s"
+    writeTimeout: "3s"
+```
+
+#### Redis Sentinel
+
+Use `sentinelConfig` for self-managed Redis deployments with Sentinel-based high availability.
+
+```yaml
+storage:
+  type: redis
+  redis:
+    sentinelConfig:
+      masterName: mymaster
+      # Option 1: Direct Sentinel addresses
+      sentinelAddrs:
+        - "redis-sentinel-0.redis-sentinel:26379"
+        - "redis-sentinel-1.redis-sentinel:26379"
+        - "redis-sentinel-2.redis-sentinel:26379"
+      db: 0
+
+    aclUserConfig:
+      usernameSecretRef:
+        name: redis-credentials
+        key: username
+      passwordSecretRef:
+        name: redis-credentials
+        key: password
+
+    # Optional timeouts (shown with defaults)
+    dialTimeout: "5s"
+    readTimeout: "3s"
+    writeTimeout: "3s"
 ```
 
 #### Sentinel Service Discovery
@@ -94,7 +125,7 @@ storage:
 
 #### Redis Credentials Secret
 
-Create a Kubernetes Secret containing the Redis ACL username and password:
+Create a Kubernetes Secret containing the Redis password (and optionally a username for ACL-based access):
 
 ```yaml
 apiVersion: v1
@@ -104,14 +135,15 @@ metadata:
   namespace: default
 type: Opaque
 stringData:
-  username: toolhive-auth
+  username: toolhive-auth   # omit for password-only AUTH
   password: "<your-secure-password>"
 ```
 
 ### RunConfig (Process Boundary Configuration)
 
-When the auth server configuration is serialized for passing across process boundaries (e.g., from operator to proxy-runner), it uses the `RunConfig` format:
+When the auth server configuration is serialized for passing across process boundaries (e.g., from operator to proxy-runner), it uses the `RunConfig` format.
 
+**Sentinel example:**
 ```json
 {
   "type": "redis",
@@ -138,7 +170,22 @@ When the auth server configuration is serialized for passing across process boun
 }
 ```
 
-In RunConfig format, credentials are referenced via environment variables rather than Kubernetes Secrets. The operator handles the translation from Secret references to environment variables when constructing the proxy-runner pod.
+**Standalone with password-only AUTH (no username):**
+```json
+{
+  "type": "redis",
+  "redisConfig": {
+    "addr": "10.0.0.3:6379",
+    "authType": "aclUser",
+    "aclUserConfig": {
+      "passwordEnvVar": "TOOLHIVE_AS_REDIS_PASSWORD"
+    },
+    "keyPrefix": "thv:auth:{default:my-auth-config}:"
+  }
+}
+```
+
+In RunConfig format, credentials are referenced via environment variables rather than Kubernetes Secrets. The operator handles the translation from Secret references to environment variables when constructing the proxy-runner pod. When `usernameSecretRef` is omitted from the CRD, `usernameEnvVar` is omitted from the RunConfig and go-redis uses the legacy `AUTH <password>` form.
 
 ## Deploying Redis with the Spotahome Redis Operator
 
@@ -388,8 +435,11 @@ Secondary index cleanup is best-effort: stale entries may remain temporarily but
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `sentinelConfig` | `RedisSentinelConfig` | Yes | — | Sentinel connection settings |
-| `aclUserConfig` | `RedisACLUserConfig` | Yes | — | ACL user credentials |
+| `addr` | `string` | One of addr/sentinelConfig | — | Standalone Redis endpoint (`host:port`). Use for managed single-endpoint Redis services (GCP Memorystore Basic/Standard HA, Azure Cache for Redis, AWS ElastiCache non-cluster). |
+| `sentinelConfig` | `RedisSentinelConfig` | One of addr/sentinelConfig | — | Sentinel connection settings for high-availability Redis. |
+| `aclUserConfig` | `RedisACLUserConfig` | Yes | — | Authentication credentials |
+| `tls` | `RedisTLSConfig` | No | — | TLS for the Redis master connection |
+| `sentinelTLS` | `RedisTLSConfig` | No | — | TLS for Sentinel connections (Sentinel mode only) |
 | `dialTimeout` | `string` | No | `5s` | Connection establishment timeout |
 | `readTimeout` | `string` | No | `3s` | Socket read timeout |
 | `writeTimeout` | `string` | No | `3s` | Socket write timeout |
@@ -415,8 +465,15 @@ Secondary index cleanup is best-effort: stale entries may remain temporarily but
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `usernameSecretRef` | `SecretKeyRef` | Yes | — | Secret reference for Redis username |
+| `usernameSecretRef` | `SecretKeyRef` | No | — | Secret reference for Redis username. Omit for managed tiers that use password-only AUTH (GCP Memorystore Basic/Standard HA, Azure Cache for Redis). |
 | `passwordSecretRef` | `SecretKeyRef` | Yes | — | Secret reference for Redis password |
+
+### RedisTLSConfig (CRD)
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `caCertSecretRef` | `SecretKeyRef` | No | — | Secret containing a PEM-encoded CA certificate. When absent, system root CAs are used. |
+| `insecureSkipVerify` | `bool` | No | `false` | Skip certificate verification. For self-signed certs only; do not use in production. |
 
 ## Related Documentation
 

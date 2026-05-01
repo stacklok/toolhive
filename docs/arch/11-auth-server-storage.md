@@ -7,7 +7,7 @@ The embedded authorization server uses a pluggable storage backend to persist OA
 The auth server stores OAuth 2.0 protocol state including access tokens, refresh tokens, authorization codes, PKCE challenges, client registrations, user accounts, and upstream IDP tokens. Two storage backends are available:
 
 1. **Memory** (default): In-process storage with mutex-based concurrency. Suitable for single-instance deployments.
-2. **Redis Sentinel**: Shared storage using Redis with Sentinel for high availability. Required for horizontal scaling across multiple auth server replicas.
+2. **Redis**: Shared storage backed by Redis. Supports standalone mode (single endpoint, suitable for managed services like GCP Memorystore and AWS ElastiCache) and Sentinel mode (high-availability with automatic failover). Required for horizontal scaling across multiple auth server replicas.
 
 ```mermaid
 graph TB
@@ -20,7 +20,7 @@ graph TB
     subgraph "Storage Backend"
         direction TB
         Memory[In-Memory Storage<br/>Single instance only]
-        Redis[Redis Sentinel<br/>Shared state]
+        Redis[Redis<br/>Standalone or Sentinel<br/>Shared state]
     end
 
     AS1 -.->|single instance| Memory
@@ -28,27 +28,18 @@ graph TB
     AS2 -->|distributed| Redis
     AS3 -->|distributed| Redis
 
-    subgraph "Redis Sentinel Cluster"
-        S1[Sentinel 1]
-        S2[Sentinel 2]
-        S3[Sentinel 3]
-        RM[Redis Master]
-        RR1[Redis Replica]
-        RR2[Redis Replica]
+    subgraph "Redis Deployment Options"
+        Standalone[Standalone<br/>Managed services]
+        Sentinel[Sentinel Cluster<br/>Self-managed HA]
     end
 
-    Redis --> S1
-    Redis --> S2
-    Redis --> S3
-    S1 -.->|monitors| RM
-    S2 -.->|monitors| RM
-    S3 -.->|monitors| RM
-    RM -->|replicates| RR1
-    RM -->|replicates| RR2
+    Redis --> Standalone
+    Redis --> Sentinel
 
     style Memory fill:#fff3e0
     style Redis fill:#e1f5fe
-    style RM fill:#ffb74d
+    style Standalone fill:#e8f5e9
+    style Sentinel fill:#e8f5e9
 ```
 
 ## Storage Interface
@@ -105,16 +96,16 @@ The in-memory backend uses Go maps protected by `sync.RWMutex` for thread safety
 
 **Implementation:** `pkg/authserver/storage/memory.go`
 
-## Redis Sentinel Backend
+## Redis Backend
 
-The Redis backend stores all OAuth 2.0 state as JSON-serialized values in Redis, using the Sentinel protocol for automatic master discovery and failover.
+The Redis backend stores all OAuth 2.0 state as JSON-serialized values in Redis.
 
 ### Connection Architecture
 
-The client connects to Redis through Sentinel using `redis.NewFailoverClient()` from the `go-redis` library. Sentinel handles:
-- Master discovery: Finding the current master node
-- Automatic failover: Detecting master failure and promoting a replica
-- Configuration notification: Updating clients when the master changes
+Two connection modes are supported:
+
+- **Standalone** (`redis.NewClient()`): A single endpoint for managed Redis services. The caller is responsible for endpoint availability (the managed service handles HA internally).
+- **Sentinel** (`redis.NewFailoverClient()`): Connects via Sentinel for self-managed high-availability deployments. Sentinel handles master discovery, automatic failover, and configuration updates.
 
 ### Multi-Tenancy
 
@@ -124,7 +115,7 @@ Each auth server instance has a unique key prefix derived from its Kubernetes na
 thv:auth:{namespace:name}:
 ```
 
-The `{namespace:name}` portion is a Redis hash tag. Although ToolHive only supports Sentinel deployments, the hash tag format ensures keys remain co-located in the same hash slot if the deployment were ever migrated to Redis Cluster. In Sentinel mode, hash tags have no functional effect but impose no overhead.
+The `{namespace:name}` portion is a Redis hash tag. In standalone and Sentinel modes, hash tags have no functional effect but impose no overhead. The format ensures keys remain co-located in the same hash slot if the deployment were ever migrated to Redis Cluster.
 
 **Implementation:** `pkg/authserver/storage/redis_keys.go`
 
@@ -182,13 +173,16 @@ MCPExternalAuthConfig
   └── spec.embeddedAuthServer.storage
         ├── type: "memory" | "redis"
         └── redis
-              ├── sentinelConfig
-              │     ├── masterName
-              │     ├── sentinelAddrs[] (or sentinelService)
-              │     └── db
+              ├── addr (standalone)  ─── mutually exclusive ───  sentinelConfig
+              │                                                         ├── masterName
+              │                                                         ├── sentinelAddrs[] (or sentinelService)
+              │                                                         └── db
               ├── aclUserConfig
-              │     ├── usernameSecretRef
+              │     ├── usernameSecretRef  (optional; omit for password-only AUTH)
               │     └── passwordSecretRef
+              ├── tls (optional)
+              │     ├── caCertSecretRef
+              │     └── insecureSkipVerify
               └── timeouts (dial, read, write)
 ```
 
@@ -202,10 +196,10 @@ When passing configuration across process boundaries (operator → proxy-runner)
 
 ## Security Considerations
 
-- **ACL authentication only**: Redis ACL users (Redis 6+) provide fine-grained access control. Legacy `requirepass` authentication is not supported.
+- **ACL or legacy authentication**: Redis ACL users (Redis 6+) provide fine-grained access control. When a username is omitted, go-redis sends legacy password-only `AUTH`, which is required for managed Redis tiers that do not expose an ACL subsystem (e.g. GCP Memorystore Basic/Standard HA, Azure Cache for Redis).
 - **Key prefix isolation**: Each auth server is restricted to its own key prefix via Redis ACL rules (`~thv:auth:*`).
 - **Credential handling**: In Kubernetes, credentials are stored in Secrets and injected as environment variables. They are never written to disk or logged.
-- **No TLS currently**: TLS/mTLS for Redis connections is not yet supported and is planned as a future enhancement.
+- **TLS support**: TLS is supported for both master and Sentinel connections via `tls` and `sentinelTLS` in the CRD. For managed services with private CAs (e.g. GCP Memorystore), provide the CA certificate via `caCertSecretRef`.
 
 ## Related Documentation
 

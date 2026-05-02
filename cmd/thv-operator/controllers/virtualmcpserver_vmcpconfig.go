@@ -82,14 +82,9 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	}
 
 	// Marshal the serializable Config to YAML for storage in ConfigMap.
-	// RateLimiting is a top-level VirtualMCPServer spec field, not part of
-	// spec.config, so add it only when writing the runtime ConfigMap.
 	// Note: gopkg.in/yaml.v3 produces deterministic output by sorting map keys alphabetically.
 	// This ensures stable checksums for triggering pod rollouts only when content actually changes.
-	vmcpConfigYAML, err := yaml.Marshal(vmcpConfigMapConfig{
-		Config:       *config,
-		RateLimiting: vmcp.Spec.RateLimiting,
-	})
+	vmcpConfigYAML, err := yaml.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to marshal vmcp config: %w", err)
 	}
@@ -133,12 +128,6 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	}
 
 	return nil
-}
-
-type vmcpConfigMapConfig struct {
-	vmcpconfig.Config `yaml:",inline"`
-
-	RateLimiting *mcpv1beta1.RateLimitConfig `yaml:"rateLimiting,omitempty"`
 }
 
 // populateOptimizerEmbeddingService wires the EmbeddingServer URL into the optimizer

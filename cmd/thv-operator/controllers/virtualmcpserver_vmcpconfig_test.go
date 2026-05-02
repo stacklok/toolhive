@@ -459,25 +459,6 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 		},
 		Spec: mcpv1beta1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			SessionStorage: &mcpv1beta1.SessionStorageConfig{
-				Provider: mcpv1beta1.SessionStorageProviderRedis,
-				Address:  "redis.default.svc.cluster.local:6379",
-			},
-			RateLimiting: &mcpv1beta1.RateLimitConfig{
-				PerUser: &mcpv1beta1.RateLimitBucket{
-					MaxTokens:    2,
-					RefillPeriod: metav1.Duration{Duration: time.Minute},
-				},
-				Tools: []mcpv1beta1.ToolRateLimitConfig{
-					{
-						Name: "backend_a_echo",
-						Shared: &mcpv1beta1.RateLimitBucket{
-							MaxTokens:    5,
-							RefillPeriod: metav1.Duration{Duration: time.Minute},
-						},
-					},
-				},
-			},
 		},
 	}
 
@@ -527,16 +508,10 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	assert.Contains(t, cm.Data, "config.yaml")
 	assert.NotEmpty(t, cm.Annotations["toolhive.stacklok.dev/content-checksum"])
 
-	var cfg vmcpConfigMapConfig
+	var cfg vmcpconfig.Config
 	require.NoError(t, yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &cfg))
-	require.NotNil(t, cfg.RateLimiting, "runtime config must include spec.rateLimiting")
-
-	require.NotNil(t, cfg.RateLimiting.PerUser)
-	assert.EqualValues(t, 2, cfg.RateLimiting.PerUser.MaxTokens)
-	require.Len(t, cfg.RateLimiting.Tools, 1)
-	assert.Equal(t, "backend_a_echo", cfg.RateLimiting.Tools[0].Name)
-	require.NotNil(t, cfg.RateLimiting.Tools[0].Shared)
-	assert.EqualValues(t, 5, cfg.RateLimiting.Tools[0].Shared.MaxTokens)
+	assert.Equal(t, "test-vmcp", cfg.Name)
+	assert.Equal(t, "test-group", cfg.Group)
 }
 
 // TestSetAuthConfigConditions tests that auth config conditions reflect the current state

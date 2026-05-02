@@ -4,7 +4,10 @@
 package remote
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +15,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // mockTokenSource is a test implementation of oauth2.TokenSource
@@ -237,4 +242,53 @@ func TestCreateTokenSourceFromCached(t *testing.T) {
 	)
 
 	assert.NotNil(t, tokenSource)
+}
+
+// TestCreateTokenSourceFromCached_SetsUserAgent verifies that token refresh
+// requests carry the ToolHive User-Agent header for both the standard and
+// resource-aware (RFC 8707) refresh paths. Without this, the oauth2 library
+// falls back to Go-http-client/2.0, which makes ToolHive traffic indistinguishable
+// from generic Go programs at the server side.
+func TestCreateTokenSourceFromCached_SetsUserAgent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		resource string
+	}{
+		{name: "standard refresh", resource: ""},
+		{name: "resource-aware refresh", resource: "https://api.example.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var capturedUserAgent string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedUserAgent = r.Header.Get("User-Agent")
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"access_token":  "new-access-token",
+					"refresh_token": "new-refresh-token",
+					"token_type":    "Bearer",
+					"expires_in":    3600,
+				})
+			}))
+			t.Cleanup(server.Close)
+
+			cfg := &oauth2.Config{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				Endpoint:     oauth2.Endpoint{TokenURL: server.URL},
+			}
+
+			ts := CreateTokenSourceFromCached(cfg, "old-refresh-token", time.Now().Add(-time.Hour), tt.resource)
+
+			tok, err := ts.Token()
+			require.NoError(t, err)
+			require.NotNil(t, tok)
+			assert.Equal(t, oauthproto.UserAgent, capturedUserAgent)
+		})
+	}
 }

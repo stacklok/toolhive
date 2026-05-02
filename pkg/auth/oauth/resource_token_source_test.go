@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func clientCredentialsFromRequest(r *http.Request) (clientID, clientSecret string) {
@@ -164,6 +166,7 @@ func TestResourceTokenSource_Token_ExpiredToken(t *testing.T) {
 		require.NotNil(t, capturedRequest)
 		assert.Equal(t, "POST", capturedRequest.Method)
 		assert.Equal(t, "application/x-www-form-urlencoded", capturedRequest.Header.Get("Content-Type"))
+		assert.Equal(t, oauthproto.UserAgent, capturedRequest.Header.Get("User-Agent"))
 	})
 
 	t.Run("includes client credentials in refresh request", func(t *testing.T) {

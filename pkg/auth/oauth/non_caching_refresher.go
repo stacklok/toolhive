@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // NonCachingRefresher is an oauth2.TokenSource that always performs a network
@@ -47,7 +49,7 @@ func NewNonCachingRefresher(cfg *oauth2.Config, refreshToken, resource string) *
 		cfg:          cfg,
 		resource:     resource,
 		refreshToken: refreshToken,
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		httpClient:   oauthproto.NewHTTPClient(),
 	}
 }
 

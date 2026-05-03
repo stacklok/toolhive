@@ -134,7 +134,8 @@ func TestDeploymentForMCPServer_TelemetryCABundleVolume(t *testing.T) {
 			}
 
 			r := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
-			deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+			deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+			require.NoError(t, err)
 			require.NotNil(t, deployment, "deployment should not be nil")
 
 			podSpec := deployment.Spec.Template.Spec
@@ -208,7 +209,8 @@ func TestDeploymentForMCPServer_TelemetryCABundleVolume_FetchError(t *testing.T)
 	}
 
 	r := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 
 	// When the referenced MCPTelemetryConfig is not found, getTelemetryConfigForMCPServer
 	// returns nil without error (NotFound is swallowed). The deployment should still be created

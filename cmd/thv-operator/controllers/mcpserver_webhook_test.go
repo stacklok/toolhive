@@ -4,7 +4,6 @@
 package controllers
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -159,7 +158,7 @@ func TestMCPServerReconciler_handleWebhookConfig(t *testing.T) {
 
 func TestMCPServerReconciler_mapWebhookConfigToServers(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
@@ -218,4 +217,34 @@ func TestMCPServerReconciler_mapWebhookConfigToServers(t *testing.T) {
 		reqs := r.mapWebhookConfigToServers(ctx, pod)
 		assert.Nil(t, reqs)
 	})
+}
+
+func TestMCPServerReconciler_deploymentForMCPServerWebhookConfigError(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image:            "img",
+			Transport:        "stdio",
+			ProxyPort:        8080,
+			WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "missing"},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(mcpServer).
+		Build()
+	r := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	deployment, err := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.Error(t, err)
+	assert.Nil(t, deployment)
+	assert.Contains(t, err.Error(), "failed to validate webhook config")
+	assert.Contains(t, err.Error(), "failed to get MCPWebhookConfig")
 }

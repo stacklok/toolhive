@@ -22,6 +22,18 @@ import (
 
 const webhookMountBasePath = "/etc/toolhive/webhooks"
 
+const (
+	webhookSecretPurposeHMAC          = "hmac"
+	webhookSecretPurposeTLSCA         = "tls_ca"
+	webhookSecretPurposeTLSClientCert = "tls_client_cert" // #nosec G101 -- purpose label, not credential material.
+	webhookSecretPurposeTLSClientKey  = "tls_client_key"  // #nosec G101 -- purpose label, not credential material.
+
+	webhookHMACSecretFileName       = "hmac"
+	webhookCASecretFileName         = "ca.crt"
+	webhookClientCertSecretFileName = "tls.crt"
+	webhookClientKeySecretFileName  = "tls.key"
+)
+
 // GetWebhookConfigByName retrieves a MCPWebhookConfig from the cluster by its name
 func GetWebhookConfigByName(
 	ctx context.Context,
@@ -74,9 +86,9 @@ func GetWebhookConfigForMCPServer(
 	return GetWebhookConfigByName(ctx, c, mcpServer.Namespace, mcpServer.Spec.WebhookConfigRef.Name)
 }
 
-// GenerateWebhookEnvVars generates environment variables for webhook secret references.
-// These expose the necessary secrets as TOOLHIVE_SECRET_{secret-name} so they can be
-// correctly extracted and processed by the runner environment provider.
+// GenerateWebhookEnvVars validates that the referenced config exists.
+// Webhook secrets are mounted as files by GenerateWebhookVolumes so secret names and keys
+// are not embedded in environment variable names.
 func GenerateWebhookEnvVars(
 	ctx context.Context,
 	c client.Client,
@@ -88,64 +100,14 @@ func GenerateWebhookEnvVars(
 		return envVars, nil
 	}
 
-	config, err := GetWebhookConfigByName(ctx, c, namespace, webhookConfigRef.Name)
-	if err != nil {
+	if _, err := GetWebhookConfigByName(ctx, c, namespace, webhookConfigRef.Name); err != nil {
 		return nil, fmt.Errorf("failed to get MCPWebhookConfig: %w", err)
-	}
-
-	// We collect secrets to avoid duplicates and sort the final list for stable pod specs.
-	secretsToExpose := make(map[string]*mcpv1beta1.SecretKeyRef)
-
-	addSecrets := func(kind string, webhooks []mcpv1beta1.WebhookSpec) {
-		for _, w := range webhooks {
-			if w.HMACSecretRef != nil {
-				secretsToExpose[webhookSecretIdentifier(kind, w.Name, "hmac", w.HMACSecretRef)] = w.HMACSecretRef
-			}
-			if w.TLSConfig != nil {
-				if w.TLSConfig.CASecretRef != nil {
-					secretsToExpose[webhookSecretIdentifier(kind, w.Name, "tls_ca", w.TLSConfig.CASecretRef)] =
-						w.TLSConfig.CASecretRef
-				}
-				if w.TLSConfig.ClientCertSecretRef != nil {
-					secretsToExpose[webhookSecretIdentifier(kind, w.Name, "tls_client_cert",
-						w.TLSConfig.ClientCertSecretRef)] = w.TLSConfig.ClientCertSecretRef
-				}
-				if w.TLSConfig.ClientKeySecretRef != nil {
-					secretsToExpose[webhookSecretIdentifier(kind, w.Name, "tls_client_key",
-						w.TLSConfig.ClientKeySecretRef)] = w.TLSConfig.ClientKeySecretRef
-				}
-			}
-		}
-	}
-
-	addSecrets("validating", config.Spec.Validating)
-	addSecrets("mutating", config.Spec.Mutating)
-
-	secretIdentifiers := make([]string, 0, len(secretsToExpose))
-	for identifier := range secretsToExpose {
-		secretIdentifiers = append(secretIdentifiers, identifier)
-	}
-	slices.Sort(secretIdentifiers)
-
-	for _, identifier := range secretIdentifiers {
-		ref := secretsToExpose[identifier]
-		envVars = append(envVars, corev1.EnvVar{
-			Name: fmt.Sprintf("TOOLHIVE_SECRET_%s", identifier),
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: ref.Name,
-					},
-					Key: ref.Key,
-				},
-			},
-		})
 	}
 
 	return envVars, nil
 }
 
-// GenerateWebhookVolumes creates volumes and mounts for TLS-backed webhook secrets.
+// GenerateWebhookVolumes creates volumes and mounts for webhook secrets.
 func GenerateWebhookVolumes(
 	ctx context.Context,
 	c client.Client,
@@ -171,31 +133,41 @@ func GenerateWebhookVolumes(
 
 	addSecretMounts := func(kind string, webhooks []mcpv1beta1.WebhookSpec) {
 		for _, wh := range webhooks {
+			if wh.HMACSecretRef != nil {
+				identifier := webhookSecretIdentifier(kind, wh.Name, webhookSecretPurposeHMAC, wh.HMACSecretRef)
+				mountsByIdentifier[identifier] = secretMount{
+					ref:       wh.HMACSecretRef,
+					mountPath: webhookSecretMountPath(identifier, webhookHMACSecretFileName),
+					fileName:  webhookHMACSecretFileName,
+				}
+			}
 			if wh.TLSConfig == nil {
 				continue
 			}
 			if wh.TLSConfig.CASecretRef != nil {
-				identifier := webhookSecretIdentifier(kind, wh.Name, "tls_ca", wh.TLSConfig.CASecretRef)
+				identifier := webhookSecretIdentifier(kind, wh.Name, webhookSecretPurposeTLSCA, wh.TLSConfig.CASecretRef)
 				mountsByIdentifier[identifier] = secretMount{
 					ref:       wh.TLSConfig.CASecretRef,
-					mountPath: webhookTLSSecretMountPath(identifier, wh.TLSConfig.CASecretRef),
-					fileName:  webhookSecretFileName(wh.TLSConfig.CASecretRef),
+					mountPath: webhookSecretMountPath(identifier, webhookCASecretFileName),
+					fileName:  webhookCASecretFileName,
 				}
 			}
 			if wh.TLSConfig.ClientCertSecretRef != nil {
-				identifier := webhookSecretIdentifier(kind, wh.Name, "tls_client_cert", wh.TLSConfig.ClientCertSecretRef)
+				identifier := webhookSecretIdentifier(kind, wh.Name, webhookSecretPurposeTLSClientCert,
+					wh.TLSConfig.ClientCertSecretRef)
 				mountsByIdentifier[identifier] = secretMount{
 					ref:       wh.TLSConfig.ClientCertSecretRef,
-					mountPath: webhookTLSSecretMountPath(identifier, wh.TLSConfig.ClientCertSecretRef),
-					fileName:  webhookSecretFileName(wh.TLSConfig.ClientCertSecretRef),
+					mountPath: webhookSecretMountPath(identifier, webhookClientCertSecretFileName),
+					fileName:  webhookClientCertSecretFileName,
 				}
 			}
 			if wh.TLSConfig.ClientKeySecretRef != nil {
-				identifier := webhookSecretIdentifier(kind, wh.Name, "tls_client_key", wh.TLSConfig.ClientKeySecretRef)
+				identifier := webhookSecretIdentifier(kind, wh.Name, webhookSecretPurposeTLSClientKey,
+					wh.TLSConfig.ClientKeySecretRef)
 				mountsByIdentifier[identifier] = secretMount{
 					ref:       wh.TLSConfig.ClientKeySecretRef,
-					mountPath: webhookTLSSecretMountPath(identifier, wh.TLSConfig.ClientKeySecretRef),
-					fileName:  webhookSecretFileName(wh.TLSConfig.ClientKeySecretRef),
+					mountPath: webhookSecretMountPath(identifier, webhookClientKeySecretFileName),
+					fileName:  webhookClientKeySecretFileName,
 				}
 			}
 		}
@@ -242,7 +214,8 @@ func GenerateWebhookVolumes(
 }
 
 func webhookSecretIdentifier(kind, webhookName, purpose string, ref *mcpv1beta1.SecretKeyRef) string {
-	parts := []string{"WEBHOOK", kind, webhookName, purpose, ref.Name, ref.Key}
+	refHash := CalculateConfigHash(fmt.Sprintf("%s/%s", ref.Name, ref.Key))
+	parts := []string{"WEBHOOK", kind, webhookName, purpose, refHash}
 	sanitized := strings.ToUpper(strings.Join(parts, "_"))
 	sanitized = strings.ReplaceAll(sanitized, "-", "_")
 	return envVarSanitizer.ReplaceAllString(sanitized, "_")
@@ -266,7 +239,10 @@ func buildWebhookConfig(kind string, spec mcpv1beta1.WebhookSpec) webhook.Config
 	}
 
 	if spec.HMACSecretRef != nil {
-		cfg.HMACSecretRef = webhookSecretIdentifier(kind, spec.Name, "hmac", spec.HMACSecretRef)
+		cfg.HMACSecretRef = webhookSecretMountPath(
+			webhookSecretIdentifier(kind, spec.Name, webhookSecretPurposeHMAC, spec.HMACSecretRef),
+			webhookHMACSecretFileName,
+		)
 	}
 
 	if spec.TLSConfig != nil {
@@ -274,19 +250,21 @@ func buildWebhookConfig(kind string, spec mcpv1beta1.WebhookSpec) webhook.Config
 			InsecureSkipVerify: spec.TLSConfig.InsecureSkipVerify,
 		}
 		if spec.TLSConfig.CASecretRef != nil {
-			tlsConfig.CABundlePath = webhookTLSSecretMountPath(
-				webhookSecretIdentifier(kind, spec.Name, "tls_ca", spec.TLSConfig.CASecretRef),
-				spec.TLSConfig.CASecretRef,
+			tlsConfig.CABundlePath = webhookSecretMountPath(
+				webhookSecretIdentifier(kind, spec.Name, webhookSecretPurposeTLSCA, spec.TLSConfig.CASecretRef),
+				webhookCASecretFileName,
 			)
 		}
 		if spec.TLSConfig.ClientCertSecretRef != nil && spec.TLSConfig.ClientKeySecretRef != nil {
-			tlsConfig.ClientCertPath = webhookTLSSecretMountPath(
-				webhookSecretIdentifier(kind, spec.Name, "tls_client_cert", spec.TLSConfig.ClientCertSecretRef),
-				spec.TLSConfig.ClientCertSecretRef,
+			tlsConfig.ClientCertPath = webhookSecretMountPath(
+				webhookSecretIdentifier(kind, spec.Name, webhookSecretPurposeTLSClientCert,
+					spec.TLSConfig.ClientCertSecretRef),
+				webhookClientCertSecretFileName,
 			)
-			tlsConfig.ClientKeyPath = webhookTLSSecretMountPath(
-				webhookSecretIdentifier(kind, spec.Name, "tls_client_key", spec.TLSConfig.ClientKeySecretRef),
-				spec.TLSConfig.ClientKeySecretRef,
+			tlsConfig.ClientKeyPath = webhookSecretMountPath(
+				webhookSecretIdentifier(kind, spec.Name, webhookSecretPurposeTLSClientKey,
+					spec.TLSConfig.ClientKeySecretRef),
+				webhookClientKeySecretFileName,
 			)
 		}
 		cfg.TLSConfig = tlsConfig
@@ -335,16 +313,8 @@ func AddWebhookConfigOptions(
 	return nil
 }
 
-func webhookTLSSecretMountPath(identifier string, ref *mcpv1beta1.SecretKeyRef) string {
-	return path.Join(webhookMountBasePath, strings.ToLower(identifier), webhookSecretFileName(ref))
-}
-
-func webhookSecretFileName(ref *mcpv1beta1.SecretKeyRef) string {
-	fileName := strings.ReplaceAll(ref.Key, "/", "_")
-	if fileName == "" {
-		return "secret"
-	}
-	return fileName
+func webhookSecretMountPath(identifier, fileName string) string {
+	return path.Join(webhookMountBasePath, strings.ToLower(identifier), fileName)
 }
 
 func webhookVolumeName(identifier string) string {

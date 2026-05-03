@@ -4,7 +4,6 @@
 package controllerutil
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -67,7 +66,7 @@ func TestWebhookConfigHelpers(t *testing.T) {
 	}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(config, server).Build()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("GetWebhookConfigByName", func(t *testing.T) {
 		t.Parallel()
@@ -95,38 +94,38 @@ func TestWebhookConfigHelpers(t *testing.T) {
 		t.Parallel()
 		envVars, err := GenerateWebhookEnvVars(ctx, fakeClient, "default", server.Spec.WebhookConfigRef)
 		require.NoError(t, err)
-		require.Len(t, envVars, 4)
-
-		var keys []string
-		var names []string
-		for _, e := range envVars {
-			keys = append(keys, e.ValueFrom.SecretKeyRef.Name)
-			names = append(names, e.Name)
-		}
-		assert.Contains(t, keys, "hmac-secret")
-		assert.Contains(t, keys, "ca-secret")
-		assert.Contains(t, keys, "client-secret")
-		assert.Equal(t, []string{
-			"TOOLHIVE_SECRET_WEBHOOK_MUTATING_MUT1_TLS_CA_CA_SECRET_CA_CRT",
-			"TOOLHIVE_SECRET_WEBHOOK_MUTATING_MUT1_TLS_CLIENT_CERT_CLIENT_SECRET_TLS_CRT",
-			"TOOLHIVE_SECRET_WEBHOOK_MUTATING_MUT1_TLS_CLIENT_KEY_CLIENT_SECRET_TLS_KEY",
-			"TOOLHIVE_SECRET_WEBHOOK_VALIDATING_VAL1_HMAC_HMAC_SECRET_KEY",
-		}, names)
+		assert.Empty(t, envVars)
 	})
 
 	t.Run("GenerateWebhookVolumes", func(t *testing.T) {
 		t.Parallel()
 		volumes, mounts, err := GenerateWebhookVolumes(ctx, fakeClient, "default", server.Spec.WebhookConfigRef)
 		require.NoError(t, err)
-		require.Len(t, volumes, 3)
-		require.Len(t, mounts, 3)
+		require.Len(t, volumes, 4)
+		require.Len(t, mounts, 4)
+
+		hmacIdentifier := webhookSecretIdentifier("validating", "val1", webhookSecretPurposeHMAC,
+			config.Spec.Validating[0].HMACSecretRef)
+		caIdentifier := webhookSecretIdentifier(string(webhook.TypeMutating), "mut1", webhookSecretPurposeTLSCA,
+			config.Spec.Mutating[0].TLSConfig.CASecretRef)
+		clientCertIdentifier := webhookSecretIdentifier(string(webhook.TypeMutating), "mut1",
+			webhookSecretPurposeTLSClientCert, config.Spec.Mutating[0].TLSConfig.ClientCertSecretRef)
+		clientKeyIdentifier := webhookSecretIdentifier(string(webhook.TypeMutating), "mut1",
+			webhookSecretPurposeTLSClientKey, config.Spec.Mutating[0].TLSConfig.ClientKeySecretRef)
 
 		assert.Equal(t, []string{
-			"/etc/toolhive/webhooks/webhook_mutating_mut1_tls_ca_ca_secret_ca_crt/ca.crt",
-			"/etc/toolhive/webhooks/webhook_mutating_mut1_tls_client_cert_client_secret_tls_crt/tls.crt",
-			"/etc/toolhive/webhooks/webhook_mutating_mut1_tls_client_key_client_secret_tls_key/tls.key",
-		}, []string{mounts[0].MountPath, mounts[1].MountPath, mounts[2].MountPath})
-		assert.Equal(t, []string{"ca.crt", "tls.crt", "tls.key"}, []string{mounts[0].SubPath, mounts[1].SubPath, mounts[2].SubPath})
+			webhookSecretMountPath(caIdentifier, webhookCASecretFileName),
+			webhookSecretMountPath(clientCertIdentifier, webhookClientCertSecretFileName),
+			webhookSecretMountPath(clientKeyIdentifier, webhookClientKeySecretFileName),
+			webhookSecretMountPath(hmacIdentifier, webhookHMACSecretFileName),
+		}, []string{mounts[0].MountPath, mounts[1].MountPath, mounts[2].MountPath, mounts[3].MountPath})
+		assert.Equal(t, []string{"ca.crt", "tls.crt", "tls.key", "hmac"},
+			[]string{mounts[0].SubPath, mounts[1].SubPath, mounts[2].SubPath, mounts[3].SubPath})
+		for _, mount := range mounts {
+			assert.NotContains(t, mount.MountPath, "hmac-secret")
+			assert.NotContains(t, mount.MountPath, "client-secret")
+			assert.NotContains(t, mount.MountPath, "ca-secret")
+		}
 	})
 
 	t.Run("GenerateWebhookEnvVars configRef is nil", func(t *testing.T) {
@@ -154,11 +153,21 @@ func TestWebhookConfigHelpers(t *testing.T) {
 
 		validatingConfig := buildWebhookConfig(string(webhook.TypeValidating), config.Spec.Validating[0])
 		assert.Equal(t, webhook.FailurePolicyFail, validatingConfig.FailurePolicy)
-		assert.Equal(t, "WEBHOOK_VALIDATING_VAL1_HMAC_HMAC_SECRET_KEY", validatingConfig.HMACSecretRef)
+		assert.Equal(t,
+			webhookSecretMountPath(
+				webhookSecretIdentifier(string(webhook.TypeValidating), "val1", webhookSecretPurposeHMAC,
+					config.Spec.Validating[0].HMACSecretRef),
+				webhookHMACSecretFileName,
+			),
+			validatingConfig.HMACSecretRef)
 
 		mutatingConfig := buildWebhookConfig(string(webhook.TypeMutating), config.Spec.Mutating[0])
 		assert.Equal(t,
-			"/etc/toolhive/webhooks/webhook_mutating_mut1_tls_ca_ca_secret_ca_crt/ca.crt",
+			webhookSecretMountPath(
+				webhookSecretIdentifier(string(webhook.TypeMutating), "mut1", webhookSecretPurposeTLSCA,
+					config.Spec.Mutating[0].TLSConfig.CASecretRef),
+				webhookCASecretFileName,
+			),
 			mutatingConfig.TLSConfig.CABundlePath,
 		)
 	})

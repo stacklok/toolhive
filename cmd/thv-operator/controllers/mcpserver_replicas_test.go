@@ -563,7 +563,8 @@ func TestTerminationGracePeriodSet(t *testing.T) {
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
-	dep := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "")
+	dep, err := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "")
+	require.NoError(t, err)
 	require.NotNil(t, dep)
 	require.NotNil(t, dep.Spec.Template.Spec.TerminationGracePeriodSeconds)
 	assert.Equal(t, int64(30), *dep.Spec.Template.Spec.TerminationGracePeriodSeconds)
@@ -596,7 +597,8 @@ func TestSpecDrivenReplicasNil(t *testing.T) {
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
-	dep := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "")
+	dep, err := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "")
+	require.NoError(t, err)
 	require.NotNil(t, dep)
 	assert.Nil(t, dep.Spec.Replicas, "nil spec.replicas should produce nil Deployment.Spec.Replicas")
 }
@@ -629,7 +631,8 @@ func TestSpecDrivenReplicas3(t *testing.T) {
 		Build()
 
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
-	dep := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "")
+	dep, err := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "")
+	require.NoError(t, err)
 	require.NotNil(t, dep)
 	require.NotNil(t, dep.Spec.Replicas)
 	assert.Equal(t, int32(3), *dep.Spec.Replicas)

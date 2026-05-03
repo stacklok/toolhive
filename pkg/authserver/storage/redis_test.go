@@ -42,10 +42,10 @@ func withRedisStorage(t *testing.T, fn func(context.Context, *RedisStorage, *min
 	t.Helper()
 	t.Parallel()
 	storage, mr := newTestRedisStorage(t)
-	defer func() {
+	t.Cleanup(func() {
 		_ = storage.Close()
 		mr.Close()
-	}()
+	})
 	fn(context.Background(), storage, mr)
 }
 
@@ -101,38 +101,43 @@ func TestRedisConfig_Validation(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "missing sentinel config",
-			cfg:     RedisConfig{ACLUserConfig: &ACLUserConfig{}, KeyPrefix: "test:"},
-			wantErr: "sentinel configuration is required",
+			name:    "neither addr nor sentinel config",
+			cfg:     RedisConfig{ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"}, KeyPrefix: "test:"},
+			wantErr: "one of addr (standalone) or sentinel configuration is required",
+		},
+		{
+			name: "addr and sentinel config both set",
+			cfg: RedisConfig{
+				Addr:           "localhost:6379",
+				SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}},
+				ACLUserConfig:  &ACLUserConfig{Username: "u", Password: "p"},
+				KeyPrefix:      "test:",
+			},
+			wantErr: "addr and sentinel configuration are mutually exclusive",
 		},
 		{
 			name:    "missing sentinel master name",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{}, KeyPrefix: "test:"},
+			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"}, KeyPrefix: "test:"},
 			wantErr: "sentinel master name is required",
 		},
 		{
 			name:    "missing sentinel addresses",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster"}, ACLUserConfig: &ACLUserConfig{}, KeyPrefix: "test:"},
+			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster"}, ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"}, KeyPrefix: "test:"},
 			wantErr: "at least one sentinel address is required",
 		},
 		{
 			name:    "missing ACL user config",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}}, KeyPrefix: "test:"},
+			cfg:     RedisConfig{Addr: "localhost:6379", KeyPrefix: "test:"},
 			wantErr: "ACL user configuration is required",
 		},
 		{
-			name:    "missing ACL username",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{Password: "pass"}, KeyPrefix: "test:"},
-			wantErr: "ACL username is required",
-		},
-		{
 			name:    "missing ACL password",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{Username: "user"}, KeyPrefix: "test:"},
+			cfg:     RedisConfig{Addr: "localhost:6379", ACLUserConfig: &ACLUserConfig{Username: "user"}, KeyPrefix: "test:"},
 			wantErr: "ACL password is required",
 		},
 		{
 			name:    "missing key prefix",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{Username: "user", Password: "pass"}},
+			cfg:     RedisConfig{Addr: "localhost:6379", ACLUserConfig: &ACLUserConfig{Username: "user", Password: "pass"}},
 			wantErr: "key prefix is required",
 		},
 	}
@@ -169,6 +174,52 @@ func TestNewRedisStorage_ConnectionFailure(t *testing.T) {
 	_, err := NewRedisStorage(ctx, cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to connect to redis")
+}
+
+func TestNewRedisStorage_Standalone_ConnectionFailure(t *testing.T) {
+	t.Parallel()
+
+	cfg := RedisConfig{
+		Addr: "localhost:19999",
+		ACLUserConfig: &ACLUserConfig{
+			Username: "user",
+			Password: "pass",
+		},
+		KeyPrefix:   "test:",
+		DialTimeout: 100 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	_, err := NewRedisStorage(ctx, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to connect to redis")
+}
+
+func TestNewRedisStorage_Standalone_WithMiniredis(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	// Register a non-default ACL user. miniredis enforces ACL when credentials are
+	// supplied, so we use RequireUserAuth to match the configured username/password.
+	mr.RequireUserAuth("testuser", "testpass")
+
+	cfg := RedisConfig{
+		Addr: mr.Addr(),
+		ACLUserConfig: &ACLUserConfig{
+			Username: "testuser",
+			Password: "testpass",
+		},
+		KeyPrefix: "test:",
+	}
+
+	ctx := context.Background()
+	s, err := NewRedisStorage(ctx, cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	require.NoError(t, s.Health(ctx))
 }
 
 // --- Client Tests ---
@@ -1882,4 +1933,210 @@ func TestRedisStorage_Health_ConnectionFailure(t *testing.T) {
 
 	err := storage.Health(context.Background())
 	require.Error(t, err)
+}
+
+// --- GetLatestUpstreamTokensForUser Tests ---
+
+func TestRedisStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no_match", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("one_match_returns_record", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-1",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "rt-1", got.RefreshToken)
+		})
+	})
+
+	t.Run("multiple_sessions_pick_latest_expires_at", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			now := time.Now()
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-1h",
+				ExpiresAt:    now.Add(time.Hour),
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-2", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-2h",
+				ExpiresAt:    now.Add(2 * time.Hour),
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-3", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-3h",
+				ExpiresAt:    now.Add(3 * time.Hour),
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			assert.Equal(t, "rt-3h", got.RefreshToken)
+		})
+	})
+
+	t.Run("different_user_not_matched", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// This case exits via the empty-SMEMBERS short-circuit (no user-upstream
+			// index for the queried userID), not the per-row ProviderID filter. The
+			// different_provider_not_matched case below exercises the row-level filter.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-X", &UpstreamTokens{
+				ProviderID: "prov-X",
+				UserID:     "user-B",
+				ExpiresAt:  time.Now().Add(time.Hour),
+			}))
+
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("different_provider_not_matched", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-Y", &UpstreamTokens{
+				ProviderID: "prov-Y",
+				UserID:     "user-A",
+				ExpiresAt:  time.Now().Add(time.Hour),
+			}))
+
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("tolerate_access_token_expired", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// ExpiresAt is 1 minute in the past. TTL = time.Until(-1min) + DefaultRefreshTokenTTL
+			// which is still large and positive, so Redis keeps the key.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-expired-at",
+				ExpiresAt:    time.Now().Add(-time.Minute),
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "rt-expired-at", got.RefreshToken)
+		})
+	})
+
+	t.Run("zero_expires_at_wins_over_nonzero", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Zero ExpiresAt is the no-expiry sentinel for providers like Slack and
+			// GitHub OAuth Apps. Treated as "alive forever" — beats any finite expiry.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-zero", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-zero",
+				ExpiresAt:    time.Time{},
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-nonzero", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-nonzero",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			assert.Equal(t, "rt-zero", got.RefreshToken)
+		})
+	})
+
+	t.Run("two_zero_expires_at_rows", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Both rows have zero ExpiresAt. The winner is whichever is encountered
+			// first during iteration — iteration order over Redis set members is
+			// non-deterministic, so we assert only that one of them is returned.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-zero-1", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-zero-1",
+				ExpiresAt:    time.Time{},
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-zero-2", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-zero-2",
+				ExpiresAt:    time.Time{},
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Contains(t, []string{"rt-zero-1", "rt-zero-2"}, got.RefreshToken)
+		})
+	})
+
+	// stale_index_entry is Redis-specific: a SMEMBER entry pointing at a key that
+	// was never written (simulating a TTL-evicted per-provider key). The real row
+	// must still be returned; the dangling member must not cause an error.
+	t.Run("stale_index_entry", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			// Store a real row for (user-A, prov-X).
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-real", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-real",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}))
+
+			// Inject a dangling member directly into the user reverse-index set.
+			// The key "test:auth:upstream:phantom-session:prov-X" was never written.
+			setKey := redisSetKey("test:auth:", KeyTypeUserUpstream, "user-A")
+			phantomKey := redisUpstreamKey("test:auth:", "phantom-session", "prov-X")
+			mr.SAdd(setKey, phantomKey)
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "rt-real", got.RefreshToken)
+		})
+	})
+
+	t.Run("returns_all_fields_round_trip", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			// Truncate to second precision: Redis stores time as int64 unix seconds.
+			now := time.Now().Truncate(time.Second)
+			fixture := UpstreamTokens{
+				ProviderID:       "prov-X",
+				AccessToken:      "access-tok",
+				RefreshToken:     "refresh-tok",
+				IDToken:          "id-tok",
+				ExpiresAt:        now.Add(time.Hour),
+				SessionExpiresAt: now.Add(2 * time.Hour),
+				UserID:           "user-A",
+				UpstreamSubject:  "sub-upstream",
+				ClientID:         "client-1",
+			}
+
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-rt", "prov-X", &fixture))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			require.Equal(t, fixture, *got)
+		})
+	})
 }

@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2505,4 +2506,280 @@ func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings_Redis(t *testing.T)
 			assert.NotEmpty(t, tokensMap["provider-2"], "provider-2 access token must be present")
 		})
 	}
+}
+
+// ============================================================================
+// Callback Refresh-Token Carry-Forward Integration Tests
+// ============================================================================
+
+// rtStrippingProxy wraps a mockoidc server and intercepts its token endpoint.
+// When stripRT is true the proxy omits the "refresh_token" field from every
+// token-endpoint response, replicating the common IdP behavior where the RT
+// is only issued on the first authorization (e.g. Google without prompt=consent).
+//
+// All other endpoints (authorize, userinfo, jwks, discovery) are forwarded
+// verbatim so that the real mockoidc can still sign tokens and serve user info.
+//
+// We use this proxy instead of the real mockoidc token endpoint for the second
+// authorize → callback leg because mockoidc's setTokens() always generates a
+// refresh_token for authorization_code grants and offers no API to suppress it.
+type rtStrippingProxy struct {
+	stripRT atomic.Bool
+	target  string // real mockoidc base URL (e.g. "http://127.0.0.1:PORT")
+}
+
+func (p *rtStrippingProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Forward the request to the real mockoidc.
+	proxyURL := p.target + r.URL.RequestURI()
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, proxyURL, r.Body)
+	if err != nil {
+		http.Error(w, "proxy: failed to build request", http.StatusInternalServerError)
+		return
+	}
+	proxyReq.Header = r.Header.Clone()
+
+	resp, err := http.DefaultTransport.RoundTrip(proxyReq)
+	if err != nil {
+		http.Error(w, "proxy: upstream request failed", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "proxy: failed to read response", http.StatusInternalServerError)
+		return
+	}
+
+	// Strip refresh_token when the flag is set and this is the token endpoint.
+	if p.stripRT.Load() && r.URL.Path == "/oidc/token" {
+		var m map[string]json.RawMessage
+		if jsonErr := json.Unmarshal(body, &m); jsonErr == nil {
+			delete(m, "refresh_token")
+			if rewritten, jsonErr := json.Marshal(m); jsonErr == nil {
+				body = rewritten
+			}
+		}
+	}
+
+	// Copy response headers and status code.
+	for k, vs := range resp.Header {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	// Drop the upstream Content-Length; the body may have been rewritten (RT
+	// stripped) so the original length is stale. net/http will set it correctly
+	// from the buffered body.
+	w.Header().Del("Content-Length")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(body)
+}
+
+// setupTestServerWithRTProxy creates a test server backed by a real mockoidc but
+// with the upstream OAuth2 provider pointing to the rtStrippingProxy instead of
+// the mockoidc server directly. This allows toggling RT suppression mid-test.
+func setupTestServerWithRTProxy(t *testing.T, m *mockoidc.MockOIDC, proxy *rtStrippingProxy) *testServerWithUpstream {
+	t.Helper()
+
+	proxyServer := httptest.NewServer(proxy)
+	t.Cleanup(proxyServer.Close)
+
+	cfg := m.Config()
+
+	upstreamCfg := &upstream.OAuth2Config{
+		CommonOAuthConfig: upstream.CommonOAuthConfig{
+			ClientID:     cfg.ClientID,
+			ClientSecret: cfg.ClientSecret,
+			Scopes:       []string{"openid", "profile", "email"},
+			// RedirectURI must point at our auth server (resolved below after httptest.NewServer).
+			RedirectURI: testIssuer + "/oauth/callback",
+		},
+		// Authorization and token go through the proxy; userinfo comes from the proxy too.
+		AuthorizationEndpoint: proxyServer.URL + "/oidc/authorize",
+		TokenEndpoint:         proxyServer.URL + "/oidc/token",
+		UserInfo: &upstream.UserInfoConfig{
+			EndpointURL: proxyServer.URL + "/oidc/userinfo",
+			FieldMapping: &upstream.UserInfoFieldMapping{
+				SubjectFields: []string{"sub", "email"},
+			},
+		},
+	}
+	upstreamProvider, err := upstream.NewOAuth2Provider(upstreamCfg)
+	require.NoError(t, err)
+
+	ts := setupTestServer(t,
+		withUpstream(upstreamProvider),
+		withScopes(registration.DefaultScopes),
+	)
+
+	return &testServerWithUpstream{
+		testServer:       ts,
+		mockOIDC:         m,
+		upstreamProvider: upstreamProvider,
+	}
+}
+
+// TestIntegration_Callback_PreservesRefreshTokenOnReauth verifies the carry-forward
+// behavior introduced in the CallbackHandler: when an upstream IdP omits refresh_token
+// on re-authorization, the callback must copy the RT from the most-recent prior row
+// for the same (userID, providerID) pair rather than leaving it empty.
+//
+// Flow summary:
+//  1. First authorize → callback: IdP issues an RT → stored normally.
+//  2. Second authorize → callback (same user): IdP omits RT → callback carries forward
+//     the RT from the first row. Canonical regression assertion: new row's RT == priorRT.
+//  3. Third authorize → callback (different user): no prior row exists for the new user →
+//     new row has empty RT. This exercises the ErrNotFound branch of the guard
+//     (GetLatestUpstreamTokensForUser returns ErrNotFound → nothing to carry).
+//     Note: the handler-level unit tests in callback_handler_test.go cover the
+//     UpstreamSubject mismatch guard directly; this leg covers the natural not-found path.
+func TestIntegration_Callback_PreservesRefreshTokenOnReauth(t *testing.T) {
+	t.Parallel()
+
+	const providerName = "default"
+	const userSubject = "reauth-user-001"
+	const userEmail = "reauth@example.com"
+
+	// Step 1: Stand up a real mockoidc server.
+	m, err := mockoidc.Run()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, m.Shutdown()) })
+
+	// Step 2: Build the RT-stripping proxy (initially pass-through).
+	proxy := &rtStrippingProxy{
+		target: m.Addr(),
+	}
+
+	// Step 3: Stand up the auth server with the upstream pointing at the proxy.
+	ts := setupTestServerWithRTProxy(t, m, proxy)
+
+	ctx := context.Background()
+
+	// =========================================================================
+	// Leg 1: First authorize → callback (normal — IdP issues a refresh_token)
+	// =========================================================================
+
+	// Queue the test user for the first flow.
+	m.QueueUser(&mockoidc.MockUser{
+		Subject: userSubject,
+		Email:   userEmail,
+	})
+
+	verifier1 := servercrypto.GeneratePKCEVerifier()
+	challenge1 := servercrypto.ComputePKCEChallenge(verifier1)
+
+	authCode1, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "rt-carry-leg1",
+		Challenge:    challenge1,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+
+	tokenData1 := exchangeCodeForTokens(t, ts.Server.URL, authCode1, verifier1, testAudience)
+	accessToken1, ok := tokenData1["access_token"].(string)
+	require.True(t, ok, "leg 1: access_token should be present")
+
+	sessionID1 := extractTSID(t, accessToken1, ts.PrivateKey.Public())
+
+	// Verify the first leg stored a non-empty RT (mockoidc always issues one).
+	tokens1, err := ts.storage.GetUpstreamTokens(ctx, sessionID1, providerName)
+	require.NoError(t, err, "leg 1: upstream tokens should be stored")
+	require.NotEmpty(t, tokens1.RefreshToken, "leg 1: RT must be non-empty (sanity check)")
+
+	priorRT := tokens1.RefreshToken
+
+	// =========================================================================
+	// Leg 2: Second authorize → callback (re-auth, same user, IdP omits RT)
+	// =========================================================================
+
+	// Enable RT stripping: the proxy will now remove "refresh_token" from the
+	// token endpoint JSON before the oauth2 library sees it. This replicates
+	// the real-world behavior of IdPs that do not re-issue refresh_tokens on
+	// subsequent authorizations (e.g. Google without prompt=consent).
+	proxy.stripRT.Store(true)
+
+	// Queue the same user again so the auth server resolves the same internal UserID.
+	m.QueueUser(&mockoidc.MockUser{
+		Subject: userSubject,
+		Email:   userEmail,
+	})
+
+	verifier2 := servercrypto.GeneratePKCEVerifier()
+	challenge2 := servercrypto.ComputePKCEChallenge(verifier2)
+
+	authCode2, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "rt-carry-leg2",
+		Challenge:    challenge2,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+
+	tokenData2 := exchangeCodeForTokens(t, ts.Server.URL, authCode2, verifier2, testAudience)
+	accessToken2, ok := tokenData2["access_token"].(string)
+	require.True(t, ok, "leg 2: access_token should be present")
+
+	sessionID2 := extractTSID(t, accessToken2, ts.PrivateKey.Public())
+
+	// The second authorize flow must create a new session (new TSID).
+	require.NotEqual(t, sessionID1, sessionID2, "leg 2: must use a distinct session ID")
+
+	// Canonical regression assertion: the new row's RT was carried forward from
+	// the prior session even though the IdP omitted it in the token response.
+	tokens2, err := ts.storage.GetUpstreamTokens(ctx, sessionID2, providerName)
+	require.NoError(t, err, "leg 2: upstream tokens should be stored")
+	assert.Equal(t, priorRT, tokens2.RefreshToken,
+		"leg 2: RT must be carried forward from the prior session (regression assertion)")
+
+	// =========================================================================
+	// Leg 3: Third authorize → callback (different user — no prior row)
+	// =========================================================================
+	// A different upstream subject causes ResolveUser to create a NEW internal user
+	// (new UserID). GetLatestUpstreamTokensForUser returns ErrNotFound for this new
+	// user, so the carry-forward guard is not triggered and the new row's RT is empty.
+	//
+	// This leg exercises the ErrNotFound branch in maybeCarryForwardRefreshToken.
+	// The UpstreamSubject mismatch guard is covered by handler-level unit tests.
+
+	const otherUserSubject = "reauth-other-user-999"
+	const otherUserEmail = "other@example.com"
+
+	// Keep RT stripping enabled for the third leg as well.
+	m.QueueUser(&mockoidc.MockUser{
+		Subject: otherUserSubject,
+		Email:   otherUserEmail,
+	})
+
+	verifier3 := servercrypto.GeneratePKCEVerifier()
+	challenge3 := servercrypto.ComputePKCEChallenge(verifier3)
+
+	authCode3, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+		ClientID:     testClientID,
+		RedirectURI:  testRedirectURI,
+		State:        "rt-carry-leg3",
+		Challenge:    challenge3,
+		Scope:        "openid profile",
+		ResponseType: "code",
+	})
+
+	tokenData3 := exchangeCodeForTokens(t, ts.Server.URL, authCode3, verifier3, testAudience)
+	accessToken3, ok := tokenData3["access_token"].(string)
+	require.True(t, ok, "leg 3: access_token should be present")
+
+	sessionID3 := extractTSID(t, accessToken3, ts.PrivateKey.Public())
+	require.NotEqual(t, sessionID2, sessionID3, "leg 3: must use a distinct session ID from leg 2")
+	require.NotEqual(t, sessionID1, sessionID3, "leg 3: must use a distinct session ID from leg 1")
+
+	// No carry-forward: RT stripping is still on, so storageTokens.RefreshToken is
+	// empty when we enter maybeCarryForwardRefreshToken. The new user has no prior
+	// row either, so GetLatestUpstreamTokensForUser returns ErrNotFound and the
+	// guard returns early — the stored RT stays empty (ErrNotFound branch).
+	tokens3, err := ts.storage.GetUpstreamTokens(ctx, sessionID3, providerName)
+	require.NoError(t, err, "leg 3: upstream tokens should be stored")
+	assert.Empty(t, tokens3.RefreshToken,
+		"leg 3: no RT carry-forward for a new user with no prior row (ErrNotFound path)")
 }

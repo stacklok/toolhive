@@ -52,7 +52,11 @@ func warnOnCleanupErr(err error, operation, key string) {
 
 // RedisConfig holds Redis connection configuration for runtime use.
 type RedisConfig struct {
-	// SentinelConfig is required - Sentinel-only deployment.
+	// Addr is the Redis server address for standalone mode (e.g., "host:port").
+	// Mutually exclusive with SentinelConfig.
+	Addr string
+
+	// SentinelConfig is required for Sentinel mode. Mutually exclusive with Addr.
 	SentinelConfig *SentinelConfig
 
 	// ACLUserConfig is required - ACL user authentication only.
@@ -71,7 +75,7 @@ type RedisConfig struct {
 	TLS *RedisTLSConfig
 
 	// SentinelTLS configures TLS for connections to Sentinel instances.
-	// When nil, sentinel connections are plaintext (no fallback to TLS config).
+	// Only applies when SentinelConfig is set. When nil, sentinel connections are plaintext.
 	SentinelTLS *RedisTLSConfig
 }
 
@@ -100,7 +104,8 @@ type ACLUserConfig struct {
 	Password string //nolint:gosec // G117: field legitimately holds sensitive data
 }
 
-// RedisStorage implements the Storage interface with Redis Sentinel backend.
+// RedisStorage implements the Storage interface backed by Redis.
+// Supports standalone mode (single endpoint) and Sentinel failover mode.
 // It provides distributed storage for OAuth2 tokens, authorization codes,
 // user data, and pending authorizations, enabling horizontal scaling.
 type RedisStorage struct {
@@ -200,7 +205,8 @@ func configureTLSDialer(opts *redis.FailoverOptions, masterCfg, sentinelCfg *Red
 	return nil
 }
 
-// NewRedisStorage creates Redis-backed storage with Sentinel failover support.
+// NewRedisStorage creates Redis-backed storage.
+// Supports standalone mode (Addr set) and Sentinel failover mode (SentinelConfig set).
 // Returns error if configuration validation fails or connection cannot be established.
 func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error) {
 	if err := validateConfig(&cfg); err != nil {
@@ -218,23 +224,44 @@ func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error
 		cfg.WriteTimeout = DefaultWriteTimeout
 	}
 
-	opts := &redis.FailoverOptions{
-		MasterName:    cfg.SentinelConfig.MasterName,
-		SentinelAddrs: cfg.SentinelConfig.SentinelAddrs,
-		DB:            cfg.SentinelConfig.DB,
-		Username:      cfg.ACLUserConfig.Username,
-		Password:      cfg.ACLUserConfig.Password,
-		DialTimeout:   cfg.DialTimeout,
-		ReadTimeout:   cfg.ReadTimeout,
-		WriteTimeout:  cfg.WriteTimeout,
-	}
+	var client redis.UniversalClient
 
-	// Configure TLS dialer if either master or sentinel TLS is enabled.
-	if err := configureTLSDialer(opts, cfg.TLS, cfg.SentinelTLS); err != nil {
-		return nil, err
-	}
+	if cfg.SentinelConfig != nil {
+		opts := &redis.FailoverOptions{
+			MasterName:    cfg.SentinelConfig.MasterName,
+			SentinelAddrs: cfg.SentinelConfig.SentinelAddrs,
+			DB:            cfg.SentinelConfig.DB,
+			Username:      cfg.ACLUserConfig.Username,
+			Password:      cfg.ACLUserConfig.Password,
+			DialTimeout:   cfg.DialTimeout,
+			ReadTimeout:   cfg.ReadTimeout,
+			WriteTimeout:  cfg.WriteTimeout,
+		}
 
-	client := redis.NewFailoverClient(opts)
+		// Configure TLS dialer if either master or sentinel TLS is enabled.
+		if err := configureTLSDialer(opts, cfg.TLS, cfg.SentinelTLS); err != nil {
+			return nil, err
+		}
+
+		client = redis.NewFailoverClient(opts)
+	} else {
+		masterTLS, err := buildTLSConfig(cfg.TLS)
+		if err != nil {
+			return nil, fmt.Errorf("master TLS config: %w", err)
+		}
+
+		opts := &redis.Options{
+			Addr:         cfg.Addr,
+			Username:     cfg.ACLUserConfig.Username,
+			Password:     cfg.ACLUserConfig.Password,
+			DialTimeout:  cfg.DialTimeout,
+			ReadTimeout:  cfg.ReadTimeout,
+			WriteTimeout: cfg.WriteTimeout,
+			TLSConfig:    masterTLS,
+		}
+
+		client = redis.NewClient(opts)
+	}
 
 	// Test connection
 	if err := client.Ping(ctx).Err(); err != nil {
@@ -266,20 +293,22 @@ func defaultSessionFactory(subject, idpSessionID, clientID string) fosite.Sessio
 }
 
 func validateConfig(cfg *RedisConfig) error {
-	if cfg.SentinelConfig == nil {
-		return errors.New("sentinel configuration is required")
+	if cfg.Addr != "" && cfg.SentinelConfig != nil {
+		return errors.New("addr and sentinel configuration are mutually exclusive")
 	}
-	if cfg.SentinelConfig.MasterName == "" {
-		return errors.New("sentinel master name is required")
+	if cfg.Addr == "" && cfg.SentinelConfig == nil {
+		return errors.New("one of addr (standalone) or sentinel configuration is required")
 	}
-	if len(cfg.SentinelConfig.SentinelAddrs) == 0 {
-		return errors.New("at least one sentinel address is required")
+	if cfg.SentinelConfig != nil {
+		if cfg.SentinelConfig.MasterName == "" {
+			return errors.New("sentinel master name is required")
+		}
+		if len(cfg.SentinelConfig.SentinelAddrs) == 0 {
+			return errors.New("at least one sentinel address is required")
+		}
 	}
 	if cfg.ACLUserConfig == nil {
 		return errors.New("ACL user configuration is required")
-	}
-	if cfg.ACLUserConfig.Username == "" {
-		return errors.New("ACL username is required")
 	}
 	if cfg.ACLUserConfig.Password == "" {
 		return errors.New("ACL password is required")
@@ -808,6 +837,30 @@ type storedUpstreamTokens struct {
 	ClientID         string `json:"client_id"`
 }
 
+// toUpstreamTokens converts the stored int64 epoch fields to time.Time and returns
+// the populated UpstreamTokens. Zero epoch values are preserved as zero time.Time.
+func (s *storedUpstreamTokens) toUpstreamTokens() *UpstreamTokens {
+	var expiresAt time.Time
+	if s.ExpiresAt != 0 {
+		expiresAt = time.Unix(s.ExpiresAt, 0)
+	}
+	var sessionExpiresAt time.Time
+	if s.SessionExpiresAt != 0 {
+		sessionExpiresAt = time.Unix(s.SessionExpiresAt, 0)
+	}
+	return &UpstreamTokens{
+		ProviderID:       s.ProviderID,
+		AccessToken:      s.AccessToken,
+		RefreshToken:     s.RefreshToken,
+		IDToken:          s.IDToken,
+		ExpiresAt:        expiresAt,
+		SessionExpiresAt: sessionExpiresAt,
+		UserID:           s.UserID,
+		UpstreamSubject:  s.UpstreamSubject,
+		ClientID:         s.ClientID,
+	}
+}
+
 // storeUpstreamTokensScript atomically reads the existing UserID, writes new token
 // data, updates the session index set, and updates user reverse-index sets.
 // This prevents a race condition where concurrent writes for the same session
@@ -1124,6 +1177,113 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 	return nil
 }
 
+// GetLatestUpstreamTokensForUser returns the upstream token row for (userID, providerID)
+// with the highest ExpiresAt across all sessions.
+//
+// Expired tokens (past ExpiresAt) are returned so callers can use the refresh
+// token; filtering by access-token expiry is the caller's responsibility.
+// See the interface declaration in types.go for the full contract.
+func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userID, providerID string) (*UpstreamTokens, error) {
+	if userID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("user ID cannot be empty")
+	}
+	if providerID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("provider ID cannot be empty")
+	}
+
+	setKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, userID)
+
+	members, err := s.client.SMembers(ctx, setKey).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return nil, fmt.Errorf("failed to get user upstream index: %w", err)
+	}
+	if len(members) == 0 {
+		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+	}
+
+	values, err := s.client.MGet(ctx, members...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get upstream tokens: %w", err)
+	}
+
+	var winner *storedUpstreamTokens
+	for i, val := range values {
+		stored, ok := parseUserUpstreamEntry(val, providerID, members[i])
+		if !ok {
+			continue
+		}
+
+		// Tie-breaker: prefer non-expiring rows (ExpiresAt == 0, the no-expiry
+		// sentinel for providers like Slack and GitHub OAuth Apps). Among finite
+		// expiries, the latest wins. This aligns with the rest of the package
+		// treating zero ExpiresAt as "alive forever".
+		if winner == nil || compareExpiryInt64(stored.ExpiresAt, winner.ExpiresAt) > 0 {
+			winner = stored
+		}
+	}
+
+	if winner == nil {
+		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+	}
+
+	return winner.toUpstreamTokens(), nil
+}
+
+// compareExpiryInt64 is the int64 (Unix-epoch) variant of compareExpiry. Zero
+// (no-expiry sentinel) ranks latest; among finite epochs, the larger ranks
+// latest. Returns -1/0/+1.
+func compareExpiryInt64(a, b int64) int {
+	switch {
+	case a == 0 && b == 0:
+		return 0
+	case a == 0:
+		return 1
+	case b == 0:
+		return -1
+	case a > b:
+		return 1
+	case a < b:
+		return -1
+	}
+	return 0
+}
+
+// parseUserUpstreamEntry parses one raw Redis value from the user-upstream index
+// and returns the decoded storedUpstreamTokens together with a match flag.
+// It returns (nil, false) for nil values, type mismatches, deletion tombstones,
+// JSON decode errors, and rows whose ProviderID does not match providerID.
+// keyName is used only for warning log messages.
+func parseUserUpstreamEntry(val any, providerID, keyName string) (*storedUpstreamTokens, bool) {
+	if val == nil {
+		// Dangling set member: the per-provider key has been TTL-evicted.
+		// Skip it; the next write will clean up the index entry (best-effort).
+		return nil, false
+	}
+
+	data, ok := val.(string)
+	if !ok {
+		slog.Warn("skipping upstream token entry: unexpected type", "key", keyName)
+		return nil, false
+	}
+
+	if data == nullMarker {
+		// Deletion tombstone — treat as absent.
+		return nil, false
+	}
+
+	var stored storedUpstreamTokens
+	if unmarshalErr := json.Unmarshal([]byte(data), &stored); unmarshalErr != nil {
+		slog.Warn("skipping corrupt upstream token entry", "key", keyName, "error", unmarshalErr)
+		return nil, false
+	}
+
+	if stored.ProviderID != providerID {
+		return nil, false
+	}
+
+	return &stored, true
+}
+
 // getUpstreamTokensFromKey retrieves and deserializes upstream tokens from a specific Redis key.
 func (s *RedisStorage) getUpstreamTokensFromKey(ctx context.Context, key string) (*UpstreamTokens, error) {
 	data, err := s.client.Get(ctx, key).Bytes()
@@ -1149,36 +1309,13 @@ func unmarshalUpstreamTokens(data []byte) (*UpstreamTokens, error) {
 		return nil, fmt.Errorf("failed to unmarshal upstream tokens: %w", err)
 	}
 
-	// Convert stored ExpiresAt back to time.Time.
-	// stored.ExpiresAt == 0 is a sentinel meaning "no expiry" — the write path
-	// stores 0 for zero time. Skip the expiry check in this case since Redis TTL
-	// handles the actual expiration.
-	var expiresAt time.Time
-	var expired bool
-	if stored.ExpiresAt != 0 {
-		expiresAt = time.Unix(stored.ExpiresAt, 0)
-		expired = time.Now().After(expiresAt)
-	}
+	tokens := stored.toUpstreamTokens()
 
-	var sessionExpiresAt time.Time
-	if stored.SessionExpiresAt != 0 {
-		sessionExpiresAt = time.Unix(stored.SessionExpiresAt, 0)
-	}
-
-	tokens := &UpstreamTokens{
-		ProviderID:       stored.ProviderID,
-		AccessToken:      stored.AccessToken,
-		RefreshToken:     stored.RefreshToken,
-		IDToken:          stored.IDToken,
-		ExpiresAt:        expiresAt,
-		SessionExpiresAt: sessionExpiresAt,
-		UserID:           stored.UserID,
-		UpstreamSubject:  stored.UpstreamSubject,
-		ClientID:         stored.ClientID,
-	}
-
-	// Return tokens along with ErrExpired so callers can use the refresh token
-	if expired {
+	// tokens.ExpiresAt is zero when the stored epoch was 0 (the write path stores
+	// 0 for zero time.Time, which toUpstreamTokens leaves as the zero time). Skip
+	// the expiry check in that case since Redis TTL handles the actual expiration.
+	// Return tokens along with ErrExpired so callers can use the refresh token.
+	if !tokens.ExpiresAt.IsZero() && time.Now().After(tokens.ExpiresAt) {
 		return tokens, ErrExpired
 	}
 

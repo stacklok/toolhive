@@ -296,10 +296,46 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 			errMsg:  "either discovery_url or registration_endpoint is required",
 		},
 		{
-			name: "DCRConfig with only registration_endpoint is valid",
+			name: "DCRConfig with only registration_endpoint is valid when authorization_endpoint and token_endpoint are also set",
 			config: OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://idp.example.com/authorize",
+				TokenEndpoint:         "https://idp.example.com/token",
 				DCRConfig: &DCRUpstreamConfig{
 					RegistrationEndpoint: "https://idp.example.com/register",
+				},
+			},
+		},
+
+		// registration_endpoint requires explicit authorize/token endpoints.
+		// Discovery would have populated them; bypassing discovery means the
+		// run-config must supply them or the upstream is unusable.
+		{
+			name: "DCRConfig.registration_endpoint without authorization_endpoint rejects",
+			config: OAuth2UpstreamRunConfig{
+				TokenEndpoint: "https://idp.example.com/token",
+				DCRConfig: &DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+				},
+			},
+			wantErr: true,
+			errMsg:  "authorization_endpoint and token_endpoint are required",
+		},
+		{
+			name: "DCRConfig.registration_endpoint without token_endpoint rejects",
+			config: OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://idp.example.com/authorize",
+				DCRConfig: &DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+				},
+			},
+			wantErr: true,
+			errMsg:  "authorization_endpoint and token_endpoint are required",
+		},
+		{
+			name: "DCRConfig.discovery_url is valid without explicit endpoints (discovery populates them)",
+			config: OAuth2UpstreamRunConfig{
+				DCRConfig: &DCRUpstreamConfig{
+					DiscoveryURL: "https://idp.example.com/.well-known/oauth-authorization-server",
 				},
 			},
 		},

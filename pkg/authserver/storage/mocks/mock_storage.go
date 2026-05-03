@@ -220,6 +220,21 @@ func (mr *MockUpstreamTokenStorageMockRecorder) GetAllUpstreamTokens(ctx, sessio
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllUpstreamTokens", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).GetAllUpstreamTokens), ctx, sessionID)
 }
 
+// GetLatestUpstreamTokensForUser mocks base method.
+func (m *MockUpstreamTokenStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userID, providerID string) (*storage.UpstreamTokens, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetLatestUpstreamTokensForUser", ctx, userID, providerID)
+	ret0, _ := ret[0].(*storage.UpstreamTokens)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetLatestUpstreamTokensForUser indicates an expected call of GetLatestUpstreamTokensForUser.
+func (mr *MockUpstreamTokenStorageMockRecorder) GetLatestUpstreamTokensForUser(ctx, userID, providerID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLatestUpstreamTokensForUser", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).GetLatestUpstreamTokensForUser), ctx, userID, providerID)
+}
+
 // GetUpstreamTokens mocks base method.
 func (m *MockUpstreamTokenStorage) GetUpstreamTokens(ctx context.Context, sessionID, providerName string) (*storage.UpstreamTokens, error) {
 	m.ctrl.T.Helper()
@@ -691,6 +706,21 @@ func (m *MockStorage) GetClient(ctx context.Context, id string) (fosite.Client, 
 func (mr *MockStorageMockRecorder) GetClient(ctx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetClient", reflect.TypeOf((*MockStorage)(nil).GetClient), ctx, id)
+}
+
+// GetLatestUpstreamTokensForUser mocks base method.
+func (m *MockStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userID, providerID string) (*storage.UpstreamTokens, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetLatestUpstreamTokensForUser", ctx, userID, providerID)
+	ret0, _ := ret[0].(*storage.UpstreamTokens)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetLatestUpstreamTokensForUser indicates an expected call of GetLatestUpstreamTokensForUser.
+func (mr *MockStorageMockRecorder) GetLatestUpstreamTokensForUser(ctx, userID, providerID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLatestUpstreamTokensForUser", reflect.TypeOf((*MockStorage)(nil).GetLatestUpstreamTokensForUser), ctx, userID, providerID)
 }
 
 // GetPKCERequestSession mocks base method.

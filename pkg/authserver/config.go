@@ -266,14 +266,44 @@ type OAuth2UpstreamRunConfig struct {
 // points at RFC 8414 / OIDC Discovery metadata from which the registration
 // endpoint is resolved; RegistrationEndpoint is used directly when the upstream
 // does not publish discovery metadata.
+//
+// Trust assumption: DiscoveryURL and RegistrationEndpoint are operator-supplied
+// URLs validated only for HTTPS-or-loopback. The DCR resolver will issue
+// outbound HTTP requests — possibly carrying the RFC 7591 initial access token
+// as a bearer header — to whatever address those URLs resolve to. There is
+// currently no allowlist or RFC1918 / link-local / cloud-metadata-service
+// guard, because the operator role is fully trusted today. If the trust
+// boundary ever changes (e.g. a multi-tenant operator deployment, or a less-
+// privileged role gains write access to this struct via a CRD or YAML
+// surface), this field becomes a confused-deputy SSRF vector. Hardening is
+// tracked in https://github.com/stacklok/toolhive/issues/5135.
 type DCRUpstreamConfig struct {
-	// DiscoveryURL is the RFC 8414 / OIDC Discovery URL from which the
-	// registration_endpoint is resolved at runtime. Mutually exclusive with
-	// RegistrationEndpoint.
+	// DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
+	// fetch at runtime. The resolver issues a single GET against this URL
+	// (no well-known-path fallback) and reads registration_endpoint,
+	// authorization_endpoint, token_endpoint,
+	// token_endpoint_auth_methods_supported, and scopes_supported from the
+	// response. Per RFC 8414 §3.3, the document's "issuer" field must
+	// exactly match the upstream issuer configured on the parent
+	// run-config.
+	//
+	// Use this field when the upstream publishes discovery metadata at a
+	// path that differs from the issuer-derived well-known paths — for
+	// example a multi-tenant IdP whose metadata lives at
+	// https://idp.example.com/tenants/acme/.well-known/openid-configuration.
+	//
+	// Mutually exclusive with RegistrationEndpoint.
 	DiscoveryURL string `json:"discovery_url,omitempty" yaml:"discovery_url,omitempty"`
 
 	// RegistrationEndpoint is the RFC 7591 registration endpoint URL used
-	// directly, bypassing discovery. Mutually exclusive with DiscoveryURL.
+	// directly, bypassing discovery. Because no discovery is performed,
+	// server-capability fields (token_endpoint_auth_methods_supported,
+	// scopes_supported) are unavailable on this code path; the caller is
+	// expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
+	// explicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth
+	// method falls back to the resolver's default (client_secret_basic).
+	//
+	// Mutually exclusive with DiscoveryURL.
 	RegistrationEndpoint string `json:"registration_endpoint,omitempty" yaml:"registration_endpoint,omitempty"`
 
 	// InitialAccessTokenFile is the path to a file containing the RFC 7591
@@ -506,6 +536,22 @@ func (c *OAuth2UpstreamRunConfig) Validate() error {
 	if hasDCR {
 		if err := c.DCRConfig.Validate(); err != nil {
 			return fmt.Errorf("oauth2 upstream: invalid dcr_config: %w", err)
+		}
+
+		// When the operator configures DCRConfig.RegistrationEndpoint, the
+		// resolver bypasses discovery and therefore cannot populate
+		// AuthorizationEndpoint or TokenEndpoint from server metadata. The
+		// run-config must supply both explicitly or the upstream is
+		// unusable: registration would succeed and the first authorize or
+		// token-exchange call would silently fail with empty endpoints.
+		// Discovery flow (DCRConfig.DiscoveryURL) is unaffected — those
+		// fields populate from metadata.
+		if c.DCRConfig.RegistrationEndpoint != "" {
+			if c.AuthorizationEndpoint == "" || c.TokenEndpoint == "" {
+				return fmt.Errorf(
+					"oauth2 upstream: authorization_endpoint and token_endpoint are required " +
+						"when dcr_config.registration_endpoint is set (no discovery to populate them)")
+			}
 		}
 	}
 

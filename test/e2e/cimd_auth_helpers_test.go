@@ -35,21 +35,27 @@ type cimdMockAuthServer struct {
 	server          *httptest.Server
 	authRequestChan chan cimdAuthRequest
 
-	mu            sync.Mutex
-	lastClientID  string
-	dcrCalled     bool
-	cimdSupported bool
+	mu               sync.Mutex
+	lastClientID     string
+	dcrCalled        bool
+	cimdSupported    bool
+	rejectCIMD       bool
+	cimdRejectedOnce bool
 }
 
 // newCIMDMockAuthServer creates and starts a mock authorization server that
 // advertises client_id_metadata_document_supported. It registers t.Cleanup to
-// close the server automatically.
-func newCIMDMockAuthServer(tb testHelper, cimdSupported bool) *cimdMockAuthServer {
+// close the server automatically. Pass rejectCIMD=true to make the server
+// reject the first authorization request that uses a CIMD client_id (an HTTPS
+// URL), simulating an AS that advertises CIMD support but rejects it at
+// runtime, triggering the DCR fallback path in ToolHive.
+func newCIMDMockAuthServer(tb testHelper, cimdSupported bool, rejectCIMD bool) *cimdMockAuthServer {
 	tb.Helper()
 
 	s := &cimdMockAuthServer{
 		authRequestChan: make(chan cimdAuthRequest, 4),
 		cimdSupported:   cimdSupported,
+		rejectCIMD:      rejectCIMD,
 	}
 
 	mux := http.NewServeMux()
@@ -124,9 +130,24 @@ func (s *cimdMockAuthServer) handleDiscovery(w http.ResponseWriter, _ *http.Requ
 	_ = json.NewEncoder(w).Encode(doc)
 }
 
+// RejectCIMDWasCalled returns true if the server rejected a CIMD client_id at
+// least once. Callers use this to assert that the CIMD path was attempted
+// before the DCR fallback fired.
+func (s *cimdMockAuthServer) RejectCIMDWasCalled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cimdRejectedOnce
+}
+
 // handleAuthorize captures the authorization request and either immediately
 // redirects (when auto_complete=true) or places the request into the channel
 // for the test to inspect.
+//
+// When rejectCIMD is true, the first request whose client_id is an HTTPS URL
+// (i.e. a CIMD metadata document URL) is rejected by redirecting to the
+// callback with error=invalid_client. This simulates an AS that advertises
+// CIMD support but rejects it at the authorization endpoint, triggering the
+// DCR fallback path in ToolHive.
 func (s *cimdMockAuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	req := cimdAuthRequest{
@@ -138,6 +159,32 @@ func (s *cimdMockAuthServer) handleAuthorize(w http.ResponseWriter, r *http.Requ
 
 	s.mu.Lock()
 	s.lastClientID = req.ClientID
+
+	// If rejectCIMD is armed and this is the first CIMD request, reject it.
+	// A CIMD client_id is any HTTPS URL (see oauthproto.IsClientIDMetadataDocumentURL).
+	if s.rejectCIMD && !s.cimdRejectedOnce && isCIMDClientID(req.ClientID) {
+		s.cimdRejectedOnce = true
+		s.mu.Unlock()
+
+		redirectURI := req.RedirectURI
+		if redirectURI == "" {
+			http.Error(w, "missing redirect_uri", http.StatusBadRequest)
+			return
+		}
+		separator := "?"
+		for _, ch := range redirectURI {
+			if ch == '?' {
+				separator = "&"
+				break
+			}
+		}
+		http.Redirect(w, r,
+			fmt.Sprintf("%s%serror=invalid_client&state=%s&error_description=cimd+not+supported",
+				redirectURI, separator, req.State),
+			http.StatusFound,
+		)
+		return
+	}
 	s.mu.Unlock()
 
 	// Always send into the channel so WaitForAuthRequest can inspect it.
@@ -224,6 +271,13 @@ func (s *cimdMockAuthServer) handleResourceMetadata(w http.ResponseWriter, _ *ht
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(meta)
+}
+
+// isCIMDClientID returns true if clientID looks like a CIMD metadata document
+// URL (i.e. any HTTPS URL). This mirrors oauthproto.IsClientIDMetadataDocumentURL
+// without importing the production package from a test helper.
+func isCIMDClientID(clientID string) bool {
+	return len(clientID) >= 8 && clientID[:8] == "https://"
 }
 
 // newCIMDMockMCPServer creates a minimal httptest MCP server that:

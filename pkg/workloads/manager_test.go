@@ -20,6 +20,7 @@ import (
 	runtimeMocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 	statusMocks "github.com/stacklok/toolhive/pkg/workloads/statuses/mocks"
 )
 
@@ -1154,6 +1155,158 @@ func TestDefaultManager_RunWorkload(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+// fakeRunOutcome describes a single attempt's behavior for fakeRunnerFactory.
+type fakeRunOutcome struct {
+	duration time.Duration
+	err      error
+}
+
+// fakeRunner implements mcpRunner for retry-loop tests by sleeping a
+// configured duration before returning a configured error.
+type fakeRunner struct {
+	duration time.Duration
+	err      error
+}
+
+func (f *fakeRunner) Run(ctx context.Context) error {
+	if f.duration > 0 {
+		select {
+		case <-time.After(f.duration):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return f.err
+}
+
+// fakeRunnerFactory replays a sequence of outcomes across successive calls.
+// Calls beyond the configured sequence return ErrContainerExitedRestartNeeded
+// with no delay so the test fails fast if the loop runs longer than expected.
+type fakeRunnerFactory struct {
+	outcomes  []fakeRunOutcome
+	callCount int
+}
+
+func (f *fakeRunnerFactory) factory() mcpRunnerFactory {
+	return func(_ *runner.RunConfig, _ statuses.StatusManager) mcpRunner {
+		idx := f.callCount
+		f.callCount++
+		if idx >= len(f.outcomes) {
+			return &fakeRunner{err: runner.ErrContainerExitedRestartNeeded}
+		}
+		return &fakeRunner{duration: f.outcomes[idx].duration, err: f.outcomes[idx].err}
+	}
+}
+
+func TestDefaultManager_RunWorkload_RetryCounterReset(t *testing.T) {
+	t.Parallel()
+
+	// Test thresholds: short enough to keep the test fast, but with a wide
+	// margin between "short" and "stable" run durations so scheduler jitter
+	// on a busy CI host does not flip a "short" run to "stable". Production
+	// thresholds are an order of magnitude larger.
+	testCfg := &retryConfig{
+		maxRetries:         3,
+		initialDelay:       1 * time.Millisecond,
+		maxBackoff:         5 * time.Millisecond,
+		stableRunThreshold: 50 * time.Millisecond,
+	}
+
+	short := fakeRunOutcome{duration: 5 * time.Millisecond, err: runner.ErrContainerExitedRestartNeeded}
+	stable := fakeRunOutcome{duration: 200 * time.Millisecond, err: runner.ErrContainerExitedRestartNeeded}
+	atThreshold := fakeRunOutcome{duration: 50 * time.Millisecond, err: runner.ErrContainerExitedRestartNeeded}
+
+	tests := []struct {
+		name             string
+		outcomes         []fakeRunOutcome
+		expectError      bool
+		errorContains    string
+		expectedAttempts int
+	}{
+		{
+			name:             "all short runs exhaust the retry budget",
+			outcomes:         []fakeRunOutcome{short, short, short},
+			expectError:      true,
+			errorContains:    "container restart failed after 3 attempts",
+			expectedAttempts: 3,
+		},
+		{
+			name:             "single stable run at start resets counter, extends budget by one cycle",
+			outcomes:         []fakeRunOutcome{stable, short, short, short},
+			expectError:      true,
+			errorContains:    "container restart failed after 3 attempts",
+			expectedAttempts: 4,
+		},
+		{
+			name:             "stable run mid-sequence resets counter, granting a full fresh budget",
+			outcomes:         []fakeRunOutcome{short, stable, short, short, short},
+			expectError:      true,
+			errorContains:    "container restart failed after 3 attempts",
+			expectedAttempts: 5,
+		},
+		{
+			name:             "run exactly at threshold counts as stable and resets counter",
+			outcomes:         []fakeRunOutcome{atThreshold, short, short, short},
+			expectError:      true,
+			errorContains:    "container restart failed after 3 attempts",
+			expectedAttempts: 4,
+		},
+		{
+			name:             "stable run followed by clean shutdown returns success",
+			outcomes:         []fakeRunOutcome{stable, {duration: 1 * time.Millisecond, err: nil}},
+			expectError:      false,
+			expectedAttempts: 2,
+		},
+		{
+			name:             "non-restart error bails immediately without using the retry budget",
+			outcomes:         []fakeRunOutcome{{duration: 1 * time.Millisecond, err: errors.New("fatal config error")}},
+			expectError:      true,
+			errorContains:    "fatal config error",
+			expectedAttempts: 1,
+		},
+		{
+			name:             "successful run returns without retrying",
+			outcomes:         []fakeRunOutcome{{duration: 1 * time.Millisecond, err: nil}},
+			expectError:      false,
+			expectedAttempts: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
+			mockStatusMgr.EXPECT().
+				SetWorkloadStatus(gomock.Any(), "retry-test", gomock.Any(), gomock.Any()).
+				Return(nil).
+				AnyTimes()
+
+			factory := &fakeRunnerFactory{outcomes: tt.outcomes}
+			manager := &DefaultManager{
+				statuses:    mockStatusMgr,
+				retryConfig: testCfg,
+				newRunner:   factory.factory(),
+			}
+
+			err := manager.RunWorkload(context.Background(), &runner.RunConfig{BaseName: "retry-test"})
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.expectedAttempts, factory.callCount, "unexpected number of run attempts")
 		})
 	}
 }

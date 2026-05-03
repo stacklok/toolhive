@@ -192,7 +192,7 @@ func sameEntry[V any](a, b V) bool {
 	ra := reflect.ValueOf(any(a))
 	if ra.IsValid() {
 		switch ra.Kind() { //nolint:exhaustive
-		case reflect.Ptr, reflect.UnsafePointer:
+		case reflect.Pointer, reflect.UnsafePointer:
 			rb := reflect.ValueOf(any(b))
 			return rb.IsValid() && ra.Pointer() == rb.Pointer()
 		}

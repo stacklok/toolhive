@@ -235,6 +235,12 @@ components:
           description: 'SessionNameClaim is the JWT claim to use for role session
             name (default: "sub").'
           type: string
+        subject_provider_name:
+          description: |-
+            SubjectProviderName identifies which upstream provider's access token to use
+            for STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer
+            token from the incoming HTTP request is used.
+          type: string
       type: object
     github_com_stacklok_toolhive_pkg_auth_awssts.RoleMapping:
       properties:
@@ -273,6 +279,14 @@ components:
           description: Bearer token configuration (alternative to OAuth)
           type: string
         bearer_token_file:
+          type: string
+        cached_cimd_client_id:
+          description: |-
+            CachedCIMDClientID stores the CIMD metadata URL used as client_id when CIMD
+            authentication was used. Kept separate from CachedClientID (which holds
+            DCR-issued IDs) so the two can have independent lifecycles — DCR credential
+            rotation clears CachedClientID without touching the stable CIMD URL.
+            Read by resolveClientCredentials to send the correct client_id on token refresh.
           type: string
         cached_client_id:
           description: |-
@@ -372,8 +386,8 @@ components:
         subject_token_type:
           description: |-
             SubjectTokenType specifies the type of the subject token being exchanged.
-            Common values: oauth.TokenTypeAccessToken (default), oauth.TokenTypeIDToken, oauth.TokenTypeJWT.
-            If empty, defaults to oauth.TokenTypeAccessToken.
+            Common values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.
+            If empty, defaults to oauthproto.TokenTypeAccessToken.
           type: string
         token_url:
           description: TokenURL is the OAuth 2.0 token endpoint URL
@@ -399,6 +413,70 @@ components:
             This is required and must match a configured upstream provider name.
           type: string
       type: object
+    github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig:
+      description: |-
+        DCRConfig enables RFC 7591 Dynamic Client Registration against the
+        upstream authorization server. When set, the client credentials are
+        obtained at runtime rather than being pre-provisioned via ClientID /
+        ClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.
+        Mutually exclusive with ClientID.
+      properties:
+        discovery_url:
+          description: |-
+            DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
+            fetch at runtime. The resolver issues a single GET against this URL
+            (no well-known-path fallback) and reads registration_endpoint,
+            authorization_endpoint, token_endpoint,
+            token_endpoint_auth_methods_supported, and scopes_supported from the
+            response. Per RFC 8414 §3.3, the document's "issuer" field must
+            exactly match the upstream issuer configured on the parent
+            run-config.
+
+            Use this field when the upstream publishes discovery metadata at a
+            path that differs from the issuer-derived well-known paths — for
+            example a multi-tenant IdP whose metadata lives at
+            https://idp.example.com/tenants/acme/.well-known/openid-configuration.
+
+            Mutually exclusive with RegistrationEndpoint.
+          type: string
+        initial_access_token_env_var:
+          description: |-
+            InitialAccessTokenEnvVar is the name of an environment variable
+            containing the RFC 7591 initial access token. Mutually exclusive with
+            InitialAccessTokenFile.
+          type: string
+        initial_access_token_file:
+          description: |-
+            InitialAccessTokenFile is the path to a file containing the RFC 7591
+            initial access token presented to the registration endpoint. Mutually
+            exclusive with InitialAccessTokenEnvVar. Both may be omitted for open
+            registration endpoints.
+          type: string
+        registration_endpoint:
+          description: |-
+            RegistrationEndpoint is the RFC 7591 registration endpoint URL used
+            directly, bypassing discovery. Because no discovery is performed,
+            server-capability fields (token_endpoint_auth_methods_supported,
+            scopes_supported) are unavailable on this code path; the caller is
+            expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
+            explicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth
+            method falls back to the resolver's default (client_secret_basic).
+
+            Mutually exclusive with DiscoveryURL.
+          type: string
+        software_id:
+          description: |-
+            SoftwareID is the RFC 7591 "software_id" registration metadata value,
+            identifying the client software independent of any particular
+            registration instance.
+          type: string
+        software_statement:
+          description: |-
+            SoftwareStatement is the RFC 7591 "software_statement" JWT asserting
+            metadata about the client software, signed by a party the authorization
+            server trusts.
+          type: string
+      type: object
     github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig:
       description: |-
         OAuth2Config contains OAuth 2.0-specific configuration.
@@ -417,8 +495,10 @@ components:
             endpoint.
           type: string
         client_id:
-          description: ClientID is the OAuth 2.0 client identifier registered with
-            the upstream IDP.
+          description: |-
+            ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
+            Mutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained
+            at runtime via RFC 7591 Dynamic Client Registration and must be left empty.
           type: string
         client_secret_env_var:
           description: |-
@@ -430,6 +510,8 @@ components:
             ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
             Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
           type: string
+        dcr_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig'
         redirect_uri:
           description: |-
             RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -694,8 +776,12 @@ components:
           uniqueItems: false
       type: object
     github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig:
-      description: UserInfo contains configuration for fetching user information (required
-        for OAuth2).
+      description: |-
+        UserInfo contains configuration for fetching user information.
+        Optional: when nil, the upstream OAuth2 provider derives a deterministic
+        subject by SHA-256-hashing the access token (with a "tk-" prefix) instead
+        of calling a userinfo endpoint. OIDC providers always derive Subject from
+        the ID token and are unaffected.
       properties:
         additional_headers:
           additionalProperties:
@@ -732,6 +818,11 @@ components:
       properties:
         acl_user_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig'
+        addr:
+          description: |-
+            Addr is the Redis server address for standalone mode (e.g., "host:port").
+            Mutually exclusive with SentinelConfig.
+          type: string
         auth_type:
           description: AuthType must be "aclUser" - only ACL user authentication is
             supported.
@@ -757,9 +848,8 @@ components:
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig:
-      description: |-
-        SentinelTLS configures TLS for Sentinel connections.
-        Falls back to TLS config when nil.
+      description: SentinelTLS configures TLS for Sentinel connections. Only applies
+        when SentinelConfig is set.
       properties:
         ca_cert_file:
           description: CACertFile is the path to a PEM-encoded CA certificate file.
@@ -780,7 +870,9 @@ components:
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig:
-      description: SentinelConfig contains Sentinel-specific configuration.
+      description: |-
+        SentinelConfig contains Sentinel-specific configuration.
+        Mutually exclusive with Addr.
       properties:
         db:
           description: 'DB is the Redis database number (default: 0).'

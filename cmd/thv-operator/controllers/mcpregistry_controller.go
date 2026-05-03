@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
@@ -47,9 +48,16 @@ type MCPRegistryReconciler struct {
 	registryAPIManager registryapi.Manager
 }
 
-// NewMCPRegistryReconciler creates a new MCPRegistryReconciler with required dependencies
-func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme) *MCPRegistryReconciler {
-	registryAPIManager := registryapi.NewManager(k8sClient, scheme)
+// NewMCPRegistryReconciler creates a new MCPRegistryReconciler with required
+// dependencies. imagePullSecretsDefaults are cluster-wide pull-secret defaults
+// from the operator chart that are merged with the per-CR list at registry-api
+// workload-construction time.
+func NewMCPRegistryReconciler(
+	k8sClient client.Client,
+	scheme *runtime.Scheme,
+	imagePullSecretsDefaults imagepullsecrets.Defaults,
+) *MCPRegistryReconciler {
+	registryAPIManager := registryapi.NewManager(k8sClient, scheme, imagePullSecretsDefaults)
 	return &MCPRegistryReconciler{
 		Client:             k8sClient,
 		Scheme:             scheme,

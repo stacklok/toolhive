@@ -222,7 +222,11 @@ func (s *MemoryStorage) cleanupExpired() {
 
 	var expiredUpstreamTokens []upstreamKey
 	for k, v := range s.upstreamTokens {
-		if now.After(v.expiresAt) {
+		// Zero expiresAt is the sentinel for "no TTL" (non-expiring token with no session
+		// bound). Other entry types never use zero expiresAt, so only upstream tokens need
+		// this guard — without it, time.Time{} would compare as before any real time and
+		// every non-expiring token would be swept on the next tick.
+		if !v.expiresAt.IsZero() && now.After(v.expiresAt) {
 			expiredUpstreamTokens = append(expiredUpstreamTokens, k)
 		}
 	}
@@ -704,25 +708,33 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 	now := time.Now()
 	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
 	// survives in storage for transparent token refresh by the middleware.
-	var expiresAt time.Time
-	if tokens != nil && !tokens.ExpiresAt.IsZero() {
-		expiresAt = tokens.ExpiresAt.Add(DefaultRefreshTokenTTL)
-	} else {
-		expiresAt = now.Add(DefaultAccessTokenTTL + DefaultRefreshTokenTTL)
-	}
+	// Zero ExpiresAt means the token never expires; no TTL is applied.
+	expiresAt := func() time.Time {
+		if tokens == nil {
+			return now.Add(DefaultAccessTokenTTL + DefaultRefreshTokenTTL)
+		}
+		if !tokens.ExpiresAt.IsZero() {
+			return tokens.ExpiresAt.Add(DefaultRefreshTokenTTL)
+		}
+		if !tokens.SessionExpiresAt.IsZero() {
+			return tokens.SessionExpiresAt.Add(DefaultRefreshTokenTTL)
+		}
+		return time.Time{} // non-expiring token with no known session bound
+	}()
 
 	// Make a defensive copy to prevent aliasing issues
 	var tokensCopy *UpstreamTokens
 	if tokens != nil {
 		tokensCopy = &UpstreamTokens{
-			ProviderID:      tokens.ProviderID,
-			AccessToken:     tokens.AccessToken,
-			RefreshToken:    tokens.RefreshToken,
-			IDToken:         tokens.IDToken,
-			ExpiresAt:       tokens.ExpiresAt,
-			UserID:          tokens.UserID,
-			UpstreamSubject: tokens.UpstreamSubject,
-			ClientID:        tokens.ClientID,
+			ProviderID:       tokens.ProviderID,
+			AccessToken:      tokens.AccessToken,
+			RefreshToken:     tokens.RefreshToken,
+			IDToken:          tokens.IDToken,
+			ExpiresAt:        tokens.ExpiresAt,
+			SessionExpiresAt: tokens.SessionExpiresAt,
+			UserID:           tokens.UserID,
+			UpstreamSubject:  tokens.UpstreamSubject,
+			ClientID:         tokens.ClientID,
 		}
 	}
 
@@ -732,6 +744,24 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 		expiresAt: expiresAt,
 	}
 	return nil
+}
+
+// cloneUpstreamTokens returns a field-by-field copy of t, or nil if t is nil.
+func cloneUpstreamTokens(t *UpstreamTokens) *UpstreamTokens {
+	if t == nil {
+		return nil
+	}
+	return &UpstreamTokens{
+		ProviderID:       t.ProviderID,
+		AccessToken:      t.AccessToken,
+		RefreshToken:     t.RefreshToken,
+		IDToken:          t.IDToken,
+		ExpiresAt:        t.ExpiresAt,
+		SessionExpiresAt: t.SessionExpiresAt,
+		UserID:           t.UserID,
+		UpstreamSubject:  t.UpstreamSubject,
+		ClientID:         t.ClientID,
+	}
 }
 
 // GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
@@ -754,19 +784,9 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, provider
 	}
 
 	// Return a defensive copy to prevent aliasing issues
-	tokens := entry.value
-	if tokens == nil {
+	result := cloneUpstreamTokens(entry.value)
+	if result == nil {
 		return nil, nil
-	}
-	result := &UpstreamTokens{
-		ProviderID:      tokens.ProviderID,
-		AccessToken:     tokens.AccessToken,
-		RefreshToken:    tokens.RefreshToken,
-		IDToken:         tokens.IDToken,
-		ExpiresAt:       tokens.ExpiresAt,
-		UserID:          tokens.UserID,
-		UpstreamSubject: tokens.UpstreamSubject,
-		ClientID:        tokens.ClientID,
 	}
 
 	// Check the token's own ExpiresAt (access token expiry), not the entry's expiresAt
@@ -793,22 +813,8 @@ func (s *MemoryStorage) GetAllUpstreamTokens(_ context.Context, sessionID string
 		if key.sessionID != sessionID {
 			continue
 		}
-		tokens := entry.value
-		if tokens == nil {
-			result[key.providerName] = nil
-			continue
-		}
-		// Defensive copy
-		result[key.providerName] = &UpstreamTokens{
-			ProviderID:      tokens.ProviderID,
-			AccessToken:     tokens.AccessToken,
-			RefreshToken:    tokens.RefreshToken,
-			IDToken:         tokens.IDToken,
-			ExpiresAt:       tokens.ExpiresAt,
-			UserID:          tokens.UserID,
-			UpstreamSubject: tokens.UpstreamSubject,
-			ClientID:        tokens.ClientID,
-		}
+		// Defensive copy (cloneUpstreamTokens handles nil)
+		result[key.providerName] = cloneUpstreamTokens(entry.value)
 	}
 
 	return result, nil
@@ -830,6 +836,56 @@ func (s *MemoryStorage) DeleteUpstreamTokens(_ context.Context, sessionID string
 		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
 	}
 	return nil
+}
+
+// compareExpiry orders ExpiresAt values for the GetLatestUpstreamTokensForUser
+// tie-breaker. Non-expiring rows (zero ExpiresAt — "alive forever") rank latest;
+// among finite expiries, later ranks latest. Mirrors time.Compare but with the
+// zero sentinel reinterpreted. Returns -1/0/+1.
+func compareExpiry(a, b time.Time) int {
+	aZero, bZero := a.IsZero(), b.IsZero()
+	switch {
+	case aZero && bZero:
+		return 0
+	case aZero:
+		return 1
+	case bZero:
+		return -1
+	}
+	return a.Compare(b)
+}
+
+// GetLatestUpstreamTokensForUser implements UpstreamTokenStorage.
+//
+// Expired tokens (past ExpiresAt) are returned so callers can use the refresh
+// token; filtering by access-token expiry is the caller's responsibility.
+// See the interface declaration in types.go for the full contract.
+func (s *MemoryStorage) GetLatestUpstreamTokensForUser(_ context.Context, userID, providerID string) (*UpstreamTokens, error) {
+	if userID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("user ID cannot be empty")
+	}
+	if providerID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("provider ID cannot be empty")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var winner *UpstreamTokens
+	for _, entry := range s.upstreamTokens {
+		if entry.value == nil || entry.value.UserID != userID || entry.value.ProviderID != providerID {
+			continue
+		}
+		if winner == nil || compareExpiry(entry.value.ExpiresAt, winner.ExpiresAt) > 0 {
+			winner = entry.value
+		}
+	}
+
+	if winner == nil {
+		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+	}
+
+	return cloneUpstreamTokens(winner), nil
 }
 
 // -----------------------

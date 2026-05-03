@@ -6,6 +6,9 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -40,46 +43,11 @@ func TestDeriveSecretKey(t *testing.T) {
 
 	assert.Equal(t, key1, key2, "same inputs must produce the same key")
 	assert.NotEqual(t, key1, key3, "different gateway URLs must produce different keys")
-	assert.Contains(t, key1, "LLM_OAUTH_", "key must start with expected prefix")
+	assert.True(t, len(key1) > len("LLM_OAUTH_"), "key must be longer than the prefix")
+	assert.Contains(t, key1, "LLM_OAUTH_", "key must carry the LLM-specific prefix")
 }
 
-// ── ensureOfflineAccess ───────────────────────────────────────────────────────
-
-func TestEnsureOfflineAccess(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		input  []string
-		expect []string
-	}{
-		{
-			name:   "already present",
-			input:  []string{"openid", "offline_access"},
-			expect: []string{"openid", "offline_access"},
-		},
-		{
-			name:   "not present",
-			input:  []string{"openid"},
-			expect: []string{"openid", "offline_access"},
-		},
-		{
-			name:   "empty",
-			input:  []string{},
-			expect: []string{"offline_access"},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := ensureOfflineAccess(tc.input)
-			assert.Equal(t, tc.expect, got)
-		})
-	}
-}
-
-// ── Token – non-interactive, no cached token → ErrTokenRequired ──────────────
+// ── ErrTokenRequired is returned in non-interactive mode ─────────────────────
 
 func TestTokenSource_NonInteractive_NoCache_ReturnsErrTokenRequired(t *testing.T) {
 	t.Parallel()
@@ -87,41 +55,26 @@ func TestTokenSource_NonInteractive_NoCache_ReturnsErrTokenRequired(t *testing.T
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 	mockSecrets := secretsmocks.NewMockProvider(ctrl)
+	mockSecrets.EXPECT().GetSecret(gomock.Any(), gomock.Any()).
+		Return("", errors.New("not found")).AnyTimes()
 
-	// Secrets provider returns not-found for any key lookup.
-	mockSecrets.EXPECT().
-		GetSecret(gomock.Any(), gomock.Any()).
-		Return("", errors.New("not found")).
-		AnyTimes()
-
-	cfg := minimalConfig()
-	ts := NewTokenSource(cfg, mockSecrets, false /* non-interactive */, nil)
-
+	ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
 	_, err := ts.Token(context.Background())
 	require.ErrorIs(t, err, ErrTokenRequired)
 }
 
-// ── Token – non-interactive, actionable tier-2 error surfaces as lastErr ─────
-
-// When the secrets backend returns a non-not-found error (e.g. keyring locked),
-// Token() must return that specific error rather than the generic ErrTokenRequired
-// so the caller can distinguish a backend failure from a missing session.
+// Backend errors surface as the specific error, not the generic ErrTokenRequired.
 func TestTokenSource_NonInteractive_BackendError_ReturnsLastErr(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 	mockSecrets := secretsmocks.NewMockProvider(ctrl)
-
-	// "keyring is locked" does not match IsNotFoundError, so it is an actionable
-	// error, not a cache miss. tier 1.5 silently ignores it; tier 2 surfaces it.
 	backendErr := errors.New("keyring is locked")
-	mockSecrets.EXPECT().
-		GetSecret(gomock.Any(), gomock.Any()).
-		Return("", backendErr).
-		AnyTimes()
+	mockSecrets.EXPECT().GetSecret(gomock.Any(), gomock.Any()).
+		Return("", backendErr).AnyTimes()
 
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false /* non-interactive */, nil)
+	ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
 	_, err := ts.Token(context.Background())
 
 	require.Error(t, err)
@@ -130,200 +83,48 @@ func TestTokenSource_NonInteractive_BackendError_ReturnsLastErr(t *testing.T) {
 	assert.ErrorContains(t, err, "keyring is locked")
 }
 
-// ── Token – non-interactive, no secrets provider → error (not ErrTokenRequired) ──
-
-// When secretsProvider is nil, tier 2 returns an actionable error rather than
-// the generic ErrTokenRequired so the caller knows why the token could not be
-// obtained (no secrets store configured).
-func TestTokenSource_NonInteractive_NilSecrets_ReturnsError(t *testing.T) {
+// Nil secrets provider returns an actionable error, not ErrTokenRequired.
+func TestTokenSource_NonInteractive_NilSecrets_ReturnsActionableError(t *testing.T) {
 	t.Parallel()
 
-	cfg := minimalConfig()
-	ts := NewTokenSource(cfg, nil /* no secrets */, false, nil)
-
+	ts := NewTokenSource(minimalConfig(), nil, false, nil)
 	_, err := ts.Token(context.Background())
+
 	require.Error(t, err)
-	assert.False(t, errors.Is(err, ErrTokenRequired),
-		"nil secrets provider should return an actionable error, not the generic ErrTokenRequired")
+	assert.False(t, errors.Is(err, ErrTokenRequired))
 }
 
-// ── refreshTokenKey – uses CachedRefreshTokenRef when set ────────────────────
+// ── KeyProvider uses CachedRefreshTokenRef when set ───────────────────────────
 
-func TestTokenSource_RefreshTokenKey_UsesCached(t *testing.T) {
-	t.Parallel()
-
-	cfg := minimalConfig()
-	cfg.OIDC.CachedRefreshTokenRef = "my-persisted-key"
-
-	ts := NewTokenSource(cfg, nil, false, nil)
-	assert.Equal(t, "my-persisted-key", ts.refreshTokenKey())
-}
-
-// ── refreshTokenKey – derives key when no cached ref ─────────────────────────
-
-func TestTokenSource_RefreshTokenKey_DerivedWhenEmpty(t *testing.T) {
-	t.Parallel()
-
-	cfg := minimalConfig()
-	ts := NewTokenSource(cfg, nil, false, nil)
-
-	key := ts.refreshTokenKey()
-	expected := DeriveSecretKey(cfg.GatewayURL, cfg.OIDC.Issuer)
-	assert.Equal(t, expected, key)
-}
-
-// ── preemptiveTokenSource – shifts expiry back by preemptiveRefreshWindow ────
-
-// staticTokenSource is a minimal oauth2.TokenSource for tests.
-type staticTokenSource struct{ tok *oauth2.Token }
-
-func (s *staticTokenSource) Token() (*oauth2.Token, error) { return s.tok, nil }
-
-func TestPreemptiveTokenSource_ShiftsExpiry(t *testing.T) {
-	t.Parallel()
-
-	realExpiry := time.Now().Add(2 * time.Minute)
-	inner := &staticTokenSource{tok: &oauth2.Token{
-		AccessToken: "access",
-		Expiry:      realExpiry,
-	}}
-
-	pts := &preemptiveTokenSource{inner: inner}
-	tok, err := pts.Token()
-	require.NoError(t, err)
-
-	wantExpiry := realExpiry.Add(-preemptiveRefreshWindow)
-	assert.WithinDuration(t, wantExpiry, tok.Expiry, time.Millisecond,
-		"expiry must be shifted back by preemptiveRefreshWindow")
-}
-
-func TestPreemptiveTokenSource_ZeroExpiry_Unchanged(t *testing.T) {
-	t.Parallel()
-
-	inner := &staticTokenSource{tok: &oauth2.Token{
-		AccessToken: "access",
-		Expiry:      time.Time{}, // zero — no expiry info
-	}}
-
-	pts := &preemptiveTokenSource{inner: inner}
-	tok, err := pts.Token()
-	require.NoError(t, err)
-	assert.True(t, tok.Expiry.IsZero(), "zero expiry must be passed through unchanged")
-}
-
-func TestPreemptiveTokenSource_PropagatesError(t *testing.T) {
-	t.Parallel()
-
-	inner := &errTokenSource{err: errors.New("refresh failed")}
-
-	pts := &preemptiveTokenSource{inner: inner}
-	_, err := pts.Token()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "refresh failed")
-}
-
-type errTokenSource struct{ err error }
-
-func (e *errTokenSource) Token() (*oauth2.Token, error) { return nil, e.err }
-
-// ── Preemptive refresh: expiry is shifted back by 30 s ───────────────────────
-
-func TestPreemptiveRefreshWindow_Value(t *testing.T) {
-	t.Parallel()
-	// The window must be exactly 30 s so token helpers and proxy workers
-	// consistently treat tokens as expired before the gateway does.
-	assert.Equal(t, 30*time.Second, preemptiveRefreshWindow)
-}
-
-func TestTokenSource_PreemptiveRefreshWindow_ExpiryShift(t *testing.T) {
-	t.Parallel()
-
-	// Verify the expiry shift arithmetic: a token expiring in 2 minutes should
-	// have its effective expiry moved back by preemptiveRefreshWindow.
-	realExpiry := time.Now().Add(2 * time.Minute)
-	shifted := realExpiry.Add(-preemptiveRefreshWindow)
-
-	assert.True(t, shifted.Before(realExpiry),
-		"shifted expiry must be earlier than the real expiry")
-	assert.InDelta(t,
-		preemptiveRefreshWindow.Seconds(),
-		realExpiry.Sub(shifted).Seconds(),
-		0.001,
-		"shift must equal preemptiveRefreshWindow",
-	)
-}
-
-// ── tryRestoreFromCache – empty secret value treated as missing ───────────────
-
-func TestTokenSource_TryRestoreFromCache_EmptySecret_ReturnsError(t *testing.T) {
+// When CachedRefreshTokenRef is set the token source must look up that exact key
+// in the secrets provider — not a newly derived key.
+func TestTokenSource_UsesCachedRefreshTokenRef(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 	mockSecrets := secretsmocks.NewMockProvider(ctrl)
 
-	// Provider returns success but empty string — treated as "no token".
-	mockSecrets.EXPECT().
-		GetSecret(gomock.Any(), gomock.Any()).
-		Return("", nil)
-
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
-	err := ts.tryRestoreFromCache(context.Background())
-	require.Error(t, err, "empty refresh token must be treated as missing")
-}
-
-// ── tryRestoreFromCache – backend error is propagated, not swallowed ──────────
-
-func TestTokenSource_TryRestoreFromCache_BackendError_Propagated(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	t.Cleanup(ctrl.Finish)
-	mockSecrets := secretsmocks.NewMockProvider(ctrl)
-
-	// Simulate a real backend failure (keyring locked, network error, etc.).
-	backendErr := errors.New("keyring is locked")
-	mockSecrets.EXPECT().
-		GetSecret(gomock.Any(), gomock.Any()).
-		Return("", backendErr)
-
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
-	err := ts.tryRestoreFromCache(context.Background())
-
-	require.Error(t, err)
-	// Must surface the underlying backend error, not hide it as "no cached token".
-	assert.Contains(t, err.Error(), "keyring is locked",
-		"backend error must be propagated, not swallowed as a cache miss")
-}
-
-// ── tryRestoreFromCache – uses CachedRefreshTokenRef key for lookup ──────────
-
-func TestTokenSource_TryRestoreFromCache_UsesPersistedKey(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	t.Cleanup(ctrl.Finish)
-	mockSecrets := secretsmocks.NewMockProvider(ctrl)
+	const persistedKey = "my-persisted-key"
 
 	cfg := minimalConfig()
-	cfg.OIDC.CachedRefreshTokenRef = "persisted-ref-key"
+	cfg.OIDC.CachedRefreshTokenRef = persistedKey
 
-	// Must look up the persisted key, not a derived one.
+	// AT cache key (_AT suffix) and the base key must both use persistedKey.
 	mockSecrets.EXPECT().
-		GetSecret(gomock.Any(), "persisted-ref-key").
+		GetSecret(gomock.Any(), persistedKey+"_AT").
+		Return("", errors.New("not found"))
+	mockSecrets.EXPECT().
+		GetSecret(gomock.Any(), persistedKey).
 		Return("", errors.New("not found"))
 
 	ts := NewTokenSource(cfg, mockSecrets, false, nil)
-	_ = ts.tryRestoreFromCache(context.Background())
+	_, _ = ts.Token(context.Background())
+	// Expectations verify that persistedKey was used.
 }
 
-// ── tryRestoreFromCache – GetSecret is called with the derived key ────────────
-
-// TestTokenSource_TryRestoreFromCache_CallsGetSecretWithDerivedKey verifies that
-// tier 2 looks up the refresh token using the derived key (no cached ref set).
-// A short context deadline makes the subsequent OIDC discovery call fail
-// immediately so the test never makes a real network connection.
-func TestTokenSource_TryRestoreFromCache_CallsGetSecretWithDerivedKey(t *testing.T) {
+// When CachedRefreshTokenRef is empty the key is derived from GatewayURL+Issuer.
+func TestTokenSource_DerivesKeyWhenNoCachedRef(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
@@ -331,281 +132,133 @@ func TestTokenSource_TryRestoreFromCache_CallsGetSecretWithDerivedKey(t *testing
 	mockSecrets := secretsmocks.NewMockProvider(ctrl)
 
 	cfg := minimalConfig()
-	expectedKey := DeriveSecretKey(cfg.GatewayURL, cfg.OIDC.Issuer)
+	expectedBase := DeriveSecretKey(cfg.GatewayURL, cfg.OIDC.Issuer)
 
 	mockSecrets.EXPECT().
-		GetSecret(gomock.Any(), expectedKey).
-		Return("stored-refresh-token", nil)
-
-	// Cancel immediately after GetSecret so OIDC discovery aborts without
-	// making a real network call.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+		GetSecret(gomock.Any(), expectedBase+"_AT").
+		Return("", errors.New("not found"))
+	mockSecrets.EXPECT().
+		GetSecret(gomock.Any(), expectedBase).
+		Return("", errors.New("not found"))
 
 	ts := NewTokenSource(cfg, mockSecrets, false, nil)
-	err := ts.tryRestoreFromCache(ctx)
-
-	// Error must come from the cancelled context, not from a missing token.
-	require.Error(t, err)
-	assert.NotContains(t, err.Error(), "no cached refresh token",
-		"error must be from OIDC discovery, not from missing token")
+	_, _ = ts.Token(context.Background())
 }
 
-// ── makeTokenPersister – stores refresh token and calls updater ──────────────
+// ── TokenRefUpdater wired as ConfigPersister ──────────────────────────────────
 
-func TestTokenSource_MakeTokenPersister_StoresTokenAndCallsUpdater(t *testing.T) {
+// TokenRefUpdater is invoked when the OIDC provider rotates the refresh token.
+// This verifies that the LLM layer correctly wires the updater through to the
+// shared tokensource.ConfigPersister so callers can persist the new token ref.
+func TestTokenSource_TokenRefUpdater_WiredAsConfigPersister(t *testing.T) {
 	t.Parallel()
+
+	srv := newTokenServer(t, "new-access-token", "rotated-refresh-token")
 
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
-	mockSecrets := secretsmocks.NewMockProvider(ctrl)
-
-	const secretKey = "LLM_OAUTH_test"
-	wantToken := "new-refresh-token"
-	wantExpiry := time.Now().Add(time.Hour)
-
-	mockSecrets.EXPECT().
-		SetSecret(gomock.Any(), secretKey, wantToken).
-		Return(nil)
+	mock := secretsmocks.NewMockProvider(ctrl)
+	mock.EXPECT().
+		GetSecret(gomock.Any(), gomock.AssignableToTypeOf("")).
+		DoAndReturn(func(_ context.Context, key string) (string, error) {
+			if strings.HasSuffix(key, "_AT") {
+				return "", errors.New("not found")
+			}
+			return "old-refresh-token", nil
+		}).AnyTimes()
+	mock.EXPECT().SetSecret(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	var updaterKey string
-	var updaterExpiry time.Time
-	updater := func(key string, expiry time.Time) {
-		updaterKey = key
-		updaterExpiry = expiry
-	}
+	updater := TokenRefUpdater(func(key string, _ time.Time) { updaterKey = key })
 
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false, updater)
-	persister := ts.makeTokenPersister(secretKey)
+	cfg := minimalConfig()
+	cfg.OIDC.Issuer = srv.URL
+	ts := NewTokenSource(cfg, mock, false, updater)
 
-	require.NoError(t, persister(wantToken, wantExpiry))
-	assert.Equal(t, secretKey, updaterKey, "updater must receive the secret key")
-	assert.Equal(t, wantExpiry, updaterExpiry, "updater must receive the token expiry")
+	tok, err := ts.Token(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "new-access-token", tok)
+	assert.NotEmpty(t, updaterKey, "TokenRefUpdater must be called when the refresh token is rotated")
 }
 
-// ── makeTokenPersister – SetSecret failure is returned as error ───────────────
+// ── SanitizeTokenError ────────────────────────────────────────────────────────
 
-func TestTokenSource_MakeTokenPersister_SetSecretFailure(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	t.Cleanup(ctrl.Finish)
-	mockSecrets := secretsmocks.NewMockProvider(ctrl)
-
-	mockSecrets.EXPECT().
-		SetSecret(gomock.Any(), gomock.Any(), gomock.Any()).
-		Return(errors.New("keyring locked"))
-
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
-	persister := ts.makeTokenPersister("some-key")
-
-	err := persister("token", time.Now())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "keyring locked")
-}
-
-// ── updateConfigTokenRef – calls the injected updater ────────────────────────
-
-func TestTokenSource_UpdateConfigTokenRef_CallsUpdater(t *testing.T) {
-	t.Parallel()
-
-	var gotKey string
-	var gotExpiry time.Time
-
-	updater := func(key string, expiry time.Time) {
-		gotKey = key
-		gotExpiry = expiry
-	}
-
-	ts := NewTokenSource(minimalConfig(), nil, false, updater)
-	wantExpiry := time.Now().Add(time.Hour)
-	ts.updateConfigTokenRef("test-key", wantExpiry)
-
-	assert.Equal(t, "test-key", gotKey)
-	assert.Equal(t, wantExpiry, gotExpiry)
-}
-
-// ── updateConfigTokenRef – nil updater is a no-op ────────────────────────────
-
-func TestTokenSource_UpdateConfigTokenRef_NilUpdater_NoOp(t *testing.T) {
-	t.Parallel()
-
-	ts := NewTokenSource(minimalConfig(), nil, false, nil)
-	// Must not panic.
-	assert.NotPanics(t, func() {
-		ts.updateConfigTokenRef("key", time.Now())
-	})
-}
-
-// ── tryAccessTokenCache ───────────────────────────────────────────────────────
-
-func TestTokenSource_TryAccessTokenCache_NilProvider_ReturnsFalse(t *testing.T) {
-	t.Parallel()
-
-	ts := NewTokenSource(minimalConfig(), nil, false, nil)
-	tok, found := ts.tryAccessTokenCache(context.Background())
-	assert.False(t, found)
-	assert.Empty(t, tok)
-}
-
-func TestTokenSource_TryAccessTokenCache_NotFound_ReturnsFalse(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	t.Cleanup(ctrl.Finish)
-	mockSecrets := secretsmocks.NewMockProvider(ctrl)
-
-	mockSecrets.EXPECT().
-		GetSecret(gomock.Any(), gomock.Any()).
-		Return("", errors.New("not found"))
-
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
-	tok, found := ts.tryAccessTokenCache(context.Background())
-	assert.False(t, found)
-	assert.Empty(t, tok)
-}
-
-func TestTokenSource_TryAccessTokenCache_ValidToken_ReturnsToken(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	t.Cleanup(ctrl.Finish)
-	mockSecrets := secretsmocks.NewMockProvider(ctrl)
-
-	expiry := time.Now().Add(5 * time.Minute).UTC()
-	cached := "access-token-value|" + expiry.Format(time.RFC3339)
-
-	mockSecrets.EXPECT().
-		GetSecret(gomock.Any(), gomock.Any()).
-		Return(cached, nil)
-
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
-	tok, found := ts.tryAccessTokenCache(context.Background())
-	assert.True(t, found)
-	assert.Equal(t, "access-token-value", tok)
-}
-
-func TestTokenSource_TryAccessTokenCache_ExpiredToken_ReturnsFalse(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	t.Cleanup(ctrl.Finish)
-	mockSecrets := secretsmocks.NewMockProvider(ctrl)
-
-	expiry := time.Now().Add(-1 * time.Minute).UTC()
-	cached := "access-token-value|" + expiry.Format(time.RFC3339)
-
-	mockSecrets.EXPECT().
-		GetSecret(gomock.Any(), gomock.Any()).
-		Return(cached, nil)
-
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
-	tok, found := ts.tryAccessTokenCache(context.Background())
-	assert.False(t, found)
-	assert.Empty(t, tok)
-}
-
-func TestTokenSource_TryAccessTokenCache_MalformedEntry_ReturnsFalse(t *testing.T) {
+func TestSanitizeTokenError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		raw  string
+		name       string
+		err        error
+		wantSubs   []string
+		wantAbsent []string
 	}{
-		{"no pipe", "just-a-token"},
-		{"bad expiry", "token|not-a-date"},
-		{"empty value", ""},
+		{
+			name:     "plain error",
+			err:      errors.New("something went wrong"),
+			wantSubs: []string{"something went wrong"},
+		},
+		{
+			name:     "nil-like generic",
+			err:      errors.New("any message"),
+			wantSubs: []string{"any message"},
+		},
+		{
+			name: "oauth2 RetrieveError with description",
+			err: &oauth2.RetrieveError{
+				ErrorCode:        "invalid_grant",
+				ErrorDescription: "Token has been expired or revoked.",
+				Body:             []byte("sensitive-body-content"),
+			},
+			wantSubs:   []string{"invalid_grant", "Token has been expired or revoked."},
+			wantAbsent: []string{"sensitive-body-content"},
+		},
+		{
+			name: "oauth2 RetrieveError without description",
+			err: &oauth2.RetrieveError{
+				ErrorCode: "invalid_client",
+				Body:      []byte("sensitive-body-content"),
+			},
+			wantSubs:   []string{"invalid_client"},
+			wantAbsent: []string{"sensitive-body-content"},
+		},
 	}
-
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			t.Cleanup(ctrl.Finish)
-			mockSecrets := secretsmocks.NewMockProvider(ctrl)
-
-			mockSecrets.EXPECT().
-				GetSecret(gomock.Any(), gomock.Any()).
-				Return(tc.raw, nil).
-				AnyTimes()
-
-			ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
-			tok, found := ts.tryAccessTokenCache(context.Background())
-			assert.False(t, found)
-			assert.Empty(t, tok)
+			got := SanitizeTokenError(tc.err)
+			for _, sub := range tc.wantSubs {
+				assert.Contains(t, got, sub)
+			}
+			for _, absent := range tc.wantAbsent {
+				assert.NotContains(t, got, absent)
+			}
 		})
 	}
 }
 
-// ── cacheAccessToken ──────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 
-func TestTokenSource_CacheAccessToken_StoresToken(t *testing.T) {
-	t.Parallel()
+// newTokenServer builds a minimal OIDC discovery + token endpoint that returns
+// the given access token and refresh token on any token request.
+func newTokenServer(t *testing.T, at, rt string) *httptest.Server {
+	t.Helper()
 
-	ctrl := gomock.NewController(t)
-	t.Cleanup(ctrl.Finish)
-	mockSecrets := secretsmocks.NewMockProvider(ctrl)
+	var srv *httptest.Server
+	mux := http.NewServeMux()
 
-	expiry := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	expectedVal := "my-access-token|" + expiry.Format(time.RFC3339)
-
-	mockSecrets.EXPECT().
-		SetSecret(gomock.Any(), gomock.Any(), expectedVal).
-		Return(nil)
-
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
-	ts.cacheAccessToken(context.Background(), "my-access-token", expiry)
-}
-
-func TestTokenSource_CacheAccessToken_NilProvider_NoOp(t *testing.T) {
-	t.Parallel()
-
-	ts := NewTokenSource(minimalConfig(), nil, false, nil)
-	// Must not panic.
-	assert.NotPanics(t, func() {
-		ts.cacheAccessToken(context.Background(), "token", time.Now().Add(time.Hour))
+	oidcHandler := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q}`,
+			srv.URL, srv.URL+"/authorize", srv.URL+"/token")
+	}
+	mux.HandleFunc("/.well-known/openid-configuration", oidcHandler)
+	mux.HandleFunc("/.well-known/oauth-authorization-server", oidcHandler)
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"` + at + `","refresh_token":"` + rt + `","token_type":"Bearer","expires_in":3600}`))
 	})
-}
 
-func TestTokenSource_CacheAccessToken_ZeroExpiry_NoOp(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	t.Cleanup(ctrl.Finish)
-	mockSecrets := secretsmocks.NewMockProvider(ctrl)
-	// SetSecret must NOT be called.
-
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
-	ts.cacheAccessToken(context.Background(), "token", time.Time{})
-}
-
-func TestTokenSource_CacheAccessToken_WriteFailure_DoesNotPanic(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	t.Cleanup(ctrl.Finish)
-	mockSecrets := secretsmocks.NewMockProvider(ctrl)
-
-	mockSecrets.EXPECT().
-		SetSecret(gomock.Any(), gomock.Any(), gomock.Any()).
-		Return(errors.New("keyring locked"))
-
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
-	assert.NotPanics(t, func() {
-		ts.cacheAccessToken(context.Background(), "token", time.Now().Add(time.Hour))
-	})
-}
-
-// ── accessTokenCacheKey ───────────────────────────────────────────────────────
-
-func TestTokenSource_AccessTokenCacheKey_HasATSuffix(t *testing.T) {
-	t.Parallel()
-
-	ts := NewTokenSource(minimalConfig(), nil, false, nil)
-	key := ts.accessTokenCacheKey()
-	assert.True(t, strings.HasSuffix(key, "_AT"),
-		"access token cache key must end with _AT, got %q", key)
-	assert.Contains(t, key, ts.refreshTokenKey(),
-		"access token cache key must be derived from the refresh token key")
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
 }

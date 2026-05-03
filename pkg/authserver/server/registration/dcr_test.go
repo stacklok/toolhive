@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestValidateRedirectURI(t *testing.T) {
@@ -115,7 +115,7 @@ func TestValidateRedirectURI(t *testing.T) {
 		// Length validation
 		{
 			name:        "redirect URI exceeding max length is rejected",
-			uri:         "https://example.com/" + strings.Repeat("a", oauth.MaxRedirectURILength),
+			uri:         "https://example.com/" + strings.Repeat("a", oauthproto.MaxRedirectURILength),
 			expectError: true,
 			errorCode:   DCRErrorInvalidRedirectURI,
 		},

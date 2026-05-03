@@ -172,7 +172,7 @@ func (m *manager) ensureDeployment(
 // buildRegistryAPIDeployment creates a Deployment for the registry API. It mounts a ConfigMap
 // created from the raw ConfigYAML string and supports user-provided Volumes, VolumeMounts,
 // and PGPassSecretRef.
-func (*manager) buildRegistryAPIDeployment(
+func (m *manager) buildRegistryAPIDeployment(
 	ctx context.Context,
 	mcpRegistry *mcpv1beta1.MCPRegistry,
 	configMapName string,
@@ -208,6 +208,7 @@ func (*manager) buildRegistryAPIDeployment(
 		WithServiceAccountName(GetServiceAccountName(mcpRegistry)),
 		WithContainer(BuildRegistryAPIContainer(getRegistryAPIImage())),
 		WithRegistryServerConfigMount(RegistryAPIContainerName, configMapName),
+		WithImagePullSecrets(m.imagePullSecretsDefaults.Merge(mcpRegistry.Spec.ImagePullSecrets)),
 	}
 
 	// Add user-provided volumes (deserialized from raw JSON)

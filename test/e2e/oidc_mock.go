@@ -214,6 +214,7 @@ func (m *OIDCMockServer) handleDiscovery(w http.ResponseWriter, _ *http.Request)
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"scopes_supported":                      []string{"openid", "profile", "email"},
+		"client_id_metadata_document_supported": true,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -460,17 +461,24 @@ func (m *OIDCMockServer) EnableAutoComplete() {
 	m.authRequestChan = make(chan *AuthRequest, 1)
 }
 
-// WaitForAuthRequest waits for an OAuth authorization request and returns its parameters
-func (m *OIDCMockServer) WaitForAuthRequest(timeout time.Duration) (*AuthRequest, error) {
+// WaitForAuthRequest waits for an OAuth authorization request and returns its
+// parameters. The call returns as soon as ctx is cancelled, the timeout
+// elapses, or an auth request arrives — whichever comes first.
+func (m *OIDCMockServer) WaitForAuthRequest(ctx context.Context, timeout time.Duration) (*AuthRequest, error) {
 	if m.authRequestChan == nil {
 		return nil, fmt.Errorf("auto-complete not enabled")
 	}
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	select {
 	case req := <-m.authRequestChan:
 		return req, nil
-	case <-time.After(timeout):
+	case <-timer.C:
 		return nil, fmt.Errorf("timeout waiting for auth request")
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

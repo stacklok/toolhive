@@ -21,7 +21,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -37,6 +36,17 @@ const (
 	// podTemplateSpecHashAnnotation tracks the SHA256 hash of the user-provided PodTemplateSpec.
 	// Used to detect changes without comparing full rendered templates (which include K8s-defaulted fields).
 	podTemplateSpecHashAnnotation = "toolhive.stacklok.io/podtemplatespec-hash"
+
+	// imagePullRefsHashAnnotation tracks the SHA256 hash of the desired
+	// imagePullSecrets list — chart-level defaults merged with
+	// vmcp.Spec.ImagePullSecrets — used by buildDeploymentMetadataForVmcp.
+	// Mirrors the podTemplateSpecHashAnnotation pattern to detect drift on
+	// these inputs without re-running strategic-merge logic during
+	// reconciliation. Combined with podTemplateSpecHashAnnotation (which
+	// covers any imagePullSecrets the user added under
+	// spec.podTemplateSpec.spec.imagePullSecrets), this is sufficient to
+	// detect every input that influences the deployed PodSpec.ImagePullSecrets.
+	imagePullRefsHashAnnotation = "toolhive.stacklok.io/imagepullsecrets-hash"
 
 	// Log level configuration
 	logLevelDebug = "debug" // Debug log level value
@@ -195,6 +205,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: int64Ptr(vmcpTerminationGracePeriodSeconds),
 					ServiceAccountName:            serviceAccountName,
+					ImagePullSecrets:              r.imagePullSecretsForVMCP(vmcp),
 					Containers: []corev1.Container{{
 						Image:           getVmcpImage(),
 						ImagePullPolicy: corev1.PullIfNotPresent,
@@ -679,7 +690,7 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 }
 
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations
-func (*VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
+func (r *VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 	baseLabels map[string]string,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (map[string]string, map[string]string) {
@@ -696,9 +707,41 @@ func (*VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 		}
 	}
 
+	// Store hash of the desired imagePullSecrets list — chart-level defaults
+	// merged with vmcp.Spec.ImagePullSecrets — so deploymentNeedsUpdate can
+	// detect drift on this field. Without this annotation, edits to either
+	// the chart default or spec.imagePullSecrets on an existing CR would not
+	// propagate to the running Deployment because the drift checks compare
+	// individual fields and never look at PodSpec.ImagePullSecrets directly
+	// (the live value is the strategic-merge union with PodTemplateSpec).
+	if hash, err := imagePullSecretsHash(r.imagePullSecretsForVMCP(vmcp)); err == nil && hash != "" {
+		deploymentAnnotations[imagePullRefsHashAnnotation] = hash
+	}
+
 	// TODO: Add support for ResourceOverrides if needed in the future
 
 	return deploymentLabels, deploymentAnnotations
+}
+
+// imagePullSecretsHash returns a deterministic SHA256 hash of the given LocalObjectReference list.
+// The list is normalized by sorting on Name before hashing so that semantically equal slices
+// (same set of secret names, possibly in different order) produce the same hash. Returns an
+// empty string with no error when the list is empty so callers can skip writing the annotation.
+func imagePullSecretsHash(secrets []corev1.LocalObjectReference) (string, error) {
+	if len(secrets) == 0 {
+		return "", nil
+	}
+	normalized := make([]corev1.LocalObjectReference, len(secrets))
+	copy(normalized, secrets)
+	sort.Slice(normalized, func(i, j int) bool {
+		return normalized[i].Name < normalized[j].Name
+	})
+	canonical, err := json.Marshal(normalized)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal imagePullSecrets for hashing: %w", err)
+	}
+	h := sha256.Sum256(canonical)
+	return hex.EncodeToString(h[:]), nil
 }
 
 // buildPodTemplateMetadata builds pod template labels and annotations for vmcp
@@ -926,6 +969,11 @@ func (r *VirtualMCPServerReconciler) validateSecretKeyRef(
 // - User-provided fields override controller-generated defaults
 // - Arrays are merged based on strategic merge patch rules (e.g., containers merged by name)
 // - The "vmcp" container is preserved from the controller-generated spec
+//
+// Hard-fail policy: any patch failure (marshal, patch apply, unmarshal) is returned as
+// an error that blocks Deployment creation. This is the opposite of the EmbeddingServer
+// caller's soft-fail choice. ApplyPodTemplateSpecPatch is policy-neutral; the choice is
+// at this call site by design.
 func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
@@ -949,29 +997,12 @@ func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 		return nil
 	}
 
-	// Use the raw user JSON directly for strategic merge patch.
-	// This avoids the nil-slice-becomes-empty-array problem that occurs when
-	// we parse JSON into Go structs and re-marshal - Go's json.Marshal converts
-	// nil slices to [], which strategic merge patch interprets as "replace with empty".
-	// By using the raw JSON, we preserve exactly what the user specified.
-	userJSON := vmcp.Spec.PodTemplateSpec.Raw
-
-	originalJSON, err := json.Marshal(deployment.Spec.Template)
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(deployment.Spec.Template, vmcp.Spec.PodTemplateSpec.Raw)
 	if err != nil {
-		return fmt.Errorf("failed to marshal original PodTemplateSpec: %w", err)
+		return err
 	}
 
-	patchedJSON, err := strategicpatch.StrategicMergePatch(originalJSON, userJSON, corev1.PodTemplateSpec{})
-	if err != nil {
-		return fmt.Errorf("failed to apply strategic merge patch: %w", err)
-	}
-
-	var patchedPodTemplateSpec corev1.PodTemplateSpec
-	if err := json.Unmarshal(patchedJSON, &patchedPodTemplateSpec); err != nil {
-		return fmt.Errorf("failed to unmarshal patched PodTemplateSpec: %w", err)
-	}
-
-	deployment.Spec.Template = patchedPodTemplateSpec
+	deployment.Spec.Template = merged
 
 	ctxLogger.V(1).Info("Applied PodTemplateSpec customizations to deployment",
 		"virtualmcpserver", vmcp.Name,

@@ -18,6 +18,8 @@ package upstream
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,13 +30,12 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"time"
 
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 	"github.com/stacklok/toolhive/pkg/networking"
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
@@ -89,9 +90,6 @@ type OAuth2Provider interface {
 	// ignore it.
 	RefreshTokens(ctx context.Context, refreshToken, expectedSubject string) (*Tokens, error)
 }
-
-// defaultTokenExpiration is the default token lifetime when expires_in is not specified.
-const defaultTokenExpiration = time.Hour
 
 // CommonOAuthConfig contains fields shared by all OAuth provider types.
 // This provides compile-time type safety by separating OIDC and OAuth2 configuration.
@@ -220,13 +218,6 @@ func convertOAuth2Token(token *oauth2.Token) (*Tokens, error) {
 		return nil, fmt.Errorf("unexpected token_type: expected \"Bearer\", got %q", token.TokenType)
 	}
 
-	// Calculate expiration time
-	expiresAt := token.Expiry
-	if expiresAt.IsZero() {
-		// Default to 1 hour if not specified
-		expiresAt = time.Now().Add(defaultTokenExpiration)
-	}
-
 	// Extract ID token from extras (OIDC providers include it here)
 	var idToken string
 	if idTokenVal := token.Extra("id_token"); idTokenVal != nil {
@@ -239,7 +230,7 @@ func convertOAuth2Token(token *oauth2.Token) (*Tokens, error) {
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
 		IDToken:      idToken,
-		ExpiresAt:    expiresAt,
+		ExpiresAt:    token.Expiry,
 	}, nil
 }
 
@@ -331,6 +322,16 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 		"token_endpoint", config.TokenEndpoint,
 	)
 
+	if config.UserInfo == nil {
+		// Surface synthesis mode at construction so operators see it once
+		// per provider rather than only inferring from missing claims later.
+		slog.Warn("oauth2 upstream has no userinfo configured; using synthesis mode "+
+			"(non-PII subject from access token, no Name/Email). Configure "+
+			"userInfo if a real identity endpoint exists.",
+			"authorization_endpoint", config.AuthorizationEndpoint,
+		)
+	}
+
 	return p, nil
 }
 
@@ -400,12 +401,22 @@ func (p *BaseOAuth2Provider) buildAuthorizationURL(
 
 // ExchangeCodeForIdentity exchanges an authorization code for tokens and resolves
 // the user's identity in a single atomic operation.
-// For pure OAuth2 providers, identity is resolved via the UserInfo endpoint.
-// The nonce parameter is ignored for pure OAuth2 providers (no ID token validation).
+// For pure OAuth2 providers, identity is resolved via UserInfo when configured;
+// otherwise Subject is synthesized via synthesizeIdentity (which rejects empty
+// access tokens to prevent the well-known sha256("") subject collision) and
+// Name/Email are left empty. The nonce parameter is ignored (no ID token).
 func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, codeVerifier, _ string) (*Identity, error) {
 	tokens, err := p.exchangeCodeForTokens(ctx, code, codeVerifier)
 	if err != nil {
 		return nil, err
+	}
+
+	// No userinfo: synthesize a non-PII subject from the access token.
+	// Synthetic=true tells the callback handler to bypass UserResolver — the
+	// synthesized subject rotates per access token, so persisting it would
+	// create a new `users` row on every re-authentication.
+	if p.config.UserInfo == nil {
+		return synthesizeIdentity(tokens)
 	}
 
 	userInfo, err := p.fetchUserInfo(ctx, tokens.AccessToken)
@@ -421,6 +432,67 @@ func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, 
 		Subject: userInfo.Subject,
 		Name:    userInfo.Name,
 		Email:   userInfo.Email,
+	}, nil
+}
+
+// synthesizedSubjectPrefix tags subjects produced by
+// synthesizeSubjectFromAccessToken. The prefix is part of the package's
+// externally observable contract; downstream code should recognize
+// synthesized subjects via the exported IsSynthesizedSubject predicate
+// rather than this constant.
+const synthesizedSubjectPrefix = "tk-"
+
+// IsSynthesizedSubject reports whether subject was produced by the
+// synthesis-mode fallback (vs. resolved from a userinfo endpoint or ID
+// token). Use this for code paths that only see the bare subject string —
+// e.g., JWT claim consumers, audit pipelines, status conditions. Callers
+// holding an *Identity should prefer Identity.Synthetic, which is set at
+// the same source of truth.
+//
+// Purely structural — checks the prefix only, does not validate the digest.
+func IsSynthesizedSubject(subject string) bool {
+	return strings.HasPrefix(subject, synthesizedSubjectPrefix)
+}
+
+// synthesizeSubjectFromAccessToken returns a stable, opaque identifier
+// derived from an access token, for OAuth2 upstreams with no userinfo
+// endpoint. Output: synthesizedSubjectPrefix + lowercase hex of the first
+// 16 bytes of SHA-256(accessToken) — 35 chars total, e.g.
+// "tk-89abcdef0123456789abcdef01234567".
+//
+// The output is non-PII assuming the upstream issues opaque (non-JWT)
+// bearer tokens; the digest reveals nothing about the input beyond what an
+// attacker holding a candidate token could confirm by re-hashing. 16 bytes
+// is sufficient collision resistance for a session-key role.
+//
+// Only reached when OAuth2Config.UserInfo is nil. OIDC providers always
+// have an ID-token-derived subject. Callers must reject empty access
+// tokens — sha256("") is a well-known constant, and synthesizing a
+// subject from it would collapse distinct sessions onto a single
+// storage bucket. synthesizeIdentity enforces this invariant.
+func synthesizeSubjectFromAccessToken(accessToken string) string {
+	sum := sha256.Sum256([]byte(accessToken))
+	return synthesizedSubjectPrefix + hex.EncodeToString(sum[:16])
+}
+
+// synthesizeIdentity builds a synthesized Identity for an OAuth2 upstream
+// with no userinfo endpoint. Returns ErrIdentityResolutionFailed when the
+// access token is empty: sha256("") is the well-known constant
+// e3b0c44298fc1c14…, so synthesizing a subject from an empty token would
+// collapse every affected session onto a single (UserID, ProviderID)
+// storage bucket — a cross-tenant state-mixing hazard. Defense-in-depth:
+// convertOAuth2Token already rejects empty AccessToken at exchange time,
+// so this guard is unreachable today through ExchangeCodeForIdentity. It
+// exists so a future code path (e.g., a custom token-response mapping
+// that drops the field) cannot bypass the invariant.
+func synthesizeIdentity(tokens *Tokens) (*Identity, error) {
+	if tokens.AccessToken == "" {
+		return nil, fmt.Errorf("%w: empty access token, cannot synthesize subject", ErrIdentityResolutionFailed)
+	}
+	return &Identity{
+		Tokens:    tokens,
+		Subject:   synthesizeSubjectFromAccessToken(tokens.AccessToken),
+		Synthetic: true,
 	}, nil
 }
 
@@ -457,15 +529,25 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, co
 		return nil, err
 	}
 
-	slog.Info("authorization code exchange successful",
+	slog.Debug("authorization code exchange successful",
 		"has_refresh_token", tokens.RefreshToken != "",
-		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
+		"expires_at", expiresAtLogValue(tokens.ExpiresAt),
 	)
 
 	return tokens, nil
 }
 
 // RefreshTokens refreshes the upstream IDP tokens.
+//
+// Sends `scope` explicitly. RFC 6749 §6 makes the param optional and says the
+// AS SHOULD preserve original scopes on omission, but some ASes (notably
+// Entra ID v1) silently narrow refreshed tokens to the user's default consent
+// set when `scope` is omitted, dropping custom resource scopes.
+//
+// Uses oauth2.Config.Exchange with SetAuthURLParam overrides (mirroring the
+// pattern in pkg/auth/oauth/non_caching_refresher.go) because the standard
+// library's TokenSource refresh path doesn't expose a way to inject scope.
+// The empty code= side-effect is tolerated — ASes dispatch on grant_type first.
 func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ string) (*Tokens, error) {
 	if refreshToken == "" {
 		return nil, errors.New("refresh token is required")
@@ -473,21 +555,22 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 
 	slog.Info("refreshing tokens",
 		"token_endpoint", p.config.TokenEndpoint,
+		"scope_count", len(p.oauth2Config.Scopes),
 	)
 
 	// Wrap HTTP client with token response rewriter if mapping is configured.
 	httpClient := wrapHTTPClientWithMapping(p.httpClient, p.config.TokenResponseMapping, p.config.TokenEndpoint)
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
-	// Create an expired token with the refresh token to trigger refresh
-	expiredToken := &oauth2.Token{
-		RefreshToken: refreshToken,
-		Expiry:       time.Now().Add(-time.Hour), // Expired token forces refresh
+	opts := []oauth2.AuthCodeOption{
+		oauth2.SetAuthURLParam("grant_type", "refresh_token"),
+		oauth2.SetAuthURLParam("refresh_token", refreshToken),
+	}
+	if len(p.oauth2Config.Scopes) > 0 {
+		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(p.oauth2Config.Scopes, " ")))
 	}
 
-	// Use TokenSource to get a new token via refresh
-	tokenSource := p.oauth2Config.TokenSource(ctx, expiredToken)
-	token, err := tokenSource.Token()
+	token, err := p.oauth2Config.Exchange(ctx, "", opts...)
 	if err != nil {
 		return nil, formatOAuth2Error(err, "token request failed")
 	}
@@ -496,10 +579,16 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 	if err != nil {
 		return nil, err
 	}
+	// AS may not issue a new refresh token (RFC 6749 §6); preserve the old one.
+	if tokens.RefreshToken == "" {
+		tokens.RefreshToken = refreshToken
+	}
 
-	slog.Info("token refresh successful",
-		"has_new_refresh_token", tokens.RefreshToken != "",
-		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
+	slog.Debug("token refresh successful",
+		// Read from token (pre-§6-fallback) so the log accurately reflects
+		// whether the AS rotated the refresh token vs the fallback kicking in.
+		"has_new_refresh_token", token.RefreshToken != "",
+		"expires_at", expiresAtLogValue(tokens.ExpiresAt),
 	)
 
 	return tokens, nil

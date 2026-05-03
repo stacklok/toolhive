@@ -7,14 +7,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/auth/secrets"
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/llm"
+	llmproxy "github.com/stacklok/toolhive/pkg/llm/proxy"
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 	pkgsecrets "github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -69,7 +73,10 @@ func newConfigCommand() *cobra.Command {
 }
 
 func newConfigSetCommand() *cobra.Command {
-	var opts llm.SetOptions
+	var (
+		opts          llm.SetOptions
+		tlsSkipVerify bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "set",
@@ -82,7 +89,10 @@ Example:
     --issuer https://auth.example.com \
     --client-id my-client-id`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cmd.Flags().Changed("tls-skip-verify") {
+				opts.TLSSkipVerify = &tlsSkipVerify
+			}
 			return config.UpdateConfig(func(c *config.Config) error {
 				return c.LLM.SetFields(opts)
 			})
@@ -93,8 +103,10 @@ Example:
 	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
 	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
 	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
-	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (default 14000)")
-	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (default: ephemeral)")
+	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
+	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
+	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
+		"Skip TLS certificate verification for the upstream gateway (local dev only; use --tls-skip-verify=false to clear)")
 
 	return cmd
 }
@@ -137,15 +149,11 @@ func newConfigResetCommand() *cobra.Command {
 tokens from the secrets provider.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Delete cached tokens from the secrets provider first.
-			provider, err := secrets.GetSystemSecretsProvider()
-			if err != nil {
-				// Non-fatal: log and continue so the config is still cleared.
-				fmt.Fprintf(os.Stderr, "Warning: could not get secrets provider: %v\n", err)
-			} else if err := llm.DeleteCachedTokens(cmd.Context(), provider); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not remove cached LLM tokens: %v\n", err)
+			if sp, err := secrets.GetSystemSecretsProvider(); err == nil {
+				llm.PurgeTokens(cmd.Context(), cmd.ErrOrStderr(), sp)
+			} else {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not get secrets provider: %v\n", err)
 			}
-
 			return config.UpdateConfig(func(c *config.Config) error {
 				c.LLM = llm.Config{}
 				return nil
@@ -165,23 +173,10 @@ func runLLMToken(ctx context.Context) error {
 		return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
 	}
 
-	secretsProvider, err := secrets.GetSystemSecretsProvider()
+	ts, err := buildLLMTokenSource(&llmCfg, false /* non-interactive */)
 	if err != nil {
-		return fmt.Errorf("failed to get secrets provider: %w", err)
+		return err
 	}
-	scoped := pkgsecrets.NewScopedProvider(secretsProvider, pkgsecrets.ScopeLLM)
-
-	updater := func(key string, expiry time.Time) {
-		if err := config.UpdateConfig(func(c *config.Config) error {
-			c.LLM.OIDC.CachedRefreshTokenRef = key
-			c.LLM.OIDC.CachedTokenExpiry = expiry
-			return nil
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to persist LLM token reference: %v\n", err)
-		}
-	}
-
-	ts := llm.NewTokenSource(&llmCfg, scoped, false /* non-interactive */, updater)
 	token, err := ts.Token(ctx)
 	if err != nil {
 		return err
@@ -191,32 +186,210 @@ func runLLMToken(ctx context.Context) error {
 	return nil
 }
 
-// ── setup / teardown stubs ────────────────────────────────────────────────────
+// buildLLMTokenSource constructs the standard LLM token-source pipeline:
+// system secrets provider → ScopeLLM scoped provider → config-persisting updater.
+// This is the single place that wires ScopeLLM and the refresh-token persistence
+// logic; runLLMToken, runLLMProxyForeground, and future callers all use it.
+func buildLLMTokenSource(cfg *llm.Config, interactive bool) (*llm.TokenSource, error) {
+	secretsProvider, err := secrets.GetSystemSecretsProvider()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secrets provider: %w", err)
+	}
+	scoped := pkgsecrets.NewScopedProvider(secretsProvider, pkgsecrets.ScopeLLM)
+
+	updater := func(key string, expiry time.Time) {
+		if updateErr := config.UpdateConfig(func(c *config.Config) error {
+			c.LLM.OIDC.CachedRefreshTokenRef = key
+			c.LLM.OIDC.CachedTokenExpiry = expiry
+			return nil
+		}); updateErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to persist LLM token reference: %v\n", updateErr)
+		}
+	}
+
+	return llm.NewTokenSource(cfg, scoped, interactive, updater), nil
+}
+
+// ── setup / teardown ─────────────────────────────────────────────────────────
 
 func newLLMSetupCommand() *cobra.Command {
-	return &cobra.Command{
+	var (
+		opts          llm.SetOptions
+		tlsSkipVerify bool
+		targetClient  string
+	)
+
+	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Detect installed AI tools, configure them, and trigger OIDC login (coming soon)",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return fmt.Errorf("not implemented: coming in a future release")
+		Short: "Configure detected AI tools to use the LLM gateway",
+		Long: `Detect installed AI coding tools (Claude Code, Gemini CLI, Cursor, VS Code,
+Xcode) and patch each tool's configuration to route through the LLM gateway.
+
+Token-helper tools (Claude Code, Gemini CLI) are configured to call
+"thv llm token" to obtain a fresh OIDC token on demand.
+
+Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
+the localhost reverse proxy started by "thv llm proxy start".
+
+Use --client to configure only a single named tool instead of all detected
+tools. An error is returned if the named client is not installed.
+
+Inline flags (--gateway-url, --issuer, --client-id, etc.) are applied for this
+run and persisted to config only after login and tool patching succeed. This
+lets you combine "config set" and "setup" into a single command.
+
+Run "thv llm teardown" to revert all changes.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cmd.Flags().Changed("tls-skip-verify") {
+				opts.TLSSkipVerify = &tlsSkipVerify
+			}
+			cm, err := client.NewClientManager()
+			if err != nil {
+				return fmt.Errorf("initializing client manager: %w", err)
+			}
+			return runLLMSetup(
+				cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
+				cm, config.NewDefaultProvider(), oidcLogin, opts, targetClient,
+			)
 		},
 	}
+
+	cmd.Flags().StringVar(&opts.GatewayURL, "gateway-url", "", "LLM gateway base URL (must use HTTPS)")
+	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
+	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
+	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
+	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
+	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
+	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
+		"Skip TLS certificate verification for the upstream gateway (local dev only). "+
+			"For direct-mode tools (Claude Code, Gemini CLI) this sets NODE_TLS_REJECT_UNAUTHORIZED=0, "+
+			"disabling TLS for ALL of that tool's outbound connections. "+
+			"For proxy-mode tools only the proxy-to-gateway connection is affected.")
+	cmd.Flags().StringVar(&targetClient, "client", "",
+		"Configure only this AI tool by name (e.g. claude-code, cursor). Omit to configure all detected tools.")
+
+	return cmd
+}
+
+func oidcLogin(ctx context.Context, cfg *llm.Config) error {
+	ts, err := buildLLMTokenSource(cfg, true /* interactive */)
+	if err != nil {
+		return fmt.Errorf("building token source: %w", err)
+	}
+	_, err = ts.Token(ctx)
+	return err
+}
+
+// runLLMSetup is a thin CLI wrapper: it adapts concrete CLI types to the
+// interfaces expected by llm.Setup and delegates all orchestration there.
+func runLLMSetup(
+	ctx context.Context, out, errOut io.Writer,
+	cm *client.ClientManager, provider config.Provider, login llm.LoginFunc,
+	inlineOpts llm.SetOptions, targetClient string,
+) error {
+	return llm.Setup(ctx, out, errOut, &clientManagerAdapter{cm}, &configUpdaterAdapter{provider}, login, inlineOpts, targetClient)
 }
 
 func newLLMTeardownCommand() *cobra.Command {
+	var (
+		purgeTokens  bool
+		targetClient string
+	)
+
 	cmd := &cobra.Command{
 		Use:   "teardown [tool-name]",
-		Short: "Remove LLM gateway configuration from all tools and stop the proxy (coming soon)",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return fmt.Errorf("not implemented: coming in a future release")
+		Short: "Remove LLM gateway configuration from all (or one) configured tools",
+		Long: `Revert the configuration changes made by "thv llm setup" for all configured
+tools, or for a single tool when tool-name is provided as a positional argument
+or via --client.
+
+Use --purge-tokens to also remove cached OIDC tokens from the secrets provider.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if targetClient != "" && len(args) > 0 {
+				return fmt.Errorf("cannot use --client and a positional tool-name argument at the same time")
+			}
+			if targetClient != "" {
+				args = []string{targetClient}
+			}
+			cm, err := client.NewClientManager()
+			if err != nil {
+				return fmt.Errorf("initializing client manager: %w", err)
+			}
+			return runLLMTeardown(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cm, args, purgeTokens, config.NewDefaultProvider())
 		},
 	}
 
-	cmd.Flags().Bool("purge-tokens", false, "Also delete cached OIDC tokens from the secrets provider")
+	cmd.Flags().BoolVar(&purgeTokens, "purge-tokens", false, "Also delete cached OIDC tokens from the secrets provider")
+	cmd.Flags().StringVar(&targetClient, "client", "",
+		"Remove configuration for only this AI tool by name (e.g. claude-code, cursor). Omit to revert all configured tools.")
 
 	return cmd
+}
+
+// runLLMTeardown is a thin CLI wrapper: it adapts concrete CLI types to the
+// interfaces expected by llm.Teardown and delegates all orchestration there.
+func runLLMTeardown(
+	ctx context.Context,
+	out, errOut io.Writer,
+	cm *client.ClientManager,
+	args []string,
+	purgeTokens bool,
+	provider config.Provider,
+) error {
+	var sp pkgsecrets.Provider
+	if purgeTokens {
+		var err error
+		sp, err = secrets.GetSystemSecretsProvider()
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "Warning: could not get secrets provider: %v\n", err)
+		}
+	}
+	var targetTool string
+	if len(args) == 1 {
+		targetTool = args[0]
+	}
+	return llm.Teardown(ctx, out, errOut, &clientManagerAdapter{cm}, targetTool, purgeTokens, &configUpdaterAdapter{provider}, sp)
+}
+
+// ── CLI adapters ──────────────────────────────────────────────────────────────
+
+// clientManagerAdapter adapts *client.ClientManager to llm.GatewayManager.
+type clientManagerAdapter struct{ cm *client.ClientManager }
+
+func (a *clientManagerAdapter) DetectedLLMGatewayClients() []string {
+	apps := a.cm.DetectedLLMGatewayClients()
+	result := make([]string, len(apps))
+	for i, app := range apps {
+		result[i] = string(app)
+	}
+	return result
+}
+
+func (a *clientManagerAdapter) ConfigureLLMGateway(clientType string, cfg llmgateway.ApplyConfig) (string, error) {
+	return a.cm.ConfigureLLMGateway(client.ClientApp(clientType), cfg)
+}
+
+func (a *clientManagerAdapter) LLMGatewayModeFor(clientType string) string {
+	return a.cm.LLMGatewayModeFor(client.ClientApp(clientType))
+}
+
+func (a *clientManagerAdapter) RevertLLMGateway(clientType, configPath string) error {
+	return a.cm.RevertLLMGateway(client.ClientApp(clientType), configPath)
+}
+
+// configUpdaterAdapter adapts config.Provider to llm.ConfigUpdater.
+type configUpdaterAdapter struct{ p config.Provider }
+
+func (a *configUpdaterAdapter) GetLLMConfig() llm.Config {
+	return a.p.GetConfig().LLM
+}
+
+func (a *configUpdaterAdapter) UpdateLLMConfig(fn func(*llm.Config) error) error {
+	return a.p.UpdateConfig(func(c *config.Config) error {
+		return fn(&c.LLM)
+	})
 }
 
 // ── proxy subcommand group ────────────────────────────────────────────────────
@@ -226,21 +399,64 @@ func newLLMProxyCommand() *cobra.Command {
 		Use:   "proxy",
 		Short: "Manage the LLM gateway localhost proxy",
 	}
-
 	cmd.AddCommand(newLLMProxyStartCommand())
-
 	return cmd
 }
 
 func newLLMProxyStartCommand() *cobra.Command {
-	return &cobra.Command{
+	var tlsSkipVerify bool
+
+	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start the LLM proxy in the foreground (coming soon)",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return fmt.Errorf("not implemented: coming in a future release")
+		Short: "Start the LLM gateway localhost proxy",
+		Long: `Start a localhost reverse proxy that injects fresh OIDC tokens for AI tools
+that only accept static API keys (e.g. Cursor).
+
+The proxy runs in the foreground and blocks until interrupted (Ctrl+C).
+To run it in the background, use your shell or a process manager:
+
+  thv llm proxy start &`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			provider := config.NewDefaultProvider()
+			llmCfg := provider.GetConfig().LLM
+
+			if !llmCfg.IsConfigured() {
+				return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
+			}
+			if err := llmCfg.Validate(); err != nil {
+				return fmt.Errorf("LLM gateway configuration is invalid: %w", err)
+			}
+
+			// --tls-skip-verify overrides the stored config; if not provided, fall
+			// back to whatever was persisted by "thv llm setup" or "config set".
+			if cmd.Flags().Changed("tls-skip-verify") {
+				llmCfg.TLSSkipVerify = tlsSkipVerify
+			}
+
+			return runLLMProxyForeground(cmd.Context(), &llmCfg)
 		},
 	}
+
+	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
+		"Skip TLS certificate verification for the upstream gateway (overrides stored config; local dev only)")
+
+	return cmd
+}
+
+// runLLMProxyForeground builds a TokenSource and starts the proxy in this process.
+func runLLMProxyForeground(ctx context.Context, llmCfg *llm.Config) error {
+	ts, err := buildLLMTokenSource(llmCfg, true /* interactive: proxy is foreground, browser flow is acceptable */)
+	if err != nil {
+		return err
+	}
+	p, err := llmproxy.New(llmCfg, ts, llmproxy.WithTLSSkipVerify(llmCfg.TLSSkipVerify))
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("LLM proxy listening on http://%s/v1\n", p.Addr())
+	return p.Start(ctx)
 }
 
 // ── token helper (hidden) ─────────────────────────────────────────────────────

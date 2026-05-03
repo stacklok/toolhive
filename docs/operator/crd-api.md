@@ -56,6 +56,30 @@ _Appears in:_
 ## toolhive.stacklok.dev/authtypes
 
 
+#### auth.types.AwsStsConfig
+
+
+
+AwsStsConfig configures AWS STS authentication with SigV4 request signing.
+This strategy exchanges incoming tokens for AWS STS temporary credentials.
+
+
+
+_Appears in:_
+- [auth.types.BackendAuthStrategy](#authtypesbackendauthstrategy)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `region` _string_ | Region is the AWS region for the STS endpoint and service. |  |  |
+| `service` _string_ | Service is the AWS service name for SigV4 signing. |  |  |
+| `fallbackRoleArn` _string_ | FallbackRoleArn is the IAM role ARN to assume when no role mappings match. |  |  |
+| `roleMappings` _[auth.types.RoleMapping](#authtypesrolemapping) array_ | RoleMappings defines claim-based role selection rules. |  |  |
+| `roleClaim` _string_ | RoleClaim is the JWT claim to use for role mapping evaluation. |  |  |
+| `sessionDuration` _integer_ | SessionDuration is the duration in seconds for the STS session. |  |  |
+| `sessionNameClaim` _string_ | SessionNameClaim is the JWT claim to use for the role session name. |  |  |
+| `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's token to use as the<br />web identity token for AssumeRoleWithWebIdentity. When set, the token is<br />looked up from Identity.UpstreamTokens instead of the request's<br />Authorization header. |  |  |
+
+
 #### auth.types.BackendAuthStrategy
 
 
@@ -72,10 +96,11 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject" |  |  |
+| `type` _string_ | Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts" |  |  |
 | `headerInjection` _[auth.types.HeaderInjectionConfig](#authtypesheaderinjectionconfig)_ | HeaderInjection contains configuration for header injection auth strategy.<br />Used when Type = "header_injection". |  |  |
 | `tokenExchange` _[auth.types.TokenExchangeConfig](#authtypestokenexchangeconfig)_ | TokenExchange contains configuration for token exchange auth strategy.<br />Used when Type = "token_exchange". |  |  |
 | `upstreamInject` _[auth.types.UpstreamInjectConfig](#authtypesupstreaminjectconfig)_ | UpstreamInject contains configuration for upstream inject auth strategy.<br />Used when Type = "upstream_inject". |  |  |
+| `awsSts` _[auth.types.AwsStsConfig](#authtypesawsstsconfig)_ | AwsSts contains configuration for AWS STS auth strategy.<br />Used when Type = "aws_sts". |  |  |
 
 
 #### auth.types.HeaderInjectionConfig
@@ -95,6 +120,26 @@ _Appears in:_
 | `headerName` _string_ | HeaderName is the name of the header to inject (e.g., "Authorization"). |  |  |
 | `headerValue` _string_ | HeaderValue is the static header value to inject.<br />Either HeaderValue or HeaderValueEnv should be set, not both. |  |  |
 | `headerValueEnv` _string_ | HeaderValueEnv is the environment variable name containing the header value.<br />The value will be resolved at runtime from this environment variable.<br />Either HeaderValue or HeaderValueEnv should be set, not both. |  |  |
+
+
+#### auth.types.RoleMapping
+
+
+
+RoleMapping defines a rule for mapping JWT claims to IAM roles.
+Mappings are evaluated in priority order (lower number = higher priority).
+
+
+
+_Appears in:_
+- [auth.types.AwsStsConfig](#authtypesawsstsconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `claim` _string_ | Claim is a simple claim value to match against the RoleClaim field. |  |  |
+| `matcher` _string_ | Matcher is a CEL expression for complex matching against JWT claims. |  |  |
+| `roleArn` _string_ | RoleArn is the IAM role ARN to assume when this mapping matches. |  |  |
+| `priority` _integer_ | Priority determines evaluation order (lower values = higher priority).<br />Mirrors awssts.RoleMapping.Priority, which is *int because the role mapper<br />uses math.MaxInt for nil-priority semantics in effectivePriority. |  |  |
 
 
 #### auth.types.TokenExchangeConfig
@@ -862,6 +907,7 @@ _Appears in:_
 | `roleClaim` _string_ | RoleClaim is the JWT claim to use for role mapping evaluation<br />Defaults to "groups" to match common OIDC group claims | groups | Optional: \{\} <br /> |
 | `sessionDuration` _integer_ | SessionDuration is the duration in seconds for the STS session<br />Must be between 900 (15 minutes) and 43200 (12 hours)<br />Defaults to 3600 (1 hour) if not specified | 3600 | Maximum: 43200 <br />Minimum: 900 <br />Optional: \{\} <br /> |
 | `sessionNameClaim` _string_ | SessionNameClaim is the JWT claim to use for role session name<br />Defaults to "sub" to use the subject claim | sub | Optional: \{\} <br /> |
+| `subjectProviderName` _string_ | SubjectProviderName is the name of the upstream provider whose access token<br />is used as the web identity token for STS AssumeRoleWithWebIdentity.<br />This field is used exclusively by VirtualMCPServer, where there is no<br />upstream swap middleware to replace the bearer token before the strategy runs.<br />When left empty and an embedded authorization server is configured on the<br />VirtualMCPServer, the controller automatically populates this field with<br />the first configured upstream provider name. Set it explicitly to override<br />that default or to select a specific provider when multiple upstreams are<br />configured.<br />When no embedded auth server is present, the bearer token from the incoming<br />request's Authorization header is used instead. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.AuditConfig
@@ -1827,6 +1873,7 @@ _Appears in:_
 | `pgpassSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | PGPassSecretRef references a Secret containing a pre-created pgpass file.<br />Why this is a dedicated field instead of a regular volume/volumeMount:<br />PostgreSQL's libpq rejects pgpass files that aren't mode 0600. Kubernetes<br />secret volumes mount files as root-owned, and the registry-api container<br />runs as non-root (UID 65532). A root-owned 0600 file is unreadable by<br />UID 65532, and using fsGroup changes permissions to 0640 which libpq also<br />rejects. The only solution is an init container that copies the file to an<br />emptyDir as the app user and runs chmod 0600. This cannot be expressed<br />through volumes/volumeMounts alone -- it requires an init container, two<br />extra volumes (secret + emptyDir), a subPath mount, and an environment<br />variable, all wired together correctly.<br />When specified, the operator generates all of that plumbing invisibly.<br />The user creates the Secret with pgpass-formatted content; the operator<br />handles only the Kubernetes permission mechanics.<br />Example Secret:<br />	apiVersion: v1<br />	kind: Secret<br />	metadata:<br />	  name: my-pgpass<br />	stringData:<br />	  .pgpass: \|<br />	    postgres:5432:registry:db_app:mypassword<br />	    postgres:5432:registry:db_migrator:otherpassword<br />Then reference it:<br />	pgpassSecretRef:<br />	  name: my-pgpass<br />	  key: .pgpass |  | Optional: \{\} <br /> |
 | `displayName` _string_ | DisplayName is a human-readable name for the registry. |  | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the registry API server.<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the registry API server runs in, you must specify<br />the `registry-api` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
+| `imagePullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core) array_ | ImagePullSecrets allows specifying image pull secrets for the registry API workload.<br />These are applied to both the registry-api Deployment's PodSpec.ImagePullSecrets<br />and to the operator-managed ServiceAccount the registry API runs as, so private<br />images are pullable through either path.<br />Use this field for new manifests.<br />Important: this is the ONLY way to attach image-pull credentials to the<br />operator-managed ServiceAccount. The legacy<br />spec.podTemplateSpec.spec.imagePullSecrets path populates the Deployment's pod<br />spec ONLY — it does NOT touch the ServiceAccount. On managed Kubernetes<br />platforms that rely on ServiceAccount-level credential injection (for example<br />GKE Workload Identity, OpenShift's per-SA dockercfg secrets, EKS IRSA), using<br />only the legacy PodTemplateSpec path can fail to pull private images even when<br />the secret exists in the namespace. Always set spec.imagePullSecrets when<br />SA-level credentials matter.<br />Precedence with PodTemplateSpec:<br />  - This field is applied first as the controller-generated default.<br />  - Values set under spec.podTemplateSpec.spec.imagePullSecrets are user overrides<br />    and win on overlap. If the user supplies imagePullSecrets via PodTemplateSpec,<br />    those replace the default list on the Deployment (the list is treated atomically).<br />  - The ServiceAccount is always populated from this field — PodTemplateSpec does not<br />    affect the ServiceAccount.<br />An omitted field and an explicitly empty list are equivalent: both leave the<br />ServiceAccount's existing ImagePullSecrets unchanged. This preserves<br />platform-managed pull secrets (for example OpenShift's per-SA dockercfg<br />entries) when overlays or patches emit an empty list. Truly clearing the<br />ServiceAccount's pull secrets requires recreating the resource. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPRegistryStatus
@@ -2478,7 +2525,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `authorizationEndpoint` _string_ | AuthorizationEndpoint is the URL for the OAuth authorization endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
 | `tokenEndpoint` _string_ | TokenEndpoint is the URL for the OAuth token endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
-| `userInfo` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfo contains configuration for fetching user information from the upstream provider.<br />Required for OAuth2 providers to resolve user identity. |  | Required: \{\} <br /> |
+| `userInfo` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfo contains configuration for fetching user information from the upstream provider.<br />When omitted, the embedded auth server runs in synthesis mode for this<br />upstream: a non-PII subject derived from the access token, no Name/Email.<br />Use this shape for upstreams with no userinfo surface (e.g., MCP<br />authorization servers per the MCP spec). |  | Optional: \{\} <br /> |
 | `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IDP. |  | Required: \{\} <br /> |
 | `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
 | `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IDP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
@@ -2686,7 +2733,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `usernameSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | UsernameSecretRef references a Secret containing the Redis ACL username. |  | Required: \{\} <br /> |
+| `usernameSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | UsernameSecretRef references a Secret containing the Redis ACL username.<br />When omitted, connections use legacy password-only AUTH. Omit for managed<br />Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard<br />HA, Azure Cache for Redis). Set for services that support ACL users (e.g. AWS<br />ElastiCache non-cluster with Redis 6+ RBAC). |  | Optional: \{\} <br /> |
 | `passwordSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PasswordSecretRef references a Secret containing the Redis ACL password. |  | Required: \{\} <br /> |
 
 
@@ -2714,7 +2761,7 @@ _Appears in:_
 
 
 RedisStorageConfig configures Redis connection for auth server storage.
-Redis is deployed in Sentinel mode with ACL user authentication (the only supported configuration).
+Exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set.
 
 
 
@@ -2723,13 +2770,14 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `sentinelConfig` _[api.v1beta1.RedisSentinelConfig](#apiv1beta1redissentinelconfig)_ | SentinelConfig holds Redis Sentinel configuration. |  | Required: \{\} <br /> |
+| `addr` _string_ | Addr is the Redis server address for standalone mode (e.g., "host:port").<br />Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present<br />a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig. |  | Optional: \{\} <br /> |
+| `sentinelConfig` _[api.v1beta1.RedisSentinelConfig](#apiv1beta1redissentinelconfig)_ | SentinelConfig holds Redis Sentinel configuration.<br />Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr. |  | Optional: \{\} <br /> |
 | `aclUserConfig` _[api.v1beta1.RedisACLUserConfig](#apiv1beta1redisacluserconfig)_ | ACLUserConfig configures Redis ACL user authentication. |  | Required: \{\} <br /> |
 | `dialTimeout` _string_ | DialTimeout is the timeout for establishing connections.<br />Format: Go duration string (e.g., "5s", "1m"). | 5s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `readTimeout` _string_ | ReadTimeout is the timeout for socket reads.<br />Format: Go duration string (e.g., "3s", "1m"). | 3s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `writeTimeout` _string_ | WriteTimeout is the timeout for socket writes.<br />Format: Go duration string (e.g., "3s", "1m"). | 3s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
 | `tls` _[api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)_ | TLS configures TLS for connections to the Redis/Valkey master.<br />Presence of this field enables TLS. Omit to use plaintext. |  | Optional: \{\} <br /> |
-| `sentinelTls` _[api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)_ | SentinelTLS configures TLS for connections to Sentinel instances.<br />Presence of this field enables TLS. Omit to use plaintext.<br />When omitted, sentinel connections use plaintext (no fallback to TLS config). |  | Optional: \{\} <br /> |
+| `sentinelTls` _[api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)_ | SentinelTLS configures TLS for connections to Sentinel instances.<br />Only applies when sentinelConfig is set. Presence of this field enables TLS. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.RedisTLSConfig
@@ -3390,6 +3438,7 @@ _Appears in:_
 | `authServerConfig` _[api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)_ | AuthServerConfig configures an embedded OAuth authorization server.<br />When set, the vMCP server acts as an OIDC issuer, drives users through<br />upstream IDPs, and issues ToolHive JWTs. The embedded AS becomes the<br />IncomingAuth OIDC provider — its issuer must match IncomingAuth.OIDCConfigRef<br />so that tokens it issues are accepted by the vMCP's incoming auth middleware.<br />When nil, IncomingAuth uses an external IDP and behavior is unchanged. |  | Optional: \{\} <br /> |
 | `replicas` _integer_ | Replicas is the desired number of vMCP pod replicas.<br />VirtualMCPServer creates a single Deployment for the vMCP aggregator process,<br />so there is only one replicas field (unlike MCPServer which has separate<br />Replicas and BackendReplicas for its two Deployments).<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `sessionStorage` _[api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When nil, no session storage is configured. |  | Optional: \{\} <br /> |
+| `imagePullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core) array_ | ImagePullSecrets allows specifying image pull secrets for the vMCP workload.<br />These are applied to both the vMCP Deployment's PodSpec.ImagePullSecrets<br />and to the operator-managed ServiceAccount the vMCP server runs as, so private<br />images are pullable through either path.<br />Merge semantics with PodTemplateSpec:<br />The deployed PodSpec.ImagePullSecrets is the Kubernetes-native strategic-merge<br />union of this field and spec.podTemplateSpec.spec.imagePullSecrets, merged by<br />the patchStrategy:"merge" / patchMergeKey:"name" tags on corev1.PodSpec.<br />  - This field is rendered first as the controller-generated default.<br />  - spec.podTemplateSpec.spec.imagePullSecrets is then strategic-merge-patched<br />    on top, keyed by Name. Distinct names from the two sources are unioned in<br />    the resulting list; entries with the same Name are deduplicated and the<br />    PodTemplateSpec entry wins on overlap (user override).<br />  - Order in the resulting list is not guaranteed and should not be relied on:<br />    strategic merge by name is order-insensitive.<br />  - The operator-managed ServiceAccount's imagePullSecrets list is populated<br />    ONLY from this field. spec.podTemplateSpec.spec.imagePullSecrets does not<br />    reach the ServiceAccount because PodTemplateSpec has no notion of a<br />    ServiceAccount. To make a secret usable via the ServiceAccount path<br />    (e.g. for sidecars or init containers that pull images independently),<br />    list it here rather than under spec.podTemplateSpec.<br />Note on cross-CRD consistency:<br />MCPRegistry currently uses an atomic-replace strategy for its imagePullSecrets<br />(the user-provided value replaces the controller-generated list rather than<br />being merged on top). VirtualMCPServer follows the Kubernetes-native<br />strategic-merge-by-name behavior described above. Aligning the two is tracked<br />as a separate follow-up; until then, manifests that set imagePullSecrets on<br />both CRDs will see different override behavior between them. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.VirtualMCPServerStatus

@@ -315,8 +315,15 @@ type toolFilterWriter struct {
 	config *toolMiddlewareConfig
 }
 
-// WriteHeader captures the status code
+// WriteHeader captures the status code.
+//
+// Content-Length is stripped because applying tool filters or overrides may
+// change the body size (e.g. a longer override description). Without this,
+// net/http rejects the rewritten body with "http: wrote more than the declared
+// Content-Length" and the client receives only the headers. Removing the
+// header lets Go fall back to chunked transfer encoding.
 func (rw *toolFilterWriter) WriteHeader(statusCode int) {
+	rw.ResponseWriter.Header().Del("Content-Length")
 	rw.ResponseWriter.WriteHeader(statusCode)
 }
 

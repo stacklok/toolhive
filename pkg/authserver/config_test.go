@@ -239,3 +239,203 @@ func assertError(t *testing.T, err error, wantErr bool, errMsg string) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
+	t.Parallel()
+
+	validDCR := &DCRUpstreamConfig{
+		DiscoveryURL: "https://idp.example.com/.well-known/oauth-authorization-server",
+	}
+
+	tests := []struct {
+		name    string
+		config  OAuth2UpstreamRunConfig
+		wantErr bool
+		errMsg  string
+	}{
+		// Four ClientID x DCRConfig combinations.
+		{
+			name:    "empty ClientID and nil DCRConfig rejects",
+			config:  OAuth2UpstreamRunConfig{},
+			wantErr: true,
+			errMsg:  "either client_id or dcr_config is required",
+		},
+		{
+			name:    "non-empty ClientID and non-nil DCRConfig rejects",
+			config:  OAuth2UpstreamRunConfig{ClientID: "c", DCRConfig: validDCR},
+			wantErr: true,
+			errMsg:  "client_id and dcr_config are mutually exclusive",
+		},
+		{
+			name:   "non-empty ClientID and nil DCRConfig is valid",
+			config: OAuth2UpstreamRunConfig{ClientID: "c"},
+		},
+		{
+			name:   "empty ClientID and non-nil DCRConfig is valid",
+			config: OAuth2UpstreamRunConfig{DCRConfig: validDCR},
+		},
+
+		// DCRConfig exactly-one-of rule propagates.
+		{
+			name: "DCRConfig with both discovery_url and registration_endpoint rejects",
+			config: OAuth2UpstreamRunConfig{
+				DCRConfig: &DCRUpstreamConfig{
+					DiscoveryURL:         "https://idp.example.com/.well-known/oauth-authorization-server",
+					RegistrationEndpoint: "https://idp.example.com/register",
+				},
+			},
+			wantErr: true,
+			errMsg:  "discovery_url and registration_endpoint are mutually exclusive",
+		},
+		{
+			name: "DCRConfig with neither discovery_url nor registration_endpoint rejects",
+			config: OAuth2UpstreamRunConfig{
+				DCRConfig: &DCRUpstreamConfig{},
+			},
+			wantErr: true,
+			errMsg:  "either discovery_url or registration_endpoint is required",
+		},
+		{
+			name: "DCRConfig with only registration_endpoint is valid when authorization_endpoint and token_endpoint are also set",
+			config: OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://idp.example.com/authorize",
+				TokenEndpoint:         "https://idp.example.com/token",
+				DCRConfig: &DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+				},
+			},
+		},
+
+		// registration_endpoint requires explicit authorize/token endpoints.
+		// Discovery would have populated them; bypassing discovery means the
+		// run-config must supply them or the upstream is unusable.
+		{
+			name: "DCRConfig.registration_endpoint without authorization_endpoint rejects",
+			config: OAuth2UpstreamRunConfig{
+				TokenEndpoint: "https://idp.example.com/token",
+				DCRConfig: &DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+				},
+			},
+			wantErr: true,
+			errMsg:  "authorization_endpoint and token_endpoint are required",
+		},
+		{
+			name: "DCRConfig.registration_endpoint without token_endpoint rejects",
+			config: OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://idp.example.com/authorize",
+				DCRConfig: &DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+				},
+			},
+			wantErr: true,
+			errMsg:  "authorization_endpoint and token_endpoint are required",
+		},
+		{
+			name: "DCRConfig.discovery_url is valid without explicit endpoints (discovery populates them)",
+			config: OAuth2UpstreamRunConfig{
+				DCRConfig: &DCRUpstreamConfig{
+					DiscoveryURL: "https://idp.example.com/.well-known/oauth-authorization-server",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.config.Validate()
+			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+func TestDCRUpstreamConfigValidate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		config  DCRUpstreamConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "neither discovery_url nor registration_endpoint rejects",
+			config:  DCRUpstreamConfig{},
+			wantErr: true,
+			errMsg:  "either discovery_url or registration_endpoint is required",
+		},
+		{
+			name: "both discovery_url and registration_endpoint rejects",
+			config: DCRUpstreamConfig{
+				DiscoveryURL:         "https://idp.example.com/.well-known/oauth-authorization-server",
+				RegistrationEndpoint: "https://idp.example.com/register",
+			},
+			wantErr: true,
+			errMsg:  "discovery_url and registration_endpoint are mutually exclusive",
+		},
+		{
+			name: "only discovery_url is valid",
+			config: DCRUpstreamConfig{
+				DiscoveryURL: "https://idp.example.com/.well-known/oauth-authorization-server",
+			},
+		},
+		{
+			name: "only registration_endpoint is valid",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+			},
+		},
+		{
+			name: "software metadata and a single token source pass validation",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint:   "https://idp.example.com/register",
+				InitialAccessTokenFile: "/var/run/secrets/dcr-token",
+				SoftwareID:             "toolhive",
+				SoftwareStatement:      "eyJhbGciOi...",
+			},
+		},
+		{
+			name: "both initial_access_token_file and initial_access_token_env_var rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint:     "https://idp.example.com/register",
+				InitialAccessTokenFile:   "/var/run/secrets/dcr-token",
+				InitialAccessTokenEnvVar: "DCR_TOKEN",
+			},
+			wantErr: true,
+			errMsg:  "initial_access_token_file and initial_access_token_env_var are mutually exclusive",
+		},
+		{
+			name:    "malformed discovery_url rejects",
+			config:  DCRUpstreamConfig{DiscoveryURL: "://broken"},
+			wantErr: true,
+			errMsg:  "invalid discovery_url",
+		},
+		{
+			name:    "non-loopback http discovery_url rejects",
+			config:  DCRUpstreamConfig{DiscoveryURL: "http://idp.example.com/.well-known/oauth-authorization-server"},
+			wantErr: true,
+			errMsg:  "invalid discovery_url",
+		},
+		{
+			name:    "non-loopback http registration_endpoint rejects",
+			config:  DCRUpstreamConfig{RegistrationEndpoint: "http://idp.example.com/register"},
+			wantErr: true,
+			errMsg:  "invalid registration_endpoint",
+		},
+		{
+			name: "loopback http discovery_url is valid",
+			config: DCRUpstreamConfig{
+				DiscoveryURL: "http://localhost:8080/.well-known/oauth-authorization-server",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.config.Validate()
+			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}

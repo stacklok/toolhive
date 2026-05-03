@@ -101,6 +101,7 @@ The CLI automatically detects container runtimes in this order:
    - `$TOOLHIVE_DOCKER_SOCKET` (if set)
    - `/var/run/docker.sock`
    - `~/.docker/run/docker.sock` (Docker Desktop on macOS)
+   - `~/.docker/desktop/docker.sock` (Docker Desktop on Linux)
    - `~/.rd/docker.sock` (Rancher Desktop on macOS)
    - `~/.orbstack/run/docker.sock` (OrbStack on macOS)
 

@@ -211,10 +211,12 @@ func TestRegistryAPI_PutEndpoint(t *testing.T) {
 	validRegistryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		registryData := map[string]interface{}{
-			"servers": map[string]interface{}{
-				"test-server": map[string]interface{}{
-					"command": []string{"test"},
-					"args":    []string{},
+			"$schema": "https://example.com/schema.json",
+			"version": "1.0.0",
+			"meta":    map[string]interface{}{"last_updated": "2025-01-01T00:00:00Z"},
+			"data": map[string]interface{}{
+				"servers": []interface{}{
+					map[string]interface{}{"name": "io.example.test-server"},
 				},
 			},
 		}
@@ -246,7 +248,7 @@ func TestRegistryAPI_PutEndpoint(t *testing.T) {
 				t.Helper()
 				// Create a temporary file with valid registry JSON
 				tempFile := filepath.Join(t.TempDir(), "valid-registry.json")
-				validJSON := `{"servers": {"test-server": {"command": ["test"], "args": []}}}`
+				validJSON := `{"data": {"servers": [{"name": "io.example.test-server"}]}}`
 				err := os.WriteFile(tempFile, []byte(validJSON), 0600)
 				require.NoError(t, err)
 				return `{"local_path":"` + tempFile + `"}`

@@ -98,6 +98,37 @@ func TestWriteFiles(t *testing.T) {
 		assert.Equal(t, []byte("# Skill"), content)
 	})
 
+	t.Run("nested file paths create intermediate directories", func(t *testing.T) {
+		t.Parallel()
+		baseDir := resolvedTempDir(t)
+		targetDir := filepath.Join(baseDir, "my-skill")
+
+		files := []FileEntry{
+			{Path: "SKILL.md", Content: []byte("# Skill"), Mode: 0644},
+			{Path: "references/foo.md", Content: []byte("ref-foo"), Mode: 0644},
+			{Path: "scripts/nested/run.sh", Content: []byte("#!/bin/sh\n"), Mode: 0755},
+			{Path: "deep/nested/dir/note.txt", Content: []byte("deep"), Mode: 0644},
+		}
+		require.NoError(t, WriteFiles(files, targetDir, false))
+
+		for _, f := range files {
+			full := filepath.Join(targetDir, filepath.FromSlash(f.Path))
+			content, readErr := os.ReadFile(full)
+			require.NoError(t, readErr, "file %q should exist on disk", f.Path)
+			assert.Equal(t, f.Content, content)
+
+			info, statErr := os.Stat(full)
+			require.NoError(t, statErr)
+			mode := info.Mode().Perm()
+			assert.True(t, mode <= 0644, "file %q has mode %o, expected <= 0644", f.Path, mode)
+		}
+
+		// Spot-check that an intermediate directory was created.
+		info, statErr := os.Stat(filepath.Join(targetDir, "scripts", "nested"))
+		require.NoError(t, statErr)
+		assert.True(t, info.IsDir(), "intermediate dir scripts/nested should be a directory")
+	})
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/go-git/go-git/v5/plumbing/object"
+
 	"github.com/stacklok/toolhive/pkg/git"
 	"github.com/stacklok/toolhive/pkg/skills"
 )
@@ -151,9 +153,9 @@ func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*Reso
 		return nil, fmt.Errorf("invalid skill name in SKILL.md: %w", err)
 	}
 
-	// Collect all files in the skill directory.
-	// For now, we read SKILL.md as the primary file. Additional files in the
-	// skill directory are discovered by listing the tree entries.
+	// Collect all files in the skill directory, recursively walking nested
+	// subtrees so that companion files in subdirectories (e.g. references/,
+	// scripts/) are included in the resolved skill bundle.
 	files, err := r.collectFiles(repoInfo, ref.Path)
 	if err != nil {
 		return nil, fmt.Errorf("collecting skill files: %w", err)
@@ -166,7 +168,12 @@ func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*Reso
 	}, nil
 }
 
-// collectFiles reads all files from the given path in the repository.
+// collectFiles reads all files from the given path in the repository,
+// walking nested subtrees recursively. Returned paths are forward-slash
+// relative to basePath. WriteContainedFile creates parent directories and
+// guards against path traversal; the in-memory clone is bounded by
+// LimitedFs in pkg/git, and the OCI packager re-asserts file count and
+// total size limits independently.
 func (*defaultResolver) collectFiles(repoInfo *git.RepositoryInfo, basePath string) ([]FileEntry, error) {
 	ref, err := repoInfo.Repository.Head()
 	if err != nil {
@@ -183,7 +190,6 @@ func (*defaultResolver) collectFiles(repoInfo *git.RepositoryInfo, basePath stri
 		return nil, fmt.Errorf("getting tree: %w", err)
 	}
 
-	// Navigate to subdirectory if specified
 	if basePath != "" {
 		tree, err = tree.Tree(basePath)
 		if err != nil {
@@ -192,32 +198,22 @@ func (*defaultResolver) collectFiles(repoInfo *git.RepositoryInfo, basePath stri
 	}
 
 	var files []FileEntry
-	for _, entry := range tree.Entries {
-		// Skip directories — we only want files at the top level of the skill dir.
-		// Nested subdirectories are not part of the skill spec today.
-		// WriteFiles includes MkdirAll as defense-in-depth for containment safety.
-		if entry.Mode == 0040000 {
-			continue
-		}
-
-		file, fileErr := tree.File(entry.Name)
-		if fileErr != nil {
-			return nil, fmt.Errorf("reading file %q: %w", entry.Name, fileErr)
-		}
-
-		content, contentErr := file.Contents()
+	err = tree.Files().ForEach(func(f *object.File) error {
+		content, contentErr := f.Contents()
 		if contentErr != nil {
-			return nil, fmt.Errorf("reading content of %q: %w", entry.Name, contentErr)
+			return fmt.Errorf("reading content of %q: %w", f.Name, contentErr)
 		}
 
 		// All files are capped to 0644 by the writer; set a uniform mode here.
-		mode := fs.FileMode(0644)
-
 		files = append(files, FileEntry{
-			Path:    entry.Name,
+			Path:    f.Name,
 			Content: []byte(content),
-			Mode:    mode,
+			Mode:    fs.FileMode(0644),
 		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("iterating tree: %w", err)
 	}
 
 	return files, nil

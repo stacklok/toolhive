@@ -106,6 +106,18 @@ func WithContainer(container corev1.Container) PodTemplateSpecOption {
 	}
 }
 
+// WithImagePullSecrets sets the image pull secrets on the pod spec from
+// spec.imagePullSecrets. These are treated as defaults; a user-provided
+// PodTemplateSpec can override them via MergePodTemplateSpecs.
+func WithImagePullSecrets(secrets []corev1.LocalObjectReference) PodTemplateSpecOption {
+	return func(pts *corev1.PodTemplateSpec) {
+		if len(secrets) == 0 {
+			return
+		}
+		pts.Spec.ImagePullSecrets = secrets
+	}
+}
+
 // WithVolume adds a volume to the PodSpec.
 func WithVolume(volume corev1.Volume) PodTemplateSpecOption {
 	return func(pts *corev1.PodTemplateSpec) {
@@ -400,6 +412,7 @@ func BuildRegistryAPIContainer(image string) corev1.Container {
 //   - ServiceAccountName: Default only if user hasn't specified
 //   - Containers: Merged by name - defaults fill in missing container fields
 //   - Volumes: Merged by name - defaults added only if not present
+//   - ImagePullSecrets: User list wins atomically if non-empty; otherwise inherits defaults
 //   - All other PodSpec fields: User values preserved as-is
 func MergePodTemplateSpecs(defaultPTS, userPTS *corev1.PodTemplateSpec) corev1.PodTemplateSpec {
 	if userPTS == nil {
@@ -435,6 +448,14 @@ func MergePodTemplateSpecs(defaultPTS, userPTS *corev1.PodTemplateSpec) corev1.P
 
 	// Merge volumes: add default volumes that user hasn't specified
 	result.Spec.Volumes = mergeVolumesUserFirst(defaultPTS.Spec.Volumes, result.Spec.Volumes)
+
+	// Merge image pull secrets: user values win on overlap; otherwise inherit defaults.
+	// The list is treated atomically — if the user specifies any imagePullSecrets in
+	// PodTemplateSpec, theirs replace the defaults entirely. This matches the +listType=atomic
+	// semantics on MCPRegistrySpec.ImagePullSecrets.
+	if len(result.Spec.ImagePullSecrets) == 0 {
+		result.Spec.ImagePullSecrets = defaultPTS.Spec.ImagePullSecrets
+	}
 
 	return *result
 }

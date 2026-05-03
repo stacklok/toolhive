@@ -127,14 +127,10 @@ var _ = Describe("Registry API", Label("api", "api-registry", "registry", "e2e")
 		Context("valid updates", func() {
 			It("should update with valid local file path", func() {
 				By("Creating a valid test registry file")
-				testFile := createTestRegistryFile(map[string]interface{}{
-					"test-server": map[string]interface{}{
-						"image":       "test/image:latest",
-						"description": "Test server",
-						"tier":        "Community",
-						"status":      "Active",
-						"transport":   "stdio",
-					},
+				testFile := createTestRegistryFile(testServerSpec{
+					Name:        "test-server",
+					Image:       "test/image:latest",
+					Description: "Test server",
 				})
 
 				By("Updating registry with local file path")
@@ -157,14 +153,10 @@ var _ = Describe("Registry API", Label("api", "api-registry", "registry", "e2e")
 
 			It("should reset to default with empty request", func() {
 				By("First setting a custom registry")
-				testFile := createTestRegistryFile(map[string]interface{}{
-					"test-server": map[string]interface{}{
-						"image":       "test/image:latest",
-						"description": "Test server",
-						"tier":        "Community",
-						"status":      "Active",
-						"transport":   "stdio",
-					},
+				testFile := createTestRegistryFile(testServerSpec{
+					Name:        "test-server",
+					Image:       "test/image:latest",
+					Description: "Test server",
 				})
 				setResp := updateRegistry(apiServer, "default", map[string]interface{}{
 					"local_path": testFile,
@@ -201,14 +193,10 @@ var _ = Describe("Registry API", Label("api", "api-registry", "registry", "e2e")
 
 			It("should return 400 when specifying multiple sources", func() {
 				By("Sending request with multiple sources")
-				testFile := createTestRegistryFile(map[string]interface{}{
-					"test-server": map[string]interface{}{
-						"image":       "test/image:latest",
-						"description": "Test server",
-						"tier":        "Community",
-						"status":      "Active",
-						"transport":   "stdio",
-					},
+				testFile := createTestRegistryFile(testServerSpec{
+					Name:        "test-server",
+					Image:       "test/image:latest",
+					Description: "Test server",
 				})
 				updateReq := map[string]interface{}{
 					"url":        "https://example.com/registry.json",
@@ -393,14 +381,10 @@ var _ = Describe("Registry API", Label("api", "api-registry", "registry", "e2e")
 
 			BeforeEach(func() {
 				By("Creating a test registry file with a unique server")
-				testFile = createTestRegistryFile(map[string]interface{}{
-					testServerName: map[string]interface{}{
-						"image":       "test/e2e-image:latest",
-						"description": "E2E Test server for state consistency",
-						"tier":        "Community",
-						"status":      "Active",
-						"transport":   "stdio",
-					},
+				testFile = createTestRegistryFile(testServerSpec{
+					Name:        testServerName,
+					Image:       "test/e2e-image:latest",
+					Description: "E2E Test server for state consistency",
 				})
 
 				By("Updating registry with the test file")
@@ -506,14 +490,10 @@ var _ = Describe("Registry API", Label("api", "api-registry", "registry", "e2e")
 		Context("after resetting to default", func() {
 			BeforeEach(func() {
 				By("First setting a custom registry")
-				testFile := createTestRegistryFile(map[string]interface{}{
-					"custom-server": map[string]interface{}{
-						"image":       "test/custom:latest",
-						"description": "Custom server",
-						"tier":        "Community",
-						"status":      "Active",
-						"transport":   "stdio",
-					},
+				testFile := createTestRegistryFile(testServerSpec{
+					Name:        "custom-server",
+					Image:       "test/custom:latest",
+					Description: "Custom server",
 				})
 				setResp := updateRegistry(apiServer, "default", map[string]interface{}{
 					"local_path": testFile,
@@ -567,23 +547,11 @@ var _ = Describe("Registry API", Label("api", "api-registry", "registry", "e2e")
 
 			BeforeEach(func() {
 				By("Creating a test registry file with remote servers")
-				registryData := map[string]interface{}{
-					"version":      "1.0.0",
-					"last_updated": "2025-01-01T00:00:00Z",
-					"servers":      map[string]interface{}{},
-					"remote_servers": map[string]interface{}{
-						remoteServerName: map[string]interface{}{
-							"url":         "https://example.com/mcp",
-							"description": "E2E Test remote server",
-							"tier":        "Community",
-							"status":      "Active",
-							"transport":   "sse",
-						},
-					},
-				}
-				data, err := json.Marshal(registryData)
-				Expect(err).ToNot(HaveOccurred())
-				testFile = createTestRegistryFileWithContent(data)
+				testFile = createTestRegistryFile(testServerSpec{
+					Name:        remoteServerName,
+					URL:         "https://example.com/mcp",
+					Description: "E2E Test remote server",
+				})
 
 				By("Updating registry with the test file")
 				updateReq := map[string]interface{}{
@@ -879,13 +847,48 @@ func getRegistryServer(server *e2e.Server, registryName, serverName string) *htt
 	return resp
 }
 
-func createTestRegistryFile(servers map[string]interface{}) string {
-	registryData := map[string]interface{}{
-		"version":      "1.0.0",
-		"last_updated": "2025-01-01T00:00:00Z",
-		"servers":      servers,
-	}
+// testServerSpec describes a single MCP server entry for an upstream-format
+// registry fixture. Either Image (container) or URL (remote) is required.
+type testServerSpec struct {
+	Name        string
+	Description string
+	Image       string
+	URL         string
+}
 
+// createTestRegistryFile writes an upstream MCP registry JSON file containing
+// the given server specs and returns the file path. Container specs (Image
+// set) become packages with stdio transport; remote specs (URL set) become
+// streamable-http remotes.
+func createTestRegistryFile(specs ...testServerSpec) string {
+	servers := make([]map[string]interface{}, 0, len(specs))
+	for _, s := range specs {
+		entry := map[string]interface{}{
+			"name":        s.Name,
+			"description": s.Description,
+		}
+		switch {
+		case s.Image != "":
+			entry["packages"] = []map[string]interface{}{
+				{
+					"registryType": "oci",
+					"identifier":   s.Image,
+					"transport":    map[string]interface{}{"type": "stdio"},
+				},
+			}
+		case s.URL != "":
+			entry["remotes"] = []map[string]interface{}{
+				{"type": "streamable-http", "url": s.URL},
+			}
+		}
+		servers = append(servers, entry)
+	}
+	registryData := map[string]interface{}{
+		"$schema": "https://example.com/schema.json",
+		"version": "1.0.0",
+		"meta":    map[string]interface{}{"last_updated": "2025-01-01T00:00:00Z"},
+		"data":    map[string]interface{}{"servers": servers},
+	}
 	data, err := json.Marshal(registryData)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to marshal test registry")
 

@@ -11,13 +11,12 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/networking"
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
@@ -263,7 +262,7 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 	slog.Debug("authorization code exchange successful",
 		"has_refresh_token", tokens.RefreshToken != "",
 		"has_id_token", tokens.IDToken != "",
-		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
+		"expires_at", expiresAtLogValue(tokens.ExpiresAt),
 	)
 
 	// Extract optional standard claims (name, email) from ID token
@@ -409,7 +408,7 @@ func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken, expe
 
 	slog.Debug("token refresh successful",
 		"has_new_refresh_token", tokens.RefreshToken != "",
-		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
+		"expires_at", expiresAtLogValue(tokens.ExpiresAt),
 	)
 
 	return tokens, nil

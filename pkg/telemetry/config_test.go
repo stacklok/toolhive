@@ -165,7 +165,7 @@ func TestTelemetryProviderValidation(t *testing.T) {
 // getProviderTypeName returns a readable type name for telemetry providers
 func getProviderTypeName(provider interface{}) string {
 	t := reflect.TypeOf(provider)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		return t.Elem().PkgPath()[len("go.opentelemetry.io/otel/"):] + "." + t.Elem().Name()
 	}
 	return t.PkgPath()[len("go.opentelemetry.io/otel/"):] + "." + t.Name()

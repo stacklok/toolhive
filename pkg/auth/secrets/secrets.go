@@ -9,9 +9,11 @@ package secrets
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -162,11 +164,8 @@ func GenerateUniqueSecretNameWithPrefix(workloadName, prefix string, secretManag
 // This version is testable with dependency injection
 func StoreSecretInManagerWithProvider(ctx context.Context, secretName, secretValue string, secretManager secrets.Provider) error {
 	// Check if the provider supports writing secrets
-	if !secretManager.Capabilities().CanWrite {
-		configProvider := config.NewDefaultProvider()
-		cfg := configProvider.GetConfig()
-		providerType, _ := cfg.Secrets.GetProviderType()
-		return fmt.Errorf("secrets provider %s does not support writing secrets", providerType)
+	if caps := secretManager.Capabilities(); !caps.CanWrite {
+		return fmt.Errorf("secrets provider (%s) does not support writing secrets", caps)
 	}
 
 	// Store the secret
@@ -206,15 +205,25 @@ func GetUserSecretsProvider() (secrets.Provider, error) {
 // GetUserSecretsProvider it does not apply UserProvider filtering, so callers
 // can read and delete __thv_* prefixed keys directly.
 func GetSystemSecretsProvider() (secrets.Provider, error) {
-	configProvider := config.NewDefaultProvider()
+	return getSystemSecretsProviderFromConfig(config.NewDefaultProvider(), &env.OSReader{})
+}
+
+// getSystemSecretsProviderFromConfig is the testable core of GetSystemSecretsProvider.
+// It accepts an explicit config.Provider and env.Reader so tests can inject
+// both without touching global environment state.
+func getSystemSecretsProviderFromConfig(configProvider config.Provider, envReader env.Reader) (secrets.Provider, error) {
 	cfg := configProvider.GetConfig()
 
-	if !cfg.Secrets.SetupCompleted {
-		return nil, secrets.ErrSecretsNotSetup
-	}
-
-	providerType, err := cfg.Secrets.GetProviderType()
+	// GetProviderTypeWithEnv handles the TOOLHIVE_SECRETS_PROVIDER env var and
+	// allows the "environment" provider even when SetupCompleted is false, so
+	// Kubernetes and test deployments can skip interactive setup. When no env
+	// var override is present and SetupCompleted is false, it returns
+	// ErrSecretsNotSetup, which is propagated directly to the caller.
+	providerType, err := cfg.Secrets.GetProviderTypeWithEnv(envReader)
 	if err != nil {
+		if errors.Is(err, secrets.ErrSecretsNotSetup) {
+			return nil, secrets.ErrSecretsNotSetup
+		}
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 

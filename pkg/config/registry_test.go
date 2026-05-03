@@ -54,18 +54,18 @@ func TestDetectRegistryType(t *testing.T) { //nolint:tparallel,paralleltest // C
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					switch r.URL.Path {
 					case "/":
-						// Return valid ToolHive registry JSON
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(map[string]interface{}{
+							"$schema": "https://example.com/schema.json",
 							"version": "1.0.0",
-							"servers": map[string]interface{}{
-								"test-server": map[string]interface{}{
-									"image": "test:latest",
+							"meta":    map[string]interface{}{"last_updated": "2025-01-01T00:00:00Z"},
+							"data": map[string]interface{}{
+								"servers": []interface{}{
+									map[string]interface{}{"name": "io.example.test-server"},
 								},
 							},
 						})
 					default:
-						// Return 404 for API endpoint and any other path
 						w.WriteHeader(http.StatusNotFound)
 					}
 				}))
@@ -115,31 +115,6 @@ func TestDetectRegistryType(t *testing.T) { //nolint:tparallel,paralleltest // C
 				}))
 			},
 		},
-		{
-			name:            "URL with remote_servers field (valid registry JSON)",
-			allowPrivateIPs: true,
-			expectedType:    RegistryTypeURL,
-			setupMockServer: func() *httptest.Server {
-				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					switch r.URL.Path {
-					case "/":
-						// Return valid ToolHive registry JSON with remote_servers
-						w.Header().Set("Content-Type", "application/json")
-						json.NewEncoder(w).Encode(map[string]interface{}{
-							"version": "1.0.0",
-							"remote_servers": map[string]interface{}{
-								"remote-server": map[string]interface{}{
-									"url": "https://remote.example.com",
-								},
-							},
-						})
-					default:
-						// Return 404 for API endpoint and any other path
-						w.WriteHeader(http.StatusNotFound)
-					}
-				}))
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -177,71 +152,32 @@ func TestDetectRegistryType(t *testing.T) { //nolint:tparallel,paralleltest // C
 func TestIsValidRegistryJSON(t *testing.T) {
 	t.Parallel()
 
+	upstreamWithServer := map[string]interface{}{
+		"$schema": "https://example.com/schema.json",
+		"version": "1.0.0",
+		"meta":    map[string]interface{}{"last_updated": "2025-01-01T00:00:00Z"},
+		"data": map[string]interface{}{
+			"servers": []interface{}{
+				map[string]interface{}{"name": "io.example.test"},
+			},
+		},
+	}
+
 	tests := []struct {
-		name          string
-		setupServer   func() *httptest.Server
-		expectedError bool
+		name             string
+		setupServer      func() *httptest.Server
+		expectedError    bool
+		expectErrMessage string
 	}{
 		{
-			name: "valid registry JSON with servers field",
+			name: "valid upstream registry with servers",
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]interface{}{
-						"version": "1.0.0",
-						"servers": map[string]interface{}{
-							"test": map[string]interface{}{"image": "test:latest"},
-						},
-					})
+					json.NewEncoder(w).Encode(upstreamWithServer)
 				}))
 			},
 			expectedError: false,
-		},
-		{
-			name: "valid registry JSON with remote_servers field",
-			setupServer: func() *httptest.Server {
-				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]interface{}{
-						"version": "1.0.0",
-						"remote_servers": map[string]interface{}{
-							"remote": map[string]interface{}{"url": "https://example.com"},
-						},
-					})
-				}))
-			},
-			expectedError: false,
-		},
-		{
-			name: "valid registry JSON with both servers and remote_servers",
-			setupServer: func() *httptest.Server {
-				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]interface{}{
-						"version": "1.0.0",
-						"servers": map[string]interface{}{
-							"test": map[string]interface{}{"image": "test:latest"},
-						},
-						"remote_servers": map[string]interface{}{
-							"remote": map[string]interface{}{"url": "https://example.com"},
-						},
-					})
-				}))
-			},
-			expectedError: false,
-		},
-		{
-			name: "invalid JSON - missing registry fields",
-			setupServer: func() *httptest.Server {
-				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]interface{}{
-						"version": "1.0.0",
-						// Missing servers and remote_servers
-					})
-				}))
-			},
-			expectedError: true,
 		},
 		{
 			name: "invalid JSON - not JSON at all",
@@ -263,60 +199,38 @@ func TestIsValidRegistryJSON(t *testing.T) {
 			expectedError: true,
 		},
 		{
-			name: "invalid structure - servers as string instead of map",
+			name: "upstream registry with empty servers list",
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
-					// This would pass weak validation but fails strong type validation
 					json.NewEncoder(w).Encode(map[string]interface{}{
+						"$schema": "https://example.com/schema.json",
 						"version": "1.0.0",
-						"servers": "not-a-map",
+						"meta":    map[string]interface{}{},
+						"data":    map[string]interface{}{"servers": []interface{}{}},
 					})
 				}))
 			},
 			expectedError: true,
 		},
 		{
-			name: "invalid structure - remote_servers as array instead of map",
-			setupServer: func() *httptest.Server {
-				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					w.Header().Set("Content-Type", "application/json")
-					// This would pass weak validation but fails strong type validation
-					json.NewEncoder(w).Encode(map[string]interface{}{
-						"version":        "1.0.0",
-						"remote_servers": []string{"wrong", "type"},
-					})
-				}))
-			},
-			expectedError: true,
-		},
-		{
-			name: "empty registry - has fields but no servers",
+			name: "valid upstream registry with groups",
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(map[string]interface{}{
-						"version":        "1.0.0",
-						"servers":        map[string]interface{}{},
-						"remote_servers": map[string]interface{}{},
-					})
-				}))
-			},
-			expectedError: true,
-		},
-		{
-			name: "valid registry with groups only",
-			setupServer: func() *httptest.Server {
-				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]interface{}{
+						"$schema": "https://example.com/schema.json",
 						"version": "1.0.0",
-						"groups": []map[string]interface{}{
-							{
-								"name":        "test-group",
-								"description": "Test group",
-								"servers": map[string]interface{}{
-									"grouped-server": map[string]interface{}{"image": "test:latest"},
+						"meta":    map[string]interface{}{},
+						"data": map[string]interface{}{
+							"servers": []interface{}{},
+							"groups": []map[string]interface{}{
+								{
+									"name":        "test-group",
+									"description": "Test group",
+									"servers": []interface{}{
+										map[string]interface{}{"name": "io.example.grouped"},
+									},
 								},
 							},
 						},
@@ -324,6 +238,20 @@ func TestIsValidRegistryJSON(t *testing.T) {
 				}))
 			},
 			expectedError: false,
+		},
+		{
+			name: "legacy registry returns migration hint",
+			setupServer: func() *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{
+						"version": "1.0.0",
+						"servers": {"test": {"image": "test:latest"}}
+					}`))
+				}))
+			},
+			expectedError:    true,
+			expectErrMessage: "thv registry convert",
 		},
 	}
 
@@ -339,10 +267,13 @@ func TestIsValidRegistryJSON(t *testing.T) {
 			err := isValidRegistryJSON(client, server.URL)
 
 			if tt.expectedError {
-				assert.Error(t, err, "isValidRegistryJSON should return an error")
-			} else {
-				assert.NoError(t, err, "isValidRegistryJSON should not return an error")
+				require.Error(t, err, "isValidRegistryJSON should return an error")
+				if tt.expectErrMessage != "" {
+					assert.Contains(t, err.Error(), tt.expectErrMessage)
+				}
+				return
 			}
+			assert.NoError(t, err, "isValidRegistryJSON should not return an error")
 		})
 	}
 }
@@ -351,9 +282,10 @@ func TestValidateRegistryFileStructure_UpstreamFormat(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		content     string
-		expectError bool
+		name           string
+		content        string
+		expectError    bool
+		errMsgContains string
 	}{
 		{
 			name: "valid upstream format with servers",
@@ -381,15 +313,26 @@ func TestValidateRegistryFileStructure_UpstreamFormat(t *testing.T) {
 				"meta": {"last_updated": "2025-01-01T00:00:00Z"},
 				"data": {"servers": []}
 			}`,
-			expectError: true,
+			expectError:    true,
+			errMsgContains: "no servers or groups",
 		},
 		{
-			name: "legacy format still works",
+			name: "legacy format with top-level servers returns migration hint",
 			content: `{
 				"version": "1.0.0",
 				"servers": {"test": {"image": "test:latest"}}
 			}`,
-			expectError: false,
+			expectError:    true,
+			errMsgContains: "thv registry convert",
+		},
+		{
+			name: "legacy format with top-level remote_servers returns migration hint",
+			content: `{
+				"version": "1.0.0",
+				"remote_servers": {"test": {"url": "https://example.com"}}
+			}`,
+			expectError:    true,
+			errMsgContains: "thv registry convert",
 		},
 	}
 
@@ -402,7 +345,10 @@ func TestValidateRegistryFileStructure_UpstreamFormat(t *testing.T) {
 
 			err := validateRegistryFileStructure(path)
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
+				if tt.errMsgContains != "" {
+					assert.Contains(t, err.Error(), tt.errMsgContains)
+				}
 			} else {
 				assert.NoError(t, err)
 			}
@@ -484,13 +430,16 @@ func TestProbeRegistryURL(t *testing.T) { //nolint:tparallel,paralleltest // Can
 					case "/":
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(map[string]interface{}{
+							"$schema": "https://example.com/schema.json",
 							"version": "1.0.0",
-							"servers": map[string]interface{}{
-								"test-server": map[string]interface{}{"image": "test:latest"},
+							"meta":    map[string]interface{}{},
+							"data": map[string]interface{}{
+								"servers": []interface{}{
+									map[string]interface{}{"name": "io.example.test-server"},
+								},
 							},
 						})
 					default:
-						// Return 404 for API endpoint and any other path
 						w.WriteHeader(http.StatusNotFound)
 					}
 				}))

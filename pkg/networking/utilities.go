@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
@@ -130,14 +132,50 @@ func ValidateIssuerURL(rawURL string) error {
 	return nil
 }
 
-// IsLocalhost checks if a host is localhost (for development)
+// ValidateLoopbackAddress returns an error if addr (a host:port string) does
+// not contain a literal loopback IP address. Both IPv4 (127.x.x.x) and IPv6
+// (::1) loopback addresses are accepted. Hostnames (including "localhost") are
+// not resolved and will be rejected.
+func ValidateLoopbackAddress(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid listen address %q: %w", addr, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("listen address %q must be a loopback interface (127.x.x.x or ::1)", addr)
+	}
+	return nil
+}
+
+// IsLocalhost checks if a host is a loopback address (for development).
+// The canonical implementation lives in pkg/oauthproto.IsLoopbackHost;
+// this function is a thin wrapper that preserves backward compatibility for
+// all callers in this package and beyond.
 func IsLocalhost(host string) bool {
-	return strings.HasPrefix(host, "localhost:") ||
-		strings.HasPrefix(host, "127.0.0.1:") ||
-		strings.HasPrefix(host, "[::1]:") ||
-		host == "localhost" ||
-		host == "127.0.0.1" ||
-		host == "[::1]"
+	return oauthproto.IsLoopbackHost(host)
+}
+
+// IsLoopbackHost reports whether the Host header value refers to a loopback
+// address. It is intended for DNS-rebinding guards on loopback-only listeners.
+// It accepts the hostname "localhost" (case-insensitive), any 127.x.x.x
+// address, and the IPv6 loopback ::1. Both plain-host and host:port forms are
+// accepted. Hostnames other than "localhost" are NOT resolved.
+func IsLoopbackHost(host string) bool {
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		// No port present — treat the whole value as the host.
+		h = host
+		// Strip brackets from bare IPv6 literals like "[::1]".
+		if len(h) > 2 && h[0] == '[' && h[len(h)-1] == ']' {
+			h = h[1 : len(h)-1]
+		}
+	}
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 // IsURL checks if the input is a valid HTTP or HTTPS URL

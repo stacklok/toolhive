@@ -72,6 +72,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: serviceAccountNameForRemoteProxy(proxy),
+					ImagePullSecrets:   r.imagePullSecretsForRemoteProxy(proxy),
 					Containers: []corev1.Container{{
 						Image:           getToolhiveRunnerImage(),
 						Name:            "toolhive",

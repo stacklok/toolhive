@@ -621,6 +621,206 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 	})
 }
 
+func TestMemoryStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no_match", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("one_match_returns_deep_copy", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-1",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "rt-1", got.RefreshToken)
+
+			// Mutate the returned copy and confirm the stored value is unchanged.
+			got.RefreshToken = "mutated"
+			got2, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			assert.Equal(t, "rt-1", got2.RefreshToken, "stored row must be unaffected by mutation of returned copy")
+		})
+	})
+
+	t.Run("multiple_sessions_pick_latest_expires_at", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			now := time.Now()
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-1h",
+				ExpiresAt:    now.Add(time.Hour),
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-2", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-2h",
+				ExpiresAt:    now.Add(2 * time.Hour),
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-3", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-3h",
+				ExpiresAt:    now.Add(3 * time.Hour),
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			assert.Equal(t, "rt-3h", got.RefreshToken)
+		})
+	})
+
+	t.Run("different_user_not_matched", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-X", &UpstreamTokens{
+				ProviderID: "prov-X",
+				UserID:     "user-B",
+				ExpiresAt:  time.Now().Add(time.Hour),
+			}))
+
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("different_provider_not_matched", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// The lookup filters on the stored UpstreamTokens.ProviderID field,
+			// not the map key. StoreUpstreamTokens copies the field from the
+			// input struct, so they always match here.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-Y", &UpstreamTokens{
+				ProviderID: "prov-Y",
+				UserID:     "user-A",
+				ExpiresAt:  time.Now().Add(time.Hour),
+			}))
+
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("tolerate_access_token_expired", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// ExpiresAt is 1h in the past (access token expired), but the storage TTL
+			// is ExpiresAt + DefaultRefreshTokenTTL which is still in the future,
+			// so the cleanup loop has not swept this row yet.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-expired-at",
+				ExpiresAt:    time.Now().Add(-time.Hour),
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "rt-expired-at", got.RefreshToken)
+		})
+	})
+
+	t.Run("zero_expires_at_wins_over_nonzero", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// Row with zero ExpiresAt — providers like Slack and GitHub OAuth Apps
+			// genuinely never expire; treated as "alive forever" by IsExpired.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-zero", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-zero",
+				ExpiresAt:    time.Time{},
+			}))
+			// Row with a real ExpiresAt in the future.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-nonzero", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-nonzero",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			assert.Equal(t, "rt-zero", got.RefreshToken)
+		})
+	})
+
+	t.Run("two_zero_expires_at_rows", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// Both rows have zero ExpiresAt. Go's map iteration is randomized so
+			// we only assert that one of the two is returned.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-zero-1", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-zero-1",
+				ExpiresAt:    time.Time{},
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-zero-2", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-zero-2",
+				ExpiresAt:    time.Time{},
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Contains(t, []string{"rt-zero-1", "rt-zero-2"}, got.RefreshToken)
+		})
+	})
+
+	t.Run("empty_user_id", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "", "prov-X")
+			require.Error(t, err)
+			require.ErrorIs(t, err, fosite.ErrInvalidRequest)
+		})
+	})
+
+	t.Run("empty_provider_id", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "")
+			require.Error(t, err)
+			require.ErrorIs(t, err, fosite.ErrInvalidRequest)
+		})
+	})
+
+	t.Run("returns_all_fields_round_trip", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			now := time.Now().Truncate(time.Second)
+			fixture := UpstreamTokens{
+				ProviderID:       "prov-X",
+				AccessToken:      "access-tok",
+				RefreshToken:     "refresh-tok",
+				IDToken:          "id-tok",
+				ExpiresAt:        now.Add(time.Hour),
+				SessionExpiresAt: now.Add(2 * time.Hour),
+				UserID:           "user-A",
+				UpstreamSubject:  "sub-upstream",
+				ClientID:         "client-1",
+			}
+
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-rt", "prov-X", &fixture))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			require.Equal(t, fixture, *got)
+		})
+	})
+}
+
 // --- Pending Authorization Tests ---
 
 func TestMemoryStorage_PendingAuthorization(t *testing.T) {
@@ -818,6 +1018,65 @@ func TestMemoryStorage_CleanupExpired(t *testing.T) {
 			})
 		})
 	}
+
+	t.Run("upstream tokens with zero ExpiresAt are never evicted", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// Non-expiring token (ExpiresAt zero) must survive cleanup runs.
+			_ = s.StoreUpstreamTokens(ctx, "never-expiring", "provider-a", &UpstreamTokens{
+				AccessToken: "non-expiring-token",
+				// ExpiresAt intentionally zero
+			})
+			// Expiring token to confirm cleanup still works.
+			_ = s.StoreUpstreamTokens(ctx, "expired", "provider-a", &UpstreamTokens{
+				AccessToken: "expired-token",
+				ExpiresAt:   time.Now().Add(-DefaultRefreshTokenTTL - time.Hour),
+			})
+
+			assert.Equal(t, 2, s.Stats().UpstreamTokens)
+
+			s.cleanupExpired()
+
+			assert.Equal(t, 1, s.Stats().UpstreamTokens, "only the expiring token should be removed")
+
+			tokens, err := s.GetUpstreamTokens(ctx, "never-expiring", "provider-a")
+			require.NoError(t, err)
+			require.NotNil(t, tokens)
+			assert.Equal(t, "non-expiring-token", tokens.AccessToken)
+			assert.True(t, tokens.ExpiresAt.IsZero())
+		})
+	})
+
+	t.Run("non-expiring token with SessionExpiresAt is evicted after session bound passes", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.StoreUpstreamTokens(ctx, "sess-1", "github", &UpstreamTokens{
+				AccessToken:      "pat-token",
+				SessionExpiresAt: time.Now().Add(-DefaultRefreshTokenTTL - time.Second),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, 1, s.Stats().UpstreamTokens)
+
+			s.cleanupExpired()
+
+			assert.Equal(t, 0, s.Stats().UpstreamTokens)
+			_, getErr := s.GetUpstreamTokens(ctx, "sess-1", "github")
+			requireNotFoundError(t, getErr)
+		})
+	})
+
+	t.Run("non-expiring token with future SessionExpiresAt is kept", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.StoreUpstreamTokens(ctx, "sess-2", "github", &UpstreamTokens{
+				AccessToken:      "pat-token",
+				SessionExpiresAt: time.Now().Add(time.Hour),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, 1, s.Stats().UpstreamTokens)
+
+			s.cleanupExpired()
+
+			assert.Equal(t, 1, s.Stats().UpstreamTokens)
+		})
+	})
 
 	t.Run("cleanup expired invalidated codes", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {

@@ -15,6 +15,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +30,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
@@ -40,6 +42,10 @@ type MCPRemoteProxyReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
+	// operator chart that are merged with the per-CR imagePullSecrets when
+	// constructing workloads. The zero value is a usable empty Defaults.
+	ImagePullSecretsDefaults imagepullsecrets.Defaults
 }
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch;create;update;patch;delete
@@ -1087,12 +1093,29 @@ func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, prox
 	// Ensure Role with minimal permissions for remote proxies
 	// Remote proxies only need ConfigMap and Secret read access (no StatefulSet/Pod management)
 	_, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
-		Name:      proxyRunnerNameForRBAC,
-		Namespace: proxy.Namespace,
-		Rules:     remoteProxyRBACRules,
-		Owner:     proxy,
+		Name:             proxyRunnerNameForRBAC,
+		Namespace:        proxy.Namespace,
+		Rules:            remoteProxyRBACRules,
+		Owner:            proxy,
+		ImagePullSecrets: r.imagePullSecretsForRemoteProxy(proxy),
 	})
 	return err
+}
+
+// imagePullSecretsForRemoteProxy returns the image pull secrets the operator
+// will set on the workload's PodSpec and ServiceAccount. The list is the merge
+// of cluster-wide chart defaults (from r.ImagePullSecretsDefaults) with the
+// per-CR list from spec.resourceOverrides.proxyDeployment.imagePullSecrets.
+// CR-level entries win on name collisions; chart-level entries are appended
+// additively. Returns nil when both inputs are empty.
+func (r *MCPRemoteProxyReconciler) imagePullSecretsForRemoteProxy(
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) []corev1.LocalObjectReference {
+	var crLevel []corev1.LocalObjectReference
+	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
+		crLevel = proxy.Spec.ResourceOverrides.ProxyDeployment.ImagePullSecrets
+	}
+	return r.ImagePullSecretsDefaults.Merge(crLevel)
 }
 
 // updateMCPRemoteProxyStatus updates the status of the MCPRemoteProxy
@@ -1244,6 +1267,10 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	if r.podSpecNeedsUpdate(deployment, proxy) {
+		return true
+	}
+
 	return false
 }
 
@@ -1371,6 +1398,21 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 	}
 
 	return false
+}
+
+// podSpecNeedsUpdate checks if pod-level fields (not container fields) have drifted.
+//
+// Currently compares ImagePullSecrets — the merge of cluster-wide chart
+// defaults with spec.resourceOverrides.proxyDeployment.imagePullSecrets. Uses
+// equality.Semantic.DeepEqual so nil and empty slices are treated as equal,
+// which matches Kubernetes' own serialization semantics.
+func (r *MCPRemoteProxyReconciler) podSpecNeedsUpdate(
+	deployment *appsv1.Deployment,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) bool {
+	expected := r.imagePullSecretsForRemoteProxy(proxy)
+	current := deployment.Spec.Template.Spec.ImagePullSecrets
+	return !equality.Semantic.DeepEqual(current, expected)
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated

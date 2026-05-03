@@ -5,6 +5,7 @@ package v1beta1
 
 import (
 	"fmt"
+	"sort"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -365,9 +366,12 @@ type OAuth2UpstreamConfig struct {
 	TokenEndpoint string `json:"tokenEndpoint"`
 
 	// UserInfo contains configuration for fetching user information from the upstream provider.
-	// Required for OAuth2 providers to resolve user identity.
-	// +kubebuilder:validation:Required
-	UserInfo *UserInfoConfig `json:"userInfo"`
+	// When omitted, the embedded auth server runs in synthesis mode for this
+	// upstream: a non-PII subject derived from the access token, no Name/Email.
+	// Use this shape for upstreams with no userinfo surface (e.g., MCP
+	// authorization servers per the MCP spec).
+	// +optional
+	UserInfo *UserInfoConfig `json:"userInfo,omitempty"`
 
 	// ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
 	// +kubebuilder:validation:Required
@@ -521,11 +525,22 @@ type AuthServerStorageConfig struct {
 }
 
 // RedisStorageConfig configures Redis connection for auth server storage.
-// Redis is deployed in Sentinel mode with ACL user authentication (the only supported configuration).
+// Exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set.
+//
+// +kubebuilder:validation:XValidation:rule="(self.addr.size() > 0) != has(self.sentinelConfig)",message="exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type RedisStorageConfig struct {
+	// Addr is the Redis server address for standalone mode (e.g., "host:port").
+	// Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present
+	// a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig.
+	// +optional
+	Addr string `json:"addr,omitempty"`
+
 	// SentinelConfig holds Redis Sentinel configuration.
-	// +kubebuilder:validation:Required
-	SentinelConfig *RedisSentinelConfig `json:"sentinelConfig"`
+	// Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr.
+	// +optional
+	SentinelConfig *RedisSentinelConfig `json:"sentinelConfig,omitempty"`
 
 	// ACLUserConfig configures Redis ACL user authentication.
 	// +kubebuilder:validation:Required
@@ -558,8 +573,7 @@ type RedisStorageConfig struct {
 	TLS *RedisTLSConfig `json:"tls,omitempty"`
 
 	// SentinelTLS configures TLS for connections to Sentinel instances.
-	// Presence of this field enables TLS. Omit to use plaintext.
-	// When omitted, sentinel connections use plaintext (no fallback to TLS config).
+	// Only applies when sentinelConfig is set. Presence of this field enables TLS.
 	// +optional
 	SentinelTLS *RedisTLSConfig `json:"sentinelTls,omitempty"`
 }
@@ -620,8 +634,12 @@ type RedisTLSConfig struct {
 // RedisACLUserConfig configures Redis ACL user authentication.
 type RedisACLUserConfig struct {
 	// UsernameSecretRef references a Secret containing the Redis ACL username.
-	// +kubebuilder:validation:Required
-	UsernameSecretRef *SecretKeyRef `json:"usernameSecretRef"`
+	// When omitted, connections use legacy password-only AUTH. Omit for managed
+	// Redis tiers that do not support ACL users (e.g. GCP Memorystore Basic/Standard
+	// HA, Azure Cache for Redis). Set for services that support ACL users (e.g. AWS
+	// ElastiCache non-cluster with Redis 6+ RBAC).
+	// +optional
+	UsernameSecretRef *SecretKeyRef `json:"usernameSecretRef,omitempty"`
 
 	// PasswordSecretRef references a Secret containing the Redis ACL password.
 	// +kubebuilder:validation:Required
@@ -689,6 +707,20 @@ type AWSStsConfig struct {
 	// +kubebuilder:default="sub"
 	// +optional
 	SessionNameClaim string `json:"sessionNameClaim,omitempty"`
+
+	// SubjectProviderName is the name of the upstream provider whose access token
+	// is used as the web identity token for STS AssumeRoleWithWebIdentity.
+	// This field is used exclusively by VirtualMCPServer, where there is no
+	// upstream swap middleware to replace the bearer token before the strategy runs.
+	// When left empty and an embedded authorization server is configured on the
+	// VirtualMCPServer, the controller automatically populates this field with
+	// the first configured upstream provider name. Set it explicitly to override
+	// that default or to select a specific provider when multiple upstreams are
+	// configured.
+	// When no embedded auth server is present, the bearer token from the incoming
+	// request's Authorization header is used instead.
+	// +optional
+	SubjectProviderName string `json:"subjectProviderName,omitempty"`
 }
 
 // RoleMapping defines a rule for mapping JWT claims to IAM roles.
@@ -739,6 +771,29 @@ type UpstreamInjectSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	ProviderName string `json:"providerName"`
 }
+
+// Condition types specific to MCPExternalAuthConfig and the inline embedded
+// auth server config it shares with VirtualMCPServer.
+const (
+	// ConditionTypeIdentitySynthesized is an advisory set to True when at
+	// least one OAuth2 upstream has no userInfo endpoint configured (the
+	// embedded auth server synthesizes its subject from the access token,
+	// no Name/Email claims). Surfaces on resources that own the upstream
+	// declaration so a missing userInfo block is visible in
+	// `kubectl describe` instead of only in proxyrunner logs.
+	ConditionTypeIdentitySynthesized = "IdentitySynthesized"
+)
+
+// Condition reasons for ConditionTypeIdentitySynthesized.
+const (
+	// ConditionReasonIdentitySynthesizedActive: one or more OAuth2 upstreams
+	// have nil userInfo. The condition message names the affected upstream(s).
+	ConditionReasonIdentitySynthesizedActive = "OAuth2UpstreamWithoutUserInfo"
+
+	// ConditionReasonIdentitySynthesizedInactive: every upstream has userInfo;
+	// real identity is being resolved.
+	ConditionReasonIdentitySynthesizedInactive = "AllUpstreamsHaveUserInfo"
+)
 
 // MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
 type MCPExternalAuthConfigStatus struct {
@@ -929,6 +984,29 @@ func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]stri
 		return p.OAuth2Config.AdditionalAuthorizationParams
 	}
 	return nil
+}
+
+// SyntheticIdentityUpstreams returns the names of OAuth2 upstreams running
+// in synthesis mode (no userInfo configured), sorted lexically for
+// deterministic condition messages. OIDC upstreams are skipped — they always
+// have an ID-token-derived subject. Source of truth for the
+// ConditionTypeIdentitySynthesized advisory.
+func (c *EmbeddedAuthServerConfig) SyntheticIdentityUpstreams() []string {
+	if c == nil {
+		return nil
+	}
+	var names []string
+	for i := range c.UpstreamProviders {
+		p := &c.UpstreamProviders[i]
+		if p.Type != UpstreamProviderTypeOAuth2 || p.OAuth2Config == nil {
+			continue
+		}
+		if p.OAuth2Config.UserInfo == nil {
+			names = append(names, p.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ValidateAdditionalAuthorizationParams checks that no reserved OAuth2 parameters

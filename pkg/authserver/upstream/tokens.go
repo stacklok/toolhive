@@ -15,6 +15,7 @@
 package upstream
 
 import (
+	"log/slog"
 	"time"
 )
 
@@ -35,7 +36,8 @@ type Tokens struct {
 	// IDToken is the ID token from the upstream IDP (for OIDC).
 	IDToken string
 
-	// ExpiresAt is when the access token expires.
+	// ExpiresAt is when the access token expires. Zero value means the provider
+	// did not assert an expiry; callers must treat it as non-expiring.
 	ExpiresAt time.Time
 }
 
@@ -52,7 +54,26 @@ func (t *Tokens) IsExpiredAt(now time.Time) bool {
 	if t == nil {
 		return true
 	}
+	if t.ExpiresAt.IsZero() {
+		return false
+	}
 	// Token is expired if it expires at or before (now + buffer)
 	// Using !After to include the equality case (expires exactly at boundary)
 	return !t.ExpiresAt.After(now.Add(tokenExpirationBuffer))
+}
+
+// expiresAtLogValue is a slog.LogValuer wrapper for an ExpiresAt time that
+// renders zero time as "none" rather than the misleading year-0001 timestamp
+// slog would otherwise produce. As a LogValuer, formatting is deferred until
+// the log record is actually emitted, so DEBUG logs do no work when the
+// handler level filters them out.
+type expiresAtLogValue time.Time
+
+// LogValue implements slog.LogValuer.
+func (e expiresAtLogValue) LogValue() slog.Value {
+	t := time.Time(e)
+	if t.IsZero() {
+		return slog.StringValue("none")
+	}
+	return slog.StringValue(t.Format(time.RFC3339))
 }

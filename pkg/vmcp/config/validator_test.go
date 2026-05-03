@@ -188,6 +188,57 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 			wantErr: true,
 			errMsg:  "issuer is required",
 		},
+		{
+			name: "valid OIDC auth with absolute caBundlePath",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:       "https://example.com",
+					Audience:     "vmcp",
+					CABundlePath: "/config/certs/example-ca/ca.crt",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "OIDC rejects relative caBundlePath",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:       "https://example.com",
+					Audience:     "vmcp",
+					CABundlePath: "certs/ca.crt",
+				},
+			},
+			wantErr: true,
+			errMsg:  "caBundlePath must be an absolute path",
+		},
+		{
+			name: "OIDC rejects caBundlePath with path traversal",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:       "https://example.com",
+					Audience:     "vmcp",
+					CABundlePath: "/config/certs/../../etc/passwd",
+				},
+			},
+			wantErr: true,
+			errMsg:  "caBundlePath contains invalid path characters",
+		},
+		{
+			name: "OIDC rejects caBundlePath with null byte",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:       "https://example.com",
+					Audience:     "vmcp",
+					CABundlePath: "/config/certs/ca\x00.crt",
+				},
+			},
+			wantErr: true,
+			errMsg:  "caBundlePath contains invalid path characters",
+		},
 	}
 
 	for _, tt := range tests {

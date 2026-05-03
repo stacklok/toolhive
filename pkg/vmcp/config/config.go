@@ -249,6 +249,16 @@ type OIDCConfig struct {
 	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
 	// WARNING: This is insecure and should NEVER be used in production
 	InsecureAllowHTTP bool `json:"insecureAllowHttp,omitempty" yaml:"insecureAllowHttp,omitempty"`
+
+	// CABundlePath is the absolute file path to a PEM-encoded CA certificate bundle
+	// used when the OIDC middleware performs HTTPS requests to the issuer
+	// (OIDC discovery, JWKS fetch, token introspection). When set, the CA bundle
+	// at this path is added to the trust store used for verifying the issuer's
+	// TLS certificate. Typically populated by the Kubernetes operator from
+	// MCPOIDCConfig.spec.inline.caBundleRef (ConfigMap) or from the in-cluster
+	// service-account CA when using Kubernetes service-account auth.
+	// +optional
+	CABundlePath string `json:"caBundlePath,omitempty" yaml:"caBundlePath,omitempty"`
 }
 
 // AuthzConfig configures authorization.

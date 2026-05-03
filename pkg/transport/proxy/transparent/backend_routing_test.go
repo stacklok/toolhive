@@ -28,7 +28,7 @@ func startProxy(t *testing.T, targetURL string) (proxy *TransparentProxy, addr s
 		"127.0.0.1", 0, targetURL,
 		nil, nil, nil,
 		false, false, "sse",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		nil,
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -103,7 +103,7 @@ func TestRewriteFallsBackToStaticTargetWhenNoBackendURL(t *testing.T) {
 
 	proxy, addr := startProxy(t, defaultBackend.URL)
 
-	// Session with no backend_url — should fall back to static target
+	// Session with no backend_url ā€” should fall back to static target
 	sessionID := uuid.New().String()
 	sess := session.NewProxySession(sessionID)
 	require.NoError(t, proxy.sessionManager.AddSession(sess))
@@ -139,7 +139,7 @@ func TestRewriteFallsBackToStaticTargetForNonAbsoluteBackendURL(t *testing.T) {
 
 	proxy, addr := startProxy(t, defaultBackend.URL)
 
-	// Session with a schemeless "host:port" backend_url — url.Parse succeeds
+	// Session with a schemeless "host:port" backend_url ā€” url.Parse succeeds
 	// but returns empty Scheme and Host, which must not corrupt the outbound URL.
 	sessionID := uuid.New().String()
 	sess := session.NewProxySession(sessionID)
@@ -176,7 +176,7 @@ func TestRoundTripReturns404ForUnknownSession(t *testing.T) {
 		"localhost", 0, backend.URL,
 		nil, nil, nil,
 		false, false, "sse",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		nil,
 	))
 
@@ -211,7 +211,7 @@ func TestRoundTripAllowsInitializeWithUnknownSession(t *testing.T) {
 		"localhost", 0, backend.URL,
 		nil, nil, nil,
 		false, false, "sse",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		nil,
 	))
 
@@ -243,7 +243,7 @@ func TestRoundTripAllowsBatchInitializeWithUnknownSession(t *testing.T) {
 		"localhost", 0, backend.URL,
 		nil, nil, nil,
 		false, false, "sse",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		nil,
 	))
 
@@ -327,7 +327,7 @@ func TestRoundTripStoresInitBodyOnInitialize(t *testing.T) {
 
 // TestRoundTripReinitializesOnBackend404 verifies that when the backend pod returns
 // 404 (session lost after restart on the same IP), the proxy transparently
-// re-initializes the backend session and replays the original request — client sees 200.
+// re-initializes the backend session and replays the original request ā€” client sees 200.
 func TestRoundTripReinitializesOnBackend404(t *testing.T) {
 	t.Parallel()
 
@@ -388,7 +388,7 @@ func TestRoundTripReinitializesOnBackend404(t *testing.T) {
 
 // TestRoundTripReinitializesPreservesNonUUIDBackendSessionID verifies that when the
 // backend issues a non-UUID Mcp-Session-Id on re-initialization, the proxy stores
-// and forwards the raw value — not a UUID v5 hash of it — on all subsequent requests.
+// and forwards the raw value ā€” not a UUID v5 hash of it ā€” on all subsequent requests.
 //
 // The normalization bug only manifests on the request AFTER the replay: the replay
 // sets Mcp-Session-Id directly from newBackendSID (bypassing Rewrite), but subsequent
@@ -456,7 +456,7 @@ func TestRoundTripReinitializesPreservesNonUUIDBackendSessionID(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp1.StatusCode)
 
 	// Second request: goes through the Rewrite closure, which reads backend_sid from
-	// session metadata. This is where the normalization bug manifests — if backend_sid
+	// session metadata. This is where the normalization bug manifests ā€” if backend_sid
 	// was stored as normalizeSessionID(nonUUIDSessionID), Rewrite would forward the
 	// wrong hashed value and receivedSIDs[1] would not equal nonUUIDSessionID.
 	resp2 := doRequest()
@@ -528,9 +528,9 @@ func TestRoundTripReinitializesAfterPriorReinit(t *testing.T) {
 }
 
 // TestRoundTripReinitializesOnDialError verifies that when the proxy cannot reach
-// the stored pod IP (dial error — pod rescheduled to a new IP), it transparently
+// the stored pod IP (dial error ā€” pod rescheduled to a new IP), it transparently
 // re-initializes the backend session via the ClusterIP and replays the original
-// request — the client sees a 200.
+// request ā€” the client sees a 200.
 func TestRoundTripReinitializesOnDialError(t *testing.T) {
 	t.Parallel()
 

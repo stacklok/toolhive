@@ -426,6 +426,21 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		})
 
+		// Set the health check recovery callback for remote servers.
+		// When the remote server becomes reachable again after being unhealthy,
+		// transition the workload back to running.
+		transportHandler.SetOnHealthCheckRecovered(func() {
+			slog.Info("health check recovered for remote server, marking as running", "server", r.Config.BaseName)
+			if err := r.statusManager.SetWorkloadStatus(
+				context.Background(),
+				r.Config.BaseName,
+				rt.WorkloadStatusRunning,
+				"",
+			); err != nil {
+				slog.Error("failed to update workload status on recovery", "error", err)
+			}
+		})
+
 		// Set the unauthorized response callback for bearer token authentication
 		errorMsg := "Bearer token authentication failed. Please restart the server with a new token"
 		transportHandler.SetOnUnauthorizedResponse(func() {
@@ -588,10 +603,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		slog.Warn("failed to get current workload status", "error", err)
 	}
 
-	// Only set status to running if it's not already unauthenticated
-	// This preserves the unauthenticated state when bearer token authentication fails
-	if err == nil && currentWorkload.Status == rt.WorkloadStatusUnauthenticated {
-		slog.Debug("preserving unauthenticated status for workload", "workload", r.Config.BaseName)
+	// Only set status to running if it's not already unauthenticated or unhealthy.
+	// - unauthenticated: bearer token auth failed during init, preserve that state
+	// - unhealthy: health check fired before waitForInitializeSuccess returned,
+	//   the health check loop owns this state transition
+	if err == nil && (currentWorkload.Status == rt.WorkloadStatusUnauthenticated ||
+		currentWorkload.Status == rt.WorkloadStatusUnhealthy) {
+		slog.Debug("preserving non-running status for workload", "workload", r.Config.BaseName, "status", currentWorkload.Status)
 	} else {
 		if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, rt.WorkloadStatusRunning, ""); err != nil {
 			// If we can't set the status to `running` - treat it as a fatal error.

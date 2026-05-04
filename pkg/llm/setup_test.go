@@ -104,7 +104,10 @@ func (*stubGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfi
 	return "", nil
 }
 func (*stubGatewayManager) LLMGatewayModeFor(_ string) string { return "" }
-func (*stubGatewayManager) LLMSetupNoteFor(_ string) string   { return "" }
+func (*stubGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
+	return "", nil
+}
+func (*stubGatewayManager) RevertEnvFile(_, _ string) error { return nil }
 func (s *stubGatewayManager) RevertLLMGateway(clientType, _ string) error {
 	s.reverted = append(s.reverted, clientType)
 	return nil
@@ -191,6 +194,10 @@ func (g *capturingGatewayManager) ConfigureLLMGateway(_ string, cfg llmgateway.A
 func (g *capturingGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
 func (*capturingGatewayManager) LLMSetupNoteFor(_ string) string     { return "" }
 func (*capturingGatewayManager) RevertLLMGateway(_, _ string) error  { return nil }
+func (*capturingGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
+	return "", nil
+}
+func (*capturingGatewayManager) RevertEnvFile(_, _ string) error { return nil }
 
 func TestConfigureDetectedTools_PathPrefixAppendedForDirectMode(t *testing.T) {
 	t.Parallel()

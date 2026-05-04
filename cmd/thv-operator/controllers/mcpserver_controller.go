@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
@@ -2476,7 +2477,7 @@ func (r *MCPServerReconciler) validateRateLimitConfig(ctx context.Context, mcpSe
 func (r *MCPServerReconciler) mapWebhookConfigToServers(
 	ctx context.Context, obj client.Object,
 ) []reconcile.Request {
-	webhookConfig, ok := obj.(*mcpv1beta1.MCPWebhookConfig)
+	webhookConfig, ok := obj.(*mcpv1alpha1.MCPWebhookConfig)
 	if !ok {
 		return nil
 	}
@@ -2583,6 +2584,6 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mcpv1beta1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
 		Watches(&mcpv1beta1.MCPOIDCConfig{}, oidcConfigHandler).
 		Watches(&mcpv1beta1.MCPTelemetryConfig{}, telemetryConfigHandler).
-		Watches(&mcpv1beta1.MCPWebhookConfig{}, webhookConfigHandler).
+		Watches(&mcpv1alpha1.MCPWebhookConfig{}, webhookConfigHandler).
 		Complete(r)
 }

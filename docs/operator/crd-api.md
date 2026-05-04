@@ -884,8 +884,6 @@ _Appears in:_
 - [api.v1beta1.MCPTelemetryConfigList](#apiv1beta1mcptelemetryconfiglist)
 - [api.v1beta1.MCPToolConfig](#apiv1beta1mcptoolconfig)
 - [api.v1beta1.MCPToolConfigList](#apiv1beta1mcptoolconfiglist)
-- [api.v1beta1.MCPWebhookConfig](#apiv1beta1mcpwebhookconfig)
-- [api.v1beta1.MCPWebhookConfigList](#apiv1beta1mcpwebhookconfiglist)
 - [api.v1beta1.VirtualMCPCompositeToolDefinition](#apiv1beta1virtualmcpcompositetooldefinition)
 - [api.v1beta1.VirtualMCPCompositeToolDefinitionList](#apiv1beta1virtualmcpcompositetooldefinitionlist)
 - [api.v1beta1.VirtualMCPServer](#apiv1beta1virtualmcpserver)
@@ -2483,48 +2481,6 @@ _Appears in:_
 | `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
-#### api.v1beta1.MCPWebhookConfig
-
-
-
-MCPWebhookConfig is the Schema for the mcpwebhookconfigs API.
-
-
-
-_Appears in:_
-- [api.v1beta1.MCPWebhookConfigList](#apiv1beta1mcpwebhookconfiglist)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
-| `kind` _string_ | `MCPWebhookConfig` | | |
-| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
-| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
-| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[api.v1beta1.MCPWebhookConfigSpec](#apiv1beta1mcpwebhookconfigspec)_ |  |  |  |
-| `status` _[api.v1beta1.MCPWebhookConfigStatus](#apiv1beta1mcpwebhookconfigstatus)_ |  |  |  |
-
-
-#### api.v1beta1.MCPWebhookConfigList
-
-
-
-MCPWebhookConfigList contains a list of MCPWebhookConfig
-
-
-
-
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `apiVersion` _string_ | `toolhive.stacklok.dev/v1beta1` | | |
-| `kind` _string_ | `MCPWebhookConfigList` | | |
-| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
-| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
-| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `items` _[api.v1beta1.MCPWebhookConfig](#apiv1beta1mcpwebhookconfig) array_ |  |  |  |
-
-
 #### api.v1beta1.MCPWebhookConfigSpec
 
 
@@ -2533,8 +2489,7 @@ MCPWebhookConfigSpec defines the desired state of MCPWebhookConfig
 
 
 
-_Appears in:_
-- [api.v1beta1.MCPWebhookConfig](#apiv1beta1mcpwebhookconfig)
+
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -2550,8 +2505,7 @@ MCPWebhookConfigStatus defines the observed state of MCPWebhookConfig
 
 
 
-_Appears in:_
-- [api.v1beta1.MCPWebhookConfig](#apiv1beta1mcpwebhookconfig)
+
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |

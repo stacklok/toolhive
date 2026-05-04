@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -25,7 +26,7 @@ func TestMCPServerReconciler_handleWebhookConfig(t *testing.T) {
 	tests := []struct {
 		name                string
 		mcpServer           *mcpv1beta1.MCPServer
-		webhookConfig       *mcpv1beta1.MCPWebhookConfig
+		webhookConfig       *mcpv1alpha1.MCPWebhookConfig
 		expectError         bool
 		expectErrorContains string
 		expectHash          string
@@ -61,7 +62,7 @@ func TestMCPServerReconciler_handleWebhookConfig(t *testing.T) {
 					WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "cfg"},
 				},
 			},
-			webhookConfig: &mcpv1beta1.MCPWebhookConfig{
+			webhookConfig: &mcpv1alpha1.MCPWebhookConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
 				Spec:       mcpv1beta1.MCPWebhookConfigSpec{},
 				Status: mcpv1beta1.MCPWebhookConfigStatus{
@@ -79,7 +80,7 @@ func TestMCPServerReconciler_handleWebhookConfig(t *testing.T) {
 					WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "cfg"},
 				},
 			},
-			webhookConfig: &mcpv1beta1.MCPWebhookConfig{
+			webhookConfig: &mcpv1alpha1.MCPWebhookConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
 				Spec: mcpv1beta1.MCPWebhookConfigSpec{
 					Validating: []mcpv1beta1.WebhookSpec{{
@@ -101,7 +102,7 @@ func TestMCPServerReconciler_handleWebhookConfig(t *testing.T) {
 				},
 				Status: mcpv1beta1.MCPServerStatus{WebhookConfigHash: "old-hash"},
 			},
-			webhookConfig: &mcpv1beta1.MCPWebhookConfig{
+			webhookConfig: &mcpv1alpha1.MCPWebhookConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
 				Spec:       mcpv1beta1.MCPWebhookConfigSpec{},
 				Status: mcpv1beta1.MCPWebhookConfigStatus{
@@ -119,6 +120,7 @@ func TestMCPServerReconciler_handleWebhookConfig(t *testing.T) {
 			ctx := t.Context()
 
 			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 			require.NoError(t, corev1.AddToScheme(scheme))
 
@@ -161,6 +163,7 @@ func TestMCPServerReconciler_mapWebhookConfigToServers(t *testing.T) {
 	ctx := t.Context()
 
 	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
@@ -198,7 +201,7 @@ func TestMCPServerReconciler_mapWebhookConfigToServers(t *testing.T) {
 
 	t.Run("valid WebhookConfig", func(t *testing.T) {
 		t.Parallel()
-		config := &mcpv1beta1.MCPWebhookConfig{
+		config := &mcpv1alpha1.MCPWebhookConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-config", Namespace: "default"},
 		}
 
@@ -223,6 +226,7 @@ func TestMCPServerReconciler_deploymentForMCPServerWebhookConfigError(t *testing
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 

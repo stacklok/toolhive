@@ -279,14 +279,14 @@ type MCPTelemetryConfigList struct {
 // ─── MCPWebhookConfig ────────────────────────────────────────────────────────
 
 //+kubebuilder:object:root=true
-//+kubebuilder:deprecatedversion:warning="toolhive.stacklok.dev/v1alpha1 is deprecated; use v1beta1"
+//+kubebuilder:storageversion
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=mwc,categories=toolhive
 //+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
 //+kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
 //+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// MCPWebhookConfig is the deprecated v1alpha1 version of the MCPWebhookConfig resource.
+// MCPWebhookConfig is the Schema for the mcpwebhookconfigs API.
 type MCPWebhookConfig struct {
 	metav1.TypeMeta   `json:",inline"` // nolint:revive
 	metav1.ObjectMeta `json:"metadata,omitempty"`

@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/webhook"
@@ -40,8 +41,8 @@ func GetWebhookConfigByName(
 	c client.Client,
 	namespace string,
 	name string,
-) (*mcpv1beta1.MCPWebhookConfig, error) {
-	var config mcpv1beta1.MCPWebhookConfig
+) (*mcpv1alpha1.MCPWebhookConfig, error) {
+	var config mcpv1alpha1.MCPWebhookConfig
 	if err := c.Get(ctx, types.NamespacedName{
 		Namespace: namespace,
 		Name:      name,
@@ -78,7 +79,7 @@ func GetWebhookConfigForMCPServer(
 	ctx context.Context,
 	c client.Client,
 	mcpServer *mcpv1beta1.MCPServer,
-) (*mcpv1beta1.MCPWebhookConfig, error) {
+) (*mcpv1alpha1.MCPWebhookConfig, error) {
 	if mcpServer.Spec.WebhookConfigRef == nil {
 		return nil, nil
 	}

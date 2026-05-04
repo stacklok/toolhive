@@ -75,7 +75,7 @@ spec:
       try:
         - apply:
             resource:
-              apiVersion: toolhive.stacklok.dev/v1beta1
+              apiVersion: toolhive.stacklok.dev/v1alpha1
               kind: MCPWebhookConfig
               metadata:
                 name: non-existent-webhook-config
@@ -118,7 +118,7 @@ spec:
               exit 1
         - assert:
             resource:
-              apiVersion: toolhive.stacklok.dev/v1beta1
+              apiVersion: toolhive.stacklok.dev/v1alpha1
               kind: MCPWebhookConfig
               metadata:
                 name: non-existent-webhook-config

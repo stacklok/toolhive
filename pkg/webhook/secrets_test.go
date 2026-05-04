@@ -75,4 +75,30 @@ func TestResolveSecret(t *testing.T) {
 		assert.Contains(t, err.Error(), `failed to resolve webhook secret "missing_hmac"`)
 		assert.True(t, strings.Contains(err.Error(), "secret not found"))
 	})
+
+	t.Run("invalid provider override returns provider initialization error", func(t *testing.T) {
+		t.Setenv(secrets.ProviderEnvVar, "unknown")
+
+		value, err := ResolveSecret(t.Context(), "webhook_hmac")
+		require.Error(t, err)
+		assert.Nil(t, value)
+		assert.Contains(t, err.Error(), "failed to initialize webhook secrets provider")
+	})
+
+	t.Run("invalid configured provider returns provider type error", func(t *testing.T) {
+		t.Setenv(secrets.ProviderEnvVar, "")
+		config.SetSingletonConfig(&config.Config{
+			Secrets: config.Secrets{
+				SetupCompleted: true,
+				ProviderType:   "unknown",
+			},
+		})
+		t.Cleanup(config.ResetSingleton)
+
+		value, err := ResolveSecret(t.Context(), "webhook_hmac")
+		require.Error(t, err)
+		assert.Nil(t, value)
+		assert.Contains(t, err.Error(), "failed to initialize webhook secrets provider")
+		assert.Contains(t, err.Error(), "failed to get configured secrets provider type")
+	})
 }

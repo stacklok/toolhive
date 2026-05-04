@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
@@ -51,7 +52,7 @@ type MCPWebhookConfigReconciler struct {
 func (r *MCPWebhookConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	webhookConfig := &mcpv1beta1.MCPWebhookConfig{}
+	webhookConfig := &mcpv1alpha1.MCPWebhookConfig{}
 	err := r.Get(ctx, req.NamespacedName, webhookConfig)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -67,7 +68,7 @@ func (r *MCPWebhookConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	if !controllerutil.ContainsFinalizer(webhookConfig, WebhookConfigFinalizerName) {
-		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, webhookConfig, func(cfg *mcpv1beta1.MCPWebhookConfig) {
+		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, webhookConfig, func(cfg *mcpv1alpha1.MCPWebhookConfig) {
 			controllerutil.AddFinalizer(cfg, WebhookConfigFinalizerName)
 		}); err != nil {
 			logger.Error(err, "Failed to add finalizer")
@@ -79,7 +80,7 @@ func (r *MCPWebhookConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err := ctrlutil.ValidateMCPWebhookConfigSpec(webhookConfig.Spec); err != nil {
 		logger.Error(err, "MCPWebhookConfig spec validation failed")
 		if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, webhookConfig,
-			func(cfg *mcpv1beta1.MCPWebhookConfig) {
+			func(cfg *mcpv1alpha1.MCPWebhookConfig) {
 				meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
 					Type:               mcpv1beta1.ConditionTypeValid,
 					Status:             metav1.ConditionFalse,
@@ -109,7 +110,7 @@ func (r *MCPWebhookConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	if conditionChanged {
-		if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, webhookConfig, func(cfg *mcpv1beta1.MCPWebhookConfig) {
+		if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, webhookConfig, func(cfg *mcpv1alpha1.MCPWebhookConfig) {
 			condition := validCondition
 			condition.ObservedGeneration = cfg.Generation
 			meta.SetStatusCondition(&cfg.Status.Conditions, condition)
@@ -130,7 +131,7 @@ func (*MCPWebhookConfigReconciler) calculateConfigHash(spec mcpv1beta1.MCPWebhoo
 // handleConfigHashChange handles the logic when the config hash changes
 func (r *MCPWebhookConfigReconciler) handleConfigHashChange(
 	ctx context.Context,
-	webhookConfig *mcpv1beta1.MCPWebhookConfig,
+	webhookConfig *mcpv1alpha1.MCPWebhookConfig,
 	configHash string,
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -146,7 +147,7 @@ func (r *MCPWebhookConfigReconciler) handleConfigHashChange(
 
 	refs := workloadRefsFromMCPServers(referencingServers)
 
-	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, webhookConfig, func(cfg *mcpv1beta1.MCPWebhookConfig) {
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, webhookConfig, func(cfg *mcpv1alpha1.MCPWebhookConfig) {
 		cfg.Status.ConfigHash = configHash
 		cfg.Status.ObservedGeneration = cfg.Generation
 		cfg.Status.ReferencingWorkloads = refs
@@ -198,7 +199,7 @@ func (r *MCPWebhookConfigReconciler) handleConfigHashChange(
 // handleDeletion handles the deletion of a MCPWebhookConfig
 func (r *MCPWebhookConfigReconciler) handleDeletion(
 	ctx context.Context,
-	webhookConfig *mcpv1beta1.MCPWebhookConfig,
+	webhookConfig *mcpv1alpha1.MCPWebhookConfig,
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -215,7 +216,7 @@ func (r *MCPWebhookConfigReconciler) handleDeletion(
 				"webhookConfig", webhookConfig.Name, "referencingWorkloads", refs)
 
 			if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, webhookConfig,
-				func(cfg *mcpv1beta1.MCPWebhookConfig) {
+				func(cfg *mcpv1alpha1.MCPWebhookConfig) {
 					meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
 						Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
 						Status:             metav1.ConditionTrue,
@@ -234,7 +235,7 @@ func (r *MCPWebhookConfigReconciler) handleDeletion(
 
 		if meta.FindStatusCondition(webhookConfig.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked) != nil {
 			if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, webhookConfig,
-				func(cfg *mcpv1beta1.MCPWebhookConfig) {
+				func(cfg *mcpv1alpha1.MCPWebhookConfig) {
 					meta.RemoveStatusCondition(&cfg.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked)
 					cfg.Status.ReferencingWorkloads = nil
 				}); err != nil {
@@ -247,7 +248,7 @@ func (r *MCPWebhookConfigReconciler) handleDeletion(
 			}
 		}
 
-		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, webhookConfig, func(cfg *mcpv1beta1.MCPWebhookConfig) {
+		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, webhookConfig, func(cfg *mcpv1alpha1.MCPWebhookConfig) {
 			controllerutil.RemoveFinalizer(cfg, WebhookConfigFinalizerName)
 		}); err != nil {
 			logger.Error(err, "Failed to remove finalizer")
@@ -262,7 +263,7 @@ func (r *MCPWebhookConfigReconciler) handleDeletion(
 // findReferencingMCPServers finds all MCPServers that reference the given MCPWebhookConfig
 func (r *MCPWebhookConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
-	webhookConfig *mcpv1beta1.MCPWebhookConfig,
+	webhookConfig *mcpv1alpha1.MCPWebhookConfig,
 ) ([]mcpv1beta1.MCPServer, error) {
 	return ctrlutil.FindReferencingMCPServers(ctx, r.Client, webhookConfig.Namespace, webhookConfig.Name,
 		func(server *mcpv1beta1.MCPServer) *string {
@@ -276,7 +277,7 @@ func (r *MCPWebhookConfigReconciler) findReferencingMCPServers(
 // updateReferencingWorkloads updates the list of workloads referencing this config
 func (r *MCPWebhookConfigReconciler) updateReferencingWorkloads(
 	ctx context.Context,
-	webhookConfig *mcpv1beta1.MCPWebhookConfig,
+	webhookConfig *mcpv1alpha1.MCPWebhookConfig,
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -289,7 +290,7 @@ func (r *MCPWebhookConfigReconciler) updateReferencingWorkloads(
 	refs := workloadRefsFromMCPServers(referencingServers)
 	if !ctrlutil.WorkloadRefsEqual(webhookConfig.Status.ReferencingWorkloads, refs) {
 		if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, webhookConfig,
-			func(cfg *mcpv1beta1.MCPWebhookConfig) {
+			func(cfg *mcpv1alpha1.MCPWebhookConfig) {
 				cfg.Status.ReferencingWorkloads = refs
 			}); err != nil {
 			logger.Error(err, "Failed to update referencing workloads list")
@@ -317,7 +318,7 @@ func conditionWouldChange(conditions []metav1.Condition, desired metav1.Conditio
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPWebhookConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&mcpv1beta1.MCPWebhookConfig{}).
+		For(&mcpv1alpha1.MCPWebhookConfig{}).
 		Watches(
 			&mcpv1beta1.MCPServer{},
 			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToWebhookConfig),
@@ -349,7 +350,7 @@ func (r *MCPWebhookConfigReconciler) mapMCPServerToWebhookConfig(
 		requests = append(requests, reconcile.Request{NamespacedName: nn})
 	}
 
-	webhookConfigList := &mcpv1beta1.MCPWebhookConfigList{}
+	webhookConfigList := &mcpv1alpha1.MCPWebhookConfigList{}
 	if err := r.List(ctx, webhookConfigList, client.InNamespace(server.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list MCPWebhookConfigs for MCPServer watch")
 		return requests

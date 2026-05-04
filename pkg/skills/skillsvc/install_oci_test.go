@@ -504,6 +504,44 @@ func TestInstallFromLocalStore(t *testing.T) {
 			wantDigest:  true,
 		},
 		{
+			// User-facing reproducer: GET /skills/builds shows
+			// `{tag: "v0.0.1", name: "<skill>"}` (cfg.Version may be empty
+			// or differ from the tag), and a caller passing the displayed
+			// `tag` as `version` must still resolve. `version` is matched
+			// against either cfg.Version OR the local store tag, mirroring
+			// the OCI-name path that already treats `version` as the tag.
+			name: "scan version matches local store tag",
+			opts: skills.InstallOptions{Name: "my-skill", Version: "v1.0.0", Clients: []string{"claude-code"}},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				// Artifact's cfg.Version is "1.0.0" (no leading 'v'); the
+				// caller passes the tag "v1.0.0" as `version`.
+				d := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+				require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "v1.0.0"))
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				targetDir := filepath.Join(tempDir(t), "installed", "my-skill")
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
+				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, sk skills.InstalledSkill) error {
+						// Reference defaults to the resolved tag.
+						assert.Equal(t, "v1.0.0", sk.Reference)
+						// cfg.Version (1.0.0) hydrates Metadata.Version
+						// because the caller-supplied version was matched
+						// via the tag, not via cfg.Version.
+						assert.Equal(t, "v1.0.0", sk.Metadata.Version)
+						return nil
+					})
+				return ociStore, store, pr
+			},
+			wantStatus: string(skills.InstallStatusInstalled),
+		},
+		{
 			// Two local builds share a skill name but differ in version.
 			// A caller-supplied version narrows the scan to one match.
 			name: "scan version filter selects matching build",

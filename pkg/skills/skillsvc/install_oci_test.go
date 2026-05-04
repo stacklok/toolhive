@@ -466,6 +466,216 @@ func TestInstallFromLocalStore(t *testing.T) {
 			},
 			wantErr: "checking OCI content type",
 		},
+		{
+			// Mirrors the original GH issue: a build tagged with an OCI tag
+			// (e.g. `--tag v1.0.0`) must still be installable by skill name.
+			name: "scan resolves by skill name when tag differs",
+			opts: skills.InstallOptions{Name: "my-skill", Clients: []string{"claude-code"}},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				// Build "my-skill" but tag it as "v1.0.0" (typical
+				// `thv skill build --tag v1.0.0` flow).
+				indexDigest := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+				require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, indexDigest, "v1.0.0"))
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				targetDir := filepath.Join(tempDir(t), "installed", "my-skill")
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
+				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, sk skills.InstalledSkill) error {
+						assert.Equal(t, "my-skill", sk.Metadata.Name)
+						assert.Equal(t, "1.0.0", sk.Metadata.Version)
+						// Reference defaults to the local store tag so push
+						// can re-resolve the artifact later.
+						assert.Equal(t, "v1.0.0", sk.Reference)
+						assert.Contains(t, sk.Digest, "sha256:")
+						assert.Equal(t, skills.InstallStatusInstalled, sk.Status)
+						return nil
+					})
+				return ociStore, store, pr
+			},
+			wantStatus:  string(skills.InstallStatusInstalled),
+			wantVersion: "1.0.0",
+			wantDigest:  true,
+		},
+		{
+			// User-facing reproducer: GET /skills/builds shows
+			// `{tag: "v0.0.1", name: "<skill>"}` (cfg.Version may be empty
+			// or differ from the tag), and a caller passing the displayed
+			// `tag` as `version` must still resolve. `version` is matched
+			// against either cfg.Version OR the local store tag, mirroring
+			// the OCI-name path that already treats `version` as the tag.
+			name: "scan version matches local store tag",
+			opts: skills.InstallOptions{Name: "my-skill", Version: "v1.0.0", Clients: []string{"claude-code"}},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				// Artifact's cfg.Version is "1.0.0" (no leading 'v'); the
+				// caller passes the tag "v1.0.0" as `version`.
+				d := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+				require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "v1.0.0"))
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				targetDir := filepath.Join(tempDir(t), "installed", "my-skill")
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
+				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, sk skills.InstalledSkill) error {
+						// Reference defaults to the resolved tag.
+						assert.Equal(t, "v1.0.0", sk.Reference)
+						// cfg.Version (1.0.0) hydrates Metadata.Version
+						// because the caller-supplied version was matched
+						// via the tag, not via cfg.Version.
+						assert.Equal(t, "v1.0.0", sk.Metadata.Version)
+						return nil
+					})
+				return ociStore, store, pr
+			},
+			wantStatus: string(skills.InstallStatusInstalled),
+		},
+		{
+			// Two local builds share a skill name but differ in version.
+			// A caller-supplied version narrows the scan to one match.
+			name: "scan version filter selects matching build",
+			opts: skills.InstallOptions{Name: "my-skill", Version: "2.0.0", Clients: []string{"claude-code"}},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				d1 := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+				require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d1, "v1"))
+				d2 := buildTestArtifact(t, ociStore, "my-skill", "2.0.0")
+				require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d2, "v2"))
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				targetDir := filepath.Join(tempDir(t), "installed", "my-skill")
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
+				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, sk skills.InstalledSkill) error {
+						assert.Equal(t, "2.0.0", sk.Metadata.Version)
+						assert.Equal(t, "v2", sk.Reference)
+						return nil
+					})
+				return ociStore, store, pr
+			},
+			wantStatus:  string(skills.InstallStatusInstalled),
+			wantVersion: "2.0.0",
+		},
+		{
+			// Two builds with the same skill name and same version (only
+			// differ by tag), and no version specified: the scan is
+			// genuinely ambiguous and must surface a 409 listing both.
+			name: "scan ambiguous matches return 409 with candidate list",
+			opts: skills.InstallOptions{Name: "my-skill"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				d1 := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+				require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d1, "alpha"))
+				d2 := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+				require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d2, "beta"))
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				return ociStore, store, pr
+			},
+			wantCode: http.StatusConflict,
+			wantErr:  "multiple local builds match",
+		},
+		{
+			// A caller-supplied version that no local build satisfies must
+			// fall through to the registry lookup (which returns 404 here
+			// since no registry is configured) rather than picking a
+			// non-matching build or returning the ambiguity error.
+			name: "scan version mismatch falls through to registry",
+			opts: skills.InstallOptions{Name: "my-skill", Version: "9.9.9"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				d := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+				require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "v1"))
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				return ociStore, store, pr
+			},
+			wantCode: http.StatusNotFound,
+			wantErr:  "not found in local store or registry",
+		},
+		{
+			// A direct tag match whose artifact name agrees with opts.Name
+			// but whose version disagrees must fall through to the scan,
+			// which can then locate a sibling build with the right version.
+			name: "direct version mismatch falls through to scan",
+			opts: skills.InstallOptions{Name: "my-skill", Version: "2.0.0", Clients: []string{"claude-code"}},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				// Canonical tag at version 1.0.0.
+				d1 := buildTestArtifact(t, ociStore, "my-skill", "1.0.0")
+				require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d1, "my-skill"))
+				// Sibling build at version 2.0.0.
+				d2 := buildTestArtifact(t, ociStore, "my-skill", "2.0.0")
+				require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d2, "next"))
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				targetDir := filepath.Join(tempDir(t), "installed", "my-skill")
+				pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
+				store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, sk skills.InstalledSkill) error {
+						assert.Equal(t, "2.0.0", sk.Metadata.Version)
+						assert.Equal(t, "next", sk.Reference)
+						return nil
+					})
+				return ociStore, store, pr
+			},
+			wantStatus:  string(skills.InstallStatusInstalled),
+			wantVersion: "2.0.0",
+		},
+		{
+			// A tag carrying the local-build marker on a non-skill artifact
+			// (defensive case — Build never produces this, but the index
+			// file is user-editable) must be ignored by the scan.
+			name: "scan ignores non-skill local-build-marked tags",
+			opts: skills.InstallOptions{Name: "my-skill"},
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*ociskills.Store, *storemocks.MockSkillStore, *skillsmocks.MockPathResolver) {
+				t.Helper()
+				ociStore, err := ociskills.NewStore(tempDir(t))
+				require.NoError(t, err)
+
+				// Local-build-marked tag pointing at an index whose
+				// ArtifactType is not the skill type.
+				otherIndex := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","artifactType":"application/vnd.docker.distribution.manifest.v2","manifests":[]}`
+				d, putErr := ociStore.PutManifest(t.Context(), []byte(otherIndex))
+				require.NoError(t, putErr)
+				require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "non-skill-tag"))
+
+				store := storemocks.NewMockSkillStore(ctrl)
+				pr := skillsmocks.NewMockPathResolver(ctrl)
+				return ociStore, store, pr
+			},
+			wantCode: http.StatusNotFound,
+			wantErr:  "not found in local store or registry",
+		},
 	}
 
 	for _, tt := range tests {
@@ -488,6 +698,9 @@ func TestInstallFromLocalStore(t *testing.T) {
 			if tt.wantCode != 0 {
 				require.Error(t, err)
 				assert.Equal(t, tt.wantCode, httperr.Code(err))
+				if tt.wantErr != "" {
+					assert.Contains(t, err.Error(), tt.wantErr)
+				}
 				return
 			}
 			if tt.wantErr != "" {

@@ -102,7 +102,8 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 
 	// Call deploymentForMCPServer
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that the pod template metadata overrides labels are merged with Spec.Template.Labels
@@ -193,7 +194,8 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 
 	// Call deploymentForMCPServer
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 }
 
@@ -237,7 +239,8 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 
 	// Call deploymentForMCPServer
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that secrets are injected via pod template patch
@@ -258,7 +261,7 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 
 	// Parse and verify the pod template patch contains secret environment variables and service account
 	var podTemplateSpec corev1.PodTemplateSpec
-	err := json.Unmarshal([]byte(podTemplatePatch), &podTemplateSpec)
+	err = json.Unmarshal([]byte(podTemplatePatch), &podTemplateSpec)
 	require.NoError(t, err, "Should be able to unmarshal pod template patch")
 
 	// Verify the service account is set in the pod template patch
@@ -334,7 +337,8 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 
 	// Generate the deployment
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that the ProxyRunner's pod and container security context are set
@@ -381,7 +385,8 @@ func TestProxyRunnerStructuredLogsEnvVar(t *testing.T) {
 
 	// Create the deployment
 	ctx := context.Background()
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that the proxy runner container has the UNSTRUCTURED_LOGS environment variable set to false

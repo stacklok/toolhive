@@ -105,7 +105,8 @@ func TestDeploymentNeedsUpdate_DefaultImagePullSecrets(t *testing.T) {
 	tc := setupTest("test-server-drift-pull-secrets", "default")
 	tc.reconciler.ImagePullSecretsDefaults = imagepullsecrets.NewDefaults([]string{"chart-default"})
 
-	dep := tc.reconciler.deploymentForMCPServer(t.Context(), tc.mcpServer, "test-checksum")
+	dep, err := tc.reconciler.deploymentForMCPServer(t.Context(), tc.mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, dep)
 
 	assert.False(t, tc.reconciler.deploymentNeedsUpdate(t.Context(), dep, tc.mcpServer, "test-checksum"),
@@ -159,7 +160,8 @@ func TestDeploymentForMCPServer_DefaultImagePullSecrets(t *testing.T) {
 				}
 			}
 
-			dep := tc.reconciler.deploymentForMCPServer(t.Context(), tc.mcpServer, "test-checksum")
+			dep, err := tc.reconciler.deploymentForMCPServer(t.Context(), tc.mcpServer, "test-checksum")
+			require.NoError(t, err)
 			require.NotNil(t, dep)
 			assert.Equal(t, tt.wantSecrets, dep.Spec.Template.Spec.ImagePullSecrets,
 				"proxy runner Deployment ImagePullSecrets must reflect merged defaults+CR")

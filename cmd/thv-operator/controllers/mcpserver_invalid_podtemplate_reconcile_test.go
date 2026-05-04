@@ -218,21 +218,10 @@ func TestDeploymentArgsWithInvalidPodTemplateSpec(t *testing.T) {
 	// Set a logger for the context
 	ctx = log.IntoContext(ctx, log.Log)
 
-	// Call deploymentForMCPServer to check that it handles invalid PodTemplateSpec gracefully
-	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
-
-	// Check that the deployment was created successfully
-	require.NotNil(t, deployment)
-	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
-
-	// Check that the --k8s-pod-patch argument is NOT present due to invalid spec
-	container := deployment.Spec.Template.Spec.Containers[0]
-	for _, arg := range container.Args {
-		assert.NotContains(t, arg, "--k8s-pod-patch", "Pod patch should not be present with invalid PodTemplateSpec")
-	}
-
-	// The deployment should still have the basic required arguments
-	// Note: In configmap mode (default), args are minimal - the full configuration is in the ConfigMap
-	assert.Contains(t, container.Args, "run")
-	assert.Contains(t, container.Args, "test-image:latest")
+	// Invalid PodTemplateSpec should be surfaced to the reconcile loop instead of silently
+	// building a deployment without the requested pod customizations.
+	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to build PodTemplateSpec")
+	assert.Nil(t, deployment)
 }

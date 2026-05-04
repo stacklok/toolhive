@@ -1,0 +1,5 @@
+I just finished a phone screen with Alice Chen for the Senior Go Engineer role. She has 8 years of Go experience, strong distributed systems background, currently at Google. Technically she looks great. Her ask is $160K base.
+
+One issue: she mentioned she's on OPT and would need an H1-B transfer — her OPT expires in about 6 months. Before I move her forward I want to make sure that's not a blocker. Can you check if we have any policy on that?
+
+Also, once you've got that, can you log the outcome of this screen for me so the hiring manager and any other recruiter can see it?

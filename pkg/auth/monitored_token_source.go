@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -249,11 +250,11 @@ func (mts *MonitoredTokenSource) Stopped() <-chan struct{} {
 	return mts.stopped
 }
 
-// Token retrieves a token, retrying with exponential backoff on transient errors
-// (see isTransientNetworkError for the full list). On non-transient errors
-// (OAuth 4xx, TLS failures) it marks the workload as unauthenticated and returns
-// immediately. Context cancellation (workload removal) stops the retry without
-// marking the workload as unauthenticated.
+// Token retrieves a token, retrying with exponential backoff on transient
+// errors and marking the workload as unauthenticated on non-transient errors.
+// See isTransientNetworkError for the classification rule. Context
+// cancellation (workload removal) stops the retry without marking the
+// workload as unauthenticated.
 //
 // Concurrent callers are deduplicated via singleflight so that only one retry
 // loop runs at a time during transient failures.
@@ -342,30 +343,28 @@ func (mts *MonitoredTokenSource) onTick() (bool, time.Duration) {
 	return false, wait
 }
 
-// isTransientNetworkError reports whether err represents a transient condition
-// (DNS failure, TCP transport error, timeout, OAuth server 5xx, unparsable
-// token response) that is likely to resolve on its own.
+// isTransientNetworkError reports whether err represents a transient
+// condition that is likely to resolve on its own. The categories are:
 //
-// OAuth2 client-level auth failures (invalid_grant, 401, 400) and TLS errors
-// (certificate verification, handshake failure) are NOT considered transient and
-// return false so the workload is marked unauthenticated immediately.
+//   - Network-level failures: DNS lookup errors, TCP transport errors,
+//     timeouts.
+//   - OAuth token-endpoint responses classified as transient by
+//     classifyOAuthRetrieveError.
+//   - Unparsable token responses on a 2xx status (typically an HTML page
+//     from a load balancer or CDN).
+//
+// All other errors return false, causing the workload to be marked
+// unauthenticated. TLS failures (certificate verification, handshake
+// failure) are intentionally non-transient even though they surface
+// through net.OpError like transport-level errors.
 func isTransientNetworkError(err error) bool {
 	if err == nil ||
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 
-	// OAuth HTTP-level errors: 5xx (Bad Gateway, Service Unavailable, Gateway
-	// Timeout) are transient server-side issues that typically resolve on their
-	// own. 4xx errors (invalid_grant, invalid_client) are permanent auth failures.
 	if retrieveErr, ok := errors.AsType[*oauth2.RetrieveError](err); ok {
-		if retrieveErr.Response != nil && retrieveErr.Response.StatusCode >= 500 {
-			slog.Debug("treating OAuth server error as transient",
-				"status_code", retrieveErr.Response.StatusCode,
-			)
-			return true
-		}
-		return false
+		return classifyOAuthRetrieveError(retrieveErr)
 	}
 
 	// Non-JSON responses from the OAuth server (e.g. load balancer HTML pages).
@@ -393,6 +392,54 @@ func isTransientNetworkError(err error) bool {
 
 	// Generic net.Error timeout (catches any remaining net.Error implementations).
 	if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
+		return true
+	}
+
+	return false
+}
+
+// classifyOAuthRetrieveError reports whether an *oauth2.RetrieveError should
+// be treated as transient. The classification rules are:
+//
+//   - nil Response: non-transient. There is no signal to act on, so we fall
+//     through to the unauthenticated path rather than retry blindly.
+//   - 5xx status: transient (server-side issue, likely to resolve).
+//   - 429 Too Many Requests: transient regardless of body (HTTP standard).
+//   - 4xx with an empty ErrorCode: transient. The oauth2 library populates
+//     ErrorCode from the RFC 6749 'error' field in a JSON response body. An
+//     empty ErrorCode means the response was not a parseable OAuth error —
+//     typically an HTML page from a WAF, CDN, or reverse proxy that
+//     intercepted the request before it reached the OAuth server. These
+//     infrastructure errors (Cloudflare blocks, residential-IP allowlist
+//     misses, transient bad-config deploys) commonly resolve on their own.
+//   - 4xx with a populated ErrorCode: permanent. The OAuth server returned
+//     a structured error code (invalid_grant, invalid_client, etc.) telling
+//     us specifically what's wrong; retrying won't help.
+func classifyOAuthRetrieveError(retrieveErr *oauth2.RetrieveError) bool {
+	if retrieveErr.Response == nil {
+		return false
+	}
+	statusCode := retrieveErr.Response.StatusCode
+
+	if statusCode >= 500 {
+		slog.Debug("treating OAuth server error as transient",
+			"status_code", statusCode,
+		)
+		return true
+	}
+
+	if statusCode == http.StatusTooManyRequests {
+		slog.Debug("treating OAuth rate-limit response as transient",
+			"status_code", statusCode,
+			"error_code", retrieveErr.ErrorCode,
+		)
+		return true
+	}
+
+	if retrieveErr.ErrorCode == "" {
+		slog.Debug("treating OAuth 4xx without error code as transient",
+			"status_code", statusCode,
+		)
 		return true
 	}
 

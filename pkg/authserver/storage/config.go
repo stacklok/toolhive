@@ -67,11 +67,15 @@ type RunConfig struct {
 }
 
 // RedisRunConfig is the serializable Redis configuration for RunConfig.
-// Exactly one of Addr (standalone) or SentinelConfig (Sentinel) must be set.
+// Exactly one of Addr (standalone/cluster) or SentinelConfig must be set.
+// Set ClusterMode to true when Addr points to a Redis Cluster discovery endpoint.
 type RedisRunConfig struct {
-	// Addr is the Redis server address for standalone mode (e.g., "host:port").
+	// Addr is the Redis server address (host:port). Required for standalone and cluster modes.
 	// Mutually exclusive with SentinelConfig.
 	Addr string `json:"addr,omitempty" yaml:"addr,omitempty"`
+
+	// ClusterMode enables the Redis Cluster protocol. Requires Addr to be set.
+	ClusterMode bool `json:"cluster_mode,omitempty" yaml:"cluster_mode,omitempty"`
 
 	// SentinelConfig contains Sentinel-specific configuration.
 	// Mutually exclusive with Addr.
@@ -95,7 +99,7 @@ type RedisRunConfig struct {
 	// WriteTimeout is the timeout for write operations (e.g., "3s").
 	WriteTimeout string `json:"write_timeout,omitempty" yaml:"write_timeout,omitempty"`
 
-	// TLS configures TLS for Redis/Valkey master connections.
+	// TLS configures TLS for Redis/Valkey master or cluster node connections.
 	TLS *RedisTLSRunConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
 
 	// SentinelTLS configures TLS for Sentinel connections. Only applies when SentinelConfig is set.

@@ -544,12 +544,11 @@ func buildStorageRunConfig(
 		return nil, fmt.Errorf("redis config is required when storage type is redis")
 	}
 
-	if redisConfig.Addr == "" && redisConfig.SentinelConfig == nil {
-		return nil, fmt.Errorf("either addr (standalone) or sentinel config is required for Redis storage")
-	}
-
 	if redisConfig.Addr != "" && redisConfig.SentinelConfig != nil {
-		return nil, fmt.Errorf("addr and sentinel config are mutually exclusive for Redis storage")
+		return nil, fmt.Errorf("addr and sentinelConfig are mutually exclusive for Redis storage")
+	}
+	if redisConfig.Addr == "" && redisConfig.SentinelConfig == nil {
+		return nil, fmt.Errorf("one of addr (standalone or cluster) or sentinelConfig (Sentinel) is required for Redis storage")
 	}
 
 	if redisConfig.ACLUserConfig == nil ||
@@ -569,6 +568,7 @@ func buildStorageRunConfig(
 
 	rc := &storage.RedisRunConfig{
 		Addr:          redisConfig.Addr,
+		ClusterMode:   redisConfig.ClusterMode,
 		AuthType:      storage.AuthTypeACLUser,
 		ACLUserConfig: aclRunConfig,
 		KeyPrefix:     keyPrefix,

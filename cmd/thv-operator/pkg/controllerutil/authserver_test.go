@@ -1674,7 +1674,7 @@ func TestBuildStorageRunConfig(t *testing.T) {
 			errContains: "redis config is required",
 		},
 		{
-			name: "Redis storage missing both addr and sentinelConfig returns error",
+			name: "Redis storage missing addr and sentinelConfig returns error",
 			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
 				Storage: &mcpv1beta1.AuthServerStorageConfig{
@@ -1688,7 +1688,7 @@ func TestBuildStorageRunConfig(t *testing.T) {
 				},
 			},
 			wantErr:     true,
-			errContains: "either addr (standalone) or sentinel config is required",
+			errContains: "one of addr (standalone or cluster) or sentinelConfig (Sentinel) is required",
 		},
 		{
 			name: "Redis storage with both addr and sentinelConfig returns error",
@@ -1710,7 +1710,37 @@ func TestBuildStorageRunConfig(t *testing.T) {
 				},
 			},
 			wantErr:     true,
-			errContains: "addr and sentinel config are mutually exclusive",
+			errContains: "mutually exclusive",
+		},
+		{
+			name: "Redis cluster mode builds correctly",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				Storage: &mcpv1beta1.AuthServerStorageConfig{
+					Type: mcpv1beta1.AuthServerStorageTypeRedis,
+					Redis: &mcpv1beta1.RedisStorageConfig{
+						Addr:        "discovery.example.com:6379",
+						ClusterMode: true,
+						ACLUserConfig: &mcpv1beta1.RedisACLUserConfig{
+							UsernameSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "username"},
+							PasswordSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "password"},
+						},
+					},
+				},
+			},
+			checkFunc: func(t *testing.T, cfg *storage.RunConfig) {
+				t.Helper()
+				assert.Equal(t, string(storage.TypeRedis), cfg.Type)
+				require.NotNil(t, cfg.RedisConfig)
+				assert.Equal(t, "discovery.example.com:6379", cfg.RedisConfig.Addr)
+				assert.True(t, cfg.RedisConfig.ClusterMode)
+				assert.Nil(t, cfg.RedisConfig.SentinelConfig)
+				assert.Equal(t, storage.AuthTypeACLUser, cfg.RedisConfig.AuthType)
+				require.NotNil(t, cfg.RedisConfig.ACLUserConfig)
+				assert.Equal(t, authrunner.RedisUsernameEnvVar, cfg.RedisConfig.ACLUserConfig.UsernameEnvVar)
+				assert.Equal(t, authrunner.RedisPasswordEnvVar, cfg.RedisConfig.ACLUserConfig.PasswordEnvVar)
+				assert.Equal(t, "thv:auth:{default:test-server}:", cfg.RedisConfig.KeyPrefix)
+			},
 		},
 		{
 			name: "Redis storage with standalone addr builds correctly",

@@ -525,17 +525,27 @@ type AuthServerStorageConfig struct {
 }
 
 // RedisStorageConfig configures Redis connection for auth server storage.
-// Exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set.
+// Exactly one of addr or sentinelConfig must be set. Set clusterMode to true when
+// addr points to a Redis Cluster discovery endpoint (GCP Memorystore Cluster,
+// AWS ElastiCache cluster mode enabled).
 //
-// +kubebuilder:validation:XValidation:rule="(self.addr.size() > 0) != has(self.sentinelConfig)",message="exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set"
+// +kubebuilder:validation:XValidation:rule="(self.addr.size() > 0) != has(self.sentinelConfig)",message="exactly one of addr or sentinelConfig must be set"
+// +kubebuilder:validation:XValidation:rule="!self.clusterMode || self.addr.size() > 0",message="clusterMode requires addr to be set"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type RedisStorageConfig struct {
-	// Addr is the Redis server address for standalone mode (e.g., "host:port").
-	// Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present
-	// a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig.
+	// Addr is the Redis server address (host:port). Required for standalone and cluster modes.
+	// Use for managed Redis services that expose a single endpoint (GCP Memorystore basic tier,
+	// AWS ElastiCache without cluster mode, or cluster-mode services when clusterMode is true).
+	// Mutually exclusive with sentinelConfig.
 	// +optional
 	Addr string `json:"addr,omitempty"`
+
+	// ClusterMode enables the Redis Cluster protocol. Set to true when addr points to a
+	// Redis Cluster discovery endpoint (e.g., GCP Memorystore Cluster, AWS ElastiCache
+	// cluster mode enabled). Requires addr to be set.
+	// +optional
+	ClusterMode bool `json:"clusterMode,omitempty"`
 
 	// SentinelConfig holds Redis Sentinel configuration.
 	// Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr.

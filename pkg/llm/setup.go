@@ -28,6 +28,9 @@ type GatewayManager interface {
 	ConfigureLLMGateway(clientType string, cfg llmgateway.ApplyConfig) (string, error)
 	// LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
 	LLMGatewayModeFor(clientType string) string
+	// LLMSetupNoteFor returns an optional post-setup message for the given
+	// client, or "" when there is nothing to surface.
+	LLMSetupNoteFor(clientType string) string
 	// RevertLLMGateway removes the LLM gateway settings from the tool's config file.
 	RevertLLMGateway(clientType, configPath string) error
 }
@@ -343,6 +346,9 @@ func configureDetectedTools(
 			ConfigPath: configPath,
 		})
 		_, _ = fmt.Fprintf(out, "Configured %s (%s mode)  →  %s\n", clientType, mode, configPath)
+		if note := gm.LLMSetupNoteFor(clientType); note != "" {
+			_, _ = fmt.Fprintln(out, note)
+		}
 	}
 	if len(configured) == 0 {
 		return nil, fmt.Errorf("failed to configure any detected tools")

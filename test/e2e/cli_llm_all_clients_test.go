@@ -19,6 +19,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth/tokensource"
 	"github.com/stacklok/toolhive/pkg/llm"
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/test/e2e"
 )
@@ -89,11 +90,17 @@ func allClientTestCases() []llmClientTestCase {
 			settingsPath: func(tempDir string) string {
 				return filepath.Join(tempDir, ".gemini", "settings.json")
 			},
-			mode: "direct",
+			mode: "proxy",
 			expectedKeys: map[string]func(string, string) string{
-				"/auth/tokenCommand": func(_, _ string) string { return "llm token" },
-				"/baseUrl": func(gatewayURL, _ string) string {
-					return gatewayURL
+				// Force API-key auth so GOOGLE_GEMINI_BASE_URL is respected.
+				"/security/auth/selectedType": func(_, _ string) string { return "gemini-api-key" },
+				"/env/GEMINI_API_KEY":         func(_, _ string) string { return clientThvProxy },
+				// ProxyOrigin strips the entire path (and any query/fragment) from
+				// the proxy base URL so Gemini CLI can append its own /v1beta/...
+				// path without doubling segments. Mirror the production logic here
+				// so the expectation stays correct if the proxy path changes.
+				"/env/GOOGLE_GEMINI_BASE_URL": func(_, proxyURL string) string {
+					return llmgateway.ProxyOriginOf(proxyURL)
 				},
 			},
 		},
@@ -448,11 +455,11 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 			Expect(err).ToNot(HaveOccurred())
 			var geminiAfter map[string]any
 			Expect(json.Unmarshal(data, &geminiAfter)).To(Succeed())
-			tokenCmd, found := jsonPointerGet(geminiAfter, "/auth/tokenCommand")
+			baseURL, found := jsonPointerGet(geminiAfter, "/env/GOOGLE_GEMINI_BASE_URL")
 			Expect(found).To(BeTrue(),
-				"gemini-cli /auth/tokenCommand should still be present after claude-code teardown")
-			Expect(tokenCmd).To(ContainSubstring("llm token"),
-				"gemini-cli tokenCommand should still reference 'llm token' after claude-code teardown")
+				"gemini-cli /env/GOOGLE_GEMINI_BASE_URL should still be present after claude-code teardown")
+			Expect(baseURL).ToNot(BeEmpty(),
+				"gemini-cli GOOGLE_GEMINI_BASE_URL should still be set after claude-code teardown")
 
 			By("verifying ConfiguredTools has only gemini-cli")
 			showOut, _ = thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()

@@ -7,23 +7,27 @@ package llmgateway
 
 import "net/url"
 
-// ProxyOriginOf returns rawURL with its path, query, and fragment stripped so
-// only the scheme and host remain (the "origin"). Tools like Gemini CLI that
-// append their own API path (e.g. /v1beta/...) need the origin rather than the
-// full proxy base URL to avoid doubled path segments. Falls back to rawURL when
-// parsing fails.
+// ProxyOriginOf returns rawURL with its path, query, fragment, and userinfo
+// stripped so only the scheme and host remain (the "origin"). Tools like
+// Gemini CLI that append their own API path (e.g. /v1beta/...) need the
+// origin rather than the full proxy base URL to avoid doubled path segments.
+//
+// Falls back to rawURL when:
+//   - parsing fails, or
+//   - the parsed URL has no Host (e.g. scheme-less "localhost:14000/v1" is
+//     parsed by url.Parse as Scheme=localhost, Opaque=14000/v1 with no Host),
+//     or
+//   - the parsed URL has a non-empty Opaque field (opaque URI reference).
 func ProxyOriginOf(rawURL string) string {
 	u, err := url.Parse(rawURL)
-	if err != nil || u == nil {
+	if err != nil || u == nil || u.Host == "" || u.Opaque != "" {
 		return rawURL
 	}
-	u.Path = ""
-	u.RawPath = ""
-	u.RawQuery = ""
-	u.ForceQuery = false
-	u.Fragment = ""
-	u.RawFragment = ""
-	return u.String()
+	origin := url.URL{
+		Scheme: u.Scheme,
+		Host:   u.Host,
+	}
+	return origin.String()
 }
 
 // ApplyConfig holds the values needed to configure a single tool's LLM

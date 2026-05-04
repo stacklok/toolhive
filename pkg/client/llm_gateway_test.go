@@ -4,15 +4,45 @@
 package client
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tailscale/hujson"
 
 	"github.com/stacklok/toolhive/pkg/llmgateway"
 )
+
+// jsonPointerGet resolves a JSON Pointer (RFC 6901) in data and returns the
+// string value at that path, or ("", false) if the pointer does not exist or
+// the value is not a string. data may be JSONC (hujson).
+func jsonPointerGet(data []byte, pointer string) (string, bool) {
+	std, err := hujson.Standardize(data)
+	if err != nil {
+		return "", false
+	}
+	var root any
+	if err := json.Unmarshal(std, &root); err != nil {
+		return "", false
+	}
+	current := root
+	for _, seg := range strings.Split(strings.TrimPrefix(pointer, "/"), "/") {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return "", false
+		}
+		current, ok = m[seg]
+		if !ok {
+			return "", false
+		}
+	}
+	s, ok := current.(string)
+	return s, ok
+}
 
 // fakeLLMBinary is the sentinel binary name used in tests that exercise the
 // exec.LookPath check inside DetectedLLMGatewayClients. The real lookup is
@@ -27,6 +57,10 @@ const fakeLLMBinary = "fake-llm-tool"
 // ValueField names, or missing intermediate-object creation in the real config
 // table — none of which are caught by tests that use fake clientAppConfig
 // entries via LLMTestIntegrations.
+//
+// Values are asserted via exact JSON-pointer lookups rather than raw substring
+// checks, so a value landing at a wrong pointer (or as a stray key name) will
+// fail the test rather than silently pass.
 func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 	t.Parallel()
 
@@ -40,61 +74,61 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 		TokenHelperCommand: `"thv" llm token`,
 	}
 
-	// expectedKeys lists substrings that must appear in the settings file after
-	// Configure, and must NOT appear after Revert. Each entry maps to one real
-	// clientAppConfig in supportedClientIntegrations.
+	// wantPointers maps RFC 6901 JSON pointer → expected string value after
+	// Configure. After Revert every pointer must be absent.
 	cases := []struct {
 		clientType   ClientApp
-		expectedKeys []string
+		wantPointers map[string]string
 	}{
 		{
 			// ~/.claude/settings.json
 			clientType: ClaudeCode,
-			expectedKeys: []string{
-				"apiKeyHelper",
-				"ANTHROPIC_BASE_URL", "https://gw.example.com",
+			wantPointers: map[string]string{
+				"/apiKeyHelper":           `"thv" llm token`,
+				"/env/ANTHROPIC_BASE_URL": "https://gw.example.com",
 			},
 		},
 		{
 			// ~/.gemini/settings.json
 			// NODE_TLS_REJECT_UNAUTHORIZED must NOT appear when TLSSkipVerify is false.
 			clientType: GeminiCli,
-			expectedKeys: []string{
-				"selectedType", "gemini-api-key",
-				"GEMINI_API_KEY", "thv-proxy",
-				"GOOGLE_GEMINI_BASE_URL", "http://localhost:14000",
+			wantPointers: map[string]string{
+				"/security/auth/selectedType": "gemini-api-key",
+				"/env/GEMINI_API_KEY":         "thv-proxy",
+				// ProxyOriginOf strips the /v1 path suffix.
+				"/env/GOOGLE_GEMINI_BASE_URL": "http://localhost:14000",
 			},
 		},
 		{
 			// ~/.<platform>/Cursor/User/settings.json
 			clientType: Cursor,
-			expectedKeys: []string{
-				"cursor.general.openAIBaseURL", "http://localhost:14000/v1",
-				"cursor.general.openAIAPIKey", "thv-proxy",
+			wantPointers: map[string]string{
+				"/cursor.general.openAIBaseURL": "http://localhost:14000/v1",
+				"/cursor.general.openAIAPIKey":  "thv-proxy",
 			},
 		},
 		{
 			// ~/.<platform>/Code/User/settings.json
 			clientType: VSCode,
-			expectedKeys: []string{
-				"github.copilot.advanced.serverUrl", "http://localhost:14000/v1",
-				"github.copilot.advanced.apiKey", "thv-proxy",
+			wantPointers: map[string]string{
+				"/github.copilot.advanced.serverUrl": "http://localhost:14000/v1",
+				"/github.copilot.advanced.apiKey":    "thv-proxy",
 			},
 		},
 		{
 			// ~/.<platform>/Code - Insiders/User/settings.json
 			clientType: VSCodeInsider,
-			expectedKeys: []string{
-				"github.copilot.advanced.serverUrl", "http://localhost:14000/v1",
-				"github.copilot.advanced.apiKey", "thv-proxy",
+			wantPointers: map[string]string{
+				"/github.copilot.advanced.serverUrl": "http://localhost:14000/v1",
+				"/github.copilot.advanced.apiKey":    "thv-proxy",
 			},
 		},
 		{
 			// ~/Library/Application Support/GitHub Copilot for Xcode/editorSettings.json
 			clientType: ClientApp(Xcode),
-			expectedKeys: []string{
-				"openAIBaseURL", "http://localhost:14000/v1",
-				"apiKey", "thv-proxy",
+			wantPointers: map[string]string{
+				"/openAIBaseURL": "http://localhost:14000/v1",
+				"/apiKey":        "thv-proxy",
 			},
 		},
 	}
@@ -111,25 +145,26 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 			settingsPath := cm.buildLLMSettingsPath(cfg)
 			require.NoError(t, os.MkdirAll(filepath.Dir(settingsPath), 0o700))
 
-			// Configure and verify all expected keys appear.
+			// Configure and verify each pointer resolves to the expected value.
 			path, err := cm.ConfigureLLMGateway(tc.clientType, applyCfg)
 			require.NoError(t, err)
 
 			data, err := os.ReadFile(path)
 			require.NoError(t, err)
-			for _, key := range tc.expectedKeys {
-				assert.Contains(t, string(data), key,
-					"key %q missing after Configure for %s", key, tc.clientType)
+			for ptr, want := range tc.wantPointers {
+				got, ok := jsonPointerGet(data, ptr)
+				assert.True(t, ok, "pointer %q missing after Configure for %s", ptr, tc.clientType)
+				assert.Equal(t, want, got, "wrong value at %q after Configure for %s", ptr, tc.clientType)
 			}
 
-			// Revert and verify all expected keys are gone.
+			// Revert and verify every pointer is gone.
 			require.NoError(t, cm.RevertLLMGateway(tc.clientType, path))
 
 			data, err = os.ReadFile(path)
 			require.NoError(t, err)
-			for _, key := range tc.expectedKeys {
-				assert.NotContains(t, string(data), key,
-					"key %q still present after Revert for %s", key, tc.clientType)
+			for ptr := range tc.wantPointers {
+				_, ok := jsonPointerGet(data, ptr)
+				assert.False(t, ok, "pointer %q still present after Revert for %s", ptr, tc.clientType)
 			}
 		})
 	}
@@ -666,35 +701,45 @@ func TestLLMValueForSpec(t *testing.T) {
 	}
 
 	cases := []struct {
-		name       string
-		valueField string
-		cfg        llmgateway.ApplyConfig
-		want       string
+		name    string
+		spec    LLMGatewayKeySpec
+		cfg     llmgateway.ApplyConfig
+		want    string
+		wantErr bool
 	}{
-		{"GatewayURL", "GatewayURL", cfg, "https://gw.example.com"},
-		{"ProxyBaseURL", "ProxyBaseURL", cfg, "http://localhost:14000/v1"},
-		{"TokenHelperCommand", "TokenHelperCommand", cfg, `"thv" llm token`},
-		{"PlaceholderAPIKey", "PlaceholderAPIKey", cfg, "thv-proxy"},
+		// ValueField — known names resolve correctly
+		{name: "GatewayURL", spec: LLMGatewayKeySpec{ValueField: "GatewayURL"}, cfg: cfg, want: "https://gw.example.com"},
+		{name: "ProxyBaseURL", spec: LLMGatewayKeySpec{ValueField: "ProxyBaseURL"}, cfg: cfg, want: "http://localhost:14000/v1"},
+		{name: "TokenHelperCommand", spec: LLMGatewayKeySpec{ValueField: "TokenHelperCommand"}, cfg: cfg, want: `"thv" llm token`},
+		{name: "PlaceholderAPIKey", spec: LLMGatewayKeySpec{ValueField: "PlaceholderAPIKey"}, cfg: cfg, want: "thv-proxy"},
 		// NodeTLSRejectUnauthorized: "0" when set, "" when clear
-		{"NodeTLSRejectUnauthorized/skip=false", "NodeTLSRejectUnauthorized", cfg, ""},
-		{"NodeTLSRejectUnauthorized/skip=true", "NodeTLSRejectUnauthorized", llmgateway.ApplyConfig{TLSSkipVerify: true}, "0"},
+		{name: "NodeTLSRejectUnauthorized/skip=false", spec: LLMGatewayKeySpec{ValueField: "NodeTLSRejectUnauthorized"}, cfg: cfg, want: ""},
+		{name: "NodeTLSRejectUnauthorized/skip=true", spec: LLMGatewayKeySpec{ValueField: "NodeTLSRejectUnauthorized"}, cfg: llmgateway.ApplyConfig{TLSSkipVerify: true}, want: "0"},
 		// ProxyOrigin strips path, query, and fragment from ProxyBaseURL
-		{"ProxyOrigin/strips_path", "ProxyOrigin", cfg, "http://localhost:14000"},
-		{"ProxyOrigin/long_path", "ProxyOrigin", llmgateway.ApplyConfig{ProxyBaseURL: "http://localhost:9000/v1beta/openai"}, "http://localhost:9000"},
-		{"ProxyOrigin/strips_query_and_fragment", "ProxyOrigin", llmgateway.ApplyConfig{ProxyBaseURL: "http://host:8080/path?q=1#frag"}, "http://host:8080"},
+		{name: "ProxyOrigin/strips_path", spec: LLMGatewayKeySpec{ValueField: "ProxyOrigin"}, cfg: cfg, want: "http://localhost:14000"},
+		{name: "ProxyOrigin/long_path", spec: LLMGatewayKeySpec{ValueField: "ProxyOrigin"}, cfg: llmgateway.ApplyConfig{ProxyBaseURL: "http://localhost:9000/v1beta/openai"}, want: "http://localhost:9000"},
+		{name: "ProxyOrigin/strips_query_and_fragment", spec: LLMGatewayKeySpec{ValueField: "ProxyOrigin"}, cfg: llmgateway.ApplyConfig{ProxyBaseURL: "http://host:8080/path?q=1#frag"}, want: "http://host:8080"},
 		// ForceQuery: trailing "?" with no key must not leak into the origin.
-		{"ProxyOrigin/force_query", "ProxyOrigin", llmgateway.ApplyConfig{ProxyBaseURL: "http://host:8080/path?"}, "http://host:8080"},
+		{name: "ProxyOrigin/force_query", spec: LLMGatewayKeySpec{ValueField: "ProxyOrigin"}, cfg: llmgateway.ApplyConfig{ProxyBaseURL: "http://host:8080/path?"}, want: "http://host:8080"},
 		// ProxyOrigin falls back to the raw value when URL parsing fails
-		{"ProxyOrigin/invalid_url_fallback", "ProxyOrigin", llmgateway.ApplyConfig{ProxyBaseURL: "::invalid"}, "::invalid"},
-		// Unrecognised ValueField is written as a literal constant
-		{"literal/gemini-api-key", "gemini-api-key", cfg, "gemini-api-key"},
-		{"literal/some-literal", "some-literal", cfg, "some-literal"},
+		{name: "ProxyOrigin/invalid_url_fallback", spec: LLMGatewayKeySpec{ValueField: "ProxyOrigin"}, cfg: llmgateway.ApplyConfig{ProxyBaseURL: "::invalid"}, want: "::invalid"},
+		// Literal — written verbatim regardless of cfg
+		{name: "Literal/gemini-api-key", spec: LLMGatewayKeySpec{Literal: "gemini-api-key"}, cfg: cfg, want: "gemini-api-key"},
+		{name: "Literal/some-constant", spec: LLMGatewayKeySpec{Literal: "some-constant"}, cfg: cfg, want: "some-constant"},
+		// Unknown ValueField — must return an error (no silent literal fallback)
+		{name: "unknown_ValueField/typo", spec: LLMGatewayKeySpec{ValueField: "GatwayURL"}, cfg: cfg, wantErr: true},
+		{name: "unknown_ValueField/arbitrary", spec: LLMGatewayKeySpec{ValueField: "not-a-field"}, cfg: cfg, wantErr: true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := llmValueForSpec(tc.valueField, tc.cfg)
+			got, err := llmValueForSpec(tc.spec, tc.cfg)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
 			assert.Equal(t, tc.want, got)
 		})
 	}

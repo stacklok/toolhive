@@ -159,22 +159,29 @@ const (
 // path (e.g. "/apiKeyHelper" or "/env/ANTHROPIC_BASE_URL"). Dots in flat
 // top-level key names (e.g. "/cursor.general.openAIBaseURL") are treated as
 // literals by hujson.Patch.
-// ValueField names which LLMApplyConfig field to write: "GatewayURL",
-// "ProxyBaseURL", "TokenHelperCommand", "PlaceholderAPIKey" (constant "thv-proxy"),
-// "NodeTLSRejectUnauthorized" (writes "0" when TLSSkipVerify is true), or
-// "ProxyOrigin" (like ProxyBaseURL but with the path stripped — use for tools
-// such as Gemini CLI that append their own API path to avoid doubled segments).
-// Any other string is written as a literal value; use this to hard-code a
-// constant string into a settings key (e.g. forcing an auth type to a fixed value).
-// ClearWhenEmpty: when true and the resolved value is empty, the key is removed
-// from the settings file rather than skipped. Use for conditional keys like
-// NODE_TLS_REJECT_UNAUTHORIZED that must be cleaned up when the flag is cleared.
+//
+// Exactly one of ValueField or Literal must be set:
+//   - ValueField names which ApplyConfig field to write. Valid values:
+//     "GatewayURL", "ProxyBaseURL", "ProxyOrigin", "TokenHelperCommand",
+//     "PlaceholderAPIKey", "NodeTLSRejectUnauthorized".
+//     An unrecognised ValueField is a programming error and causes
+//     ConfigureLLMGateway to return an error.
+//   - Literal is written verbatim into the settings key (e.g. a fixed auth
+//     type string). Use Literal instead of ValueField for constant values so
+//     that typos in ValueField are caught as errors rather than silently
+//     written as unexpected strings.
+//
+// ClearWhenEmpty: when true and the resolved value is empty, the key is
+// removed from the settings file rather than skipped. Use for conditional
+// keys like NODE_TLS_REJECT_UNAUTHORIZED that must be cleaned up when the
+// flag is cleared. Ignored when Literal is set (literals are never empty).
 type LLMGatewayKeySpec struct {
 	JSONPointer string // RFC 6901 path
 	// ValueField: "GatewayURL" | "ProxyBaseURL" | "ProxyOrigin" |
 	// "TokenHelperCommand" | "PlaceholderAPIKey" | "NodeTLSRejectUnauthorized"
 	ValueField     string
-	ClearWhenEmpty bool // remove the key when the resolved value is empty
+	Literal        string // constant value written verbatim; mutually exclusive with ValueField
+	ClearWhenEmpty bool   // remove the key when the resolved value is empty (ignored for Literal)
 }
 
 // clientAppConfig represents a configuration path for a supported MCP client.
@@ -229,6 +236,10 @@ type clientAppConfig struct {
 	// LLMGatewayKeys lists the JSON Pointer paths and value-field mappings to
 	// apply when setting up (or reverting) LLM gateway access.
 	LLMGatewayKeys []LLMGatewayKeySpec
+	// LLMSetupNote is an optional message printed to stdout after a successful
+	// "thv llm setup" for this client. Use it to surface manual steps that
+	// toolhive cannot automate (e.g. env vars the tool reads from a .env file).
+	LLMSetupNote string
 }
 
 // extractServersKeyFromConfig extracts the servers key from MCPServersPathPrefix
@@ -862,10 +873,11 @@ var supportedClientIntegrations = []clientAppConfig{
 		LLMSettingsRelPath: []string{".gemini"},
 		LLMGatewayKeys: []LLMGatewayKeySpec{
 			// Force API-key auth so GOOGLE_GEMINI_BASE_URL is respected.
-			// "gemini-api-key" is an unrecognised ValueField, so llmValueForSpec
-			// writes it as a literal string (see LLMGatewayKeySpec doc comment).
-			{JSONPointer: "/security/auth/selectedType", ValueField: "gemini-api-key"},
-			{JSONPointer: "/env/GEMINI_API_KEY", ValueField: "PlaceholderAPIKey"},
+			{JSONPointer: "/security/auth/selectedType", Literal: "gemini-api-key"},
+			// Placeholder API key (proxy does not validate it).
+			{JSONPointer: "/env/GEMINI_API_KEY", Literal: llmPlaceholderAPIKey},
+			// Proxy origin for Gemini CLI; path is stripped because Gemini
+			// CLI appends its own /v1beta/... path to the base URL.
 			{JSONPointer: "/env/GOOGLE_GEMINI_BASE_URL", ValueField: "ProxyOrigin"},
 		},
 	},

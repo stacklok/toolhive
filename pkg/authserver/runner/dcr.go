@@ -5,8 +5,6 @@ package runner
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,13 +13,13 @@ import (
 	"regexp"
 	"runtime/debug"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
 	"golang.org/x/sync/singleflight"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -229,34 +227,12 @@ func applyResolutionToOAuth2Config(cfg *upstream.OAuth2Config, res *DCRResolutio
 	cfg.ClientSecret = res.ClientSecret
 }
 
-// scopesHash returns the SHA-256 hex digest of the canonical scope set.
-//
-// Canonicalisation:
-//  1. Sort ascending so the digest is order-insensitive — e.g.
-//     []string{"openid", "profile"} and []string{"profile", "openid"} hash to
-//     the same value.
-//  2. Deduplicate so that []string{"openid"} and []string{"openid", "openid"}
-//     hash to the same value. An OAuth scope set is a set, not a multiset
-//     (RFC 6749 §3.3), and without deduplication a caller that accidentally
-//     duplicated a scope would miss cache entries and trigger redundant
-//     RFC 7591 registrations.
-//  3. Join with newlines (a character not valid in OAuth scope tokens per
-//     RFC 6749 §3.3) to avoid collision between e.g. ["ab", "c"] and
-//     ["a", "bc"].
-func scopesHash(scopes []string) string {
-	sorted := slices.Clone(scopes)
-	sort.Strings(sorted)
-	sorted = slices.Compact(sorted)
-
-	h := sha256.New()
-	for i, s := range sorted {
-		if i > 0 {
-			_, _ = h.Write([]byte("\n"))
-		}
-		_, _ = h.Write([]byte(s))
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
+// scopesHash is a runner-package shorthand for storage.ScopesHash, kept so the
+// resolver and its tests can reference the canonical hash function without an
+// explicit storage. qualifier on every call site. The canonical implementation
+// lives in the storage package next to DCRKey so any future backend hashes
+// keys identically.
+var scopesHash = storage.ScopesHash
 
 // Step identifiers for structured error logs emitted by the caller of
 // resolveDCRCredentials. These values flow through the "step" attribute so

@@ -1717,3 +1717,236 @@ func TestMemoryStorage_ConcurrentAccess(t *testing.T) {
 		})
 	})
 }
+
+func TestMemoryStorage_DCRCredentials_RoundTrip(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := DCRKey{
+			Issuer:      "https://thv.example.com",
+			RedirectURI: "https://thv.example.com/oauth/callback",
+			ScopesHash:  ScopesHash([]string{"openid", "profile"}),
+		}
+		creds := &DCRCredentials{
+			Key:                     key,
+			ProviderName:            "atlassian",
+			ClientID:                "client-abc",
+			ClientSecret:            "secret-xyz",
+			TokenEndpointAuthMethod: "client_secret_basic",
+			RegistrationAccessToken: "rat-123",
+			RegistrationClientURI:   "https://idp.example.com/register/client-abc",
+			AuthorizationEndpoint:   "https://idp.example.com/authorize",
+			TokenEndpoint:           "https://idp.example.com/token",
+			CreatedAt:               time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC),
+			ClientSecretExpiresAt:   time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+		}
+
+		require.NoError(t, s.StoreDCRCredentials(ctx, creds))
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+
+		// Every field round-trips, including the embedded Key.
+		assert.Equal(t, *creds, *got)
+	})
+}
+
+func TestMemoryStorage_DCRCredentials_DistinctKeysDoNotCollide(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		mkKey := func(issuer, redirect string, scopes []string) DCRKey {
+			return DCRKey{
+				Issuer:      issuer,
+				RedirectURI: redirect,
+				ScopesHash:  ScopesHash(scopes),
+			}
+		}
+		entries := []*DCRCredentials{
+			{Key: mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid"}), ClientID: "a"},
+			{Key: mkKey("https://idp-b.example.com", "https://x/cb", []string{"openid"}), ClientID: "b"},
+			{Key: mkKey("https://idp-a.example.com", "https://y/cb", []string{"openid"}), ClientID: "c"},
+			{Key: mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid", "email"}), ClientID: "d"},
+		}
+		for _, e := range entries {
+			require.NoError(t, s.StoreDCRCredentials(ctx, e))
+		}
+
+		for _, want := range entries {
+			got, err := s.GetDCRCredentials(ctx, want.Key)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, want.ClientID, got.ClientID)
+		}
+	})
+}
+
+func TestMemoryStorage_DCRCredentials_OverwriteSemantics(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x/cb"}
+
+		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{Key: key, ClientID: "first"}))
+		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{Key: key, ClientID: "second"}))
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "second", got.ClientID)
+	})
+}
+
+func TestMemoryStorage_DCRCredentials_NotFound(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		_, err := s.GetDCRCredentials(ctx, DCRKey{Issuer: "https://unknown.example.com"})
+		requireNotFoundError(t, err)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected pins the
+// fail-loud-on-invalid-input contract: nil creds, an empty Key.Issuer, or
+// an empty Key.RedirectURI must be rejected with fosite.ErrInvalidRequest
+// rather than producing a working-looking write under a partially-populated
+// key.
+func TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		creds *DCRCredentials
+	}{
+		{
+			name:  "nil creds",
+			creds: nil,
+		},
+		{
+			name: "empty issuer",
+			creds: &DCRCredentials{
+				Key: DCRKey{Issuer: "", RedirectURI: "https://x/cb"},
+			},
+		},
+		{
+			name: "empty redirect_uri",
+			creds: &DCRCredentials{
+				Key: DCRKey{Issuer: "https://idp.example.com", RedirectURI: ""},
+			},
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+				err := s.StoreDCRCredentials(ctx, tc.creds)
+				require.Error(t, err)
+				assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
+				// Confirm the rejection did not partially populate the store.
+				assert.Equal(t, 0, s.Stats().DCRCredentials,
+					"rejected Store must not leave any entry behind")
+			})
+		})
+	}
+}
+
+// TestMemoryStorage_DCRCredentials_GetReturnsDefensiveCopy pins the
+// defensive-copy contract: a caller mutating the returned record must not
+// affect persisted state.
+func TestMemoryStorage_DCRCredentials_GetReturnsDefensiveCopy(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x/cb"}
+		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{Key: key, ClientID: "orig"}))
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		got.ClientID = "tampered-by-caller"
+
+		refetched, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "orig", refetched.ClientID)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_StoreCopyIsolatesCaller pins the
+// store-side defensive-copy contract: a caller mutating the input *after*
+// Store must not affect persisted state.
+func TestMemoryStorage_DCRCredentials_StoreCopyIsolatesCaller(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x/cb"}
+		input := &DCRCredentials{Key: key, ClientID: "orig"}
+		require.NoError(t, s.StoreDCRCredentials(ctx, input))
+
+		input.ClientID = "tampered-after-store"
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "orig", got.ClientID)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_ExcludedFromCleanupExpired pins the
+// invariant that DCR entries are NOT swept by cleanupExpired. The Redis
+// backend applies TTL via SetEX; the in-memory backend keeps entries for the
+// process lifetime.
+func TestMemoryStorage_DCRCredentials_ExcludedFromCleanupExpired(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x/cb"}
+		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
+			Key:       key,
+			ClientID:  "abc",
+			CreatedAt: time.Now().Add(-365 * 24 * time.Hour),
+		}))
+
+		s.cleanupExpired()
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "abc", got.ClientID)
+	})
+}
+
+// TestScopesHash_StableAcrossPermutationAndDuplicates pins the canonical-form
+// invariants of ScopesHash.
+func TestScopesHash_StableAcrossPermutationAndDuplicates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		a, b []string
+	}{
+		{"two-element permutation", []string{"openid", "profile"}, []string{"profile", "openid"}},
+		{"three-element permutation", []string{"openid", "profile", "email"}, []string{"email", "openid", "profile"}},
+		// OAuth scope sets are sets, not multisets (RFC 6749 §3.3); duplicates
+		// must canonicalise to the same hash.
+		{"single equals double duplicate", []string{"openid"}, []string{"openid", "openid"}},
+		{"three with duplicate equals two unique", []string{"openid", "profile", "openid"}, []string{"openid", "profile"}},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, ScopesHash(tc.a), ScopesHash(tc.b))
+		})
+	}
+}
+
+// TestScopesHash_NoCollisionFromBoundaryJoin guards against a regression in
+// the canonical form: ["ab", "c"] and ["a", "bc"] must produce different
+// hashes. The newline delimiter is what prevents the collision; this test
+// exists to fail loudly if the canonical form is ever simplified.
+func TestScopesHash_NoCollisionFromBoundaryJoin(t *testing.T) {
+	t.Parallel()
+	assert.NotEqual(t, ScopesHash([]string{"ab", "c"}), ScopesHash([]string{"a", "bc"}))
+}
+
+// TestScopesHash_DistinctForDistinctScopes pins that distinct non-empty
+// scope sets hash to distinct values, while nil and empty slice canonicalise
+// to the same value (both reduce to the empty canonical form).
+func TestScopesHash_DistinctForDistinctScopes(t *testing.T) {
+	t.Parallel()
+
+	a := ScopesHash([]string{"openid"})
+	b := ScopesHash([]string{"openid", "profile"})
+	c := ScopesHash([]string{"profile"})
+	d := ScopesHash(nil)
+	e := ScopesHash([]string{})
+
+	assert.NotEqual(t, a, b)
+	assert.NotEqual(t, a, c)
+	assert.NotEqual(t, b, c)
+	assert.NotEqual(t, a, d)
+	assert.Equal(t, d, e)
+}

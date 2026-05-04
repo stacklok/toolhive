@@ -8,43 +8,23 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 // dcrStaleAgeThreshold is the age beyond which a cached DCR resolution is
 // considered stale and logged as such by higher-level wiring. The store itself
 // does not expire or evict entries — RFC 7591 client registrations are
-// long-lived and are only purged by explicit RFC 7592 deregistration. This
-// threshold is consumed by Step 2g observability logs introduced in the next
-// PR in the DCR stack (sub-issue C, #5039); 5042 only defines the constant
-// so the consumer can land without a cross-PR cycle.
-//
-//nolint:unused // consumed by lookupCachedResolution in #5039
+// long-lived and are only purged by explicit RFC 7592 deregistration.
 const dcrStaleAgeThreshold = 90 * 24 * time.Hour
 
-// DCRKey is the canonical lookup key for a DCR resolution. The tuple is
-// designed so a future Redis-backed store can serialise it into a single key
-// segment (Phase 3) without redefining the canonical form. ScopesHash rather
-// than the raw scope slice is used so the key is comparable and order-
-// insensitive.
-type DCRKey struct {
-	// Issuer is *this* auth server's issuer identifier — the local issuer
-	// of the embedded authorization server that performed the registration,
-	// NOT the upstream's. The cache is keyed by this value because two
-	// different local issuers registering against the same upstream are
-	// distinct OAuth clients and must not share credentials. The upstream's
-	// issuer is used only for RFC 8414 §3.3 metadata verification inside
-	// the resolver and is not part of the cache key.
-	Issuer string
-
-	// RedirectURI is the redirect URI registered with the upstream
-	// authorization server. Lives on the local issuer's origin since it is
-	// where the upstream sends the user back to us after authentication.
-	RedirectURI string
-
-	// ScopesHash is the SHA-256 hex digest of the sorted scope list.
-	// See scopesHash in dcr.go for the canonical form.
-	ScopesHash string
-}
+// DCRKey is a re-export of storage.DCRKey, kept as a package-local alias so
+// existing runner-side callers continue to compile against runner.DCRKey
+// while the canonical definition lives in pkg/authserver/storage. The
+// canonical form (and its ScopesHash constructor) MUST live in a single place
+// so any future Redis backend hashes keys identically to the in-memory
+// backend; see storage.DCRKey for the field documentation.
+type DCRKey = storage.DCRKey
 
 // DCRCredentialStore caches RFC 7591 Dynamic Client Registration resolutions
 // keyed by the (Issuer, RedirectURI, ScopesHash) tuple. Implementations must

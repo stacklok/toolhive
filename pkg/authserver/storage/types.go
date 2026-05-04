@@ -16,11 +16,15 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"slices"
+	"sort"
 	"time"
 
 	"github.com/ory/fosite"
@@ -105,6 +109,167 @@ func (t *UpstreamTokens) IsExpired(now time.Time) bool {
 		return true
 	}
 	return !t.ExpiresAt.IsZero() && now.After(t.ExpiresAt)
+}
+
+// DCRKey is the canonical lookup key for a DCR registration. The tuple is
+// designed so that any backend (in-memory or Redis) serialises it identically
+// without redefining the canonical form. ScopesHash is used rather than a raw
+// scope slice so the key is comparable, fixed-size, and order-insensitive.
+//
+// The key lives in the storage package because both MemoryStorage and the
+// future Redis backend must hash keys identically; keeping the canonical form
+// next to the persistence implementations prevents drift.
+type DCRKey struct {
+	// Issuer is *this* auth server's issuer identifier — the local issuer
+	// of the embedded authorization server that performed the registration,
+	// NOT the upstream's. The cache is keyed by this value because two
+	// different local issuers registering against the same upstream are
+	// distinct OAuth clients and must not share credentials.
+	Issuer string
+
+	// RedirectURI is the redirect URI registered with the upstream
+	// authorization server. Lives on the local issuer's origin since it is
+	// where the upstream sends the user back after authentication.
+	RedirectURI string
+
+	// ScopesHash is the SHA-256 hex digest of the sorted, deduplicated scope
+	// list. Use ScopesHash() to compute this value — do NOT hash scopes by
+	// hand at call sites; the canonical form must be a single source of truth
+	// so the key matches across processes and backends.
+	ScopesHash string
+}
+
+// ScopesHash returns the SHA-256 hex digest of the canonical OAuth scope set,
+// suitable for use as DCRKey.ScopesHash.
+//
+// Canonicalisation:
+//  1. Sort ascending so the digest is order-insensitive — e.g.
+//     []string{"openid", "profile"} and []string{"profile", "openid"} hash to
+//     the same value.
+//  2. Deduplicate so that []string{"openid"} and []string{"openid", "openid"}
+//     hash to the same value. An OAuth scope set is a set, not a multiset
+//     (RFC 6749 §3.3), and without deduplication a caller that accidentally
+//     duplicated a scope would miss cache entries and trigger redundant
+//     RFC 7591 registrations.
+//  3. Join with newlines (a character not valid in OAuth scope tokens per
+//     RFC 6749 §3.3) to avoid collision between e.g. ["ab", "c"] and
+//     ["a", "bc"].
+//
+// nil and empty slice both canonicalise to the same hash.
+func ScopesHash(scopes []string) string {
+	sorted := slices.Clone(scopes)
+	sort.Strings(sorted)
+	sorted = slices.Compact(sorted)
+
+	h := sha256.New()
+	for i, s := range sorted {
+		if i > 0 {
+			_, _ = h.Write([]byte("\n"))
+		}
+		_, _ = h.Write([]byte(s))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// DCRCredentials is the persisted form of an RFC 7591 Dynamic Client
+// Registration result. All fields are populated from the upstream's DCR
+// response. The RFC 7592 management fields (RegistrationAccessToken,
+// RegistrationClientURI) are preserved verbatim so future rotation /
+// management flows can use them.
+//
+// # Defensive copy
+//
+// Callers receive a defensive copy from the store. Mutations on the returned
+// value do not affect persisted state, and mutations on a value passed to
+// StoreDCRCredentials are not observed by subsequent reads. This matches the
+// UpstreamTokens contract.
+//
+// # Lifetime
+//
+// Entries are long-lived — RFC 7591 client registrations do not expire unless
+// the upstream asserts client_secret_expires_at. The in-memory backend
+// retains entries for the process lifetime and is intentionally excluded from
+// the periodic cleanup loop. The Redis backend (future sub-issue) applies
+// TTL via SetEX when ClientSecretExpiresAt is non-zero.
+type DCRCredentials struct {
+	// Key is the canonical cache key: (Issuer, RedirectURI, ScopesHash).
+	Key DCRKey
+
+	// ProviderName is the upstream's UpstreamRunConfig.Name. Debug / audit
+	// only — never used as a primary key. Two upstreams with different
+	// ProviderName but identical Key share one credential record.
+	ProviderName string
+
+	ClientID                string
+	ClientSecret            string //nolint:gosec // G117: field legitimately holds sensitive data
+	TokenEndpointAuthMethod string
+
+	// RegistrationAccessToken and RegistrationClientURI are RFC 7592 fields
+	// captured for future management operations (rotation, deletion).
+	RegistrationAccessToken string //nolint:gosec // G117: field legitimately holds sensitive data
+	RegistrationClientURI   string
+
+	AuthorizationEndpoint string
+	TokenEndpoint         string
+
+	// CreatedAt is the wall-clock time at which the registration completed.
+	// Used to compute staleness for observability — the cache itself does
+	// not expire entries based on age (see ClientSecretExpiresAt for the
+	// authoritative expiry signal).
+	CreatedAt time.Time
+
+	// ClientSecretExpiresAt is the RFC 7591 §3.2.1 client_secret_expires_at
+	// value converted from int64 epoch seconds to time.Time. The wire
+	// convention is that 0 means "the secret does not expire"; this struct
+	// represents that as the zero time.Time so callers can use IsZero()
+	// rather than special-casing 0.
+	//
+	// When non-zero, this is the authoritative signal a backend uses to TTL
+	// the persisted entry: the Redis backend (sub-issue 2) plumbs it through
+	// SetEX so the row evicts before the upstream rejects the secret at the
+	// token endpoint. The in-memory backend ignores this field — entries
+	// persist for the process lifetime and the resolver re-checks the
+	// expiry on read.
+	ClientSecretExpiresAt time.Time
+}
+
+// DCRCredentialStore is a narrow, segregated interface for persisting
+// dynamic-client-registration credentials. Both MemoryStorage and a future
+// Redis-backed store implement it; an authserver backed by Redis shares DCR
+// credentials across replicas and restarts.
+//
+// # Cross-replica limitation
+//
+// Sharing DCR credentials does NOT imply cross-replica session / token
+// delivery. Callers that need that must still route through the proxy runner
+// and (if applicable) pin sessions to a replica.
+//
+// # Defensive copy
+//
+// Implementations MUST defensively copy on both Store and Get so caller
+// mutations cannot reach persisted state and vice versa, mirroring the
+// UpstreamTokens contract.
+//
+// # TTL handling
+//
+// Implementations SHOULD honor a non-zero DCRCredentials.ClientSecretExpiresAt
+// as a backend-level TTL when the underlying store supports one (e.g. Redis
+// SetEX) so an entry evicts before the upstream rejects the secret at the
+// token endpoint. Backends without a native TTL (e.g. the in-memory backend)
+// retain the field verbatim and rely on the caller — typically the runner's
+// resolver — to re-check expiry on read; see MemoryStorage.GetDCRCredentials.
+// A zero ClientSecretExpiresAt means the upstream did not assert an expiry
+// and no TTL is applied.
+type DCRCredentialStore interface {
+	// GetDCRCredentials returns the credentials for the given key.
+	// Returns ErrNotFound (wrapped) if no entry exists for the key.
+	// The returned value is a defensive copy.
+	GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRCredentials, error)
+
+	// StoreDCRCredentials persists the credentials, overwriting any existing
+	// entry for the same Key. See the interface-level "TTL handling" section
+	// for the contract on ClientSecretExpiresAt.
+	StoreDCRCredentials(ctx context.Context, creds *DCRCredentials) error
 }
 
 // User represents a user account in the authorization server.

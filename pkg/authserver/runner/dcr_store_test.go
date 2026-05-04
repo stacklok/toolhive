@@ -168,75 +168,11 @@ func TestInMemoryDCRCredentialStore_GetReturnsDefensiveCopy(t *testing.T) {
 	assert.Equal(t, "orig", refetched.ClientID)
 }
 
-func TestScopesHash_StableAcrossPermutation(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		a, b []string
-	}{
-		{
-			name: "two-element permutation",
-			a:    []string{"openid", "profile"},
-			b:    []string{"profile", "openid"},
-		},
-		{
-			name: "three-element permutation",
-			a:    []string{"openid", "profile", "email"},
-			b:    []string{"email", "openid", "profile"},
-		},
-		{
-			// OAuth scope sets are sets, not multisets (RFC 6749 §3.3).
-			// scopesHash deduplicates before hashing so a caller who
-			// accidentally repeats a scope still hits the cache entry
-			// keyed under the canonical set.
-			name: "single element equals double element duplicate",
-			a:    []string{"openid"},
-			b:    []string{"openid", "openid"},
-		},
-		{
-			name: "three-element with duplicate equals two-element unique",
-			a:    []string{"openid", "profile", "openid"},
-			b:    []string{"openid", "profile"},
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, scopesHash(tc.a), scopesHash(tc.b))
-		})
-	}
-}
-
-func TestScopesHash_DistinctForDistinctScopes(t *testing.T) {
-	t.Parallel()
-
-	a := scopesHash([]string{"openid"})
-	b := scopesHash([]string{"openid", "profile"})
-	c := scopesHash([]string{"profile"})
-	d := scopesHash(nil)
-	e := scopesHash([]string{})
-
-	// Non-empty distinct sets produce distinct hashes.
-	assert.NotEqual(t, a, b)
-	assert.NotEqual(t, a, c)
-	assert.NotEqual(t, b, c)
-	assert.NotEqual(t, a, d)
-	// nil and empty slice canonicalise to the same hash (both sort-then-join
-	// to the empty canonical form).
-	assert.Equal(t, d, e)
-}
-
-func TestScopesHash_NoCollisionFromBoundaryJoin(t *testing.T) {
-	t.Parallel()
-
-	// Without a delimiter that cannot appear inside a scope value,
-	// ["ab", "c"] and ["a", "bc"] would collide. This test exists to
-	// prevent a regression if the canonical form is ever simplified.
-	h1 := scopesHash([]string{"ab", "c"})
-	h2 := scopesHash([]string{"a", "bc"})
-	assert.NotEqual(t, h1, h2)
-}
+// Tests for the canonical scopes-hash form live next to the canonical
+// implementation in pkg/authserver/storage/memory_test.go (TestScopesHash_*).
+// The runner-package binding `scopesHash = storage.ScopesHash` would only
+// re-exercise the same code, so duplicating the suite here would be redundant
+// per .claude/rules/testing.md.
 
 // TestInMemoryDCRCredentialStore_ConcurrentAccess fans out N goroutines
 // performing alternating Put / Get against overlapping and disjoint keys,

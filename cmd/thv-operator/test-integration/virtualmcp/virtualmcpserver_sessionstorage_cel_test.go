@@ -5,6 +5,8 @@
 package controllers
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -104,6 +106,62 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 				vmcp.Spec.Replicas = &replicas
 				err := k8sClient.Create(ctx, vmcp)
 				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		Context("rateLimiting", func() {
+			It("should reject rate limiting without redis session storage", func() {
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-rl-no-redis", nil)
+				vmcp.Spec.RateLimiting = &mcpv1beta1.RateLimitConfig{
+					Shared: &mcpv1beta1.RateLimitBucket{
+						MaxTokens:    1,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				}
+
+				err := k8sClient.Create(ctx, vmcp)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("rateLimiting requires sessionStorage with provider 'redis'"))
+			})
+
+			It("should reject perUser rate limiting with anonymous auth", func() {
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-rl-peruser-anon", &mcpv1beta1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6379",
+				})
+				vmcp.Spec.RateLimiting = &mcpv1beta1.RateLimitConfig{
+					PerUser: &mcpv1beta1.RateLimitBucket{
+						MaxTokens:    1,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				}
+
+				err := k8sClient.Create(ctx, vmcp)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("rateLimiting.perUser requires incomingAuth.type oidc"))
+			})
+
+			It("should accept perUser rate limiting with oidc auth and redis session storage", func() {
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-rl-peruser-oidc", &mcpv1beta1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6379",
+				})
+				vmcp.Spec.IncomingAuth = &mcpv1beta1.IncomingAuthConfig{
+					Type: "oidc",
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+						Name:     "oidc",
+						Audience: "test-audience",
+					},
+				}
+				vmcp.Spec.RateLimiting = &mcpv1beta1.RateLimitConfig{
+					PerUser: &mcpv1beta1.RateLimitBucket{
+						MaxTokens:    1,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				}
+
+				err := k8sClient.Create(ctx, vmcp)
+				Expect(err).NotTo(HaveOccurred())
 			})
 		})
 	})

@@ -2245,6 +2245,131 @@ spec:
                   This field accepts a PodTemplateSpec object as JSON/YAML.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
+              rateLimiting:
+                description: |-
+                  RateLimiting defines rate limiting configuration for the Virtual MCP server.
+                  Requires Redis session storage to be configured for distributed rate limiting.
+                properties:
+                  perUser:
+                    description: |-
+                      PerUser is a token bucket applied independently to each authenticated user
+                      at the server level. Requires authentication to be enabled.
+                      Each unique userID creates Redis keys that expire after 2x refillPeriod.
+                      Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys.
+                    properties:
+                      maxTokens:
+                        description: |-
+                          MaxTokens is the maximum number of tokens (bucket capacity).
+                          This is also the burst size: the maximum number of requests that can be served
+                          instantaneously before the bucket is depleted.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      refillPeriod:
+                        description: |-
+                          RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                          The effective refill rate is maxTokens / refillPeriod tokens per second.
+                          Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                        type: string
+                    required:
+                    - maxTokens
+                    - refillPeriod
+                    type: object
+                  shared:
+                    description: Shared is a token bucket shared across all users
+                      for the entire server.
+                    properties:
+                      maxTokens:
+                        description: |-
+                          MaxTokens is the maximum number of tokens (bucket capacity).
+                          This is also the burst size: the maximum number of requests that can be served
+                          instantaneously before the bucket is depleted.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      refillPeriod:
+                        description: |-
+                          RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                          The effective refill rate is maxTokens / refillPeriod tokens per second.
+                          Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                        type: string
+                    required:
+                    - maxTokens
+                    - refillPeriod
+                    type: object
+                  tools:
+                    description: |-
+                      Tools defines per-tool rate limit overrides.
+                      Each entry applies additional rate limits to calls targeting a specific tool name.
+                      A request must pass both the server-level limit and the per-tool limit.
+                    items:
+                      description: |-
+                        ToolRateLimitConfig defines rate limits for a specific tool.
+                        At least one of shared or perUser must be configured.
+                      properties:
+                        name:
+                          description: Name is the MCP tool name this limit applies
+                            to.
+                          minLength: 1
+                          type: string
+                        perUser:
+                          description: PerUser token bucket configuration for this
+                            tool.
+                          properties:
+                            maxTokens:
+                              description: |-
+                                MaxTokens is the maximum number of tokens (bucket capacity).
+                                This is also the burst size: the maximum number of requests that can be served
+                                instantaneously before the bucket is depleted.
+                              format: int32
+                              minimum: 1
+                              type: integer
+                            refillPeriod:
+                              description: |-
+                                RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                              type: string
+                          required:
+                          - maxTokens
+                          - refillPeriod
+                          type: object
+                        shared:
+                          description: Shared token bucket for this specific tool.
+                          properties:
+                            maxTokens:
+                              description: |-
+                                MaxTokens is the maximum number of tokens (bucket capacity).
+                                This is also the burst size: the maximum number of requests that can be served
+                                instantaneously before the bucket is depleted.
+                              format: int32
+                              minimum: 1
+                              type: integer
+                            refillPeriod:
+                              description: |-
+                                RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                              type: string
+                          required:
+                          - maxTokens
+                          - refillPeriod
+                          type: object
+                      required:
+                      - name
+                      type: object
+                      x-kubernetes-validations:
+                      - message: at least one of shared or perUser must be configured
+                        rule: has(self.shared) || has(self.perUser)
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                type: object
+                x-kubernetes-validations:
+                - message: at least one of shared, perUser, or tools must be configured
+                  rule: has(self.shared) || has(self.perUser) || (has(self.tools)
+                    && size(self.tools) > 0)
               replicas:
                 description: |-
                   Replicas is the desired number of vMCP pod replicas.
@@ -2350,6 +2475,17 @@ spec:
             - groupRef
             - incomingAuth
             type: object
+            x-kubernetes-validations:
+            - message: rateLimiting requires sessionStorage with provider 'redis'
+              rule: '!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider
+                == ''redis'')'
+            - message: rateLimiting.perUser requires incomingAuth.type oidc
+              rule: '!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) ||
+                (has(self.incomingAuth) && self.incomingAuth.type == ''oidc'')'
+            - message: per-tool perUser rate limiting requires incomingAuth.type oidc
+              rule: '!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t,
+                !has(t.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type
+                == ''oidc'')'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
@@ -4741,6 +4877,131 @@ spec:
                   This field accepts a PodTemplateSpec object as JSON/YAML.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
+              rateLimiting:
+                description: |-
+                  RateLimiting defines rate limiting configuration for the Virtual MCP server.
+                  Requires Redis session storage to be configured for distributed rate limiting.
+                properties:
+                  perUser:
+                    description: |-
+                      PerUser is a token bucket applied independently to each authenticated user
+                      at the server level. Requires authentication to be enabled.
+                      Each unique userID creates Redis keys that expire after 2x refillPeriod.
+                      Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys.
+                    properties:
+                      maxTokens:
+                        description: |-
+                          MaxTokens is the maximum number of tokens (bucket capacity).
+                          This is also the burst size: the maximum number of requests that can be served
+                          instantaneously before the bucket is depleted.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      refillPeriod:
+                        description: |-
+                          RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                          The effective refill rate is maxTokens / refillPeriod tokens per second.
+                          Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                        type: string
+                    required:
+                    - maxTokens
+                    - refillPeriod
+                    type: object
+                  shared:
+                    description: Shared is a token bucket shared across all users
+                      for the entire server.
+                    properties:
+                      maxTokens:
+                        description: |-
+                          MaxTokens is the maximum number of tokens (bucket capacity).
+                          This is also the burst size: the maximum number of requests that can be served
+                          instantaneously before the bucket is depleted.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      refillPeriod:
+                        description: |-
+                          RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                          The effective refill rate is maxTokens / refillPeriod tokens per second.
+                          Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                        type: string
+                    required:
+                    - maxTokens
+                    - refillPeriod
+                    type: object
+                  tools:
+                    description: |-
+                      Tools defines per-tool rate limit overrides.
+                      Each entry applies additional rate limits to calls targeting a specific tool name.
+                      A request must pass both the server-level limit and the per-tool limit.
+                    items:
+                      description: |-
+                        ToolRateLimitConfig defines rate limits for a specific tool.
+                        At least one of shared or perUser must be configured.
+                      properties:
+                        name:
+                          description: Name is the MCP tool name this limit applies
+                            to.
+                          minLength: 1
+                          type: string
+                        perUser:
+                          description: PerUser token bucket configuration for this
+                            tool.
+                          properties:
+                            maxTokens:
+                              description: |-
+                                MaxTokens is the maximum number of tokens (bucket capacity).
+                                This is also the burst size: the maximum number of requests that can be served
+                                instantaneously before the bucket is depleted.
+                              format: int32
+                              minimum: 1
+                              type: integer
+                            refillPeriod:
+                              description: |-
+                                RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                              type: string
+                          required:
+                          - maxTokens
+                          - refillPeriod
+                          type: object
+                        shared:
+                          description: Shared token bucket for this specific tool.
+                          properties:
+                            maxTokens:
+                              description: |-
+                                MaxTokens is the maximum number of tokens (bucket capacity).
+                                This is also the burst size: the maximum number of requests that can be served
+                                instantaneously before the bucket is depleted.
+                              format: int32
+                              minimum: 1
+                              type: integer
+                            refillPeriod:
+                              description: |-
+                                RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                              type: string
+                          required:
+                          - maxTokens
+                          - refillPeriod
+                          type: object
+                      required:
+                      - name
+                      type: object
+                      x-kubernetes-validations:
+                      - message: at least one of shared or perUser must be configured
+                        rule: has(self.shared) || has(self.perUser)
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                type: object
+                x-kubernetes-validations:
+                - message: at least one of shared, perUser, or tools must be configured
+                  rule: has(self.shared) || has(self.perUser) || (has(self.tools)
+                    && size(self.tools) > 0)
               replicas:
                 description: |-
                   Replicas is the desired number of vMCP pod replicas.
@@ -4846,6 +5107,17 @@ spec:
             - groupRef
             - incomingAuth
             type: object
+            x-kubernetes-validations:
+            - message: rateLimiting requires sessionStorage with provider 'redis'
+              rule: '!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider
+                == ''redis'')'
+            - message: rateLimiting.perUser requires incomingAuth.type oidc
+              rule: '!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) ||
+                (has(self.incomingAuth) && self.incomingAuth.type == ''oidc'')'
+            - message: per-tool perUser rate limiting requires incomingAuth.type oidc
+              rule: '!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t,
+                !has(t.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type
+                == ''oidc'')'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:

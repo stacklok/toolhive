@@ -116,6 +116,44 @@ func TestRateLimitConfigJSONRoundtrip(t *testing.T) {
 	}
 }
 
+func TestVirtualMCPServerSpecRateLimitingJSONRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	spec := VirtualMCPServerSpec{
+		IncomingAuth: &IncomingAuthConfig{Type: "oidc"},
+		GroupRef:     &MCPGroupRef{Name: "group-a"},
+		SessionStorage: &SessionStorageConfig{
+			Provider: "redis",
+			Address:  "redis.default.svc.cluster.local:6379",
+		},
+		RateLimiting: &RateLimitConfig{
+			Shared: &RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+			PerUser: &RateLimitBucket{
+				MaxTokens:    2,
+				RefillPeriod: metav1.Duration{Duration: time.Minute},
+			},
+			Tools: []ToolRateLimitConfig{
+				{
+					Name: "backend_a_echo",
+					Shared: &RateLimitBucket{
+						MaxTokens:    5,
+						RefillPeriod: metav1.Duration{Duration: 30 * time.Second},
+					},
+				},
+			},
+		},
+	}
+
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	out := string(b)
+	assert.Contains(t, out, `"rateLimiting"`)
+	assert.Contains(t, out, `"shared"`)
+	assert.Contains(t, out, `"perUser"`)
+	assert.Contains(t, out, `"backend_a_echo"`)
+	assert.NotContains(t, out, `"config":{"rateLimiting"`)
+}
+
 func TestMCPServerSpecScalingFieldsJSONRoundtrip(t *testing.T) {
 	t.Parallel()
 

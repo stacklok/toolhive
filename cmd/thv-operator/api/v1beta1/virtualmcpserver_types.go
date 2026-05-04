@@ -16,6 +16,10 @@ import (
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 //
+// +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="rateLimiting requires sessionStorage with provider 'redis'"
+// +kubebuilder:validation:XValidation:rule="!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="rateLimiting.perUser requires incomingAuth.type oidc"
+// +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="per-tool perUser rate limiting requires incomingAuth.type oidc"
+//
 //nolint:lll // CEL validation rules exceed line length limit
 type VirtualMCPServerSpec struct {
 	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
@@ -143,6 +147,11 @@ type VirtualMCPServerSpec struct {
 	// +listType=atomic
 	// +optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+
+	// RateLimiting defines rate limiting configuration for the Virtual MCP server.
+	// Requires Redis session storage to be configured for distributed rate limiting.
+	// +optional
+	RateLimiting *RateLimitConfig `json:"rateLimiting,omitempty"`
 }
 
 // EmbeddingServerRef references an existing EmbeddingServer resource by name.

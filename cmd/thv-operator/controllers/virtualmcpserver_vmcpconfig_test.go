@@ -507,6 +507,11 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	assert.Equal(t, "test-vmcp-vmcp-config", cm.Name)
 	assert.Contains(t, cm.Data, "config.yaml")
 	assert.NotEmpty(t, cm.Annotations["toolhive.stacklok.dev/content-checksum"])
+
+	var cfg vmcpconfig.Config
+	require.NoError(t, yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &cfg))
+	assert.Equal(t, "test-vmcp", cfg.Name)
+	assert.Equal(t, "test-group", cfg.Group)
 }
 
 // TestSetAuthConfigConditions tests that auth config conditions reflect the current state

@@ -39,8 +39,27 @@ const (
 type EmbeddedAuthServer struct {
 	server      authserver.Server
 	keyProvider keys.KeyProvider
-	closeOnce   sync.Once
-	closeErr    error
+	// dcrStore caches RFC 7591 Dynamic Client Registration resolutions across
+	// calls to buildUpstreamConfigs so that re-entrant boot/reload paths reuse
+	// previously-registered upstream clients instead of re-registering.
+	//
+	// Lifetime: per-instance — the store is owned by this EmbeddedAuthServer
+	// and is GC'd when the server is unreferenced. This intentionally
+	// contrasts with the package-level dcrFlight singleflight in dcr.go,
+	// which is process-wide so concurrent EmbeddedAuthServer instances
+	// targeting the same upstream still deduplicate the network call. The
+	// cache (per-instance) and the flight (process-wide) protect different
+	// resources: the cache prevents redundant registrations across reboots,
+	// the flight prevents N concurrent /register calls during a thundering
+	// herd. The asymmetry is by design.
+	//
+	// DCRCredentialStore has no Close method today because the in-memory
+	// implementation needs no release. A future Phase 3 backend (Redis,
+	// sqlite) with handles will need Close added to the interface and
+	// invoked from EmbeddedAuthServer.Close.
+	dcrStore  DCRCredentialStore
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewEmbeddedAuthServer creates an EmbeddedAuthServer from authserver.RunConfig.
@@ -73,8 +92,10 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		return nil, fmt.Errorf("failed to parse token lifespans: %w", err)
 	}
 
-	// 4. Build upstream configurations
-	upstreams, err := buildUpstreamConfigs(ctx, cfg.Upstreams)
+	// 4. Build upstream configurations (resolves DCR credentials for any
+	// upstream configured with DCRConfig, caching resolutions in dcrStore).
+	dcrStore := NewInMemoryDCRCredentialStore()
+	upstreams, err := buildUpstreamConfigs(ctx, cfg.Upstreams, cfg.Issuer, dcrStore)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build upstream configs: %w", err)
 	}
@@ -108,6 +129,7 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	return &EmbeddedAuthServer{
 		server:      server,
 		keyProvider: keyProvider,
+		dcrStore:    dcrStore,
 	}, nil
 }
 
@@ -271,14 +293,71 @@ func parseTokenLifespans(cfg *authserver.TokenLifespanRunConfig) (access, refres
 // buildUpstreamConfigs converts UpstreamRunConfig slice to UpstreamConfig slice.
 // It preserves the provider type so the factory can create the correct provider
 // (OIDCProviderImpl for OIDC, BaseOAuth2Provider for OAuth2).
-func buildUpstreamConfigs(_ context.Context, runConfigs []authserver.UpstreamRunConfig) ([]authserver.UpstreamConfig, error) {
+//
+// For OAuth2 upstreams configured with DCRConfig, buildUpstreamConfigs performs
+// RFC 7591 Dynamic Client Registration against the upstream authorization
+// server (hitting the network on first call, using dcrStore on subsequent
+// calls) and overlays the resulting ClientID / ClientSecret onto the output
+// config via consumeResolution + applyResolutionToOAuth2Config. The
+// caller's runConfigs slice is not mutated: in-place mutation of
+// caller-provided values surprises callers and can cause data races, so
+// each element is cloned before applying DCR resolution.
+//
+// Error logging: this function is the boundary for DCR errors — on any
+// failure from resolveDCRCredentials it emits exactly one structured
+// slog.Error via logDCRStepError and returns the wrapped error to the
+// caller without logging further. The resolver itself does not log
+// errors, which avoids the log-and-return double-reporting pattern.
+func buildUpstreamConfigs(
+	ctx context.Context,
+	runConfigs []authserver.UpstreamRunConfig,
+	issuer string,
+	dcrStore DCRCredentialStore,
+) ([]authserver.UpstreamConfig, error) {
 	configs := make([]authserver.UpstreamConfig, 0, len(runConfigs))
 
 	for _, rc := range runConfigs {
-		cfg, err := buildUpstreamConfig(&rc)
+		// Shallow copy of the outer UpstreamRunConfig so DCR resolution never
+		// mutates the caller's slice element.
+		rcCopy := rc
+
+		var dcrResolution *DCRResolution
+		// needsDCR returns false for nil input, so the explicit Type ==
+		// OAuth2 guard is redundant. Keeping a single source of truth for
+		// "does this upstream require DCR" avoids drift if the condition
+		// ever needs to be extended (e.g., to support OIDC DCR).
+		if needsDCR(rcCopy.OAuth2Config) {
+			// Deep-copy the OAuth2 sub-config so consumeResolution writes to the
+			// copy, not the caller's OAuth2UpstreamRunConfig pointer.
+			o2Copy := *rcCopy.OAuth2Config
+			rcCopy.OAuth2Config = &o2Copy
+
+			resolution, err := resolveDCRCredentials(ctx, &o2Copy, issuer, dcrStore)
+			if err != nil {
+				// Emit the single boundary Error record with enough context to
+				// correlate the failure back to this upstream; then return the
+				// wrapped error without further logging.
+				logDCRStepError(rc.Name, err)
+				return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+			}
+			consumeResolution(&o2Copy, resolution)
+			dcrResolution = resolution
+		}
+
+		cfg, err := buildUpstreamConfig(&rcCopy)
 		if err != nil {
 			return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
 		}
+
+		// Apply the DCR-resolved ClientSecret to the built OAuth2Config.
+		// The split between consumeResolution (run-config fields) and
+		// applyResolutionToOAuth2Config (inline-only ClientSecret) is
+		// documented in dcr.go — both calls must be paired to produce a
+		// fully-resolved DCR client.
+		if dcrResolution != nil && cfg.OAuth2Config != nil {
+			applyResolutionToOAuth2Config(cfg.OAuth2Config, dcrResolution)
+		}
+
 		configs = append(configs, *cfg)
 	}
 

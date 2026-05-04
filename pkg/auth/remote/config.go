@@ -186,6 +186,30 @@ func (c *Config) ClearCachedClientCredentials() {
 	c.CachedRegTokenRef = ""
 }
 
+// LogContext returns the upstream issuer and resolved client_id for use as
+// log-correlation fields on the MonitoredTokenSource. Returns ("", "")
+// when c is nil so callers do not need to guard the call. Mirrors the
+// precedence applied at runtime when sending the client_id on token
+// refresh: cached CIMD URL > cached DCR client_id > statically configured
+// client_id. Lives next to resolveClientCredentials so the precedence has
+// a single home — adding a fourth cached field updates both call sites
+// in one place.
+func (c *Config) LogContext() (upstream, clientID string) {
+	if c == nil {
+		return "", ""
+	}
+	clientID = func() string {
+		if c.CachedCIMDClientID != "" {
+			return c.CachedCIMDClientID
+		}
+		if c.CachedClientID != "" {
+			return c.CachedClientID
+		}
+		return c.ClientID
+	}()
+	return c.Issuer, clientID
+}
+
 // DefaultResourceIndicator derives the resource indicator (RFC 8707) from the remote server URL.
 // This function should only be called when the user has not explicitly provided a resource indicator.
 // If the resource indicator cannot be derived, it returns an empty string.

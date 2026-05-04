@@ -303,8 +303,17 @@ func handleHTTPResponse(resp *http.Response) (*DynamicClientRegistrationResponse
 
 	// Check response status
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		// Try to read error response
-		errorBody, _ := io.ReadAll(resp.Body)
+		// Cap the upstream's error body so a misbehaving or malicious AS
+		// cannot inflate operator logs by echoing arbitrary content. 8 KiB
+		// is far larger than any conformant RFC 7591 error response and
+		// still small enough that the surrounding error chain stays
+		// readable.
+		const maxErrorBodySize = 8 * 1024
+		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
+		// Drain whatever exceeded the cap so net/http can reuse the TCP
+		// connection — without this the deferred Close terminates the
+		// connection mid-stream when the upstream returned more than 8 KiB.
+		_, _ = io.Copy(io.Discard, resp.Body)
 
 		// Detect if DCR is not supported by the provider.
 		// Common HTTP status codes when DCR is unsupported:

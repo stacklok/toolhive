@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -630,7 +631,7 @@ func TestNeedsDCR(t *testing.T) {
 	}
 }
 
-func TestApplyResolution_RespectsExplicitEndpoints(t *testing.T) {
+func TestConsumeResolution_RespectsExplicitEndpoints(t *testing.T) {
 	t.Parallel()
 
 	rc := &authserver.OAuth2UpstreamRunConfig{
@@ -642,13 +643,13 @@ func TestApplyResolution_RespectsExplicitEndpoints(t *testing.T) {
 		AuthorizationEndpoint: "https://discovered/authorize",
 		TokenEndpoint:         "https://discovered/token",
 	}
-	applyResolution(rc, res)
+	consumeResolution(rc, res)
 	assert.Equal(t, "got-client", rc.ClientID)
 	assert.Equal(t, "https://explicit/authorize", rc.AuthorizationEndpoint)
 	assert.Equal(t, "https://explicit/token", rc.TokenEndpoint)
 }
 
-func TestApplyResolution_FillsMissingEndpoints(t *testing.T) {
+func TestConsumeResolution_FillsMissingEndpoints(t *testing.T) {
 	t.Parallel()
 
 	rc := &authserver.OAuth2UpstreamRunConfig{}
@@ -657,10 +658,34 @@ func TestApplyResolution_FillsMissingEndpoints(t *testing.T) {
 		AuthorizationEndpoint: "https://discovered/authorize",
 		TokenEndpoint:         "https://discovered/token",
 	}
-	applyResolution(rc, res)
+	consumeResolution(rc, res)
 	assert.Equal(t, "got-client", rc.ClientID)
 	assert.Equal(t, "https://discovered/authorize", rc.AuthorizationEndpoint)
 	assert.Equal(t, "https://discovered/token", rc.TokenEndpoint)
+}
+
+// TestConsumeResolution_ClearsDCRConfig pins the contract that
+// consumeResolution clears DCRConfig on the run-config copy after writing
+// the resolved ClientID. Without this, OAuth2UpstreamRunConfig.Validate
+// (run by buildPureOAuth2Config downstream) trips its ClientID-xor-
+// DCRConfig rule on the resolved copy and rejects the upstream at boot.
+func TestConsumeResolution_ClearsDCRConfig(t *testing.T) {
+	t.Parallel()
+
+	rc := &authserver.OAuth2UpstreamRunConfig{
+		DCRConfig: &authserver.DCRUpstreamConfig{
+			RegistrationEndpoint: "https://idp.example.com/register",
+		},
+	}
+	res := &DCRResolution{
+		ClientID: "dcr-issued-client",
+	}
+
+	consumeResolution(rc, res)
+
+	assert.Equal(t, "dcr-issued-client", rc.ClientID)
+	assert.Nil(t, rc.DCRConfig,
+		"consumeResolution must clear DCRConfig so the resolved copy satisfies the ClientID-xor-DCRConfig invariant")
 }
 
 func TestResolveUpstreamRedirectURI(t *testing.T) {
@@ -1172,11 +1197,11 @@ func TestResolveUpstreamRedirectURI_PreservesIssuerPath(t *testing.T) {
 	}
 }
 
-// TestApplyResolution_DoesNotOverwritePreProvisionedClientID verifies the
-// defence-in-depth in applyResolution: a caller that bypasses
-// validateResolveInputs and invokes applyResolution directly with a
+// TestConsumeResolution_DoesNotOverwritePreProvisionedClientID verifies
+// the defence-in-depth in consumeResolution: a caller that bypasses
+// validateResolveInputs and invokes consumeResolution directly with a
 // pre-provisioned ClientID does not have it silently clobbered.
-func TestApplyResolution_DoesNotOverwritePreProvisionedClientID(t *testing.T) {
+func TestConsumeResolution_DoesNotOverwritePreProvisionedClientID(t *testing.T) {
 	t.Parallel()
 
 	rc := &authserver.OAuth2UpstreamRunConfig{
@@ -1185,9 +1210,9 @@ func TestApplyResolution_DoesNotOverwritePreProvisionedClientID(t *testing.T) {
 	res := &DCRResolution{
 		ClientID: "would-be-overwrite",
 	}
-	applyResolution(rc, res)
+	consumeResolution(rc, res)
 	assert.Equal(t, "pre-provisioned", rc.ClientID,
-		"applyResolution must not overwrite a non-empty ClientID")
+		"consumeResolution must not overwrite a non-empty ClientID")
 }
 
 // TestResolveDCREndpoints_DirectRegistrationEndpointValidated covers
@@ -1326,7 +1351,9 @@ func TestResolveDCRCredentials_CacheGetFailureWrapped(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, storeErr,
 		"cache.Get error must be wrapped with %%w so callers can inspect the cause")
-	assert.Contains(t, err.Error(), "dcr: cache lookup",
+	assert.Contains(t, err.Error(), dcrStepCacheRead,
+		"step identifier is part of the operator-debugging contract")
+	assert.Contains(t, err.Error(), "cache lookup",
 		"the wrap message is part of the operator-debugging contract")
 }
 
@@ -1353,7 +1380,9 @@ func TestResolveDCRCredentials_CachePutFailureWrapped(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, storeErr,
 		"cache.Put error must be wrapped with %%w so callers can inspect the cause")
-	assert.Contains(t, err.Error(), "dcr: cache put",
+	assert.Contains(t, err.Error(), dcrStepCacheWrite,
+		"step identifier is part of the operator-debugging contract")
+	assert.Contains(t, err.Error(), "cache put",
 		"the wrap message is part of the operator-debugging contract")
 }
 
@@ -1413,6 +1442,7 @@ func TestBuildResolution_PopulatesRFC7591ExpiryFields(t *testing.T) {
 					tokenEndpoint:         "https://idp.example.com/token",
 				},
 				"client_secret_basic",
+				"https://idp.example.com/oauth/callback",
 			)
 			assert.Equal(t, tc.wantIssuedAt, resolution.ClientIDIssuedAt)
 			assert.Equal(t, tc.wantExpiresAt, resolution.ClientSecretExpiresAt)
@@ -1538,8 +1568,9 @@ func (s panickingPutDCRStore) Put(_ context.Context, _ DCRKey, _ *DCRResolution)
 // singleflight.Group re-panics the leader's panic in every follower, so
 // without the recover N concurrent callers for the same DCRKey would all
 // crash with the same value. The defer/recover converts the panic to a
-// normal error, the panic is logged at Error with a stack, and every
-// caller gets the same wrapped error.
+// *dcrStepError(dcrStepRegister, ..., Stack: <captured>); the boundary
+// caller's logDCRStepError emits the single Error record and every caller
+// gets the same wrapped error.
 func TestResolveDCRCredentials_RecoversPanicInsideSingleflight(t *testing.T) {
 	t.Parallel()
 
@@ -1594,5 +1625,162 @@ func TestResolveDCRCredentials_RecoversPanicInsideSingleflight(t *testing.T) {
 			i, errs[i].Error())
 		assert.Contains(t, errs[i].Error(), "boom",
 			"goroutine %d's error must include the panic value so the cause is recoverable", i)
+
+		// The captured stack and dcrStepRegister tag must travel with the
+		// returned error so the boundary log (logDCRStepError) emits a
+		// single Error record without a duplicate in-defer log.
+		var stepErr *dcrStepError
+		require.True(t, errors.As(errs[i], &stepErr),
+			"goroutine %d's error must wrap a *dcrStepError; got %T", i, errs[i])
+		assert.Equal(t, dcrStepRegister, stepErr.Step,
+			"goroutine %d's wrapped error must carry the dcrStepRegister step", i)
+		assert.NotEmpty(t, stepErr.Stack,
+			"goroutine %d's wrapped error must include the captured panic stack", i)
+	}
+}
+
+func TestDcrStepError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Error formats step and cause", func(t *testing.T) {
+		t.Parallel()
+
+		cause := fmt.Errorf("boom")
+		e := newDCRStepError(dcrStepRegister, "https://as", "https://app/cb", cause)
+		assert.Equal(t, "dcr: dcr_call: boom", e.Error())
+	})
+
+	t.Run("Unwrap returns cause", func(t *testing.T) {
+		t.Parallel()
+
+		cause := fmt.Errorf("inner")
+		e := newDCRStepError(dcrStepValidate, "", "", cause)
+		assert.Same(t, cause, errors.Unwrap(e))
+	})
+
+	t.Run("errors.As extracts the typed error", func(t *testing.T) {
+		t.Parallel()
+
+		cause := fmt.Errorf("inner")
+		e := newDCRStepError(dcrStepCacheRead, "https://as", "https://app/cb", cause)
+		wrapped := fmt.Errorf("outer: %w", e)
+
+		var got *dcrStepError
+		require.True(t, errors.As(wrapped, &got))
+		assert.Equal(t, dcrStepCacheRead, got.Step)
+		assert.Equal(t, "https://as", got.Issuer)
+		assert.Equal(t, "https://app/cb", got.RedirectURI)
+	})
+
+	t.Run("resolveDCRCredentials wraps every failure in a dcrStepError", func(t *testing.T) {
+		t.Parallel()
+
+		// Precondition failure → dcrStepValidate.
+		_, err := resolveDCRCredentials(context.Background(), nil, "https://as",
+			NewInMemoryDCRCredentialStore())
+		require.Error(t, err)
+		var stepErr *dcrStepError
+		require.True(t, errors.As(err, &stepErr))
+		assert.Equal(t, dcrStepValidate, stepErr.Step)
+	})
+}
+
+func TestSanitizeErrorForLog(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		in       error
+		expected string
+	}{
+		{
+			name:     "nil error returns empty string",
+			in:       nil,
+			expected: "",
+		},
+		{
+			name:     "no URL passes through unchanged",
+			in:       fmt.Errorf("something went wrong"),
+			expected: "something went wrong",
+		},
+		{
+			name:     "URL without query is preserved",
+			in:       fmt.Errorf("GET https://as.example.com/register failed"),
+			expected: "GET https://as.example.com/register failed",
+		},
+		{
+			name:     "URL query is stripped",
+			in:       fmt.Errorf("GET https://as.example.com/register?token=leak&foo=bar failed"),
+			expected: "GET https://as.example.com/register failed",
+		},
+		{
+			name:     "multiple URLs — only queries are stripped, hosts and paths remain",
+			in:       fmt.Errorf("from https://a.example/p1?x=1 to https://b.example/p2?y=2"),
+			expected: "from https://a.example/p1 to https://b.example/p2",
+		},
+		// Trailing punctuation regression cases: the query is stripped
+		// but the sentence punctuation adjacent to the URL must be
+		// preserved verbatim. Without trimURLTrailingPunctuation the
+		// regex's greedy character class would absorb these into the
+		// raw query and drop them along with it.
+		{
+			name:     "trailing comma is preserved when query is stripped",
+			in:       fmt.Errorf("error reaching https://as.example.com/register?x=1, retrying."),
+			expected: "error reaching https://as.example.com/register, retrying.",
+		},
+		{
+			name:     "trailing period is preserved when query is stripped",
+			in:       fmt.Errorf("failed: https://a.example/p?q=1."),
+			expected: "failed: https://a.example/p.",
+		},
+		{
+			name:     "trailing closing paren is preserved when query is stripped",
+			in:       fmt.Errorf("(see https://ex.com/a?b=1)"),
+			expected: "(see https://ex.com/a)",
+		},
+		{
+			name:     "mixed trailing punctuation is preserved when query is stripped",
+			in:       fmt.Errorf("at https://ex.com/a?b=1]!"),
+			expected: "at https://ex.com/a]!",
+		},
+		{
+			name:     "trailing punctuation on URL without query is still preserved",
+			in:       fmt.Errorf("see https://ex.com/a."),
+			expected: "see https://ex.com/a.",
+		},
+		{
+			name:     "go http client style quoted URL is sanitised",
+			in:       fmt.Errorf(`Get "https://as.example.com/register?token=abc": EOF`),
+			expected: `Get "https://as.example.com/register": EOF`,
+		},
+		{
+			name:     "embedded userinfo is stripped",
+			in:       fmt.Errorf("connect https://user:pass@host.example/path?q=1 failed"),
+			expected: "connect https://host.example/path failed",
+		},
+		{
+			name:     "embedded userinfo without query is stripped",
+			in:       fmt.Errorf("connect https://user:pass@host.example/path failed"),
+			expected: "connect https://host.example/path failed",
+		},
+		{
+			name:     "fragment is stripped",
+			in:       fmt.Errorf("callback https://app.example/cb#access_token=abc failed"),
+			expected: "callback https://app.example/cb failed",
+		},
+		{
+			// url.Parse normalises the scheme to lowercase, so the
+			// post-sanitisation form matches the canonical scheme casing.
+			name:     "uppercase scheme is sanitised",
+			in:       fmt.Errorf("GET HTTPS://as.example.com/register?token=leak failed"),
+			expected: "GET https://as.example.com/register failed",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.expected, sanitizeErrorForLog(tc.in))
+		})
 	}
 }

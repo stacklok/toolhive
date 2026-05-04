@@ -47,13 +47,20 @@ type Handler struct {
 // upstreams defines the ordered sequence of upstream providers consulted
 // during multi-upstream authorization flows (e.g., sequential token acquisition).
 //
-// Returns an error if upstreams is empty or if any entry has an empty name or nil provider.
+// Returns an error if config is nil, if config's embedded *fosite.Config is
+// nil, if upstreams is empty, or if any entry has an empty name or nil
+// provider. Catching misconfiguration here is far easier to diagnose than
+// a nil-deref panic deep inside an HTTP handler at request time.
 func NewHandler(
 	provider fosite.OAuth2Provider,
 	config *server.AuthorizationServerConfig,
 	stor storage.Storage,
 	upstreams []NamedUpstream,
 ) (*Handler, error) {
+	if config == nil || config.Config == nil {
+		return nil, fmt.Errorf(
+			"handlers: AuthorizationServerConfig with embedded *fosite.Config must be non-nil")
+	}
 	if len(upstreams) == 0 {
 		return nil, fmt.Errorf("handlers: upstreams must not be empty")
 	}
@@ -135,4 +142,11 @@ func (h *Handler) upstreamByName(name string) (upstream.OAuth2Provider, bool) {
 		}
 	}
 	return nil, false
+}
+
+// issuer returns the authorization-server issuer URL. NewHandler enforces
+// that h.config and h.config.Config are non-nil, so this method does not
+// re-validate.
+func (h *Handler) issuer() string {
+	return h.config.AccessTokenIssuer
 }

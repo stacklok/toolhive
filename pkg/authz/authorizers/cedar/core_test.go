@@ -1296,7 +1296,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 			errContains: "upstream token for provider",
 		},
 		{
-			name: "upstream_token_opaque_not_parseable",
+			name: "upstream_token_opaque_falls_back_to_request_claims_denied",
 			identity: &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
 					Subject: "thv-user",
@@ -1304,6 +1304,45 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				},
 				UpstreamTokens: map[string]string{
 					providerName: "opaque-token-cannot-be-parsed",
+				},
+			},
+			// Opaque upstream tokens (Google's ya29.*, GitHub's gho_*, etc.)
+			// trigger the fallback to identity.Claims. Here the request-token
+			// sub does not match the policy, so authorization is correctly
+			// denied based on policy evaluation rather than a parse-time error.
+			wantAuthorize: false,
+		},
+		{
+			name: "upstream_token_opaque_falls_back_to_request_claims_permitted",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims:  map[string]any{"sub": "upstream-user"},
+				},
+				UpstreamTokens: map[string]string{
+					providerName: "opaque-token-cannot-be-parsed",
+				},
+			},
+			// When the upstream token is not a JWT, Cedar evaluates against
+			// the request-token claims. The embedded auth server already
+			// mirrors the upstream OIDC sub/email/name into its issued token,
+			// so a policy referencing claim_sub still matches the user.
+			wantAuthorize: true,
+		},
+		{
+			name: "upstream_token_jwt_shaped_but_malformed_still_errors",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{
+					// Three-segment shape (looks like a JWT) but the segments are
+					// not valid base64-encoded JSON — i.e. a tampered or
+					// corrupted JWT. The fallback path MUST NOT trigger here:
+					// silently degrading a tampered upstream JWT to fallback
+					// claims would be a security regression.
+					providerName: "not-base64.not-base64.not-base64",
 				},
 			},
 			wantErr:     true,

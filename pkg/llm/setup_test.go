@@ -6,6 +6,8 @@ package llm
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -171,4 +173,120 @@ func TestTeardown_NoPurge_LeavesTokenRefsIntact(t *testing.T) {
 	// Token refs must be untouched when purgeTokens=false.
 	assert.Equal(t, "some-ref", provider.cfg.OIDC.CachedRefreshTokenRef)
 	assert.Equal(t, expiry, provider.cfg.OIDC.CachedTokenExpiry)
+}
+
+// ── AnthropicPathPrefix / configureDetectedTools ──────────────────────────────
+
+// capturingGatewayManager records the ApplyConfig passed to ConfigureLLMGateway.
+type capturingGatewayManager struct {
+	mode    string // returned by LLMGatewayModeFor
+	applied []llmgateway.ApplyConfig
+}
+
+func (*capturingGatewayManager) DetectedLLMGatewayClients() []string { return nil }
+func (g *capturingGatewayManager) ConfigureLLMGateway(_ string, cfg llmgateway.ApplyConfig) (string, error) {
+	g.applied = append(g.applied, cfg)
+	return "/path/to/settings.json", nil
+}
+func (g *capturingGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
+func (*capturingGatewayManager) LLMSetupNoteFor(_ string) string     { return "" }
+func (*capturingGatewayManager) RevertLLMGateway(_, _ string) error  { return nil }
+
+func TestConfigureDetectedTools_PathPrefixAppendedForDirectMode(t *testing.T) {
+	t.Parallel()
+
+	gm := &capturingGatewayManager{mode: "direct"}
+	var out, errOut bytes.Buffer
+
+	_, err := configureDetectedTools(
+		&out, &errOut, gm,
+		[]string{"claude-code"},
+		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		false, "/anthropic",
+	)
+	require.NoError(t, err)
+	require.Len(t, gm.applied, 1)
+
+	// The Anthropic base URL must be gateway + prefix, not just the gateway.
+	assert.Equal(t, "https://gw.example.com/anthropic", gm.applied[0].AnthropicBaseURL)
+	assert.Equal(t, "https://gw.example.com", gm.applied[0].GatewayURL)
+}
+
+func TestConfigureDetectedTools_NoPrefixWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	gm := &capturingGatewayManager{mode: "direct"}
+	var out, errOut bytes.Buffer
+
+	_, err := configureDetectedTools(
+		&out, &errOut, gm,
+		[]string{"claude-code"},
+		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		false, "", // no prefix
+	)
+	require.NoError(t, err)
+	require.Len(t, gm.applied, 1)
+
+	// AnthropicBaseURL must be empty so llmValueForSpec falls back to GatewayURL.
+	assert.Empty(t, gm.applied[0].AnthropicBaseURL)
+}
+
+func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
+	t.Parallel()
+
+	gm := &capturingGatewayManager{mode: "proxy"}
+	var out, errOut bytes.Buffer
+
+	_, err := configureDetectedTools(
+		&out, &errOut, gm,
+		[]string{"cursor"},
+		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		false, "/anthropic",
+	)
+	require.NoError(t, err)
+	require.Len(t, gm.applied, 1)
+
+	// Proxy-mode tools must never receive an AnthropicBaseURL.
+	assert.Empty(t, gm.applied[0].AnthropicBaseURL)
+}
+
+// ── probeAnthropicPrefix ──────────────────────────────────────────────────────
+
+func TestProbeAnthropicPrefix_Returns_Anthropic_On_401(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+
+	prefix := probeAnthropicPrefix(context.Background(), srv.URL, false)
+	assert.Equal(t, "/anthropic", prefix)
+}
+
+func TestProbeAnthropicPrefix_Returns_Empty_On_404(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	prefix := probeAnthropicPrefix(context.Background(), srv.URL, false)
+	assert.Empty(t, prefix)
+}
+
+func TestProbeAnthropicPrefix_Returns_Empty_On_NetworkError(t *testing.T) {
+	t.Parallel()
+
+	// Use a URL that will immediately refuse connections.
+	prefix := probeAnthropicPrefix(context.Background(), "http://127.0.0.1:1", false)
+	assert.Empty(t, prefix)
+}
+
+func TestProbeAnthropicPrefix_Returns_Empty_For_EmptyGatewayURL(t *testing.T) {
+	t.Parallel()
+
+	prefix := probeAnthropicPrefix(context.Background(), "", false)
+	assert.Empty(t, prefix)
 }

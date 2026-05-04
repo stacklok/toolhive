@@ -35,6 +35,7 @@ func ProxyOriginOf(rawURL string) string {
 // the caller has multiple similar string values in scope.
 type ApplyConfig struct {
 	GatewayURL         string // direct-mode: URL of the upstream LLM gateway
+	AnthropicBaseURL   string // direct-mode: effective ANTHROPIC_BASE_URL (gateway + optional path prefix)
 	ProxyBaseURL       string // proxy-mode: URL of the localhost reverse proxy
 	TokenHelperCommand string // direct-mode: shell command that prints a fresh token
 	TLSSkipVerify      bool   // when true, instruct the tool to skip TLS verification

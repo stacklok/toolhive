@@ -84,6 +84,10 @@ func (m *LLMGatewayMock) newServer() *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", m.handleModels)
 	mux.HandleFunc("/v1/chat/completions", m.handleChatCompletions)
+	// Gemini CLI sends requests to /v1beta/models/{model}:generateContent.
+	// The mock handles any /v1beta/ path so proxy routing tests can verify
+	// end-to-end request flow without a real Envoy AI Gateway.
+	mux.HandleFunc("/v1beta/", m.handleGeminiGenerate)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
@@ -237,6 +241,30 @@ func (m *LLMGatewayMock) handleChatCompletions(w http.ResponseWriter, r *http.Re
 		}},
 		"usage": map[string]any{
 			"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30,
+		},
+	})
+}
+
+// handleGeminiGenerate handles Gemini CLI's native API path:
+// /v1beta/models/{model}:generateContent (and other /v1beta/* variants).
+// It returns a minimal Gemini GenerateContent response so proxy routing tests
+// can verify end-to-end flow without a real Envoy AI Gateway.
+func (m *LLMGatewayMock) handleGeminiGenerate(w http.ResponseWriter, r *http.Request) {
+	m.record(r)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"candidates": []map[string]any{{
+			"content": map[string]any{
+				"parts": []map[string]any{{"text": "Hello from the mock LLM gateway!"}},
+				"role":  "model",
+			},
+			"finishReason": "STOP",
+			"index":        0,
+		}},
+		"usageMetadata": map[string]any{
+			"promptTokenCount":     10,
+			"candidatesTokenCount": 20,
+			"totalTokenCount":      30,
 		},
 	})
 }

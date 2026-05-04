@@ -28,9 +28,12 @@ type GatewayManager interface {
 	ConfigureLLMGateway(clientType string, cfg llmgateway.ApplyConfig) (string, error)
 	// LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
 	LLMGatewayModeFor(clientType string) string
-	// LLMSetupNoteFor returns an optional post-setup message for the given
-	// client, or "" when there is nothing to surface.
-	LLMSetupNoteFor(clientType string) string
+	// ConfigureEnvFile writes .env file entries for the client and returns the
+	// env file path. Returns ("", nil) when the client has no env-file entries.
+	ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error)
+	// RevertEnvFile removes the .env file entries that setup wrote. envFilePath
+	// is the value returned by ConfigureEnvFile; a no-op when empty.
+	RevertEnvFile(clientType, envFilePath string) error
 	// RevertLLMGateway removes the LLM gateway settings from the tool's config file.
 	RevertLLMGateway(clientType, configPath string) error
 }
@@ -137,12 +140,7 @@ func Setup(
 		// Roll back every tool we successfully patched so the tool config files
 		// are not left in a modified state without a persisted record of what
 		// was changed (which would make teardown unable to revert them).
-		for _, tc := range configured {
-			if revertErr := gm.RevertLLMGateway(tc.Tool, tc.ConfigPath); revertErr != nil {
-				_, _ = fmt.Fprintf(errOut,
-					"Warning: rollback of %s failed: %v\n", tc.Tool, revertErr)
-			}
-		}
+		rollbackConfiguredTools(errOut, gm, configured)
 		return fmt.Errorf("persisting tool configuration: %w", err)
 	}
 
@@ -221,11 +219,7 @@ func Teardown(
 	// Revert tool config files best-effort; warn on failure but do not undo
 	// the config update above (the user can re-run setup+teardown to reconcile).
 	for _, tc := range toRevert {
-		if err := gm.RevertLLMGateway(tc.Tool, tc.ConfigPath); err != nil {
-			_, _ = fmt.Fprintf(errOut, "Warning: failed to revert %s: %v\n", tc.Tool, err)
-			continue
-		}
-		_, _ = fmt.Fprintf(out, "Reverted %s  (%s)\n", tc.Tool, tc.ConfigPath)
+		revertToolConfig(out, errOut, gm, tc)
 	}
 
 	if purgeTokens && secretsProvider != nil {
@@ -329,31 +323,67 @@ func configureDetectedTools(
 ) ([]ToolConfig, error) {
 	var configured []ToolConfig
 	for _, clientType := range detected {
-		configPath, err := gm.ConfigureLLMGateway(clientType, llmgateway.ApplyConfig{
+		applyCfg := llmgateway.ApplyConfig{
 			GatewayURL:         gatewayURL,
 			ProxyBaseURL:       proxyBaseURL,
 			TokenHelperCommand: tokenHelperCommand,
 			TLSSkipVerify:      tlsSkipVerify,
-		})
+		}
+		configPath, err := gm.ConfigureLLMGateway(clientType, applyCfg)
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Warning: failed to configure %s: %v\n", clientType, err)
 			continue
 		}
+		envFilePath, err := gm.ConfigureEnvFile(clientType, applyCfg)
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "Warning: failed to write .env for %s: %v\n", clientType, err)
+			// Roll back the settings-file patch we just made.
+			if revertErr := gm.RevertLLMGateway(clientType, configPath); revertErr != nil {
+				_, _ = fmt.Fprintf(errOut, "Warning: rollback of %s failed: %v\n", clientType, revertErr)
+			}
+			continue
+		}
 		mode := gm.LLMGatewayModeFor(clientType)
 		configured = append(configured, ToolConfig{
-			Tool:       clientType,
-			Mode:       mode,
-			ConfigPath: configPath,
+			Tool:        clientType,
+			Mode:        mode,
+			ConfigPath:  configPath,
+			EnvFilePath: envFilePath,
 		})
 		_, _ = fmt.Fprintf(out, "Configured %s (%s mode)  →  %s\n", clientType, mode, configPath)
-		if note := gm.LLMSetupNoteFor(clientType); note != "" {
-			_, _ = fmt.Fprintln(out, note)
-		}
 	}
 	if len(configured) == 0 {
 		return nil, fmt.Errorf("failed to configure any detected tools")
 	}
 	return configured, nil
+}
+
+// revertToolConfig reverts the settings-file and .env patches for a single
+// tool. Errors are logged as warnings so the caller can continue with others.
+func revertToolConfig(out, errOut io.Writer, gm GatewayManager, tc ToolConfig) {
+	ok := true
+	if err := gm.RevertLLMGateway(tc.Tool, tc.ConfigPath); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: failed to revert %s settings: %v\n", tc.Tool, err)
+		ok = false
+	}
+	if tc.EnvFilePath != "" {
+		if err := gm.RevertEnvFile(tc.Tool, tc.EnvFilePath); err != nil {
+			_, _ = fmt.Fprintf(errOut, "Warning: failed to revert %s .env: %v\n", tc.Tool, err)
+			ok = false
+		}
+	}
+	if ok {
+		_, _ = fmt.Fprintf(out, "Reverted %s  (%s)\n", tc.Tool, tc.ConfigPath)
+	}
+}
+
+// rollbackConfiguredTools reverts the settings-file and .env patches for every
+// entry in configured. Errors are logged as warnings so all tools are attempted.
+func rollbackConfiguredTools(errOut io.Writer, gm GatewayManager, configured []ToolConfig) {
+	// Use a discard writer for the "Reverted" line — rollback is silent on success.
+	for _, tc := range configured {
+		revertToolConfig(io.Discard, errOut, gm, tc)
+	}
 }
 
 // hasProxyMode reports whether any of the given tool configs uses proxy mode.

@@ -46,6 +46,9 @@ type ToolConfig struct {
 	Mode string `yaml:"mode" json:"mode"`
 	// ConfigPath is the absolute path to the tool's config file that was patched.
 	ConfigPath string `yaml:"config_path" json:"config_path"`
+	// EnvFilePath is the absolute path to the .env file written during setup,
+	// or empty if no .env file was managed for this tool.
+	EnvFilePath string `yaml:"env_file_path,omitempty" json:"env_file_path,omitempty"`
 }
 
 // IsConfigured reports whether the minimum required fields are present for the

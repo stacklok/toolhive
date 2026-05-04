@@ -375,8 +375,12 @@ func (a *clientManagerAdapter) LLMGatewayModeFor(clientType string) string {
 	return a.cm.LLMGatewayModeFor(client.ClientApp(clientType))
 }
 
-func (a *clientManagerAdapter) LLMSetupNoteFor(clientType string) string {
-	return a.cm.LLMSetupNoteFor(client.ClientApp(clientType))
+func (a *clientManagerAdapter) ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error) {
+	return a.cm.ConfigureEnvFile(client.ClientApp(clientType), cfg)
+}
+
+func (a *clientManagerAdapter) RevertEnvFile(clientType, envFilePath string) error {
+	return a.cm.RevertEnvFile(client.ClientApp(clientType), envFilePath)
 }
 
 func (a *clientManagerAdapter) RevertLLMGateway(clientType, configPath string) error {

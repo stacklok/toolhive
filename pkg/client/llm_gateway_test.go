@@ -94,9 +94,6 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 			clientType: GeminiCli,
 			wantPointers: map[string]string{
 				"/security/auth/selectedType": "gemini-api-key",
-				"/env/GEMINI_API_KEY":         "thv-proxy",
-				// ProxyOriginOf strips the /v1 path suffix.
-				"/env/GOOGLE_GEMINI_BASE_URL": "http://localhost:14000",
 			},
 		},
 		{
@@ -701,45 +698,36 @@ func TestLLMValueForSpec(t *testing.T) {
 	}
 
 	cases := []struct {
-		name    string
-		spec    LLMGatewayKeySpec
-		cfg     llmgateway.ApplyConfig
-		want    string
-		wantErr bool
+		name       string
+		valueField string
+		cfg        llmgateway.ApplyConfig
+		want       string
 	}{
-		// ValueField — known names resolve correctly
-		{name: "GatewayURL", spec: LLMGatewayKeySpec{ValueField: "GatewayURL"}, cfg: cfg, want: "https://gw.example.com"},
-		{name: "ProxyBaseURL", spec: LLMGatewayKeySpec{ValueField: "ProxyBaseURL"}, cfg: cfg, want: "http://localhost:14000/v1"},
-		{name: "TokenHelperCommand", spec: LLMGatewayKeySpec{ValueField: "TokenHelperCommand"}, cfg: cfg, want: `"thv" llm token`},
-		{name: "PlaceholderAPIKey", spec: LLMGatewayKeySpec{ValueField: "PlaceholderAPIKey"}, cfg: cfg, want: "thv-proxy"},
+		// Known ValueField names resolve correctly
+		{name: "GatewayURL", valueField: "GatewayURL", cfg: cfg, want: "https://gw.example.com"},
+		{name: "ProxyBaseURL", valueField: "ProxyBaseURL", cfg: cfg, want: "http://localhost:14000/v1"},
+		{name: "TokenHelperCommand", valueField: "TokenHelperCommand", cfg: cfg, want: `"thv" llm token`},
+		{name: "PlaceholderAPIKey", valueField: "PlaceholderAPIKey", cfg: cfg, want: "thv-proxy"},
 		// NodeTLSRejectUnauthorized: "0" when set, "" when clear
-		{name: "NodeTLSRejectUnauthorized/skip=false", spec: LLMGatewayKeySpec{ValueField: "NodeTLSRejectUnauthorized"}, cfg: cfg, want: ""},
-		{name: "NodeTLSRejectUnauthorized/skip=true", spec: LLMGatewayKeySpec{ValueField: "NodeTLSRejectUnauthorized"}, cfg: llmgateway.ApplyConfig{TLSSkipVerify: true}, want: "0"},
+		{name: "NodeTLSRejectUnauthorized/skip=false", valueField: "NodeTLSRejectUnauthorized", cfg: cfg, want: ""},
+		{name: "NodeTLSRejectUnauthorized/skip=true", valueField: "NodeTLSRejectUnauthorized", cfg: llmgateway.ApplyConfig{TLSSkipVerify: true}, want: "0"},
 		// ProxyOrigin strips path, query, and fragment from ProxyBaseURL
-		{name: "ProxyOrigin/strips_path", spec: LLMGatewayKeySpec{ValueField: "ProxyOrigin"}, cfg: cfg, want: "http://localhost:14000"},
-		{name: "ProxyOrigin/long_path", spec: LLMGatewayKeySpec{ValueField: "ProxyOrigin"}, cfg: llmgateway.ApplyConfig{ProxyBaseURL: "http://localhost:9000/v1beta/openai"}, want: "http://localhost:9000"},
-		{name: "ProxyOrigin/strips_query_and_fragment", spec: LLMGatewayKeySpec{ValueField: "ProxyOrigin"}, cfg: llmgateway.ApplyConfig{ProxyBaseURL: "http://host:8080/path?q=1#frag"}, want: "http://host:8080"},
+		{name: "ProxyOrigin/strips_path", valueField: "ProxyOrigin", cfg: cfg, want: "http://localhost:14000"},
+		{name: "ProxyOrigin/long_path", valueField: "ProxyOrigin", cfg: llmgateway.ApplyConfig{ProxyBaseURL: "http://localhost:9000/v1beta/openai"}, want: "http://localhost:9000"},
+		{name: "ProxyOrigin/strips_query_and_fragment", valueField: "ProxyOrigin", cfg: llmgateway.ApplyConfig{ProxyBaseURL: "http://host:8080/path?q=1#frag"}, want: "http://host:8080"},
 		// ForceQuery: trailing "?" with no key must not leak into the origin.
-		{name: "ProxyOrigin/force_query", spec: LLMGatewayKeySpec{ValueField: "ProxyOrigin"}, cfg: llmgateway.ApplyConfig{ProxyBaseURL: "http://host:8080/path?"}, want: "http://host:8080"},
+		{name: "ProxyOrigin/force_query", valueField: "ProxyOrigin", cfg: llmgateway.ApplyConfig{ProxyBaseURL: "http://host:8080/path?"}, want: "http://host:8080"},
 		// ProxyOrigin falls back to the raw value when URL parsing fails
-		{name: "ProxyOrigin/invalid_url_fallback", spec: LLMGatewayKeySpec{ValueField: "ProxyOrigin"}, cfg: llmgateway.ApplyConfig{ProxyBaseURL: "::invalid"}, want: "::invalid"},
-		// Literal — written verbatim regardless of cfg
-		{name: "Literal/gemini-api-key", spec: LLMGatewayKeySpec{Literal: "gemini-api-key"}, cfg: cfg, want: "gemini-api-key"},
-		{name: "Literal/some-constant", spec: LLMGatewayKeySpec{Literal: "some-constant"}, cfg: cfg, want: "some-constant"},
-		// Unknown ValueField — must return an error (no silent literal fallback)
-		{name: "unknown_ValueField/typo", spec: LLMGatewayKeySpec{ValueField: "GatwayURL"}, cfg: cfg, wantErr: true},
-		{name: "unknown_ValueField/arbitrary", spec: LLMGatewayKeySpec{ValueField: "not-a-field"}, cfg: cfg, wantErr: true},
+		{name: "ProxyOrigin/invalid_url_fallback", valueField: "ProxyOrigin", cfg: llmgateway.ApplyConfig{ProxyBaseURL: "::invalid"}, want: "::invalid"},
+		// Unknown ValueField names are returned verbatim as literal values
+		{name: "unknown_ValueField/constant", valueField: "gemini-api-key", cfg: cfg, want: "gemini-api-key"},
+		{name: "unknown_ValueField/typo", valueField: "GatwayURL", cfg: cfg, want: "GatwayURL"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := llmValueForSpec(tc.spec, tc.cfg)
-			if tc.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			assert.NoError(t, err)
+			got := llmValueForSpec(tc.valueField, tc.cfg)
 			assert.Equal(t, tc.want, got)
 		})
 	}

@@ -47,7 +47,7 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 	}
 
 	err := fileutils.WithFileLock(path, func() error {
-		content, err := readOrInit(path)
+		content, err := readOrInitFile(path, []byte("{}"))
 		if err != nil {
 			return err
 		}
@@ -84,11 +84,11 @@ func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgate
 	// any file is modified.
 	values := make([]string, len(specs))
 	for i, spec := range specs {
-		val, err := llmValueForSpec(spec, cfg)
-		if err != nil {
-			return err
+		if spec.Literal != "" {
+			values[i] = spec.Literal
+		} else {
+			values[i] = llmValueForSpec(spec.ValueField, cfg)
 		}
-		values[i] = val
 	}
 
 	// Ensure ancestors only for specs that will be written (not removed).
@@ -230,15 +230,6 @@ func (cm *ClientManager) LLMGatewayModeFor(clientType ClientApp) string {
 	return cfg.LLMGatewayMode
 }
 
-// LLMSetupNoteFor returns the post-setup note for clientType, or "" if none.
-func (cm *ClientManager) LLMSetupNoteFor(clientType ClientApp) string {
-	cfg := cm.lookupClientAppConfig(clientType)
-	if cfg == nil {
-		return ""
-	}
-	return cfg.LLMSetupNote
-}
-
 // DetectedLLMGatewayClients returns the subset of LLM-gateway-capable clients
 // that are installed on this machine. A client is considered installed when:
 //  1. Its settings directory exists on disk.
@@ -278,36 +269,40 @@ func (cm *ClientManager) buildLLMSettingsPath(cfg *clientAppConfig) string {
 	)
 }
 
-// llmValueForSpec returns the value to write for spec given cfg.
-// If spec.Literal is set it is returned directly.
-// Otherwise spec.ValueField is resolved against cfg; an unrecognised ValueField
-// returns an error so typos are caught at call time rather than silently written
-// as unexpected strings into the user's settings file.
-func llmValueForSpec(spec LLMGatewayKeySpec, cfg llmgateway.ApplyConfig) (string, error) {
-	if spec.Literal != "" {
-		return spec.Literal, nil
-	}
-	switch spec.ValueField {
+// resolveApplyConfigField maps a ValueField name to its runtime value from cfg.
+// Returns (value, true) for any recognized field, ("", false) for unknown ones.
+// This is the single source of truth for ValueField semantics shared by both
+// LLMGatewayKeySpec (settings-file patching) and LLMEnvFileKeySpec (.env injection).
+func resolveApplyConfigField(valueField string, cfg llmgateway.ApplyConfig) (string, bool) {
+	switch valueField {
 	case "GatewayURL":
-		return cfg.GatewayURL, nil
+		return cfg.GatewayURL, true
 	case "ProxyBaseURL":
-		return cfg.ProxyBaseURL, nil
+		return cfg.ProxyBaseURL, true
+	case "ProxyOrigin":
+		return llmgateway.ProxyOriginOf(cfg.ProxyBaseURL), true
 	case "TokenHelperCommand":
-		return cfg.TokenHelperCommand, nil
+		return cfg.TokenHelperCommand, true
 	case "PlaceholderAPIKey":
-		return llmPlaceholderAPIKey, nil
+		return llmPlaceholderAPIKey, true
 	case "NodeTLSRejectUnauthorized":
 		if cfg.TLSSkipVerify {
-			return "0", nil
+			return "0", true
 		}
-		return "", nil
-	case "ProxyOrigin":
-		// Like ProxyBaseURL but with the path stripped; see llmgateway.ProxyOriginOf.
-		return llmgateway.ProxyOriginOf(cfg.ProxyBaseURL), nil
+		return "", true
 	default:
-		return "", fmt.Errorf("unknown ValueField %q in LLMGatewayKeySpec for %q; use Literal for constant values",
-			spec.ValueField, spec.JSONPointer)
+		return "", false
 	}
+}
+
+// llmValueForSpec returns the config value for a settings-file key spec.
+// Unknown ValueField names are returned verbatim as literal values, which
+// allows specs like {ValueField: "gemini-api-key"} to inject constant strings.
+func llmValueForSpec(valueField string, cfg llmgateway.ApplyConfig) string {
+	if v, ok := resolveApplyConfigField(valueField, cfg); ok {
+		return v
+	}
+	return valueField // treat unknown field names as literal values
 }
 
 // ensureLLMAncestors walks every ancestor of ptr from root inward and creates
@@ -373,18 +368,19 @@ func jsonPointerExists(data []byte, pointer string) bool {
 	return true
 }
 
-// readOrInit reads path and returns its content, or "{}" if the file is missing
-// or empty. Returns an error only for real IO failures.
-func readOrInit(path string) ([]byte, error) {
+// readOrInitFile reads path and returns its content.
+// When the file is missing or empty it returns defaultContent instead.
+// Returns an error only for real IO failures.
+func readOrInitFile(path string, defaultContent []byte) ([]byte, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path is a known tool config file location
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []byte("{}"), nil
+			return defaultContent, nil
 		}
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 	if len(data) == 0 {
-		return []byte("{}"), nil
+		return defaultContent, nil
 	}
 	return data, nil
 }

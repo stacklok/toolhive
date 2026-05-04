@@ -102,6 +102,7 @@ func (*stubGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfi
 	return "", nil
 }
 func (*stubGatewayManager) LLMGatewayModeFor(_ string) string { return "" }
+func (*stubGatewayManager) LLMSetupNoteFor(_ string) string   { return "" }
 func (s *stubGatewayManager) RevertLLMGateway(clientType, _ string) error {
 	s.reverted = append(s.reverted, clientType)
 	return nil

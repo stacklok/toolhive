@@ -80,9 +80,20 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 // allowing conditional keys (e.g. NODE_TLS_REJECT_UNAUTHORIZED) to be cleaned
 // up when the associated flag is cleared.
 func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgateway.ApplyConfig, filePath string) error {
+	// Resolve all values up front so an unknown ValueField fails fast before
+	// any file is modified.
+	values := make([]string, len(specs))
+	for i, spec := range specs {
+		val, err := llmValueForSpec(spec, cfg)
+		if err != nil {
+			return err
+		}
+		values[i] = val
+	}
+
 	// Ensure ancestors only for specs that will be written (not removed).
-	for _, spec := range specs {
-		if spec.ClearWhenEmpty && llmValueForSpec(spec.ValueField, cfg) == "" {
+	for i, spec := range specs {
+		if spec.ClearWhenEmpty && values[i] == "" {
 			continue
 		}
 		if err := ensureLLMAncestors(v, spec.JSONPointer, filePath); err != nil {
@@ -96,8 +107,8 @@ func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgate
 		return fmt.Errorf("standardizing %s: %w", filePath, err)
 	}
 
-	for _, spec := range specs {
-		value := llmValueForSpec(spec.ValueField, cfg)
+	for i, spec := range specs {
+		value := values[i]
 		if spec.ClearWhenEmpty && value == "" {
 			if err := removeLLMKey(v, spec.JSONPointer, filePath, standardized); err != nil {
 				return err
@@ -219,6 +230,15 @@ func (cm *ClientManager) LLMGatewayModeFor(clientType ClientApp) string {
 	return cfg.LLMGatewayMode
 }
 
+// LLMSetupNoteFor returns the post-setup note for clientType, or "" if none.
+func (cm *ClientManager) LLMSetupNoteFor(clientType ClientApp) string {
+	cfg := cm.lookupClientAppConfig(clientType)
+	if cfg == nil {
+		return ""
+	}
+	return cfg.LLMSetupNote
+}
+
 // DetectedLLMGatewayClients returns the subset of LLM-gateway-capable clients
 // that are installed on this machine. A client is considered installed when:
 //  1. Its settings directory exists on disk.
@@ -258,26 +278,35 @@ func (cm *ClientManager) buildLLMSettingsPath(cfg *clientAppConfig) string {
 	)
 }
 
-// llmValueForSpec returns the config value corresponding to the ValueField name.
-// For "NodeTLSRejectUnauthorized", returns "0" when TLSSkipVerify is true, or ""
-// when false (which triggers removal when ClearWhenEmpty is set on the spec).
-func llmValueForSpec(valueField string, cfg llmgateway.ApplyConfig) string {
-	switch valueField {
+// llmValueForSpec returns the value to write for spec given cfg.
+// If spec.Literal is set it is returned directly.
+// Otherwise spec.ValueField is resolved against cfg; an unrecognised ValueField
+// returns an error so typos are caught at call time rather than silently written
+// as unexpected strings into the user's settings file.
+func llmValueForSpec(spec LLMGatewayKeySpec, cfg llmgateway.ApplyConfig) (string, error) {
+	if spec.Literal != "" {
+		return spec.Literal, nil
+	}
+	switch spec.ValueField {
 	case "GatewayURL":
-		return cfg.GatewayURL
+		return cfg.GatewayURL, nil
 	case "ProxyBaseURL":
-		return cfg.ProxyBaseURL
+		return cfg.ProxyBaseURL, nil
 	case "TokenHelperCommand":
-		return cfg.TokenHelperCommand
+		return cfg.TokenHelperCommand, nil
 	case "PlaceholderAPIKey":
-		return llmPlaceholderAPIKey
+		return llmPlaceholderAPIKey, nil
 	case "NodeTLSRejectUnauthorized":
 		if cfg.TLSSkipVerify {
-			return "0"
+			return "0", nil
 		}
-		return ""
+		return "", nil
+	case "ProxyOrigin":
+		// Like ProxyBaseURL but with the path stripped; see llmgateway.ProxyOriginOf.
+		return llmgateway.ProxyOriginOf(cfg.ProxyBaseURL), nil
 	default:
-		return valueField // treat unknown field names as literal values
+		return "", fmt.Errorf("unknown ValueField %q in LLMGatewayKeySpec for %q; use Literal for constant values",
+			spec.ValueField, spec.JSONPointer)
 	}
 }
 

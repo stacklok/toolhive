@@ -3544,6 +3544,18 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 		},
 	}
 
+	// authzRefWithPrimary builds an inline authz ref with an explicit
+	// PrimaryUpstreamProvider — used to exercise the override branch.
+	authzRefWithPrimary := func(primary string) *mcpv1beta1.AuthzConfigRef {
+		return &mcpv1beta1.AuthzConfigRef{
+			Type: "inline",
+			Inline: &mcpv1beta1.InlineAuthzConfig{
+				Policies:                []string{`permit(principal, action, resource);`},
+				PrimaryUpstreamProvider: primary,
+			},
+		}
+	}
+
 	// warningExpectation captures the expected state of the advisory
 	// AuthzUpstreamSelectionWarning condition after validation. When
 	// expectPresent is false the condition must not appear in status at
@@ -3632,6 +3644,61 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 				reason:        mcpv1beta1.ConditionReasonAuthzUpstreamAutoSelected,
 				messageSubstr: `"okta"`,
 			},
+		},
+		{
+			// Explicit PrimaryUpstreamProvider matching one of the upstreams is
+			// valid and emits no advisory — the user has disambiguated the choice.
+			name: "explicit primary provider matching an upstream is valid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: authzRefWithPrimary("entra"),
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+					{Name: "entra", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			expectedWarning: warningExpectation{expectPresent: false},
+		},
+		{
+			// Explicit PrimaryUpstreamProvider with multiple upstreams suppresses
+			// the advisory warning — auto-selection is no longer happening.
+			name: "explicit primary provider suppresses multi-upstream advisory",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: authzRefWithPrimary("okta"),
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+					{Name: "entra", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+					{Name: "google", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			expectedWarning: warningExpectation{expectPresent: false},
+		},
+		{
+			// Explicit PrimaryUpstreamProvider that does not match any declared
+			// upstream is rejected at admission. Cedar would otherwise deny every
+			// request at runtime; failing loudly is the right behavior.
+			name: "explicit primary provider not matching any upstream is invalid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: authzRefWithPrimary("ping"),
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+					{Name: "entra", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			expectError:     true,
+			expectedReason:  mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
+			expectedWarning: warningExpectation{expectPresent: false},
 		},
 	}
 

@@ -621,10 +621,65 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 		return stderrors.New("authz configured without an upstream IDP")
 	}
 
-	// Valid configuration. When multiple upstreams are declared, surface an
-	// advisory naming the auto-selected upstream; otherwise ensure any stale
-	// warning is cleared.
-	if len(vmcp.Spec.AuthServerConfig.UpstreamProviders) > 1 {
+	// If the user has set spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider
+	// explicitly, the name must resolve to one of the declared upstreams after
+	// normalization on both sides. A mismatch would cause Cedar to deny every
+	// request at runtime — fail loudly at admission instead.
+	explicitProvider := ""
+	if vmcp.Spec.IncomingAuth.AuthzConfig.Inline != nil {
+		explicitProvider = vmcp.Spec.IncomingAuth.AuthzConfig.Inline.PrimaryUpstreamProvider
+	}
+	if explicitProvider != "" {
+		resolved := authserver.ResolveUpstreamName(explicitProvider)
+		matched := false
+		for _, up := range vmcp.Spec.AuthServerConfig.UpstreamProviders {
+			if authserver.ResolveUpstreamName(up.Name) == resolved {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
+
+			message := fmt.Sprintf(
+				"spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider=%q does not "+
+					"match any upstream declared on spec.authServerConfig.upstreamProviders. "+
+					"Set primaryUpstreamProvider to one of the configured upstream names, or "+
+					"leave it empty to default to the first upstream.",
+				explicitProvider,
+			)
+
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Info("authz primaryUpstreamProvider does not match any upstream; rejecting VirtualMCPServer",
+				"name", vmcp.Name,
+				"namespace", vmcp.Namespace,
+				"primaryUpstreamProvider", explicitProvider,
+				"reason", mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
+			)
+
+			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetAuthServerConfigValidatedCondition(
+				mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
+				message,
+				metav1.ConditionFalse,
+			)
+			statusManager.SetObservedGeneration(vmcp.Generation)
+			return &SpecValidationError{
+				Message: fmt.Sprintf(
+					"authz primaryUpstreamProvider %q does not match any configured upstream",
+					explicitProvider,
+				),
+			}
+		}
+	}
+
+	// Valid configuration. When multiple upstreams are declared AND the user has
+	// not pinned a choice via primaryUpstreamProvider, surface an advisory naming
+	// the auto-selected upstream so the operator can reorder or set the explicit
+	// field. Otherwise — single upstream, or an explicit choice that disambiguates
+	// the multi-upstream case — ensure any stale warning is cleared.
+	if len(vmcp.Spec.AuthServerConfig.UpstreamProviders) > 1 && explicitProvider == "" {
 		selected := vmcp.Spec.AuthServerConfig.UpstreamProviders[0].Name
 		statusManager.SetCondition(
 			mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning,
@@ -632,7 +687,8 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 			fmt.Sprintf(
 				"multiple upstreamProviders configured; Cedar policies will evaluate "+
 					"claims from the first upstream (%q). If another upstream should be "+
-					"authoritative, remove or reorder the list.",
+					"authoritative, set spec.incomingAuth.authzConfig.inline."+
+					"primaryUpstreamProvider explicitly, or remove or reorder the list.",
 				selected,
 			),
 			metav1.ConditionTrue,

@@ -1415,6 +1415,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `policies` _string array_ | Policies is a list of Cedar policy strings |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `entitiesJson` _string_ | EntitiesJSON is a JSON string representing Cedar entities | [] | Optional: \{\} <br /> |
+| `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token's claims<br />Cedar should evaluate. Only meaningful for VirtualMCPServer with an embedded<br />auth server. When empty and an embedded auth server has upstreams configured,<br />the controller defaults to the first upstream provider. Ignored by MCPServer<br />and MCPRemoteProxy. The name must match one of the upstreams declared on<br />spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is<br />rejected with AuthServerConfigValidated=False. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.InlineOIDCSharedConfig

@@ -773,6 +773,16 @@ type InlineAuthzConfig struct {
 	// +kubebuilder:default="[]"
 	// +optional
 	EntitiesJSON string `json:"entitiesJson,omitempty"`
+
+	// PrimaryUpstreamProvider names the upstream IDP whose access token's claims
+	// Cedar should evaluate. Only meaningful for VirtualMCPServer with an embedded
+	// auth server. When empty and an embedded auth server has upstreams configured,
+	// the controller defaults to the first upstream provider. Ignored by MCPServer
+	// and MCPRemoteProxy. The name must match one of the upstreams declared on
+	// spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
+	// rejected with AuthServerConfigValidated=False.
+	// +optional
+	PrimaryUpstreamProvider string `json:"primaryUpstreamProvider,omitempty"`
 }
 
 // AuditConfig defines audit logging configuration for the MCP server

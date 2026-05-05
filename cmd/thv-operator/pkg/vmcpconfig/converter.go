@@ -198,7 +198,21 @@ func (c *Converter) convertIncomingAuth(
 		// injectUpstreamProviderIfNeeded in pkg/runner/middleware.go (thv run path).
 		// Leaving PrimaryUpstreamProvider empty (no embedded AS or no upstreams) lets
 		// Cedar fall back to claims from the ToolHive-issued token.
-		if vmcp.Spec.AuthServerConfig != nil && len(vmcp.Spec.AuthServerConfig.UpstreamProviders) > 0 {
+		//
+		// When the user has set spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider
+		// explicitly, honor it (after normalization). Otherwise fall back to the first
+		// configured upstream — matching the SubjectProviderName precedent on the
+		// token-exchange and AWS-STS strategies. The validator at
+		// validateAuthzUpstreamAvailable rejects names that don't match any declared
+		// upstream, so by the time we reach this branch the explicit value is known
+		// to resolve to a real upstream.
+		switch {
+		case vmcp.Spec.IncomingAuth.AuthzConfig.Inline != nil &&
+			vmcp.Spec.IncomingAuth.AuthzConfig.Inline.PrimaryUpstreamProvider != "":
+			incoming.Authz.PrimaryUpstreamProvider = authserver.ResolveUpstreamName(
+				vmcp.Spec.IncomingAuth.AuthzConfig.Inline.PrimaryUpstreamProvider,
+			)
+		case vmcp.Spec.AuthServerConfig != nil && len(vmcp.Spec.AuthServerConfig.UpstreamProviders) > 0:
 			incoming.Authz.PrimaryUpstreamProvider = authserver.ResolveUpstreamName(
 				vmcp.Spec.AuthServerConfig.UpstreamProviders[0].Name,
 			)

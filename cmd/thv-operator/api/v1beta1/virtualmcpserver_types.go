@@ -400,6 +400,12 @@ const (
 	// the Cedar claim source. The advisory message names the selected upstream.
 	ConditionReasonAuthzUpstreamAutoSelected = "AuthzUpstreamAutoSelected"
 
+	// ConditionReasonAuthzUpstreamUnknown indicates that
+	// spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider names an upstream
+	// IDP that is not declared on spec.authServerConfig.upstreamProviders. Cedar
+	// would otherwise deny every request at runtime; reject at admission instead.
+	ConditionReasonAuthzUpstreamUnknown = "AuthzUpstreamUnknown"
+
 	// ConditionReasonVirtualMCPServerTelemetryConfigRefValid indicates the referenced MCPTelemetryConfig is valid
 	ConditionReasonVirtualMCPServerTelemetryConfigRefValid = "TelemetryConfigRefValid"
 

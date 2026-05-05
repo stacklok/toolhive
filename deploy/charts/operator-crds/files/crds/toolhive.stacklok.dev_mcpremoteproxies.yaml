@@ -131,6 +131,16 @@ spec:
                         minItems: 1
                         type: array
                         x-kubernetes-list-type: atomic
+                      primaryUpstreamProvider:
+                        description: |-
+                          PrimaryUpstreamProvider names the upstream IDP whose access token's claims
+                          Cedar should evaluate. Only meaningful for VirtualMCPServer with an embedded
+                          auth server. When empty and an embedded auth server has upstreams configured,
+                          the controller defaults to the first upstream provider. Ignored by MCPServer
+                          and MCPRemoteProxy. The name must match one of the upstreams declared on
+                          spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
+                          rejected with AuthServerConfigValidated=False.
+                        type: string
                     required:
                     - policies
                     type: object
@@ -697,6 +707,16 @@ spec:
                         minItems: 1
                         type: array
                         x-kubernetes-list-type: atomic
+                      primaryUpstreamProvider:
+                        description: |-
+                          PrimaryUpstreamProvider names the upstream IDP whose access token's claims
+                          Cedar should evaluate. Only meaningful for VirtualMCPServer with an embedded
+                          auth server. When empty and an embedded auth server has upstreams configured,
+                          the controller defaults to the first upstream provider. Ignored by MCPServer
+                          and MCPRemoteProxy. The name must match one of the upstreams declared on
+                          spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
+                          rejected with AuthServerConfigValidated=False.
+                        type: string
                     required:
                     - policies
                     type: object

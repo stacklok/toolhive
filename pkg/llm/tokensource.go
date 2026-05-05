@@ -19,7 +19,7 @@ import (
 // refresh token is persisted for subsequent non-interactive calls.
 var ErrTokenRequired = errors.New(
 	"LLM gateway authentication required: no cached credentials found; " +
-		"complete an interactive login first (\"thv llm setup\" — coming soon)",
+		"run \"thv llm setup\" to log in",
 )
 
 // TokenRefUpdater is a callback invoked when the refresh token changes — either

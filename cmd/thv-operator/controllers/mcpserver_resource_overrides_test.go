@@ -647,7 +647,8 @@ func TestDeploymentForMCPServer_PodTemplateOverridesPreserveRunConfigChecksum(t 
 		},
 	}
 
-	deployment := r.deploymentForMCPServer(t.Context(), mcpServer, "C1")
+	deployment, err := r.deploymentForMCPServer(t.Context(), mcpServer, "C1")
+	require.NoError(t, err)
 	require.NotNil(t, deployment)
 
 	assert.Equal(t, "C1",
@@ -688,7 +689,8 @@ func TestDeploymentNeedsUpdate_StableAfterBuildWithPodTemplateOverrides(t *testi
 	}
 
 	const runConfigChecksum = "stable-checksum"
-	built := r.deploymentForMCPServer(t.Context(), mcpServer, runConfigChecksum)
+	built, err := r.deploymentForMCPServer(t.Context(), mcpServer, runConfigChecksum)
+	require.NoError(t, err)
 	require.NotNil(t, built)
 
 	// Constructor and comparator must agree on the same input — otherwise the

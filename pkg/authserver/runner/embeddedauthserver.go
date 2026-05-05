@@ -39,25 +39,24 @@ const (
 type EmbeddedAuthServer struct {
 	server      authserver.Server
 	keyProvider keys.KeyProvider
-	// dcrStore caches RFC 7591 Dynamic Client Registration resolutions across
-	// calls to buildUpstreamConfigs so that re-entrant boot/reload paths reuse
-	// previously-registered upstream clients instead of re-registering.
+	// dcrStore is the durable DCR credential cache shared with the rest of
+	// authserver state. It is the same storage.DCRCredentialStore returned
+	// by createStorage — MemoryStorage in single-replica mode, RedisStorage
+	// in multi-replica deployments — so a Redis-backed authserver reuses
+	// already-registered RFC 7591 clients across replicas and restarts
+	// instead of re-registering at the upstream on every boot.
 	//
-	// Lifetime: per-instance — the store is owned by this EmbeddedAuthServer
-	// and is GC'd when the server is unreferenced. This intentionally
-	// contrasts with the package-level dcrFlight singleflight in dcr.go,
-	// which is process-wide so concurrent EmbeddedAuthServer instances
-	// targeting the same upstream still deduplicate the network call. The
-	// cache (per-instance) and the flight (process-wide) protect different
-	// resources: the cache prevents redundant registrations across reboots,
-	// the flight prevents N concurrent /register calls during a thundering
-	// herd. The asymmetry is by design.
+	// Resource lifecycle: the store is owned by the underlying
+	// authserver.Storage and released by EmbeddedAuthServer.Close (which
+	// closes the authserver, which closes its storage). No separate Close
+	// is needed here.
 	//
-	// dcrResolutionCache has no Close method today because the in-memory
-	// implementation needs no release. A future Phase 3 backend (Redis,
-	// sqlite) with handles will need Close added to the interface and
-	// invoked from EmbeddedAuthServer.Close.
-	dcrStore  dcrResolutionCache
+	// Concurrency: this field is the per-instance persistent cache layer;
+	// the package-level dcrFlight singleflight in dcr.go is the in-process
+	// thundering-herd guard. The asymmetry is by design — the store
+	// deduplicates registrations across boots and replicas; the flight
+	// deduplicates concurrent /register calls within a single process.
+	dcrStore  storage.DCRCredentialStore
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -92,15 +91,39 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		return nil, fmt.Errorf("failed to parse token lifespans: %w", err)
 	}
 
-	// 4. Build upstream configurations (resolves DCR credentials for any
-	// upstream configured with DCRConfig, caching resolutions in dcrStore).
-	dcrStore := newInMemoryDCRResolutionCache()
-	upstreams, err := buildUpstreamConfigs(ctx, cfg.Upstreams, cfg.Issuer, dcrStore)
+	// 4. Create the storage backend FIRST so the DCR resolver and the auth
+	// server share the same persistence. createStorage selects memory vs
+	// Redis based on cfg.Storage; both backends implement
+	// storage.DCRCredentialStore, so a single type assertion is sufficient
+	// to obtain the DCR store. This is the wiring change that lets a
+	// Redis-backed authserver reuse RFC 7591 client registrations across
+	// replicas and restarts.
+	stor, err := createStorage(ctx, cfg.Storage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage: %w", err)
+	}
+	dcrStore, ok := stor.(storage.DCRCredentialStore)
+	if !ok {
+		// Defensive: every concrete Storage implementation in this
+		// package implements DCRCredentialStore (see the
+		// `var _ DCRCredentialStore = (*MemoryStorage)(nil)` and
+		// `var _ DCRCredentialStore = (*RedisStorage)(nil)` checks in
+		// pkg/authserver/storage), so this is a programming error
+		// rather than a runtime condition. Surfacing it as a
+		// constructor error (rather than a later nil-pointer panic at
+		// first DCR resolve) keeps misconfiguration fail-loud at boot.
+		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", stor)
+	}
+
+	// 5. Build upstream configurations. The DCR resolver caches RFC 7591
+	// resolutions in dcrStore so re-entrant boot/reload paths reuse
+	// previously-registered upstream clients instead of re-registering.
+	upstreams, err := buildUpstreamConfigs(ctx, cfg.Upstreams, cfg.Issuer, newStorageBackedStore(dcrStore))
 	if err != nil {
 		return nil, fmt.Errorf("failed to build upstream configs: %w", err)
 	}
 
-	// 5. Build the resolved Config
+	// 6. Build the resolved Config
 	resolvedCfg := authserver.Config{
 		Issuer:                       cfg.Issuer,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
@@ -112,12 +135,6 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		Upstreams:                    upstreams,
 		ScopesSupported:              cfg.ScopesSupported,
 		AllowedAudiences:             cfg.AllowedAudiences,
-	}
-
-	// 6. Create storage backend based on configuration
-	stor, err := createStorage(ctx, cfg.Storage)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
 
 	// 7. Create the auth server

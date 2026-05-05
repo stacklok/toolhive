@@ -5,8 +5,8 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -30,16 +30,18 @@ type DCRKey = storage.DCRKey
 // keyed by the (Issuer, RedirectURI, ScopesHash) tuple. Implementations must
 // be safe for concurrent use.
 //
-// This is a runner-internal cache of *DCRResolution values; it is distinct
-// from the persistent storage.DCRCredentialStore (which holds *DCRCredentials
-// and is the durable contract sub-issue 3 wires the resolver to use). Naming
-// them differently keeps the two interfaces unambiguous to readers and grep
-// tooling while both exist during the Phase 3 migration.
+// This is the runner-facing interface used by the DCR resolver. It is a
+// narrow re-projection of storage.DCRCredentialStore that exchanges
+// *DCRResolution values (the resolver's working type) instead of
+// *storage.DCRCredentials so the resolver internals stay agnostic to the
+// persistence layer's exact field shape.
 //
-// The cache is in-memory and holds long-lived registrations — entries are
-// never expired or evicted by the cache itself. Callers are responsible for
-// invalidating entries when the underlying registration is revoked (e.g.,
-// via RFC 7592 deregistration).
+// Implementations in this package are thin adapters around a
+// storage.DCRCredentialStore — the durable map / Redis hash lives over
+// there, and this interface adds a per-call DCRResolution <-> DCRCredentials
+// translation. There is exactly one persistence implementation per backend:
+// storage.MemoryStorage and storage.RedisStorage. See newStorageBackedStore
+// for the adapter.
 type dcrResolutionCache interface {
 	// Get returns the cached resolution for key, or (nil, false, nil) if the
 	// key is not present. An error is returned only on backend failure.
@@ -54,68 +56,45 @@ type dcrResolutionCache interface {
 
 // newInMemoryDCRResolutionCache returns a thread-safe in-memory
 // dcrResolutionCache intended for tests and single-replica development
-// deployments. Production deployments should use the Redis-backed store
-// introduced in Phase 3, which addresses the cross-replica sharing,
-// durability, and cross-process coordination gaps documented below.
-//
-// Entries are retained for the process lifetime; there is no TTL and no
-// background cleanup goroutine. Growth is bounded by upstream count ×
-// distinct scope sets ever registered for each upstream during the
-// process lifetime — for a stable configuration this collapses to the
-// upstream count, but rotating scope sets (operator-driven scope
-// changes, or upstream scopes_supported rotations re-derived by the
-// resolver) accumulate stale entries that survive until restart. This
-// implementation is not the production answer; the Redis backend
-// introduced in Phase 3 mitigates the rotation case via SetEX TTL.
-//
-// What this enables: serialises Get/Put against a single in-process map so
-// concurrent callers within one authserver process see a consistent view of
-// the cache without redundant RFC 7591 registrations.
-//
-// What this does NOT solve:
-//   - Cross-replica sharing: each replica holds its own independent map, so a
-//     registration performed on replica A is not visible to replica B. In a
-//     multi-replica deployment every replica will register its own DCR client
-//     against the upstream on first boot. Phase 3 introduces a Redis-backed
-//     store that addresses this.
-//   - Durability across restarts: process exit drops every entry; the next
-//     boot re-registers. Operators relying on stable client_ids must use a
-//     persistent backend.
-//   - Cross-process write coordination: two processes (or replicas) calling
-//     Put for the same DCRKey concurrently will both succeed against their
-//     local maps; whichever registration the upstream accepts last wins on
-//     that side, the loser becomes orphaned. The
-//     resolveDCRCredentials-level singleflight in dcr.go only deduplicates
-//     within one process.
+// deployments. It is a thin adapter over storage.NewMemoryStorage so the
+// runner-side cache and the authserver's main storage backend share a
+// single in-memory implementation; production deployments configure a
+// Redis-backed storage.DCRCredentialStore via storage.NewRedisStorage and
+// reach this same adapter through newStorageBackedStore.
 func newInMemoryDCRResolutionCache() dcrResolutionCache {
-	return &inMemoryDCRResolutionCache{
-		entries: make(map[DCRKey]*DCRResolution),
-	}
+	return newStorageBackedStore(storage.NewMemoryStorage())
 }
 
-// inMemoryDCRResolutionCache is the default dcrResolutionCache backed by a
-// plain map guarded by sync.RWMutex. Modelled on
-// pkg/authserver/storage/memory.go but stripped of TTL bookkeeping — DCR
-// resolutions are long-lived.
-type inMemoryDCRResolutionCache struct {
-	mu      sync.RWMutex
-	entries map[DCRKey]*DCRResolution
+// newStorageBackedStore returns a dcrResolutionCache that delegates to a
+// storage.DCRCredentialStore for durable persistence and translates
+// DCRResolution values into DCRCredentials at the boundary. The returned
+// store is safe for concurrent use because the underlying
+// storage.DCRCredentialStore must be (per its interface contract).
+func newStorageBackedStore(backend storage.DCRCredentialStore) dcrResolutionCache {
+	return &storageBackedStore{backend: backend}
+}
+
+// storageBackedStore is the runner-side dcrResolutionCache wrapping a
+// storage.DCRCredentialStore. Its methods are the only place that converts
+// between the resolver's *DCRResolution and the persisted
+// *storage.DCRCredentials shapes.
+type storageBackedStore struct {
+	backend storage.DCRCredentialStore
 }
 
 // Get implements dcrResolutionCache.
-func (s *inMemoryDCRResolutionCache) Get(_ context.Context, key DCRKey) (*DCRResolution, bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	res, ok := s.entries[key]
-	if !ok {
-		return nil, false, nil
+//
+// A storage-level ErrNotFound is translated into the (nil, false, nil)
+// miss-tuple advertised by the interface. Other errors propagate as-is.
+func (s *storageBackedStore) Get(ctx context.Context, key DCRKey) (*DCRResolution, bool, error) {
+	creds, err := s.backend.GetDCRCredentials(ctx, key)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
 	}
-	// Return a defensive copy so mutations by the caller never reach the
-	// cache entry — internal maps and pointers must not be reachable from
-	// the caller's value.
-	cp := *res
-	return &cp, true, nil
+	return credentialsToResolution(creds), true, nil
 }
 
 // Put implements dcrResolutionCache.
@@ -124,16 +103,70 @@ func (s *inMemoryDCRResolutionCache) Get(_ context.Context, key DCRKey) (*DCRRes
 // passing nil would otherwise get a successful return, observe a miss on
 // the next Get, and have no error trail to debug from. Failing loudly at
 // the boundary makes such bugs visible at the first call.
-func (s *inMemoryDCRResolutionCache) Put(_ context.Context, key DCRKey, resolution *DCRResolution) error {
+func (s *storageBackedStore) Put(ctx context.Context, key DCRKey, resolution *DCRResolution) error {
 	if resolution == nil {
 		return fmt.Errorf("dcr: resolution must not be nil")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	creds := resolutionToCredentials(key, resolution)
+	return s.backend.StoreDCRCredentials(ctx, creds)
+}
 
-	// Defensive copy so the caller's subsequent mutations do not reach the
-	// cache entry.
-	cp := *resolution
-	s.entries[key] = &cp
-	return nil
+// resolutionToCredentials converts a resolver-side *DCRResolution into the
+// persisted *storage.DCRCredentials shape. The DCRKey is supplied separately
+// because storage.DCRCredentials carries the key as a struct field rather
+// than implicitly via a map key, so the persistence layer can round-trip it
+// across processes and backends.
+//
+// Fields that exist on DCRResolution but not on DCRCredentials are dropped:
+//   - ClientIDIssuedAt: informational only per RFC 7591 §3.2.1; the resolver
+//     does not consult it for cache invalidation, so it does not need to
+//     survive a process restart.
+//   - RedirectURI: already encoded into key.RedirectURI; storing it twice
+//     would risk drift between the canonical key and the persisted value.
+//
+// CreatedAt and ClientSecretExpiresAt are preserved so cache observers
+// (e.g. lookupCachedResolution's staleness Warn) and TTL-aware backends
+// (Redis) keep their existing behaviour after a restart.
+func resolutionToCredentials(key DCRKey, res *DCRResolution) *storage.DCRCredentials {
+	if res == nil {
+		return nil
+	}
+	return &storage.DCRCredentials{
+		Key:                     key,
+		ClientID:                res.ClientID,
+		ClientSecret:            res.ClientSecret,
+		TokenEndpointAuthMethod: res.TokenEndpointAuthMethod,
+		RegistrationAccessToken: res.RegistrationAccessToken,
+		RegistrationClientURI:   res.RegistrationClientURI,
+		AuthorizationEndpoint:   res.AuthorizationEndpoint,
+		TokenEndpoint:           res.TokenEndpoint,
+		CreatedAt:               res.CreatedAt,
+		ClientSecretExpiresAt:   res.ClientSecretExpiresAt,
+	}
+}
+
+// credentialsToResolution is the inverse of resolutionToCredentials. The
+// RedirectURI is recovered from the persisted Key so consumers that read it
+// off the resolution (e.g. consumeResolution, which writes it back onto a
+// run-config copy when the caller left it empty) see the canonical value.
+//
+// ClientIDIssuedAt is left zero because it is not persisted. Callers that
+// care about it (none today) must read it directly from the live RFC 7591
+// response, not from a cached resolution.
+func credentialsToResolution(creds *storage.DCRCredentials) *DCRResolution {
+	if creds == nil {
+		return nil
+	}
+	return &DCRResolution{
+		ClientID:                creds.ClientID,
+		ClientSecret:            creds.ClientSecret,
+		AuthorizationEndpoint:   creds.AuthorizationEndpoint,
+		TokenEndpoint:           creds.TokenEndpoint,
+		RegistrationAccessToken: creds.RegistrationAccessToken,
+		RegistrationClientURI:   creds.RegistrationClientURI,
+		TokenEndpointAuthMethod: creds.TokenEndpointAuthMethod,
+		RedirectURI:             creds.Key.RedirectURI,
+		ClientSecretExpiresAt:   creds.ClientSecretExpiresAt,
+		CreatedAt:               creds.CreatedAt,
+	}
 }

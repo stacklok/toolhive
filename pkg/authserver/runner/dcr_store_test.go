@@ -92,10 +92,22 @@ func TestInMemoryDCRResolutionCache_DistinctKeysDoNotCollide(t *testing.T) {
 		ScopesHash:  storage.ScopesHash([]string{"openid", "email"}),
 	}
 
-	require.NoError(t, store.Put(ctx, keyA, &DCRResolution{ClientID: "a"}))
-	require.NoError(t, store.Put(ctx, keyB, &DCRResolution{ClientID: "b"}))
-	require.NoError(t, store.Put(ctx, keyC, &DCRResolution{ClientID: "c"}))
-	require.NoError(t, store.Put(ctx, keyD, &DCRResolution{ClientID: "d"}))
+	// The persisted *storage.DCRCredentials shape requires non-empty
+	// AuthorizationEndpoint / TokenEndpoint per validateDCRCredentialsForStore;
+	// supply a minimal valid resolution so the storage-backed adapter accepts
+	// the Put, since the test asserts key-distinctness and not field shape.
+	resolution := func(clientID string) *DCRResolution {
+		return &DCRResolution{
+			ClientID:              clientID,
+			AuthorizationEndpoint: "https://idp.example.com/authorize",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}
+	}
+
+	require.NoError(t, store.Put(ctx, keyA, resolution("a")))
+	require.NoError(t, store.Put(ctx, keyB, resolution("b")))
+	require.NoError(t, store.Put(ctx, keyC, resolution("c")))
+	require.NoError(t, store.Put(ctx, keyD, resolution("d")))
 
 	for _, tc := range []struct {
 		key      DCRKey
@@ -119,9 +131,28 @@ func TestInMemoryDCRResolutionCache_Put_OverwritesExisting(t *testing.T) {
 	store := newInMemoryDCRResolutionCache()
 	ctx := context.Background()
 
-	key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x.example.com/cb"}
-	require.NoError(t, store.Put(ctx, key, &DCRResolution{ClientID: "first"}))
-	require.NoError(t, store.Put(ctx, key, &DCRResolution{ClientID: "second"}))
+	key := DCRKey{
+		Issuer:      "https://idp.example.com",
+		RedirectURI: "https://x.example.com/cb",
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+	}
+	endpoints := struct {
+		Authorization string
+		Token         string
+	}{
+		Authorization: "https://idp.example.com/authorize",
+		Token:         "https://idp.example.com/token",
+	}
+	require.NoError(t, store.Put(ctx, key, &DCRResolution{
+		ClientID:              "first",
+		AuthorizationEndpoint: endpoints.Authorization,
+		TokenEndpoint:         endpoints.Token,
+	}))
+	require.NoError(t, store.Put(ctx, key, &DCRResolution{
+		ClientID:              "second",
+		AuthorizationEndpoint: endpoints.Authorization,
+		TokenEndpoint:         endpoints.Token,
+	}))
 
 	got, ok, err := store.Get(ctx, key)
 	require.NoError(t, err)
@@ -156,8 +187,16 @@ func TestInMemoryDCRResolutionCache_GetReturnsDefensiveCopy(t *testing.T) {
 	store := newInMemoryDCRResolutionCache()
 	ctx := context.Background()
 
-	key := DCRKey{Issuer: "https://idp.example.com"}
-	require.NoError(t, store.Put(ctx, key, &DCRResolution{ClientID: "orig"}))
+	key := DCRKey{
+		Issuer:      "https://idp.example.com",
+		RedirectURI: "https://x.example.com/cb",
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+	}
+	require.NoError(t, store.Put(ctx, key, &DCRResolution{
+		ClientID:              "orig",
+		AuthorizationEndpoint: "https://idp.example.com/authorize",
+		TokenEndpoint:         "https://idp.example.com/token",
+	}))
 
 	got, ok, err := store.Get(ctx, key)
 	require.NoError(t, err)
@@ -221,8 +260,10 @@ func TestInMemoryDCRResolutionCache_ConcurrentAccess(t *testing.T) {
 			ctx := context.Background()
 			for i := 0; i < opsPerWorker; i++ {
 				resolution := &DCRResolution{
-					ClientID:  fmt.Sprintf("worker-%d-op-%d", worker, i),
-					CreatedAt: time.Now(),
+					ClientID:              fmt.Sprintf("worker-%d-op-%d", worker, i),
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					CreatedAt:             time.Now(),
 				}
 				if i%2 == 0 {
 					if err := store.Put(ctx, overlappingKey(i), resolution); err != nil {

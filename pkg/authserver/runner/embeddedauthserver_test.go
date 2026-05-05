@@ -1712,16 +1712,18 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 		"DCR boot should have issued network I/O to the mock AS")
 
 	// The store on the EmbeddedAuthServer contains the canonical DCRKey
-	// for this upstream — no separate in-memory store was created.
+	// for this upstream — the field is the same storage.DCRCredentialStore
+	// returned by createStorage, so a successful boot persisted the
+	// resolution there directly (no separate in-memory store was created).
 	redirectURI := server.URL + "/oauth/callback"
 	key := DCRKey{
 		Issuer:      server.URL,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
-	cached, ok, err := embed.dcrStore.Get(context.Background(), key)
-	require.NoError(t, err)
-	require.True(t, ok, "dcrStore on EmbeddedAuthServer must hold the DCR resolution")
+	cached, err := embed.dcrStore.GetDCRCredentials(context.Background(), key)
+	require.NoError(t, err, "dcrStore on EmbeddedAuthServer must hold the DCR resolution")
+	require.NotNil(t, cached)
 	assert.Equal(t, "dcr-client-id", cached.ClientID)
 	assert.Equal(t, "dcr-client-secret", cached.ClientSecret)
 
@@ -1732,4 +1734,105 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 		"NewEmbeddedAuthServer must not clear the caller's OAuth2Config.DCRConfig")
 	assert.Same(t, originalOAuth2, cfg.Upstreams[0].OAuth2Config,
 		"NewEmbeddedAuthServer must not replace the caller's OAuth2Config pointer")
+}
+
+// TestEmbeddedAuthServer_DCRSurvivesRestart is the authserver-restart analog
+// of TestBuildUpstreamConfigs_DCR's cache-hit assertion, crossing an
+// EmbeddedAuthServer lifecycle boundary instead of just two
+// buildUpstreamConfigs calls.
+//
+// It boots an EmbeddedAuthServer against a mock AS so the constructor
+// performs RFC 7591 registration during NewEmbeddedAuthServer; closes that
+// server (releasing its public surface, but retaining a reference to the
+// underlying storage.DCRCredentialStore the constructor surfaced via type
+// assertion); and re-runs the DCR resolver against the SAME storage
+// instance via buildUpstreamConfigs. The post-restart resolver must observe
+// zero additional HTTP requests against the mock AS — the persisted
+// credential short-circuits the resolver in lookupCachedResolution.
+//
+// The shared storage instance is reached through embed.dcrStore rather than
+// by injecting a pre-built storage into NewEmbeddedAuthServer, because the
+// constructor's storage selection is intentionally the single source of
+// truth for the DCR backend (per the wiring change in this commit) and a
+// test-only injection hook would muddy that contract. The Redis variant of
+// this scenario — actually reusing storage across two NewEmbeddedAuthServer
+// constructors against a shared Redis backend — is covered by the Redis
+// DCR integration test in pkg/authserver/storage.
+//
+// NOTE: this test would naturally live in pkg/authserver/integration_test.go
+// alongside the other EmbeddedAuthServer integration cases, but that file
+// is in `package authserver` and importing this package from there would
+// create an import cycle (runner already imports authserver). The next
+// closest fit is here, next to TestNewEmbeddedAuthServer_DCRBoot.
+func TestEmbeddedAuthServer_DCRSurvivesRestart(t *testing.T) {
+	t.Parallel()
+
+	server, requestCount := newMockAuthorizationServer(t)
+
+	// First boot: full NewEmbeddedAuthServer path runs DCR against the
+	// mock AS, populating the storage-backed DCR store.
+	cfg := &authserver.RunConfig{
+		SchemaVersion: authserver.CurrentSchemaVersion,
+		Issuer:        server.URL,
+		Upstreams: []authserver.UpstreamRunConfig{
+			{
+				Name: "dcr-upstream",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					ClientID:              "",
+					AuthorizationEndpoint: server.URL + "/authorize",
+					TokenEndpoint:         server.URL + "/token",
+					Scopes:                []string{"openid", "profile"},
+					DCRConfig: &authserver.DCRUpstreamConfig{
+						DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+					},
+				},
+			},
+		},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+	}
+
+	embed, err := NewEmbeddedAuthServer(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, embed)
+
+	firstBootRequests := atomic.LoadInt32(requestCount)
+	require.Greater(t, firstBootRequests, int32(0),
+		"first boot must have issued network I/O to the mock AS during DCR")
+
+	// Capture the storage instance the constructor wired into the DCR
+	// store before tearing down the server. This is the same backend the
+	// authserver itself was using; in production it is shared across
+	// authserver state, so DCR survives restart on the same backend.
+	persistentStore := embed.dcrStore
+	require.NotNil(t, persistentStore,
+		"NewEmbeddedAuthServer must surface a storage-level DCRCredentialStore")
+
+	// Tear down the first server. Its DCR registration is now persisted in
+	// persistentStore; the next boot must reuse it.
+	require.NoError(t, embed.Close())
+
+	// Second boot: reuse the same DCR store via the runner-side adapter.
+	// We re-run buildUpstreamConfigs (rather than a second
+	// NewEmbeddedAuthServer) because the constructor's createStorage
+	// produces a fresh storage on each call by design — a test that
+	// rebuilt the full constructor would exercise a brand-new backend and
+	// observe a cache miss, which is the wrong assertion. Routing the
+	// restart through buildUpstreamConfigs against persistentStore models
+	// what a Redis-backed deployment sees naturally: the DCR resolver
+	// hitting a backend that already holds the prior boot's resolution.
+	got, err := buildUpstreamConfigs(
+		context.Background(), cfg.Upstreams, cfg.Issuer,
+		newStorageBackedStore(persistentStore),
+	)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID,
+		"second boot must observe the persisted DCR client_id without re-registering")
+	assert.Equal(t, "dcr-client-secret", got[0].OAuth2Config.ClientSecret,
+		"second boot must observe the persisted DCR client_secret without re-registering")
+
+	assert.Equal(t, firstBootRequests, atomic.LoadInt32(requestCount),
+		"second boot must issue ZERO additional HTTP requests; the storage-backed "+
+			"DCR store on EmbeddedAuthServer is the same instance both boots share")
 }

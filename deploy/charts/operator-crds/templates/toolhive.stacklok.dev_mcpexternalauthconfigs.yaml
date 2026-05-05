@@ -572,10 +572,13 @@ spec:
                                     token_endpoint_auth_methods_supported, and scopes_supported from the
                                     response.
                                     Mutually exclusive with RegistrationEndpoint.
-                                    MaxLength bounds CEL cost estimation on the parent struct's
-                                    XValidation rule and matches the conventional URL length cap.
+                                    HTTPS is required because the registration endpoint resolved from this
+                                    document carries the initial access token and the issued client_secret
+                                    (RFC 7591 §3, RFC 8414 §3). MaxLength is a defensive size cap (etcd
+                                    object budget, regex evaluation cost) and matches the conventional URL
+                                    length cap.
                                   maxLength: 2048
-                                  pattern: ^https?://.*$
+                                  pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
                                 initialAccessTokenRef:
                                   description: |-
@@ -601,10 +604,12 @@ spec:
                                     expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
                                     explicit Scopes list on the parent OAuth2UpstreamConfig.
                                     Mutually exclusive with DiscoveryURL.
-                                    MaxLength bounds CEL cost estimation on the parent struct's
-                                    XValidation rule and matches the conventional URL length cap.
+                                    HTTPS is required because the registration endpoint carries the initial
+                                    access token and the issued client_secret (RFC 7591 §3, RFC 8414 §3).
+                                    MaxLength is a defensive size cap (etcd object budget, regex evaluation
+                                    cost) and matches the conventional URL length cap.
                                   maxLength: 2048
-                                  pattern: ^https?://.*$
+                                  pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
                                 softwareId:
                                   description: |-
@@ -617,9 +622,21 @@ spec:
                                   description: |-
                                     SoftwareStatement is the RFC 7591 "software_statement" JWT asserting
                                     metadata about the client software, signed by a party the authorization
-                                    server trusts. Bounded to 4096 characters to prevent unbounded
-                                    user input from inflating the CR beyond etcd object limits.
-                                  maxLength: 4096
+                                    server trusts.
+
+                                    Stored inline on the CR. The JWT is signed but not encrypted, so its
+                                    contents are visible to anyone with get/list/watch on this resource and
+                                    appear in etcd backups in plaintext. Treat the value as non-confidential
+                                    (signed attestation, not a secret). Operators that rotate software
+                                    statements like bearer credentials should keep them at the authorization
+                                    server side and rely on the registration endpoint's initial access
+                                    token (see InitialAccessTokenRef) instead of placing them on the CR.
+
+                                    Bounded to 16384 characters as a defensive size cap (etcd object
+                                    budget, regex evaluation cost). Real-world signed statements with
+                                    embedded x5c certificate chains, JWKS keys, or OIDC-Federation
+                                    trust-framework metadata routinely exceed 4 KB.
+                                  maxLength: 16384
                                   type: string
                               type: object
                               x-kubernetes-validations:
@@ -749,6 +766,10 @@ spec:
                               set
                             rule: '(has(self.clientId) && size(self.clientId) > 0)
                               ? !has(self.dcrConfig) : has(self.dcrConfig)'
+                          - message: clientSecretRef must not be set when dcrConfig
+                              is set; the client_secret is obtained at runtime via
+                              Dynamic Client Registration
+                            rule: '!(has(self.dcrConfig) && has(self.clientSecretRef))'
                         oidcConfig:
                           description: |-
                             OIDCConfig contains OIDC-specific configuration.
@@ -1713,10 +1734,13 @@ spec:
                                     token_endpoint_auth_methods_supported, and scopes_supported from the
                                     response.
                                     Mutually exclusive with RegistrationEndpoint.
-                                    MaxLength bounds CEL cost estimation on the parent struct's
-                                    XValidation rule and matches the conventional URL length cap.
+                                    HTTPS is required because the registration endpoint resolved from this
+                                    document carries the initial access token and the issued client_secret
+                                    (RFC 7591 §3, RFC 8414 §3). MaxLength is a defensive size cap (etcd
+                                    object budget, regex evaluation cost) and matches the conventional URL
+                                    length cap.
                                   maxLength: 2048
-                                  pattern: ^https?://.*$
+                                  pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
                                 initialAccessTokenRef:
                                   description: |-
@@ -1742,10 +1766,12 @@ spec:
                                     expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
                                     explicit Scopes list on the parent OAuth2UpstreamConfig.
                                     Mutually exclusive with DiscoveryURL.
-                                    MaxLength bounds CEL cost estimation on the parent struct's
-                                    XValidation rule and matches the conventional URL length cap.
+                                    HTTPS is required because the registration endpoint carries the initial
+                                    access token and the issued client_secret (RFC 7591 §3, RFC 8414 §3).
+                                    MaxLength is a defensive size cap (etcd object budget, regex evaluation
+                                    cost) and matches the conventional URL length cap.
                                   maxLength: 2048
-                                  pattern: ^https?://.*$
+                                  pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
                                 softwareId:
                                   description: |-
@@ -1758,9 +1784,21 @@ spec:
                                   description: |-
                                     SoftwareStatement is the RFC 7591 "software_statement" JWT asserting
                                     metadata about the client software, signed by a party the authorization
-                                    server trusts. Bounded to 4096 characters to prevent unbounded
-                                    user input from inflating the CR beyond etcd object limits.
-                                  maxLength: 4096
+                                    server trusts.
+
+                                    Stored inline on the CR. The JWT is signed but not encrypted, so its
+                                    contents are visible to anyone with get/list/watch on this resource and
+                                    appear in etcd backups in plaintext. Treat the value as non-confidential
+                                    (signed attestation, not a secret). Operators that rotate software
+                                    statements like bearer credentials should keep them at the authorization
+                                    server side and rely on the registration endpoint's initial access
+                                    token (see InitialAccessTokenRef) instead of placing them on the CR.
+
+                                    Bounded to 16384 characters as a defensive size cap (etcd object
+                                    budget, regex evaluation cost). Real-world signed statements with
+                                    embedded x5c certificate chains, JWKS keys, or OIDC-Federation
+                                    trust-framework metadata routinely exceed 4 KB.
+                                  maxLength: 16384
                                   type: string
                               type: object
                               x-kubernetes-validations:
@@ -1890,6 +1928,10 @@ spec:
                               set
                             rule: '(has(self.clientId) && size(self.clientId) > 0)
                               ? !has(self.dcrConfig) : has(self.dcrConfig)'
+                          - message: clientSecretRef must not be set when dcrConfig
+                              is set; the client_secret is obtained at runtime via
+                              Dynamic Client Registration
+                            rule: '!(has(self.dcrConfig) && has(self.clientSecretRef))'
                         oidcConfig:
                           description: |-
                             OIDCConfig contains OIDC-specific configuration.

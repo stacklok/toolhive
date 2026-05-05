@@ -4,12 +4,31 @@
 package v1beta1
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// makeStringOfLen returns a string of exactly n ASCII bytes.
+func makeStringOfLen(n int) string {
+	return strings.Repeat("a", n)
+}
+
+// makeURLOfLen returns an https URL whose total length is exactly n.
+// The host is padded with 'a' characters; useful for boundary-length tests
+// against +kubebuilder:validation:Pattern URL regexes that require a host.
+func makeURLOfLen(n int) string {
+	const prefix = "https://"
+	if n <= len(prefix) {
+		// Caller asked for something below the minimum URL shape. Fall back to
+		// a plain string of length n so callers see the length they asked for.
+		return strings.Repeat("a", n)
+	}
+	return prefix + strings.Repeat("a", n-len(prefix))
+}
 
 func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 	t.Parallel()
@@ -502,7 +521,10 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 				OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://oauth.example.com", ClientID: "client-id"},
 			},
 			expectErr: true,
-			errMsg:    "oidcConfig must be set when type is 'oidc' and must not be set otherwise",
+			// Pin the suffix that uniquely identifies the unified discriminator
+			// message — distinguishes it from the per-config substring used in
+			// the "missing oidcConfig" / "missing oauth2Config" cases above.
+			errMsg: "(and the other must not be set)",
 		},
 		{
 			name: "OIDC provider with valid additionalAuthorizationParams",
@@ -671,13 +693,17 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 			errMsg: "oauth2Config: exactly one of clientId or dcrConfig must be set",
 		},
 		{
-			// Regression guard: conversion only maps DCRConfig in the OAuth2
-			// branch, so an OIDC-typed provider carrying OAuth2Config/DCRConfig
-			// must be rejected at validate time rather than silently dropped.
-			name: "OIDC provider with OAuth2Config carrying DCRConfig is rejected",
+			// Regression guard for DCR leakage on OIDC-typed providers:
+			// conversion only maps DCRConfig in the OAuth2 branch, so a stray
+			// OAuth2Config/DCRConfig payload on an OIDC-typed provider must be
+			// rejected at validate time rather than silently dropped. Set
+			// OIDCConfig so the OIDC half of the discriminator passes; the
+			// stray OAuth2Config is what trips the rule.
+			name: "OIDC provider with stray OAuth2Config carrying DCRConfig is rejected",
 			provider: UpstreamProviderConfig{
-				Name: "mismatched-oidc",
-				Type: UpstreamProviderTypeOIDC,
+				Name:       "mismatched-oidc",
+				Type:       UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://oidc.example.com", ClientID: "client-id"},
 				OAuth2Config: &OAuth2UpstreamConfig{
 					AuthorizationEndpoint: "https://idp.example.com/authorize",
 					TokenEndpoint:         "https://idp.example.com/token",
@@ -688,7 +714,79 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 				},
 			},
 			expectErr: true,
-			errMsg:    "oidcConfig must be set when type is 'oidc' and must not be set otherwise",
+			// The unified discriminator message is the same regardless of
+			// which side trips it; pin the OAuth2-specific phrasing to
+			// document that this case is exercising the OAuth2-leakage path.
+			errMsg: "oauth2Config must be set when type is 'oauth2'",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig and ClientSecretRef is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-with-client-secret",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					ClientSecretRef:       &SecretKeyRef{Name: "stray", Key: "client-secret"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "clientSecretRef must not be set when dcrConfig is set",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig discoveryUrl at MaxLength is accepted",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-url-at-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: makeURLOfLen(MaxDCRURLLength),
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with DCRConfig discoveryUrl over MaxLength is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-url-over-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: makeURLOfLen(MaxDCRURLLength + 1),
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "dcrConfig.discoveryUrl: length",
+		},
+		{
+			name: "OAuth2 provider with DCRConfig softwareStatement over MaxLength is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-software-statement-over-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL:      "https://idp.example.com/.well-known/openid-configuration",
+						SoftwareStatement: makeStringOfLen(MaxSoftwareStatementLength + 1),
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "dcrConfig.softwareStatement: length",
 		},
 	}
 

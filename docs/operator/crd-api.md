@@ -1104,11 +1104,11 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `discoveryUrl` _string_ | DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver<br />issues a single GET against this URL (no well-known-path fallback) and<br />reads registration_endpoint, authorization_endpoint, token_endpoint,<br />token_endpoint_auth_methods_supported, and scopes_supported from the<br />response.<br />Mutually exclusive with RegistrationEndpoint.<br />MaxLength bounds CEL cost estimation on the parent struct's<br />XValidation rule and matches the conventional URL length cap. |  | MaxLength: 2048 <br />Pattern: `^https?://.*$` <br />Optional: \{\} <br /> |
-| `registrationEndpoint` _string_ | RegistrationEndpoint is the RFC 7591 registration endpoint URL used<br />directly, bypassing discovery. When using this field, the caller is<br />expected to also supply AuthorizationEndpoint, TokenEndpoint, and an<br />explicit Scopes list on the parent OAuth2UpstreamConfig.<br />Mutually exclusive with DiscoveryURL.<br />MaxLength bounds CEL cost estimation on the parent struct's<br />XValidation rule and matches the conventional URL length cap. |  | MaxLength: 2048 <br />Pattern: `^https?://.*$` <br />Optional: \{\} <br /> |
+| `discoveryUrl` _string_ | DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver<br />issues a single GET against this URL (no well-known-path fallback) and<br />reads registration_endpoint, authorization_endpoint, token_endpoint,<br />token_endpoint_auth_methods_supported, and scopes_supported from the<br />response.<br />Mutually exclusive with RegistrationEndpoint.<br />HTTPS is required because the registration endpoint resolved from this<br />document carries the initial access token and the issued client_secret<br />(RFC 7591 §3, RFC 8414 §3). MaxLength is a defensive size cap (etcd<br />object budget, regex evaluation cost) and matches the conventional URL<br />length cap. |  | MaxLength: 2048 <br />Pattern: `^https://[^\s?#]+[^/\s?#]$` <br />Optional: \{\} <br /> |
+| `registrationEndpoint` _string_ | RegistrationEndpoint is the RFC 7591 registration endpoint URL used<br />directly, bypassing discovery. When using this field, the caller is<br />expected to also supply AuthorizationEndpoint, TokenEndpoint, and an<br />explicit Scopes list on the parent OAuth2UpstreamConfig.<br />Mutually exclusive with DiscoveryURL.<br />HTTPS is required because the registration endpoint carries the initial<br />access token and the issued client_secret (RFC 7591 §3, RFC 8414 §3).<br />MaxLength is a defensive size cap (etcd object budget, regex evaluation<br />cost) and matches the conventional URL length cap. |  | MaxLength: 2048 <br />Pattern: `^https://[^\s?#]+[^/\s?#]$` <br />Optional: \{\} <br /> |
 | `initialAccessTokenRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | InitialAccessTokenRef is an optional reference to a Kubernetes Secret<br />carrying an RFC 7591 §3 initial access token. When set, the resolver<br />presents the token value as a Bearer credential on the registration<br />request. Mirrors the ClientSecretRef pattern. |  | Optional: \{\} <br /> |
 | `softwareId` _string_ | SoftwareID is the RFC 7591 "software_id" registration metadata value,<br />identifying the client software independent of any particular<br />registration instance. Typically a UUID or short identifier. |  | MaxLength: 255 <br />Optional: \{\} <br /> |
-| `softwareStatement` _string_ | SoftwareStatement is the RFC 7591 "software_statement" JWT asserting<br />metadata about the client software, signed by a party the authorization<br />server trusts. Bounded to 4096 characters to prevent unbounded<br />user input from inflating the CR beyond etcd object limits. |  | MaxLength: 4096 <br />Optional: \{\} <br /> |
+| `softwareStatement` _string_ | SoftwareStatement is the RFC 7591 "software_statement" JWT asserting<br />metadata about the client software, signed by a party the authorization<br />server trusts.<br />Stored inline on the CR. The JWT is signed but not encrypted, so its<br />contents are visible to anyone with get/list/watch on this resource and<br />appear in etcd backups in plaintext. Treat the value as non-confidential<br />(signed attestation, not a secret). Operators that rotate software<br />statements like bearer credentials should keep them at the authorization<br />server side and rely on the registration endpoint's initial access<br />token (see InitialAccessTokenRef) instead of placing them on the CR.<br />Bounded to 16384 characters as a defensive size cap (etcd object<br />budget, regex evaluation cost). Real-world signed statements with<br />embedded x5c certificate chains, JWKS keys, or OIDC-Federation<br />trust-framework metadata routinely exceed 4 KB. |  | MaxLength: 16384 <br />Optional: \{\} <br /> |
 
 
 
@@ -2595,6 +2595,23 @@ OAuth 2.0 providers require explicit endpoint configuration.
 Exactly one of ClientID or DCRConfig must be set: ClientID is used when the
 client is pre-provisioned out of band, DCRConfig enables RFC 7591 Dynamic
 Client Registration at runtime.
+
+ClientSecretRef is mutually exclusive with DCRConfig: when DCRConfig is set,
+the client_secret is obtained from the registration response (RFC 7591
+§3.2.1) and any static ClientSecretRef would be either dead config or a
+competing source of truth. The XValidation rule below rejects the
+combination at admission; ValidateOAuth2DCRConfig is the matching
+reconcile-time backstop.
+
+Layered XOR behavior: the ClientID/DCRConfig rule treats `clientId: ""` as
+absent (size>0) but treats `dcrConfig: {}` as present (has() is true for an
+empty object). For input `{ clientId: "", dcrConfig: {} }` the outer rule
+passes and the inner DCRUpstreamConfig XOR fires with "exactly one of
+discoveryUrl or registrationEndpoint must be set". This is intentional —
+adding a non-empty subfield check (e.g.,
+`has(self.dcrConfig.discoveryUrl) || has(self.dcrConfig.registrationEndpoint)`)
+would inflate CEL cost on an already-budget-bound rule, and the inner
+message is still actionable.
 
 
 

@@ -290,6 +290,13 @@ func llmValueForSpec(spec LLMGatewayKeySpec, cfg llmgateway.ApplyConfig) (string
 	switch spec.ValueField {
 	case "GatewayURL":
 		return cfg.GatewayURL, nil
+	case "AnthropicBaseURL":
+		// Use the pre-computed Anthropic base URL when available; fall back to
+		// GatewayURL so existing configs continue to work without the prefix.
+		if cfg.AnthropicBaseURL != "" {
+			return cfg.AnthropicBaseURL, nil
+		}
+		return cfg.GatewayURL, nil
 	case "ProxyBaseURL":
 		return cfg.ProxyBaseURL, nil
 	case "TokenHelperCommand":

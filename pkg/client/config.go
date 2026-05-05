@@ -162,8 +162,8 @@ const (
 //
 // Exactly one of ValueField or Literal must be set:
 //   - ValueField names which ApplyConfig field to write. Valid values:
-//     "GatewayURL", "ProxyBaseURL", "ProxyOrigin", "TokenHelperCommand",
-//     "PlaceholderAPIKey", "NodeTLSRejectUnauthorized".
+//     "GatewayURL", "AnthropicBaseURL", "ProxyBaseURL", "ProxyOrigin",
+//     "TokenHelperCommand", "PlaceholderAPIKey", "NodeTLSRejectUnauthorized".
 //     An unrecognised ValueField is a programming error and causes
 //     ConfigureLLMGateway to return an error.
 //   - Literal is written verbatim into the settings key (e.g. a fixed auth
@@ -177,7 +177,7 @@ const (
 // flag is cleared. Ignored when Literal is set (literals are never empty).
 type LLMGatewayKeySpec struct {
 	JSONPointer string // RFC 6901 path
-	// ValueField: "GatewayURL" | "ProxyBaseURL" | "ProxyOrigin" |
+	// ValueField: "GatewayURL" | "AnthropicBaseURL" | "ProxyBaseURL" | "ProxyOrigin" |
 	// "TokenHelperCommand" | "PlaceholderAPIKey" | "NodeTLSRejectUnauthorized"
 	ValueField     string
 	Literal        string // constant value written verbatim; mutually exclusive with ValueField
@@ -481,7 +481,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		LLMSettingsRelPath: []string{".claude"},
 		LLMGatewayKeys: []LLMGatewayKeySpec{
 			{JSONPointer: "/apiKeyHelper", ValueField: "TokenHelperCommand"},
-			{JSONPointer: "/env/ANTHROPIC_BASE_URL", ValueField: "GatewayURL"},
+			{JSONPointer: "/env/ANTHROPIC_BASE_URL", ValueField: "AnthropicBaseURL"},
 			// NODE_TLS_REJECT_UNAUTHORIZED is only written when --tls-skip-verify is set.
 			// ClearWhenEmpty ensures it is removed when the flag is later cleared.
 			{JSONPointer: "/env/NODE_TLS_REJECT_UNAUTHORIZED", ValueField: "NodeTLSRejectUnauthorized", ClearWhenEmpty: true},

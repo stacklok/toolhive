@@ -18,10 +18,32 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/networking"
 )
+
+// dialerControlFunc is the type of the Control hook installed on the underlying
+// *net.Dialer used by the webhook HTTP transport.
+type dialerControlFunc func(network, address string, c syscall.RawConn) error
+
+// dialerControl holds the active Control hook. By default it wraps
+// networking.ProtectedDialerControl, which rejects dials to private, loopback,
+// and link-local addresses (SSRF guard).
+//
+// It is wrapped in atomic.Pointer so cross-goroutine writes from tests
+// (SetDialerControlForTesting / SetDialerControlForTestMain) and
+// cross-goroutine reads from the production dial path are race-free, even if
+// a future test introduces t.Parallel(). Production callers must not
+// reassign this variable.
+var dialerControl atomic.Pointer[dialerControlFunc]
+
+func init() {
+	fn := dialerControlFunc(networking.ProtectedDialerControl)
+	dialerControl.Store(&fn)
+}
 
 // Client is an HTTP client for calling webhook endpoints.
 type Client struct {
@@ -127,7 +149,10 @@ func (c *Client) doHTTPCall(ctx context.Context, body []byte) ([]byte, error) {
 		httpReq.Header.Set(TimestampHeader, strconv.FormatInt(timestamp, 10))
 	}
 
-	// #nosec G704 -- URL is validated in Config.Validate and we use ValidatingTransport for SSRF protection.
+	// #nosec G704 -- URL is validated in Config.Validate; the inner transport's
+	// dialer rejects private/loopback/link-local addresses (SSRF guard), and
+	// ValidatingTransport additionally enforces HTTPS unless InsecureAllowHTTP
+	// is set for the configured TLS profile.
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, classifyError(c.config.Name, err)
@@ -199,8 +224,11 @@ func (c *Client) hmacSecretForRequest(ctx context.Context) ([]byte, error) {
 	return secret, nil
 }
 
-// buildTransport creates an http.RoundTripper with the specified TLS configuration,
-// always wrapped in ValidatingTransport for SSRF protection.
+// buildTransport creates an http.RoundTripper with the specified TLS configuration.
+// The inner *http.Transport installs a dialer Control hook (the package-level
+// dialerControl) that rejects connections to private, loopback, and link-local
+// addresses, providing an SSRF guard regardless of TLS or HTTP mode. The outer
+// ValidatingTransport additionally enforces HTTPS unless InsecureAllowHTTP is set.
 func buildTransport(tlsCfg *TLSConfig) (http.RoundTripper, error) {
 	transport := &http.Transport{
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -208,6 +236,11 @@ func buildTransport(tlsCfg *TLSConfig) (http.RoundTripper, error) {
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   10,
 		IdleConnTimeout:       90 * time.Second,
+		DialContext: (&net.Dialer{
+			Control: func(network, address string, c syscall.RawConn) error {
+				return (*dialerControl.Load())(network, address, c)
+			},
+		}).DialContext,
 	}
 
 	// allowHTTP is true when InsecureSkipVerify is set, which also covers in-cluster

@@ -323,8 +323,9 @@ func TestClientHMACSigningHeaders(t *testing.T) {
 	assert.NotEmpty(t, capturedHeaders.Get(TimestampHeader), "expected %s header", TimestampHeader)
 }
 
+//nolint:paralleltest // mutates package-level dialerControl hook
 func TestClientRereadsMountedHMACSecret(t *testing.T) {
-	t.Parallel()
+	SetDialerControlForTesting(t, AllowAnyDialerControl)
 
 	type signedRequest struct {
 		body      []byte
@@ -641,6 +642,75 @@ func TestBuildTransport(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestClientSSRFGuardBlocksPrivateAddress verifies that the production webhook
+// client refuses to dial private, loopback, and link-local addresses (cloud
+// metadata IP). The dial-time SSRF guard is the load-bearing protection against
+// a tenant pointing MCPWebhookConfig.url at internal services.
+//
+//nolint:paralleltest // exercises the production package-level dialerControl hook
+func TestClientSSRFGuardBlocksPrivateAddress(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+	}{
+		{name: "loopback IPv4", host: "127.0.0.1"},
+		{name: "RFC1918 private", host: "10.0.0.1"},
+		{name: "cloud metadata link-local", host: "169.254.169.254"},
+		{name: "loopback IPv6", host: "[::1]"},
+		{name: "link-local IPv6", host: "[fe80::1]"},
+		{name: "ULA IPv6", host: "[fc00::1]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Use HTTPS scheme so ValidatingTransport does not short-circuit the
+			// request before the dial. Use a high-numbered port so we never
+			// actually reach a real listener; the dialer guard fires first.
+			cfg := Config{
+				Name:          "ssrf-test",
+				URL:           "https://" + tt.host + ":59999/webhook",
+				Timeout:       2 * time.Second,
+				FailurePolicy: FailurePolicyFail,
+			}
+			client, err := NewClient(cfg, TypeValidating, nil)
+			require.NoError(t, err)
+
+			req := &Request{
+				Version:   APIVersion,
+				UID:       "ssrf-uid",
+				Timestamp: time.Now(),
+			}
+			_, callErr := client.Call(t.Context(), req)
+			require.Error(t, callErr)
+
+			var netErr *NetworkError
+			require.True(t, errors.As(callErr, &netErr),
+				"expected *NetworkError, got %T: %v", callErr, callErr)
+			assert.Contains(t, callErr.Error(), networking.ErrPrivateIpAddress,
+				"error should reflect dialer rejection of private/loopback/link-local address")
+		})
+	}
+}
+
+// TestBuildTransportInstallsDialerGuard is a narrow unit check that buildTransport
+// installs a non-nil DialContext on the inner *http.Transport. The integration
+// coverage in TestClientSSRFGuardBlocksPrivateAddress is the load-bearing test;
+// this assertion just ensures the wiring does not silently regress to a bare
+// transport with no Control hook.
+func TestBuildTransportInstallsDialerGuard(t *testing.T) {
+	t.Parallel()
+
+	rt, err := buildTransport(nil)
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+
+	vt, ok := rt.(*networking.ValidatingTransport)
+	require.True(t, ok, "expected *networking.ValidatingTransport, got %T", rt)
+	inner, ok := vt.Transport.(*http.Transport)
+	require.True(t, ok, "expected inner *http.Transport, got %T", vt.Transport)
+	assert.NotNil(t, inner.DialContext, "buildTransport must install a DialContext that runs the SSRF dialer guard")
 }
 
 func TestClassifyError(t *testing.T) {

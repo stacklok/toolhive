@@ -244,10 +244,9 @@ func TestScopesHash_NoCollisionFromBoundaryJoin(t *testing.T) {
 // interface doc. With go test -race this catches any future change that
 // drops the lock or introduces a data race in the map access.
 //
-// The test is bounded by a fail-fast deadline per .claude/rules/testing.md
-// "Concurrent Tests: Always Add Timeouts to Blocking Barriers" — a
-// regression that deadlocks would otherwise hang until the global Go test
-// timeout.
+// The test is bounded by a fail-fast deadline so a regression that
+// deadlocks fails loudly with a clear message rather than hanging until
+// the global Go test timeout.
 func TestInMemoryDCRCredentialStore_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 

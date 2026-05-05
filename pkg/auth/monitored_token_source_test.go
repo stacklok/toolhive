@@ -118,7 +118,7 @@ func TestMonitoredTokenSource_SuccessfulTokenRetrieval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	// Test successful token retrieval
 	token, err := ats.Token()
@@ -151,7 +151,7 @@ func TestMonitoredTokenSource_AuthenticationErrorMarksUnauthenticated(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	// Expect SetWorkloadStatus to be called with unauthenticated status
 	statusManager.EXPECT().
@@ -195,7 +195,7 @@ func TestMonitoredTokenSource_ErrorMarksUnauthenticated(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	// Expect SetWorkloadStatus to be called for any error
 	statusManager.EXPECT().
@@ -245,7 +245,7 @@ func TestMonitoredTokenSource_BackgroundMonitoring(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	// Expect SetWorkloadStatus to be called when auth error occurs
 	statusManager.EXPECT().
@@ -297,7 +297,7 @@ func TestMonitoredTokenSource_BackgroundMonitoringStopsOnAnyError(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	// Expect SetWorkloadStatus to be called when any error occurs
 	statusManager.EXPECT().
@@ -341,7 +341,7 @@ func TestMonitoredTokenSource_ExpiredTokenHandling(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	// Should not mark as unauthenticated just for expired token
 	// (oauth2 library should handle refresh; we only mark on actual auth errors)
@@ -374,7 +374,7 @@ func TestMonitoredTokenSource_StopMonitoring(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 	ats.StartBackgroundMonitoring()
 
 	// Wait a bit to ensure monitoring started
@@ -407,7 +407,7 @@ func TestMonitoredTokenSource_MultipleCallsToToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	statusManager.EXPECT().
 		SetWorkloadStatus(
@@ -627,7 +627,7 @@ func TestMonitoredTokenSource_BackgroundMonitor_ErrorClassification(t *testing.T
 				statusUpdater, _ := newMockStatusUpdater(ctrl)
 				retrying := tokenSource.notifyOnCall(2)
 
-				ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+				ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 				ats.refresher.newBackOff = fastBackOff
 				ats.StartBackgroundMonitoring()
 
@@ -647,7 +647,7 @@ func TestMonitoredTokenSource_BackgroundMonitor_ErrorClassification(t *testing.T
 					Return(nil).
 					Times(1)
 
-				ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+				ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 				ats.refresher.newBackOff = fastBackOff
 				ats.StartBackgroundMonitoring()
 
@@ -698,7 +698,7 @@ func TestMonitoredTokenSource_TransientErrorRetriesAndSucceeds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 	ats.refresher.newBackOff = fastBackOff
 	ats.StartBackgroundMonitoring()
 
@@ -738,7 +738,7 @@ func TestMonitoredTokenSource_TransientErrorContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 	ats.refresher.newBackOff = fastBackOff
 	ats.StartBackgroundMonitoring()
 
@@ -793,7 +793,7 @@ func TestMonitoredTokenSource_TransientThenNonTransientMarksUnauthenticated(t *t
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 	ats.refresher.newBackOff = fastBackOff
 	ats.StartBackgroundMonitoring()
 

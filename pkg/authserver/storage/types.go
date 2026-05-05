@@ -614,11 +614,21 @@ type UserStorage interface {
 // See doc.go for comprehensive documentation of fosite's storage design.
 type Storage interface {
 	// Embed segregated interfaces for IDP tokens, pending authorizations, client registry,
-	// and user management for multi-IDP support.
+	// user management for multi-IDP support, and DCR credential persistence.
+	//
+	// DCRCredentialStore is embedded so callers obtaining a Storage value can
+	// access GetDCRCredentials / StoreDCRCredentials directly without a runtime
+	// type assertion. This is the compile-time guarantee
+	// pkg/authserver/runner.NewEmbeddedAuthServer relies on when wiring the
+	// authserver and its DCR resolver to a single shared backend; without it,
+	// a future Storage implementation that omitted the DCR methods would
+	// silently boot and fail at first DCR resolve. With it, the type system
+	// rejects any such implementation at compile time.
 	UpstreamTokenStorage
 	PendingAuthorizationStorage
 	ClientRegistry
 	UserStorage
+	DCRCredentialStore
 
 	// AuthorizeCodeStorage provides authorization code storage for the Authorization Code
 	// Grant (RFC 6749 Section 4.1). Authorization codes are one-time-use and short-lived.

@@ -24,13 +24,12 @@ import (
 
 func newLLMCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    "llm",
-		Hidden: true,
-		Short:  "Manage LLM gateway authentication",
+		Use:   "llm",
+		Short: "Manage LLM gateway authentication",
 		Long: `Configure and manage authentication for OIDC-protected LLM gateways.
 
 The llm command bridges AI coding tools to LLM gateways by handling OIDC
-authentication transparently. Two modes are planned:
+authentication transparently. Two modes are supported:
 
   Proxy mode    — a localhost reverse proxy injects fresh tokens for tools
                   that only accept static API keys (e.g. Cursor).
@@ -476,13 +475,12 @@ func runLLMProxyForeground(ctx context.Context, llmCfg *llm.Config) error {
 	return p.Start(ctx)
 }
 
-// ── token helper (hidden) ─────────────────────────────────────────────────────
+// ── token helper ──────────────────────────────────────────────────────────────
 
 func newLLMTokenCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    "token",
-		Hidden: true,
-		Short:  "Print a fresh LLM gateway access token to stdout",
+		Use:   "token",
+		Short: "Print a fresh LLM gateway access token to stdout",
 		Long: `Print a fresh OIDC access token to stdout (all other output on stderr).
 Intended for use as apiKeyHelper or auth.command in OIDC-capable AI tools.
 Runs non-interactively — will not launch a browser flow.`,

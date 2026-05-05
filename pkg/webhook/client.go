@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -37,6 +38,9 @@ type Client struct {
 func NewClient(cfg Config, webhookType Type, hmacSecret []byte) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid webhook config: %w", err)
+	}
+	if cfg.HMACSecretRef != "" && len(hmacSecret) == 0 {
+		return nil, fmt.Errorf("webhook %q has HMAC configured but resolved secret is empty", cfg.Name)
 	}
 
 	timeout := cfg.Timeout
@@ -109,10 +113,15 @@ func (c *Client) doHTTPCall(ctx context.Context, body []byte) ([]byte, error) {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	hmacSecret, err := c.hmacSecretForRequest(ctx)
+	if err != nil {
+		return nil, NewNetworkError(c.config.Name, fmt.Errorf("failed to resolve HMAC secret: %w", err))
+	}
+
 	// Apply HMAC signing if configured.
-	if len(c.hmacSecret) > 0 {
+	if len(hmacSecret) > 0 {
 		timestamp := time.Now().Unix()
-		signature := SignPayload(c.hmacSecret, timestamp, body)
+		signature := SignPayload(hmacSecret, timestamp, body)
 		httpReq.Header.Set(SignatureHeader, signature)
 		httpReq.Header.Set(TimestampHeader, strconv.FormatInt(timestamp, 10))
 	}
@@ -153,6 +162,24 @@ func (c *Client) doHTTPCall(ctx context.Context, body []byte) ([]byte, error) {
 	}
 
 	return respBody, nil
+}
+
+func (c *Client) hmacSecretForRequest(ctx context.Context) ([]byte, error) {
+	if c.config.HMACSecretRef == "" {
+		return c.hmacSecret, nil
+	}
+	if !filepath.IsAbs(c.config.HMACSecretRef) {
+		return c.hmacSecret, nil
+	}
+
+	secret, err := ResolveSecret(ctx, c.config.HMACSecretRef)
+	if err != nil {
+		return nil, err
+	}
+	if len(secret) == 0 {
+		return nil, fmt.Errorf("resolved HMAC secret is empty")
+	}
+	return secret, nil
 }
 
 // buildTransport creates an http.RoundTripper with the specified TLS configuration,

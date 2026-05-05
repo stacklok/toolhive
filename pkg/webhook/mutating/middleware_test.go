@@ -490,6 +490,57 @@ func TestCreateMiddleware(t *testing.T) {
 	require.NoError(t, mw.Close())
 }
 
+func TestCreateMiddleware_ResolvesHMACSecret(t *testing.T) {
+	t.Setenv("TOOLHIVE_SECRETS_PROVIDER", "environment")
+	t.Setenv("TOOLHIVE_SECRET_WEBHOOK_MUTATING_TEST_HMAC_SECRET", "top-secret")
+
+	var signatureHeader string
+	var timestampHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		signatureHeader = r.Header.Get(webhook.SignatureHeader)
+		timestampHeader = r.Header.Get(webhook.TimestampHeader)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(webhook.MutatingResponse{
+			Response: webhook.Response{
+				Version: webhook.APIVersion,
+				UID:     "uid",
+				Allowed: true,
+			},
+		})
+	}))
+	defer server.Close()
+
+	runner := &mockRunner{}
+	params := FactoryMiddlewareParams{
+		MiddlewareParams: MiddlewareParams{
+			Webhooks: []webhook.Config{{
+				Name:          "test",
+				URL:           server.URL,
+				Timeout:       webhook.DefaultTimeout,
+				FailurePolicy: webhook.FailurePolicyIgnore,
+				HMACSecretRef: "WEBHOOK_MUTATING_TEST_HMAC_SECRET",
+				TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+			}},
+		},
+		ServerName: "test-server",
+		Transport:  "stdio",
+	}
+	paramsJSON, err := json.Marshal(params)
+	require.NoError(t, err)
+
+	err = CreateMiddleware(&types.MiddlewareConfig{Type: MiddlewareType, Parameters: paramsJSON}, runner)
+	require.NoError(t, err)
+
+	req := makeMCPRequest(t, []byte(`{"jsonrpc":"2.0","method":"tools/call","id":1}`))
+	rr := httptest.NewRecorder()
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	runner.middlewares[MiddlewareType].Handler()(next).ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.NotEmpty(t, signatureHeader)
+	assert.NotEmpty(t, timestampHeader)
+}
+
 func TestCreateMiddleware_InvalidParams(t *testing.T) {
 	t.Parallel()
 	runner := &mockRunner{}

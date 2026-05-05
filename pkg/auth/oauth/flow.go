@@ -503,8 +503,12 @@ func (f *Flow) processToken(_ context.Context, token *oauth2.Token) *TokenResult
 		// Use resourceTokenSource wrapper to add resource parameter to refresh requests (RFC 8707)
 		base = NewResourceTokenSource(f.oauth2Config, token, f.config.Resource)
 	} else {
-		// No resource parameter needed, use standard token source
-		base = f.oauth2Config.TokenSource(context.Background(), token)
+		// No resource parameter needed, use standard token source. Inject an
+		// HTTP client whose transport sets the ToolHive User-Agent so the
+		// oauth2 library does not fall back to Go-http-client/2.0 on token
+		// refresh requests.
+		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, oauthproto.NewHTTPClient())
+		base = f.oauth2Config.TokenSource(ctx, token)
 	}
 
 	// ReuseTokenSource ensures that refresh happens only when needed

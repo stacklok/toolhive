@@ -162,8 +162,8 @@ const (
 //
 // Exactly one of ValueField or Literal must be set:
 //   - ValueField names which ApplyConfig field to write. Valid values:
-//     "GatewayURL", "ProxyBaseURL", "ProxyOrigin", "TokenHelperCommand",
-//     "PlaceholderAPIKey", "NodeTLSRejectUnauthorized".
+//     "GatewayURL", "AnthropicBaseURL", "ProxyBaseURL", "ProxyOrigin",
+//     "TokenHelperCommand", "PlaceholderAPIKey", "NodeTLSRejectUnauthorized".
 //     An unrecognised ValueField is a programming error and causes
 //     ConfigureLLMGateway to return an error.
 //   - Literal is written verbatim into the settings key (e.g. a fixed auth
@@ -177,11 +177,26 @@ const (
 // flag is cleared. Ignored when Literal is set (literals are never empty).
 type LLMGatewayKeySpec struct {
 	JSONPointer string // RFC 6901 path
-	// ValueField: "GatewayURL" | "ProxyBaseURL" | "ProxyOrigin" |
+	// ValueField: "GatewayURL" | "AnthropicBaseURL" | "ProxyBaseURL" | "ProxyOrigin" |
 	// "TokenHelperCommand" | "PlaceholderAPIKey" | "NodeTLSRejectUnauthorized"
 	ValueField     string
 	Literal        string // constant value written verbatim; mutually exclusive with ValueField
 	ClearWhenEmpty bool   // remove the key when the resolved value is empty (ignored for Literal)
+}
+
+// LLMEnvFileKeySpec describes a single KEY=value entry to write to a dotenv
+// file when configuring (or reverting) LLM gateway access for a tool.
+//
+// Exactly one of ValueField or Literal must be set. ValueField semantics are
+// identical to LLMGatewayKeySpec.ValueField.
+type LLMEnvFileKeySpec struct {
+	// Name is the environment variable name (e.g. "GEMINI_API_KEY").
+	Name string
+	// ValueField names which ApplyConfig field to resolve. Valid values are the
+	// same as LLMGatewayKeySpec.ValueField. Mutually exclusive with Literal.
+	ValueField string
+	// Literal is written verbatim as the variable value. Mutually exclusive with ValueField.
+	Literal string
 }
 
 // clientAppConfig represents a configuration path for a supported MCP client.
@@ -236,10 +251,15 @@ type clientAppConfig struct {
 	// LLMGatewayKeys lists the JSON Pointer paths and value-field mappings to
 	// apply when setting up (or reverting) LLM gateway access.
 	LLMGatewayKeys []LLMGatewayKeySpec
-	// LLMSetupNote is an optional message printed to stdout after a successful
-	// "thv llm setup" for this client. Use it to surface manual steps that
-	// toolhive cannot automate (e.g. env vars the tool reads from a .env file).
-	LLMSetupNote string
+	// LLMEnvFileRelPath is the path segments from home dir to the directory
+	// containing the .env file to manage for LLM gateway (e.g. []string{".gemini"}).
+	// Empty means this client has no .env file to manage.
+	LLMEnvFileRelPath []string
+	// LLMEnvFileName is the filename of the .env file (e.g. ".env").
+	LLMEnvFileName string
+	// LLMEnvFileKeys lists the key=value entries to write to the .env file when
+	// setting up (or reverting) LLM gateway access.
+	LLMEnvFileKeys []LLMEnvFileKeySpec
 }
 
 // extractServersKeyFromConfig extracts the servers key from MCPServersPathPrefix
@@ -481,7 +501,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		LLMSettingsRelPath: []string{".claude"},
 		LLMGatewayKeys: []LLMGatewayKeySpec{
 			{JSONPointer: "/apiKeyHelper", ValueField: "TokenHelperCommand"},
-			{JSONPointer: "/env/ANTHROPIC_BASE_URL", ValueField: "GatewayURL"},
+			{JSONPointer: "/env/ANTHROPIC_BASE_URL", ValueField: "AnthropicBaseURL"},
 			// NODE_TLS_REJECT_UNAUTHORIZED is only written when --tls-skip-verify is set.
 			// ClearWhenEmpty ensures it is removed when the flag is later cleared.
 			{JSONPointer: "/env/NODE_TLS_REJECT_UNAUTHORIZED", ValueField: "NodeTLSRejectUnauthorized", ClearWhenEmpty: true},
@@ -874,11 +894,14 @@ var supportedClientIntegrations = []clientAppConfig{
 		LLMGatewayKeys: []LLMGatewayKeySpec{
 			// Force API-key auth so GOOGLE_GEMINI_BASE_URL is respected.
 			{JSONPointer: "/security/auth/selectedType", Literal: "gemini-api-key"},
-			// Placeholder API key (proxy does not validate it).
-			{JSONPointer: "/env/GEMINI_API_KEY", Literal: llmPlaceholderAPIKey},
-			// Proxy origin for Gemini CLI; path is stripped because Gemini
-			// CLI appends its own /v1beta/... path to the base URL.
-			{JSONPointer: "/env/GOOGLE_GEMINI_BASE_URL", ValueField: "ProxyOrigin"},
+		},
+		// Gemini CLI reads GEMINI_API_KEY and GOOGLE_GEMINI_BASE_URL from
+		// process.env (not from settings.json), so they are injected via .env.
+		LLMEnvFileRelPath: []string{".gemini"},
+		LLMEnvFileName:    ".env",
+		LLMEnvFileKeys: []LLMEnvFileKeySpec{
+			{Name: "GEMINI_API_KEY", Literal: llmPlaceholderAPIKey},
+			{Name: "GOOGLE_GEMINI_BASE_URL", ValueField: "ProxyOrigin"},
 		},
 	},
 	{

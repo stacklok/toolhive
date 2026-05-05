@@ -71,7 +71,7 @@ func TestRunLLMSetup_NotConfigured(t *testing.T) {
 	provider := llmProvider(t, llm.Config{}) // no gateway URL
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "")
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "", false, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not configured")
 }
@@ -98,7 +98,7 @@ func TestRunLLMSetup_NoDetectedTools(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "")
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "", false, "")
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "No supported AI tools detected")
 }
@@ -142,7 +142,7 @@ func TestRunLLMSetup_PartialFailure(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "")
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "", false, "")
 	require.NoError(t, err)
 	assert.Contains(t, stderr.String(), "Warning: failed to configure claude-code")
 	assert.Contains(t, stdout.String(), "Configured gemini-cli")
@@ -176,7 +176,7 @@ func TestRunLLMSetup_RollbackOnConfigUpdateFailure(t *testing.T) {
 	provider := &errOnUpdateProvider{cfg: c, updateErr: errors.New("disk full")}
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "")
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "", false, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "persisting tool configuration")
 
@@ -226,7 +226,7 @@ func TestRunLLMSetup_RollbackBothToolsOnConfigUpdateFailure(t *testing.T) {
 	provider := &errOnUpdateProvider{cfg: c, updateErr: errors.New("disk full")}
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "")
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "", false, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "persisting tool configuration")
 
@@ -273,7 +273,7 @@ func TestRunLLMSetup_LoginFailureLeavesNoState(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider,
 		func(_ context.Context, _ *llm.Config) error { return loginErr },
-		llm.SetOptions{}, "",
+		llm.SetOptions{}, "", false, "",
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "OIDC login failed")
@@ -474,7 +474,7 @@ func TestRunLLMSetup_ClientFlag_ConfiguresSingleTool(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "claude-code")
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "", false, "claude-code")
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "Configured claude-code")
 	assert.NotContains(t, stdout.String(), "gemini-cli")
@@ -509,7 +509,7 @@ func TestRunLLMSetup_ClientFlag_NotInstalled(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	// cursor is not installed (no dir); expect an error.
-	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "cursor")
+	err := runLLMSetup(context.Background(), &stdout, &stderr, cm, provider, noopLogin, llm.SetOptions{}, "", false, "cursor")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"cursor" is not installed or not detected`)
 }

@@ -127,18 +127,19 @@ func buildUpstreamSecretEnvVars(b *upstreamSecretBinding) []corev1.EnvVar {
 // the matching Go-level check in validateUpstreamProvider, which together
 // enforce that exactly one of OIDCConfig / OAuth2Config is set and that it
 // matches Type):
-//   - OIDC providers: only `clientSecretRef` is ever non-nil.
-//     `initialAccessTokenRef` is always nil because DCR is OAuth2-only and
+//   - OIDC providers: only the client-secret ref is ever non-nil. The
+//     initial-access-token ref is always nil because DCR is OAuth2-only and
 //     OAuth2Config must be nil for OIDC-typed providers.
-//   - OAuth2 providers: `clientSecretRef` and `initialAccessTokenRef` are
-//     independent — either, both, or neither may be non-nil.
+//   - OAuth2 providers: the two refs are independent — either, both, or
+//     neither may be non-nil.
 //   - Any other (currently unreachable) Type value: both are nil.
 //
 // Callers must not rely on the third bullet to mask an admission-bypassing
 // object — `BuildAuthServerRunConfig` is the reconcile-time backstop for that.
 func extractUpstreamSecretRefs(
 	provider *mcpv1beta1.UpstreamProviderConfig,
-) (clientSecretRef, initialAccessTokenRef *mcpv1beta1.SecretKeyRef) {
+) (*mcpv1beta1.SecretKeyRef, *mcpv1beta1.SecretKeyRef) {
+	var clientSecretRef, initialAccessTokenRef *mcpv1beta1.SecretKeyRef
 	switch provider.Type {
 	case mcpv1beta1.UpstreamProviderTypeOIDC:
 		if provider.OIDCConfig != nil {
@@ -742,7 +743,8 @@ func buildUpstreamRunConfig(
 		}
 	case mcpv1beta1.UpstreamProviderTypeOAuth2:
 		if provider.OAuth2Config != nil {
-			oauth2, err := buildOAuth2UpstreamRunConfig(provider, b, resourceURL)
+			oauth2, err := buildOAuth2UpstreamRunConfig(
+				provider.OAuth2Config, b.EnvVarName, b.DCRInitialAccessTokenEnvVar, resourceURL)
 			if err != nil {
 				return nil, err
 			}
@@ -782,22 +784,25 @@ func buildOIDCUpstreamRunConfig(
 }
 
 // buildOAuth2UpstreamRunConfig converts a CRD OAuth2UpstreamConfig to the
-// runtime representation. It rejects malformed ClientID/DCRConfig pairs
-// before producing a RunConfig — mirroring the CEL XValidation rules on
-// OAuth2UpstreamConfig / DCRUpstreamConfig — so objects that reached etcd
-// without passing admission (stored-before-CEL, apiserver patches, test
-// fixtures bypassing validation) fail at reconcile time rather than at
-// authserver startup.
+// runtime representation. The signature mirrors buildOIDCUpstreamRunConfig:
+// the caller passes the resolved env-var names directly. `clientSecretEnvVar`
+// is used when ClientSecretRef is configured; `initialAccessTokenEnvVar` is
+// used when DCRConfig.InitialAccessTokenRef is configured.
+//
+// It rejects malformed ClientID/DCRConfig pairs before producing a RunConfig —
+// mirroring the CEL XValidation rules on OAuth2UpstreamConfig /
+// DCRUpstreamConfig — so objects that reached etcd without passing admission
+// (stored-before-CEL, apiserver patches, test fixtures bypassing validation)
+// fail at reconcile time rather than at authserver startup. The validator
+// error is returned unwrapped so the outer wrap in BuildAuthServerRunConfig
+// (`upstream %q: %w`) supplies the upstream name exactly once.
 func buildOAuth2UpstreamRunConfig(
-	provider *mcpv1beta1.UpstreamProviderConfig,
-	b *upstreamSecretBinding,
+	cfg *mcpv1beta1.OAuth2UpstreamConfig,
+	clientSecretEnvVar string,
+	initialAccessTokenEnvVar string,
 	resourceURL string,
 ) (*authserver.OAuth2UpstreamRunConfig, error) {
-	cfg := provider.OAuth2Config
-	// Pass an empty prefix so the upstream name appears once — supplied by the
-	// outer wrap in BuildAuthServerRunConfig — instead of duplicating it on
-	// both the inner and outer error messages.
-	if err := mcpv1beta1.ValidateOAuth2DCRConfig("", cfg); err != nil {
+	if err := mcpv1beta1.ValidateOAuth2DCRConfig(cfg); err != nil {
 		return nil, err
 	}
 
@@ -814,7 +819,7 @@ func buildOAuth2UpstreamRunConfig(
 		AdditionalAuthorizationParams: cfg.AdditionalAuthorizationParams,
 	}
 	if cfg.ClientSecretRef != nil {
-		runConfig.ClientSecretEnvVar = b.EnvVarName
+		runConfig.ClientSecretEnvVar = clientSecretEnvVar
 	}
 	if cfg.UserInfo != nil {
 		runConfig.UserInfo = buildUserInfoRunConfig(cfg.UserInfo)
@@ -829,7 +834,7 @@ func buildOAuth2UpstreamRunConfig(
 		}
 	}
 	if cfg.DCRConfig != nil {
-		runConfig.DCRConfig = buildDCRUpstreamRunConfig(cfg.DCRConfig, b.DCRInitialAccessTokenEnvVar)
+		runConfig.DCRConfig = buildDCRUpstreamRunConfig(cfg.DCRConfig, initialAccessTokenEnvVar)
 	}
 	return runConfig, nil
 }

@@ -1110,8 +1110,8 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 	// Validate OAuth2-specific DCR / ClientID constraints (defense-in-depth with CEL).
 	// The discriminator above guarantees OAuth2Config != nil when type is oauth2.
 	if provider.Type == UpstreamProviderTypeOAuth2 {
-		if err := ValidateOAuth2DCRConfig(prefix, provider.OAuth2Config); err != nil {
-			return err
+		if err := ValidateOAuth2DCRConfig(provider.OAuth2Config); err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
 		}
 	}
 
@@ -1142,19 +1142,19 @@ const (
 // objects stored before CEL rules were added or validated through code paths
 // that bypass admission).
 //
-// The prefix is embedded in error messages to identify the offending upstream
-// (e.g., "upstreamProviders[i]"). Pass an empty string when the caller already
-// wraps the error with the upstream identifier, to avoid duplicating it.
+// Errors are scoped to "oauth2Config[.dcrConfig[.field]]" so callers can wrap
+// with their own outer scope (e.g. "upstreamProviders[i]: %w" or
+// "upstream %q: %w") without duplicating the field name.
+//
 // Exported so the controllerutil conversion layer can reuse the same
 // invariants when building runtime configs, rejecting malformed objects at
 // reconcile time rather than waiting until the authserver process parses them.
-func ValidateOAuth2DCRConfig(prefix string, cfg *OAuth2UpstreamConfig) error {
+func ValidateOAuth2DCRConfig(cfg *OAuth2UpstreamConfig) error {
 	hasClientID := cfg.ClientID != ""
 	hasDCR := cfg.DCRConfig != nil
 
-	scoped := scopedFieldPath(prefix, "oauth2Config")
 	if hasClientID == hasDCR {
-		return fmt.Errorf("%s: exactly one of clientId or dcrConfig must be set", scoped)
+		return fmt.Errorf("oauth2Config: exactly one of clientId or dcrConfig must be set")
 	}
 
 	if !hasDCR {
@@ -1163,39 +1163,28 @@ func ValidateOAuth2DCRConfig(prefix string, cfg *OAuth2UpstreamConfig) error {
 
 	if cfg.ClientSecretRef != nil {
 		return fmt.Errorf(
-			"%s: clientSecretRef must not be set when dcrConfig is set; "+
-				"the client_secret is obtained at runtime via Dynamic Client Registration", scoped)
+			"oauth2Config: clientSecretRef must not be set when dcrConfig is set; " +
+				"the client_secret is obtained at runtime via Dynamic Client Registration")
 	}
 
 	hasDiscoveryURL := cfg.DCRConfig.DiscoveryURL != ""
 	hasRegistrationEndpoint := cfg.DCRConfig.RegistrationEndpoint != ""
 	if hasDiscoveryURL == hasRegistrationEndpoint {
-		return fmt.Errorf("%s.dcrConfig: exactly one of discoveryUrl or registrationEndpoint must be set", scoped)
+		return fmt.Errorf("oauth2Config.dcrConfig: exactly one of discoveryUrl or registrationEndpoint must be set")
 	}
 
 	if l := len(cfg.DCRConfig.DiscoveryURL); l > MaxDCRURLLength {
-		return fmt.Errorf("%s.dcrConfig.discoveryUrl: length %d exceeds maximum %d", scoped, l, MaxDCRURLLength)
+		return fmt.Errorf("oauth2Config.dcrConfig.discoveryUrl: length %d exceeds maximum %d", l, MaxDCRURLLength)
 	}
 	if l := len(cfg.DCRConfig.RegistrationEndpoint); l > MaxDCRURLLength {
-		return fmt.Errorf("%s.dcrConfig.registrationEndpoint: length %d exceeds maximum %d", scoped, l, MaxDCRURLLength)
+		return fmt.Errorf("oauth2Config.dcrConfig.registrationEndpoint: length %d exceeds maximum %d", l, MaxDCRURLLength)
 	}
 	if l := len(cfg.DCRConfig.SoftwareStatement); l > MaxSoftwareStatementLength {
 		return fmt.Errorf(
-			"%s.dcrConfig.softwareStatement: length %d exceeds maximum %d",
-			scoped, l, MaxSoftwareStatementLength)
+			"oauth2Config.dcrConfig.softwareStatement: length %d exceeds maximum %d",
+			l, MaxSoftwareStatementLength)
 	}
 	return nil
-}
-
-// scopedFieldPath joins a non-empty prefix to a field name with a dot. When
-// the prefix is empty, it returns just the field name so callers that already
-// supply their own scope (e.g., a wrapping `fmt.Errorf("upstream %q: %w", ...)`)
-// don't end up with a leading dot.
-func scopedFieldPath(prefix, field string) string {
-	if prefix == "" {
-		return field
-	}
-	return prefix + "." + field
 }
 
 // AdditionalAuthorizationParams returns the additional authorization parameters

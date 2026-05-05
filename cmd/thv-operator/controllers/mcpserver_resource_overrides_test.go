@@ -82,7 +82,8 @@ func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *testing.T
 		Build()
 	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
 
-	deployment := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, deployment)
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 	require.Contains(t, deployment.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{
@@ -152,7 +153,8 @@ func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(t *te
 		Build()
 	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
 
-	deployment := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, deployment)
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 
@@ -205,7 +207,8 @@ func TestMCPServerDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testing.T) 
 		Build()
 	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
 
-	deployment := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	deployment, err := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NoError(t, err)
 	require.NotNil(t, deployment)
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 
@@ -524,7 +527,8 @@ func TestResourceOverrides(t *testing.T) {
 
 			// Test deployment creation
 			ctx := t.Context()
-			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer, "test-checksum")
+			deployment, err := r.deploymentForMCPServer(ctx, tt.mcpServer, "test-checksum")
+			require.NoError(t, err)
 			require.NotNil(t, deployment)
 
 			assert.Equal(t, tt.expectedDeploymentLabels, deployment.Labels)
@@ -798,7 +802,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 
 			// Create a deployment and manually set up its state to isolate proxy env testing
 			ctx := t.Context()
-			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer, "test-checksum")
+			deployment, err := r.deploymentForMCPServer(ctx, tt.mcpServer, "test-checksum")
+			require.NoError(t, err)
 			require.NotNil(t, deployment)
 			require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 
@@ -906,7 +911,8 @@ func TestMCPServerDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T) {
 			}
 
 			ctx := t.Context()
-			deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+			deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+			require.NoError(t, err)
 			require.NotNil(t, deployment)
 
 			// Simulate the "stored" state by overwriting ImagePullSecrets only.

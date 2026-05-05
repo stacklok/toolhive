@@ -106,6 +106,7 @@ rules:
   - mcpremoteproxies
   - mcpservers
   - mcptoolconfigs
+  - mcpwebhookconfigs
   - virtualmcpservers
   verbs:
   - create
@@ -126,6 +127,7 @@ rules:
   - mcpservers/finalizers
   - mcptelemetryconfigs/finalizers
   - mcptoolconfigs/finalizers
+  - mcpwebhookconfigs/finalizers
   verbs:
   - update
 - apiGroups:
@@ -141,6 +143,7 @@ rules:
   - mcpservers/status
   - mcptelemetryconfigs/status
   - mcptoolconfigs/status
+  - mcpwebhookconfigs/status
   - virtualmcpservers/status
   verbs:
   - get

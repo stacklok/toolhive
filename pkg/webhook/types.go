@@ -79,8 +79,9 @@ type Config struct {
 	HMACSecretRef string `json:"hmac_secret_ref,omitempty" yaml:"hmac_secret_ref,omitempty"`
 }
 
-// Validate checks that the WebhookConfig has valid required fields.
-func (c *Config) Validate() error {
+// ValidateDefinition checks semantic validity of a webhook config without touching the filesystem.
+// This is useful when a higher layer is responsible for mounting referenced files later.
+func (c *Config) ValidateDefinition() error {
 	if c.Name == "" {
 		return fmt.Errorf("webhook name is required")
 	}
@@ -107,7 +108,21 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("webhook timeout %v exceeds maximum %v", c.Timeout, MaxTimeout)
 	}
 	if c.TLSConfig != nil {
-		if err := validateTLSConfig(c.TLSConfig); err != nil {
+		if err := validateTLSConfigShape(c.TLSConfig); err != nil {
+			return fmt.Errorf("webhook TLS config: %w", err)
+		}
+	}
+	return nil
+}
+
+// Validate checks that the WebhookConfig has valid required fields and referenced files exist.
+func (c *Config) Validate() error {
+	if err := c.ValidateDefinition(); err != nil {
+		return err
+	}
+
+	if c.TLSConfig != nil {
+		if err := validateTLSConfigFiles(c.TLSConfig); err != nil {
 			return fmt.Errorf("webhook TLS config: %w", err)
 		}
 	}
@@ -221,12 +236,17 @@ type MutatingResponse struct {
 	Patch json.RawMessage `json:"patch,omitempty"`
 }
 
-// validateTLSConfig validates the TLS configuration for consistency.
-func validateTLSConfig(cfg *TLSConfig) error {
+// validateTLSConfigShape validates TLS configuration for consistency.
+func validateTLSConfigShape(cfg *TLSConfig) error {
 	// If one of client cert/key is provided, both must be present.
 	if (cfg.ClientCertPath == "") != (cfg.ClientKeyPath == "") {
 		return fmt.Errorf("both client_cert_path and client_key_path must be provided for mTLS")
 	}
+	return nil
+}
+
+// validateTLSConfigFiles validates referenced TLS files exist.
+func validateTLSConfigFiles(cfg *TLSConfig) error {
 	if cfg.CABundlePath != "" {
 		if _, err := os.Stat(cfg.CABundlePath); err != nil {
 			return fmt.Errorf("ca_bundle_path %q not found: %w", cfg.CABundlePath, err)

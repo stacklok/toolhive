@@ -743,6 +743,17 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              webhookConfigRef:
+                description: |-
+                  WebhookConfigRef references a MCPWebhookConfig resource for webhook middleware configuration.
+                  The referenced MCPWebhookConfig must exist in the same namespace as this MCPServer.
+                properties:
+                  name:
+                    description: Name is the name of the MCPWebhookConfig resource
+                    type: string
+                required:
+                - name
+                type: object
             required:
             - image
             type: object
@@ -867,6 +878,10 @@ spec:
                 type: string
               url:
                 description: URL is the URL where the MCP server can be accessed
+                type: string
+              webhookConfigHash:
+                description: WebhookConfigHash is the hash of the referenced MCPWebhookConfig
+                  spec
                 type: string
             type: object
         type: object
@@ -1592,6 +1607,17 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              webhookConfigRef:
+                description: |-
+                  WebhookConfigRef references a MCPWebhookConfig resource for webhook middleware configuration.
+                  The referenced MCPWebhookConfig must exist in the same namespace as this MCPServer.
+                properties:
+                  name:
+                    description: Name is the name of the MCPWebhookConfig resource
+                    type: string
+                required:
+                - name
+                type: object
             required:
             - image
             type: object
@@ -1716,6 +1742,10 @@ spec:
                 type: string
               url:
                 description: URL is the URL where the MCP server can be accessed
+                type: string
+              webhookConfigHash:
+                description: WebhookConfigHash is the hash of the referenced MCPWebhookConfig
+                  spec
                 type: string
             type: object
         type: object

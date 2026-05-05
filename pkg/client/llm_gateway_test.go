@@ -209,11 +209,9 @@ func TestConfigureLLMGateway_DeepNestedKey(t *testing.T) {
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	s := string(data)
-	assert.Contains(t, s, `"a"`, "outer ancestor object must be created")
-	assert.Contains(t, s, `"b"`, "inner ancestor object must be created")
-	assert.Contains(t, s, `"c"`, "leaf key must be written")
-	assert.Contains(t, s, "https://gw.example.com", "leaf value must be written")
+	got, ok := jsonPointerGet(data, "/a/b/c")
+	assert.True(t, ok, "deep nested key /a/b/c must exist (ancestor objects must be created)")
+	assert.Equal(t, "https://gw.example.com", got, "deep nested value must match")
 }
 
 // ── IsLLMGatewaySupported / LLMGatewayModeFor ─────────────────────────────────
@@ -271,9 +269,9 @@ func TestConfigureLLMGateway_CreatesFile(t *testing.T) {
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "apiKeyHelper")
-	assert.Contains(t, string(data), "thv")
-	assert.Contains(t, string(data), "llm token")
+	got, ok := jsonPointerGet(data, "/apiKeyHelper")
+	assert.True(t, ok, "/apiKeyHelper pointer must be present")
+	assert.Equal(t, `"thv" llm token`, got, "/apiKeyHelper must contain the token helper command")
 }
 
 func TestConfigureLLMGateway_PreservesExistingKeys(t *testing.T) {
@@ -294,8 +292,10 @@ func TestConfigureLLMGateway_PreservesExistingKeys(t *testing.T) {
 
 	data, err := os.ReadFile(settingsPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "permissions")  // original key preserved
-	assert.Contains(t, string(data), "apiKeyHelper") // new key added
+	assert.Contains(t, string(data), "permissions") // non-string object — checked as raw substring
+	got, ok := jsonPointerGet(data, "/apiKeyHelper")
+	assert.True(t, ok, "/apiKeyHelper pointer must be present after configure")
+	assert.Equal(t, `"thv" llm token`, got)
 }
 
 func TestConfigureLLMGateway_JSONCPreservesExistingParent(t *testing.T) {
@@ -377,8 +377,9 @@ func TestRevertLLMGateway_RemovesKey(t *testing.T) {
 
 	data, err := os.ReadFile(settingsPath)
 	require.NoError(t, err)
-	assert.NotContains(t, string(data), "apiKeyHelper")
-	assert.Contains(t, string(data), "permissions") // unrelated key survives
+	_, ok := jsonPointerGet(data, "/apiKeyHelper")
+	assert.False(t, ok, "/apiKeyHelper must be removed after revert")
+	assert.Contains(t, string(data), "permissions") // non-string object — checked as raw substring
 }
 
 func TestRevertLLMGateway_MissingFile(t *testing.T) {
@@ -438,10 +439,12 @@ func TestConfigureLLMGateway_ProxyMode(t *testing.T) {
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "serverUrl")
-	assert.Contains(t, string(data), "http://localhost:14000/v1")
-	assert.Contains(t, string(data), "apiKey")
-	assert.Contains(t, string(data), "thv-proxy")
+	serverURL, okURL := jsonPointerGet(data, "/github.copilot.advanced.serverUrl")
+	assert.True(t, okURL, "/github.copilot.advanced.serverUrl pointer must be present")
+	assert.Equal(t, "http://localhost:14000/v1", serverURL)
+	apiKey, okKey := jsonPointerGet(data, "/github.copilot.advanced.apiKey")
+	assert.True(t, okKey, "/github.copilot.advanced.apiKey pointer must be present")
+	assert.Equal(t, "thv-proxy", apiKey)
 }
 
 // ── DetectedLLMGatewayClients ─────────────────────────────────────────────────
@@ -609,8 +612,9 @@ func TestConfigureLLMGateway_TLSSkipVerify_WritesNodeEnv(t *testing.T) {
 
 	data, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED")
-	assert.Contains(t, string(data), `"0"`)
+	val, ok := jsonPointerGet(data, "/env/NODE_TLS_REJECT_UNAUTHORIZED")
+	assert.True(t, ok, "/env/NODE_TLS_REJECT_UNAUTHORIZED must be present when TLSSkipVerify=true")
+	assert.Equal(t, "0", val)
 }
 
 func TestConfigureLLMGateway_TLSSkipVerify_NotSet_DoesNotWriteNodeEnv(t *testing.T) {
@@ -628,7 +632,8 @@ func TestConfigureLLMGateway_TLSSkipVerify_NotSet_DoesNotWriteNodeEnv(t *testing
 
 	data, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
 	require.NoError(t, err)
-	assert.NotContains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED")
+	_, ok := jsonPointerGet(data, "/env/NODE_TLS_REJECT_UNAUTHORIZED")
+	assert.False(t, ok, "/env/NODE_TLS_REJECT_UNAUTHORIZED must not be written when TLSSkipVerify=false")
 }
 
 func TestConfigureLLMGateway_TLSSkipVerify_ClearRemovesKey(t *testing.T) {
@@ -648,7 +653,8 @@ func TestConfigureLLMGateway_TLSSkipVerify_ClearRemovesKey(t *testing.T) {
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	data, err := os.ReadFile(settingsPath)
 	require.NoError(t, err)
-	require.Contains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED", "key must be present after first configure")
+	_, present := jsonPointerGet(data, "/env/NODE_TLS_REJECT_UNAUTHORIZED")
+	require.True(t, present, "/env/NODE_TLS_REJECT_UNAUTHORIZED must be present after first configure")
 
 	// Second run: clear tls-skip-verify
 	_, err = cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
@@ -659,7 +665,8 @@ func TestConfigureLLMGateway_TLSSkipVerify_ClearRemovesKey(t *testing.T) {
 
 	data, err = os.ReadFile(settingsPath)
 	require.NoError(t, err)
-	assert.NotContains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED", "key must be removed when TLSSkipVerify is cleared")
+	_, present = jsonPointerGet(data, "/env/NODE_TLS_REJECT_UNAUTHORIZED")
+	assert.False(t, present, "/env/NODE_TLS_REJECT_UNAUTHORIZED must be removed when TLSSkipVerify is cleared")
 }
 
 // TestRealClientConfigs_GeminiCLI_NeverWritesTLSKey verifies that
@@ -683,8 +690,8 @@ func TestRealClientConfigs_GeminiCLI_NeverWritesTLSKey(t *testing.T) {
 
 		data, err := os.ReadFile(path)
 		require.NoError(t, err)
-		assert.NotContains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED",
-			"TLS key must never be written for Gemini CLI (TLSSkipVerify=%v)", skipVerify)
+		_, ok := jsonPointerGet(data, "/env/NODE_TLS_REJECT_UNAUTHORIZED")
+		assert.False(t, ok, "TLS key must never be written for Gemini CLI (TLSSkipVerify=%v)", skipVerify)
 	}
 }
 

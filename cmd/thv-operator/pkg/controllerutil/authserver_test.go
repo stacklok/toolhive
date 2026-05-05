@@ -348,6 +348,7 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 		authConfig      *mcpv1beta1.EmbeddedAuthServerConfig
 		wantEnvNames    []string
 		wantSecretNames []string // parallel to wantEnvNames; asserts SecretKeyRef.Name
+		wantSecretKeys  []string // parallel to wantEnvNames; asserts SecretKeyRef.Key
 	}{
 		{
 			name:         "nil config returns empty slice",
@@ -382,7 +383,9 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 					},
 				},
 			},
-			wantEnvNames: []string{UpstreamClientSecretEnvVar + "_OKTA"},
+			wantEnvNames:    []string{UpstreamClientSecretEnvVar + "_OKTA"},
+			wantSecretNames: []string{"oidc-client-secret"},
+			wantSecretKeys:  []string{"client-secret"},
 		},
 		{
 			name: "OIDC provider without client secret ref (public client)",
@@ -424,7 +427,9 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 					},
 				},
 			},
-			wantEnvNames: []string{UpstreamClientSecretEnvVar + "_GITHUB"},
+			wantEnvNames:    []string{UpstreamClientSecretEnvVar + "_GITHUB"},
+			wantSecretNames: []string{"github-client-secret"},
+			wantSecretKeys:  []string{"client-secret"},
 		},
 		{
 			name: "OAuth2 provider without client secret ref",
@@ -497,6 +502,7 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 				UpstreamClientSecretEnvVar + "_GITHUB",
 			},
 			wantSecretNames: []string{"okta-secret", "github-secret"},
+			wantSecretKeys:  []string{"client-secret", "client-secret"},
 		},
 		{
 			name: "OAuth2 provider with DCR initial access token ref emits separate env var",
@@ -523,9 +529,16 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 			},
 			wantEnvNames:    []string{UpstreamDCRInitialAccessTokenEnvVarPrefix + "_ACME_IDP"},
 			wantSecretNames: []string{"acme-dcr-token"},
+			wantSecretKeys:  []string{"token"},
 		},
 		{
-			name: "OAuth2 provider with DCR and client secret emits both env vars",
+			// Regression guard for upstream-secret-binding name derivation. A
+			// hash-based naming scheme would not produce stable, distinct
+			// env-var names per provider; sanitize-and-uppercase does. Using
+			// two OAuth2 + DCR + InitialAccessTokenRef providers exercises
+			// the multi-upstream branch of GenerateAuthServerEnvVars and pins
+			// the per-upstream env-var/secret-ref/key triple end to end.
+			name: "multi-upstream DCR providers each get distinct initial-access-token env vars",
 			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
 				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
@@ -533,18 +546,30 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 						Name: "acme-idp",
 						Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
 						OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
-							AuthorizationEndpoint: "https://idp.example.com/authorize",
-							TokenEndpoint:         "https://idp.example.com/token",
-							UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
-							ClientSecretRef: &mcpv1beta1.SecretKeyRef{
-								Name: "acme-secret",
-								Key:  "client-secret",
-							},
+							AuthorizationEndpoint: "https://acme.example.com/authorize",
+							TokenEndpoint:         "https://acme.example.com/token",
+							UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://acme.example.com/userinfo"},
 							DCRConfig: &mcpv1beta1.DCRUpstreamConfig{
-								DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+								DiscoveryURL: "https://acme.example.com/.well-known/openid-configuration",
 								InitialAccessTokenRef: &mcpv1beta1.SecretKeyRef{
-									Name: "acme-dcr-token",
-									Key:  "token",
+									Name: "acme-dcr-secret",
+									Key:  "acme-token",
+								},
+							},
+						},
+					},
+					{
+						Name: "globex-idp",
+						Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://globex.example.com/authorize",
+							TokenEndpoint:         "https://globex.example.com/token",
+							UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://globex.example.com/userinfo"},
+							DCRConfig: &mcpv1beta1.DCRUpstreamConfig{
+								RegistrationEndpoint: "https://globex.example.com/register",
+								InitialAccessTokenRef: &mcpv1beta1.SecretKeyRef{
+									Name: "globex-dcr-secret",
+									Key:  "globex-token",
 								},
 							},
 						},
@@ -552,10 +577,11 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 				},
 			},
 			wantEnvNames: []string{
-				UpstreamClientSecretEnvVar + "_ACME_IDP",
 				UpstreamDCRInitialAccessTokenEnvVarPrefix + "_ACME_IDP",
+				UpstreamDCRInitialAccessTokenEnvVarPrefix + "_GLOBEX_IDP",
 			},
-			wantSecretNames: []string{"acme-secret", "acme-dcr-token"},
+			wantSecretNames: []string{"acme-dcr-secret", "globex-dcr-secret"},
+			wantSecretKeys:  []string{"acme-token", "globex-token"},
 		},
 		{
 			name: "OAuth2 provider with DCR but no initial access token ref emits no DCR env var",
@@ -597,7 +623,12 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 				require.NotNil(t, envVars[i].ValueFrom)
 				require.NotNil(t, envVars[i].ValueFrom.SecretKeyRef)
 				if len(tt.wantSecretNames) > i {
-					assert.Equal(t, tt.wantSecretNames[i], envVars[i].ValueFrom.SecretKeyRef.Name)
+					assert.Equal(t, tt.wantSecretNames[i], envVars[i].ValueFrom.SecretKeyRef.Name,
+						"env %s should reference secret name %s", wantName, tt.wantSecretNames[i])
+				}
+				if len(tt.wantSecretKeys) > i {
+					assert.Equal(t, tt.wantSecretKeys[i], envVars[i].ValueFrom.SecretKeyRef.Key,
+						"env %s should reference secret key %s", wantName, tt.wantSecretKeys[i])
 				}
 			}
 		})
@@ -1408,106 +1439,61 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 }
 
 // TestBuildAuthServerRunConfig_InvalidDCR verifies that BuildAuthServerRunConfig
-// rejects OAuth2 upstreams whose ClientID / DCRConfig pairing violates the
-// mutual-exclusivity invariants (matching the CEL XValidation rules on
-// OAuth2UpstreamConfig and DCRUpstreamConfig). This is the reconcile-time
-// defense-in-depth against stored objects that bypassed admission.
+// surfaces ValidateOAuth2DCRConfig errors with a single outer
+// `upstream %q:` wrap and no inner-prefix duplication.
+//
+// ValidateOAuth2DCRConfig itself is exhaustively tested in
+// TestMCPExternalAuthConfig_validateUpstreamProvider in the v1beta1 package
+// (each XOR violation, the ClientSecretRef ⊥ DCRConfig rule, and the length
+// caps). Mirroring those cases here would duplicate that table; the unique
+// thing this test pins is the conversion-layer wrapping behavior, which is
+// fully exercised by a single representative violation.
 func TestBuildAuthServerRunConfig_InvalidDCR(t *testing.T) {
 	t.Parallel()
 
-	defaultAudiences := []string{"http://test-server.default.svc.cluster.local:8080"}
-	defaultScopes := []string{"openid", "offline_access"}
-
-	tests := []struct {
-		name      string
-		oauth2Cfg *mcpv1beta1.OAuth2UpstreamConfig
-		wantErr   string
-	}{
-		{
-			name: "both ClientID and DCRConfig set",
-			oauth2Cfg: &mcpv1beta1.OAuth2UpstreamConfig{
-				AuthorizationEndpoint: "https://idp.example.com/authorize",
-				TokenEndpoint:         "https://idp.example.com/token",
-				UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
-				ClientID:              "pre-provisioned-id",
-				DCRConfig: &mcpv1beta1.DCRUpstreamConfig{
-					DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
-				},
-			},
-			wantErr: "exactly one of clientId or dcrConfig must be set",
+	authConfig := &mcpv1beta1.EmbeddedAuthServerConfig{
+		Issuer: "https://auth.example.com",
+		SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+			{Name: "signing-key", Key: "private.pem"},
 		},
-		{
-			name: "neither ClientID nor DCRConfig set",
-			oauth2Cfg: &mcpv1beta1.OAuth2UpstreamConfig{
-				AuthorizationEndpoint: "https://idp.example.com/authorize",
-				TokenEndpoint:         "https://idp.example.com/token",
-				UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
-			},
-			wantErr: "exactly one of clientId or dcrConfig must be set",
+		HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+			{Name: "hmac-secret", Key: "hmac"},
 		},
-		{
-			name: "DCRConfig with both endpoints set",
-			oauth2Cfg: &mcpv1beta1.OAuth2UpstreamConfig{
-				AuthorizationEndpoint: "https://idp.example.com/authorize",
-				TokenEndpoint:         "https://idp.example.com/token",
-				UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
-				DCRConfig: &mcpv1beta1.DCRUpstreamConfig{
-					DiscoveryURL:         "https://idp.example.com/.well-known/openid-configuration",
-					RegistrationEndpoint: "https://idp.example.com/register",
-				},
-			},
-			wantErr: "exactly one of discoveryUrl or registrationEndpoint must be set",
-		},
-		{
-			name: "DCRConfig with neither endpoint set",
-			oauth2Cfg: &mcpv1beta1.OAuth2UpstreamConfig{
-				AuthorizationEndpoint: "https://idp.example.com/authorize",
-				TokenEndpoint:         "https://idp.example.com/token",
-				UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
-				DCRConfig:             &mcpv1beta1.DCRUpstreamConfig{},
-			},
-			wantErr: "exactly one of discoveryUrl or registrationEndpoint must be set",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			authConfig := &mcpv1beta1.EmbeddedAuthServerConfig{
-				Issuer: "https://auth.example.com",
-				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
-					{Name: "signing-key", Key: "private.pem"},
-				},
-				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
-					{Name: "hmac-secret", Key: "hmac"},
-				},
-				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
-					{
-						Name:         "acme-idp",
-						Type:         mcpv1beta1.UpstreamProviderTypeOAuth2,
-						OAuth2Config: tt.oauth2Cfg,
+		UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+			{
+				Name: "acme-idp",
+				Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					ClientID:              "pre-provisioned-id",
+					DCRConfig: &mcpv1beta1.DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
 					},
 				},
-			}
-
-			config, err := BuildAuthServerRunConfig(
-				"default", "test-server", authConfig,
-				defaultAudiences, defaultScopes,
-				"http://test-server.default.svc.cluster.local:8080",
-			)
-
-			require.Error(t, err, "expected BuildAuthServerRunConfig to fail on invalid DCR pairing")
-			assert.Nil(t, config)
-			assert.Contains(t, err.Error(), tt.wantErr,
-				"error should surface the mutual-exclusivity violation")
-			// The upstream name must appear exactly once: the outer wrap in
-			// BuildAuthServerRunConfig supplies it, and the inner validator is
-			// invoked with an empty prefix so it doesn't duplicate the name.
-			assert.Equal(t, 1, strings.Count(err.Error(), "acme-idp"),
-				"upstream name should appear exactly once in error: %q", err.Error())
-		})
+			},
+		},
 	}
+
+	config, err := BuildAuthServerRunConfig(
+		"default", "test-server", authConfig,
+		[]string{"http://test-server.default.svc.cluster.local:8080"},
+		[]string{"openid", "offline_access"},
+		"http://test-server.default.svc.cluster.local:8080",
+	)
+
+	require.Error(t, err, "expected BuildAuthServerRunConfig to fail on invalid DCR pairing")
+	assert.Nil(t, config)
+	assert.Contains(t, err.Error(), "exactly one of clientId or dcrConfig must be set",
+		"outer wrap should surface the validator's diagnostic")
+	assert.True(t, strings.HasPrefix(err.Error(), `upstream "acme-idp":`),
+		"outer wrap should prefix with upstream %%q (got %q)", err.Error())
+	// The upstream name must appear exactly once: the outer wrap in
+	// BuildAuthServerRunConfig supplies it, and ValidateOAuth2DCRConfig is
+	// called without a prefix so it doesn't duplicate the name.
+	assert.Equal(t, 1, strings.Count(err.Error(), "acme-idp"),
+		"upstream name should appear exactly once in error: %q", err.Error())
 }
 
 func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {

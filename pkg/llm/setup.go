@@ -283,9 +283,16 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 					"(LLM provider APIs, MCP registry, etc.), not just the LLM gateway. "+
 					"Use only in isolated local environments.\n", tc.Tool, tc.Tool)
 		case "proxy":
-			_, _ = fmt.Fprintf(errOut,
-				"Warning: %s uses proxy mode — TLS certificate verification is disabled for the "+
-					"proxy's upstream gateway connection only. Use only in isolated local environments.\n", tc.Tool)
+			if tc.Tool == "gemini-cli" {
+				_, _ = fmt.Fprintf(errOut,
+					"Note: --tls-skip-verify is not supported for Gemini CLI "+
+						"(setting NODE_TLS_REJECT_UNAUTHORIZED would affect all HTTPS connections in the process). "+
+						"Ensure your proxy certificate is trusted by the system store instead.\n")
+			} else {
+				_, _ = fmt.Fprintf(errOut,
+					"Warning: %s uses proxy mode — TLS certificate verification is disabled for the "+
+						"proxy's upstream gateway connection only. Use only in isolated local environments.\n", tc.Tool)
+			}
 		}
 	}
 }

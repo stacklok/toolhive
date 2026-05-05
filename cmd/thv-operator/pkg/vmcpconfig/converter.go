@@ -203,9 +203,11 @@ func (c *Converter) convertIncomingAuth(
 		// explicitly, honor it (after normalization). Otherwise fall back to the first
 		// configured upstream — matching the SubjectProviderName precedent on the
 		// token-exchange and AWS-STS strategies. The validator at
-		// validateAuthzUpstreamAvailable rejects names that don't match any declared
-		// upstream, so by the time we reach this branch the explicit value is known
-		// to resolve to a real upstream.
+		// validateAuthzUpstreamAvailable rejects an explicit name that does not match
+		// any declared upstream, and also rejects an explicit name when no embedded
+		// auth server is configured at all, so by the time we reach this branch the
+		// value resolves to a real upstream on the embedded AS.
+		// TODO: load primaryUpstreamProvider from configMap
 		switch {
 		case vmcp.Spec.IncomingAuth.AuthzConfig.Inline != nil &&
 			vmcp.Spec.IncomingAuth.AuthzConfig.Inline.PrimaryUpstreamProvider != "":

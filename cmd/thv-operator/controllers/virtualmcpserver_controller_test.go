@@ -3700,6 +3700,22 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 			expectedReason:  mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
 			expectedWarning: warningExpectation{expectPresent: false},
 		},
+		{
+			// Explicit PrimaryUpstreamProvider with no embedded auth server at
+			// all is rejected at admission. The field names an upstream IDP on
+			// the embedded AS — without an AS there is nothing for it to refer
+			// to, and the converter would otherwise forward an unresolvable
+			// name. Same condition reason as the upstream-mismatch case.
+			name: "explicit primary provider without embedded auth server is invalid",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: authzRefWithPrimary("okta"),
+			},
+			authServerConfig: nil,
+			expectError:      true,
+			expectedReason:   mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
+			expectedWarning:  warningExpectation{expectPresent: false},
+		},
 	}
 
 	for _, tt := range tests {

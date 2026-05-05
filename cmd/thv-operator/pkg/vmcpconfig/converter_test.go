@@ -2021,23 +2021,29 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			expectedProvider: "github",
 		},
 		{
-			// Explicit value flows through ResolveUpstreamName for normalization
-			// parity with the auto-select branch — though for non-empty input the
-			// resolver is the identity function. Keeps both paths normalized.
-			name: "explicit primary provider is normalized via ResolveUpstreamName",
+			// Exercises the actual normalization step inside ResolveUpstreamName:
+			// the upstream is declared with Name:"" (which resolves to "default")
+			// and the user pins primaryUpstreamProvider to "default". The explicit
+			// branch must forward "default" — exercising both the explicit path
+			// and the resolver's empty-input handling. The previous "okta -> okta"
+			// case did not exercise normalization because ResolveUpstreamName is
+			// the identity function for non-empty input.
+			name: "explicit primary provider 'default' resolves to default upstream",
 			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://authserver.example.com",
 				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
-					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+					{Name: "", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
 			},
-			authzConfig:      authzWith("okta"),
-			expectedProvider: "okta",
+			authzConfig:      authzWith("default"),
+			expectedProvider: "default",
 		},
 		{
 			// Explicit primary provider is honored even without an embedded AS
-			// configured on the spec. The validator catches the mismatch in this
-			// case; the converter's job is only to forward the explicit choice.
+			// configured on the spec. The validator rejects this combination
+			// (covered by TestVirtualMCPServerValidateAuthzUpstreamAvailable),
+			// but the converter still forwards the explicit value as a defined
+			// contract — this case locks that contract in.
 			name:             "explicit primary provider without auth server is forwarded",
 			authServerConfig: nil,
 			authzConfig:      authzWith("okta"),

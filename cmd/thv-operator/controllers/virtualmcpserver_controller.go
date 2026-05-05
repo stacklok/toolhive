@@ -552,6 +552,20 @@ func (*VirtualMCPServerReconciler) applyAuthServerIdentitySynthesizedCondition(
 	)
 }
 
+// extractExplicitPrimaryUpstreamProvider returns the user-specified primary
+// upstream provider name from the authz config, or "" if none is set.
+//
+// Currently reads from inline config only. ConfigMap-sourced authz needs to
+// load and parse the referenced ConfigMap; until that path lands (see the
+// matching TODO in pkg/vmcpconfig/converter.go), configMap users always fall
+// through to auto-selection of the first upstream.
+func extractExplicitPrimaryUpstreamProvider(authzConfig *mcpv1beta1.AuthzConfigRef) string {
+	if authzConfig == nil || authzConfig.Inline == nil {
+		return ""
+	}
+	return authzConfig.Inline.PrimaryUpstreamProvider
+}
+
 // validateAuthzUpstreamAvailable ensures that when authorization policies are
 // configured via IncomingAuth.AuthzConfig AND an embedded AuthServer is in use,
 // at least one upstream IDP is declared so Cedar evaluates claim references
@@ -583,7 +597,49 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	// Direct-IdP flow: no embedded AS. Cedar evaluates against identity.Claims
 	// populated by incoming OIDC middleware from the IdP token. No upstream
 	// needed; nothing to warn about. Remove any stale condition.
+	//
+	// However, an explicit primaryUpstreamProvider is meaningless in this mode
+	// — there is no upstream-token table for Cedar to look it up in — so the
+	// converter would forward a name that cannot resolve at runtime. Reject at
+	// admission for the same "fail loudly instead of denying every request"
+	// reason as the configured-AS mismatch path below.
 	if vmcp.Spec.AuthServerConfig == nil {
+		explicitProvider := extractExplicitPrimaryUpstreamProvider(vmcp.Spec.IncomingAuth.AuthzConfig)
+		if explicitProvider != "" {
+			statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
+
+			message := fmt.Sprintf(
+				"spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider=%q is set but "+
+					"spec.authServerConfig is not configured. The field names an upstream IDP "+
+					"on the embedded auth server, which is required for it to take effect. "+
+					"Remove primaryUpstreamProvider, or configure spec.authServerConfig with "+
+					"an upstream of that name.",
+				explicitProvider,
+			)
+
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Info("authz primaryUpstreamProvider set without an embedded auth server; rejecting VirtualMCPServer",
+				"name", vmcp.Name,
+				"namespace", vmcp.Namespace,
+				"primaryUpstreamProvider", explicitProvider,
+				"reason", mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
+			)
+
+			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetAuthServerConfigValidatedCondition(
+				mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
+				message,
+				metav1.ConditionFalse,
+			)
+			statusManager.SetObservedGeneration(vmcp.Generation)
+			return &SpecValidationError{
+				Message: fmt.Sprintf(
+					"authz primaryUpstreamProvider %q set without an embedded auth server",
+					explicitProvider,
+				),
+			}
+		}
 		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
 		return nil
 	}
@@ -625,10 +681,7 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	// explicitly, the name must resolve to one of the declared upstreams after
 	// normalization on both sides. A mismatch would cause Cedar to deny every
 	// request at runtime — fail loudly at admission instead.
-	explicitProvider := ""
-	if vmcp.Spec.IncomingAuth.AuthzConfig.Inline != nil {
-		explicitProvider = vmcp.Spec.IncomingAuth.AuthzConfig.Inline.PrimaryUpstreamProvider
-	}
+	explicitProvider := extractExplicitPrimaryUpstreamProvider(vmcp.Spec.IncomingAuth.AuthzConfig)
 	if explicitProvider != "" {
 		resolved := authserver.ResolveUpstreamName(explicitProvider)
 		matched := false

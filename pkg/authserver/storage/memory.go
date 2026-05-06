@@ -99,8 +99,13 @@ type MemoryStorage struct {
 	// periodic cleanupExpired loop: DCR registrations are long-lived and the
 	// authoritative expiry signal is RFC 7591 client_secret_expires_at, which
 	// is honored at read time by callers (and by the future Redis backend's
-	// SetEX TTL). The map is bounded by the operator-configured upstream
-	// count, so unbounded growth is not a concern.
+	// SetEX TTL). Growth is bounded by upstream count × distinct scope sets
+	// ever registered for each upstream during the process lifetime; for a
+	// stable configuration this collapses to the upstream count, but rotating
+	// scope sets (operator-driven scope changes, or upstream
+	// scopes_supported rotations re-derived by the resolver) accumulate
+	// stale entries that survive until process restart. The Redis backend's
+	// SetEX TTL mitigates this in production deployments.
 	dcrCredentials map[DCRKey]*DCRCredentials
 
 	// cleanupInterval is how often the background cleanup runs

@@ -59,10 +59,14 @@ type dcrResolutionCache interface {
 // durability, and cross-process coordination gaps documented below.
 //
 // Entries are retained for the process lifetime; there is no TTL and no
-// background cleanup goroutine. The usual concern about an unbounded
-// cache leaking memory does not apply here because the key space is
-// bounded by the operator-configured upstream count, and this
-// implementation is not the production answer.
+// background cleanup goroutine. Growth is bounded by upstream count ×
+// distinct scope sets ever registered for each upstream during the
+// process lifetime — for a stable configuration this collapses to the
+// upstream count, but rotating scope sets (operator-driven scope
+// changes, or upstream scopes_supported rotations re-derived by the
+// resolver) accumulate stale entries that survive until restart. This
+// implementation is not the production answer; the Redis backend
+// introduced in Phase 3 mitigates the rotation case via SetEX TTL.
 //
 // What this enables: serialises Get/Put against a single in-process map so
 // concurrent callers within one authserver process see a consistent view of

@@ -329,11 +329,16 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 
 	envReader := &env.OSReader{}
+	var backendRequestTimeout time.Duration
+	if vmcpCfg.Operational != nil && vmcpCfg.Operational.Timeouts != nil {
+		backendRequestTimeout = time.Duration(vmcpCfg.Operational.Timeouts.Default)
+	}
 	sessionFactory, err := createSessionFactory(
 		envReader.Getenv("VMCP_SESSION_HMAC_SECRET"),
 		runtime.IsKubernetesRuntimeWithEnv(envReader),
 		outgoingRegistry,
 		agg,
+		backendRequestTimeout,
 	)
 	if err != nil {
 		return err
@@ -386,6 +391,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		OptimizerConfig:         optCfg,
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
+		RequestTimeout:          backendRequestTimeout, // see createSessionFactory; same value
 	}
 
 	// Assign Watcher only when backendWatcher is non-nil. A typed nil
@@ -640,12 +646,16 @@ func createSessionFactory(
 	isKubernetes bool,
 	outgoingRegistry vmcpauth.OutgoingAuthRegistry,
 	agg aggregator.Aggregator,
+	backendRequestTimeout time.Duration,
 ) (vmcpsession.MultiSessionFactory, error) {
 	const minRecommendedSecretLen = 32
 
 	opts := []vmcpsession.MultiSessionFactoryOption{}
 	if agg != nil {
 		opts = append(opts, vmcpsession.WithAggregator(agg))
+	}
+	if backendRequestTimeout > 0 {
+		opts = append(opts, vmcpsession.WithBackendRequestTimeout(backendRequestTimeout))
 	}
 
 	if hmacSecret != "" {

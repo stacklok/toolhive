@@ -128,11 +128,12 @@ type backendConnector func(
 
 // defaultMultiSessionFactory is the production MultiSessionFactory implementation.
 type defaultMultiSessionFactory struct {
-	connector          backendConnector
-	maxConcurrency     int
-	backendInitTimeout time.Duration
-	hmacSecret         []byte                // Server-managed secret for HMAC-SHA256 token hashing
-	aggregator         aggregator.Aggregator // Optional: applies tool transforms (overrides, conflict resolution, filter)
+	connector             backendConnector
+	maxConcurrency        int
+	backendInitTimeout    time.Duration
+	backendRequestTimeout time.Duration         // Per-tool-call timeout; 0 = use upstream default (30s).
+	hmacSecret            []byte                // Server-managed secret for HMAC-SHA256 token hashing
+	aggregator            aggregator.Aggregator // Optional: applies tool transforms (overrides, conflict resolution, filter)
 }
 
 // MultiSessionFactoryOption configures a defaultMultiSessionFactory.
@@ -154,6 +155,19 @@ func WithBackendInitTimeout(d time.Duration) MultiSessionFactoryOption {
 	return func(f *defaultMultiSessionFactory) {
 		if d > 0 {
 			f.backendInitTimeout = d
+		}
+	}
+}
+
+// WithBackendRequestTimeout sets the per-tool-call wall-clock deadline for
+// streamable-HTTP backend requests. Plumbs through to the http.Client and
+// the mark3labs SDK constructed in backend.NewHTTPConnector. Defaults to 30s
+// (the upstream default) when not set or set to 0. SSE backends ignore this
+// value because their stream lifetime is unbounded by design.
+func WithBackendRequestTimeout(d time.Duration) MultiSessionFactoryOption {
+	return func(f *defaultMultiSessionFactory) {
+		if d > 0 {
+			f.backendRequestTimeout = d
 		}
 	}
 }
@@ -191,7 +205,15 @@ func WithAggregator(agg aggregator.Aggregator) MultiSessionFactoryOption {
 // NewSessionFactory creates a MultiSessionFactory that connects to backends
 // over HTTP using the given outgoing auth registry.
 func NewSessionFactory(registry vmcpauth.OutgoingAuthRegistry, opts ...MultiSessionFactoryOption) MultiSessionFactory {
-	return newSessionFactoryWithConnector(backend.NewHTTPConnector(registry), opts...)
+	// Pre-apply opts to a sentinel to extract config the connector needs at
+	// construction time. The same opts run a second time inside
+	// newSessionFactoryWithConnector to populate the real factory; option
+	// functions are pure setters, so double-application is idempotent.
+	pre := &defaultMultiSessionFactory{}
+	for _, opt := range opts {
+		opt(pre)
+	}
+	return newSessionFactoryWithConnector(backend.NewHTTPConnector(registry, pre.backendRequestTimeout), opts...)
 }
 
 // newSessionFactoryWithConnector creates a MultiSessionFactory backed by an

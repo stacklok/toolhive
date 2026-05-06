@@ -948,6 +948,10 @@ func getRemoteAuthFromRemoteServerMetadata(
 	authCfg.AuthorizeURL = firstNonEmpty(f.RemoteAuthAuthorizeURL, oc.AuthorizeURL)
 	authCfg.TokenURL = firstNonEmpty(f.RemoteAuthTokenURL, oc.TokenURL)
 
+	// Resource is only set from explicit user flag or registry metadata.
+	// Unlike the direct-URL path (getRemoteAuthFromRunFlags), --resource-url
+	// derivation is intentionally not applied here: registry metadata is the
+	// authoritative source for the resource indicator in this path.
 	authCfg.Resource = firstNonEmpty(f.RemoteAuthResource, oc.Resource)
 
 	// OAuthParams: REPLACE metadata when CLI provides any key/value.

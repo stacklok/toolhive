@@ -516,8 +516,8 @@ func TestCreateRequestToRemoteAuthConfig(t *testing.T) {
 		})
 	}
 
-	// The coder removed auto-derivation of resource from URL (RFC 8707 resource
-	// indicator). These sub-tests guard against that fallback being re-introduced.
+	// Guard against reintroduction of RFC 8707 auto-derivation from URL.
+	// Resource must only be set when explicitly provided (see #5203).
 	t.Run("resource empty when URL set but resource not explicitly provided", func(t *testing.T) {
 		t.Parallel()
 

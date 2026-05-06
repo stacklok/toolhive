@@ -260,6 +260,19 @@ type DCRCredentials struct {
 // resolver — to re-check expiry on read; see MemoryStorage.GetDCRCredentials.
 // A zero ClientSecretExpiresAt means the upstream did not assert an expiry
 // and no TTL is applied.
+//
+// # Why the key is embedded in DCRCredentials
+//
+// StoreDCRCredentials takes a single (ctx, creds) argument rather than the
+// (ctx, key, value) shape used by sibling Store* methods on Storage. The
+// DCRKey is embedded as DCRCredentials.Key so the persisted blob is
+// self-describing: a Redis SCAN, an admin-tool dump, or a cross-replica
+// reconciliation path can identify a record's logical cache slot
+// (Issuer, RedirectURI, ScopesHash) from the value alone, without
+// reconstructing it from a separately-passed key. This is a deliberate
+// asymmetry with the rest of the package — callers must populate creds.Key
+// before Store, and implementations validate it (see MemoryStorage docs
+// for the rejected-input list).
 type DCRCredentialStore interface {
 	// GetDCRCredentials returns the credentials for the given key.
 	// Returns ErrNotFound (wrapped) if no entry exists for the key.

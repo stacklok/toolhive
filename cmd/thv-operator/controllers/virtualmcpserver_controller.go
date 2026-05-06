@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -552,6 +553,32 @@ func (*VirtualMCPServerReconciler) applyAuthServerIdentitySynthesizedCondition(
 	)
 }
 
+// rejectAuthzAdmission centralizes the boilerplate shared by every
+// authz-spec rejection branch in validateAuthzUpstreamAvailable: clear any
+// stale advisory, log the rejection, set Phase=Failed plus the
+// AuthServerConfigValidated=False condition, and return a *SpecValidationError
+// the reconciler converts into a non-requeueing outcome.
+func rejectAuthzAdmission(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+	logMsg, reason, userMessage, errSummary string,
+	extraLogFields ...any,
+) *SpecValidationError {
+	statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
+	logFields := append([]any{
+		"name", vmcp.Name,
+		"namespace", vmcp.Namespace,
+		"reason", reason,
+	}, extraLogFields...)
+	log.FromContext(ctx).Info(logMsg, logFields...)
+	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+	statusManager.SetMessage(userMessage)
+	statusManager.SetAuthServerConfigValidatedCondition(reason, userMessage, metav1.ConditionFalse)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+	return &SpecValidationError{Message: errSummary}
+}
+
 // validateAuthzUpstreamAvailable ensures that when authorization policies are
 // configured via IncomingAuth.AuthzConfig AND an embedded AuthServer is in use,
 // at least one upstream IDP is declared so Cedar evaluates claim references
@@ -567,6 +594,11 @@ func (*VirtualMCPServerReconciler) applyAuthServerIdentitySynthesizedCondition(
 // first one is authoritative for Cedar. Surface an advisory
 // AuthzUpstreamSelectionWarning condition naming the selected provider so the
 // operator can reorder or prune the list if the auto-selection is wrong.
+//
+// When spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider is set
+// explicitly, the validator additionally rejects (a) the direct-IdP case (no
+// embedded AS) because the field is meaningless without an AS, and (b) any
+// name that does not resolve to one of spec.authServerConfig.upstreamProviders.
 func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
@@ -592,8 +624,6 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	if vmcp.Spec.AuthServerConfig == nil {
 		explicitProvider := vmcp.Spec.IncomingAuth.AuthzConfig.ExplicitPrimaryUpstreamProvider()
 		if explicitProvider != "" {
-			statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
-
 			message := fmt.Sprintf(
 				"spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider=%q is set but "+
 					"spec.authServerConfig is not configured. The field names an upstream IDP "+
@@ -602,29 +632,13 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 					"an upstream of that name.",
 				explicitProvider,
 			)
-
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Info("authz primaryUpstreamProvider set without an embedded auth server; rejecting VirtualMCPServer",
-				"name", vmcp.Name,
-				"namespace", vmcp.Namespace,
-				"primaryUpstreamProvider", explicitProvider,
-				"reason", mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
-			)
-
-			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-			statusManager.SetMessage(message)
-			statusManager.SetAuthServerConfigValidatedCondition(
+			return rejectAuthzAdmission(ctx, vmcp, statusManager,
+				"authz primaryUpstreamProvider set without an embedded auth server; rejecting VirtualMCPServer",
 				mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
 				message,
-				metav1.ConditionFalse,
+				fmt.Sprintf("authz primaryUpstreamProvider %q set without an embedded auth server", explicitProvider),
+				"primaryUpstreamProvider", explicitProvider,
 			)
-			statusManager.SetObservedGeneration(vmcp.Generation)
-			return &SpecValidationError{
-				Message: fmt.Sprintf(
-					"authz primaryUpstreamProvider %q set without an embedded auth server",
-					explicitProvider,
-				),
-			}
 		}
 		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
 		return nil
@@ -633,8 +647,6 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	// Embedded AS configured but no upstreams: this is the misconfiguration
 	// that silently evaluates policies against the AS-issued token.
 	if len(vmcp.Spec.AuthServerConfig.UpstreamProviders) == 0 {
-		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
-
 		// User-facing message includes full remediation guidance and ends with
 		// a period, matching other validator messages. The returned error uses
 		// a trimmed form without trailing punctuation to satisfy staticcheck.
@@ -644,14 +656,15 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 			"Configure spec.authServerConfig.upstreamProviders with at least one " +
 			"upstream IDP, or remove authServerConfig if clients will present IdP " +
 			"tokens directly."
-
-		ctxLogger := log.FromContext(ctx)
-		ctxLogger.Info("authz configured without an upstream IDP; rejecting VirtualMCPServer",
+		// Returning a plain error (not *SpecValidationError) preserves the
+		// existing requeue behavior for this branch — the helper produces a
+		// non-requeueing outcome which differs.
+		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
+		log.FromContext(ctx).Info("authz configured without an upstream IDP; rejecting VirtualMCPServer",
 			"name", vmcp.Name,
 			"namespace", vmcp.Namespace,
 			"reason", mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
 		)
-
 		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
 		statusManager.SetAuthServerConfigValidatedCondition(
@@ -670,16 +683,13 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	explicitProvider := vmcp.Spec.IncomingAuth.AuthzConfig.ExplicitPrimaryUpstreamProvider()
 	if explicitProvider != "" {
 		resolved := authserver.ResolveUpstreamName(explicitProvider)
-		matched := false
-		for _, up := range vmcp.Spec.AuthServerConfig.UpstreamProviders {
-			if authserver.ResolveUpstreamName(up.Name) == resolved {
-				matched = true
-				break
-			}
-		}
+		matched := slices.ContainsFunc(
+			vmcp.Spec.AuthServerConfig.UpstreamProviders,
+			func(up mcpv1beta1.UpstreamProviderConfig) bool {
+				return authserver.ResolveUpstreamName(up.Name) == resolved
+			},
+		)
 		if !matched {
-			statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
-
 			message := fmt.Sprintf(
 				"spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider=%q does not "+
 					"match any upstream declared on spec.authServerConfig.upstreamProviders. "+
@@ -687,29 +697,13 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 					"leave it empty to default to the first upstream.",
 				explicitProvider,
 			)
-
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Info("authz primaryUpstreamProvider does not match any upstream; rejecting VirtualMCPServer",
-				"name", vmcp.Name,
-				"namespace", vmcp.Namespace,
-				"primaryUpstreamProvider", explicitProvider,
-				"reason", mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
-			)
-
-			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-			statusManager.SetMessage(message)
-			statusManager.SetAuthServerConfigValidatedCondition(
+			return rejectAuthzAdmission(ctx, vmcp, statusManager,
+				"authz primaryUpstreamProvider does not match any upstream; rejecting VirtualMCPServer",
 				mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
 				message,
-				metav1.ConditionFalse,
+				fmt.Sprintf("authz primaryUpstreamProvider %q does not match any configured upstream", explicitProvider),
+				"primaryUpstreamProvider", explicitProvider,
 			)
-			statusManager.SetObservedGeneration(vmcp.Generation)
-			return &SpecValidationError{
-				Message: fmt.Sprintf(
-					"authz primaryUpstreamProvider %q does not match any configured upstream",
-					explicitProvider,
-				),
-			}
 		}
 	}
 

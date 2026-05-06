@@ -189,7 +189,7 @@ func (c *Converter) convertIncomingAuth(
 		if vmcp.Spec.IncomingAuth.AuthzConfig.Type == authzLabelValueInline && vmcp.Spec.IncomingAuth.AuthzConfig.Inline != nil {
 			incoming.Authz.Policies = vmcp.Spec.IncomingAuth.AuthzConfig.Inline.Policies
 		}
-		// TODO: Load policies from ConfigMap if Type is "configMap"
+		// TODO(#5208): Load policies from ConfigMap if Type is "configMap"
 
 		// When an embedded auth server with upstream providers is configured, Cedar
 		// policies must evaluate claims from the upstream IDP token rather than the
@@ -210,7 +210,7 @@ func (c *Converter) convertIncomingAuth(
 		// ensures Convert cannot produce an unresolvable PrimaryUpstreamProvider
 		// even if invoked outside the reconcile flow (CLI dry-run, webhook, test
 		// harness).
-		// TODO: load primaryUpstreamProvider from configMap
+		// TODO(#5208): load primaryUpstreamProvider from configMap
 		if explicit := vmcp.Spec.IncomingAuth.AuthzConfig.ExplicitPrimaryUpstreamProvider(); explicit != "" {
 			resolved := authserver.ResolveUpstreamName(explicit)
 			if vmcp.Spec.AuthServerConfig == nil {

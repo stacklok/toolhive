@@ -139,7 +139,7 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 	issuer := server.URL
 
 	// Pre-populate the cache with a resolution matching the key we will
@@ -187,7 +187,7 @@ func TestResolveDCRCredentials_RegistersOnCacheMiss(t *testing.T) {
 		},
 	})
 
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 	issuer := server.URL
 	rc := &authserver.OAuth2UpstreamRunConfig{
 		Scopes: []string{"openid", "profile"},
@@ -227,7 +227,7 @@ func TestResolveDCRCredentials_ExplicitEndpointsOverride(t *testing.T) {
 	t.Parallel()
 
 	server := newDCRTestServer(t, dcrTestHandlerConfig{})
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 	issuer := server.URL
 
 	rc := &authserver.OAuth2UpstreamRunConfig{
@@ -262,7 +262,7 @@ func TestResolveDCRCredentials_InitialAccessTokenAsBearer(t *testing.T) {
 	tokenPath := filepath.Join(t.TempDir(), "iat")
 	require.NoError(t, os.WriteFile(tokenPath, []byte("iat-secret-value\n"), 0o600))
 
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 	issuer := server.URL
 	rc := &authserver.OAuth2UpstreamRunConfig{
 		Scopes: []string{"openid"},
@@ -326,7 +326,7 @@ func TestResolveDCRCredentials_DoesNotForwardBearerOnRedirect(t *testing.T) {
 	tokenPath := filepath.Join(t.TempDir(), "iat")
 	require.NoError(t, os.WriteFile(tokenPath, []byte("iat-secret-value\n"), 0o600))
 
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 	issuer := upstream.URL
 	rc := &authserver.OAuth2UpstreamRunConfig{
 		Scopes: []string{"openid"},
@@ -395,7 +395,7 @@ func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
 				tokenEndpointAuthMethodsSupported: tc.supported,
 				codeChallengeMethodsSupported:     tc.codeChallenge,
 			})
-			cache := NewInMemoryDCRCredentialStore()
+			cache := newInMemoryDCRResolutionCache()
 			issuer := server.URL
 			rc := &authserver.OAuth2UpstreamRunConfig{
 				Scopes: []string{"openid"},
@@ -434,7 +434,7 @@ func TestResolveDCRCredentials_RefusesNoneWithoutS256(t *testing.T) {
 				tokenEndpointAuthMethodsSupported: []string{"none"},
 				codeChallengeMethodsSupported:     tc.codeChallenge,
 			})
-			cache := NewInMemoryDCRCredentialStore()
+			cache := newInMemoryDCRResolutionCache()
 			issuer := server.URL
 			rc := &authserver.OAuth2UpstreamRunConfig{
 				Scopes: []string{"openid"},
@@ -460,7 +460,7 @@ func TestResolveDCRCredentials_EmptyAuthMethodIntersectionErrors(t *testing.T) {
 	server := newDCRTestServer(t, dcrTestHandlerConfig{
 		tokenEndpointAuthMethodsSupported: []string{"tls_client_auth"},
 	})
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 	issuer := server.URL
 	rc := &authserver.OAuth2UpstreamRunConfig{
 		Scopes: []string{"openid"},
@@ -486,7 +486,7 @@ func TestResolveDCRCredentials_SynthesisedRegistrationEndpoint(t *testing.T) {
 			gotPath = r.URL.Path
 		},
 	})
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 	issuer := server.URL
 	rc := &authserver.OAuth2UpstreamRunConfig{
 		Scopes: []string{"openid"},
@@ -519,7 +519,7 @@ func TestResolveDCRCredentials_RegistrationEndpointDirectBypassesDiscovery(t *te
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 	issuer := server.URL
 	rc := &authserver.OAuth2UpstreamRunConfig{
 		AuthorizationEndpoint: issuer + "/authorize",
@@ -553,35 +553,35 @@ func TestResolveDCRCredentials_RejectsInvalidInputs(t *testing.T) {
 		name       string
 		rc         *authserver.OAuth2UpstreamRunConfig
 		issuer     string
-		cache      DCRCredentialStore
+		cache      dcrResolutionCache
 		wantErrSub string
 	}{
 		{
 			name:       "nil run-config",
 			rc:         nil,
 			issuer:     "https://example.com",
-			cache:      NewInMemoryDCRCredentialStore(),
+			cache:      newInMemoryDCRResolutionCache(),
 			wantErrSub: "oauth2 upstream run-config is required",
 		},
 		{
 			name:       "pre-provisioned client_id",
 			rc:         &authserver.OAuth2UpstreamRunConfig{ClientID: "preprovisioned", DCRConfig: validCfg},
 			issuer:     "https://example.com",
-			cache:      NewInMemoryDCRCredentialStore(),
+			cache:      newInMemoryDCRResolutionCache(),
 			wantErrSub: "pre-provisioned",
 		},
 		{
 			name:       "missing dcr_config",
 			rc:         &authserver.OAuth2UpstreamRunConfig{},
 			issuer:     "https://example.com",
-			cache:      NewInMemoryDCRCredentialStore(),
+			cache:      newInMemoryDCRResolutionCache(),
 			wantErrSub: "no dcr_config",
 		},
 		{
 			name:       "empty issuer",
 			rc:         &authserver.OAuth2UpstreamRunConfig{DCRConfig: validCfg},
 			issuer:     "",
-			cache:      NewInMemoryDCRCredentialStore(),
+			cache:      newInMemoryDCRResolutionCache(),
 			wantErrSub: "issuer is required",
 		},
 		{
@@ -781,7 +781,7 @@ func TestResolveDCRCredentials_DiscoveryURLHonoured(t *testing.T) {
 	server = httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 	issuer := server.URL
 	rc := &authserver.OAuth2UpstreamRunConfig{
 		Scopes: []string{"openid"},
@@ -822,7 +822,7 @@ func TestResolveDCRCredentials_DiscoveryURLIssuerMismatchRejected(t *testing.T) 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 	issuer := server.URL
 	rc := &authserver.OAuth2UpstreamRunConfig{
 		Scopes: []string{"openid"},
@@ -849,7 +849,7 @@ func TestResolveDCRCredentials_DiscoveredScopesFallback(t *testing.T) {
 			gotBody = body
 		},
 	})
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 	issuer := server.URL
 	rc := &authserver.OAuth2UpstreamRunConfig{
 		// Scopes intentionally left empty so the resolver falls back to
@@ -881,7 +881,7 @@ func TestResolveDCRCredentials_EmptyScopesOmitted(t *testing.T) {
 			gotBody = body
 		},
 	})
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 	issuer := server.URL
 	rc := &authserver.OAuth2UpstreamRunConfig{
 		DCRConfig: &authserver.DCRUpstreamConfig{
@@ -918,7 +918,7 @@ func TestResolveDCRCredentials_UpstreamIssuerDerivedFromDiscoveryURL(t *testing.
 	server := newDCRTestServer(t, dcrTestHandlerConfig{
 		tokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
 	})
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 
 	// Caller-supplied issuer names this auth server, NOT the upstream.
 	// Production wiring always passes its own issuer here (see
@@ -1009,14 +1009,14 @@ func TestDeriveExpectedIssuerFromDiscoveryURL(t *testing.T) {
 	}
 }
 
-// countingStore is a DCRCredentialStore decorator that counts the number of
+// countingStore is a dcrResolutionCache decorator that counts the number of
 // Get calls that returned a hit. The singleflight coalescing test uses it
 // to assert that no concurrent caller observed a cache hit during the run:
 // a hit during the test would mean a goroutine raced past the gate, took
 // the cache-lookup short-circuit instead of joining the singleflight, and
 // silently weakened the test's coverage.
 type countingStore struct {
-	inner DCRCredentialStore
+	inner dcrResolutionCache
 	hits  atomic.Int32
 }
 
@@ -1060,7 +1060,7 @@ func TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers(t *testing
 		},
 	})
 
-	cache := &countingStore{inner: NewInMemoryDCRCredentialStore()}
+	cache := &countingStore{inner: newInMemoryDCRResolutionCache()}
 	issuer := server.URL
 	rc := &authserver.OAuth2UpstreamRunConfig{
 		Scopes: []string{"openid", "profile"},
@@ -1471,7 +1471,7 @@ func TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret(t *testing.T) {
 		},
 	})
 
-	cache := NewInMemoryDCRCredentialStore()
+	cache := newInMemoryDCRResolutionCache()
 	issuer := server.URL
 	rc := &authserver.OAuth2UpstreamRunConfig{
 		Scopes: []string{"openid"},
@@ -1526,7 +1526,7 @@ func TestResolveDCRCredentials_HonoursFutureExpiryAndZero(t *testing.T) {
 					atomic.AddInt32(&registrationCalls, 1)
 				},
 			})
-			cache := NewInMemoryDCRCredentialStore()
+			cache := newInMemoryDCRResolutionCache()
 			issuer := server.URL
 			rc := &authserver.OAuth2UpstreamRunConfig{
 				Scopes: []string{"openid"},
@@ -1677,7 +1677,7 @@ func TestDcrStepError(t *testing.T) {
 
 		// Precondition failure → dcrStepValidate.
 		_, err := resolveDCRCredentials(context.Background(), nil, "https://as",
-			NewInMemoryDCRCredentialStore())
+			newInMemoryDCRResolutionCache())
 		require.Error(t, err)
 		var stepErr *dcrStepError
 		require.True(t, errors.As(err, &stepErr))

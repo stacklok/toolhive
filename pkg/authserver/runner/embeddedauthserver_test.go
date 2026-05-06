@@ -1526,7 +1526,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 			AllowedAudiences: []string{"https://mcp.example.com"},
 		}
 
-		store := NewInMemoryDCRCredentialStore()
+		store := newInMemoryDCRResolutionCache()
 		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
@@ -1588,7 +1588,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 			AllowedAudiences: []string{"https://mcp.example.com"},
 		}
 
-		store := NewInMemoryDCRCredentialStore()
+		store := newInMemoryDCRResolutionCache()
 
 		// First call: populates the store.
 		_, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)

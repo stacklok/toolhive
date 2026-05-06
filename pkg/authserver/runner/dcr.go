@@ -71,7 +71,7 @@ var authMethodPreference = []string{
 // successful Dynamic Client Registration, together with the endpoints the
 // upstream advertises so the caller need not re-discover them.
 //
-// The struct is the unit of storage in DCRCredentialStore and the unit of
+// The struct is the unit of storage in dcrResolutionCache and the unit of
 // application via consumeResolution.
 type DCRResolution struct {
 	// ClientID is the RFC 7591 "client_id" returned by the authorization
@@ -323,7 +323,7 @@ func resolveDCRCredentials(
 	ctx context.Context,
 	rc *authserver.OAuth2UpstreamRunConfig,
 	localIssuer string,
-	cache DCRCredentialStore,
+	cache dcrResolutionCache,
 ) (*DCRResolution, error) {
 	if err := validateResolveInputs(rc, localIssuer, cache); err != nil {
 		return nil, newDCRStepError(dcrStepValidate, localIssuer, "", err)
@@ -393,7 +393,7 @@ func registerAndCache(
 	localIssuer, redirectURI string,
 	scopes []string,
 	key DCRKey,
-	cache DCRCredentialStore,
+	cache dcrResolutionCache,
 ) (*DCRResolution, error) {
 	// Recheck cache: another flight that just finished may have populated
 	// it between our initial lookup and our singleflight entry.
@@ -590,7 +590,7 @@ var queryStrippingPattern = regexp.MustCompile(`(?i)https?://[^\s"']+`)
 func validateResolveInputs(
 	rc *authserver.OAuth2UpstreamRunConfig,
 	localIssuer string,
-	cache DCRCredentialStore,
+	cache dcrResolutionCache,
 ) error {
 	if rc == nil {
 		return fmt.Errorf("oauth2 upstream run-config is required")
@@ -634,7 +634,7 @@ func validateResolveInputs(
 //     trigger.
 func lookupCachedResolution(
 	ctx context.Context,
-	cache DCRCredentialStore,
+	cache dcrResolutionCache,
 	key DCRKey,
 	localIssuer, redirectURI string,
 ) (*DCRResolution, bool, error) {

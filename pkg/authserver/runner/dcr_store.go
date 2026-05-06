@@ -26,15 +26,21 @@ const dcrStaleAgeThreshold = 90 * 24 * time.Hour
 // backend; see storage.DCRKey for the field documentation.
 type DCRKey = storage.DCRKey
 
-// DCRCredentialStore caches RFC 7591 Dynamic Client Registration resolutions
+// dcrResolutionCache caches RFC 7591 Dynamic Client Registration resolutions
 // keyed by the (Issuer, RedirectURI, ScopesHash) tuple. Implementations must
 // be safe for concurrent use.
 //
-// The store is an in-memory cache of long-lived registrations — it is not a
-// durable store, and entries are never expired or evicted by the store
-// itself. Callers are responsible for invalidating entries when the
-// underlying registration is revoked (e.g., via RFC 7592 deregistration).
-type DCRCredentialStore interface {
+// This is a runner-internal cache of *DCRResolution values; it is distinct
+// from the persistent storage.DCRCredentialStore (which holds *DCRCredentials
+// and is the durable contract sub-issue 3 wires the resolver to use). Naming
+// them differently keeps the two interfaces unambiguous to readers and grep
+// tooling while both exist during the Phase 3 migration.
+//
+// The cache is in-memory and holds long-lived registrations — entries are
+// never expired or evicted by the cache itself. Callers are responsible for
+// invalidating entries when the underlying registration is revoked (e.g.,
+// via RFC 7592 deregistration).
+type dcrResolutionCache interface {
 	// Get returns the cached resolution for key, or (nil, false, nil) if the
 	// key is not present. An error is returned only on backend failure.
 	Get(ctx context.Context, key DCRKey) (*DCRResolution, bool, error)
@@ -46,8 +52,8 @@ type DCRCredentialStore interface {
 	Put(ctx context.Context, key DCRKey, resolution *DCRResolution) error
 }
 
-// NewInMemoryDCRCredentialStore returns a thread-safe in-memory
-// DCRCredentialStore intended for tests and single-replica development
+// newInMemoryDCRResolutionCache returns a thread-safe in-memory
+// dcrResolutionCache intended for tests and single-replica development
 // deployments. Production deployments should use the Redis-backed store
 // introduced in Phase 3, which addresses the cross-replica sharing,
 // durability, and cross-process coordination gaps documented below.
@@ -77,23 +83,23 @@ type DCRCredentialStore interface {
 //     that side, the loser becomes orphaned. The
 //     resolveDCRCredentials-level singleflight in dcr.go only deduplicates
 //     within one process.
-func NewInMemoryDCRCredentialStore() DCRCredentialStore {
-	return &inMemoryDCRCredentialStore{
+func newInMemoryDCRResolutionCache() dcrResolutionCache {
+	return &inMemoryDCRResolutionCache{
 		entries: make(map[DCRKey]*DCRResolution),
 	}
 }
 
-// inMemoryDCRCredentialStore is the default DCRCredentialStore backed by a
+// inMemoryDCRResolutionCache is the default dcrResolutionCache backed by a
 // plain map guarded by sync.RWMutex. Modelled on
 // pkg/authserver/storage/memory.go but stripped of TTL bookkeeping — DCR
 // resolutions are long-lived.
-type inMemoryDCRCredentialStore struct {
+type inMemoryDCRResolutionCache struct {
 	mu      sync.RWMutex
 	entries map[DCRKey]*DCRResolution
 }
 
-// Get implements DCRCredentialStore.
-func (s *inMemoryDCRCredentialStore) Get(_ context.Context, key DCRKey) (*DCRResolution, bool, error) {
+// Get implements dcrResolutionCache.
+func (s *inMemoryDCRResolutionCache) Get(_ context.Context, key DCRKey) (*DCRResolution, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -108,13 +114,13 @@ func (s *inMemoryDCRCredentialStore) Get(_ context.Context, key DCRKey) (*DCRRes
 	return &cp, true, nil
 }
 
-// Put implements DCRCredentialStore.
+// Put implements dcrResolutionCache.
 //
 // A nil resolution is rejected rather than silently no-oped: a caller
 // passing nil would otherwise get a successful return, observe a miss on
 // the next Get, and have no error trail to debug from. Failing loudly at
 // the boundary makes such bugs visible at the first call.
-func (s *inMemoryDCRCredentialStore) Put(_ context.Context, key DCRKey, resolution *DCRResolution) error {
+func (s *inMemoryDCRResolutionCache) Put(_ context.Context, key DCRKey, resolution *DCRResolution) error {
 	if resolution == nil {
 		return fmt.Errorf("dcr: resolution must not be nil")
 	}

@@ -552,20 +552,6 @@ func (*VirtualMCPServerReconciler) applyAuthServerIdentitySynthesizedCondition(
 	)
 }
 
-// extractExplicitPrimaryUpstreamProvider returns the user-specified primary
-// upstream provider name from the authz config, or "" if none is set.
-//
-// Currently reads from inline config only. ConfigMap-sourced authz needs to
-// load and parse the referenced ConfigMap; until that path lands (see the
-// matching TODO in pkg/vmcpconfig/converter.go), configMap users always fall
-// through to auto-selection of the first upstream.
-func extractExplicitPrimaryUpstreamProvider(authzConfig *mcpv1beta1.AuthzConfigRef) string {
-	if authzConfig == nil || authzConfig.Inline == nil {
-		return ""
-	}
-	return authzConfig.Inline.PrimaryUpstreamProvider
-}
-
 // validateAuthzUpstreamAvailable ensures that when authorization policies are
 // configured via IncomingAuth.AuthzConfig AND an embedded AuthServer is in use,
 // at least one upstream IDP is declared so Cedar evaluates claim references
@@ -604,7 +590,7 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	// admission for the same "fail loudly instead of denying every request"
 	// reason as the configured-AS mismatch path below.
 	if vmcp.Spec.AuthServerConfig == nil {
-		explicitProvider := extractExplicitPrimaryUpstreamProvider(vmcp.Spec.IncomingAuth.AuthzConfig)
+		explicitProvider := vmcp.Spec.IncomingAuth.AuthzConfig.ExplicitPrimaryUpstreamProvider()
 		if explicitProvider != "" {
 			statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
 
@@ -681,7 +667,7 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	// explicitly, the name must resolve to one of the declared upstreams after
 	// normalization on both sides. A mismatch would cause Cedar to deny every
 	// request at runtime — fail loudly at admission instead.
-	explicitProvider := extractExplicitPrimaryUpstreamProvider(vmcp.Spec.IncomingAuth.AuthzConfig)
+	explicitProvider := vmcp.Spec.IncomingAuth.AuthzConfig.ExplicitPrimaryUpstreamProvider()
 	if explicitProvider != "" {
 		resolved := authserver.ResolveUpstreamName(explicitProvider)
 		matched := false

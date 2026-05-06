@@ -89,6 +89,12 @@ const (
 
 	// ConditionTypeWebhookConfigValidated indicates whether the WebhookConfig is valid
 	ConditionTypeWebhookConfigValidated = "WebhookConfigValidated"
+
+	// ConditionTypeAuthzPrimaryUpstreamProviderIgnored is an advisory condition set
+	// when spec.authzConfig.inline.primaryUpstreamProvider is non-empty on a CR type
+	// that has no embedded auth server (MCPServer / MCPRemoteProxy). The field has
+	// no effect on those resources and is documented as VirtualMCPServer-only.
+	ConditionTypeAuthzPrimaryUpstreamProviderIgnored = "AuthzPrimaryUpstreamProviderIgnored"
 )
 
 const (
@@ -98,6 +104,11 @@ const (
 
 	// ConditionReasonWebhookConfigInvalid indicates the referenced webhook config is invalid or missing
 	ConditionReasonWebhookConfigInvalid = "WebhookConfigInvalid"
+
+	// ConditionReasonAuthzPrimaryUpstreamProviderIgnored indicates that
+	// primaryUpstreamProvider is set on a CR type without an embedded auth server,
+	// where the field has no runtime effect.
+	ConditionReasonAuthzPrimaryUpstreamProviderIgnored = "PrimaryUpstreamProviderIgnored"
 )
 
 const (
@@ -693,6 +704,20 @@ type AuthzConfigRef struct {
 	Inline *InlineAuthzConfig `json:"inline,omitempty"`
 }
 
+// ExplicitPrimaryUpstreamProvider returns the user-specified primary upstream
+// provider name from the authz config, or "" if none is set.
+//
+// Currently reads from inline config only. ConfigMap-sourced authz needs to
+// load and parse the referenced ConfigMap; until that path lands (see the
+// matching TODO in cmd/thv-operator/pkg/vmcpconfig/converter.go), configMap
+// users always fall through to auto-selection of the first upstream.
+func (r *AuthzConfigRef) ExplicitPrimaryUpstreamProvider() string {
+	if r == nil || r.Inline == nil {
+		return ""
+	}
+	return r.Inline.PrimaryUpstreamProvider
+}
+
 // ConfigMapAuthzRef references a ConfigMap containing authorization configuration
 type ConfigMapAuthzRef struct {
 	// Name is the name of the ConfigMap
@@ -775,13 +800,18 @@ type InlineAuthzConfig struct {
 	EntitiesJSON string `json:"entitiesJson,omitempty"`
 
 	// PrimaryUpstreamProvider names the upstream IDP whose access token's claims
-	// Cedar should evaluate. Only meaningful for VirtualMCPServer with an embedded
-	// auth server. When empty and an embedded auth server has upstreams configured,
-	// the controller defaults to the first upstream provider. Ignored by MCPServer
-	// and MCPRemoteProxy. The name must match one of the upstreams declared on
+	// Cedar should evaluate. Only honored when the parent AuthzConfigRef.Type is
+	// "inline"; on Type "configMap" this value is currently not loaded (see TODO
+	// in cmd/thv-operator/pkg/vmcpconfig/converter.go). Only meaningful for
+	// VirtualMCPServer with an embedded auth server. When empty and an embedded
+	// auth server has upstreams configured, the controller defaults to the first
+	// upstream provider. The name must match one of the upstreams declared on
 	// spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
-	// rejected with AuthServerConfigValidated=False.
+	// rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
+	// have no embedded auth server; setting this field on those CRs surfaces an
+	// AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
 	// +optional
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
 	PrimaryUpstreamProvider string `json:"primaryUpstreamProvider,omitempty"`
 }
 

@@ -208,12 +208,9 @@ func (c *Converter) convertIncomingAuth(
 		// auth server is configured at all, so by the time we reach this branch the
 		// value resolves to a real upstream on the embedded AS.
 		// TODO: load primaryUpstreamProvider from configMap
-		switch {
-		case vmcp.Spec.IncomingAuth.AuthzConfig.Inline != nil &&
-			vmcp.Spec.IncomingAuth.AuthzConfig.Inline.PrimaryUpstreamProvider != "":
-			incoming.Authz.PrimaryUpstreamProvider = authserver.ResolveUpstreamName(
-				vmcp.Spec.IncomingAuth.AuthzConfig.Inline.PrimaryUpstreamProvider,
-			)
+		switch explicit := vmcp.Spec.IncomingAuth.AuthzConfig.ExplicitPrimaryUpstreamProvider(); {
+		case explicit != "":
+			incoming.Authz.PrimaryUpstreamProvider = authserver.ResolveUpstreamName(explicit)
 		case vmcp.Spec.AuthServerConfig != nil && len(vmcp.Spec.AuthServerConfig.UpstreamProviders) > 0:
 			incoming.Authz.PrimaryUpstreamProvider = authserver.ResolveUpstreamName(
 				vmcp.Spec.AuthServerConfig.UpstreamProviders[0].Name,

@@ -358,19 +358,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 
 	attachStdio := options == nil || options.AttachStdio
 
-	// Convert environment variables to Kubernetes format.
-	// Sort keys so the resulting list is deterministic — Go map iteration
-	// is randomized, and any ordering shift here changes the pod template
-	// hash and triggers an unnecessary StatefulSet rollout (#5063).
-	envKeys := make([]string, 0, len(envVars))
-	for k := range envVars {
-		envKeys = append(envKeys, k)
-	}
-	sort.Strings(envKeys)
-	envVarList := make([]*corev1apply.EnvVarApplyConfiguration, 0, len(envKeys))
-	for _, k := range envKeys {
-		envVarList = append(envVarList, corev1apply.EnvVar().WithName(k).WithValue(envVars[k]))
-	}
+	envVarList := buildSortedEnvVarList(envVars)
 
 	// Create a pod template spec
 	podTemplateSpec := ensureObjectMetaApplyConfigurationExists(corev1apply.PodTemplateSpec())
@@ -455,6 +443,23 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	}
 
 	return 0, nil
+}
+
+// buildSortedEnvVarList converts an env var map to Kubernetes apply configurations
+// with deterministically ordered keys. Go map iteration is randomized, and any
+// ordering shift changes the pod template hash and triggers an unnecessary
+// StatefulSet rollout (#5063).
+func buildSortedEnvVarList(envVars map[string]string) []*corev1apply.EnvVarApplyConfiguration {
+	envKeys := make([]string, 0, len(envVars))
+	for k := range envVars {
+		envKeys = append(envKeys, k)
+	}
+	sort.Strings(envKeys)
+	envVarList := make([]*corev1apply.EnvVarApplyConfiguration, 0, len(envKeys))
+	for _, k := range envKeys {
+		envVarList = append(envVarList, corev1apply.EnvVar().WithName(k).WithValue(envVars[k]))
+	}
+	return envVarList
 }
 
 // runConfigGeneration extracts the RunConfig MCPServer generation from options,

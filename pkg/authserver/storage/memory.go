@@ -1224,10 +1224,16 @@ func cloneDCRCredentials(c *DCRCredentials) *DCRCredentials {
 // retained verbatim for callers to re-check on read (see the interface
 // docstring's "TTL handling" section).
 //
-// Rejects nil creds and an unpopulated Key (empty Issuer or empty
-// RedirectURI). An empty ScopesHash is permitted because ScopesHash("")
-// produces a non-empty canonical digest, and the empty-scope case
-// (no scopes configured or discovered) is a real, valid registration.
+// Validation rejects nil creds, an unpopulated Key (empty Issuer,
+// RedirectURI, or ScopesHash), and missing RFC 7591 mandatory response
+// fields (ClientID, AuthorizationEndpoint, TokenEndpoint). An empty
+// ScopesHash is rejected because the canonical digest of any scope set —
+// including the empty-scope set via ScopesHash(nil) — is non-empty, so an
+// empty string can only be a caller bug; accepting it would silently
+// route a forgotten-hash record to a different cache slot than a sibling
+// caller that did compute ScopesHash. ClientSecret is left permissive
+// because RFC 7591 §2 public clients (auth method "none") legitimately
+// register without a secret.
 func (s *MemoryStorage) StoreDCRCredentials(_ context.Context, creds *DCRCredentials) error {
 	if creds == nil {
 		return fosite.ErrInvalidRequest.WithHint("dcr credentials cannot be nil")
@@ -1237,6 +1243,18 @@ func (s *MemoryStorage) StoreDCRCredentials(_ context.Context, creds *DCRCredent
 	}
 	if creds.Key.RedirectURI == "" {
 		return fosite.ErrInvalidRequest.WithHint("dcr credentials key redirect_uri cannot be empty")
+	}
+	if creds.Key.ScopesHash == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials key scopes_hash cannot be empty")
+	}
+	if creds.ClientID == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials client_id cannot be empty")
+	}
+	if creds.AuthorizationEndpoint == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials authorization_endpoint cannot be empty")
+	}
+	if creds.TokenEndpoint == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials token_endpoint cannot be empty")
 	}
 
 	s.mu.Lock()

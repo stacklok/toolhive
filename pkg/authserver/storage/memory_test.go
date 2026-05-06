@@ -1759,11 +1759,19 @@ func TestMemoryStorage_DCRCredentials_DistinctKeysDoNotCollide(t *testing.T) {
 				ScopesHash:  ScopesHash(scopes),
 			}
 		}
+		mkCreds := func(key DCRKey, clientID string) *DCRCredentials {
+			return &DCRCredentials{
+				Key:                   key,
+				ClientID:              clientID,
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+			}
+		}
 		entries := []*DCRCredentials{
-			{Key: mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid"}), ClientID: "a"},
-			{Key: mkKey("https://idp-b.example.com", "https://x/cb", []string{"openid"}), ClientID: "b"},
-			{Key: mkKey("https://idp-a.example.com", "https://y/cb", []string{"openid"}), ClientID: "c"},
-			{Key: mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid", "email"}), ClientID: "d"},
+			mkCreds(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid"}), "a"),
+			mkCreds(mkKey("https://idp-b.example.com", "https://x/cb", []string{"openid"}), "b"),
+			mkCreds(mkKey("https://idp-a.example.com", "https://y/cb", []string{"openid"}), "c"),
+			mkCreds(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid", "email"}), "d"),
 		}
 		for _, e := range entries {
 			require.NoError(t, s.StoreDCRCredentials(ctx, e))
@@ -1780,10 +1788,22 @@ func TestMemoryStorage_DCRCredentials_DistinctKeysDoNotCollide(t *testing.T) {
 
 func TestMemoryStorage_DCRCredentials_OverwriteSemantics(t *testing.T) {
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-		key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x/cb"}
+		key := DCRKey{
+			Issuer:      "https://idp.example.com",
+			RedirectURI: "https://x/cb",
+			ScopesHash:  ScopesHash([]string{"openid"}),
+		}
+		mkCreds := func(clientID string) *DCRCredentials {
+			return &DCRCredentials{
+				Key:                   key,
+				ClientID:              clientID,
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+			}
+		}
 
-		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{Key: key, ClientID: "first"}))
-		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{Key: key, ClientID: "second"}))
+		require.NoError(t, s.StoreDCRCredentials(ctx, mkCreds("first")))
+		require.NoError(t, s.StoreDCRCredentials(ctx, mkCreds("second")))
 
 		got, err := s.GetDCRCredentials(ctx, key)
 		require.NoError(t, err)
@@ -1799,31 +1819,79 @@ func TestMemoryStorage_DCRCredentials_NotFound(t *testing.T) {
 }
 
 // TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected pins the
-// fail-loud-on-invalid-input contract: nil creds, an empty Key.Issuer, or
-// an empty Key.RedirectURI must be rejected with fosite.ErrInvalidRequest
-// rather than producing a working-looking write under a partially-populated
-// key.
+// fail-loud-on-invalid-input contract: nil creds, an unpopulated Key
+// (empty Issuer, RedirectURI, or ScopesHash), and missing RFC 7591
+// mandatory response fields (ClientID, AuthorizationEndpoint,
+// TokenEndpoint) must be rejected with fosite.ErrInvalidRequest rather
+// than producing a working-looking write that fails downstream at the
+// upstream's token endpoint.
 func TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected(t *testing.T) {
 	t.Parallel()
 
+	// validCreds returns a fully-populated DCRCredentials that subtests
+	// mutate to isolate a single missing field. Keeping every other field
+	// valid ensures the assertion proves which field was rejected.
+	validCreds := func() *DCRCredentials {
+		return &DCRCredentials{
+			Key: DCRKey{
+				Issuer:      "https://idp.example.com",
+				RedirectURI: "https://x/cb",
+				ScopesHash:  ScopesHash([]string{"openid"}),
+			},
+			ClientID:              "abc",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}
+	}
+
 	tests := []struct {
-		name  string
-		creds *DCRCredentials
+		name    string
+		mutator func(*DCRCredentials) *DCRCredentials
 	}{
 		{
-			name:  "nil creds",
-			creds: nil,
+			name:    "nil creds",
+			mutator: func(*DCRCredentials) *DCRCredentials { return nil },
 		},
 		{
 			name: "empty issuer",
-			creds: &DCRCredentials{
-				Key: DCRKey{Issuer: "", RedirectURI: "https://x/cb"},
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.Key.Issuer = ""
+				return c
 			},
 		},
 		{
 			name: "empty redirect_uri",
-			creds: &DCRCredentials{
-				Key: DCRKey{Issuer: "https://idp.example.com", RedirectURI: ""},
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.Key.RedirectURI = ""
+				return c
+			},
+		},
+		{
+			name: "empty scopes_hash",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.Key.ScopesHash = ""
+				return c
+			},
+		},
+		{
+			name: "empty client_id",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.ClientID = ""
+				return c
+			},
+		},
+		{
+			name: "empty authorization_endpoint",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.AuthorizationEndpoint = ""
+				return c
+			},
+		},
+		{
+			name: "empty token_endpoint",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.TokenEndpoint = ""
+				return c
 			},
 		},
 	}
@@ -1831,7 +1899,7 @@ func TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-				err := s.StoreDCRCredentials(ctx, tc.creds)
+				err := s.StoreDCRCredentials(ctx, tc.mutator(validCreds()))
 				require.Error(t, err)
 				assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
 				// Confirm the rejection did not partially populate the store.
@@ -1847,8 +1915,17 @@ func TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected(t *testing.T) {
 // affect persisted state.
 func TestMemoryStorage_DCRCredentials_GetReturnsDefensiveCopy(t *testing.T) {
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-		key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x/cb"}
-		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{Key: key, ClientID: "orig"}))
+		key := DCRKey{
+			Issuer:      "https://idp.example.com",
+			RedirectURI: "https://x/cb",
+			ScopesHash:  ScopesHash([]string{"openid"}),
+		}
+		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "orig",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}))
 
 		got, err := s.GetDCRCredentials(ctx, key)
 		require.NoError(t, err)
@@ -1865,8 +1942,17 @@ func TestMemoryStorage_DCRCredentials_GetReturnsDefensiveCopy(t *testing.T) {
 // Store must not affect persisted state.
 func TestMemoryStorage_DCRCredentials_StoreCopyIsolatesCaller(t *testing.T) {
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-		key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x/cb"}
-		input := &DCRCredentials{Key: key, ClientID: "orig"}
+		key := DCRKey{
+			Issuer:      "https://idp.example.com",
+			RedirectURI: "https://x/cb",
+			ScopesHash:  ScopesHash([]string{"openid"}),
+		}
+		input := &DCRCredentials{
+			Key:                   key,
+			ClientID:              "orig",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}
 		require.NoError(t, s.StoreDCRCredentials(ctx, input))
 
 		input.ClientID = "tampered-after-store"
@@ -1883,11 +1969,17 @@ func TestMemoryStorage_DCRCredentials_StoreCopyIsolatesCaller(t *testing.T) {
 // process lifetime.
 func TestMemoryStorage_DCRCredentials_ExcludedFromCleanupExpired(t *testing.T) {
 	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
-		key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x/cb"}
+		key := DCRKey{
+			Issuer:      "https://idp.example.com",
+			RedirectURI: "https://x/cb",
+			ScopesHash:  ScopesHash([]string{"openid"}),
+		}
 		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
-			Key:       key,
-			ClientID:  "abc",
-			CreatedAt: time.Now().Add(-365 * 24 * time.Hour),
+			Key:                   key,
+			ClientID:              "abc",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+			CreatedAt:             time.Now().Add(-365 * 24 * time.Hour),
 		}))
 
 		s.cleanupExpired()

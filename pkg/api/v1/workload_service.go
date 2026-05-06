@@ -463,8 +463,6 @@ func createRequestToRemoteAuthConfig(
 	req *createRequest,
 ) *remote.Config {
 
-	resource := req.OAuthConfig.Resource
-
 	// Create RemoteAuthConfig
 	remoteAuthConfig := &remote.Config{
 		ClientID:     req.OAuthConfig.ClientID,
@@ -473,7 +471,7 @@ func createRequestToRemoteAuthConfig(
 		AuthorizeURL: req.OAuthConfig.AuthorizeURL,
 		TokenURL:     req.OAuthConfig.TokenURL,
 		UsePKCE:      req.OAuthConfig.UsePKCE,
-		Resource:     resource,
+		Resource:     req.OAuthConfig.Resource,
 		OAuthParams:  req.OAuthConfig.OAuthParams,
 		CallbackPort: req.OAuthConfig.CallbackPort,
 		SkipBrowser:  req.OAuthConfig.SkipBrowser,

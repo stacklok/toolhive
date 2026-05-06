@@ -948,12 +948,7 @@ func getRemoteAuthFromRemoteServerMetadata(
 	authCfg.AuthorizeURL = firstNonEmpty(f.RemoteAuthAuthorizeURL, oc.AuthorizeURL)
 	authCfg.TokenURL = firstNonEmpty(f.RemoteAuthTokenURL, oc.TokenURL)
 
-	resourceIndicator := firstNonEmpty(f.RemoteAuthResource, oc.Resource)
-	if resourceIndicator != "" {
-		authCfg.Resource = resourceIndicator
-	} else {
-		authCfg.Resource = remote.DefaultResourceIndicator(remoteServerMetadata.URL)
-	}
+	authCfg.Resource = firstNonEmpty(f.RemoteAuthResource, oc.Resource)
 
 	// OAuthParams: REPLACE metadata when CLI provides any key/value.
 	if len(runFlags.OAuthParams) > 0 {

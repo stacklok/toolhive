@@ -47,7 +47,7 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 	}
 
 	err := fileutils.WithFileLock(path, func() error {
-		content, err := readOrInit(path)
+		content, err := readOrInitFile(path, []byte("{}"))
 		if err != nil {
 			return err
 		}
@@ -80,9 +80,24 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 // allowing conditional keys (e.g. NODE_TLS_REJECT_UNAUTHORIZED) to be cleaned
 // up when the associated flag is cleared.
 func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgateway.ApplyConfig, filePath string) error {
+	// Resolve all values up front so an unknown ValueField fails fast before
+	// any file is modified.
+	values := make([]string, len(specs))
+	for i, spec := range specs {
+		if spec.Literal != "" {
+			values[i] = spec.Literal
+		} else {
+			v, err := llmValueForSpec(spec.ValueField, cfg)
+			if err != nil {
+				return err
+			}
+			values[i] = v
+		}
+	}
+
 	// Ensure ancestors only for specs that will be written (not removed).
-	for _, spec := range specs {
-		if spec.ClearWhenEmpty && llmValueForSpec(spec.ValueField, cfg) == "" {
+	for i, spec := range specs {
+		if spec.ClearWhenEmpty && values[i] == "" {
 			continue
 		}
 		if err := ensureLLMAncestors(v, spec.JSONPointer, filePath); err != nil {
@@ -96,8 +111,8 @@ func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgate
 		return fmt.Errorf("standardizing %s: %w", filePath, err)
 	}
 
-	for _, spec := range specs {
-		value := llmValueForSpec(spec.ValueField, cfg)
+	for i, spec := range specs {
+		value := values[i]
 		if spec.ClearWhenEmpty && value == "" {
 			if err := removeLLMKey(v, spec.JSONPointer, filePath, standardized); err != nil {
 				return err
@@ -258,27 +273,48 @@ func (cm *ClientManager) buildLLMSettingsPath(cfg *clientAppConfig) string {
 	)
 }
 
-// llmValueForSpec returns the config value corresponding to the ValueField name.
-// For "NodeTLSRejectUnauthorized", returns "0" when TLSSkipVerify is true, or ""
-// when false (which triggers removal when ClearWhenEmpty is set on the spec).
-func llmValueForSpec(valueField string, cfg llmgateway.ApplyConfig) string {
+// resolveApplyConfigField maps a ValueField name to its runtime value from cfg.
+// Returns (value, true) for any recognized field, ("", false) for unknown ones.
+// This is the single source of truth for ValueField semantics shared by both
+// LLMGatewayKeySpec (settings-file patching) and LLMEnvFileKeySpec (.env injection).
+func resolveApplyConfigField(valueField string, cfg llmgateway.ApplyConfig) (string, bool) {
 	switch valueField {
 	case "GatewayURL":
-		return cfg.GatewayURL
+		return cfg.GatewayURL, true
+	case "AnthropicBaseURL":
+		// Use the pre-computed Anthropic base URL when available; fall back to
+		// GatewayURL so existing configs continue to work without the prefix.
+		if cfg.AnthropicBaseURL != "" {
+			return cfg.AnthropicBaseURL, true
+		}
+		return cfg.GatewayURL, true
 	case "ProxyBaseURL":
-		return cfg.ProxyBaseURL
+		return cfg.ProxyBaseURL, true
+	case "ProxyOrigin":
+		return llmgateway.ProxyOriginOf(cfg.ProxyBaseURL), true
 	case "TokenHelperCommand":
-		return cfg.TokenHelperCommand
+		return cfg.TokenHelperCommand, true
 	case "PlaceholderAPIKey":
-		return llmPlaceholderAPIKey
+		return llmPlaceholderAPIKey, true
 	case "NodeTLSRejectUnauthorized":
 		if cfg.TLSSkipVerify {
-			return "0"
+			return "0", true
 		}
-		return ""
+		return "", true
 	default:
-		return valueField // treat unknown field names as literal values
+		return "", false
 	}
+}
+
+// llmValueForSpec returns the config value for a settings-file key spec.
+// An unrecognised ValueField is a programming error and returns an error so
+// typos are caught at call time rather than silently written into user config.
+// Use LLMGatewayKeySpec.Literal for constant values.
+func llmValueForSpec(valueField string, cfg llmgateway.ApplyConfig) (string, error) {
+	if v, ok := resolveApplyConfigField(valueField, cfg); ok {
+		return v, nil
+	}
+	return "", fmt.Errorf("unknown ValueField %q in LLMGatewayKeySpec; use Literal for constant values", valueField)
 }
 
 // ensureLLMAncestors walks every ancestor of ptr from root inward and creates
@@ -344,18 +380,19 @@ func jsonPointerExists(data []byte, pointer string) bool {
 	return true
 }
 
-// readOrInit reads path and returns its content, or "{}" if the file is missing
-// or empty. Returns an error only for real IO failures.
-func readOrInit(path string) ([]byte, error) {
+// readOrInitFile reads path and returns its content.
+// When the file is missing or empty it returns defaultContent instead.
+// Returns an error only for real IO failures.
+func readOrInitFile(path string, defaultContent []byte) ([]byte, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path is a known tool config file location
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []byte("{}"), nil
+			return defaultContent, nil
 		}
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 	if len(data) == 0 {
-		return []byte("{}"), nil
+		return defaultContent, nil
 	}
 	return data, nil
 }

@@ -4,15 +4,45 @@
 package client
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tailscale/hujson"
 
 	"github.com/stacklok/toolhive/pkg/llmgateway"
 )
+
+// jsonPointerGet resolves a JSON Pointer (RFC 6901) in data and returns the
+// string value at that path, or ("", false) if the pointer does not exist or
+// the value is not a string. data may be JSONC (hujson).
+func jsonPointerGet(data []byte, pointer string) (string, bool) {
+	std, err := hujson.Standardize(data)
+	if err != nil {
+		return "", false
+	}
+	var root any
+	if err := json.Unmarshal(std, &root); err != nil {
+		return "", false
+	}
+	current := root
+	for _, seg := range strings.Split(strings.TrimPrefix(pointer, "/"), "/") {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return "", false
+		}
+		current, ok = m[seg]
+		if !ok {
+			return "", false
+		}
+	}
+	s, ok := current.(string)
+	return s, ok
+}
 
 // fakeLLMBinary is the sentinel binary name used in tests that exercise the
 // exec.LookPath check inside DetectedLLMGatewayClients. The real lookup is
@@ -27,6 +57,10 @@ const fakeLLMBinary = "fake-llm-tool"
 // ValueField names, or missing intermediate-object creation in the real config
 // table — none of which are caught by tests that use fake clientAppConfig
 // entries via LLMTestIntegrations.
+//
+// Values are asserted via exact JSON-pointer lookups rather than raw substring
+// checks, so a value landing at a wrong pointer (or as a stray key name) will
+// fail the test rather than silently pass.
 func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 	t.Parallel()
 
@@ -40,58 +74,58 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 		TokenHelperCommand: `"thv" llm token`,
 	}
 
-	// expectedKeys lists substrings that must appear in the settings file after
-	// Configure, and must NOT appear after Revert. Each entry maps to one real
-	// clientAppConfig in supportedClientIntegrations.
+	// wantPointers maps RFC 6901 JSON pointer → expected string value after
+	// Configure. After Revert every pointer must be absent.
 	cases := []struct {
 		clientType   ClientApp
-		expectedKeys []string
+		wantPointers map[string]string
 	}{
 		{
 			// ~/.claude/settings.json
 			clientType: ClaudeCode,
-			expectedKeys: []string{
-				"apiKeyHelper",
-				"ANTHROPIC_BASE_URL", "https://gw.example.com",
+			wantPointers: map[string]string{
+				"/apiKeyHelper":           `"thv" llm token`,
+				"/env/ANTHROPIC_BASE_URL": "https://gw.example.com",
 			},
 		},
 		{
 			// ~/.gemini/settings.json
+			// NODE_TLS_REJECT_UNAUTHORIZED must NOT appear when TLSSkipVerify is false.
 			clientType: GeminiCli,
-			expectedKeys: []string{
-				"tokenCommand", "baseUrl", "https://gw.example.com",
+			wantPointers: map[string]string{
+				"/security/auth/selectedType": "gemini-api-key",
 			},
 		},
 		{
 			// ~/.<platform>/Cursor/User/settings.json
 			clientType: Cursor,
-			expectedKeys: []string{
-				"cursor.general.openAIBaseURL", "http://localhost:14000/v1",
-				"cursor.general.openAIAPIKey", "thv-proxy",
+			wantPointers: map[string]string{
+				"/cursor.general.openAIBaseURL": "http://localhost:14000/v1",
+				"/cursor.general.openAIAPIKey":  "thv-proxy",
 			},
 		},
 		{
 			// ~/.<platform>/Code/User/settings.json
 			clientType: VSCode,
-			expectedKeys: []string{
-				"github.copilot.advanced.serverUrl", "http://localhost:14000/v1",
-				"github.copilot.advanced.apiKey", "thv-proxy",
+			wantPointers: map[string]string{
+				"/github.copilot.advanced.serverUrl": "http://localhost:14000/v1",
+				"/github.copilot.advanced.apiKey":    "thv-proxy",
 			},
 		},
 		{
 			// ~/.<platform>/Code - Insiders/User/settings.json
 			clientType: VSCodeInsider,
-			expectedKeys: []string{
-				"github.copilot.advanced.serverUrl", "http://localhost:14000/v1",
-				"github.copilot.advanced.apiKey", "thv-proxy",
+			wantPointers: map[string]string{
+				"/github.copilot.advanced.serverUrl": "http://localhost:14000/v1",
+				"/github.copilot.advanced.apiKey":    "thv-proxy",
 			},
 		},
 		{
 			// ~/Library/Application Support/GitHub Copilot for Xcode/editorSettings.json
 			clientType: ClientApp(Xcode),
-			expectedKeys: []string{
-				"openAIBaseURL", "http://localhost:14000/v1",
-				"apiKey", "thv-proxy",
+			wantPointers: map[string]string{
+				"/openAIBaseURL": "http://localhost:14000/v1",
+				"/apiKey":        "thv-proxy",
 			},
 		},
 	}
@@ -108,25 +142,26 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 			settingsPath := cm.buildLLMSettingsPath(cfg)
 			require.NoError(t, os.MkdirAll(filepath.Dir(settingsPath), 0o700))
 
-			// Configure and verify all expected keys appear.
+			// Configure and verify each pointer resolves to the expected value.
 			path, err := cm.ConfigureLLMGateway(tc.clientType, applyCfg)
 			require.NoError(t, err)
 
 			data, err := os.ReadFile(path)
 			require.NoError(t, err)
-			for _, key := range tc.expectedKeys {
-				assert.Contains(t, string(data), key,
-					"key %q missing after Configure for %s", key, tc.clientType)
+			for ptr, want := range tc.wantPointers {
+				got, ok := jsonPointerGet(data, ptr)
+				assert.True(t, ok, "pointer %q missing after Configure for %s", ptr, tc.clientType)
+				assert.Equal(t, want, got, "wrong value at %q after Configure for %s", ptr, tc.clientType)
 			}
 
-			// Revert and verify all expected keys are gone.
+			// Revert and verify every pointer is gone.
 			require.NoError(t, cm.RevertLLMGateway(tc.clientType, path))
 
 			data, err = os.ReadFile(path)
 			require.NoError(t, err)
-			for _, key := range tc.expectedKeys {
-				assert.NotContains(t, string(data), key,
-					"key %q still present after Revert for %s", key, tc.clientType)
+			for ptr := range tc.wantPointers {
+				_, ok := jsonPointerGet(data, ptr)
+				assert.False(t, ok, "pointer %q still present after Revert for %s", ptr, tc.clientType)
 			}
 		})
 	}
@@ -171,11 +206,9 @@ func TestConfigureLLMGateway_DeepNestedKey(t *testing.T) {
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	s := string(data)
-	assert.Contains(t, s, `"a"`, "outer ancestor object must be created")
-	assert.Contains(t, s, `"b"`, "inner ancestor object must be created")
-	assert.Contains(t, s, `"c"`, "leaf key must be written")
-	assert.Contains(t, s, "https://gw.example.com", "leaf value must be written")
+	got, ok := jsonPointerGet(data, "/a/b/c")
+	assert.True(t, ok, "deep nested key /a/b/c must exist (ancestor objects must be created)")
+	assert.Equal(t, "https://gw.example.com", got, "deep nested value must match")
 }
 
 // ── IsLLMGatewaySupported / LLMGatewayModeFor ─────────────────────────────────
@@ -233,9 +266,9 @@ func TestConfigureLLMGateway_CreatesFile(t *testing.T) {
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "apiKeyHelper")
-	assert.Contains(t, string(data), "thv")
-	assert.Contains(t, string(data), "llm token")
+	got, ok := jsonPointerGet(data, "/apiKeyHelper")
+	assert.True(t, ok, "/apiKeyHelper pointer must be present")
+	assert.Equal(t, `"thv" llm token`, got, "/apiKeyHelper must contain the token helper command")
 }
 
 func TestConfigureLLMGateway_PreservesExistingKeys(t *testing.T) {
@@ -256,8 +289,10 @@ func TestConfigureLLMGateway_PreservesExistingKeys(t *testing.T) {
 
 	data, err := os.ReadFile(settingsPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "permissions")  // original key preserved
-	assert.Contains(t, string(data), "apiKeyHelper") // new key added
+	assert.Contains(t, string(data), "permissions") // non-string object — checked as raw substring
+	got, ok := jsonPointerGet(data, "/apiKeyHelper")
+	assert.True(t, ok, "/apiKeyHelper pointer must be present after configure")
+	assert.Equal(t, `"thv" llm token`, got)
 }
 
 func TestConfigureLLMGateway_JSONCPreservesExistingParent(t *testing.T) {
@@ -339,8 +374,9 @@ func TestRevertLLMGateway_RemovesKey(t *testing.T) {
 
 	data, err := os.ReadFile(settingsPath)
 	require.NoError(t, err)
-	assert.NotContains(t, string(data), "apiKeyHelper")
-	assert.Contains(t, string(data), "permissions") // unrelated key survives
+	_, ok := jsonPointerGet(data, "/apiKeyHelper")
+	assert.False(t, ok, "/apiKeyHelper must be removed after revert")
+	assert.Contains(t, string(data), "permissions") // non-string object — checked as raw substring
 }
 
 func TestRevertLLMGateway_MissingFile(t *testing.T) {
@@ -400,10 +436,12 @@ func TestConfigureLLMGateway_ProxyMode(t *testing.T) {
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "serverUrl")
-	assert.Contains(t, string(data), "http://localhost:14000/v1")
-	assert.Contains(t, string(data), "apiKey")
-	assert.Contains(t, string(data), "thv-proxy")
+	serverURL, okURL := jsonPointerGet(data, "/github.copilot.advanced.serverUrl")
+	assert.True(t, okURL, "/github.copilot.advanced.serverUrl pointer must be present")
+	assert.Equal(t, "http://localhost:14000/v1", serverURL)
+	apiKey, okKey := jsonPointerGet(data, "/github.copilot.advanced.apiKey")
+	assert.True(t, okKey, "/github.copilot.advanced.apiKey pointer must be present")
+	assert.Equal(t, "thv-proxy", apiKey)
 }
 
 // ── DetectedLLMGatewayClients ─────────────────────────────────────────────────
@@ -571,8 +609,9 @@ func TestConfigureLLMGateway_TLSSkipVerify_WritesNodeEnv(t *testing.T) {
 
 	data, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED")
-	assert.Contains(t, string(data), `"0"`)
+	val, ok := jsonPointerGet(data, "/env/NODE_TLS_REJECT_UNAUTHORIZED")
+	assert.True(t, ok, "/env/NODE_TLS_REJECT_UNAUTHORIZED must be present when TLSSkipVerify=true")
+	assert.Equal(t, "0", val)
 }
 
 func TestConfigureLLMGateway_TLSSkipVerify_NotSet_DoesNotWriteNodeEnv(t *testing.T) {
@@ -590,7 +629,8 @@ func TestConfigureLLMGateway_TLSSkipVerify_NotSet_DoesNotWriteNodeEnv(t *testing
 
 	data, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
 	require.NoError(t, err)
-	assert.NotContains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED")
+	_, ok := jsonPointerGet(data, "/env/NODE_TLS_REJECT_UNAUTHORIZED")
+	assert.False(t, ok, "/env/NODE_TLS_REJECT_UNAUTHORIZED must not be written when TLSSkipVerify=false")
 }
 
 func TestConfigureLLMGateway_TLSSkipVerify_ClearRemovesKey(t *testing.T) {
@@ -610,7 +650,8 @@ func TestConfigureLLMGateway_TLSSkipVerify_ClearRemovesKey(t *testing.T) {
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	data, err := os.ReadFile(settingsPath)
 	require.NoError(t, err)
-	require.Contains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED", "key must be present after first configure")
+	_, present := jsonPointerGet(data, "/env/NODE_TLS_REJECT_UNAUTHORIZED")
+	require.True(t, present, "/env/NODE_TLS_REJECT_UNAUTHORIZED must be present after first configure")
 
 	// Second run: clear tls-skip-verify
 	_, err = cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
@@ -621,7 +662,88 @@ func TestConfigureLLMGateway_TLSSkipVerify_ClearRemovesKey(t *testing.T) {
 
 	data, err = os.ReadFile(settingsPath)
 	require.NoError(t, err)
-	assert.NotContains(t, string(data), "NODE_TLS_REJECT_UNAUTHORIZED", "key must be removed when TLSSkipVerify is cleared")
+	_, present = jsonPointerGet(data, "/env/NODE_TLS_REJECT_UNAUTHORIZED")
+	assert.False(t, present, "/env/NODE_TLS_REJECT_UNAUTHORIZED must be removed when TLSSkipVerify is cleared")
+}
+
+// TestRealClientConfigs_GeminiCLI_NeverWritesTLSKey verifies that
+// NODE_TLS_REJECT_UNAUTHORIZED is never written for Gemini CLI regardless of
+// TLSSkipVerify. In proxy mode the tool connects to localhost over plain HTTP,
+// so setting the env var would only globally suppress TLS for other HTTPS
+// requests — an unacceptable side-effect. The key spec is intentionally absent.
+func TestRealClientConfigs_GeminiCLI_NeverWritesTLSKey(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".gemini"), 0o700))
+
+	for _, skipVerify := range []bool{false, true} {
+		path, err := cm.ConfigureLLMGateway(GeminiCli, llmgateway.ApplyConfig{
+			ProxyBaseURL:  "http://localhost:14000/v1",
+			TLSSkipVerify: skipVerify,
+		})
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		_, ok := jsonPointerGet(data, "/env/NODE_TLS_REJECT_UNAUTHORIZED")
+		assert.False(t, ok, "TLS key must never be written for Gemini CLI (TLSSkipVerify=%v)", skipVerify)
+	}
+}
+
+// ── llmValueForSpec unit tests ────────────────────────────────────────────────
+
+func TestLLMValueForSpec(t *testing.T) {
+	t.Parallel()
+
+	cfg := llmgateway.ApplyConfig{
+		GatewayURL:         "https://gw.example.com",
+		ProxyBaseURL:       "http://localhost:14000/v1",
+		TokenHelperCommand: `"thv" llm token`,
+		TLSSkipVerify:      false,
+	}
+
+	cases := []struct {
+		name       string
+		valueField string
+		cfg        llmgateway.ApplyConfig
+		want       string
+		wantErr    bool
+	}{
+		// Known ValueField names resolve correctly
+		{name: "GatewayURL", valueField: "GatewayURL", cfg: cfg, want: "https://gw.example.com"},
+		{name: "ProxyBaseURL", valueField: "ProxyBaseURL", cfg: cfg, want: "http://localhost:14000/v1"},
+		{name: "TokenHelperCommand", valueField: "TokenHelperCommand", cfg: cfg, want: `"thv" llm token`},
+		{name: "PlaceholderAPIKey", valueField: "PlaceholderAPIKey", cfg: cfg, want: "thv-proxy"},
+		// NodeTLSRejectUnauthorized: "0" when set, "" when clear
+		{name: "NodeTLSRejectUnauthorized/skip=false", valueField: "NodeTLSRejectUnauthorized", cfg: cfg, want: ""},
+		{name: "NodeTLSRejectUnauthorized/skip=true", valueField: "NodeTLSRejectUnauthorized", cfg: llmgateway.ApplyConfig{TLSSkipVerify: true}, want: "0"},
+		// ProxyOrigin strips path, query, and fragment from ProxyBaseURL
+		{name: "ProxyOrigin/strips_path", valueField: "ProxyOrigin", cfg: cfg, want: "http://localhost:14000"},
+		{name: "ProxyOrigin/long_path", valueField: "ProxyOrigin", cfg: llmgateway.ApplyConfig{ProxyBaseURL: "http://localhost:9000/v1beta/openai"}, want: "http://localhost:9000"},
+		{name: "ProxyOrigin/strips_query_and_fragment", valueField: "ProxyOrigin", cfg: llmgateway.ApplyConfig{ProxyBaseURL: "http://host:8080/path?q=1#frag"}, want: "http://host:8080"},
+		// ForceQuery: trailing "?" with no key must not leak into the origin.
+		{name: "ProxyOrigin/force_query", valueField: "ProxyOrigin", cfg: llmgateway.ApplyConfig{ProxyBaseURL: "http://host:8080/path?"}, want: "http://host:8080"},
+		// ProxyOrigin falls back to the raw value when URL parsing fails
+		{name: "ProxyOrigin/invalid_url_fallback", valueField: "ProxyOrigin", cfg: llmgateway.ApplyConfig{ProxyBaseURL: "::invalid"}, want: "::invalid"},
+		// Unknown ValueField names are programming errors and must return an error
+		{name: "unknown_ValueField/typo", valueField: "GatwayURL", cfg: cfg, wantErr: true},
+		{name: "unknown_ValueField/arbitrary", valueField: "gemini-api-key", cfg: cfg, wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := llmValueForSpec(tc.valueField, tc.cfg)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 // countSubstring counts non-overlapping occurrences of substr in s.

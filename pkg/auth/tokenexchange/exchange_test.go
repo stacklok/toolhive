@@ -371,40 +371,42 @@ func TestExchangeToken_HTTPErrorResponses(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		statusCode    int
-		responseBody  string
-		expectedError string
+		name                string
+		statusCode          int
+		responseBody        string
+		expectedErrorCode   string
+		expectedDescription string
 	}{
 		{
-			name:          "400 Bad Request",
-			statusCode:    http.StatusBadRequest,
-			responseBody:  `{"error":"invalid_request","error_description":"Missing required parameter"}`,
-			expectedError: "OAuth error \"invalid_request\" (status 400)",
+			name:                "400 Bad Request",
+			statusCode:          http.StatusBadRequest,
+			responseBody:        `{"error":"invalid_request","error_description":"Missing required parameter"}`,
+			expectedErrorCode:   "invalid_request",
+			expectedDescription: "Missing required parameter",
 		},
 		{
-			name:          "401 Unauthorized",
-			statusCode:    http.StatusUnauthorized,
-			responseBody:  `{"error":"invalid_client"}`,
-			expectedError: "OAuth error \"invalid_client\" (status 401)",
+			name:              "401 Unauthorized",
+			statusCode:        http.StatusUnauthorized,
+			responseBody:      `{"error":"invalid_client"}`,
+			expectedErrorCode: "invalid_client",
 		},
 		{
-			name:          "403 Forbidden",
-			statusCode:    http.StatusForbidden,
-			responseBody:  `{"error":"access_denied"}`,
-			expectedError: "OAuth error \"access_denied\" (status 403)",
+			name:              "403 Forbidden",
+			statusCode:        http.StatusForbidden,
+			responseBody:      `{"error":"access_denied"}`,
+			expectedErrorCode: "access_denied",
 		},
 		{
-			name:          "500 Internal Server Error",
-			statusCode:    http.StatusInternalServerError,
-			responseBody:  `{"error":"server_error"}`,
-			expectedError: "OAuth error \"server_error\" (status 500)",
+			name:              "500 Internal Server Error",
+			statusCode:        http.StatusInternalServerError,
+			responseBody:      `{"error":"server_error"}`,
+			expectedErrorCode: "server_error",
 		},
 		{
-			name:          "503 Service Unavailable",
-			statusCode:    http.StatusServiceUnavailable,
-			responseBody:  "Service temporarily unavailable",
-			expectedError: "token exchange failed with status 503",
+			name:         "503 Service Unavailable",
+			statusCode:   http.StatusServiceUnavailable,
+			responseBody: "Service temporarily unavailable",
+			// Non-JSON body: ErrorCode stays empty, body cleared to prevent info leak.
 		},
 	}
 
@@ -434,7 +436,14 @@ func TestExchangeToken_HTTPErrorResponses(t *testing.T) {
 
 			require.Error(t, err)
 			assert.Nil(t, resp)
-			assert.Contains(t, err.Error(), tt.expectedError)
+
+			var retrieveErr *oauth2.RetrieveError
+			require.ErrorAs(t, err, &retrieveErr)
+			require.NotNil(t, retrieveErr.Response)
+			assert.Equal(t, tt.statusCode, retrieveErr.Response.StatusCode)
+			assert.Equal(t, tt.expectedErrorCode, retrieveErr.ErrorCode)
+			assert.Equal(t, tt.expectedDescription, retrieveErr.ErrorDescription)
+			assert.Nil(t, retrieveErr.Body)
 		})
 	}
 }

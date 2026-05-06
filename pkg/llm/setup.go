@@ -5,8 +5,11 @@ package llm
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -28,6 +31,12 @@ type GatewayManager interface {
 	ConfigureLLMGateway(clientType string, cfg llmgateway.ApplyConfig) (string, error)
 	// LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
 	LLMGatewayModeFor(clientType string) string
+	// ConfigureEnvFile writes .env file entries for the client and returns the
+	// env file path. Returns ("", nil) when the client has no env-file entries.
+	ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error)
+	// RevertEnvFile removes the .env file entries that setup wrote. envFilePath
+	// is the value returned by ConfigureEnvFile; a no-op when empty.
+	RevertEnvFile(clientType, envFilePath string) error
 	// RevertLLMGateway removes the LLM gateway settings from the tool's config file.
 	RevertLLMGateway(clientType, configPath string) error
 }
@@ -53,7 +62,7 @@ type ConfigUpdater interface {
 func Setup(
 	ctx context.Context, out, errOut io.Writer,
 	gm GatewayManager, provider ConfigUpdater, login LoginFunc,
-	inlineOpts SetOptions, targetClient string,
+	inlineOpts SetOptions, anthropicPathPrefix string, anthropicPathPrefixSet bool, targetClient string,
 ) error {
 	llmCfg := provider.GetLLMConfig()
 
@@ -68,31 +77,12 @@ func Setup(
 		return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
 	}
 
-	self, err := os.Executable()
+	tokenHelperCommand, err := buildTokenHelperCommand()
 	if err != nil {
-		return fmt.Errorf("resolving thv executable path: %w", err)
-	}
-	// Reject paths that contain shell metacharacters: the token-helper command
-	// is written verbatim into long-lived tool config files and re-executed by
-	// the shell inside Claude Code / Gemini CLI.  A path with '"', '\', ';',
-	// '$', '`', newline, or carriage-return would silently produce a broken or
-	// exploitable command.  '$' and '`' are included because they trigger
-	// variable and command substitution even inside double-quoted strings.
-	//
-	// Note: backslashes are Windows path separators, so this check effectively
-	// makes "thv llm setup" unsupported on Windows — consistent with the rest
-	// of the LLM gateway feature (token-helper tools use POSIX-style shells).
-	const shellUnsafe = `"\;$` + "`\n\r"
-	if strings.ContainsAny(self, shellUnsafe) {
-		return fmt.Errorf(
-			"executable path %q contains shell-unsafe characters; "+
-				"move thv to a path without quotes, backslashes, semicolons, "+
-				"dollar signs, or backticks "+
-				"(Windows paths are not supported by thv llm setup)", self)
+		return err
 	}
 
 	proxyBaseURL := fmt.Sprintf("http://localhost:%d/v1", llmCfg.EffectiveProxyPort())
-	tokenHelperCommand := fmt.Sprintf(`"%s" llm token`, self)
 
 	// Detect tools before login so we skip the interactive browser flow when
 	// there is nothing to configure. Login still runs before any files are
@@ -112,8 +102,18 @@ func Setup(
 	}
 	_, _ = fmt.Fprintln(out, "Login successful.")
 
+	// Resolve the effective path prefix for ANTHROPIC_BASE_URL.
+	// If the caller supplied --anthropic-path-prefix, use it directly.
+	// Otherwise auto-probe: a HEAD request to <gateway>/anthropic/v1/messages
+	// that returns 401 (rather than 404) indicates the gateway uses the
+	// /anthropic prefix, so we apply it automatically.
+	// Only probe if at least one detected tool uses direct mode; proxy-mode
+	// tools ignore the Anthropic prefix entirely.
+	anthropicPrefix := resolveAnthropicPrefix(ctx, gm, detected, llmCfg, anthropicPathPrefix, anthropicPathPrefixSet)
+
 	configured, err := configureDetectedTools(
-		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand, llmCfg.TLSSkipVerify,
+		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand,
+		llmCfg.TLSSkipVerify, anthropicPrefix,
 	)
 	if err != nil {
 		return err
@@ -134,12 +134,7 @@ func Setup(
 		// Roll back every tool we successfully patched so the tool config files
 		// are not left in a modified state without a persisted record of what
 		// was changed (which would make teardown unable to revert them).
-		for _, tc := range configured {
-			if revertErr := gm.RevertLLMGateway(tc.Tool, tc.ConfigPath); revertErr != nil {
-				_, _ = fmt.Fprintf(errOut,
-					"Warning: rollback of %s failed: %v\n", tc.Tool, revertErr)
-			}
-		}
+		rollbackConfiguredTools(errOut, gm, configured)
 		return fmt.Errorf("persisting tool configuration: %w", err)
 	}
 
@@ -218,11 +213,7 @@ func Teardown(
 	// Revert tool config files best-effort; warn on failure but do not undo
 	// the config update above (the user can re-run setup+teardown to reconcile).
 	for _, tc := range toRevert {
-		if err := gm.RevertLLMGateway(tc.Tool, tc.ConfigPath); err != nil {
-			_, _ = fmt.Fprintf(errOut, "Warning: failed to revert %s: %v\n", tc.Tool, err)
-			continue
-		}
-		_, _ = fmt.Fprintf(out, "Reverted %s  (%s)\n", tc.Tool, tc.ConfigPath)
+		revertToolConfig(out, errOut, gm, tc)
 	}
 
 	if purgeTokens && secretsProvider != nil {
@@ -292,9 +283,16 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 					"(LLM provider APIs, MCP registry, etc.), not just the LLM gateway. "+
 					"Use only in isolated local environments.\n", tc.Tool, tc.Tool)
 		case "proxy":
-			_, _ = fmt.Fprintf(errOut,
-				"Warning: %s uses proxy mode — TLS certificate verification is disabled for the "+
-					"proxy's upstream gateway connection only. Use only in isolated local environments.\n", tc.Tool)
+			if tc.Tool == "gemini-cli" {
+				_, _ = fmt.Fprintf(errOut,
+					"Note: --tls-skip-verify is not supported for Gemini CLI "+
+						"(setting NODE_TLS_REJECT_UNAUTHORIZED would affect all HTTPS connections in the process). "+
+						"Ensure your proxy certificate is trusted by the system store instead.\n")
+			} else {
+				_, _ = fmt.Fprintf(errOut,
+					"Warning: %s uses proxy mode — TLS certificate verification is disabled for the "+
+						"proxy's upstream gateway connection only. Use only in isolated local environments.\n", tc.Tool)
+			}
 		}
 	}
 }
@@ -323,24 +321,49 @@ func configureDetectedTools(
 	detected []string,
 	gatewayURL, proxyBaseURL, tokenHelperCommand string,
 	tlsSkipVerify bool,
+	anthropicPathPrefix string,
 ) ([]ToolConfig, error) {
 	var configured []ToolConfig
 	for _, clientType := range detected {
-		configPath, err := gm.ConfigureLLMGateway(clientType, llmgateway.ApplyConfig{
+		mode := gm.LLMGatewayModeFor(clientType)
+
+		// Only apply the Anthropic path prefix for direct-mode tools.
+		// Proxy-mode tools (Cursor, VS Code, Xcode) do not use ANTHROPIC_BASE_URL.
+		anthropicBaseURL := ""
+		if mode == "direct" && anthropicPathPrefix != "" {
+			// Trim any leading slash: url.JoinPath docs say elements should not
+			// start with "/", and path.Join already handles the join correctly.
+			if joined, err := url.JoinPath(gatewayURL, strings.TrimLeft(anthropicPathPrefix, "/")); err == nil {
+				anthropicBaseURL = joined
+			}
+		}
+
+		applyCfg := llmgateway.ApplyConfig{
 			GatewayURL:         gatewayURL,
+			AnthropicBaseURL:   anthropicBaseURL,
 			ProxyBaseURL:       proxyBaseURL,
 			TokenHelperCommand: tokenHelperCommand,
 			TLSSkipVerify:      tlsSkipVerify,
-		})
+		}
+		configPath, err := gm.ConfigureLLMGateway(clientType, applyCfg)
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Warning: failed to configure %s: %v\n", clientType, err)
 			continue
 		}
-		mode := gm.LLMGatewayModeFor(clientType)
+		envFilePath, err := gm.ConfigureEnvFile(clientType, applyCfg)
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "Warning: failed to write .env for %s: %v\n", clientType, err)
+			// Roll back the settings-file patch we just made.
+			if revertErr := gm.RevertLLMGateway(clientType, configPath); revertErr != nil {
+				_, _ = fmt.Fprintf(errOut, "Warning: rollback of %s failed: %v\n", clientType, revertErr)
+			}
+			continue
+		}
 		configured = append(configured, ToolConfig{
-			Tool:       clientType,
-			Mode:       mode,
-			ConfigPath: configPath,
+			Tool:        clientType,
+			Mode:        mode,
+			ConfigPath:  configPath,
+			EnvFilePath: envFilePath,
 		})
 		_, _ = fmt.Fprintf(out, "Configured %s (%s mode)  →  %s\n", clientType, mode, configPath)
 	}
@@ -348,6 +371,137 @@ func configureDetectedTools(
 		return nil, fmt.Errorf("failed to configure any detected tools")
 	}
 	return configured, nil
+}
+
+// resolveAnthropicPrefix returns the effective Anthropic path prefix. When the
+// caller explicitly set the flag (anthropicPathPrefixSet), the provided value is
+// returned as-is (including empty string, which disables the prefix). Otherwise
+// the gateway is auto-probed when at least one direct-mode client is present.
+func resolveAnthropicPrefix(
+	ctx context.Context, gm GatewayManager, detected []string,
+	llmCfg Config, anthropicPathPrefix string, anthropicPathPrefixSet bool,
+) string {
+	if anthropicPathPrefixSet || !hasDirectModeClient(gm, detected) {
+		return anthropicPathPrefix
+	}
+	return probeAnthropicPrefix(ctx, llmCfg.GatewayURL, llmCfg.TLSSkipVerify)
+}
+
+// probeAnthropicPrefix performs a HEAD request to <gatewayURL>/anthropic/v1/messages.
+// If the server responds with HTTP 401 (Unauthorized) — meaning the path exists but
+// requires authentication — it returns "/anthropic" as the path prefix so that
+// ANTHROPIC_BASE_URL is constructed as <gateway>/anthropic rather than <gateway>.
+// Any other status code (including 404 Not Found) or any network error is treated
+// as "no prefix needed" and the function returns "".
+func probeAnthropicPrefix(ctx context.Context, gatewayURL string, tlsSkipVerify bool) string {
+	if gatewayURL == "" {
+		return ""
+	}
+	probeURL, err := url.JoinPath(gatewayURL, "anthropic/v1/messages")
+	if err != nil {
+		return ""
+	}
+
+	// Build an http.Client that honours --tls-skip-verify so the probe works
+	// against gateways with self-signed certificates (local dev). Clone
+	// http.DefaultTransport to preserve all production defaults (timeouts,
+	// ProxyFromEnvironment, HTTP/2, connection pooling) and only toggle
+	// InsecureSkipVerify.
+	//nolint:forcetypeassert // DefaultTransport is always *http.Transport
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if tlsSkipVerify {
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // G402: intentional for local dev with self-signed certs
+	}
+	httpClient := &http.Client{Transport: transport}
+
+	// Use a short timeout so setup is not significantly slowed by an unreachable gateway.
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodHead, probeURL, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "/anthropic"
+	}
+	return ""
+}
+
+// buildTokenHelperCommand returns the shell command string used as the
+// token-helper for direct-mode tools. It rejects executable paths that contain
+// shell metacharacters, since the command is written verbatim into long-lived
+// tool config files and re-executed by the shell inside Claude Code / Gemini CLI.
+// A path with '"', '\', ';', '$', '`', newline, or carriage-return would
+// silently produce a broken or exploitable command. '$' and '`' are included
+// because they trigger variable/command substitution inside double-quoted strings.
+//
+// Note: backslashes are Windows path separators, so this effectively makes
+// "thv llm setup" unsupported on Windows — consistent with the rest of the LLM
+// gateway feature (token-helper tools use POSIX-style shells).
+func buildTokenHelperCommand() (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolving thv executable path: %w", err)
+	}
+	const shellUnsafe = `"\;$` + "`\n\r"
+	if strings.ContainsAny(self, shellUnsafe) {
+		return "", fmt.Errorf(
+			"executable path %q contains shell-unsafe characters; "+
+				"move thv to a path without quotes, backslashes, semicolons, "+
+				"dollar signs, or backticks "+
+				"(Windows paths are not supported by thv llm setup)", self)
+	}
+	return fmt.Sprintf(`"%s" llm token`, self), nil
+}
+
+// hasDirectModeClient reports whether any client in the detected list uses
+// direct mode. Used to skip the Anthropic-prefix probe when no direct-mode
+// tools are present (proxy-mode tools ignore ANTHROPIC_BASE_URL entirely).
+func hasDirectModeClient(gm GatewayManager, detected []string) bool {
+	for _, clientType := range detected {
+		if gm.LLMGatewayModeFor(clientType) == "direct" {
+			return true
+		}
+	}
+	return false
+}
+
+// revertToolConfig reverts the settings-file and .env patches for a single
+// tool. Errors are logged as warnings so the caller can continue with others.
+func revertToolConfig(out, errOut io.Writer, gm GatewayManager, tc ToolConfig) {
+	ok := true
+	if err := gm.RevertLLMGateway(tc.Tool, tc.ConfigPath); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: failed to revert %s settings: %v\n", tc.Tool, err)
+		ok = false
+	}
+	if tc.EnvFilePath != "" {
+		if err := gm.RevertEnvFile(tc.Tool, tc.EnvFilePath); err != nil {
+			_, _ = fmt.Fprintf(errOut, "Warning: failed to revert %s .env: %v\n", tc.Tool, err)
+			ok = false
+		}
+	}
+	if ok {
+		_, _ = fmt.Fprintf(out, "Reverted %s  (%s)\n", tc.Tool, tc.ConfigPath)
+	}
+}
+
+// rollbackConfiguredTools reverts the settings-file and .env patches for every
+// entry in configured. Errors are logged as warnings so all tools are attempted.
+func rollbackConfiguredTools(errOut io.Writer, gm GatewayManager, configured []ToolConfig) {
+	// Use a discard writer for the "Reverted" line — rollback is silent on success.
+	for _, tc := range configured {
+		revertToolConfig(io.Discard, errOut, gm, tc)
+	}
 }
 
 // hasProxyMode reports whether any of the given tool configs uses proxy mode.

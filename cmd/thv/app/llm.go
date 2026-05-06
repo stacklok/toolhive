@@ -24,13 +24,12 @@ import (
 
 func newLLMCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    "llm",
-		Hidden: true,
-		Short:  "Manage LLM gateway authentication",
+		Use:   "llm",
+		Short: "Manage LLM gateway authentication",
 		Long: `Configure and manage authentication for OIDC-protected LLM gateways.
 
 The llm command bridges AI coding tools to LLM gateways by handling OIDC
-authentication transparently. Two modes are planned:
+authentication transparently. Two modes are supported:
 
   Proxy mode    — a localhost reverse proxy injects fresh tokens for tools
                   that only accept static API keys (e.g. Cursor).
@@ -214,9 +213,10 @@ func buildLLMTokenSource(cfg *llm.Config, interactive bool) (*llm.TokenSource, e
 
 func newLLMSetupCommand() *cobra.Command {
 	var (
-		opts          llm.SetOptions
-		tlsSkipVerify bool
-		targetClient  string
+		opts                llm.SetOptions
+		tlsSkipVerify       bool
+		targetClient        string
+		anthropicPathPrefix string
 	)
 
 	cmd := &cobra.Command{
@@ -250,7 +250,8 @@ Run "thv llm teardown" to revert all changes.`,
 			}
 			return runLLMSetup(
 				cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
-				cm, config.NewDefaultProvider(), oidcLogin, opts, targetClient,
+				cm, config.NewDefaultProvider(), oidcLogin, opts,
+				anthropicPathPrefix, cmd.Flags().Changed("anthropic-path-prefix"), targetClient,
 			)
 		},
 	}
@@ -266,6 +267,9 @@ Run "thv llm teardown" to revert all changes.`,
 			"For direct-mode tools (Claude Code, Gemini CLI) this sets NODE_TLS_REJECT_UNAUTHORIZED=0, "+
 			"disabling TLS for ALL of that tool's outbound connections. "+
 			"For proxy-mode tools only the proxy-to-gateway connection is affected.")
+	cmd.Flags().StringVar(&anthropicPathPrefix, "anthropic-path-prefix", "",
+		"Path prefix appended to the gateway URL when writing ANTHROPIC_BASE_URL for direct-mode tools "+
+			"(e.g. /anthropic). When omitted, the gateway is probed automatically.")
 	cmd.Flags().StringVar(&targetClient, "client", "",
 		"Configure only this AI tool by name (e.g. claude-code, cursor). Omit to configure all detected tools.")
 
@@ -286,9 +290,13 @@ func oidcLogin(ctx context.Context, cfg *llm.Config) error {
 func runLLMSetup(
 	ctx context.Context, out, errOut io.Writer,
 	cm *client.ClientManager, provider config.Provider, login llm.LoginFunc,
-	inlineOpts llm.SetOptions, targetClient string,
+	inlineOpts llm.SetOptions, anthropicPathPrefix string, anthropicPathPrefixSet bool, targetClient string,
 ) error {
-	return llm.Setup(ctx, out, errOut, &clientManagerAdapter{cm}, &configUpdaterAdapter{provider}, login, inlineOpts, targetClient)
+	return llm.Setup(
+		ctx, out, errOut,
+		&clientManagerAdapter{cm}, &configUpdaterAdapter{provider}, login,
+		inlineOpts, anthropicPathPrefix, anthropicPathPrefixSet, targetClient,
+	)
 }
 
 func newLLMTeardownCommand() *cobra.Command {
@@ -375,6 +383,14 @@ func (a *clientManagerAdapter) LLMGatewayModeFor(clientType string) string {
 	return a.cm.LLMGatewayModeFor(client.ClientApp(clientType))
 }
 
+func (a *clientManagerAdapter) ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error) {
+	return a.cm.ConfigureEnvFile(client.ClientApp(clientType), cfg)
+}
+
+func (a *clientManagerAdapter) RevertEnvFile(clientType, envFilePath string) error {
+	return a.cm.RevertEnvFile(client.ClientApp(clientType), envFilePath)
+}
+
 func (a *clientManagerAdapter) RevertLLMGateway(clientType, configPath string) error {
 	return a.cm.RevertLLMGateway(client.ClientApp(clientType), configPath)
 }
@@ -459,13 +475,12 @@ func runLLMProxyForeground(ctx context.Context, llmCfg *llm.Config) error {
 	return p.Start(ctx)
 }
 
-// ── token helper (hidden) ─────────────────────────────────────────────────────
+// ── token helper ──────────────────────────────────────────────────────────────
 
 func newLLMTokenCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    "token",
-		Hidden: true,
-		Short:  "Print a fresh LLM gateway access token to stdout",
+		Use:   "token",
+		Short: "Print a fresh LLM gateway access token to stdout",
 		Long: `Print a fresh OIDC access token to stdout (all other output on stderr).
 Intended for use as apiKeyHelper or auth.command in OIDC-capable AI tools.
 Runs non-interactively — will not launch a browser flow.`,

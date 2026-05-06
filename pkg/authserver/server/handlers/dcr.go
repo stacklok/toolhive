@@ -95,10 +95,32 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	slog.Debug("registered new DCR client",
+	// Successful DCR registration is a normal operational event, not a
+	// long-running operation, so it logs at Debug to stay silent at INFO+.
+	// client_id, software_id, token_endpoint_auth_method, and scopes are
+	// public client metadata per RFC 7591 and not credentials. If audit
+	// signal is desired in future, the right home is a dedicated audit-
+	// log emission path rather than promoting this record to INFO.
+	//
+	// Note: the "issuer" attribute here identifies THIS server (the
+	// ToolHive-embedded AS that is performing the registration), not the
+	// upstream AS being registered against. That distinction is important
+	// when correlating these logs with the resolver's logs in
+	// pkg/authserver/runner/dcr.go, which use "issuer" to mean the
+	// upstream AS. The two uses live at opposite ends of the DCR flow.
+	// No "upstream" attribute is emitted because the /oauth/register
+	// endpoint has no upstream concept.
+	logAttrs := []any{
 		"client_id", clientID,
-		"client_name", validated.ClientName,
-	)
+		"software_id", validated.SoftwareID,
+		"token_endpoint_auth_method", validated.TokenEndpointAuthMethod,
+		"scopes", scopes,
+	}
+	if issuer := h.issuer(); issuer != "" {
+		logAttrs = append(logAttrs, "issuer", issuer)
+	}
+	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
+	slog.Debug("registered new DCR client", logAttrs...)
 
 	// Build response per RFC 7591 Section 3.2.1.
 	// Scope reflects the scopes actually granted to this client (from

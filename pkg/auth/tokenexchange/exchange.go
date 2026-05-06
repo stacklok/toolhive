@@ -7,7 +7,6 @@ package tokenexchange
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -65,34 +64,6 @@ func NormalizeTokenType(tokenType string) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid token type %q: must be one of: access_token, id_token, jwt", tokenType)
 	}
-}
-
-// oAuthError represents an OAuth 2.0 error response as defined in RFC 6749 Section 5.2.
-type oAuthError struct {
-	Error            string `json:"error"`
-	ErrorDescription string `json:"error_description,omitempty"`
-	ErrorURI         string `json:"error_uri,omitempty"`
-	StatusCode       int    `json:"-"`
-}
-
-func (e *oAuthError) String() string {
-	if e.ErrorURI != "" {
-		return fmt.Sprintf("OAuth error %q (status %d): see %s", e.Error, e.StatusCode, e.ErrorURI)
-	}
-	return fmt.Sprintf("OAuth error %q (status %d)", e.Error, e.StatusCode)
-}
-
-// parseOAuthError attempts to parse an OAuth error response from the given response body.
-func parseOAuthError(statusCode int, body []byte) *oAuthError {
-	var oauthErr oAuthError
-	if err := json.Unmarshal(body, &oauthErr); err != nil {
-		return nil
-	}
-	if oauthErr.Error == "" {
-		return nil
-	}
-	oauthErr.StatusCode = statusCode
-	return &oauthErr
 }
 
 // defaultHTTPClient is the default HTTP client used for token exchange requests.
@@ -502,7 +473,7 @@ func executeTokenExchangeRequest(client *http.Client, req *http.Request) ([]byte
 		return nil, fmt.Errorf("failed to read token exchange response: %w", err)
 	}
 
-	if err := validateResponseStatus(resp.StatusCode, body); err != nil {
+	if err := validateResponseStatus(resp, body); err != nil {
 		return nil, err
 	}
 
@@ -510,21 +481,44 @@ func executeTokenExchangeRequest(client *http.Client, req *http.Request) ([]byte
 }
 
 // validateResponseStatus checks the HTTP status code and returns an error if not successful.
-func validateResponseStatus(statusCode int, body []byte) error {
-	if statusCode >= 200 && statusCode <= 299 {
+// On non-2xx responses it extracts RFC 6749 §5.2 fields (error, error_description, error_uri)
+// onto the structured fields of the returned *oauth2.RetrieveError. Body is always cleared so
+// callers cannot interpolate raw upstream content into error strings — matching the pattern used
+// by Ory Hydra, which never surfaces raw error bodies through its public error type.
+func validateResponseStatus(resp *http.Response, body []byte) error {
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
 		return nil
 	}
 
-	// Try to parse as OAuth error first
-	if oauthErr := parseOAuthError(statusCode, body); oauthErr != nil {
-		//nolint:gosec // G706: OAuth error codes are standard protocol values, not user input
-		slog.Debug("Token exchange OAuth error", "oauth_error_code", oauthErr.Error, "description", oauthErr.ErrorDescription)
-		return errors.New(oauthErr.String())
+	retrieveErr := &oauth2.RetrieveError{
+		Response: resp,
+		Body:     body,
 	}
 
-	//nolint:gosec // G706: status code and body length are safe diagnostic values
-	slog.Debug("Token exchange failed", "status", statusCode, "body_length", len(body))
-	return fmt.Errorf("token exchange failed with status %d", statusCode)
+	// Best-effort parse of the RFC 6749 Section 5.2 error response. Non-JSON or
+	// non-error-shaped bodies leave ErrorCode/ErrorDescription/ErrorURI empty.
+	var oauthErr struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description,omitempty"`
+		ErrorURI         string `json:"error_uri,omitempty"`
+	}
+	if err := json.Unmarshal(body, &oauthErr); err == nil {
+		retrieveErr.ErrorCode = oauthErr.Error
+		retrieveErr.ErrorDescription = oauthErr.ErrorDescription
+		retrieveErr.ErrorURI = oauthErr.ErrorURI
+	}
+
+	if retrieveErr.ErrorCode != "" {
+		slog.Debug("Token exchange OAuth error",
+			"oauth_error_code", retrieveErr.ErrorCode,
+			"description", retrieveErr.ErrorDescription)
+	} else {
+		slog.Debug("Token exchange failed", "status", resp.StatusCode, "body_length", len(body), "body", string(body))
+	}
+
+	retrieveErr.Body = nil
+
+	return retrieveErr
 }
 
 // parseTokenExchangeResponse parses the token exchange response body.
@@ -532,7 +526,7 @@ func parseTokenExchangeResponse(body []byte) (*response, error) {
 	var tokenResp response
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		slog.Debug("Failed to parse token exchange response", "error", err)
-		return nil, errors.New("failed to parse token exchange response")
+		return nil, fmt.Errorf("failed to parse token exchange response: %w", err)
 	}
 
 	return &tokenResp, nil

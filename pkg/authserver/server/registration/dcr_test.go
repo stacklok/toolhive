@@ -419,6 +419,59 @@ func TestValidateDCRRequest(t *testing.T) {
 			},
 			expectError: false,
 		},
+
+		// software_id length cap and charset enforcement
+		{
+			name: "software_id at max length is accepted",
+			request: &DCRRequest{
+				RedirectURIs: []string{"http://127.0.0.1/callback"},
+				SoftwareID:   strings.Repeat("a", MaxSoftwareIDLength),
+			},
+			expectError: false,
+		},
+		{
+			name: "software_id exceeding max length is rejected",
+			request: &DCRRequest{
+				RedirectURIs: []string{"http://127.0.0.1/callback"},
+				SoftwareID:   strings.Repeat("a", MaxSoftwareIDLength+1),
+			},
+			expectError: true,
+			errorCode:   DCRErrorInvalidClientMetadata,
+		},
+		{
+			name: "software_id with control character is rejected",
+			request: &DCRRequest{
+				RedirectURIs: []string{"http://127.0.0.1/callback"},
+				SoftwareID:   "bad\x00id",
+			},
+			expectError: true,
+			errorCode:   DCRErrorInvalidClientMetadata,
+		},
+		{
+			name: "software_id with non-ASCII character is rejected",
+			request: &DCRRequest{
+				RedirectURIs: []string{"http://127.0.0.1/callback"},
+				SoftwareID:   "softwäre",
+			},
+			expectError: true,
+			errorCode:   DCRErrorInvalidClientMetadata,
+		},
+		{
+			name: "empty software_id is accepted (field is optional)",
+			request: &DCRRequest{
+				RedirectURIs: []string{"http://127.0.0.1/callback"},
+				SoftwareID:   "",
+			},
+			expectError: false,
+		},
+		{
+			name: "printable-ASCII software_id is accepted",
+			request: &DCRRequest{
+				RedirectURIs: []string{"http://127.0.0.1/callback"},
+				SoftwareID:   "example-app-v1.2.3",
+			},
+			expectError: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -451,6 +504,9 @@ func TestValidateDCRRequest(t *testing.T) {
 
 				// Verify client_name is preserved
 				assert.Equal(t, tt.request.ClientName, result.ClientName)
+
+				// Verify software_id is preserved
+				assert.Equal(t, tt.request.SoftwareID, result.SoftwareID)
 			}
 		})
 	}

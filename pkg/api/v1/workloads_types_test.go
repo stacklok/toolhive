@@ -515,6 +515,44 @@ func TestCreateRequestToRemoteAuthConfig(t *testing.T) {
 			assert.Equal(t, tt.expectedBearerToken, result.BearerToken)
 		})
 	}
+
+	// The coder removed auto-derivation of resource from URL (RFC 8707 resource
+	// indicator). These sub-tests guard against that fallback being re-introduced.
+	t.Run("resource empty when URL set but resource not explicitly provided", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				URL:         "https://mcp.example.com/mcp",
+				OAuthConfig: remoteOAuthConfig{ClientID: "some-client"},
+			},
+		}
+
+		cfg := createRequestToRemoteAuthConfig(context.Background(), req)
+
+		require.NotNil(t, cfg)
+		assert.Empty(t, cfg.Resource, "resource must not be auto-derived from URL when not explicitly set")
+	})
+
+	t.Run("resource preserved when user provides it explicitly", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				URL: "https://mcp.example.com/mcp",
+				OAuthConfig: remoteOAuthConfig{
+					ClientID: "some-client",
+					Resource: "https://explicit-resource.example.com",
+				},
+			},
+		}
+
+		cfg := createRequestToRemoteAuthConfig(context.Background(), req)
+
+		require.NotNil(t, cfg)
+		assert.Equal(t, "https://explicit-resource.example.com", cfg.Resource,
+			"user-provided resource must be preserved verbatim")
+	})
 }
 
 func TestValidateHeaderForwardConfig(t *testing.T) {

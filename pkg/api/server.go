@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	stdruntime "runtime"
 	"strings"
 	"time"
 
@@ -366,41 +367,20 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 	}
 }
 
+// namedPipePrefix is the Windows named-pipe namespace prefix. Both per-platform
+// socket files use it, and ListenURL/createListener inspect the address prefix
+// to choose between AF_UNIX and named-pipe semantics.
+const namedPipePrefix = `\\.\pipe\`
+
+// isNamedPipeAddress reports whether address is a Windows named-pipe path.
+// The check is platform-agnostic so callers on non-Windows can fail fast with
+// a clear error before reaching the listener code.
+func isNamedPipeAddress(address string) bool {
+	return strings.HasPrefix(address, namedPipePrefix)
+}
+
 func setupTCPListener(address string) (net.Listener, error) {
 	return net.Listen("tcp", address)
-}
-
-func setupUnixSocket(address string) (net.Listener, error) {
-	// Remove the socket file if it already exists
-	if _, err := os.Stat(address); err == nil {
-		if err := os.Remove(address); err != nil {
-			return nil, fmt.Errorf("failed to remove existing socket: %w", err)
-		}
-	}
-
-	// Create the directory for the socket file if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(address), 0750); err != nil {
-		return nil, fmt.Errorf("failed to create socket directory: %w", err)
-	}
-
-	// Create UNIX socket listener
-	listener, err := net.Listen("unix", address)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create UNIX socket listener: %w", err)
-	}
-
-	// Set file permissions on the socket to allow other local processes to connect
-	if err := os.Chmod(address, socketPermissions); err != nil {
-		return nil, fmt.Errorf("failed to set socket permissions: %w", err)
-	}
-
-	return listener, nil
-}
-
-func cleanupUnixSocket(address string) {
-	if err := os.Remove(address); err != nil && !os.IsNotExist(err) {
-		slog.Warn("failed to remove socket file", "error", err)
-	}
 }
 
 func headersMiddleware(next http.Handler) http.Handler {
@@ -592,7 +572,7 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 // bound address from the listener (important when binding to port 0).
 func (s *Server) ListenURL() string {
 	if s.isUnixSocket {
-		return fmt.Sprintf("unix://%s", s.address)
+		return socketURL(s.address)
 	}
 	return fmt.Sprintf("http://%s", s.listener.Addr().String())
 }
@@ -715,24 +695,30 @@ func (s *Server) cleanup() {
 	}
 }
 
-// createListener creates the appropriate listener based on the configuration
+// createListener creates the appropriate listener based on the configuration.
+// Named-pipe addresses are only supported on Windows; other platforms reject
+// them up front rather than creating a literal-backslash file via AF_UNIX.
 func createListener(address string, isUnixSocket bool) (net.Listener, string, error) {
-	var listener net.Listener
-	var addrType string
-	var err error
-
-	if isUnixSocket {
-		listener, err = setupUnixSocket(address)
-		addrType = "UNIX socket"
-	} else {
-		listener, err = setupTCPListener(address)
-		addrType = "HTTP"
+	if !isUnixSocket {
+		listener, err := setupTCPListener(address)
+		if err != nil {
+			return nil, "", err
+		}
+		return listener, "HTTP", nil
 	}
 
+	addrType := "UNIX socket"
+	if isNamedPipeAddress(address) {
+		if stdruntime.GOOS != "windows" {
+			return nil, "", fmt.Errorf("named pipe addresses are only supported on Windows: %s", address)
+		}
+		addrType = "Windows named pipe"
+	}
+
+	listener, err := setupUnixSocket(address)
 	if err != nil {
 		return nil, "", err
 	}
-
 	return listener, addrType, nil
 }
 

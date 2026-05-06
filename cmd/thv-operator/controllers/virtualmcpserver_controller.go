@@ -634,7 +634,7 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 			)
 			return rejectAuthzAdmission(ctx, vmcp, statusManager,
 				"authz primaryUpstreamProvider set without an embedded auth server; rejecting VirtualMCPServer",
-				mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
+				mcpv1beta1.ConditionReasonAuthzPrimaryProviderRequiresAuthServer,
 				message,
 				fmt.Sprintf("authz primaryUpstreamProvider %q set without an embedded auth server", explicitProvider),
 				"primaryUpstreamProvider", explicitProvider,

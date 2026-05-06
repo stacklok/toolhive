@@ -1921,6 +1921,7 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 		authzConfig      *mcpv1beta1.AuthzConfigRef
 		expectAuthzNil   bool
 		expectedProvider string
+		expectError      bool
 	}{
 		{
 			name:             "no auth server leaves provider unset",
@@ -2039,15 +2040,26 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			expectedProvider: "default",
 		},
 		{
-			// Explicit primary provider is honored even without an embedded AS
-			// configured on the spec. The validator rejects this combination
-			// (covered by TestVirtualMCPServerValidateAuthzUpstreamAvailable),
-			// but the converter still forwards the explicit value as a defined
-			// contract — this case locks that contract in.
-			name:             "explicit primary provider without auth server is forwarded",
+			// Defense in depth: even if invoked outside the reconcile flow
+			// (CLI dry-run, webhook, test harness), Convert refuses to produce
+			// an unresolvable PrimaryUpstreamProvider. The validator rejection
+			// is the primary user-facing fail-loud point; this case locks the
+			// converter-side defense in.
+			name:             "explicit primary provider without auth server is rejected",
 			authServerConfig: nil,
 			authzConfig:      authzWith("okta"),
-			expectedProvider: "okta",
+			expectError:      true,
+		},
+		{
+			name: "explicit primary provider that doesn't match any upstream is rejected",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			authzConfig: authzWith("ping"),
+			expectError: true,
 		},
 	}
 
@@ -2071,6 +2083,10 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 
 			ctx := log.IntoContext(t.Context(), logr.Discard())
 			incoming, err := converter.convertIncomingAuth(ctx, vmcp)
+			if tt.expectError {
+				require.Error(t, err)
+				return
+			}
 			require.NoError(t, err)
 			require.NotNil(t, incoming)
 

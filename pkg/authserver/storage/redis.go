@@ -32,6 +32,17 @@ const (
 // nullMarker is used to store nil upstream tokens in Redis.
 const nullMarker = "null"
 
+// pastExpiryDCRTTL is the bounded TTL applied when a caller writes DCR
+// credentials whose ClientSecretExpiresAt is already in the past. The row is
+// still accepted (the resolver decides when to re-register) but it self-evicts
+// almost immediately so the store does not hold an already-expired secret
+// forever. One second is small enough that no caller can usefully read the
+// row, large enough that real Redis applies the TTL reliably (sub-second TTLs
+// are technically supported via PEXPIRE but the second-grain TTL command is
+// the broadly-tested path), and short enough that operational metrics do not
+// confuse this row with a healthy long-lived registration.
+const pastExpiryDCRTTL = time.Second
+
 // warnOnCleanupErr logs a warning when a best-effort cleanup operation fails.
 //
 // Secondary index cleanup in Redis (SRem from reverse-lookup sets, Del of orphaned
@@ -1353,6 +1364,176 @@ func unmarshalUpstreamTokens(data []byte) (*UpstreamTokens, error) {
 }
 
 // -----------------------
+// DCR Credentials Storage
+// -----------------------
+
+// storedDCRCredentials is the on-the-wire JSON representation of DCRCredentials.
+// Time fields use int64 Unix epoch; 0 is the sentinel meaning "not set", matching
+// the storedUpstreamTokens convention. ClientSecretExpiresAt == 0 specifically
+// encodes the RFC 7591 §3.2.1 "client_secret does not expire" semantics, in
+// which case StoreDCRCredentials persists the entry without a Redis TTL.
+type storedDCRCredentials struct {
+	// Embed the canonical key so a row recovered without its lookup key
+	// (e.g. via SCAN during diagnostics) still self-identifies.
+	KeyIssuer      string `json:"key_issuer"`
+	KeyRedirectURI string `json:"key_redirect_uri"`
+	KeyScopesHash  string `json:"key_scopes_hash"`
+
+	ProviderName string `json:"provider_name,omitempty"`
+
+	ClientID                string `json:"client_id"`
+	ClientSecret            string `json:"client_secret,omitempty"` //nolint:gosec // G117: field legitimately holds sensitive data
+	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty"`
+
+	// Bearer token for the RFC 7592 management endpoint.
+	//nolint:gosec // G117: field legitimately holds sensitive data
+	RegistrationAccessToken string `json:"registration_access_token,omitempty"`
+	RegistrationClientURI   string `json:"registration_client_uri,omitempty"`
+
+	AuthorizationEndpoint string `json:"authorization_endpoint,omitempty"`
+	TokenEndpoint         string `json:"token_endpoint,omitempty"`
+
+	CreatedAt             int64 `json:"created_at"`
+	ClientSecretExpiresAt int64 `json:"client_secret_expires_at"`
+}
+
+// toDCRCredentials decodes the stored form back into the public type, mirroring
+// storedUpstreamTokens.toUpstreamTokens. Zero epoch values become the zero
+// time.Time, preserving the "not set" sentinel.
+func (s *storedDCRCredentials) toDCRCredentials() *DCRCredentials {
+	var createdAt time.Time
+	if s.CreatedAt != 0 {
+		createdAt = time.Unix(s.CreatedAt, 0)
+	}
+	var clientSecretExpiresAt time.Time
+	if s.ClientSecretExpiresAt != 0 {
+		clientSecretExpiresAt = time.Unix(s.ClientSecretExpiresAt, 0)
+	}
+	return &DCRCredentials{
+		Key: DCRKey{
+			Issuer:      s.KeyIssuer,
+			RedirectURI: s.KeyRedirectURI,
+			ScopesHash:  s.KeyScopesHash,
+		},
+		ProviderName:            s.ProviderName,
+		ClientID:                s.ClientID,
+		ClientSecret:            s.ClientSecret,
+		TokenEndpointAuthMethod: s.TokenEndpointAuthMethod,
+		RegistrationAccessToken: s.RegistrationAccessToken,
+		RegistrationClientURI:   s.RegistrationClientURI,
+		AuthorizationEndpoint:   s.AuthorizationEndpoint,
+		TokenEndpoint:           s.TokenEndpoint,
+		CreatedAt:               createdAt,
+		ClientSecretExpiresAt:   clientSecretExpiresAt,
+	}
+}
+
+// StoreDCRCredentials persists DCR credentials, overwriting any existing entry
+// for the same Key. Defensive copy is provided implicitly by JSON serialisation —
+// caller mutations after the call cannot reach the persisted bytes.
+//
+// # TTL
+//
+// When creds.ClientSecretExpiresAt is non-zero (the upstream advertised an
+// RFC 7591 §3.2.1 client_secret_expires_at), the entry is stored with a Redis
+// TTL derived from time.Until(ClientSecretExpiresAt) so the row evicts before
+// the upstream rejects the secret at the token endpoint. When zero (RFC 7591
+// "never"), Set with TTL=0 is used and the entry is long-lived.
+//
+// If ClientSecretExpiresAt is already in the past at call time, the entry is
+// written with the bounded TTL pastExpiryDCRTTL (1 second) rather than rejected
+// or stored long-lived. This keeps the store's "already-expired secret" window
+// narrow even if the resolver never re-reads the row, and matches the
+// fail-loud-but-tolerant posture: the caller's expiry timestamp round-trips so
+// a downstream reader can still observe it and trigger re-registration.
+//
+// Returns fosite.ErrInvalidRequest for nil creds, empty Issuer, or empty
+// RedirectURI — the same fail-loud contract as MemoryStorage.StoreDCRCredentials.
+func (s *RedisStorage) StoreDCRCredentials(ctx context.Context, creds *DCRCredentials) error {
+	if creds == nil {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials cannot be nil")
+	}
+	if creds.Key.Issuer == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials key issuer cannot be empty")
+	}
+	if creds.Key.RedirectURI == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials key redirect_uri cannot be empty")
+	}
+
+	key := redisDCRKey(s.keyPrefix, creds.Key)
+
+	stored := storedDCRCredentials{
+		KeyIssuer:               creds.Key.Issuer,
+		KeyRedirectURI:          creds.Key.RedirectURI,
+		KeyScopesHash:           creds.Key.ScopesHash,
+		ProviderName:            creds.ProviderName,
+		ClientID:                creds.ClientID,
+		ClientSecret:            creds.ClientSecret,
+		TokenEndpointAuthMethod: creds.TokenEndpointAuthMethod,
+		RegistrationAccessToken: creds.RegistrationAccessToken,
+		RegistrationClientURI:   creds.RegistrationClientURI,
+		AuthorizationEndpoint:   creds.AuthorizationEndpoint,
+		TokenEndpoint:           creds.TokenEndpoint,
+	}
+	if !creds.CreatedAt.IsZero() {
+		stored.CreatedAt = creds.CreatedAt.Unix()
+	}
+	if !creds.ClientSecretExpiresAt.IsZero() {
+		stored.ClientSecretExpiresAt = creds.ClientSecretExpiresAt.Unix()
+	}
+
+	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
+	if err != nil {
+		return fmt.Errorf("failed to marshal dcr credentials: %w", err)
+	}
+
+	// Derive Redis TTL from ClientSecretExpiresAt:
+	//   * Zero (unset)   -> TTL=0 (no expiration) per RFC 7591 §3.2.1 "never".
+	//   * Future expiry  -> TTL = time.Until(expiry).
+	//   * Past expiry    -> TTL = pastExpiryDCRTTL (bounded eviction window).
+	// See the function docstring for the past-expiry rationale.
+	ttl := time.Duration(0)
+	if !creds.ClientSecretExpiresAt.IsZero() {
+		if until := time.Until(creds.ClientSecretExpiresAt); until > 0 {
+			ttl = until
+		} else {
+			ttl = pastExpiryDCRTTL
+		}
+	}
+
+	if err := s.client.Set(ctx, key, data, ttl).Err(); err != nil {
+		return fmt.Errorf("failed to store dcr credentials: %w", err)
+	}
+	return nil
+}
+
+// GetDCRCredentials retrieves the credentials previously persisted under key.
+// Returns ErrNotFound (wrapped) when no entry exists. The returned value is a
+// fresh struct decoded from JSON, which acts as a defensive copy.
+//
+// An unpopulated key (empty Issuer or empty RedirectURI) cannot match any
+// stored row because StoreDCRCredentials rejects such keys, so a Get against
+// one is a normal miss — ErrNotFound — matching MemoryStorage.GetDCRCredentials
+// and the DCRCredentialStore interface contract.
+func (s *RedisStorage) GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRCredentials, error) {
+	redisKey := redisDCRKey(s.keyPrefix, key)
+	data, err := s.client.Get(ctx, redisKey).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("DCR credentials not found"))
+		}
+		return nil, fmt.Errorf("failed to get dcr credentials: %w", err)
+	}
+
+	var stored storedDCRCredentials
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal dcr credentials: %w", err)
+	}
+
+	return stored.toDCRCredentials(), nil
+}
+
+// -----------------------
 // Pending Authorization Storage
 // -----------------------
 
@@ -1862,4 +2043,5 @@ var (
 	_ ClientRegistry              = (*RedisStorage)(nil)
 	_ UpstreamTokenStorage        = (*RedisStorage)(nil)
 	_ UserStorage                 = (*RedisStorage)(nil)
+	_ DCRCredentialStore          = (*RedisStorage)(nil)
 )

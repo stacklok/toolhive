@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -42,6 +43,49 @@ func TestParseUnixSocketPath_Empty(t *testing.T) {
 	_, err := ParseUnixSocketPath("unix://")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty")
+}
+
+func TestParseNamedPipeURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		raw       string
+		expect    string
+		wantErr   bool
+		errSubstr string
+	}{
+		{name: "valid", raw: "npipe://thv-api", expect: `\\.\pipe\thv-api`},
+		{name: "valid with hyphen and digits", raw: "npipe://thv-api-1", expect: `\\.\pipe\thv-api-1`},
+		{name: "missing scheme", raw: "thv-api", wantErr: true, errSubstr: "must start with npipe://"},
+		{name: "wrong scheme", raw: "unix://thv-api", wantErr: true, errSubstr: "must start with npipe://"},
+		{name: "empty name", raw: "npipe://", wantErr: true, errSubstr: "empty"},
+		{name: "forward slash", raw: "npipe://thv/api", wantErr: true, errSubstr: "path separators"},
+		{name: "backslash", raw: `npipe://thv\api`, wantErr: true, errSubstr: "path separators"},
+		{name: "dot dot", raw: "npipe://..thv", wantErr: true, errSubstr: "'..'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ParseNamedPipeURL(tt.raw)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errSubstr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expect, got)
+		})
+	}
+}
+
+func TestCheckHealth_NamedPipe_Unsupported_OnNonWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-Windows guard test")
+	}
+	t.Parallel()
+	err := CheckHealth(context.Background(), "npipe://thv-api", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Windows")
 }
 
 func TestCheckHealth_TCP_Success(t *testing.T) {

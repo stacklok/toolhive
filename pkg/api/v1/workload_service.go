@@ -429,13 +429,10 @@ func buildRemoteAuthConfigFromMetadata(req *createRequest, md *regtypes.RemoteSe
 		return nil
 	}
 
-	// Default resource: user-provided > registry metadata > derived from remote URL
+	// Default resource: user-provided > registry metadata
 	resource := req.OAuthConfig.Resource
 	if resource == "" {
 		resource = md.OAuthConfig.Resource
-	}
-	if resource == "" && md.URL != "" {
-		resource = remote.DefaultResourceIndicator(md.URL)
 	}
 
 	cfg := &remote.Config{
@@ -466,11 +463,7 @@ func createRequestToRemoteAuthConfig(
 	req *createRequest,
 ) *remote.Config {
 
-	// Default resource: user-provided > derived from remote URL
 	resource := req.OAuthConfig.Resource
-	if resource == "" && req.URL != "" {
-		resource = remote.DefaultResourceIndicator(req.URL)
-	}
 
 	// Create RemoteAuthConfig
 	remoteAuthConfig := &remote.Config{

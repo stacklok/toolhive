@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1987,6 +1988,90 @@ func TestMemoryStorage_DCRCredentials_ExcludedFromCleanupExpired(t *testing.T) {
 		got, err := s.GetDCRCredentials(ctx, key)
 		require.NoError(t, err)
 		assert.Equal(t, "abc", got.ClientID)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_ConcurrentAccess fans out N goroutines
+// performing alternating StoreDCRCredentials / GetDCRCredentials against
+// overlapping and disjoint keys, exercising the sync.RWMutex guard
+// advertised in the DCRCredentialStore contract. With go test -race this
+// catches a future change that drops the lock or returns an internal
+// pointer instead of a defensive copy.
+//
+// The test is bounded by a fail-fast deadline so a regression that
+// deadlocks fails loudly rather than hanging until the global Go test
+// timeout, per .claude/rules/testing.md.
+func TestMemoryStorage_DCRCredentials_ConcurrentAccess(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		const (
+			workers      = 16
+			opsPerWorker = 200
+		)
+
+		// Two key spaces: overlapping (every worker writes the same keys, so
+		// the lock must serialise their writes) and disjoint (each worker has
+		// its own key space, so reads never see another worker's writes).
+		overlappingKey := func(i int) DCRKey {
+			return DCRKey{
+				Issuer:      "https://idp.example.com",
+				RedirectURI: "https://thv.example.com/oauth/callback",
+				ScopesHash:  fmt.Sprintf("overlap-%d", i%4),
+			}
+		}
+		disjointKey := func(worker, i int) DCRKey {
+			return DCRKey{
+				Issuer:      fmt.Sprintf("https://idp-%d.example.com", worker),
+				RedirectURI: "https://thv.example.com/oauth/callback",
+				ScopesHash:  fmt.Sprintf("disjoint-%d", i),
+			}
+		}
+		mkCreds := func(key DCRKey, clientID string) *DCRCredentials {
+			return &DCRCredentials{
+				Key:                   key,
+				ClientID:              clientID,
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+			}
+		}
+
+		var errCount int32
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for w := 0; w < workers; w++ {
+			go func(worker int) {
+				defer wg.Done()
+				for i := 0; i < opsPerWorker; i++ {
+					var key DCRKey
+					if i%2 == 0 {
+						key = overlappingKey(i)
+					} else {
+						key = disjointKey(worker, i)
+					}
+					if err := s.StoreDCRCredentials(ctx, mkCreds(key, fmt.Sprintf("worker-%d-op-%d", worker, i))); err != nil {
+						atomic.AddInt32(&errCount, 1)
+					}
+					// The disjoint Get must always hit (the goroutine that
+					// just wrote owns this key); the overlapping Get may
+					// miss if another worker happens to be mid-Store, but
+					// that's not an error.
+					if _, err := s.GetDCRCredentials(ctx, key); err != nil && i%2 != 0 {
+						atomic.AddInt32(&errCount, 1)
+					}
+				}
+			}(w)
+		}
+
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timeout waiting for concurrent DCR Store/Get to finish; possible deadlock")
+		}
+
+		assert.Zero(t, atomic.LoadInt32(&errCount),
+			"no Store or disjoint-Get should have errored under concurrent access")
 	})
 }
 

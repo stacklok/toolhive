@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 func TestSessionStorageConfigJSONRoundtrip(t *testing.T) {
@@ -126,18 +128,20 @@ func TestVirtualMCPServerSpecRateLimitingJSONRoundtrip(t *testing.T) {
 			Provider: "redis",
 			Address:  "redis.default.svc.cluster.local:6379",
 		},
-		RateLimiting: &RateLimitConfig{
-			Shared: &RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
-			PerUser: &RateLimitBucket{
-				MaxTokens:    2,
-				RefillPeriod: metav1.Duration{Duration: time.Minute},
-			},
-			Tools: []ToolRateLimitConfig{
-				{
-					Name: "backend_a_echo",
-					Shared: &RateLimitBucket{
-						MaxTokens:    5,
-						RefillPeriod: metav1.Duration{Duration: 30 * time.Second},
+		Config: vmcpconfig.Config{
+			RateLimiting: &vmcpconfig.RateLimitConfig{
+				Shared: &vmcpconfig.RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+				PerUser: &vmcpconfig.RateLimitBucket{
+					MaxTokens:    2,
+					RefillPeriod: metav1.Duration{Duration: time.Minute},
+				},
+				Tools: []vmcpconfig.ToolRateLimitConfig{
+					{
+						Name: "backend_a_echo",
+						Shared: &vmcpconfig.RateLimitBucket{
+							MaxTokens:    5,
+							RefillPeriod: metav1.Duration{Duration: 30 * time.Second},
+						},
 					},
 				},
 			},
@@ -151,7 +155,7 @@ func TestVirtualMCPServerSpecRateLimitingJSONRoundtrip(t *testing.T) {
 	assert.Contains(t, out, `"shared"`)
 	assert.Contains(t, out, `"perUser"`)
 	assert.Contains(t, out, `"backend_a_echo"`)
-	assert.NotContains(t, out, `"config":{"rateLimiting"`)
+	assert.Contains(t, out, `"config":{"rateLimiting"`)
 }
 
 func TestMCPServerSpecScalingFieldsJSONRoundtrip(t *testing.T) {

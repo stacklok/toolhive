@@ -112,8 +112,8 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 		Context("rateLimiting", func() {
 			It("should reject rate limiting without redis session storage", func() {
 				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-rl-no-redis", nil)
-				vmcp.Spec.RateLimiting = &mcpv1beta1.RateLimitConfig{
-					Shared: &mcpv1beta1.RateLimitBucket{
+				vmcp.Spec.Config.RateLimiting = &vmcpconfig.RateLimitConfig{
+					Shared: &vmcpconfig.RateLimitBucket{
 						MaxTokens:    1,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
@@ -121,7 +121,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 
 				err := k8sClient.Create(ctx, vmcp)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("rateLimiting requires sessionStorage with provider 'redis'"))
+				Expect(err.Error()).To(ContainSubstring("config.rateLimiting requires sessionStorage with provider 'redis'"))
 			})
 
 			It("should reject perUser rate limiting with anonymous auth", func() {
@@ -129,8 +129,8 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 					Provider: "redis",
 					Address:  "redis:6379",
 				})
-				vmcp.Spec.RateLimiting = &mcpv1beta1.RateLimitConfig{
-					PerUser: &mcpv1beta1.RateLimitBucket{
+				vmcp.Spec.Config.RateLimiting = &vmcpconfig.RateLimitConfig{
+					PerUser: &vmcpconfig.RateLimitBucket{
 						MaxTokens:    1,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
@@ -138,7 +138,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 
 				err := k8sClient.Create(ctx, vmcp)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("rateLimiting.perUser requires incomingAuth.type oidc"))
+				Expect(err.Error()).To(ContainSubstring("config.rateLimiting.perUser requires incomingAuth.type oidc"))
 			})
 
 			It("should accept perUser rate limiting with oidc auth and redis session storage", func() {
@@ -153,8 +153,8 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 						Audience: "test-audience",
 					},
 				}
-				vmcp.Spec.RateLimiting = &mcpv1beta1.RateLimitConfig{
-					PerUser: &mcpv1beta1.RateLimitBucket{
+				vmcp.Spec.Config.RateLimiting = &vmcpconfig.RateLimitConfig{
+					PerUser: &vmcpconfig.RateLimitBucket{
 						MaxTokens:    1,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},

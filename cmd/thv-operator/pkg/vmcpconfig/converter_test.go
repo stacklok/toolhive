@@ -1601,6 +1601,51 @@ func TestConverter_SessionStorage(t *testing.T) {
 	}
 }
 
+func TestConverter_RateLimitingPassThrough(t *testing.T) {
+	t.Parallel()
+
+	vmcpServer := &mcpv1beta1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			Config: vmcpconfig.Config{
+				RateLimiting: &vmcpconfig.RateLimitConfig{
+					PerUser: &vmcpconfig.RateLimitBucket{
+						MaxTokens:    2,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+					Tools: []vmcpconfig.ToolRateLimitConfig{
+						{
+							Name: "backend_a_echo",
+							Shared: &vmcpconfig.RateLimitBucket{
+								MaxTokens:    5,
+								RefillPeriod: metav1.Duration{Duration: 30 * time.Second},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	converter := newTestConverter(t, newNoOpMockResolver(t))
+	ctx := log.IntoContext(context.Background(), logr.Discard())
+
+	config, _, err := converter.Convert(ctx, vmcpServer, nil)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	require.NotNil(t, config.RateLimiting)
+
+	assert.EqualValues(t, 2, config.RateLimiting.PerUser.MaxTokens)
+	require.Len(t, config.RateLimiting.Tools, 1)
+	assert.Equal(t, "backend_a_echo", config.RateLimiting.Tools[0].Name)
+	require.NotNil(t, config.RateLimiting.Tools[0].Shared)
+	assert.EqualValues(t, 5, config.RateLimiting.Tools[0].Shared.MaxTokens)
+}
+
 func TestDeriveAllowedAudiences(t *testing.T) {
 	t.Parallel()
 

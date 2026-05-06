@@ -13,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 func TestInMemoryDCRResolutionCache_PutGet_RoundTrip(t *testing.T) {
@@ -24,7 +26,7 @@ func TestInMemoryDCRResolutionCache_PutGet_RoundTrip(t *testing.T) {
 	key := DCRKey{
 		Issuer:      "https://idp.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  scopesHash([]string{"openid", "profile"}),
+		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
 	resolution := &DCRResolution{
 		ClientID:                "client-abc",
@@ -72,22 +74,22 @@ func TestInMemoryDCRResolutionCache_DistinctKeysDoNotCollide(t *testing.T) {
 	keyA := DCRKey{
 		Issuer:      "https://idp-a.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  scopesHash([]string{"openid"}),
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
 	keyB := DCRKey{
 		Issuer:      "https://idp-b.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  scopesHash([]string{"openid"}),
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
 	keyC := DCRKey{
 		Issuer:      "https://idp-a.example.com",
 		RedirectURI: "https://other.example.com/callback",
-		ScopesHash:  scopesHash([]string{"openid"}),
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
 	keyD := DCRKey{
 		Issuer:      "https://idp-a.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  scopesHash([]string{"openid", "email"}),
+		ScopesHash:  storage.ScopesHash([]string{"openid", "email"}),
 	}
 
 	require.NoError(t, store.Put(ctx, keyA, &DCRResolution{ClientID: "a"}))
@@ -170,9 +172,8 @@ func TestInMemoryDCRResolutionCache_GetReturnsDefensiveCopy(t *testing.T) {
 
 // Tests for the canonical scopes-hash form live next to the canonical
 // implementation in pkg/authserver/storage/memory_test.go (TestScopesHash_*).
-// The runner-package binding `scopesHash = storage.ScopesHash` would only
-// re-exercise the same code, so duplicating the suite here would be redundant
-// per .claude/rules/testing.md.
+// Duplicating the suite here would re-exercise the same code, which is
+// redundant per .claude/rules/testing.md.
 
 // TestInMemoryDCRResolutionCache_ConcurrentAccess fans out N goroutines
 // performing alternating Put / Get against overlapping and disjoint keys,

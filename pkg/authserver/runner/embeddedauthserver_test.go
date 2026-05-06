@@ -1541,7 +1541,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		key := DCRKey{
 			Issuer:      server.URL,
 			RedirectURI: redirectURI,
-			ScopesHash:  scopesHash([]string{"openid", "profile"}),
+			ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 		}
 		cached, ok, err := store.Get(context.Background(), key)
 		require.NoError(t, err)
@@ -1676,7 +1676,7 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 	key := DCRKey{
 		Issuer:      server.URL,
 		RedirectURI: redirectURI,
-		ScopesHash:  scopesHash([]string{"openid", "profile"}),
+		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
 	cached, ok, err := embed.dcrStore.Get(context.Background(), key)
 	require.NoError(t, err)

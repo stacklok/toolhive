@@ -227,13 +227,6 @@ func applyResolutionToOAuth2Config(cfg *upstream.OAuth2Config, res *DCRResolutio
 	cfg.ClientSecret = res.ClientSecret
 }
 
-// scopesHash is a runner-package shorthand for storage.ScopesHash, kept so the
-// resolver and its tests can reference the canonical hash function without an
-// explicit storage. qualifier on every call site. The canonical implementation
-// lives in the storage package next to DCRKey so any future backend hashes
-// keys identically.
-var scopesHash = storage.ScopesHash
-
 // Step identifiers for structured error logs emitted by the caller of
 // resolveDCRCredentials. These values flow through the "step" attribute so
 // operators can narrow failures to a specific phase without parsing error
@@ -339,7 +332,7 @@ func resolveDCRCredentials(
 	key := DCRKey{
 		Issuer:      localIssuer,
 		RedirectURI: redirectURI,
-		ScopesHash:  scopesHash(scopes),
+		ScopesHash:  storage.ScopesHash(scopes),
 	}
 
 	// Cache lookup short-circuits before any network I/O.

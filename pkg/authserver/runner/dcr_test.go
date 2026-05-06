@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -148,7 +149,7 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 	key := DCRKey{
 		Issuer:      issuer,
 		RedirectURI: redirectURI,
-		ScopesHash:  scopesHash([]string{"openid", "profile"}),
+		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
 	preloaded := &DCRResolution{
 		ClientID:              "preloaded-id",
@@ -217,7 +218,7 @@ func TestResolveDCRCredentials_RegistersOnCacheMiss(t *testing.T) {
 
 	// Cache was populated.
 	cached, ok, err := cache.Get(context.Background(),
-		DCRKey{Issuer: issuer, RedirectURI: issuer + "/oauth/callback", ScopesHash: scopesHash([]string{"openid", "profile"})})
+		DCRKey{Issuer: issuer, RedirectURI: issuer + "/oauth/callback", ScopesHash: storage.ScopesHash([]string{"openid", "profile"})})
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "test-client-id", cached.ClientID)

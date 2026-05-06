@@ -753,7 +753,7 @@ func TestBuildRemoteAuthConfigFromMetadata(t *testing.T) {
 		assert.Equal(t, "https://resource.example.com", cfg.Resource)
 	})
 
-	t.Run("resource derived from URL when both user and metadata unset", func(t *testing.T) {
+	t.Run("resource empty when both user and metadata unset", func(t *testing.T) {
 		t.Parallel()
 
 		md := baseMetadata()
@@ -762,7 +762,7 @@ func TestBuildRemoteAuthConfigFromMetadata(t *testing.T) {
 		cfg := buildRemoteAuthConfigFromMetadata(&createRequest{}, md)
 
 		require.NotNil(t, cfg)
-		assert.NotEmpty(t, cfg.Resource, "resource should be derived from md.URL")
+		assert.Empty(t, cfg.Resource, "resource should not be auto-derived from URL")
 	})
 
 	t.Run("user ClientSecret is applied in CLI string format", func(t *testing.T) {

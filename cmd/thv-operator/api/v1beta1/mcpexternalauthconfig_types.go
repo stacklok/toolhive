@@ -273,6 +273,21 @@ const (
 )
 
 // UpstreamProviderConfig defines configuration for an upstream Identity Provider.
+//
+// Exactly one of OIDCConfig or OAuth2Config must be set and must match the
+// declared Type: oidc-typed providers set OIDCConfig, oauth2-typed providers
+// set OAuth2Config. The CEL rule below enforces the pairing at admission; the
+// matching Go-level check in validateUpstreamProvider provides defense-in-depth
+// for stored objects.
+//
+// The rule is structured as a chain of equality checks ending in an explicit
+// `false`, so adding a new UpstreamProviderType value without extending this
+// rule fails admission instead of silently demanding the OAuth2 shape. When
+// adding a new type, extend both this rule and validateUpstreamProvider.
+//
+// +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? (has(self.oidcConfig) && !has(self.oauth2Config)) : self.type == 'oauth2' ? (has(self.oauth2Config) && !has(self.oidcConfig)) : false",message="type must be 'oidc' or 'oauth2'; oidcConfig must be set when type is 'oidc' and oauth2Config must be set when type is 'oauth2' (and the other must not be set)"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type UpstreamProviderConfig struct {
 	// Name uniquely identifies this upstream provider.
 	// Used for routing decisions and session binding in multi-upstream scenarios.
@@ -354,6 +369,32 @@ type OIDCUpstreamConfig struct {
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
 // OAuth 2.0 providers require explicit endpoint configuration.
+//
+// Exactly one of ClientID or DCRConfig must be set: ClientID is used when the
+// client is pre-provisioned out of band, DCRConfig enables RFC 7591 Dynamic
+// Client Registration at runtime.
+//
+// ClientSecretRef is mutually exclusive with DCRConfig: when DCRConfig is set,
+// the client_secret is obtained from the registration response (RFC 7591
+// §3.2.1) and any static ClientSecretRef would be either dead config or a
+// competing source of truth. The XValidation rule below rejects the
+// combination at admission; ValidateOAuth2DCRConfig is the matching
+// reconcile-time backstop.
+//
+// Layered XOR behavior: the ClientID/DCRConfig rule treats `clientId: ""` as
+// absent (size>0) but treats `dcrConfig: {}` as present (has() is true for an
+// empty object). For input `{ clientId: "", dcrConfig: {} }` the outer rule
+// passes and the inner DCRUpstreamConfig XOR fires with "exactly one of
+// discoveryUrl or registrationEndpoint must be set". This is intentional —
+// adding a non-empty subfield check (e.g.,
+// `has(self.dcrConfig.discoveryUrl) || has(self.dcrConfig.registrationEndpoint)`)
+// would inflate CEL cost on an already-budget-bound rule, and the inner
+// message is still actionable.
+//
+// +kubebuilder:validation:XValidation:rule="(has(self.clientId) && size(self.clientId) > 0) ? !has(self.dcrConfig) : has(self.dcrConfig)",message="exactly one of clientId or dcrConfig must be set"
+// +kubebuilder:validation:XValidation:rule="!(has(self.dcrConfig) && has(self.clientSecretRef))",message="clientSecretRef must not be set when dcrConfig is set; the client_secret is obtained at runtime via Dynamic Client Registration"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type OAuth2UpstreamConfig struct {
 	// AuthorizationEndpoint is the URL for the OAuth authorization endpoint.
 	// +kubebuilder:validation:Required
@@ -374,8 +415,10 @@ type OAuth2UpstreamConfig struct {
 	UserInfo *UserInfoConfig `json:"userInfo,omitempty"`
 
 	// ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
-	// +kubebuilder:validation:Required
-	ClientID string `json:"clientId"`
+	// Mutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained
+	// at runtime via RFC 7591 Dynamic Client Registration and must be left empty.
+	// +optional
+	ClientID string `json:"clientId,omitempty"`
 
 	// ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.
 	// Optional for public clients using PKCE instead of client secret.
@@ -410,6 +453,98 @@ type OAuth2UpstreamConfig struct {
 	// +kubebuilder:validation:MaxProperties=16
 	// +optional
 	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
+
+	// DCRConfig enables RFC 7591 Dynamic Client Registration against the upstream
+	// authorization server. When set, the client credentials are obtained at
+	// runtime rather than being pre-provisioned, and ClientID must be left empty.
+	// Mutually exclusive with ClientID.
+	// +optional
+	DCRConfig *DCRUpstreamConfig `json:"dcrConfig,omitempty"`
+}
+
+// DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an
+// OAuth 2.0 upstream. When present on an OAuth2 upstream, the authserver
+// performs registration at runtime to obtain client credentials, replacing
+// the need to pre-provision a ClientID.
+//
+// Exactly one of DiscoveryURL or RegistrationEndpoint must be set. DiscoveryURL
+// points at an RFC 8414 / OIDC Discovery document from which the registration
+// endpoint is resolved; RegistrationEndpoint is used directly when the upstream
+// does not publish discovery metadata.
+//
+// The XOR rule uses has() alone (not has() + size() > 0) to keep the rule's
+// estimated CEL cost under the apiserver's per-rule static budget. With
+// `omitempty` on both fields, an unset field is absent on the wire and has()
+// returns false; the explicit-empty-string edge case is rejected at reconcile
+// time by ValidateOAuth2DCRConfig.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.discoveryUrl) != has(self.registrationEndpoint)",message="exactly one of discoveryUrl or registrationEndpoint must be set"
+//
+//nolint:lll // CEL validation rules exceed line length limit
+type DCRUpstreamConfig struct {
+	// DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
+	// issues a single GET against this URL (no well-known-path fallback) and
+	// reads registration_endpoint, authorization_endpoint, token_endpoint,
+	// token_endpoint_auth_methods_supported, and scopes_supported from the
+	// response.
+	// Mutually exclusive with RegistrationEndpoint.
+	// HTTPS is required because the registration endpoint resolved from this
+	// document carries the initial access token and the issued client_secret
+	// (RFC 7591 §3, RFC 8414 §3). MaxLength is a defensive size cap (etcd
+	// object budget, regex evaluation cost) and matches the conventional URL
+	// length cap.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^https://[^\s?#]+[^/\s?#]$`
+	// +kubebuilder:validation:MaxLength=2048
+	DiscoveryURL string `json:"discoveryUrl,omitempty"`
+
+	// RegistrationEndpoint is the RFC 7591 registration endpoint URL used
+	// directly, bypassing discovery. When using this field, the caller is
+	// expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
+	// explicit Scopes list on the parent OAuth2UpstreamConfig.
+	// Mutually exclusive with DiscoveryURL.
+	// HTTPS is required because the registration endpoint carries the initial
+	// access token and the issued client_secret (RFC 7591 §3, RFC 8414 §3).
+	// MaxLength is a defensive size cap (etcd object budget, regex evaluation
+	// cost) and matches the conventional URL length cap.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^https://[^\s?#]+[^/\s?#]$`
+	// +kubebuilder:validation:MaxLength=2048
+	RegistrationEndpoint string `json:"registrationEndpoint,omitempty"`
+
+	// InitialAccessTokenRef is an optional reference to a Kubernetes Secret
+	// carrying an RFC 7591 §3 initial access token. When set, the resolver
+	// presents the token value as a Bearer credential on the registration
+	// request. Mirrors the ClientSecretRef pattern.
+	// +optional
+	InitialAccessTokenRef *SecretKeyRef `json:"initialAccessTokenRef,omitempty"`
+
+	// SoftwareID is the RFC 7591 "software_id" registration metadata value,
+	// identifying the client software independent of any particular
+	// registration instance. Typically a UUID or short identifier.
+	// +optional
+	// +kubebuilder:validation:MaxLength=255
+	SoftwareID string `json:"softwareId,omitempty"`
+
+	// SoftwareStatement is the RFC 7591 "software_statement" JWT asserting
+	// metadata about the client software, signed by a party the authorization
+	// server trusts.
+	//
+	// Stored inline on the CR. The JWT is signed but not encrypted, so its
+	// contents are visible to anyone with get/list/watch on this resource and
+	// appear in etcd backups in plaintext. Treat the value as non-confidential
+	// (signed attestation, not a secret). Operators that rotate software
+	// statements like bearer credentials should keep them at the authorization
+	// server side and rely on the registration endpoint's initial access
+	// token (see InitialAccessTokenRef) instead of placing them on the CR.
+	//
+	// Bounded to 16384 characters as a defensive size cap (etcd object
+	// budget, regex evaluation cost). Real-world signed statements with
+	// embedded x5c certificate chains, JWKS keys, or OIDC-Federation
+	// trust-framework metadata routinely exceed 4 KB.
+	// +optional
+	// +kubebuilder:validation:MaxLength=16384
+	SoftwareStatement string `json:"softwareStatement,omitempty"`
 }
 
 // TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields
@@ -956,22 +1091,100 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	return nil
 }
 
-// validateUpstreamProvider validates a single upstream provider configuration
+// validateUpstreamProvider validates a single upstream provider configuration.
+// The discriminator check mirrors the combined CEL XValidation rule on
+// UpstreamProviderConfig: a single boolean test produces a single message that
+// matches what admission emits, so reconcile-time and admission-time errors
+// stay aligned.
 func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *UpstreamProviderConfig) error {
 	prefix := fmt.Sprintf("upstreamProviders[%d]", index)
 
-	if (provider.OIDCConfig == nil) == (provider.Type == UpstreamProviderTypeOIDC) {
-		return fmt.Errorf("%s: oidcConfig must be set when type is 'oidc' and must not be set otherwise", prefix)
+	typeOK := provider.Type == UpstreamProviderTypeOIDC || provider.Type == UpstreamProviderTypeOAuth2
+	configOK := (provider.Type == UpstreamProviderTypeOIDC && provider.OIDCConfig != nil && provider.OAuth2Config == nil) ||
+		(provider.Type == UpstreamProviderTypeOAuth2 && provider.OAuth2Config != nil && provider.OIDCConfig == nil)
+	if !typeOK || !configOK {
+		return fmt.Errorf("%s: type must be 'oidc' or 'oauth2'; oidcConfig must be set when type is 'oidc' "+
+			"and oauth2Config must be set when type is 'oauth2' (and the other must not be set)", prefix)
 	}
-	if (provider.OAuth2Config == nil) == (provider.Type == UpstreamProviderTypeOAuth2) {
-		return fmt.Errorf("%s: oauth2Config must be set when type is 'oauth2' and must not be set otherwise", prefix)
-	}
-	if provider.Type != UpstreamProviderTypeOIDC && provider.Type != UpstreamProviderTypeOAuth2 {
-		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
+
+	// Validate OAuth2-specific DCR / ClientID constraints (defense-in-depth with CEL).
+	// The discriminator above guarantees OAuth2Config != nil when type is oauth2.
+	if provider.Type == UpstreamProviderTypeOAuth2 {
+		if err := ValidateOAuth2DCRConfig(provider.OAuth2Config); err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
 	}
 
 	// Validate additionalAuthorizationParams does not contain reserved keys
 	return ValidateAdditionalAuthorizationParams(prefix, provider.AdditionalAuthorizationParams())
+}
+
+// Length caps for DCR-related string fields. Mirror the
+// +kubebuilder:validation:MaxLength markers on DCRUpstreamConfig so that
+// ValidateOAuth2DCRConfig is a true reconcile-time backstop for length
+// constraints, not just for the XOR rules.
+const (
+	// MaxDCRURLLength matches the MaxLength marker on
+	// DCRUpstreamConfig.DiscoveryURL and DCRUpstreamConfig.RegistrationEndpoint.
+	MaxDCRURLLength = 2048
+
+	// MaxSoftwareStatementLength matches the MaxLength marker on
+	// DCRUpstreamConfig.SoftwareStatement.
+	MaxSoftwareStatementLength = 16384
+)
+
+// ValidateOAuth2DCRConfig enforces the mutual exclusivity between ClientID and
+// DCRConfig, between ClientSecretRef and DCRConfig, and (when DCRConfig is
+// present) between DiscoveryURL and RegistrationEndpoint. It also enforces the
+// MaxLength caps declared on DCRUpstreamConfig so reconcile-time matches
+// admission-time. These rules mirror the CEL validation on OAuth2UpstreamConfig
+// and DCRUpstreamConfig and provide defense-in-depth for stored objects (e.g.,
+// objects stored before CEL rules were added or validated through code paths
+// that bypass admission).
+//
+// Errors are scoped to "oauth2Config[.dcrConfig[.field]]" so callers can wrap
+// with their own outer scope (e.g. "upstreamProviders[i]: %w" or
+// "upstream %q: %w") without duplicating the field name.
+//
+// Exported so the controllerutil conversion layer can reuse the same
+// invariants when building runtime configs, rejecting malformed objects at
+// reconcile time rather than waiting until the authserver process parses them.
+func ValidateOAuth2DCRConfig(cfg *OAuth2UpstreamConfig) error {
+	hasClientID := cfg.ClientID != ""
+	hasDCR := cfg.DCRConfig != nil
+
+	if hasClientID == hasDCR {
+		return fmt.Errorf("oauth2Config: exactly one of clientId or dcrConfig must be set")
+	}
+
+	if !hasDCR {
+		return nil
+	}
+
+	if cfg.ClientSecretRef != nil {
+		return fmt.Errorf(
+			"oauth2Config: clientSecretRef must not be set when dcrConfig is set; " +
+				"the client_secret is obtained at runtime via Dynamic Client Registration")
+	}
+
+	hasDiscoveryURL := cfg.DCRConfig.DiscoveryURL != ""
+	hasRegistrationEndpoint := cfg.DCRConfig.RegistrationEndpoint != ""
+	if hasDiscoveryURL == hasRegistrationEndpoint {
+		return fmt.Errorf("oauth2Config.dcrConfig: exactly one of discoveryUrl or registrationEndpoint must be set")
+	}
+
+	if l := len(cfg.DCRConfig.DiscoveryURL); l > MaxDCRURLLength {
+		return fmt.Errorf("oauth2Config.dcrConfig.discoveryUrl: length %d exceeds maximum %d", l, MaxDCRURLLength)
+	}
+	if l := len(cfg.DCRConfig.RegistrationEndpoint); l > MaxDCRURLLength {
+		return fmt.Errorf("oauth2Config.dcrConfig.registrationEndpoint: length %d exceeds maximum %d", l, MaxDCRURLLength)
+	}
+	if l := len(cfg.DCRConfig.SoftwareStatement); l > MaxSoftwareStatementLength {
+		return fmt.Errorf(
+			"oauth2Config.dcrConfig.softwareStatement: length %d exceeds maximum %d",
+			l, MaxSoftwareStatementLength)
+	}
+	return nil
 }
 
 // AdditionalAuthorizationParams returns the additional authorization parameters

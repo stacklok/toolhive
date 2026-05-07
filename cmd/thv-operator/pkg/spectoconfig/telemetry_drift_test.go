@@ -25,10 +25,10 @@ package spectoconfig
 
 import (
 	"reflect"
-	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
@@ -61,22 +61,27 @@ var telemetryFieldMappings = []FieldMapping{
 // telemetryIgnoredOnCRDOnly lists CRD leaf fields that intentionally have no
 // runtime counterpart. Each entry MUST include a justification.
 var telemetryIgnoredOnCRDOnly = map[string]string{
-	"openTelemetry.enabled":                            "CRD-only gate; controls whether the converter populates runtime fields at all",
-	"openTelemetry.sensitiveHeaders.name":              "K8s-secret-backed headers; resolved by operator into runtime Headers",
-	"openTelemetry.sensitiveHeaders.secretKeyRef.name": "K8s-secret-backed headers; resolved by operator into runtime Headers",
-	"openTelemetry.sensitiveHeaders.secretKeyRef.key":  "K8s-secret-backed headers; resolved by operator into runtime Headers",
-	"openTelemetry.caBundleRef.configMapRef.name":      "K8s ConfigMap reference; resolved by operator into runtime CACertPath",
-	"openTelemetry.caBundleRef.configMapRef.key":       "K8s ConfigMap reference; resolved by operator into runtime CACertPath",
-	"openTelemetry.caBundleRef.configMapRef.optional":  "K8s ConfigMap reference flag promoted from corev1.ConfigMapKeySelector; not part of runtime config",
+	"openTelemetry.enabled": "CRD-only gate; controls whether the converter populates runtime fields at all",
+	"openTelemetry.sensitiveHeaders.name": "K8s-secret-backed header value; injected as TOOLHIVE_OTEL_HEADER_* env vars on the proxyrunner pod " +
+		"(controllerutil.GenerateOpenTelemetryEnvVarsFromRef) and merged into OTLP headers at runtime; not written into telemetry.Config.Headers by the converter",
+	"openTelemetry.sensitiveHeaders.secretKeyRef.name": "K8s-secret-backed header value; injected as TOOLHIVE_OTEL_HEADER_* env vars on the proxyrunner pod " +
+		"(controllerutil.GenerateOpenTelemetryEnvVarsFromRef) and merged into OTLP headers at runtime; not written into telemetry.Config.Headers by the converter",
+	"openTelemetry.sensitiveHeaders.secretKeyRef.key": "K8s-secret-backed header value; injected as TOOLHIVE_OTEL_HEADER_* env vars on the proxyrunner pod " +
+		"(controllerutil.GenerateOpenTelemetryEnvVarsFromRef) and merged into OTLP headers at runtime; not written into telemetry.Config.Headers by the converter",
+	"openTelemetry.caBundleRef.configMapRef.name":     "K8s ConfigMap reference; resolved by operator into runtime CACertPath",
+	"openTelemetry.caBundleRef.configMapRef.key":      "K8s ConfigMap reference; resolved by operator into runtime CACertPath",
+	"openTelemetry.caBundleRef.configMapRef.optional": "K8s ConfigMap reference flag promoted from corev1.ConfigMapKeySelector; not part of runtime config",
 }
 
 // telemetryIgnoredOnRuntimeOnly lists runtime leaf fields that intentionally
 // have no CRD counterpart. Each entry MUST include a justification.
 var telemetryIgnoredOnRuntimeOnly = map[string]string{
-	"serviceName":          "per-server, set via MCPTelemetryConfigReference.ServiceName, not stored on the shared MCPTelemetryConfig",
+	"serviceName": "per-server, set from MCPTelemetryConfigReference.ServiceName and defaulted at runtime by " +
+		"telemetry.ResolveServiceName; intentionally absent from the shared MCPTelemetryConfig",
 	"serviceVersion":       "resolved at runtime from binary version (issue #2296)",
 	"environmentVariables": "CLI-only, not applicable to CRD-managed telemetry",
-	"caCertPath":           "filesystem path computed by the operator from caBundleRef; not user-facing in the CRD",
+	"caCertPath": "filesystem path injected by runconfig.AppendTelemetryRunnerOption after the operator computes the volume mount " +
+		"path from openTelemetry.caBundleRef; not user-facing in the CRD",
 }
 
 // TestTelemetryConfigDrift_CRDFieldsCovered walks MCPTelemetryConfigSpec and
@@ -144,9 +149,12 @@ func TestTelemetryConfigDrift_MappingTableSanity(t *testing.T) {
 	seenCRD := make(map[string]int, len(telemetryFieldMappings))
 	seenRuntime := make(map[string]int, len(telemetryFieldMappings))
 
+	// Use require for the per-entry NotEmpty checks so that an empty CRD
+	// or Runtime field doesn't pollute the duplicate maps below with an
+	// empty-string key — that would trigger a misleading cascade.
 	for i, m := range telemetryFieldMappings {
-		assert.NotEmptyf(t, m.CRD, "telemetryFieldMappings[%d].CRD must not be empty", i)
-		assert.NotEmptyf(t, m.Runtime, "telemetryFieldMappings[%d].Runtime must not be empty", i)
+		require.NotEmptyf(t, m.CRD, "telemetryFieldMappings[%d].CRD must not be empty", i)
+		require.NotEmptyf(t, m.Runtime, "telemetryFieldMappings[%d].Runtime must not be empty", i)
 		seenCRD[m.CRD]++
 		seenRuntime[m.Runtime]++
 	}
@@ -176,17 +184,49 @@ func TestTelemetryConfigDrift_MappingTableSanity(t *testing.T) {
 		assert.NotEmptyf(t, reason, "telemetryIgnoredOnRuntimeOnly[%q] must include a justification", path)
 	}
 
-	// Stable iteration not strictly necessary for correctness, but it keeps
-	// failure output deterministic when assertions fire on multiple keys.
-	_ = sortedKeys(seenCRD)
-	_ = sortedKeys(seenRuntime)
+	// A leaf path can't be classified two different ways. An entry in both
+	// ignore maps is a copy-paste mistake when shifting a field across the
+	// boundary — fail loudly instead of silently allowing the contradiction.
+	for path := range telemetryIgnoredOnCRDOnly {
+		if _, dup := telemetryIgnoredOnRuntimeOnly[path]; dup {
+			t.Errorf("path %q is listed in BOTH telemetryIgnoredOnCRDOnly and telemetryIgnoredOnRuntimeOnly", path)
+		}
+	}
+
+	// Every path in the mapping/ignore tables must still be a live leaf on
+	// its respective type. Catches stale entries left behind by field
+	// renames or deletions, which would otherwise mask the rename.
+	crdLeaves := liveLeafSet(reflect.TypeOf(v1beta1.MCPTelemetryConfigSpec{}))
+	for _, m := range telemetryFieldMappings {
+		if _, live := crdLeaves[m.CRD]; !live {
+			t.Errorf("telemetryFieldMappings entry %q is not a live leaf on v1beta1.MCPTelemetryConfigSpec — stale entry?", m.CRD)
+		}
+	}
+	for path := range telemetryIgnoredOnCRDOnly {
+		if _, live := crdLeaves[path]; !live {
+			t.Errorf("telemetryIgnoredOnCRDOnly entry %q is not a live leaf on v1beta1.MCPTelemetryConfigSpec — stale entry?", path)
+		}
+	}
+	runtimeLeaves := liveLeafSet(reflect.TypeOf(telemetry.Config{}))
+	for _, m := range telemetryFieldMappings {
+		if _, live := runtimeLeaves[m.Runtime]; !live {
+			t.Errorf("telemetryFieldMappings entry %q is not a live leaf on telemetry.Config — stale entry?", m.Runtime)
+		}
+	}
+	for path := range telemetryIgnoredOnRuntimeOnly {
+		if _, live := runtimeLeaves[path]; !live {
+			t.Errorf("telemetryIgnoredOnRuntimeOnly entry %q is not a live leaf on telemetry.Config — stale entry?", path)
+		}
+	}
 }
 
-func sortedKeys[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+// liveLeafSet returns the set of leaf paths reachable from t, for use in
+// stale-entry checks against the drift mapping/ignore tables.
+func liveLeafSet(t reflect.Type) map[string]struct{} {
+	leaves := testutil.FlattenJSONLeafFields(t)
+	out := make(map[string]struct{}, len(leaves))
+	for _, l := range leaves {
+		out[l] = struct{}{}
 	}
-	sort.Strings(out)
 	return out
 }

@@ -81,8 +81,8 @@ type withEmbeddedNoInline struct {
 }
 
 type withEmbeddedInline struct {
-	embedSource `json:",inline"`
-	Bar         string `json:"bar"`
+	embedSource `json:",inline"` //nolint:revive // inline is a valid kubernetes json tag option
+	Bar         string           `json:"bar"`
 }
 
 type withUnexportedField struct {
@@ -266,7 +266,7 @@ func TestFlattenJSONLeafFields_SkipsObjectMetaAndTypeMeta(t *testing.T) {
 	t.Parallel()
 
 	type withK8sMeta struct {
-		metav1.TypeMeta   `json:",inline"`
+		metav1.TypeMeta   `json:",inline"` //nolint:revive // inline is a valid kubernetes json tag option
 		metav1.ObjectMeta `json:"metadata,omitempty"`
 		Spec              flatPrimitives `json:"spec"`
 	}

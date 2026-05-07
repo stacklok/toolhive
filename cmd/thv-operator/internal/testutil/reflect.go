@@ -10,12 +10,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	thvjson "github.com/stacklok/toolhive/pkg/json"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // FlattenJSONLeafFields returns every leaf JSON field path under t as a sorted
@@ -35,12 +31,21 @@ import (
 //     `tools` slice has a `workload` field".
 //   - Map types whose VALUE type is a struct (or pointer to a struct) recurse
 //     into that value type the same way.
-//   - All other types (primitives, []string, map[string]string,
-//     time.Duration, metav1.Duration, json.RawMessage, and any type listed
-//     in the leaf allowlist below) terminate the walk and contribute one
-//     leaf path entry.
-//   - To prevent infinite recursion on self-referential types, track visited
-//     types per walk and stop if a cycle is detected.
+//   - Types that implement json.Marshaler are treated as leaves regardless of
+//     their underlying kind. A custom MarshalJSON produces a JSON shape that
+//     bears no relation to the Go field layout, so walking the fields would
+//     emit paths that never appear in the serialized form. This handles
+//     metav1.Time, metav1.Duration, intstr.IntOrString, resource.Quantity,
+//     json.RawMessage, and any project-local custom-marshaled types
+//     (e.g. pkg/json.Map, pkg/json.Any, pkg/vmcp/config.Duration) without an
+//     explicit allow-list.
+//   - All other primitive types (primitives, []string, map[string]string,
+//     time.Duration which is just int64) terminate the walk and contribute
+//     one leaf path entry via the default branch.
+//   - Self-referential types are expanded one level (the original visit plus
+//     one self-reference) and then truncated, to keep the walk terminating.
+//     Subsequent levels (e.g. "next.next.<field>") are intentionally elided.
+//     See maxStructRevisits for the controlling constant.
 //
 // If t is nil or, after dereferencing, is not a struct, an empty slice is
 // returned rather than panicking.
@@ -48,7 +53,7 @@ func FlattenJSONLeafFields(t reflect.Type) []string {
 	if t == nil {
 		return []string{}
 	}
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
@@ -67,15 +72,16 @@ func FlattenJSONLeafFields(t reflect.Type) []string {
 	return out
 }
 
-// leafTypes lists types that terminate the walk even though they are structs.
-// They contribute a single leaf entry at their parent path.
-var leafTypes = map[reflect.Type]struct{}{
-	reflect.TypeOf(time.Duration(0)):       {},
-	reflect.TypeOf(metav1.Duration{}):      {},
-	reflect.TypeOf(json.RawMessage{}):      {},
-	reflect.TypeOf(thvjson.Map{}):          {},
-	reflect.TypeOf(thvjson.Any{}):          {},
-	reflect.TypeOf(vmcpconfig.Duration(0)): {},
+// jsonMarshalerType is the reflect.Type of the json.Marshaler interface. Any
+// type implementing it (directly or via pointer receiver) produces a JSON
+// shape detached from its Go field layout, so it must terminate the walk.
+var jsonMarshalerType = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+
+// implementsJSONMarshaler reports whether values of t (or *t) have a custom
+// MarshalJSON method. The pointer-receiver check matters because Go method
+// sets only include pointer-receiver methods when the receiver is addressable.
+func implementsJSONMarshaler(t reflect.Type) bool {
+	return t.Implements(jsonMarshalerType) || reflect.PointerTo(t).Implements(jsonMarshalerType)
 }
 
 // skipFieldTypes lists embedded struct types that must be skipped entirely.
@@ -136,36 +142,40 @@ func walkStruct(t reflect.Type, prefix string, leafSet map[string]struct{}, visi
 // recurses into nested structs/slices/maps or records a leaf at prefix.
 func walkType(t reflect.Type, prefix string, leafSet map[string]struct{}, visited map[reflect.Type]int) {
 	// Deref pointers.
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 
-	// Allow-listed leaf types short-circuit any further walking.
-	if _, ok := leafTypes[t]; ok {
+	// Custom JSON marshalers short-circuit any further walking. See
+	// jsonMarshalerType for the rationale.
+	if implementsJSONMarshaler(t) {
 		recordLeaf(prefix, leafSet)
 		return
 	}
 
-	switch t.Kind() {
+	// Only Struct/Slice/Array/Map require recursion; every other Kind
+	// (primitives, interfaces, channels, etc.) is a leaf path captured by
+	// the default branch.
+	switch t.Kind() { //exhaustive:ignore
 	case reflect.Struct:
 		recurseStruct(t, prefix, leafSet, visited)
 	case reflect.Slice, reflect.Array:
 		elem := t.Elem()
-		for elem.Kind() == reflect.Ptr {
+		for elem.Kind() == reflect.Pointer {
 			elem = elem.Elem()
 		}
-		// Recurse only when the element is a struct that is NOT a leaf type.
-		if _, isLeaf := leafTypes[elem]; !isLeaf && elem.Kind() == reflect.Struct {
+		// Recurse only when the element is a plain struct (no custom marshaler).
+		if elem.Kind() == reflect.Struct && !implementsJSONMarshaler(elem) {
 			recurseStruct(elem, prefix, leafSet, visited)
 			return
 		}
 		recordLeaf(prefix, leafSet)
 	case reflect.Map:
 		val := t.Elem()
-		for val.Kind() == reflect.Ptr {
+		for val.Kind() == reflect.Pointer {
 			val = val.Elem()
 		}
-		if _, isLeaf := leafTypes[val]; !isLeaf && val.Kind() == reflect.Struct {
+		if val.Kind() == reflect.Struct && !implementsJSONMarshaler(val) {
 			recurseStruct(val, prefix, leafSet, visited)
 			return
 		}

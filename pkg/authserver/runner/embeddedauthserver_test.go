@@ -1356,6 +1356,7 @@ type stubServer struct {
 func (s *stubServer) Handler() http.Handler                                { return s.handler }
 func (*stubServer) IDPTokenStorage() storage.UpstreamTokenStorage          { return nil }
 func (*stubServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher { return nil }
+func (*stubServer) DCRStore() storage.DCRCredentialStore                   { return nil }
 func (*stubServer) Close() error                                           { return nil }
 
 func TestRoutes(t *testing.T) {
@@ -1704,25 +1705,27 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 	require.NotNil(t, embed)
 	t.Cleanup(func() { _ = embed.Close() })
 
-	// The constructor must have populated a non-nil dcrStore.
-	require.NotNil(t, embed.dcrStore, "NewEmbeddedAuthServer must initialise a dcrStore")
+	// The constructor must have wired a non-nil DCR store.
+	dcrStore := embed.DCRStore()
+	require.NotNil(t, dcrStore, "NewEmbeddedAuthServer must wire a DCR store")
 
 	// The DCR registration must have hit the mock AS at least once.
 	assert.Greater(t, atomic.LoadInt32(requestCount), int32(0),
 		"DCR boot should have issued network I/O to the mock AS")
 
 	// The store on the EmbeddedAuthServer contains the canonical DCRKey
-	// for this upstream — the field is the same storage.DCRCredentialStore
-	// returned by createStorage, so a successful boot persisted the
-	// resolution there directly (no separate in-memory store was created).
+	// for this upstream — the accessor delegates to the same
+	// storage.DCRCredentialStore createStorage produced, so a successful
+	// boot persisted the resolution there directly (no separate in-memory
+	// store was created).
 	redirectURI := server.URL + "/oauth/callback"
 	key := DCRKey{
 		Issuer:      server.URL,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
-	cached, err := embed.dcrStore.GetDCRCredentials(context.Background(), key)
-	require.NoError(t, err, "dcrStore on EmbeddedAuthServer must hold the DCR resolution")
+	cached, err := dcrStore.GetDCRCredentials(context.Background(), key)
+	require.NoError(t, err, "DCR store on EmbeddedAuthServer must hold the DCR resolution")
 	require.NotNil(t, cached)
 	assert.Equal(t, "dcr-client-id", cached.ClientID)
 	assert.Equal(t, "dcr-client-secret", cached.ClientSecret)

@@ -614,21 +614,24 @@ type UserStorage interface {
 // See doc.go for comprehensive documentation of fosite's storage design.
 type Storage interface {
 	// Embed segregated interfaces for IDP tokens, pending authorizations, client registry,
-	// user management for multi-IDP support, and DCR credential persistence.
+	// and user management for multi-IDP support.
 	//
-	// DCRCredentialStore is embedded so callers obtaining a Storage value can
-	// access GetDCRCredentials / StoreDCRCredentials directly without a runtime
-	// type assertion. This is the compile-time guarantee
-	// pkg/authserver/runner.NewEmbeddedAuthServer relies on when wiring the
-	// authserver and its DCR resolver to a single shared backend; without it,
-	// a future Storage implementation that omitted the DCR methods would
-	// silently boot and fail at first DCR resolve. With it, the type system
-	// rejects any such implementation at compile time.
+	// DCRCredentialStore is intentionally NOT embedded here: doing so would
+	// promote GetDCRCredentials / StoreDCRCredentials onto every consumer of
+	// storage.Storage (handlers, server, registration, etc.), broadening the
+	// surface that can read raw client_secret / registration_access_token even
+	// when those consumers have no DCR responsibility. Code that legitimately
+	// needs DCR access (the runner and authserver constructors) obtains it
+	// via an explicit `stor.(DCRCredentialStore)` type assertion at the
+	// boundary; the per-backend `var _ DCRCredentialStore = (*MemoryStorage)(nil)`
+	// and `var _ DCRCredentialStore = (*RedisStorage)(nil)` checks in
+	// memory.go / redis.go provide the compile-time guarantee that production
+	// backends satisfy the interface, so the runtime assertion is provably
+	// safe at the boundary while keeping the wider Storage surface narrow.
 	UpstreamTokenStorage
 	PendingAuthorizationStorage
 	ClientRegistry
 	UserStorage
-	DCRCredentialStore
 
 	// AuthorizeCodeStorage provides authorization code storage for the Authorization Code
 	// Grant (RFC 6749 Section 4.1). Authorization codes are one-time-use and short-lived.

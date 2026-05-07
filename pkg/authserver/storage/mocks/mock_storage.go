@@ -761,21 +761,6 @@ func (mr *MockStorageMockRecorder) GetClient(ctx, id any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetClient", reflect.TypeOf((*MockStorage)(nil).GetClient), ctx, id)
 }
 
-// GetDCRCredentials mocks base method.
-func (m *MockStorage) GetDCRCredentials(ctx context.Context, key storage.DCRKey) (*storage.DCRCredentials, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetDCRCredentials", ctx, key)
-	ret0, _ := ret[0].(*storage.DCRCredentials)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetDCRCredentials indicates an expected call of GetDCRCredentials.
-func (mr *MockStorageMockRecorder) GetDCRCredentials(ctx, key any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetDCRCredentials", reflect.TypeOf((*MockStorage)(nil).GetDCRCredentials), ctx, key)
-}
-
 // GetLatestUpstreamTokensForUser mocks base method.
 func (m *MockStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userID, providerID string) (*storage.UpstreamTokens, error) {
 	m.ctrl.T.Helper()
@@ -992,20 +977,6 @@ func (m *MockStorage) SetClientAssertionJWT(ctx context.Context, jti string, exp
 func (mr *MockStorageMockRecorder) SetClientAssertionJWT(ctx, jti, exp any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetClientAssertionJWT", reflect.TypeOf((*MockStorage)(nil).SetClientAssertionJWT), ctx, jti, exp)
-}
-
-// StoreDCRCredentials mocks base method.
-func (m *MockStorage) StoreDCRCredentials(ctx context.Context, creds *storage.DCRCredentials) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "StoreDCRCredentials", ctx, creds)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// StoreDCRCredentials indicates an expected call of StoreDCRCredentials.
-func (mr *MockStorageMockRecorder) StoreDCRCredentials(ctx, creds any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StoreDCRCredentials", reflect.TypeOf((*MockStorage)(nil).StoreDCRCredentials), ctx, creds)
 }
 
 // StorePendingAuthorization mocks base method.

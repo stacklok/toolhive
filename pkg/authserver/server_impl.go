@@ -22,8 +22,14 @@ import (
 
 // server is the internal implementation of the Server interface.
 type server struct {
-	handler   http.Handler
-	storage   storage.Storage
+	handler http.Handler
+	storage storage.Storage
+	// dcrStore is the same storage.Storage value asserted to
+	// storage.DCRCredentialStore. The assertion runs once at construction
+	// (newServer) so DCRStore() is a field read rather than re-asserting on
+	// every call, and a backend that does not implement DCRCredentialStore
+	// is rejected at boot rather than at first DCR resolve.
+	dcrStore  storage.DCRCredentialStore
 	upstreams []handlers.NamedUpstream
 	// refreshTokenLifespan mirrors the validated Config.RefreshTokenLifespan.
 	// It is threaded into upstreamTokenRefresher so the refresh path can
@@ -91,6 +97,19 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	// Validate storage is provided
 	if stor == nil {
 		return nil, fmt.Errorf("storage is required")
+	}
+
+	// Storage no longer embeds DCRCredentialStore (the embed widened secret
+	// reach to every Storage consumer); obtain the DCR-capable handle via an
+	// explicit assertion at the boundary. The per-backend
+	// `var _ DCRCredentialStore = (*MemoryStorage)(nil)` /
+	// `var _ DCRCredentialStore = (*RedisStorage)(nil)` checks make this
+	// provably safe for the production backends; surfacing a bad backend as
+	// a constructor error keeps misconfiguration fail-loud at boot rather
+	// than at first DCR resolve.
+	dcrStore, ok := stor.(storage.DCRCredentialStore)
+	if !ok {
+		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", stor)
 	}
 
 	slog.Debug("creating OAuth2 configuration")
@@ -172,6 +191,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	return &server{
 		handler:              router,
 		storage:              stor,
+		dcrStore:             dcrStore,
 		upstreams:            upstreams,
 		refreshTokenLifespan: cfg.RefreshTokenLifespan,
 	}, nil
@@ -185,6 +205,12 @@ func (s *server) Handler() http.Handler {
 // IDPTokenStorage returns the IDP token storage interface.
 func (s *server) IDPTokenStorage() storage.UpstreamTokenStorage {
 	return s.storage
+}
+
+// DCRStore returns the persistent DCR credential store the server is wired
+// against. See the Server interface doc for SECURITY and lifecycle notes.
+func (s *server) DCRStore() storage.DCRCredentialStore {
+	return s.dcrStore
 }
 
 // UpstreamTokenRefresher returns a refresher that wraps the upstream providers

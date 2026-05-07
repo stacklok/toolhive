@@ -101,9 +101,13 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 //
 // The first two segments are length-prefixed to handle colons in RedirectURI
 // (and, for symmetry, Issuer) without ambiguity, mirroring redisProviderKey.
-// ScopesHash is a SHA-256 hex digest produced by storage.ScopesHash; it
-// contains only [0-9a-f] and never contains a colon, so it can be appended
-// without a length prefix.
+// ScopesHash is expected to be a SHA-256 hex digest produced by
+// storage.ScopesHash — only [0-9a-f] and never colon-bearing — so it is
+// appended without a length prefix. The format is robust for that domain;
+// validateDCRCredentialsForStore (called by every Store path) already
+// rejects an empty ScopesHash, and callers are required to compute the hash
+// via storage.ScopesHash. Length-prefix collision-safety is preserved on
+// the leading segments either way.
 func redisDCRKey(prefix string, key DCRKey) string {
 	return fmt.Sprintf("%s%s:%d:%s:%d:%s:%s",
 		prefix, KeyTypeDCR,

@@ -1467,11 +1467,19 @@ func TestIntegration_DCRCredentials_DistinctKeysCoexist(t *testing.T) {
 		mkKey := func(issuer, redirect string, scopes []string) DCRKey {
 			return DCRKey{Issuer: issuer, RedirectURI: redirect, ScopesHash: ScopesHash(scopes)}
 		}
+		mk := func(key DCRKey, clientID string) *DCRCredentials {
+			return &DCRCredentials{
+				Key:                   key,
+				ClientID:              clientID,
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+			}
+		}
 		entries := []*DCRCredentials{
-			{Key: mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid"}), ClientID: "a"},
-			{Key: mkKey("https://idp-b.example.com", "https://x/cb", []string{"openid"}), ClientID: "b"},
-			{Key: mkKey("https://idp-a.example.com", "https://y/cb", []string{"openid"}), ClientID: "c"},
-			{Key: mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid", "email"}), ClientID: "d"},
+			mk(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid"}), "a"),
+			mk(mkKey("https://idp-b.example.com", "https://x/cb", []string{"openid"}), "b"),
+			mk(mkKey("https://idp-a.example.com", "https://y/cb", []string{"openid"}), "c"),
+			mk(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid", "email"}), "d"),
 		}
 		for _, e := range entries {
 			require.NoError(t, s.StoreDCRCredentials(ctx, e))
@@ -1491,9 +1499,17 @@ func TestIntegration_DCRCredentials_OverwriteSemantics(t *testing.T) {
 
 	withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
 		key := dcrFixtureKey()
+		mk := func(clientID string) *DCRCredentials {
+			return &DCRCredentials{
+				Key:                   key,
+				ClientID:              clientID,
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+			}
+		}
 
-		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{Key: key, ClientID: "first"}))
-		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{Key: key, ClientID: "second"}))
+		require.NoError(t, s.StoreDCRCredentials(ctx, mk("first")))
+		require.NoError(t, s.StoreDCRCredentials(ctx, mk("second")))
 
 		got, err := s.GetDCRCredentials(ctx, key)
 		require.NoError(t, err)
@@ -1517,6 +1533,8 @@ func TestIntegration_DCRCredentials_TTL(t *testing.T) {
 			require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
 				Key:                   key,
 				ClientID:              "client-with-expiry",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
 				ClientSecretExpiresAt: expires,
 			}))
 
@@ -1535,8 +1553,10 @@ func TestIntegration_DCRCredentials_TTL(t *testing.T) {
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
 			key := dcrFixtureKey()
 			require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
-				Key:      key,
-				ClientID: "client-no-expiry",
+				Key:                   key,
+				ClientID:              "client-no-expiry",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
 				// ClientSecretExpiresAt deliberately zero.
 			}))
 
@@ -1549,43 +1569,25 @@ func TestIntegration_DCRCredentials_TTL(t *testing.T) {
 }
 
 // TestIntegration_DCRCredentials_ConcurrentAccess pins race-freedom against
-// real Redis for concurrent Put/Get on the same set of keys. Run with -race
-// to validate the data-race detector is clean.
+// real Redis. Mirrors the unit-test sibling (overlapping + disjoint
+// keyspaces) using the shared runDCRConcurrentAccess helper from
+// redis_test.go (visible across build tags), with a longer timeout to
+// absorb real-Redis network latency. Run with -race to validate the
+// data-race detector is clean.
 func TestIntegration_DCRCredentials_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
-	withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
-		const goroutines = 8
-		const iterations = 16
+	t.Run("overlapping_key", func(t *testing.T) {
+		t.Parallel()
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			runDCRConcurrentAccess(ctx, t, s, dcrConcurrentOverlappingKey, 30*time.Second)
+		})
+	})
 
-		var wg sync.WaitGroup
-		wg.Add(goroutines)
-		for g := 0; g < goroutines; g++ {
-			gid := g
-			go func() {
-				defer wg.Done()
-				for i := 0; i < iterations; i++ {
-					key := DCRKey{
-						Issuer:      fmt.Sprintf("https://idp-%d.example.com", gid),
-						RedirectURI: "https://x/cb",
-						ScopesHash:  ScopesHash([]string{"openid"}),
-					}
-					require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
-						Key:      key,
-						ClientID: fmt.Sprintf("client-%d-%d", gid, i),
-					}))
-					_, err := s.GetDCRCredentials(ctx, key)
-					require.NoError(t, err)
-				}
-			}()
-		}
-
-		done := make(chan struct{})
-		go func() { wg.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			t.Fatal("timeout waiting for concurrent DCR access goroutines")
-		}
+	t.Run("disjoint_keys", func(t *testing.T) {
+		t.Parallel()
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			runDCRConcurrentAccess(ctx, t, s, dcrConcurrentDisjointKeys, 30*time.Second)
+		})
 	})
 }

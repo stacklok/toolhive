@@ -1447,17 +1447,11 @@ func (s *storedDCRCredentials) toDCRCredentials() *DCRCredentials {
 // fail-loud-but-tolerant posture: the caller's expiry timestamp round-trips so
 // a downstream reader can still observe it and trigger re-registration.
 //
-// Returns fosite.ErrInvalidRequest for nil creds, empty Issuer, or empty
-// RedirectURI — the same fail-loud contract as MemoryStorage.StoreDCRCredentials.
+// Validation is delegated to validateDCRCredentialsForStore so the rejection
+// set stays in sync with MemoryStorage and any future backend.
 func (s *RedisStorage) StoreDCRCredentials(ctx context.Context, creds *DCRCredentials) error {
-	if creds == nil {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials cannot be nil")
-	}
-	if creds.Key.Issuer == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials key issuer cannot be empty")
-	}
-	if creds.Key.RedirectURI == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials key redirect_uri cannot be empty")
+	if err := validateDCRCredentialsForStore(creds); err != nil {
+		return err
 	}
 
 	key := redisDCRKey(s.keyPrefix, creds.Key)
@@ -1511,10 +1505,10 @@ func (s *RedisStorage) StoreDCRCredentials(ctx context.Context, creds *DCRCreden
 // Returns ErrNotFound (wrapped) when no entry exists. The returned value is a
 // fresh struct decoded from JSON, which acts as a defensive copy.
 //
-// An unpopulated key (empty Issuer or empty RedirectURI) cannot match any
-// stored row because StoreDCRCredentials rejects such keys, so a Get against
-// one is a normal miss — ErrNotFound — matching MemoryStorage.GetDCRCredentials
-// and the DCRCredentialStore interface contract.
+// An unpopulated key (empty Issuer, RedirectURI, or ScopesHash) cannot match
+// any stored row because StoreDCRCredentials rejects such keys, so a Get
+// against one is a normal miss — ErrNotFound — matching
+// MemoryStorage.GetDCRCredentials and the DCRCredentialStore interface contract.
 func (s *RedisStorage) GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRCredentials, error) {
 	redisKey := redisDCRKey(s.keyPrefix, key)
 	data, err := s.client.Get(ctx, redisKey).Bytes()

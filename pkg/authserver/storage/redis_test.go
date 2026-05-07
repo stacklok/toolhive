@@ -103,7 +103,7 @@ func TestRedisConfig_Validation(t *testing.T) {
 		{
 			name:    "neither addr nor sentinel config",
 			cfg:     RedisConfig{ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"}, KeyPrefix: "test:"},
-			wantErr: "one of addr (standalone) or sentinel configuration is required",
+			wantErr: "one of addr (standalone or cluster) or sentinel configuration is required",
 		},
 		{
 			name: "addr and sentinel config both set",
@@ -113,7 +113,26 @@ func TestRedisConfig_Validation(t *testing.T) {
 				ACLUserConfig:  &ACLUserConfig{Username: "u", Password: "p"},
 				KeyPrefix:      "test:",
 			},
-			wantErr: "addr and sentinel configuration are mutually exclusive",
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "cluster mode with sentinel config",
+			cfg: RedisConfig{
+				ClusterMode:    true,
+				SentinelConfig: &SentinelConfig{MasterName: "m", SentinelAddrs: []string{"localhost:26379"}},
+				ACLUserConfig:  &ACLUserConfig{Username: "u", Password: "p"},
+				KeyPrefix:      "test:",
+			},
+			wantErr: "cluster mode cannot be used with sentinel",
+		},
+		{
+			name: "cluster mode without addr",
+			cfg: RedisConfig{
+				ClusterMode:   true,
+				ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"},
+				KeyPrefix:     "test:",
+			},
+			wantErr: "cluster mode requires addr",
 		},
 		{
 			name:    "missing sentinel master name",
@@ -220,6 +239,28 @@ func TestNewRedisStorage_Standalone_WithMiniredis(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	require.NoError(t, s.Health(ctx))
+}
+
+func TestNewRedisStorage_Cluster_ConnectionFailure(t *testing.T) {
+	t.Parallel()
+
+	cfg := RedisConfig{
+		Addr:        "localhost:19998",
+		ClusterMode: true,
+		ACLUserConfig: &ACLUserConfig{
+			Username: "user",
+			Password: "pass",
+		},
+		KeyPrefix:   "test:",
+		DialTimeout: 100 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	_, err := NewRedisStorage(ctx, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to connect to redis")
 }
 
 // --- Client Tests ---

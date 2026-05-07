@@ -229,6 +229,18 @@ func validateDCRCredentialsForStore(creds *DCRCredentials) error {
 // retains entries for the process lifetime and is intentionally excluded from
 // the periodic cleanup loop. The Redis backend applies TTL via SET with a
 // duration when ClientSecretExpiresAt is non-zero.
+//
+// # Converter contract
+//
+// MUST update both converters in
+// pkg/authserver/runner/dcr_store.go (resolutionToCredentials and
+// credentialsToResolution) when adding, renaming, or removing a field
+// here. The two converters are the only translation seam between this
+// persisted type and the runner-side *DCRResolution; a field added here
+// without a paired converter update will silently fail to round-trip
+// across an authserver restart. The round-trip behaviour is pinned by
+// TestResolutionCredentialsRoundTrip in
+// pkg/authserver/runner/dcr_store_test.go.
 type DCRCredentials struct {
 	// Key is the canonical cache key: (Issuer, RedirectURI, ScopesHash).
 	Key DCRKey

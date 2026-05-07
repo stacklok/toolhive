@@ -4,6 +4,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -13,6 +14,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1826,4 +1828,121 @@ func TestNewEmbeddedAuthServer_ClosesStorageOnError(t *testing.T) {
 	assert.Equal(t, int32(1), tracker.closeCount.Load(),
 		"failed NewEmbeddedAuthServer must Close the storage exactly once via the deferred-cleanup gate; "+
 			"a count of 0 indicates the deferred Close did not run, leaking the backend on the error path")
+}
+
+// urlErrorOnCloseStorage wraps an authserver storage and returns a fixed
+// URL-bearing error from Close. It exists so
+// TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog can verify that the
+// deferred-cleanup gate routes both closeErr and retErr through
+// sanitizeErrorForLog, scrubbing any query / userinfo / fragment that might
+// carry credentials in a future regression.
+type urlErrorOnCloseStorage struct {
+	storage.Storage
+	closeErr error
+}
+
+func (s *urlErrorOnCloseStorage) Close() error {
+	// Intentionally drop the inner Close result: this test is about the log
+	// path, not about double-closing the inner storage. Returning the
+	// fixed error makes the slog capture deterministic.
+	_ = s.Storage.Close()
+	return s.closeErr
+}
+
+// TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog pins the post-#5196
+// invariant that the deferred-cleanup slog.Warn at the top of
+// newEmbeddedAuthServerWithStorage routes both closeErr and retErr through
+// sanitizeErrorForLog, so a future regression that drops the call (or that
+// changes the error chain to inline an upstream response body containing a
+// userinfo/query/fragment) cannot silently leak secrets to operator logs.
+//
+// The test injects a closeErr containing a URL with a secret-bearing query
+// (?token=leak-marker) and a discovery URL whose host appears verbatim in
+// the wrapped DCR error chain (so the captured slog record's `cause` field
+// also exercises the sanitiser). It then asserts:
+//   - the captured log record does NOT contain the literal secret marker;
+//   - the captured log record DOES contain the host components, so
+//     operators retain enough context to correlate the failure.
+//
+// NOT t.Parallel(): the test swaps slog.Default() to capture output and
+// restores it via t.Cleanup. Running in parallel would race with any other
+// test in this package that emits a log record. Confirmed against the
+// paralleltest rule on a sample run — every other test failed with a
+// data-race report on slog's internal default-logger handle.
+//
+//nolint:paralleltest // see comment above; mutates the package-global slog.Default()
+func TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog(t *testing.T) {
+	const (
+		closeErrSecretMarker = "close-leak-marker-7f9c"
+		retErrSecretMarker   = "ret-leak-marker-3b2a"
+	)
+
+	closeErr := fmt.Errorf(
+		"redis: connection broken: https://primary:hidden@redis.example.com/0?token=%s",
+		closeErrSecretMarker,
+	)
+	tracker := &urlErrorOnCloseStorage{
+		Storage:  storage.NewMemoryStorage(),
+		closeErr: closeErr,
+	}
+
+	// Discovery endpoint returns 500 so the DCR resolver fails and the
+	// constructor reaches the deferred-cleanup gate. The query string
+	// embedded in the discovery URL is what the resolver wraps into its
+	// error chain via fmt.Errorf("...%w", err) — so retErr's text is the
+	// vehicle for the second secret marker.
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(httpServer.Close)
+
+	discoveryURL := httpServer.URL + "/.well-known/oauth-authorization-server?token=" + retErrSecretMarker
+
+	cfg := &authserver.RunConfig{
+		SchemaVersion: authserver.CurrentSchemaVersion,
+		Issuer:        httpServer.URL,
+		Upstreams: []authserver.UpstreamRunConfig{
+			{
+				Name: "dcr-upstream",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					ClientID:              "",
+					AuthorizationEndpoint: httpServer.URL + "/authorize",
+					TokenEndpoint:         httpServer.URL + "/token",
+					Scopes:                []string{"openid", "profile"},
+					DCRConfig: &authserver.DCRUpstreamConfig{
+						DiscoveryURL: discoveryURL,
+					},
+				},
+			},
+		},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+	}
+
+	// Capture slog output by swapping the default logger for the duration
+	// of this test. Restore on cleanup so parallel tests are unaffected.
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	embed, err := newEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
+	require.Error(t, err)
+	assert.Nil(t, embed)
+
+	logged := buf.String()
+
+	// Defense in depth: both secret markers must be stripped before the
+	// Warn record reaches operator logs.
+	assert.NotContains(t, logged, closeErrSecretMarker,
+		"closeErr secret marker must be sanitised before reaching the Warn record")
+	assert.NotContains(t, logged, retErrSecretMarker,
+		"retErr secret marker must be sanitised before reaching the Warn record")
+	assert.NotContains(t, logged, "primary:hidden",
+		"closeErr userinfo must be sanitised before reaching the Warn record")
+
+	// The host components survive sanitisation so operators retain enough
+	// context to correlate the failure with upstream logs.
+	assert.Contains(t, logged, "redis.example.com",
+		"closeErr host must remain in the Warn record after sanitisation")
 }

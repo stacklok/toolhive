@@ -93,12 +93,24 @@ func newEmbeddedAuthServerWithStorage(
 	stor storage.Storage,
 ) (retEAS *EmbeddedAuthServer, retErr error) {
 	// From here on, any error must close stor before returning.
+	//
+	// Both errors are passed through sanitizeErrorForLog before being
+	// recorded: closeErr for symmetry with retErr, retErr because the
+	// most common cause of reaching this gate is a wrapped DCR failure
+	// whose error chain may inline several KiB of the upstream's raw
+	// /register response body — that body is attacker-influenced and may
+	// contain URL components that carry credentials (userinfo, query,
+	// fragment). The existing logDCRStepError boundary log routes
+	// through the same sanitiser; keep the two log paths consistent so
+	// the cleanup log cannot regress to a less-defended state. The
+	// "cause" key matches the package-wide vocabulary for the
+	// triggering error.
 	defer func() {
 		if retErr != nil {
 			if closeErr := stor.Close(); closeErr != nil {
 				slog.Warn("failed to close storage on NewEmbeddedAuthServer error path",
-					"error", closeErr,
-					"original_error", retErr,
+					"error", sanitizeErrorForLog(closeErr),
+					"cause", sanitizeErrorForLog(retErr),
 				)
 			}
 		}

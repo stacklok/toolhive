@@ -298,3 +298,104 @@ func TestStorageBackedStore_ConcurrentAccess(t *testing.T) {
 	assert.Zero(t, atomic.LoadInt32(&errCount),
 		"no Get/Put should have errored under concurrent access")
 }
+
+// TestResolutionCredentialsRoundTrip pins the field-by-field contract
+// between resolutionToCredentials and credentialsToResolution: which
+// fields survive a round-trip, which are intentionally dropped, and
+// which are recovered from the persisted DCRKey. The test exists
+// because the two converters are the seam where a field added to either
+// DCRResolution or storage.DCRCredentials must be paired with an update
+// here; without coverage, a future field addition would silently fail
+// to persist across an authserver restart.
+//
+// The "preserved" group asserts equality on round-tripped values. The
+// "dropped" group asserts that the post-round-trip value is the type's
+// zero value (ClientIDIssuedAt is informational per RFC 7591 §3.2.1 and
+// is not persisted). RedirectURI is in its own group because it is
+// dropped from DCRCredentials and recovered via Key.RedirectURI on
+// read.
+//
+// ProviderName is the one DCRCredentials field with no DCRResolution
+// counterpart. It is documented in storage.DCRCredentials as "debug /
+// audit only — never used as a primary key" and no current consumer
+// reads it. The decision to leave it unpopulated by the runner is
+// recorded here so a future contributor adding ProviderName threading
+// has a single grep target.
+func TestResolutionCredentialsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC().Round(time.Second)
+	expiry := now.Add(30 * 24 * time.Hour)
+
+	key := DCRKey{
+		Issuer:      "https://idp.example.com",
+		RedirectURI: "https://thv.example.com/oauth/callback",
+		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+	}
+
+	original := &DCRResolution{
+		ClientID:                "round-trip-client-id",
+		ClientSecret:            "round-trip-secret",
+		AuthorizationEndpoint:   "https://idp.example.com/authorize",
+		TokenEndpoint:           "https://idp.example.com/token",
+		RegistrationAccessToken: "rfc7592-token",
+		RegistrationClientURI:   "https://idp.example.com/register/round-trip-client-id",
+		TokenEndpointAuthMethod: "client_secret_basic",
+		// RedirectURI is recovered from Key on read; pre-populate it on
+		// the input to confirm it survives via the key, not via a
+		// dedicated field on DCRCredentials.
+		RedirectURI:           key.RedirectURI,
+		ClientIDIssuedAt:      now, // intentionally dropped on persist
+		ClientSecretExpiresAt: expiry,
+		CreatedAt:             now,
+	}
+
+	creds := resolutionToCredentials(key, original)
+	require.NotNil(t, creds)
+
+	// Persisted-side assertions: which fields the converter writes to
+	// DCRCredentials, which it leaves zero (the asymmetry F7 documents).
+	assert.Equal(t, key, creds.Key,
+		"Key must round-trip via the explicit parameter")
+	assert.Empty(t, creds.ProviderName,
+		"ProviderName has no DCRResolution counterpart and is intentionally not populated; "+
+			"a future contributor threading it through must update this assertion and the converters together")
+
+	roundTripped := credentialsToResolution(creds)
+	require.NotNil(t, roundTripped)
+
+	t.Run("preserved fields survive round-trip", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, original.ClientID, roundTripped.ClientID)
+		assert.Equal(t, original.ClientSecret, roundTripped.ClientSecret)
+		assert.Equal(t, original.AuthorizationEndpoint, roundTripped.AuthorizationEndpoint)
+		assert.Equal(t, original.TokenEndpoint, roundTripped.TokenEndpoint)
+		assert.Equal(t, original.RegistrationAccessToken, roundTripped.RegistrationAccessToken)
+		assert.Equal(t, original.RegistrationClientURI, roundTripped.RegistrationClientURI)
+		assert.Equal(t, original.TokenEndpointAuthMethod, roundTripped.TokenEndpointAuthMethod)
+		assert.Equal(t, original.ClientSecretExpiresAt, roundTripped.ClientSecretExpiresAt)
+		assert.Equal(t, original.CreatedAt, roundTripped.CreatedAt)
+	})
+
+	t.Run("RedirectURI is recovered from Key on read", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, key.RedirectURI, roundTripped.RedirectURI,
+			"RedirectURI on the round-tripped resolution must match Key.RedirectURI; "+
+				"the converter does not store it twice")
+	})
+
+	t.Run("dropped fields zero on read", func(t *testing.T) {
+		t.Parallel()
+		// ClientIDIssuedAt is informational (RFC 7591 §3.2.1) and not
+		// persisted; round-tripping must reset it to the zero value
+		// rather than silently re-deriving it from CreatedAt.
+		assert.True(t, roundTripped.ClientIDIssuedAt.IsZero(),
+			"ClientIDIssuedAt must be zero after round-trip; the field is intentionally dropped from DCRCredentials")
+	})
+
+	t.Run("nil inputs short-circuit", func(t *testing.T) {
+		t.Parallel()
+		assert.Nil(t, resolutionToCredentials(key, nil))
+		assert.Nil(t, credentialsToResolution(nil))
+	})
+}

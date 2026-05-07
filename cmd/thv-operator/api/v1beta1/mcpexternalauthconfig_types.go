@@ -712,7 +712,7 @@ type RedisStorageConfig struct {
 	// +optional
 	WriteTimeout string `json:"writeTimeout,omitempty"`
 
-	// TLS configures TLS for connections to the Redis/Valkey master.
+	// TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
 	// Presence of this field enables TLS. Omit to use plaintext.
 	// +optional
 	TLS *RedisTLSConfig `json:"tls,omitempty"`

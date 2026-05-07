@@ -290,7 +290,7 @@ spec:
                             type: object
                           tls:
                             description: |-
-                              TLS configures TLS for connections to the Redis/Valkey master.
+                              TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
                               Presence of this field enables TLS. Omit to use plaintext.
                             properties:
                               caCertSecretRef:
@@ -2908,7 +2908,7 @@ spec:
                             type: object
                           tls:
                             description: |-
-                              TLS configures TLS for connections to the Redis/Valkey master.
+                              TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
                               Presence of this field enables TLS. Omit to use plaintext.
                             properties:
                               caCertSecretRef:

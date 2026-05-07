@@ -22,6 +22,15 @@ import (
 // (Docker, containerd, Podman) and is well above any single HTTP header chunk.
 const namedPipeBufferSize = 64 * 1024
 
+// namedPipeSDDL restricts the named-pipe DACL to the creating user (OW) and
+// SYSTEM (SY), each granted GenericAll. The Protected flag (P) blocks ACE
+// inheritance from any container object. Without an explicit DACL, winio
+// inherits CreateNamedPipeW's default which permits other interactive users
+// to open the pipe and exercise the entire REST API; on shared, RDP, or
+// Citrix hosts that is reachable by anyone with a desktop session, since
+// OIDC is opt-in (WithOIDCConfig) rather than always-on.
+const namedPipeSDDL = `D:P(A;;GA;;;OW)(A;;GA;;;SY)`
+
 // supportsNamedPipe reports whether the current build target can host a
 // Windows named-pipe listener. Used by createListener to choose between the
 // pipe and AF_UNIX paths without dragging the runtime package into server.go.
@@ -30,22 +39,26 @@ func supportsNamedPipe() bool { return true }
 // setupUnixSocket creates either a Windows named-pipe listener (when address
 // has the \\.\pipe\ prefix) or an AF_UNIX listener at a filesystem path.
 //
-// Named pipes are kernel objects rather than files, so the os.Stat / os.Remove
-// precheck, os.MkdirAll, and os.Chmod steps are skipped: the pipe namespace
-// has no parent directory, and access control is governed by the security
-// descriptor on the listener (winio's default restricts access to the
-// creating user, which matches the toolhive-studio same-user use case).
+// Named pipes are kernel objects rather than files, so the os.Remove,
+// os.MkdirAll, and os.Chmod steps are skipped: the pipe namespace has no
+// parent directory, and access control is governed by the SDDL passed to
+// winio.ListenPipe (see namedPipeSDDL).
 //
 // AF_UNIX is supported on Windows 10 1803+. The chmod step is dropped on this
-// path because POSIX file modes do not apply on Windows.
+// path because POSIX file modes do not apply on Windows; the resulting
+// .sock file inherits the parent directory's NTFS ACL, which is best-effort.
+// Prefer the named-pipe path when listener access control matters.
 func setupUnixSocket(address string) (net.Listener, error) {
 	if isNamedPipeAddress(address) {
 		// MessageMode is left at false (byte stream) explicitly because HTTP
-		// requires byte-oriented framing.
+		// requires byte-oriented framing. SecurityDescriptor restricts the
+		// pipe DACL to the creating user and SYSTEM; without it the winio
+		// default permits other interactive users to dial the pipe.
 		listener, err := winio.ListenPipe(address, &winio.PipeConfig{
-			MessageMode:      false,
-			InputBufferSize:  namedPipeBufferSize,
-			OutputBufferSize: namedPipeBufferSize,
+			MessageMode:        false,
+			InputBufferSize:    namedPipeBufferSize,
+			OutputBufferSize:   namedPipeBufferSize,
+			SecurityDescriptor: namedPipeSDDL,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create named pipe listener: %w", err)

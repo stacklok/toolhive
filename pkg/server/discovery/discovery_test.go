@@ -54,6 +54,31 @@ func TestWriteReadServerInfo_UnixSocket(t *testing.T) {
 	assert.Equal(t, info.Nonce, got.Nonce)
 }
 
+// TestWriteReadServerInfo_NamedPipe pins the producer/consumer contract for
+// npipe:// discovery URLs end to end. The individual pieces (socketURL emit,
+// HTTPClientForURL dispatch, ParseNamedPipeURL parse) are covered in their
+// own tests; this test asserts that an npipe URL survives the discovery
+// file's JSON serialization round-trip without being mangled.
+func TestWriteReadServerInfo_NamedPipe(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	info := &ServerInfo{
+		URL:       "npipe://thv-api",
+		PID:       99999,
+		Nonce:     "test-nonce-pipe",
+		StartedAt: time.Date(2026, 5, 7, 14, 0, 0, 0, time.UTC),
+	}
+
+	require.NoError(t, writeServerInfoTo(dir, info))
+
+	got, err := readServerInfoFrom(dir)
+	require.NoError(t, err)
+	assert.Equal(t, info.URL, got.URL)
+	assert.Equal(t, info.PID, got.PID)
+	assert.Equal(t, info.Nonce, got.Nonce)
+}
+
 func TestReadServerInfo_NotFound(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

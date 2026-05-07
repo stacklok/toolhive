@@ -17,10 +17,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
-func TestInMemoryDCRResolutionCache_PutGet_RoundTrip(t *testing.T) {
+func TestStorageBackedStore_PutGet_RoundTrip(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
 	key := DCRKey{
@@ -53,10 +53,10 @@ func TestInMemoryDCRResolutionCache_PutGet_RoundTrip(t *testing.T) {
 	assert.Equal(t, resolution.TokenEndpointAuthMethod, got.TokenEndpointAuthMethod)
 }
 
-func TestInMemoryDCRResolutionCache_Get_MissingKey(t *testing.T) {
+func TestStorageBackedStore_Get_MissingKey(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
 	got, ok, err := store.Get(ctx, DCRKey{Issuer: "https://unknown.example.com"})
@@ -65,10 +65,10 @@ func TestInMemoryDCRResolutionCache_Get_MissingKey(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-func TestInMemoryDCRResolutionCache_DistinctKeysDoNotCollide(t *testing.T) {
+func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
 	keyA := DCRKey{
@@ -125,10 +125,10 @@ func TestInMemoryDCRResolutionCache_DistinctKeysDoNotCollide(t *testing.T) {
 	}
 }
 
-func TestInMemoryDCRResolutionCache_Put_OverwritesExisting(t *testing.T) {
+func TestStorageBackedStore_Put_OverwritesExisting(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
 	key := DCRKey{
@@ -160,14 +160,14 @@ func TestInMemoryDCRResolutionCache_Put_OverwritesExisting(t *testing.T) {
 	assert.Equal(t, "second", got.ClientID)
 }
 
-// TestInMemoryDCRResolutionCache_Put_RejectsNilResolution pins the
+// TestStorageBackedStore_Put_RejectsNilResolution pins the
 // fail-loud-on-invalid-input contract: passing nil must error rather than
 // silently no-op. A silent no-op would leave the caller with a successful
 // Put followed by a Get miss and no debug trail to explain it.
-func TestInMemoryDCRResolutionCache_Put_RejectsNilResolution(t *testing.T) {
+func TestStorageBackedStore_Put_RejectsNilResolution(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 	key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x.example.com/cb"}
 
@@ -181,10 +181,10 @@ func TestInMemoryDCRResolutionCache_Put_RejectsNilResolution(t *testing.T) {
 	assert.False(t, ok, "rejected Put must not leave any entry behind")
 }
 
-func TestInMemoryDCRResolutionCache_GetReturnsDefensiveCopy(t *testing.T) {
+func TestStorageBackedStore_GetReturnsDefensiveCopy(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
 	key := DCRKey{
@@ -214,19 +214,21 @@ func TestInMemoryDCRResolutionCache_GetReturnsDefensiveCopy(t *testing.T) {
 // Duplicating the suite here would re-exercise the same code, which is
 // redundant per .claude/rules/testing.md.
 
-// TestInMemoryDCRResolutionCache_ConcurrentAccess fans out N goroutines
+// TestStorageBackedStore_ConcurrentAccess fans out N goroutines
 // performing alternating Put / Get against overlapping and disjoint keys,
-// exercising the sync.RWMutex guard advertised in the dcrResolutionCache
-// interface doc. With go test -race this catches any future change that
-// drops the lock or introduces a data race in the map access.
+// exercising the safe-for-concurrent-use contract advertised on the
+// dcrResolutionCache interface. The contract is satisfied by the underlying
+// storage.DCRCredentialStore (which holds the lock); this test runs under
+// `go test -race` so any future regression that drops the storage backend's
+// guarantee, or an adapter change that races on its own state, fails loudly.
 //
 // The test is bounded by a fail-fast deadline so a regression that
 // deadlocks fails loudly with a clear message rather than hanging until
 // the global Go test timeout.
-func TestInMemoryDCRResolutionCache_ConcurrentAccess(t *testing.T) {
+func TestStorageBackedStore_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 
 	const (
 		workers      = 16

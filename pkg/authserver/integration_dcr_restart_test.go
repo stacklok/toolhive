@@ -29,51 +29,34 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// TestEmbeddedAuthServer_DCRSurvivesRestart is the authserver-restart analog
-// of pkg/authserver/runner.TestBuildUpstreamConfigs_DCR's cache-hit
-// assertion, crossing an EmbeddedAuthServer lifecycle boundary instead of
-// just two buildUpstreamConfigs calls.
+// TestEmbeddedAuthServer_DCRStorePersistsAcrossClose verifies that the DCR
+// store reachable through EmbeddedAuthServer.DCRStore() holds the resolved
+// RFC 7591 client registration after the constructor's full DCR resolver
+// runs against a mock AS. The Get is issued BEFORE Close so the assertion
+// does not depend on the (undocumented) MemoryStorage post-Close
+// readability that an earlier version of this test silently relied on.
 //
-// Coverage shape:
+// What this test does cover:
 //
-//   - First boot: NewEmbeddedAuthServer runs the full DCR resolver against
-//     a mock AS during construction, populating the storage-backed DCR
-//     store. The resolved client_id / client_secret are observable through
-//     the constructor's success.
-//   - Capture: the storage instance the constructor wired into the DCR
-//     store is exposed via EmbeddedAuthServer.DCRStore(), which surfaces
-//     the same storage.DCRCredentialStore the authserver itself reads
-//     from. In production this is shared backend state; here it lets the
-//     test stand in for "what the next boot would see if it were pointed
-//     at the same backend."
-//   - Teardown: the first server is closed, releasing handlers and
-//     backend resources. The persisted DCR row remains in the captured
-//     storage.DCRCredentialStore.
-//   - Second resolve: a second NewEmbeddedAuthServer with the same
-//     upstream config and a fresh (memory) storage would freshly register
-//     against the mock AS, since memory storage cannot be shared across
-//     two NewEmbeddedAuthServer constructors today (createStorage always
-//     produces a new MemoryStorage). The "shared backend" case — where
-//     the second constructor reads the first boot's DCR row — is the
-//     production Redis path, which this test cannot exercise without a
-//     real Sentinel cluster (miniredis does not speak the Sentinel
-//     protocol). Instead, this test verifies the persistence boundary by
-//     issuing a Get directly against the captured store and asserting
-//     the row survived the first server's Close. That is the strongest
-//     coverage achievable from package authserver_test against the
-//     current production constructor seam.
+//   - NewEmbeddedAuthServer runs the full DCR resolver against a mock AS
+//     during construction, populating the storage-backed DCR store, and
+//     surfaces the same storage.DCRCredentialStore the authserver itself
+//     reads from via DCRStore(). The persisted credentials are readable
+//     by issuing a Get against the captured store while the server is
+//     still live.
 //
-// Documented gap: the full "boot, close, boot again, observe zero
-// /register calls on the second boot" scenario is not exercised in this
-// test (or anywhere else in the repo). Closing it requires either
-// miniredis-Sentinel emulation or a Docker-based Redis Sentinel cluster
-// in the test harness; both are deferred to a follow-up. The wiring
-// that the second boot would consume — the type of dcrStore being the
-// same storage.DCRCredentialStore that authserver.New writes through —
-// is verified at compile time by the storage.Storage interface
-// embedding storage.DCRCredentialStore and by the existing
-// TestNewEmbeddedAuthServer_DCRBoot in pkg/authserver/runner.
-func TestEmbeddedAuthServer_DCRSurvivesRestart(t *testing.T) {
+// What this test does NOT cover (deferred follow-up):
+//
+//   - The full "boot, close, boot again on the same backend, observe zero
+//     /register calls on the second boot" cross-restart scenario. Closing
+//     that gap requires either miniredis-Sentinel emulation or a
+//     Docker-based Redis Sentinel cluster in the test harness, since the
+//     production restart path lives on Redis (Memory cannot be shared
+//     across two NewEmbeddedAuthServer constructors). Tracked as a
+//     follow-up; this test deliberately scopes itself to what is
+//     exercisable today from package authserver_test against the
+//     production constructor seam.
+func TestEmbeddedAuthServer_DCRStorePersistsAcrossClose(t *testing.T) {
 	t.Parallel()
 
 	server, requestCount := newMockUpstreamAS(t)
@@ -102,30 +85,28 @@ func TestEmbeddedAuthServer_DCRSurvivesRestart(t *testing.T) {
 	embed, err := runner.NewEmbeddedAuthServer(context.Background(), cfg)
 	require.NoError(t, err)
 	require.NotNil(t, embed)
+	t.Cleanup(func() { _ = embed.Close() })
 
 	firstBootRequests := atomic.LoadInt32(requestCount)
 	require.Greater(t, firstBootRequests, int32(0),
 		"first boot must have issued network I/O to the mock AS during DCR")
 
 	// Capture the storage instance the constructor wired into the DCR
-	// store before tearing down the server. This is the same backend the
-	// authserver itself was using; in production it is shared across
-	// authserver state, so DCR survives restart on the same backend.
+	// store. This is the same backend the authserver itself was using; in
+	// production it is shared across authserver state, so DCR survives
+	// restart on the same backend.
 	persistentStore := embed.DCRStore()
 	require.NotNil(t, persistentStore,
 		"NewEmbeddedAuthServer must surface a storage-level DCRCredentialStore")
 
-	// Tear down the first server. Its DCR registration is now persisted in
-	// persistentStore.
-	require.NoError(t, embed.Close())
-
-	// Verify the DCR row survived the first server's Close — the
-	// persistence boundary that production cross-replica / cross-restart
-	// reuse depends on. The exact cache key construction is the runner
-	// resolver's responsibility (issuer + redirect URI + scopes hash);
-	// here we assemble the same key shape using the public canonical
-	// helpers so the assertion does not silently drift if the resolver
-	// changes how keys are computed.
+	// Verify the persisted DCR row by issuing a Get against the captured
+	// store BEFORE closing the server. Doing the Get pre-Close avoids
+	// silently depending on whichever storage backend the test happens to
+	// use staying readable after Close (a contract MemoryStorage honors
+	// today but RedisStorage's closed connection pool does not). The
+	// assertion proves the persistence boundary the production cross-
+	// replica and cross-restart reuse paths depend on: that the
+	// resolution lives in storage, not in process-local cache state.
 	redirectURI := server.URL + "/oauth/callback"
 	key := storage.DCRKey{
 		Issuer:      server.URL,
@@ -134,7 +115,7 @@ func TestEmbeddedAuthServer_DCRSurvivesRestart(t *testing.T) {
 	}
 	creds, err := persistentStore.GetDCRCredentials(context.Background(), key)
 	require.NoError(t, err,
-		"DCR credentials must remain readable from the captured store after Close — "+
+		"DCR credentials must be readable from the captured store — "+
 			"this is the persistence boundary cross-replica reuse depends on")
 	require.NotNil(t, creds)
 	assert.Equal(t, "dcr-client-id", creds.ClientID,
@@ -159,6 +140,12 @@ func TestEmbeddedAuthServer_DCRSurvivesRestart(t *testing.T) {
 // either exporting the helper — bloating runner's public surface — or
 // sharing a test-helpers package). Keeping a small, self-contained
 // duplicate is the lower-cost option for this single use site.
+//
+// DO NOT COPY THIS A THIRD TIME. The next caller must extract the helper
+// to a shared internal test-helpers package (e.g.
+// pkg/authserver/internal/testhelpers) and rewrite both this copy and the
+// runner-package copy to call into it; two copies are tolerable, three is
+// a bug factory.
 func newMockUpstreamAS(t *testing.T) (*httptest.Server, *int32) {
 	t.Helper()
 

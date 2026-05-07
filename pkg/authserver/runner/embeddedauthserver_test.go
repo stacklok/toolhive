@@ -1476,6 +1476,13 @@ func TestRegisterHandlers(t *testing.T) {
 // cache hits issue zero additional network I/O. The issuer advertised in
 // metadata is the server's own URL (loopback), which satisfies the HTTPS
 // redirect-URI policy in resolveUpstreamRedirectURI.
+//
+// DO NOT COPY THIS A THIRD TIME. There is one near-identical copy in
+// pkg/authserver/integration_dcr_restart_test.go (newMockUpstreamAS) that
+// the import-cycle into authserver_test forced. The next caller must
+// extract this helper to a shared internal test-helpers package (e.g.
+// pkg/authserver/internal/testhelpers) and rewrite both copies to call
+// into it; two copies are tolerable, three is a bug factory.
 func newMockAuthorizationServer(t *testing.T) (*httptest.Server, *int32) {
 	t.Helper()
 
@@ -1568,7 +1575,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 			AllowedAudiences: []string{"https://mcp.example.com"},
 		}
 
-		store := newInMemoryDCRResolutionCache()
+		store := newMemoryDCRStore(t)
 		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
@@ -1630,7 +1637,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 			AllowedAudiences: []string{"https://mcp.example.com"},
 		}
 
-		store := newInMemoryDCRResolutionCache()
+		store := newMemoryDCRStore(t)
 
 		// First call: populates the store.
 		_, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)

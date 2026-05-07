@@ -54,17 +54,6 @@ type dcrResolutionCache interface {
 	Put(ctx context.Context, key DCRKey, resolution *DCRResolution) error
 }
 
-// newInMemoryDCRResolutionCache returns a thread-safe in-memory
-// dcrResolutionCache intended for tests and single-replica development
-// deployments. It is a thin adapter over storage.NewMemoryStorage so the
-// runner-side cache and the authserver's main storage backend share a
-// single in-memory implementation; production deployments configure a
-// Redis-backed storage.DCRCredentialStore via storage.NewRedisStorage and
-// reach this same adapter through newStorageBackedStore.
-func newInMemoryDCRResolutionCache() dcrResolutionCache {
-	return newStorageBackedStore(storage.NewMemoryStorage())
-}
-
 // newStorageBackedStore returns a dcrResolutionCache that delegates to a
 // storage.DCRCredentialStore for durable persistence and translates
 // DCRResolution values into DCRCredentials at the boundary. The returned

@@ -61,6 +61,7 @@ import (
 const (
 	middlewareTimeout  = 60 * time.Second
 	readHeaderTimeout  = 10 * time.Second
+	idleTimeout        = 120 * time.Second
 	shutdownTimeout    = 30 * time.Second
 	nonceBytes         = 16
 	socketPermissions  = 0660    // Socket file permissions (owner/group read-write)
@@ -559,6 +560,12 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 		Addr:              builder.address,
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
+		// IdleTimeout caps how long a keep-alive connection can sit idle.
+		// On Windows named pipes winio.MaxInstances defaults to 255, so a
+		// slow client cannot hold an instance forever and starve new
+		// connections; on POSIX it bounds keep-alive resource use the same
+		// way the http stdlib defaults would for a tcp listener.
+		IdleTimeout: idleTimeout,
 	}
 
 	return &Server{

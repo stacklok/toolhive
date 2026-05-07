@@ -1567,7 +1567,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 			AllowedAudiences: []string{"https://mcp.example.com"},
 		}
 
-		store := NewInMemoryDCRCredentialStore()
+		store := newInMemoryDCRResolutionCache()
 		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
@@ -1582,7 +1582,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		key := DCRKey{
 			Issuer:      server.URL,
 			RedirectURI: redirectURI,
-			ScopesHash:  scopesHash([]string{"openid", "profile"}),
+			ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 		}
 		cached, ok, err := store.Get(context.Background(), key)
 		require.NoError(t, err)
@@ -1629,7 +1629,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 			AllowedAudiences: []string{"https://mcp.example.com"},
 		}
 
-		store := NewInMemoryDCRCredentialStore()
+		store := newInMemoryDCRResolutionCache()
 
 		// First call: populates the store.
 		_, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)
@@ -1717,7 +1717,7 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 	key := DCRKey{
 		Issuer:      server.URL,
 		RedirectURI: redirectURI,
-		ScopesHash:  scopesHash([]string{"openid", "profile"}),
+		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
 	cached, ok, err := embed.dcrStore.Get(context.Background(), key)
 	require.NoError(t, err)

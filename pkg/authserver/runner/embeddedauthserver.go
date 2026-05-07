@@ -53,11 +53,11 @@ type EmbeddedAuthServer struct {
 	// the flight prevents N concurrent /register calls during a thundering
 	// herd. The asymmetry is by design.
 	//
-	// DCRCredentialStore has no Close method today because the in-memory
+	// dcrResolutionCache has no Close method today because the in-memory
 	// implementation needs no release. A future Phase 3 backend (Redis,
 	// sqlite) with handles will need Close added to the interface and
 	// invoked from EmbeddedAuthServer.Close.
-	dcrStore  DCRCredentialStore
+	dcrStore  dcrResolutionCache
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -94,7 +94,7 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 
 	// 4. Build upstream configurations (resolves DCR credentials for any
 	// upstream configured with DCRConfig, caching resolutions in dcrStore).
-	dcrStore := NewInMemoryDCRCredentialStore()
+	dcrStore := newInMemoryDCRResolutionCache()
 	upstreams, err := buildUpstreamConfigs(ctx, cfg.Upstreams, cfg.Issuer, dcrStore)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build upstream configs: %w", err)
@@ -312,7 +312,7 @@ func buildUpstreamConfigs(
 	ctx context.Context,
 	runConfigs []authserver.UpstreamRunConfig,
 	issuer string,
-	dcrStore DCRCredentialStore,
+	dcrStore dcrResolutionCache,
 ) ([]authserver.UpstreamConfig, error) {
 	configs := make([]authserver.UpstreamConfig, 0, len(runConfigs))
 

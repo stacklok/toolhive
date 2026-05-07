@@ -30,6 +30,11 @@ const MinTimeout = 1 * time.Second
 // MaxResponseSize is the maximum allowed size in bytes for webhook responses (1 MB).
 const MaxResponseSize = 1 << 20
 
+// MaxRequestSize is the maximum allowed size in bytes for inbound webhook
+// middleware request bodies (1 MB). Requests exceeding this size are
+// rejected with HTTP 413 before the body is buffered or forwarded.
+const MaxRequestSize = 1 << 20
+
 // Type indicates whether a webhook is validating or mutating.
 type Type string
 

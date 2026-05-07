@@ -697,11 +697,13 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 	m.requestDuration.Record(ctx, duration.Seconds(), attrs)
 
 	// Record OTEL MCP spec mcp.server.operation.duration for actual MCP requests.
-	// mcpMethod should never be "unknown" for requests reaching the MCP middleware;
-	// if it is, the middleware chain is misconfigured (see #3687).
+	// Only POST requests carry a JSON-RPC body; GET (SSE stream open) and DELETE
+	// (session termination) are valid Streamable HTTP lifecycle requests with no
+	// MCP method to record. An unknown method on a POST indicates either a
+	// misconfigured middleware chain (see #3687) or a parse failure.
 	if mcpMethod != "unknown" {
 		m.recordOperationDuration(ctx, r, mcpMethod, mcpResourceID, rw.statusCode, duration)
-	} else {
+	} else if r.Method == http.MethodPost {
 		//nolint:gosec // G706: HTTP method and URL path from request
 		slog.Warn("mcp method could not be determined, middleware may be misconfigured",
 			"http_method", r.Method, "path", r.URL.Path)

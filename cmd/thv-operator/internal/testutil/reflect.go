@@ -17,35 +17,12 @@ import (
 // FlattenJSONLeafFields returns every leaf JSON field path under t as a sorted
 // slice of dot-delimited paths (e.g. "openTelemetry.tracing.enabled").
 //
-// Walking semantics:
-//   - For struct fields, the JSON tag's name (before any comma) is used as the
-//     path segment. If the tag is "-", the field is skipped. If the tag is
-//     missing, the Go field name is used.
-//   - Unexported fields are skipped.
-//   - Fields with `,inline` flatten into the parent path with no prefix.
-//   - Pointer types are dereferenced and walked.
-//   - Struct types are recursed into.
-//   - Slice and array types whose ELEMENT type is a struct (or pointer to a
-//     struct) recurse into that element type, joining with the parent path.
-//     A path like "tools.workload" therefore means "every element of the
-//     `tools` slice has a `workload` field".
-//   - Map types whose VALUE type is a struct (or pointer to a struct) recurse
-//     into that value type the same way.
-//   - Types that implement json.Marshaler are treated as leaves regardless of
-//     their underlying kind. A custom MarshalJSON produces a JSON shape that
-//     bears no relation to the Go field layout, so walking the fields would
-//     emit paths that never appear in the serialized form. This handles
-//     metav1.Time, metav1.Duration, intstr.IntOrString, resource.Quantity,
-//     json.RawMessage, and any project-local custom-marshaled types
-//     (e.g. pkg/json.Map, pkg/json.Any, pkg/vmcp/config.Duration) without an
-//     explicit allow-list.
-//   - All other primitive types (primitives, []string, map[string]string,
-//     time.Duration which is just int64) terminate the walk and contribute
-//     one leaf path entry via the default branch.
-//   - Self-referential types are expanded one level (the original visit plus
-//     one self-reference) and then truncated, to keep the walk terminating.
-//     Subsequent levels (e.g. "next.next.<field>") are intentionally elided.
-//     See maxStructRevisits for the controlling constant.
+// A leaf is any type that does not produce nested JSON keys at runtime: a
+// primitive, a slice/map of primitives, or a type implementing json.Marshaler
+// (whose MarshalJSON shape is opaque to reflection). Structs, slices/maps of
+// structs, and pointers to either are recursed into. Field names follow
+// encoding/json rules including `,inline` and anonymous-field promotion.
+// Self-referential types stop on revisit so the walk always terminates.
 //
 // If t is nil or, after dereferencing, is not a struct, an empty slice is
 // returned rather than panicking.
@@ -61,7 +38,7 @@ func FlattenJSONLeafFields(t reflect.Type) []string {
 	}
 
 	leafSet := make(map[string]struct{})
-	visited := map[reflect.Type]int{}
+	visited := map[reflect.Type]struct{}{}
 	recurseStruct(t, "", leafSet, visited)
 
 	out := make([]string, 0, len(leafSet))
@@ -96,7 +73,7 @@ var skipFieldTypes = map[reflect.Type]struct{}{
 // visited is the set of struct types currently on the recursion stack; it is
 // used to break cycles on self-referential types. Callers add t to visited
 // before invoking this function and remove it afterwards.
-func walkStruct(t reflect.Type, prefix string, leafSet map[string]struct{}, visited map[reflect.Type]int) {
+func walkStruct(t reflect.Type, prefix string, leafSet map[string]struct{}, visited map[reflect.Type]struct{}) {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		// Skip unexported fields. PkgPath is non-empty for unexported fields.
@@ -140,7 +117,7 @@ func walkStruct(t reflect.Type, prefix string, leafSet map[string]struct{}, visi
 
 // walkType walks a single type with the given accumulated prefix. It either
 // recurses into nested structs/slices/maps or records a leaf at prefix.
-func walkType(t reflect.Type, prefix string, leafSet map[string]struct{}, visited map[reflect.Type]int) {
+func walkType(t reflect.Type, prefix string, leafSet map[string]struct{}, visited map[reflect.Type]struct{}) {
 	// Deref pointers.
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -185,25 +162,16 @@ func walkType(t reflect.Type, prefix string, leafSet map[string]struct{}, visite
 	}
 }
 
-// maxStructRevisits caps how many times a single struct type may appear on the
-// recursion stack. A value of 2 means the type may be entered at most twice
-// on the same path: the original entry plus one self-referential visit. This
-// is enough for one level of "next.<field>" expansion in cyclic types like
-// linked lists, while still guaranteeing the walk terminates.
-const maxStructRevisits = 2
-
 // recurseStruct descends into a nested struct type with cycle protection.
-// visited holds the count of how many times each struct type currently appears
-// on the recursion stack. When entering t would exceed maxStructRevisits, the
-// walk stops silently — no leaf is recorded, on the assumption that the
-// useful leaves under t have already been captured by the earlier visit on
-// the same path.
-func recurseStruct(t reflect.Type, prefix string, leafSet map[string]struct{}, visited map[reflect.Type]int) {
-	if visited[t] >= maxStructRevisits {
+// visited is the set of struct types currently on the recursion stack; if t
+// is already present, the walk stops silently to keep self-referential types
+// from looping forever.
+func recurseStruct(t reflect.Type, prefix string, leafSet map[string]struct{}, visited map[reflect.Type]struct{}) {
+	if _, seen := visited[t]; seen {
 		return
 	}
-	visited[t]++
-	defer func() { visited[t]-- }()
+	visited[t] = struct{}{}
+	defer delete(visited, t)
 	walkStruct(t, prefix, leafSet, visited)
 }
 

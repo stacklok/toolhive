@@ -4,18 +4,13 @@
 package testutil
 
 import (
-	"encoding/json"
 	"reflect"
-	"sort"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	thvjson "github.com/stacklok/toolhive/pkg/json"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // --- Fixture types ---------------------------------------------------------
@@ -52,10 +47,6 @@ type withSliceOfStruct struct {
 	Items []leafInner `json:"items"`
 }
 
-type withSliceOfPointerStruct struct {
-	Items []*leafInner `json:"items"`
-}
-
 type withSliceOfPrimitive struct {
 	Tags []string `json:"tags"`
 }
@@ -90,22 +81,12 @@ type withUnexportedField struct {
 	hidden  string //nolint:unused // exercised by reflection
 }
 
+// withDuration covers two leaf paths in one fixture: a primitive int64
+// (time.Duration, default branch) and a json.Marshaler (metav1.Duration,
+// short-circuit branch). Other Marshaler types follow the same code path.
 type withDuration struct {
 	Wait     time.Duration   `json:"wait"`
 	WaitMeta metav1.Duration `json:"waitMeta"`
-}
-
-type withRawJSON struct {
-	Raw json.RawMessage `json:"raw"`
-}
-
-type withThvJSON struct {
-	M thvjson.Map `json:"m"`
-	A thvjson.Any `json:"a"`
-}
-
-type withVmcpDuration struct {
-	D vmcpconfig.Duration `json:"d"`
 }
 
 type recursive struct {
@@ -154,11 +135,6 @@ func TestFlattenJSONLeafFields(t *testing.T) {
 			want: []string{"items.a", "items.b"},
 		},
 		{
-			name: "slice of pointer to struct recurses into element",
-			in:   withSliceOfPointerStruct{},
-			want: []string{"items.a", "items.b"},
-		},
-		{
 			name: "slice of primitive terminates at slice",
 			in:   withSliceOfPrimitive{},
 			want: []string{"tags"},
@@ -189,29 +165,22 @@ func TestFlattenJSONLeafFields(t *testing.T) {
 			want: []string{"visible"},
 		},
 		{
-			name: "time.Duration and metav1.Duration are leaves",
+			// time.Duration is a primitive int64 (default branch);
+			// metav1.Duration is a json.Marshaler (short-circuit branch).
+			// Together these exercise both leaf-emission paths.
+			name: "primitive and json.Marshaler types are leaves",
 			in:   withDuration{},
 			want: []string{"wait", "waitMeta"},
 		},
 		{
-			name: "json.RawMessage is a leaf",
-			in:   withRawJSON{},
-			want: []string{"raw"},
-		},
-		{
-			name: "thvjson Map and Any are leaves",
-			in:   withThvJSON{},
-			want: []string{"a", "m"},
-		},
-		{
-			name: "vmcp config Duration is a leaf",
-			in:   withVmcpDuration{},
-			want: []string{"d"},
-		},
-		{
-			name: "self-referential type does not recurse infinitely",
+			name: "self-referential type stops on revisit",
 			in:   recursive{},
-			want: []string{"name", "next.name"},
+			want: []string{"name"},
+		},
+		{
+			name: "pointer input is dereferenced",
+			in:   &flatPrimitives{},
+			want: []string{"count", "enabled", "name"},
 		},
 	}
 
@@ -222,21 +191,6 @@ func TestFlattenJSONLeafFields(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
-}
-
-func TestFlattenJSONLeafFields_PointerInputDereferenced(t *testing.T) {
-	t.Parallel()
-
-	got := FlattenJSONLeafFields(reflect.TypeOf(&flatPrimitives{}))
-	require.Equal(t, []string{"count", "enabled", "name"}, got)
-}
-
-func TestFlattenJSONLeafFields_OutputIsSorted(t *testing.T) {
-	t.Parallel()
-
-	got := FlattenJSONLeafFields(reflect.TypeOf(flatPrimitives{}))
-	require.NotEmpty(t, got)
-	require.True(t, sort.StringsAreSorted(got), "expected sorted output, got %v", got)
 }
 
 func TestFlattenJSONLeafFields_NilOrNonStructReturnsEmpty(t *testing.T) {

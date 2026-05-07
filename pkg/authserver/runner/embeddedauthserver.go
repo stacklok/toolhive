@@ -62,6 +62,10 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		return nil, fmt.Errorf("config is required")
 	}
 
+	// Register gjson modifiers used by IdentityFromToken configs (e.g. @upstreamjwt).
+	// Without this, modifier-bearing paths silently fail to resolve.
+	upstream.RegisterModifiers()
+
 	// Fail loudly on operator-supplied misconfiguration (e.g. a baseline
 	// scope absent from scopes_supported) BEFORE touching storage or any
 	// other side-effecting work, so a bad config never reaches the network

@@ -230,7 +230,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	r.validateCABundleRef(ctx, mcpServer)
 
 	// Surface advisory condition when primaryUpstreamProvider is set but ignored
-	r.validateAuthzPrimaryUpstreamProviderIgnored(ctx, mcpServer)
+	r.validateAuthzPrimaryUpstreamProviderIgnored(mcpServer)
 
 	// Validate stdio replica cap, session storage, and rate limit config
 	r.validateStdioReplicaCap(ctx, mcpServer)
@@ -652,15 +652,14 @@ func (r *MCPServerReconciler) updateCABundleStatus(ctx context.Context, mcpServe
 // MCPServer has no embedded auth server, so the field has no runtime effect —
 // the condition gives operators a kubectl-visible signal that a configured
 // value is being silently ignored.
-func (r *MCPServerReconciler) validateAuthzPrimaryUpstreamProviderIgnored(
-	ctx context.Context, mcpServer *mcpv1beta1.MCPServer,
-) {
+//
+// Mirrors the validateGroupRef convention: this only sets/removes the
+// condition; the caller is responsible for persisting status.
+func (*MCPServerReconciler) validateAuthzPrimaryUpstreamProviderIgnored(mcpServer *mcpv1beta1.MCPServer) {
 	provider := mcpServer.Spec.AuthzConfig.ExplicitPrimaryUpstreamProvider()
 	conditionType := mcpv1beta1.ConditionTypeAuthzPrimaryUpstreamProviderIgnored
 	if provider == "" {
-		if meta.RemoveStatusCondition(&mcpServer.Status.Conditions, conditionType) {
-			r.updatePrimaryUpstreamProviderStatus(ctx, mcpServer)
-		}
+		meta.RemoveStatusCondition(&mcpServer.Status.Conditions, conditionType)
 		return
 	}
 	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
@@ -671,16 +670,6 @@ func (r *MCPServerReconciler) validateAuthzPrimaryUpstreamProviderIgnored(
 			"the field only takes effect on VirtualMCPServer with an embedded auth server", provider),
 		ObservedGeneration: mcpServer.Generation,
 	})
-	r.updatePrimaryUpstreamProviderStatus(ctx, mcpServer)
-}
-
-func (r *MCPServerReconciler) updatePrimaryUpstreamProviderStatus(
-	ctx context.Context, mcpServer *mcpv1beta1.MCPServer,
-) {
-	ctxLogger := log.FromContext(ctx)
-	if err := r.Status().Update(ctx, mcpServer); err != nil {
-		ctxLogger.Error(err, "Failed to update MCPServer status after primaryUpstreamProvider validation")
-	}
 }
 
 // setReadyCondition sets the top-level Ready status condition.

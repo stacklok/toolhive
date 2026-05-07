@@ -656,24 +656,12 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 			"Configure spec.authServerConfig.upstreamProviders with at least one " +
 			"upstream IDP, or remove authServerConfig if clients will present IdP " +
 			"tokens directly."
-		// Returning a plain error (not *SpecValidationError) preserves the
-		// existing requeue behavior for this branch — the helper produces a
-		// non-requeueing outcome which differs.
-		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
-		log.FromContext(ctx).Info("authz configured without an upstream IDP; rejecting VirtualMCPServer",
-			"name", vmcp.Name,
-			"namespace", vmcp.Namespace,
-			"reason", mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
-		)
-		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-		statusManager.SetMessage(message)
-		statusManager.SetAuthServerConfigValidatedCondition(
+		return rejectAuthzAdmission(ctx, vmcp, statusManager,
+			"authz configured without an upstream IDP; rejecting VirtualMCPServer",
 			mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
 			message,
-			metav1.ConditionFalse,
+			"authz configured without an upstream IDP",
 		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		return stderrors.New("authz configured without an upstream IDP")
 	}
 
 	// If the user has set spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider

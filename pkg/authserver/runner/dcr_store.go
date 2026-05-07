@@ -8,53 +8,39 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 // dcrStaleAgeThreshold is the age beyond which a cached DCR resolution is
 // considered stale and logged as such by higher-level wiring. The store itself
 // does not expire or evict entries — RFC 7591 client registrations are
-// long-lived and are only purged by explicit RFC 7592 deregistration. This
-// threshold is consumed by Step 2g observability logs introduced in the next
-// PR in the DCR stack (sub-issue C, #5039); 5042 only defines the constant
-// so the consumer can land without a cross-PR cycle.
-//
-//nolint:unused // consumed by lookupCachedResolution in #5039
+// long-lived and are only purged by explicit RFC 7592 deregistration.
 const dcrStaleAgeThreshold = 90 * 24 * time.Hour
 
-// DCRKey is the canonical lookup key for a DCR resolution. The tuple is
-// designed so a future Redis-backed store can serialise it into a single key
-// segment (Phase 3) without redefining the canonical form. ScopesHash rather
-// than the raw scope slice is used so the key is comparable and order-
-// insensitive.
-type DCRKey struct {
-	// Issuer is *this* auth server's issuer identifier — the local issuer
-	// of the embedded authorization server that performed the registration,
-	// NOT the upstream's. The cache is keyed by this value because two
-	// different local issuers registering against the same upstream are
-	// distinct OAuth clients and must not share credentials. The upstream's
-	// issuer is used only for RFC 8414 §3.3 metadata verification inside
-	// the resolver and is not part of the cache key.
-	Issuer string
+// DCRKey is a re-export of storage.DCRKey, kept as a package-local alias so
+// existing runner-side callers continue to compile against runner.DCRKey
+// while the canonical definition lives in pkg/authserver/storage. The
+// canonical form (and its ScopesHash constructor) MUST live in a single place
+// so any future Redis backend hashes keys identically to the in-memory
+// backend; see storage.DCRKey for the field documentation.
+type DCRKey = storage.DCRKey
 
-	// RedirectURI is the redirect URI registered with the upstream
-	// authorization server. Lives on the local issuer's origin since it is
-	// where the upstream sends the user back to us after authentication.
-	RedirectURI string
-
-	// ScopesHash is the SHA-256 hex digest of the sorted scope list.
-	// See scopesHash in dcr.go for the canonical form.
-	ScopesHash string
-}
-
-// DCRCredentialStore caches RFC 7591 Dynamic Client Registration resolutions
+// dcrResolutionCache caches RFC 7591 Dynamic Client Registration resolutions
 // keyed by the (Issuer, RedirectURI, ScopesHash) tuple. Implementations must
 // be safe for concurrent use.
 //
-// The store is an in-memory cache of long-lived registrations — it is not a
-// durable store, and entries are never expired or evicted by the store
-// itself. Callers are responsible for invalidating entries when the
-// underlying registration is revoked (e.g., via RFC 7592 deregistration).
-type DCRCredentialStore interface {
+// This is a runner-internal cache of *DCRResolution values; it is distinct
+// from the persistent storage.DCRCredentialStore (which holds *DCRCredentials
+// and is the durable contract sub-issue 3 wires the resolver to use). Naming
+// them differently keeps the two interfaces unambiguous to readers and grep
+// tooling while both exist during the Phase 3 migration.
+//
+// The cache is in-memory and holds long-lived registrations — entries are
+// never expired or evicted by the cache itself. Callers are responsible for
+// invalidating entries when the underlying registration is revoked (e.g.,
+// via RFC 7592 deregistration).
+type dcrResolutionCache interface {
 	// Get returns the cached resolution for key, or (nil, false, nil) if the
 	// key is not present. An error is returned only on backend failure.
 	Get(ctx context.Context, key DCRKey) (*DCRResolution, bool, error)
@@ -66,17 +52,21 @@ type DCRCredentialStore interface {
 	Put(ctx context.Context, key DCRKey, resolution *DCRResolution) error
 }
 
-// NewInMemoryDCRCredentialStore returns a thread-safe in-memory
-// DCRCredentialStore intended for tests and single-replica development
+// newInMemoryDCRResolutionCache returns a thread-safe in-memory
+// dcrResolutionCache intended for tests and single-replica development
 // deployments. Production deployments should use the Redis-backed store
 // introduced in Phase 3, which addresses the cross-replica sharing,
 // durability, and cross-process coordination gaps documented below.
 //
 // Entries are retained for the process lifetime; there is no TTL and no
-// background cleanup goroutine. The usual concern about an unbounded
-// cache leaking memory does not apply here because the key space is
-// bounded by the operator-configured upstream count, and this
-// implementation is not the production answer.
+// background cleanup goroutine. Growth is bounded by upstream count ×
+// distinct scope sets ever registered for each upstream during the
+// process lifetime — for a stable configuration this collapses to the
+// upstream count, but rotating scope sets (operator-driven scope
+// changes, or upstream scopes_supported rotations re-derived by the
+// resolver) accumulate stale entries that survive until restart. This
+// implementation is not the production answer; the Redis backend
+// introduced in Phase 3 mitigates the rotation case via SetEX TTL.
 //
 // What this enables: serialises Get/Put against a single in-process map so
 // concurrent callers within one authserver process see a consistent view of
@@ -97,23 +87,23 @@ type DCRCredentialStore interface {
 //     that side, the loser becomes orphaned. The
 //     resolveDCRCredentials-level singleflight in dcr.go only deduplicates
 //     within one process.
-func NewInMemoryDCRCredentialStore() DCRCredentialStore {
-	return &inMemoryDCRCredentialStore{
+func newInMemoryDCRResolutionCache() dcrResolutionCache {
+	return &inMemoryDCRResolutionCache{
 		entries: make(map[DCRKey]*DCRResolution),
 	}
 }
 
-// inMemoryDCRCredentialStore is the default DCRCredentialStore backed by a
+// inMemoryDCRResolutionCache is the default dcrResolutionCache backed by a
 // plain map guarded by sync.RWMutex. Modelled on
 // pkg/authserver/storage/memory.go but stripped of TTL bookkeeping — DCR
 // resolutions are long-lived.
-type inMemoryDCRCredentialStore struct {
+type inMemoryDCRResolutionCache struct {
 	mu      sync.RWMutex
 	entries map[DCRKey]*DCRResolution
 }
 
-// Get implements DCRCredentialStore.
-func (s *inMemoryDCRCredentialStore) Get(_ context.Context, key DCRKey) (*DCRResolution, bool, error) {
+// Get implements dcrResolutionCache.
+func (s *inMemoryDCRResolutionCache) Get(_ context.Context, key DCRKey) (*DCRResolution, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -128,13 +118,13 @@ func (s *inMemoryDCRCredentialStore) Get(_ context.Context, key DCRKey) (*DCRRes
 	return &cp, true, nil
 }
 
-// Put implements DCRCredentialStore.
+// Put implements dcrResolutionCache.
 //
 // A nil resolution is rejected rather than silently no-oped: a caller
 // passing nil would otherwise get a successful return, observe a miss on
 // the next Get, and have no error trail to debug from. Failing loudly at
 // the boundary makes such bugs visible at the first call.
-func (s *inMemoryDCRCredentialStore) Put(_ context.Context, key DCRKey, resolution *DCRResolution) error {
+func (s *inMemoryDCRResolutionCache) Put(_ context.Context, key DCRKey, resolution *DCRResolution) error {
 	if resolution == nil {
 		return fmt.Errorf("dcr: resolution must not be nil")
 	}

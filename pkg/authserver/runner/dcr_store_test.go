@@ -13,18 +13,20 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
-func TestInMemoryDCRCredentialStore_PutGet_RoundTrip(t *testing.T) {
+func TestInMemoryDCRResolutionCache_PutGet_RoundTrip(t *testing.T) {
 	t.Parallel()
 
-	store := NewInMemoryDCRCredentialStore()
+	store := newInMemoryDCRResolutionCache()
 	ctx := context.Background()
 
 	key := DCRKey{
 		Issuer:      "https://idp.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  scopesHash([]string{"openid", "profile"}),
+		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
 	resolution := &DCRResolution{
 		ClientID:                "client-abc",
@@ -51,10 +53,10 @@ func TestInMemoryDCRCredentialStore_PutGet_RoundTrip(t *testing.T) {
 	assert.Equal(t, resolution.TokenEndpointAuthMethod, got.TokenEndpointAuthMethod)
 }
 
-func TestInMemoryDCRCredentialStore_Get_MissingKey(t *testing.T) {
+func TestInMemoryDCRResolutionCache_Get_MissingKey(t *testing.T) {
 	t.Parallel()
 
-	store := NewInMemoryDCRCredentialStore()
+	store := newInMemoryDCRResolutionCache()
 	ctx := context.Background()
 
 	got, ok, err := store.Get(ctx, DCRKey{Issuer: "https://unknown.example.com"})
@@ -63,31 +65,31 @@ func TestInMemoryDCRCredentialStore_Get_MissingKey(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-func TestInMemoryDCRCredentialStore_DistinctKeysDoNotCollide(t *testing.T) {
+func TestInMemoryDCRResolutionCache_DistinctKeysDoNotCollide(t *testing.T) {
 	t.Parallel()
 
-	store := NewInMemoryDCRCredentialStore()
+	store := newInMemoryDCRResolutionCache()
 	ctx := context.Background()
 
 	keyA := DCRKey{
 		Issuer:      "https://idp-a.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  scopesHash([]string{"openid"}),
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
 	keyB := DCRKey{
 		Issuer:      "https://idp-b.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  scopesHash([]string{"openid"}),
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
 	keyC := DCRKey{
 		Issuer:      "https://idp-a.example.com",
 		RedirectURI: "https://other.example.com/callback",
-		ScopesHash:  scopesHash([]string{"openid"}),
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
 	keyD := DCRKey{
 		Issuer:      "https://idp-a.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  scopesHash([]string{"openid", "email"}),
+		ScopesHash:  storage.ScopesHash([]string{"openid", "email"}),
 	}
 
 	require.NoError(t, store.Put(ctx, keyA, &DCRResolution{ClientID: "a"}))
@@ -111,10 +113,10 @@ func TestInMemoryDCRCredentialStore_DistinctKeysDoNotCollide(t *testing.T) {
 	}
 }
 
-func TestInMemoryDCRCredentialStore_Put_OverwritesExisting(t *testing.T) {
+func TestInMemoryDCRResolutionCache_Put_OverwritesExisting(t *testing.T) {
 	t.Parallel()
 
-	store := NewInMemoryDCRCredentialStore()
+	store := newInMemoryDCRResolutionCache()
 	ctx := context.Background()
 
 	key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x.example.com/cb"}
@@ -127,14 +129,14 @@ func TestInMemoryDCRCredentialStore_Put_OverwritesExisting(t *testing.T) {
 	assert.Equal(t, "second", got.ClientID)
 }
 
-// TestInMemoryDCRCredentialStore_Put_RejectsNilResolution pins the
+// TestInMemoryDCRResolutionCache_Put_RejectsNilResolution pins the
 // fail-loud-on-invalid-input contract: passing nil must error rather than
 // silently no-op. A silent no-op would leave the caller with a successful
 // Put followed by a Get miss and no debug trail to explain it.
-func TestInMemoryDCRCredentialStore_Put_RejectsNilResolution(t *testing.T) {
+func TestInMemoryDCRResolutionCache_Put_RejectsNilResolution(t *testing.T) {
 	t.Parallel()
 
-	store := NewInMemoryDCRCredentialStore()
+	store := newInMemoryDCRResolutionCache()
 	ctx := context.Background()
 	key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x.example.com/cb"}
 
@@ -148,10 +150,10 @@ func TestInMemoryDCRCredentialStore_Put_RejectsNilResolution(t *testing.T) {
 	assert.False(t, ok, "rejected Put must not leave any entry behind")
 }
 
-func TestInMemoryDCRCredentialStore_GetReturnsDefensiveCopy(t *testing.T) {
+func TestInMemoryDCRResolutionCache_GetReturnsDefensiveCopy(t *testing.T) {
 	t.Parallel()
 
-	store := NewInMemoryDCRCredentialStore()
+	store := newInMemoryDCRResolutionCache()
 	ctx := context.Background()
 
 	key := DCRKey{Issuer: "https://idp.example.com"}
@@ -168,89 +170,24 @@ func TestInMemoryDCRCredentialStore_GetReturnsDefensiveCopy(t *testing.T) {
 	assert.Equal(t, "orig", refetched.ClientID)
 }
 
-func TestScopesHash_StableAcrossPermutation(t *testing.T) {
-	t.Parallel()
+// Tests for the canonical scopes-hash form live next to the canonical
+// implementation in pkg/authserver/storage/memory_test.go (TestScopesHash_*).
+// Duplicating the suite here would re-exercise the same code, which is
+// redundant per .claude/rules/testing.md.
 
-	tests := []struct {
-		name string
-		a, b []string
-	}{
-		{
-			name: "two-element permutation",
-			a:    []string{"openid", "profile"},
-			b:    []string{"profile", "openid"},
-		},
-		{
-			name: "three-element permutation",
-			a:    []string{"openid", "profile", "email"},
-			b:    []string{"email", "openid", "profile"},
-		},
-		{
-			// OAuth scope sets are sets, not multisets (RFC 6749 §3.3).
-			// scopesHash deduplicates before hashing so a caller who
-			// accidentally repeats a scope still hits the cache entry
-			// keyed under the canonical set.
-			name: "single element equals double element duplicate",
-			a:    []string{"openid"},
-			b:    []string{"openid", "openid"},
-		},
-		{
-			name: "three-element with duplicate equals two-element unique",
-			a:    []string{"openid", "profile", "openid"},
-			b:    []string{"openid", "profile"},
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, scopesHash(tc.a), scopesHash(tc.b))
-		})
-	}
-}
-
-func TestScopesHash_DistinctForDistinctScopes(t *testing.T) {
-	t.Parallel()
-
-	a := scopesHash([]string{"openid"})
-	b := scopesHash([]string{"openid", "profile"})
-	c := scopesHash([]string{"profile"})
-	d := scopesHash(nil)
-	e := scopesHash([]string{})
-
-	// Non-empty distinct sets produce distinct hashes.
-	assert.NotEqual(t, a, b)
-	assert.NotEqual(t, a, c)
-	assert.NotEqual(t, b, c)
-	assert.NotEqual(t, a, d)
-	// nil and empty slice canonicalise to the same hash (both sort-then-join
-	// to the empty canonical form).
-	assert.Equal(t, d, e)
-}
-
-func TestScopesHash_NoCollisionFromBoundaryJoin(t *testing.T) {
-	t.Parallel()
-
-	// Without a delimiter that cannot appear inside a scope value,
-	// ["ab", "c"] and ["a", "bc"] would collide. This test exists to
-	// prevent a regression if the canonical form is ever simplified.
-	h1 := scopesHash([]string{"ab", "c"})
-	h2 := scopesHash([]string{"a", "bc"})
-	assert.NotEqual(t, h1, h2)
-}
-
-// TestInMemoryDCRCredentialStore_ConcurrentAccess fans out N goroutines
+// TestInMemoryDCRResolutionCache_ConcurrentAccess fans out N goroutines
 // performing alternating Put / Get against overlapping and disjoint keys,
-// exercising the sync.RWMutex guard advertised in the DCRCredentialStore
+// exercising the sync.RWMutex guard advertised in the dcrResolutionCache
 // interface doc. With go test -race this catches any future change that
 // drops the lock or introduces a data race in the map access.
 //
 // The test is bounded by a fail-fast deadline so a regression that
 // deadlocks fails loudly with a clear message rather than hanging until
 // the global Go test timeout.
-func TestInMemoryDCRCredentialStore_ConcurrentAccess(t *testing.T) {
+func TestInMemoryDCRResolutionCache_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
-	store := NewInMemoryDCRCredentialStore()
+	store := newInMemoryDCRResolutionCache()
 
 	const (
 		workers      = 16

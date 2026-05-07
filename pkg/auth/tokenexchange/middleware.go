@@ -36,7 +36,7 @@ const (
 const (
 	// EnvClientSecret is the environment variable name for the OAuth client secret
 	// This corresponds to the "client_secret" field in the token exchange configuration
-	//nolint:gosec // G101: This is an environment variable name, not a credential
+	//nolint:gosec // G101: this is an environment variable name, not a credential value
 	EnvClientSecret = "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET"
 )
 
@@ -63,7 +63,7 @@ type Config struct {
 	ClientID string `json:"client_id"`
 
 	// ClientSecret is the OAuth 2.0 client secret
-	ClientSecret string `json:"client_secret"` //nolint:gosec // G117: field legitimately holds sensitive data
+	ClientSecret string `json:"client_secret"`
 
 	// Audience is the target audience for the exchanged token
 	Audience string `json:"audience"`
@@ -333,7 +333,6 @@ func createTokenExchangeMiddleware(
 
 			// Log some claim information for debugging
 			if sub, exists := claims["sub"]; exists {
-				//nolint:gosec // G706: subject claim is from validated JWT
 				slog.Debug("Performing token exchange for subject", "subject", sub)
 			}
 

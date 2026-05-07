@@ -216,7 +216,7 @@ func TestTokenSource_Token_Success(t *testing.T) {
 		err = json.NewEncoder(w).Encode(resp)
 		require.NoError(t, err)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	// Create config with test server
 	config := &ExchangeConfig{
@@ -258,7 +258,7 @@ func TestTokenSource_Token_WithRefreshToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	config := &ExchangeConfig{
 		TokenURL:     server.URL,
@@ -290,7 +290,7 @@ func TestTokenSource_Token_NoExpiry(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	config := &ExchangeConfig{
 		TokenURL:     server.URL,
@@ -343,7 +343,7 @@ func TestTokenSource_Token_ContextCancellation(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	config := &ExchangeConfig{
 		TokenURL:     server.URL,
@@ -418,7 +418,7 @@ func TestExchangeToken_HTTPErrorResponses(t *testing.T) {
 				w.WriteHeader(tt.statusCode)
 				_, _ = w.Write([]byte(tt.responseBody))
 			}))
-			defer server.Close()
+			t.Cleanup(server.Close)
 
 			request := &exchangeRequest{
 				GrantType:          "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -483,7 +483,7 @@ func TestExchangeToken_MalformedJSON(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(tt.responseBody))
 			}))
-			defer server.Close()
+			t.Cleanup(server.Close)
 
 			request := &exchangeRequest{
 				SubjectToken: "test-token",
@@ -507,7 +507,7 @@ func TestExchangeToken_MissingRequiredFields(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Fatal("should not reach server")
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	request := &exchangeRequest{
 		// Missing SubjectToken
@@ -542,7 +542,7 @@ func TestExchangeToken_DefaultValues(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	request := &exchangeRequest{
 		SubjectToken: "test-token",
@@ -577,7 +577,7 @@ func TestExchangeToken_OptionalFields(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	request := &exchangeRequest{
 		SubjectToken: "test-token",
@@ -618,7 +618,7 @@ func TestExchangeToken_ActorTokenWithoutType(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	request := &exchangeRequest{
 		SubjectToken: "test-token",
@@ -686,7 +686,7 @@ func TestExchangeToken_ResponseSizeLimit(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	request := &exchangeRequest{
 		SubjectToken: "test-token",
@@ -742,7 +742,7 @@ func TestExchangeToken_NoCredentialLeakage(t *testing.T) {
 			t.Parallel()
 
 			server := tt.setupServer()
-			defer server.Close()
+			t.Cleanup(server.Close)
 
 			request := &exchangeRequest{
 				SubjectToken: tt.subjectToken,
@@ -784,7 +784,7 @@ func TestExchangeToken_FormEncoding(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	request := &exchangeRequest{
 		SubjectToken: specialChars,
@@ -817,7 +817,7 @@ func TestExchangeToken_ContentLength(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	request := &exchangeRequest{
 		SubjectToken: "test-token",
@@ -901,7 +901,7 @@ func TestSubjectTokenProvider_Variants(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 				_ = json.NewEncoder(w).Encode(resp)
 			}))
-			defer server.Close()
+			t.Cleanup(server.Close)
 
 			config := &ExchangeConfig{
 				TokenURL:             server.URL,
@@ -950,7 +950,7 @@ func TestExchangeToken_EmptyClientCredentials(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	request := &exchangeRequest{
 		SubjectToken: "test-token",
@@ -988,7 +988,7 @@ func TestExchangeToken_OnlyClientID(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	request := &exchangeRequest{
 		SubjectToken: "test-token",
@@ -1020,7 +1020,7 @@ func TestExchangeToken_ResponseFields(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	request := &exchangeRequest{
 		SubjectToken: "test-token",
@@ -1052,7 +1052,7 @@ func TestExchangeToken_MinimalResponse(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	request := &exchangeRequest{
 		SubjectToken: "test-token",
@@ -1121,7 +1121,7 @@ func TestExchangeToken_ScopeArray(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 				_ = json.NewEncoder(w).Encode(resp)
 			}))
-			defer server.Close()
+			t.Cleanup(server.Close)
 
 			request := &exchangeRequest{
 				SubjectToken: "test-token",
@@ -1328,7 +1328,7 @@ func TestExchangeToken_URLValues(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	request := &exchangeRequest{
 		GrantType:          "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -1393,7 +1393,7 @@ func TestExchangeToken_BasicAuthURLEncoding(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	request := &exchangeRequest{
 		SubjectToken: "test-token",

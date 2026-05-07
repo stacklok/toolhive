@@ -6,12 +6,13 @@
 package api
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/Microsoft/go-winio"
 )
@@ -20,6 +21,11 @@ import (
 // per pipe instance. 64 KiB matches what go-winio uses in similar consumers
 // (Docker, containerd, Podman) and is well above any single HTTP header chunk.
 const namedPipeBufferSize = 64 * 1024
+
+// supportsNamedPipe reports whether the current build target can host a
+// Windows named-pipe listener. Used by createListener to choose between the
+// pipe and AF_UNIX paths without dragging the runtime package into server.go.
+func supportsNamedPipe() bool { return true }
 
 // setupUnixSocket creates either a Windows named-pipe listener (when address
 // has the \\.\pipe\ prefix) or an AF_UNIX listener at a filesystem path.
@@ -33,7 +39,7 @@ const namedPipeBufferSize = 64 * 1024
 // AF_UNIX is supported on Windows 10 1803+. The chmod step is dropped on this
 // path because POSIX file modes do not apply on Windows.
 func setupUnixSocket(address string) (net.Listener, error) {
-	if strings.HasPrefix(address, namedPipePrefix) {
+	if isNamedPipeAddress(address) {
 		// MessageMode is left at false (byte stream) explicitly because HTTP
 		// requires byte-oriented framing.
 		listener, err := winio.ListenPipe(address, &winio.PipeConfig{
@@ -47,10 +53,8 @@ func setupUnixSocket(address string) (net.Listener, error) {
 		return listener, nil
 	}
 
-	if _, err := os.Stat(address); err == nil {
-		if err := os.Remove(address); err != nil {
-			return nil, fmt.Errorf("failed to remove existing socket: %w", err)
-		}
+	if err := os.Remove(address); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("failed to remove existing socket: %w", err)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(address), 0750); err != nil {
@@ -68,10 +72,10 @@ func setupUnixSocket(address string) (net.Listener, error) {
 // cleanupUnixSocket removes the AF_UNIX socket file at address, or no-ops for
 // named pipes (the pipe is destroyed when the listener closes).
 func cleanupUnixSocket(address string) {
-	if strings.HasPrefix(address, namedPipePrefix) {
+	if isNamedPipeAddress(address) {
 		return
 	}
-	if err := os.Remove(address); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(address); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		slog.Warn("failed to remove socket file", "error", err)
 	}
 }
@@ -80,8 +84,8 @@ func cleanupUnixSocket(address string) {
 // the discovery file. Named pipes are emitted as npipe://<name> where <name>
 // is everything after the \\.\pipe\ prefix.
 func socketURL(address string) string {
-	if strings.HasPrefix(address, namedPipePrefix) {
-		return "npipe://" + strings.TrimPrefix(address, namedPipePrefix)
+	if isNamedPipeAddress(address) {
+		return "npipe://" + address[len(namedPipePrefix):]
 	}
 	return "unix://" + address
 }

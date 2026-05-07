@@ -23,9 +23,11 @@ const (
 	NonceHeader = "X-Toolhive-Nonce"
 )
 
-// namedPipePrefix is the Windows named-pipe namespace prefix used to
-// reconstruct addresses for winio.DialPipeContext.
-const namedPipePrefix = `\\.\pipe\`
+// NamedPipePrefix is the Windows named-pipe namespace prefix. The discovery
+// dialer uses it to reconstruct addresses for winio.DialPipeContext, and the
+// API listener (pkg/api) imports it as the canonical definition so the two
+// sides cannot drift.
+const NamedPipePrefix = `\\.\pipe\`
 
 // CheckHealth verifies that a server at the given URL is healthy and optionally
 // matches the expected nonce. It supports http://, unix://, and npipe:// URL
@@ -184,5 +186,5 @@ func ParseNamedPipeURL(rawURL string) (string, error) {
 	if strings.Contains(name, "..") {
 		return "", fmt.Errorf("named pipe name must not contain '..': %s", name)
 	}
-	return namedPipePrefix + name, nil
+	return NamedPipePrefix + name, nil
 }

@@ -27,7 +27,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	stdruntime "runtime"
 	"strings"
 	"time"
 
@@ -367,16 +366,21 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 	}
 }
 
-// namedPipePrefix is the Windows named-pipe namespace prefix. Both per-platform
-// socket files use it, and ListenURL/createListener inspect the address prefix
-// to choose between AF_UNIX and named-pipe semantics.
-const namedPipePrefix = `\\.\pipe\`
+// namedPipePrefix is the Windows named-pipe namespace prefix. The canonical
+// definition lives in pkg/server/discovery so the listener and dialer cannot
+// drift; pkg/api re-aliases it here so per-platform socket files do not need
+// to import discovery directly.
+const namedPipePrefix = discovery.NamedPipePrefix
 
 // isNamedPipeAddress reports whether address is a Windows named-pipe path.
 // The check is platform-agnostic so callers on non-Windows can fail fast with
-// a clear error before reaching the listener code.
+// a clear error before reaching the listener code. The comparison is
+// case-insensitive because the Windows pipe namespace is case-insensitive at
+// the kernel layer; without EqualFold an address like \\.\Pipe\foo would
+// silently fall through to AF_UNIX and then fail to bind.
 func isNamedPipeAddress(address string) bool {
-	return strings.HasPrefix(address, namedPipePrefix)
+	return len(address) >= len(namedPipePrefix) &&
+		strings.EqualFold(address[:len(namedPipePrefix)], namedPipePrefix)
 }
 
 func setupTCPListener(address string) (net.Listener, error) {
@@ -709,7 +713,7 @@ func createListener(address string, isUnixSocket bool) (net.Listener, string, er
 
 	addrType := "UNIX socket"
 	if isNamedPipeAddress(address) {
-		if stdruntime.GOOS != "windows" {
+		if !supportsNamedPipe() {
 			return nil, "", fmt.Errorf("named pipe addresses are only supported on Windows: %s", address)
 		}
 		addrType = "Windows named pipe"

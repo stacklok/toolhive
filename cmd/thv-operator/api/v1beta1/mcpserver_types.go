@@ -800,17 +800,19 @@ type InlineAuthzConfig struct {
 	EntitiesJSON string `json:"entitiesJson,omitempty"`
 
 	// PrimaryUpstreamProvider names the upstream IDP whose access token's claims
-	// Cedar should evaluate. Only honored when the parent AuthzConfigRef.Type is
-	// "inline"; on Type "configMap" this value is currently not loaded (see TODO
-	// in cmd/thv-operator/pkg/vmcpconfig/converter.go). Only meaningful for
-	// VirtualMCPServer with an embedded auth server. When empty and an embedded
-	// auth server has upstreams configured, the controller defaults to the first
-	// upstream provider. The name must match one of the upstreams declared on
+	// Cedar should evaluate. Currently honored only when the parent
+	// AuthzConfigRef.Type is "inline"; configMap-sourced policies will support
+	// this in a future release (see #5208). Only meaningful for VirtualMCPServer
+	// with an embedded auth server. When empty and an embedded auth server has
+	// upstreams configured, the controller defaults to the first upstream
+	// provider. The name must match one of the upstreams declared on
 	// spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
 	// rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
 	// have no embedded auth server; setting this field on those CRs surfaces an
 	// AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
 	PrimaryUpstreamProvider string `json:"primaryUpstreamProvider,omitempty"`
 }

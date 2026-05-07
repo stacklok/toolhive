@@ -405,6 +405,81 @@ func TestMutatingMiddleware_SkipNonMCPRequests(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rr.Code)
 }
 
+// makeJSONBodyOfSize builds a syntactically-valid JSON body of exactly `size`
+// bytes by padding the value of a "data" field with ASCII characters. The
+// resulting bytes are valid JSON-RPC for use as an MCP request body.
+func makeJSONBodyOfSize(tb testing.TB, size int) []byte {
+	tb.Helper()
+	const envelope = `{"jsonrpc":"2.0","method":"tools/call","id":1,"data":""}`
+	if size < len(envelope) {
+		tb.Fatalf("requested size %d is smaller than minimum envelope size %d", size, len(envelope))
+	}
+	padding := bytes.Repeat([]byte("a"), size-len(envelope))
+	body := []byte(`{"jsonrpc":"2.0","method":"tools/call","id":1,"data":"`)
+	body = append(body, padding...)
+	body = append(body, []byte(`"}`)...)
+	if len(body) != size {
+		tb.Fatalf("constructed body length %d != requested size %d", len(body), size)
+	}
+	return body
+}
+
+func TestMutatingMiddleware_RequestBodySizeLimit(t *testing.T) {
+	t.Parallel()
+
+	t.Run("body exceeding MaxRequestSize returns 413", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := makeConfig(closedServerURL, webhook.FailurePolicyIgnore)
+		mw := createMutatingHandler(makeExecutors(t, []webhook.Config{cfg}), "srv", "stdio")
+
+		body := makeJSONBodyOfSize(t, webhook.MaxRequestSize+1)
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: 1})
+		req = req.WithContext(ctx)
+
+		var nextCalled bool
+		nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { nextCalled = true })
+
+		rr := httptest.NewRecorder()
+		mw(nextHandler).ServeHTTP(rr, req)
+
+		assert.False(t, nextCalled, "next must not be called for oversized requests")
+		assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
+
+		var errResp map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
+		errObj, ok := errResp["Error"].(map[string]interface{})
+		require.True(t, ok)
+		assert.Equal(t, float64(http.StatusRequestEntityTooLarge), errObj["code"])
+		assert.Equal(t, "Request body exceeds maximum size", errObj["message"])
+	})
+
+	t.Run("body at MaxRequestSize boundary is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		// Use FailurePolicyIgnore against a closed port: the outbound webhook
+		// call fails and is ignored per fail-open, so next is invoked. This
+		// isolates the test from depending on a working webhook server.
+		cfg := makeConfig(closedServerURL, webhook.FailurePolicyIgnore)
+		mw := createMutatingHandler(makeExecutors(t, []webhook.Config{cfg}), "srv", "stdio")
+
+		body := makeJSONBodyOfSize(t, webhook.MaxRequestSize)
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: 1})
+		req = req.WithContext(ctx)
+
+		var nextCalled bool
+		nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { nextCalled = true })
+
+		rr := httptest.NewRecorder()
+		mw(nextHandler).ServeHTTP(rr, req)
+
+		assert.True(t, nextCalled, "next should be called for boundary-size body (fail-open ignores webhook error)")
+		assert.Equal(t, http.StatusOK, rr.Code)
+	})
+}
+
 func TestMiddlewareParams_Validate(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

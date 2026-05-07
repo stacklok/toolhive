@@ -133,7 +133,7 @@ func walkType(t reflect.Type, prefix string, leafSet map[string]struct{}, visite
 	// Only Struct/Slice/Array/Map require recursion; every other Kind
 	// (primitives, interfaces, channels, etc.) is a leaf path captured by
 	// the default branch.
-	switch t.Kind() { //exhaustive:ignore
+	switch t.Kind() { //nolint:exhaustive // every other Kind falls through to the default leaf branch by design
 	case reflect.Struct:
 		recurseStruct(t, prefix, leafSet, visited)
 	case reflect.Slice, reflect.Array:

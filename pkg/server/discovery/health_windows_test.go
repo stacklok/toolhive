@@ -8,7 +8,9 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -68,8 +70,25 @@ func TestCheckHealth_NamedPipe_HungServerCancelsOnContext(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = listener.Close() })
 
+	// Collect accepted conns under a mutex so the background goroutine never
+	// touches t after the test body returns. t.Cleanup must be registered
+	// from the test goroutine, not from the accept loop, otherwise a late
+	// Accept could race with test teardown ("Log in goroutine after Test
+	// has completed").
+	var (
+		connsMu sync.Mutex
+		conns   []net.Conn
+	)
+	t.Cleanup(func() {
+		connsMu.Lock()
+		defer connsMu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+
 	// Drain accepts so the dial succeeds, but never write anything back. The
-	// goroutine exits when the listener is closed via t.Cleanup.
+	// goroutine exits when the listener is closed via t.Cleanup above.
 	go func() {
 		for {
 			conn, acceptErr := listener.Accept()
@@ -78,7 +97,9 @@ func TestCheckHealth_NamedPipe_HungServerCancelsOnContext(t *testing.T) {
 			}
 			// Hold the connection open without responding so CheckHealth's
 			// HTTP read blocks until the context deadline fires.
-			t.Cleanup(func() { _ = conn.Close() })
+			connsMu.Lock()
+			conns = append(conns, conn)
+			connsMu.Unlock()
 		}
 	}()
 

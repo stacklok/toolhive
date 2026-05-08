@@ -131,10 +131,9 @@ func TestSetupUnixSocket_NamedPipe_FirstInstanceWins(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = first.Close() })
 
-	second, err := setupUnixSocket(pipePath)
+	// setupUnixSocket returns (nil, err) on the named-pipe failure path, so
+	// no defensive Close is needed for the second listener.
+	_, err = setupUnixSocket(pipePath)
 	require.Error(t, err, "second ListenPipe on the same name must fail")
-	if second != nil {
-		_ = second.Close()
-	}
 	assert.Contains(t, err.Error(), "failed to create named pipe listener")
 }

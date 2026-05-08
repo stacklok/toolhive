@@ -53,6 +53,12 @@ func (*EntraOBOHandler) ResolveTokenURL(config *ExchangeConfig) (string, error) 
 		return "", fmt.Errorf("token exchange: entra variant requires non-empty tenantId in RawConfig.Parameters")
 	}
 
+	// DNS labels are limited to 253 characters; GUIDs are 36.
+	const maxTenantIDLen = 253
+	if len(tenantID) > maxTenantIDLen {
+		return "", fmt.Errorf("token exchange: tenantId exceeds maximum length of %d characters", maxTenantIDLen)
+	}
+
 	if !validEntraTenantID.MatchString(tenantID) {
 		return "", fmt.Errorf("token exchange: tenantId %q is not a valid GUID or domain name", tenantID)
 	}

@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 )
@@ -58,7 +59,10 @@ func cleanupUnixSocket(address string) {
 }
 
 // socketURL returns the URL form of a Unix-socket address for the discovery
-// file. Non-Windows platforms only ever produce unix:// URLs.
+// file. Non-Windows platforms only ever produce unix:// URLs. Built via
+// (&url.URL{}).String() so the discovery dialer can round-trip the value back
+// through net/url without surprises (matters mostly on Windows but kept here
+// for symmetry).
 func socketURL(address string) string {
-	return "unix://" + address
+	return (&url.URL{Scheme: "unix", Path: address}).String()
 }

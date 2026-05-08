@@ -664,8 +664,8 @@ type AuthServerStorageConfig struct {
 // addr points to a Redis Cluster discovery endpoint (GCP Memorystore Cluster,
 // AWS ElastiCache cluster mode enabled).
 //
-// +kubebuilder:validation:XValidation:rule="(self.addr.size() > 0) != has(self.sentinelConfig)",message="exactly one of addr or sentinelConfig must be set"
-// +kubebuilder:validation:XValidation:rule="!self.clusterMode || self.addr.size() > 0",message="clusterMode requires addr to be set"
+// +kubebuilder:validation:XValidation:rule="(has(self.addr) && self.addr.size() > 0) != has(self.sentinelConfig)",message="exactly one of addr or sentinelConfig must be set"
+// +kubebuilder:validation:XValidation:rule="!(has(self.clusterMode) && self.clusterMode) || (has(self.addr) && self.addr.size() > 0)",message="clusterMode requires addr to be set"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type RedisStorageConfig struct {

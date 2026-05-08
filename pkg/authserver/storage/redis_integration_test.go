@@ -1461,8 +1461,6 @@ func TestIntegration_DCRCredentials_RoundTrip(t *testing.T) {
 }
 
 func TestIntegration_DCRCredentials_DistinctKeysCoexist(t *testing.T) {
-	t.Parallel()
-
 	withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
 		mkKey := func(issuer, redirect string, scopes []string) DCRKey {
 			return DCRKey{Issuer: issuer, RedirectURI: redirect, ScopesHash: ScopesHash(scopes)}
@@ -1495,8 +1493,6 @@ func TestIntegration_DCRCredentials_DistinctKeysCoexist(t *testing.T) {
 }
 
 func TestIntegration_DCRCredentials_OverwriteSemantics(t *testing.T) {
-	t.Parallel()
-
 	withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
 		key := dcrFixtureKey()
 		mk := func(clientID string) *DCRCredentials {
@@ -1578,14 +1574,12 @@ func TestIntegration_DCRCredentials_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
 	t.Run("overlapping_key", func(t *testing.T) {
-		t.Parallel()
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
 			runDCRConcurrentAccess(ctx, t, s, dcrConcurrentOverlappingKey, 30*time.Second)
 		})
 	})
 
 	t.Run("disjoint_keys", func(t *testing.T) {
-		t.Parallel()
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
 			runDCRConcurrentAccess(ctx, t, s, dcrConcurrentDisjointKeys, 30*time.Second)
 		})

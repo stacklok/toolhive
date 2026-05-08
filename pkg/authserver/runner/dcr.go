@@ -73,6 +73,16 @@ var authMethodPreference = []string{
 //
 // The struct is the unit of storage in dcrResolutionCache and the unit of
 // application via consumeResolution.
+//
+// MUST update both converters (resolutionToCredentials and
+// credentialsToResolution in dcr_store.go) when adding, renaming, or
+// removing a field here. The two converters are the seam between this
+// runner-side type and the persisted *storage.DCRCredentials shape; a
+// field added here without a paired converter update will silently fail
+// to round-trip across an authserver restart, the exact "parallel types
+// drift" failure mode .claude/rules/go-style.md warns about. The
+// round-trip behaviour is pinned by TestResolutionCredentialsRoundTrip
+// in dcr_store_test.go.
 type DCRResolution struct {
 	// ClientID is the RFC 7591 "client_id" returned by the authorization
 	// server.

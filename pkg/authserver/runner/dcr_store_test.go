@@ -17,10 +17,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
-func TestInMemoryDCRResolutionCache_PutGet_RoundTrip(t *testing.T) {
+func TestStorageBackedStore_PutGet_RoundTrip(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
 	key := DCRKey{
@@ -53,10 +53,10 @@ func TestInMemoryDCRResolutionCache_PutGet_RoundTrip(t *testing.T) {
 	assert.Equal(t, resolution.TokenEndpointAuthMethod, got.TokenEndpointAuthMethod)
 }
 
-func TestInMemoryDCRResolutionCache_Get_MissingKey(t *testing.T) {
+func TestStorageBackedStore_Get_MissingKey(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
 	got, ok, err := store.Get(ctx, DCRKey{Issuer: "https://unknown.example.com"})
@@ -65,10 +65,10 @@ func TestInMemoryDCRResolutionCache_Get_MissingKey(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-func TestInMemoryDCRResolutionCache_DistinctKeysDoNotCollide(t *testing.T) {
+func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
 	keyA := DCRKey{
@@ -92,10 +92,22 @@ func TestInMemoryDCRResolutionCache_DistinctKeysDoNotCollide(t *testing.T) {
 		ScopesHash:  storage.ScopesHash([]string{"openid", "email"}),
 	}
 
-	require.NoError(t, store.Put(ctx, keyA, &DCRResolution{ClientID: "a"}))
-	require.NoError(t, store.Put(ctx, keyB, &DCRResolution{ClientID: "b"}))
-	require.NoError(t, store.Put(ctx, keyC, &DCRResolution{ClientID: "c"}))
-	require.NoError(t, store.Put(ctx, keyD, &DCRResolution{ClientID: "d"}))
+	// The persisted *storage.DCRCredentials shape requires non-empty
+	// AuthorizationEndpoint / TokenEndpoint per validateDCRCredentialsForStore;
+	// supply a minimal valid resolution so the storage-backed adapter accepts
+	// the Put, since the test asserts key-distinctness and not field shape.
+	resolution := func(clientID string) *DCRResolution {
+		return &DCRResolution{
+			ClientID:              clientID,
+			AuthorizationEndpoint: "https://idp.example.com/authorize",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}
+	}
+
+	require.NoError(t, store.Put(ctx, keyA, resolution("a")))
+	require.NoError(t, store.Put(ctx, keyB, resolution("b")))
+	require.NoError(t, store.Put(ctx, keyC, resolution("c")))
+	require.NoError(t, store.Put(ctx, keyD, resolution("d")))
 
 	for _, tc := range []struct {
 		key      DCRKey
@@ -113,15 +125,34 @@ func TestInMemoryDCRResolutionCache_DistinctKeysDoNotCollide(t *testing.T) {
 	}
 }
 
-func TestInMemoryDCRResolutionCache_Put_OverwritesExisting(t *testing.T) {
+func TestStorageBackedStore_Put_OverwritesExisting(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
-	key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x.example.com/cb"}
-	require.NoError(t, store.Put(ctx, key, &DCRResolution{ClientID: "first"}))
-	require.NoError(t, store.Put(ctx, key, &DCRResolution{ClientID: "second"}))
+	key := DCRKey{
+		Issuer:      "https://idp.example.com",
+		RedirectURI: "https://x.example.com/cb",
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+	}
+	endpoints := struct {
+		Authorization string
+		Token         string
+	}{
+		Authorization: "https://idp.example.com/authorize",
+		Token:         "https://idp.example.com/token",
+	}
+	require.NoError(t, store.Put(ctx, key, &DCRResolution{
+		ClientID:              "first",
+		AuthorizationEndpoint: endpoints.Authorization,
+		TokenEndpoint:         endpoints.Token,
+	}))
+	require.NoError(t, store.Put(ctx, key, &DCRResolution{
+		ClientID:              "second",
+		AuthorizationEndpoint: endpoints.Authorization,
+		TokenEndpoint:         endpoints.Token,
+	}))
 
 	got, ok, err := store.Get(ctx, key)
 	require.NoError(t, err)
@@ -129,14 +160,14 @@ func TestInMemoryDCRResolutionCache_Put_OverwritesExisting(t *testing.T) {
 	assert.Equal(t, "second", got.ClientID)
 }
 
-// TestInMemoryDCRResolutionCache_Put_RejectsNilResolution pins the
+// TestStorageBackedStore_Put_RejectsNilResolution pins the
 // fail-loud-on-invalid-input contract: passing nil must error rather than
 // silently no-op. A silent no-op would leave the caller with a successful
 // Put followed by a Get miss and no debug trail to explain it.
-func TestInMemoryDCRResolutionCache_Put_RejectsNilResolution(t *testing.T) {
+func TestStorageBackedStore_Put_RejectsNilResolution(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 	key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x.example.com/cb"}
 
@@ -150,14 +181,22 @@ func TestInMemoryDCRResolutionCache_Put_RejectsNilResolution(t *testing.T) {
 	assert.False(t, ok, "rejected Put must not leave any entry behind")
 }
 
-func TestInMemoryDCRResolutionCache_GetReturnsDefensiveCopy(t *testing.T) {
+func TestStorageBackedStore_GetReturnsDefensiveCopy(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
-	key := DCRKey{Issuer: "https://idp.example.com"}
-	require.NoError(t, store.Put(ctx, key, &DCRResolution{ClientID: "orig"}))
+	key := DCRKey{
+		Issuer:      "https://idp.example.com",
+		RedirectURI: "https://x.example.com/cb",
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+	}
+	require.NoError(t, store.Put(ctx, key, &DCRResolution{
+		ClientID:              "orig",
+		AuthorizationEndpoint: "https://idp.example.com/authorize",
+		TokenEndpoint:         "https://idp.example.com/token",
+	}))
 
 	got, ok, err := store.Get(ctx, key)
 	require.NoError(t, err)
@@ -175,19 +214,21 @@ func TestInMemoryDCRResolutionCache_GetReturnsDefensiveCopy(t *testing.T) {
 // Duplicating the suite here would re-exercise the same code, which is
 // redundant per .claude/rules/testing.md.
 
-// TestInMemoryDCRResolutionCache_ConcurrentAccess fans out N goroutines
+// TestStorageBackedStore_ConcurrentAccess fans out N goroutines
 // performing alternating Put / Get against overlapping and disjoint keys,
-// exercising the sync.RWMutex guard advertised in the dcrResolutionCache
-// interface doc. With go test -race this catches any future change that
-// drops the lock or introduces a data race in the map access.
+// exercising the safe-for-concurrent-use contract advertised on the
+// dcrResolutionCache interface. The contract is satisfied by the underlying
+// storage.DCRCredentialStore (which holds the lock); this test runs under
+// `go test -race` so any future regression that drops the storage backend's
+// guarantee, or an adapter change that races on its own state, fails loudly.
 //
 // The test is bounded by a fail-fast deadline so a regression that
 // deadlocks fails loudly with a clear message rather than hanging until
 // the global Go test timeout.
-func TestInMemoryDCRResolutionCache_ConcurrentAccess(t *testing.T) {
+func TestStorageBackedStore_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
-	store := newInMemoryDCRResolutionCache()
+	store := newMemoryDCRStore(t)
 
 	const (
 		workers      = 16
@@ -221,8 +262,10 @@ func TestInMemoryDCRResolutionCache_ConcurrentAccess(t *testing.T) {
 			ctx := context.Background()
 			for i := 0; i < opsPerWorker; i++ {
 				resolution := &DCRResolution{
-					ClientID:  fmt.Sprintf("worker-%d-op-%d", worker, i),
-					CreatedAt: time.Now(),
+					ClientID:              fmt.Sprintf("worker-%d-op-%d", worker, i),
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					CreatedAt:             time.Now(),
 				}
 				if i%2 == 0 {
 					if err := store.Put(ctx, overlappingKey(i), resolution); err != nil {
@@ -254,4 +297,105 @@ func TestInMemoryDCRResolutionCache_ConcurrentAccess(t *testing.T) {
 
 	assert.Zero(t, atomic.LoadInt32(&errCount),
 		"no Get/Put should have errored under concurrent access")
+}
+
+// TestResolutionCredentialsRoundTrip pins the field-by-field contract
+// between resolutionToCredentials and credentialsToResolution: which
+// fields survive a round-trip, which are intentionally dropped, and
+// which are recovered from the persisted DCRKey. The test exists
+// because the two converters are the seam where a field added to either
+// DCRResolution or storage.DCRCredentials must be paired with an update
+// here; without coverage, a future field addition would silently fail
+// to persist across an authserver restart.
+//
+// The "preserved" group asserts equality on round-tripped values. The
+// "dropped" group asserts that the post-round-trip value is the type's
+// zero value (ClientIDIssuedAt is informational per RFC 7591 §3.2.1 and
+// is not persisted). RedirectURI is in its own group because it is
+// dropped from DCRCredentials and recovered via Key.RedirectURI on
+// read.
+//
+// ProviderName is the one DCRCredentials field with no DCRResolution
+// counterpart. It is documented in storage.DCRCredentials as "debug /
+// audit only — never used as a primary key" and no current consumer
+// reads it. The decision to leave it unpopulated by the runner is
+// recorded here so a future contributor adding ProviderName threading
+// has a single grep target.
+func TestResolutionCredentialsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC().Round(time.Second)
+	expiry := now.Add(30 * 24 * time.Hour)
+
+	key := DCRKey{
+		Issuer:      "https://idp.example.com",
+		RedirectURI: "https://thv.example.com/oauth/callback",
+		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+	}
+
+	original := &DCRResolution{
+		ClientID:                "round-trip-client-id",
+		ClientSecret:            "round-trip-secret",
+		AuthorizationEndpoint:   "https://idp.example.com/authorize",
+		TokenEndpoint:           "https://idp.example.com/token",
+		RegistrationAccessToken: "rfc7592-token",
+		RegistrationClientURI:   "https://idp.example.com/register/round-trip-client-id",
+		TokenEndpointAuthMethod: "client_secret_basic",
+		// RedirectURI is recovered from Key on read; pre-populate it on
+		// the input to confirm it survives via the key, not via a
+		// dedicated field on DCRCredentials.
+		RedirectURI:           key.RedirectURI,
+		ClientIDIssuedAt:      now, // intentionally dropped on persist
+		ClientSecretExpiresAt: expiry,
+		CreatedAt:             now,
+	}
+
+	creds := resolutionToCredentials(key, original)
+	require.NotNil(t, creds)
+
+	// Persisted-side assertions: which fields the converter writes to
+	// DCRCredentials, which it leaves zero (the asymmetry F7 documents).
+	assert.Equal(t, key, creds.Key,
+		"Key must round-trip via the explicit parameter")
+	assert.Empty(t, creds.ProviderName,
+		"ProviderName has no DCRResolution counterpart and is intentionally not populated; "+
+			"a future contributor threading it through must update this assertion and the converters together")
+
+	roundTripped := credentialsToResolution(creds)
+	require.NotNil(t, roundTripped)
+
+	t.Run("preserved fields survive round-trip", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, original.ClientID, roundTripped.ClientID)
+		assert.Equal(t, original.ClientSecret, roundTripped.ClientSecret)
+		assert.Equal(t, original.AuthorizationEndpoint, roundTripped.AuthorizationEndpoint)
+		assert.Equal(t, original.TokenEndpoint, roundTripped.TokenEndpoint)
+		assert.Equal(t, original.RegistrationAccessToken, roundTripped.RegistrationAccessToken)
+		assert.Equal(t, original.RegistrationClientURI, roundTripped.RegistrationClientURI)
+		assert.Equal(t, original.TokenEndpointAuthMethod, roundTripped.TokenEndpointAuthMethod)
+		assert.Equal(t, original.ClientSecretExpiresAt, roundTripped.ClientSecretExpiresAt)
+		assert.Equal(t, original.CreatedAt, roundTripped.CreatedAt)
+	})
+
+	t.Run("RedirectURI is recovered from Key on read", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, key.RedirectURI, roundTripped.RedirectURI,
+			"RedirectURI on the round-tripped resolution must match Key.RedirectURI; "+
+				"the converter does not store it twice")
+	})
+
+	t.Run("dropped fields zero on read", func(t *testing.T) {
+		t.Parallel()
+		// ClientIDIssuedAt is informational (RFC 7591 §3.2.1) and not
+		// persisted; round-tripping must reset it to the zero value
+		// rather than silently re-deriving it from CreatedAt.
+		assert.True(t, roundTripped.ClientIDIssuedAt.IsZero(),
+			"ClientIDIssuedAt must be zero after round-trip; the field is intentionally dropped from DCRCredentials")
+	})
+
+	t.Run("nil inputs short-circuit", func(t *testing.T) {
+		t.Parallel()
+		assert.Nil(t, resolutionToCredentials(key, nil))
+		assert.Nil(t, credentialsToResolution(nil))
+	})
 }

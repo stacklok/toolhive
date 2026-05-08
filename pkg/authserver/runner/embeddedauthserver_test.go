@@ -4,6 +4,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -13,6 +14,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1356,6 +1358,7 @@ type stubServer struct {
 func (s *stubServer) Handler() http.Handler                                { return s.handler }
 func (*stubServer) IDPTokenStorage() storage.UpstreamTokenStorage          { return nil }
 func (*stubServer) UpstreamTokenRefresher() storage.UpstreamTokenRefresher { return nil }
+func (*stubServer) DCRStore() storage.DCRCredentialStore                   { return nil }
 func (*stubServer) Close() error                                           { return nil }
 
 func TestRoutes(t *testing.T) {
@@ -1567,7 +1570,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 			AllowedAudiences: []string{"https://mcp.example.com"},
 		}
 
-		store := newInMemoryDCRResolutionCache()
+		store := newMemoryDCRStore(t)
 		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
@@ -1629,7 +1632,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 			AllowedAudiences: []string{"https://mcp.example.com"},
 		}
 
-		store := newInMemoryDCRResolutionCache()
+		store := newMemoryDCRStore(t)
 
 		// First call: populates the store.
 		_, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)
@@ -1704,24 +1707,28 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 	require.NotNil(t, embed)
 	t.Cleanup(func() { _ = embed.Close() })
 
-	// The constructor must have populated a non-nil dcrStore.
-	require.NotNil(t, embed.dcrStore, "NewEmbeddedAuthServer must initialise a dcrStore")
+	// The constructor must have wired a non-nil DCR store.
+	dcrStore := embed.DCRStore()
+	require.NotNil(t, dcrStore, "NewEmbeddedAuthServer must wire a DCR store")
 
 	// The DCR registration must have hit the mock AS at least once.
 	assert.Greater(t, atomic.LoadInt32(requestCount), int32(0),
 		"DCR boot should have issued network I/O to the mock AS")
 
 	// The store on the EmbeddedAuthServer contains the canonical DCRKey
-	// for this upstream — no separate in-memory store was created.
+	// for this upstream — the accessor delegates to the same
+	// storage.DCRCredentialStore createStorage produced, so a successful
+	// boot persisted the resolution there directly (no separate in-memory
+	// store was created).
 	redirectURI := server.URL + "/oauth/callback"
 	key := DCRKey{
 		Issuer:      server.URL,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
-	cached, ok, err := embed.dcrStore.Get(context.Background(), key)
-	require.NoError(t, err)
-	require.True(t, ok, "dcrStore on EmbeddedAuthServer must hold the DCR resolution")
+	cached, err := dcrStore.GetDCRCredentials(context.Background(), key)
+	require.NoError(t, err, "DCR store on EmbeddedAuthServer must hold the DCR resolution")
+	require.NotNil(t, cached)
 	assert.Equal(t, "dcr-client-id", cached.ClientID)
 	assert.Equal(t, "dcr-client-secret", cached.ClientSecret)
 
@@ -1732,4 +1739,302 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 		"NewEmbeddedAuthServer must not clear the caller's OAuth2Config.DCRConfig")
 	assert.Same(t, originalOAuth2, cfg.Upstreams[0].OAuth2Config,
 		"NewEmbeddedAuthServer must not replace the caller's OAuth2Config pointer")
+}
+
+// closeTrackingStorage wraps an authserver storage and counts Close calls.
+// It implements storage.Storage by embedding the wrapped value, then
+// overriding Close to record the call before delegating to the inner
+// Storage. Used by TestNewEmbeddedAuthServer_ClosesStorageOnError to
+// verify the deferred-cleanup contract on NewEmbeddedAuthServer's error
+// paths without depending on goroutine-count heuristics (which are
+// confounded by HTTP transport keep-alive goroutines this package does
+// not own).
+type closeTrackingStorage struct {
+	storage.Storage
+	closeCount atomic.Int32
+}
+
+func (s *closeTrackingStorage) Close() error {
+	s.closeCount.Add(1)
+	return s.Storage.Close()
+}
+
+// TestNewEmbeddedAuthServer_ClosesStorageOnError pins the post-#5185
+// invariant that NewEmbeddedAuthServer never leaks the storage backend on
+// the constructor's error paths.
+//
+// Before the wiring change, createStorage ran late in the constructor so
+// most error paths (DCR resolver, upstream config build) returned without
+// having opened the backend. After the change, createStorage runs first —
+// so a DCR failure (the most likely failure mode in production: upstream
+// AS unreachable, /register 4xx) returns from the constructor with the
+// storage still holding OS-level resources (Redis client connection pool,
+// MemoryStorage cleanup goroutine). Without the deferred cleanup, a
+// crash-looping pod would leak one connection pool / goroutine per
+// restart.
+//
+// The test calls newEmbeddedAuthServerWithStorage (the test seam that
+// production NewEmbeddedAuthServer dispatches into) so the storage
+// instance is observable: a closeTrackingStorage wrapper records every
+// Close call. The assertion is then a direct count rather than a
+// goroutine-count heuristic. This avoids the package-level swap-pattern
+// that would otherwise force the test to run non-parallel.
+func TestNewEmbeddedAuthServer_ClosesStorageOnError(t *testing.T) {
+	t.Parallel()
+
+	tracker := &closeTrackingStorage{Storage: storage.NewMemoryStorage()}
+
+	// Always-500 discovery endpoint forces the DCR resolver to fail
+	// during buildUpstreamConfigs — i.e. inside the leak window between
+	// createStorage success and EmbeddedAuthServer construction.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := &authserver.RunConfig{
+		SchemaVersion: authserver.CurrentSchemaVersion,
+		Issuer:        server.URL,
+		Upstreams: []authserver.UpstreamRunConfig{
+			{
+				Name: "dcr-upstream",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					ClientID:              "",
+					AuthorizationEndpoint: server.URL + "/authorize",
+					TokenEndpoint:         server.URL + "/token",
+					Scopes:                []string{"openid", "profile"},
+					DCRConfig: &authserver.DCRUpstreamConfig{
+						DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+					},
+				},
+			},
+		},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+	}
+
+	embed, err := newEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
+	require.Error(t, err,
+		"discovery returns 500, so DCR resolution must fail and the constructor must return an error")
+	assert.Nil(t, embed,
+		"failed constructor must return nil EmbeddedAuthServer")
+	assert.Equal(t, int32(1), tracker.closeCount.Load(),
+		"failed NewEmbeddedAuthServer must Close the storage exactly once via the deferred-cleanup gate; "+
+			"a count of 0 indicates the deferred Close did not run, leaking the backend on the error path")
+}
+
+// TestEmbeddedAuthServer_DCRStorePersistsAcrossClose verifies that the DCR
+// store reachable through EmbeddedAuthServer.DCRStore() holds the resolved
+// RFC 7591 client registration after the constructor's full DCR resolver
+// runs against a mock AS. The Get is issued BEFORE Close so the assertion
+// does not depend on the (undocumented) MemoryStorage post-Close
+// readability that an earlier version of this test silently relied on.
+//
+// What this test does cover:
+//
+//   - NewEmbeddedAuthServer runs the full DCR resolver against a mock AS
+//     during construction, populating the storage-backed DCR store, and
+//     surfaces the same storage.DCRCredentialStore the authserver itself
+//     reads from via DCRStore(). The persisted credentials are readable
+//     by issuing a Get against the captured store while the server is
+//     still live.
+//
+// What this test does NOT cover (deferred follow-up):
+//
+//   - The full "boot, close, boot again on the same backend, observe zero
+//     /register calls on the second boot" cross-restart scenario. Closing
+//     that gap requires either miniredis-Sentinel emulation or a
+//     Docker-based Redis Sentinel cluster in the test harness, since the
+//     production restart path lives on Redis (Memory cannot be shared
+//     across two NewEmbeddedAuthServer constructors). Tracked as a
+//     follow-up; this test deliberately scopes itself to what is
+//     exercisable today against the production constructor seam.
+func TestEmbeddedAuthServer_DCRStorePersistsAcrossClose(t *testing.T) {
+	t.Parallel()
+
+	server, requestCount := newMockAuthorizationServer(t)
+
+	cfg := &authserver.RunConfig{
+		SchemaVersion: authserver.CurrentSchemaVersion,
+		Issuer:        server.URL,
+		Upstreams: []authserver.UpstreamRunConfig{
+			{
+				Name: "dcr-upstream",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					ClientID:              "",
+					AuthorizationEndpoint: server.URL + "/authorize",
+					TokenEndpoint:         server.URL + "/token",
+					Scopes:                []string{"openid", "profile"},
+					DCRConfig: &authserver.DCRUpstreamConfig{
+						DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+					},
+				},
+			},
+		},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+	}
+
+	embed, err := NewEmbeddedAuthServer(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, embed)
+	t.Cleanup(func() { _ = embed.Close() })
+
+	firstBootRequests := atomic.LoadInt32(requestCount)
+	require.Greater(t, firstBootRequests, int32(0),
+		"first boot must have issued network I/O to the mock AS during DCR")
+
+	// Capture the storage instance the constructor wired into the DCR
+	// store. This is the same backend the authserver itself was using; in
+	// production it is shared across authserver state, so DCR survives
+	// restart on the same backend.
+	persistentStore := embed.DCRStore()
+	require.NotNil(t, persistentStore,
+		"NewEmbeddedAuthServer must surface a storage-level DCRCredentialStore")
+
+	// Verify the persisted DCR row by issuing a Get against the captured
+	// store BEFORE closing the server. Doing the Get pre-Close avoids
+	// silently depending on whichever storage backend the test happens to
+	// use staying readable after Close (a contract MemoryStorage honors
+	// today but RedisStorage's closed connection pool does not). The
+	// assertion proves the persistence boundary the production cross-
+	// replica and cross-restart reuse paths depend on: that the
+	// resolution lives in storage, not in process-local cache state.
+	redirectURI := server.URL + "/oauth/callback"
+	key := DCRKey{
+		Issuer:      server.URL,
+		RedirectURI: redirectURI,
+		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+	}
+	creds, err := persistentStore.GetDCRCredentials(context.Background(), key)
+	require.NoError(t, err,
+		"DCR credentials must be readable from the captured store — "+
+			"this is the persistence boundary cross-replica reuse depends on")
+	require.NotNil(t, creds)
+	assert.Equal(t, "dcr-client-id", creds.ClientID,
+		"persisted ClientID must match the first boot's DCR resolution")
+	assert.Equal(t, "dcr-client-secret", creds.ClientSecret,
+		"persisted ClientSecret must match the first boot's DCR resolution")
+
+	// Mock-AS request count is unchanged after the survival check — the
+	// Get is a pure store read with no upstream traffic.
+	assert.Equal(t, firstBootRequests, atomic.LoadInt32(requestCount),
+		"GetDCRCredentials must not issue any HTTP requests to the mock AS")
+}
+
+// urlErrorOnCloseStorage wraps an authserver storage and returns a fixed
+// URL-bearing error from Close. It exists so
+// TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog can verify that the
+// deferred-cleanup gate routes both closeErr and retErr through
+// sanitizeErrorForLog, scrubbing any query / userinfo / fragment that might
+// carry credentials in a future regression.
+type urlErrorOnCloseStorage struct {
+	storage.Storage
+	closeErr error
+}
+
+func (s *urlErrorOnCloseStorage) Close() error {
+	// Intentionally drop the inner Close result: this test is about the log
+	// path, not about double-closing the inner storage. Returning the
+	// fixed error makes the slog capture deterministic.
+	_ = s.Storage.Close()
+	return s.closeErr
+}
+
+// TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog pins the post-#5196
+// invariant that the deferred-cleanup slog.Warn at the top of
+// newEmbeddedAuthServerWithStorage routes both closeErr and retErr through
+// sanitizeErrorForLog, so a future regression that drops the call (or that
+// changes the error chain to inline an upstream response body containing a
+// userinfo/query/fragment) cannot silently leak secrets to operator logs.
+//
+// The test injects a closeErr containing a URL with a secret-bearing query
+// (?token=leak-marker) and a discovery URL whose host appears verbatim in
+// the wrapped DCR error chain (so the captured slog record's `cause` field
+// also exercises the sanitiser). It then asserts:
+//   - the captured log record does NOT contain the literal secret marker;
+//   - the captured log record DOES contain the host components, so
+//     operators retain enough context to correlate the failure.
+//
+// NOT t.Parallel(): the test swaps slog.Default() to capture output and
+// restores it via t.Cleanup. Running in parallel would race with any other
+// test in this package that emits a log record. Confirmed against the
+// paralleltest rule on a sample run — every other test failed with a
+// data-race report on slog's internal default-logger handle.
+//
+//nolint:paralleltest // see comment above; mutates the package-global slog.Default()
+func TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog(t *testing.T) {
+	const (
+		closeErrSecretMarker = "close-leak-marker-7f9c"
+		retErrSecretMarker   = "ret-leak-marker-3b2a"
+	)
+
+	closeErr := fmt.Errorf(
+		"redis: connection broken: https://primary:hidden@redis.example.com/0?token=%s",
+		closeErrSecretMarker,
+	)
+	tracker := &urlErrorOnCloseStorage{
+		Storage:  storage.NewMemoryStorage(),
+		closeErr: closeErr,
+	}
+
+	// Discovery endpoint returns 500 so the DCR resolver fails and the
+	// constructor reaches the deferred-cleanup gate. The query string
+	// embedded in the discovery URL is what the resolver wraps into its
+	// error chain via fmt.Errorf("...%w", err) — so retErr's text is the
+	// vehicle for the second secret marker.
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(httpServer.Close)
+
+	discoveryURL := httpServer.URL + "/.well-known/oauth-authorization-server?token=" + retErrSecretMarker
+
+	cfg := &authserver.RunConfig{
+		SchemaVersion: authserver.CurrentSchemaVersion,
+		Issuer:        httpServer.URL,
+		Upstreams: []authserver.UpstreamRunConfig{
+			{
+				Name: "dcr-upstream",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					ClientID:              "",
+					AuthorizationEndpoint: httpServer.URL + "/authorize",
+					TokenEndpoint:         httpServer.URL + "/token",
+					Scopes:                []string{"openid", "profile"},
+					DCRConfig: &authserver.DCRUpstreamConfig{
+						DiscoveryURL: discoveryURL,
+					},
+				},
+			},
+		},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+	}
+
+	// Capture slog output by swapping the default logger for the duration
+	// of this test. Restore on cleanup so parallel tests are unaffected.
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	embed, err := newEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
+	require.Error(t, err)
+	assert.Nil(t, embed)
+
+	logged := buf.String()
+
+	// Defense in depth: both secret markers must be stripped before the
+	// Warn record reaches operator logs.
+	assert.NotContains(t, logged, closeErrSecretMarker,
+		"closeErr secret marker must be sanitised before reaching the Warn record")
+	assert.NotContains(t, logged, retErrSecretMarker,
+		"retErr secret marker must be sanitised before reaching the Warn record")
+	assert.NotContains(t, logged, "primary:hidden",
+		"closeErr userinfo must be sanitised before reaching the Warn record")
+
+	// The host components survive sanitisation so operators retain enough
+	// context to correlate the failure with upstream logs.
+	assert.Contains(t, logged, "redis.example.com",
+		"closeErr host must remain in the Warn record after sanitisation")
 }

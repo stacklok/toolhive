@@ -229,6 +229,18 @@ func validateDCRCredentialsForStore(creds *DCRCredentials) error {
 // retains entries for the process lifetime and is intentionally excluded from
 // the periodic cleanup loop. The Redis backend applies TTL via SET with a
 // duration when ClientSecretExpiresAt is non-zero.
+//
+// # Converter contract
+//
+// MUST update both converters in
+// pkg/authserver/runner/dcr_store.go (resolutionToCredentials and
+// credentialsToResolution) when adding, renaming, or removing a field
+// here. The two converters are the only translation seam between this
+// persisted type and the runner-side *DCRResolution; a field added here
+// without a paired converter update will silently fail to round-trip
+// across an authserver restart. The round-trip behaviour is pinned by
+// TestResolutionCredentialsRoundTrip in
+// pkg/authserver/runner/dcr_store_test.go.
 type DCRCredentials struct {
 	// Key is the canonical cache key: (Issuer, RedirectURI, ScopesHash).
 	Key DCRKey
@@ -615,6 +627,19 @@ type UserStorage interface {
 type Storage interface {
 	// Embed segregated interfaces for IDP tokens, pending authorizations, client registry,
 	// and user management for multi-IDP support.
+	//
+	// DCRCredentialStore is intentionally NOT embedded here: doing so would
+	// promote GetDCRCredentials / StoreDCRCredentials onto every consumer of
+	// storage.Storage (handlers, server, registration, etc.), broadening the
+	// surface that can read raw client_secret / registration_access_token even
+	// when those consumers have no DCR responsibility. Code that legitimately
+	// needs DCR access (the runner and authserver constructors) obtains it
+	// via an explicit `stor.(DCRCredentialStore)` type assertion at the
+	// boundary; the per-backend `var _ DCRCredentialStore = (*MemoryStorage)(nil)`
+	// and `var _ DCRCredentialStore = (*RedisStorage)(nil)` checks in
+	// memory.go / redis.go provide the compile-time guarantee that production
+	// backends satisfy the interface, so the runtime assertion is provably
+	// safe at the boundary while keeping the wider Storage surface narrow.
 	UpstreamTokenStorage
 	PendingAuthorizationStorage
 	ClientRegistry

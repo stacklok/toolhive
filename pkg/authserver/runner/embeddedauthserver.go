@@ -36,30 +36,16 @@ const (
 // EmbeddedAuthServer wraps the authorization server for integration with the proxy runner.
 // It handles configuration transformation from authserver.RunConfig to authserver.Config,
 // manages resource lifecycle, and provides HTTP handlers for OAuth/OIDC endpoints.
+//
+// The DCR credential store is owned by the underlying authserver.Server and
+// reached via DCRStore(); see that accessor's doc for SECURITY and lifecycle
+// notes. Storing it twice on this struct would create a drift window with
+// the server's copy, so we delegate through e.server.DCRStore() instead.
 type EmbeddedAuthServer struct {
 	server      authserver.Server
 	keyProvider keys.KeyProvider
-	// dcrStore caches RFC 7591 Dynamic Client Registration resolutions across
-	// calls to buildUpstreamConfigs so that re-entrant boot/reload paths reuse
-	// previously-registered upstream clients instead of re-registering.
-	//
-	// Lifetime: per-instance — the store is owned by this EmbeddedAuthServer
-	// and is GC'd when the server is unreferenced. This intentionally
-	// contrasts with the package-level dcrFlight singleflight in dcr.go,
-	// which is process-wide so concurrent EmbeddedAuthServer instances
-	// targeting the same upstream still deduplicate the network call. The
-	// cache (per-instance) and the flight (process-wide) protect different
-	// resources: the cache prevents redundant registrations across reboots,
-	// the flight prevents N concurrent /register calls during a thundering
-	// herd. The asymmetry is by design.
-	//
-	// dcrResolutionCache has no Close method today because the in-memory
-	// implementation needs no release. A future Phase 3 backend (Redis,
-	// sqlite) with handles will need Close added to the interface and
-	// invoked from EmbeddedAuthServer.Close.
-	dcrStore  dcrResolutionCache
-	closeOnce sync.Once
-	closeErr  error
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 // NewEmbeddedAuthServer creates an EmbeddedAuthServer from authserver.RunConfig.
@@ -73,6 +59,62 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
 	}
+
+	// Create the storage backend FIRST so the DCR resolver and the auth
+	// server share the same persistence. Both MemoryStorage and RedisStorage
+	// satisfy storage.DCRCredentialStore (verified by package-level var _
+	// checks in pkg/authserver/storage), so an explicit type assertion at
+	// the boundary is provably safe and keeps the wider Storage interface
+	// from advertising secret-bearing DCR methods to every consumer. This
+	// is the wiring change that lets a Redis-backed authserver reuse RFC
+	// 7591 client registrations across replicas and restarts.
+	stor, err := createStorage(ctx, cfg.Storage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage: %w", err)
+	}
+	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor)
+}
+
+// newEmbeddedAuthServerWithStorage is the unexported core constructor that
+// builds an EmbeddedAuthServer around a caller-supplied storage backend.
+// NewEmbeddedAuthServer dispatches into this helper after running
+// createStorage; tests dispatch into it directly so they can supply a
+// closeTrackingStorage wrapper to verify the deferred-cleanup contract.
+//
+// Resource ownership: on success, the returned EmbeddedAuthServer takes
+// ownership of stor (its Close releases the backend). On any error path
+// after entry, the deferred cleanup closes stor before returning so a
+// crash-looping caller (typical when DCR's network I/O fails) does not
+// leak the Redis client connection pool / MemoryStorage cleanup goroutine
+// on every restart. The named return retErr is the gate.
+func newEmbeddedAuthServerWithStorage(
+	ctx context.Context,
+	cfg *authserver.RunConfig,
+	stor storage.Storage,
+) (retEAS *EmbeddedAuthServer, retErr error) {
+	// From here on, any error must close stor before returning.
+	//
+	// Both errors are passed through sanitizeErrorForLog before being
+	// recorded: closeErr for symmetry with retErr, retErr because the
+	// most common cause of reaching this gate is a wrapped DCR failure
+	// whose error chain may inline several KiB of the upstream's raw
+	// /register response body — that body is attacker-influenced and may
+	// contain URL components that carry credentials (userinfo, query,
+	// fragment). The existing logDCRStepError boundary log routes
+	// through the same sanitiser; keep the two log paths consistent so
+	// the cleanup log cannot regress to a less-defended state. The
+	// "cause" key matches the package-wide vocabulary for the
+	// triggering error.
+	defer func() {
+		if retErr != nil {
+			if closeErr := stor.Close(); closeErr != nil {
+				slog.Warn("failed to close storage on NewEmbeddedAuthServer error path",
+					"error", sanitizeErrorForLog(closeErr),
+					"cause", sanitizeErrorForLog(retErr),
+				)
+			}
+		}
+	}()
 
 	// 1. Create key provider from RunConfig.SigningKeyConfig
 	keyProvider, err := createKeyProvider(cfg.SigningKeyConfig)
@@ -92,15 +134,25 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		return nil, fmt.Errorf("failed to parse token lifespans: %w", err)
 	}
 
-	// 4. Build upstream configurations (resolves DCR credentials for any
-	// upstream configured with DCRConfig, caching resolutions in dcrStore).
-	dcrStore := newInMemoryDCRResolutionCache()
-	upstreams, err := buildUpstreamConfigs(ctx, cfg.Upstreams, cfg.Issuer, dcrStore)
+	// 4. Type-assert to the DCR-capable handle for the resolver. The
+	// per-backend `var _ DCRCredentialStore = (*MemoryStorage)(nil)` /
+	// `(*RedisStorage)(nil)` checks make this provably safe for production
+	// backends; surfacing a non-DCR backend as a constructor error keeps
+	// misconfiguration fail-loud at boot rather than at first DCR resolve.
+	dcrStore, ok := stor.(storage.DCRCredentialStore)
+	if !ok {
+		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", stor)
+	}
+
+	// 5. Build upstream configurations. The DCR resolver caches RFC 7591
+	// resolutions in dcrStore so re-entrant boot/reload paths reuse
+	// previously-registered upstream clients instead of re-registering.
+	upstreams, err := buildUpstreamConfigs(ctx, cfg.Upstreams, cfg.Issuer, newStorageBackedStore(dcrStore))
 	if err != nil {
 		return nil, fmt.Errorf("failed to build upstream configs: %w", err)
 	}
 
-	// 5. Build the resolved Config
+	// 6. Build the resolved Config
 	resolvedCfg := authserver.Config{
 		Issuer:                       cfg.Issuer,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
@@ -114,13 +166,9 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		AllowedAudiences:             cfg.AllowedAudiences,
 	}
 
-	// 6. Create storage backend based on configuration
-	stor, err := createStorage(ctx, cfg.Storage)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create storage: %w", err)
-	}
-
-	// 7. Create the auth server
+	// 7. Create the auth server. authserver.New also asserts the DCR
+	// capability internally so its DCRStore() accessor returns the same
+	// asserted handle this constructor used for buildUpstreamConfigs.
 	server, err := authserver.New(ctx, resolvedCfg, stor)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auth server: %w", err)
@@ -129,7 +177,6 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	return &EmbeddedAuthServer{
 		server:      server,
 		keyProvider: keyProvider,
-		dcrStore:    dcrStore,
 	}, nil
 }
 
@@ -171,6 +218,16 @@ func (e *EmbeddedAuthServer) UpstreamTokenRefresher() storage.UpstreamTokenRefre
 // self-referential HTTP calls when the token validator runs in the same process.
 func (e *EmbeddedAuthServer) KeyProvider() keys.KeyProvider {
 	return e.keyProvider
+}
+
+// DCRStore returns the persistent DCR credential store the authorization
+// server is wired against. This delegates to the underlying authserver.Server
+// so this struct does not hold a redundant copy that could drift if the
+// server ever swaps backends. See authserver.Server.DCRStore for SECURITY
+// and lifecycle notes — the returned interface surfaces raw client_secret
+// and registration_access_token values and MUST NOT be logged or rendered.
+func (e *EmbeddedAuthServer) DCRStore() storage.DCRCredentialStore {
+	return e.server.DCRStore()
 }
 
 // Routes returns the authorization server's HTTP route map.

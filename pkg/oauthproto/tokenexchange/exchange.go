@@ -94,6 +94,17 @@ func (c clientAuthentication) String() string {
 		c.ClientID, oauthproto.Redact(c.ClientSecret))
 }
 
+// RawExchangeConfig holds extension fields for non-standard token exchange flows.
+// VariantHandler implementations consume these fields to construct provider-specific
+// requests (e.g., Entra OBO uses Parameters["tenantId"]).
+type RawExchangeConfig struct {
+	// GrantTypeURN is the custom grant_type value for the "raw" passthrough variant.
+	GrantTypeURN string
+
+	// Parameters are key-value pairs interpreted by the variant handler.
+	Parameters map[string]string
+}
+
 // ExchangeConfig holds the configuration for token exchange.
 type ExchangeConfig struct {
 	// TokenURL is the OAuth 2.0 token endpoint URL
@@ -135,6 +146,18 @@ type ExchangeConfig struct {
 	// HTTPClient is the HTTP client to use for token exchange requests.
 	// If nil, oauthproto.DefaultHTTPClient() will be used.
 	HTTPClient *http.Client
+
+	// Variant selects the variant handler for building the token exchange
+	// request. Empty means standard RFC 8693 token exchange.
+	Variant string
+
+	// RawConfig holds variant-specific extension configuration. Set when
+	// Variant is non-empty. The variant handler determines which fields are used.
+	RawConfig *RawExchangeConfig
+
+	// VariantRegistry is an optional override for variant handler lookup.
+	// If nil, DefaultVariantRegistry is used. Set this in tests for isolation.
+	VariantRegistry *VariantRegistry
 }
 
 // Validate checks if the ExchangeConfig contains all required fields.
@@ -158,8 +181,10 @@ func (c *ExchangeConfig) Validate() error {
 	// don't require client credentials and rely on the trust relationship
 	// configured in the identity provider (e.g., Workload Identity Federation)
 
-	// Validate and normalize SubjectTokenType if provided
-	if c.SubjectTokenType != "" {
+	// SubjectTokenType normalization is RFC 8693-specific. Named variants
+	// (e.g., Entra OBO) use the field with provider-specific semantics, so
+	// only normalize when no variant is set.
+	if c.Variant == "" && c.SubjectTokenType != "" {
 		normalized, err := NormalizeTokenType(c.SubjectTokenType)
 		if err != nil {
 			return fmt.Errorf("invalid SubjectTokenType: %w", err)
@@ -191,14 +216,73 @@ func (c *ExchangeConfig) Validate() error {
 	return nil
 }
 
+// TokenSource returns an oauth2.TokenSource that performs token exchange.
+// It resolves the variant handler and (if needed) the token URL at construction
+// time. Returns an error if the configured Variant has no registered handler or
+// if the handler cannot resolve a token URL.
+//
+// The returned TokenSource holds a shallow copy of the config, so subsequent
+// mutations to the original ExchangeConfig do not affect in-flight exchanges.
+func (c *ExchangeConfig) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	handler, err := c.resolveHandler()
+	if err != nil {
+		return nil, err
+	}
+
+	// Work on a copy so the caller's config is not mutated.
+	confCopy := *c
+
+	// Allow the variant handler to resolve the token URL if not explicitly set.
+	if confCopy.TokenURL == "" {
+		resolved, resolveErr := handler.ResolveTokenURL(&confCopy)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("variant handler failed to resolve token URL: %w", resolveErr)
+		}
+		if resolved == "" {
+			return nil, fmt.Errorf("variant %q did not resolve a token URL and none was configured", confCopy.Variant)
+		}
+		confCopy.TokenURL = resolved
+	}
+
+	return &tokenSource{
+		ctx:     ctx,
+		conf:    &confCopy,
+		handler: handler,
+	}, nil
+}
+
+// variantRegistry returns the VariantRegistry to use for handler lookup.
+func (c *ExchangeConfig) variantRegistry() *VariantRegistry {
+	if c.VariantRegistry != nil {
+		return c.VariantRegistry
+	}
+	return DefaultVariantRegistry
+}
+
+// resolveHandler returns the VariantHandler for this config's Variant.
+// Returns the built-in RFC 8693 handler when Variant is empty.
+// Returns an error if a non-empty Variant has no registered handler.
+func (c *ExchangeConfig) resolveHandler() (VariantHandler, error) {
+	if c.Variant == "" {
+		return defaultHandler, nil
+	}
+	handler, ok := c.variantRegistry().Get(c.Variant)
+	if !ok {
+		return nil, fmt.Errorf("unsupported token exchange variant: %s (no handler registered)", c.Variant)
+	}
+	return handler, nil
+}
+
 // tokenSource implements oauth2.TokenSource for token exchange.
 type tokenSource struct {
-	ctx  context.Context
-	conf *ExchangeConfig
+	ctx     context.Context
+	conf    *ExchangeConfig
+	handler VariantHandler // resolved at construction time
 }
 
 // Token implements oauth2.TokenSource interface.
-// It performs the token exchange and returns an oauth2.Token.
+// It performs the token exchange and returns an oauth2.Token, delegating
+// variant-specific form construction and response validation to the handler.
 func (ts *tokenSource) Token() (*oauth2.Token, error) {
 	conf := ts.conf
 
@@ -213,36 +297,33 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 		return nil, fmt.Errorf("failed to get subject token: %w", err)
 	}
 
-	// Determine subject token type (default to access_token if not specified)
-	subjectTokenType := conf.SubjectTokenType
-	if subjectTokenType == "" {
-		subjectTokenType = oauthproto.TokenTypeAccessToken
-	}
-
-	// Build the token exchange request
-	requestedTokenType := conf.RequestedTokenType
-	if requestedTokenType == "" {
-		requestedTokenType = oauthproto.TokenTypeAccessToken
-	}
-
-	request := &exchangeRequest{
-		GrantType:          oauthproto.GrantTypeTokenExchange,
-		Audience:           conf.Audience,
-		Scope:              conf.Scopes,
-		RequestedTokenType: requestedTokenType,
-		Resource:           conf.Resource,
-		SubjectToken:       subjectToken,
-		SubjectTokenType:   subjectTokenType,
-	}
-
-	clientAuth := clientAuthentication{
-		ClientID:     conf.ClientID,
-		ClientSecret: conf.ClientSecret,
-	}
-
-	// Perform the exchange
-	resp, err := exchangeToken(ts.ctx, conf.TokenURL, request, clientAuth, conf.HTTPClient)
+	// Delegate form data construction to the variant handler.
+	data, err := ts.handler.BuildFormData(conf, subjectToken)
 	if err != nil {
+		return nil, fmt.Errorf("failed to build token exchange form data: %w", err)
+	}
+
+	// Client auth is handler-driven: RFC 8693 returns populated credentials
+	// for HTTP Basic Auth (RFC 6749 §2.3.1); variants that embed credentials
+	// in the form body return an empty clientAuthentication{}.
+	clientAuth := ts.handler.ClientAuth(conf)
+
+	client := conf.HTTPClient
+	if client == nil {
+		client = oauthproto.DefaultHTTPClient()
+	}
+
+	req, err := oauthproto.NewFormRequest(ts.ctx, conf.TokenURL, data, clientAuth.ClientID, clientAuth.ClientSecret)
+	if err != nil {
+		return nil, fmt.Errorf("tokenexchange: build request: %w", err)
+	}
+
+	resp, err := oauthproto.DoTokenRequest(client, req)
+	if err != nil {
+		var retrieveErr *oauth2.RetrieveError
+		if errors.As(err, &retrieveErr) {
+			retrieveErr.Body = nil
+		}
 		return nil, err
 	}
 
@@ -252,24 +333,19 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 	if resp.Token.TokenType == "" {
 		return nil, fmt.Errorf("token exchange: server returned empty token_type (required by RFC 8693)")
 	}
-	// RFC 8693 Section 2.2.1 requires issued_token_type in the response.
-	if resp.IssuedTokenType == "" {
-		return nil, fmt.Errorf("token exchange: server returned empty issued_token_type (required by RFC 8693)")
+
+	// Variant-specific response validation (e.g., RFC 8693 issued_token_type).
+	if err := ts.handler.ValidateResponse(resp); err != nil {
+		return nil, err
 	}
 
 	return resp.Token, nil
 }
 
-// TokenSource returns an oauth2.TokenSource that performs token exchange.
-func (c *ExchangeConfig) TokenSource(ctx context.Context) oauth2.TokenSource {
-	return &tokenSource{
-		ctx:  ctx,
-		conf: c,
-	}
-}
-
 // exchangeToken performs the actual HTTP request for token exchange.
-// This is the internal implementation used by tokenSource.Token().
+// This is the legacy non-variant path retained for tests that exercise the
+// HTTP plumbing directly. The main TokenSource path now delegates form data
+// construction to a VariantHandler.
 func exchangeToken(
 	ctx context.Context,
 	endpoint string,

@@ -341,7 +341,12 @@ func createTokenExchangeMiddleware(
 			exchangeConfig.SubjectTokenProvider = tokenProvider
 
 			// Get token from token source
-			tokenSource := exchangeConfig.TokenSource(r.Context())
+			tokenSource, err := exchangeConfig.TokenSource(r.Context())
+			if err != nil {
+				slog.Warn("Token exchange configuration error", "error", err)
+				http.Error(w, "Token exchange failed", http.StatusInternalServerError)
+				return
+			}
 			exchangedToken, err := tokenSource.Token()
 			if err != nil {
 				slog.Warn("Token exchange failed", "error", err)

@@ -185,7 +185,8 @@ func TestTokenSource_Token_Success(t *testing.T) {
 
 	// Create token source and get token
 	ctx := context.Background()
-	ts := config.TokenSource(ctx)
+	ts, tsErr := config.TokenSource(ctx)
+	require.NoError(t, tsErr)
 	token, err := ts.Token()
 
 	// Verify results
@@ -223,7 +224,8 @@ func TestTokenSource_Token_WithRefreshToken(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	ts := config.TokenSource(ctx)
+	ts, tsErr := config.TokenSource(ctx)
+	require.NoError(t, tsErr)
 	token, err := ts.Token()
 
 	require.NoError(t, err)
@@ -255,7 +257,8 @@ func TestTokenSource_Token_NoExpiry(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	ts := config.TokenSource(ctx)
+	ts, tsErr := config.TokenSource(ctx)
+	require.NoError(t, tsErr)
 	token, err := ts.Token()
 
 	require.NoError(t, err)
@@ -278,7 +281,8 @@ func TestTokenSource_Token_SubjectTokenProviderError(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	ts := config.TokenSource(ctx)
+	ts, tsErr := config.TokenSource(ctx)
+	require.NoError(t, tsErr)
 	token, err := ts.Token()
 
 	require.Error(t, err)
@@ -311,7 +315,8 @@ func TestTokenSource_Token_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	ts := config.TokenSource(ctx)
+	ts, tsErr := config.TokenSource(ctx)
+	require.NoError(t, tsErr)
 	token, err := ts.Token()
 
 	require.Error(t, err)
@@ -387,7 +392,7 @@ func TestExchangeToken_HTTPErrorResponses(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+			resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 			require.Error(t, err)
 			assert.Nil(t, resp)
@@ -448,7 +453,7 @@ func TestExchangeToken_MalformedJSON(t *testing.T) {
 			auth := clientAuthentication{}
 
 			ctx := context.Background()
-			resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+			resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 			require.Error(t, err)
 			assert.Nil(t, resp)
@@ -474,7 +479,7 @@ func TestExchangeToken_MissingRequiredFields(t *testing.T) {
 	auth := clientAuthentication{}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+	resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
@@ -507,7 +512,7 @@ func TestExchangeToken_DefaultValues(t *testing.T) {
 	auth := clientAuthentication{}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+	resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -550,7 +555,7 @@ func TestExchangeToken_OptionalFields(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+	resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -584,7 +589,7 @@ func TestExchangeToken_ActorTokenWithoutType(t *testing.T) {
 	auth := clientAuthentication{}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+	resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -600,7 +605,7 @@ func TestExchangeToken_InvalidURL(t *testing.T) {
 	auth := clientAuthentication{}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, "://invalid-url", request, auth, nil)
+	resp, err := exchangeToken(ctx, "://invalid-url", request, auth)
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
@@ -620,7 +625,7 @@ func TestExchangeToken_NetworkError(t *testing.T) {
 	auth := clientAuthentication{}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, "http://invalid-host-that-does-not-exist-12345.com/token", request, auth, nil)
+	resp, err := exchangeToken(ctx, "http://invalid-host-that-does-not-exist-12345.com/token", request, auth)
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
@@ -651,7 +656,7 @@ func TestExchangeToken_ResponseSizeLimit(t *testing.T) {
 	auth := clientAuthentication{}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+	resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
@@ -711,7 +716,7 @@ func TestExchangeToken_NoCredentialLeakage(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+			resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 			require.Error(t, err)
 			assert.Nil(t, resp)
@@ -749,7 +754,7 @@ func TestExchangeToken_FormEncoding(t *testing.T) {
 	auth := clientAuthentication{}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+	resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -781,7 +786,7 @@ func TestExchangeToken_ContentLength(t *testing.T) {
 	auth := clientAuthentication{}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+	resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -867,7 +872,8 @@ func TestSubjectTokenProvider_Variants(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			ts := config.TokenSource(ctx)
+			ts, tsErr := config.TokenSource(ctx)
+			require.NoError(t, tsErr)
 			token, err := ts.Token()
 
 			if tt.expectError {
@@ -915,7 +921,7 @@ func TestExchangeToken_EmptyClientCredentials(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+	resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -953,7 +959,7 @@ func TestExchangeToken_OnlyClientID(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+	resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -982,7 +988,7 @@ func TestExchangeToken_ResponseFields(t *testing.T) {
 	auth := clientAuthentication{}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+	resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 	require.NoError(t, err)
 	assert.Equal(t, "access-token-value", resp.Token.AccessToken)
@@ -1016,7 +1022,7 @@ func TestExchangeToken_MinimalResponse(t *testing.T) {
 	auth := clientAuthentication{}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+	resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 	require.NoError(t, err)
 	assert.Equal(t, "access-token-value", resp.Token.AccessToken)
@@ -1086,7 +1092,7 @@ func TestExchangeToken_ScopeArray(t *testing.T) {
 			auth := clientAuthentication{}
 
 			ctx := context.Background()
-			resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+			resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 			require.NoError(t, err)
 			assert.NotNil(t, resp)
@@ -1110,7 +1116,8 @@ func TestExchangeConfig_TokenSource(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	ts := config.TokenSource(ctx)
+	ts, tsErr := config.TokenSource(ctx)
+	require.NoError(t, tsErr)
 
 	assert.NotNil(t, ts)
 	assert.Implements(t, (*oauth2.TokenSource)(nil), ts)
@@ -1156,7 +1163,7 @@ func TestExchangeToken_SSRFPrevention(t *testing.T) {
 			// The function should still attempt the request but fail due to network issues
 			// This test verifies that the function doesn't have special handling that
 			// would prevent or allow SSRF - it's the caller's responsibility to validate URLs
-			resp, err := exchangeToken(ctx, tt.endpoint, request, auth, nil)
+			resp, err := exchangeToken(ctx, tt.endpoint, request, auth)
 
 			// We expect an error due to connection failure, not a panic or unexpected behavior
 			require.Error(t, err)
@@ -1275,7 +1282,7 @@ func TestExchangeToken_URLValues(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err := exchangeToken(ctx, server.URL, request, auth, nil)
+	_, err := exchangeToken(ctx, server.URL, request, auth)
 	require.NoError(t, err)
 
 	// Verify Authorization header is present with Basic Auth
@@ -1333,7 +1340,7 @@ func TestExchangeToken_BasicAuthURLEncoding(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+	resp, err := exchangeToken(ctx, server.URL, request, auth)
 
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -1503,7 +1510,8 @@ func TestTokenSource_Token_RequestedTokenTypeAndResource(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			ts := config.TokenSource(ctx)
+			ts, tsErr := config.TokenSource(ctx)
+			require.NoError(t, tsErr)
 			_, err := ts.Token()
 			require.NoError(t, err)
 		})

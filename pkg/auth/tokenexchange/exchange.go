@@ -21,19 +21,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-const (
-	// defaultHTTPTimeout is the timeout for HTTP requests
-	defaultHTTPTimeout = 30 * time.Second
-
-	// maxResponseBodySize is the maximum size for reading response bodies (1 MB)
-	maxResponseBodySize = 1 << 20
-
-	// redactedPlaceholder is used to redact sensitive values in string representations
-	redactedPlaceholder = "[REDACTED]"
-
-	// emptyPlaceholder is used to indicate empty/missing values in string representations
-	emptyPlaceholder = "<empty>"
-)
+// maxResponseBodySize bounds io.LimitReader in executeTokenExchangeRequest so
+// a pathological server cannot exhaust memory. The shared pkg/oauthproto
+// package has an identical unexported constant, but we cannot import it yet —
+// the shared one is consumed by oauthproto.DoTokenRequest, which will replace
+// executeTokenExchangeRequest in a follow-up commit.
+// TODO: drop when executeTokenExchangeRequest is replaced by oauthproto.DoTokenRequest.
+const maxResponseBodySize = 1 << 20
 
 // NormalizeTokenType converts a short token type name to its full URN.
 // Accepts both short forms ("access_token", "id_token", "jwt") and full URNs.
@@ -66,11 +60,6 @@ func NormalizeTokenType(tokenType string) (string, error) {
 	}
 }
 
-// defaultHTTPClient is the default HTTP client used for token exchange requests.
-var defaultHTTPClient = &http.Client{
-	Timeout: defaultHTTPTimeout,
-}
-
 // actingParty represents the acting party in a token exchange delegation scenario.
 // When present, it indicates that the actor token holder is acting on behalf of the subject token holder.
 type actingParty struct {
@@ -96,64 +85,41 @@ type exchangeRequest struct {
 
 // String implements fmt.Stringer for exchangeRequest, redacting sensitive tokens.
 func (r exchangeRequest) String() string {
-	subjectToken := redactedPlaceholder
-	if r.SubjectToken == "" {
-		subjectToken = emptyPlaceholder
-	}
-
 	actorToken := "<none>"
 	if r.ActingParty != nil {
-		actorToken = redactedPlaceholder
-		if r.ActingParty.ActorToken == "" {
-			actorToken = emptyPlaceholder
-		}
+		actorToken = oauthproto.Redact(r.ActingParty.ActorToken)
 	}
 
 	return fmt.Sprintf("exchangeRequest{GrantType: %s, Audience: %s, Resource: %s, Scope: %v, SubjectToken: %s, ActorToken: %s}",
-		r.GrantType, r.Audience, r.Resource, r.Scope, subjectToken, actorToken)
+		r.GrantType, r.Audience, r.Resource, r.Scope, oauthproto.Redact(r.SubjectToken), actorToken)
 }
 
 // response is used to decode the remote server response during an OAuth 2.0 token exchange.
 type response struct {
-	AccessToken     string `json:"access_token"` //nolint:gosec // G117: field legitimately holds sensitive data
+	AccessToken     string `json:"access_token"`
 	IssuedTokenType string `json:"issued_token_type"`
 	TokenType       string `json:"token_type"`
 	ExpiresIn       int    `json:"expires_in"`
 	Scope           string `json:"scope"`
-	RefreshToken    string `json:"refresh_token"` //nolint:gosec // G117: field legitimately holds sensitive data
+	RefreshToken    string `json:"refresh_token"`
 }
 
 // String implements fmt.Stringer for response, redacting sensitive tokens.
 func (r response) String() string {
-	accessToken := redactedPlaceholder
-	if r.AccessToken == "" {
-		accessToken = emptyPlaceholder
-	}
-
-	refreshToken := redactedPlaceholder
-	if r.RefreshToken == "" {
-		refreshToken = emptyPlaceholder
-	}
-
 	return fmt.Sprintf("response{AccessToken: %s, TokenType: %s, ExpiresIn: %d, RefreshToken: %s}",
-		accessToken, r.TokenType, r.ExpiresIn, refreshToken)
+		oauthproto.Redact(r.AccessToken), r.TokenType, r.ExpiresIn, oauthproto.Redact(r.RefreshToken))
 }
 
 // clientAuthentication represents OAuth client credentials for token exchange.
 type clientAuthentication struct {
 	ClientID     string
-	ClientSecret string //nolint:gosec // G117
+	ClientSecret string
 }
 
 // String implements fmt.Stringer for clientAuthentication, redacting the client secret.
 func (c clientAuthentication) String() string {
-	clientSecret := redactedPlaceholder
-	if c.ClientSecret == "" {
-		clientSecret = emptyPlaceholder
-	}
-
 	return fmt.Sprintf("clientAuthentication{ClientID: %s, ClientSecret: %s}",
-		c.ClientID, clientSecret)
+		c.ClientID, oauthproto.Redact(c.ClientSecret))
 }
 
 // ExchangeConfig holds the configuration for token exchange.
@@ -165,7 +131,7 @@ type ExchangeConfig struct {
 	ClientID string
 
 	// ClientSecret is the OAuth 2.0 client secret
-	ClientSecret string //nolint:gosec // G117
+	ClientSecret string
 
 	// Audience is the target audience for the exchanged token (optional per RFC 8693)
 	Audience string
@@ -195,7 +161,7 @@ type ExchangeConfig struct {
 	SubjectTokenProvider func() (string, error)
 
 	// HTTPClient is the HTTP client to use for token exchange requests.
-	// If nil, defaultHTTPClient will be used.
+	// If nil, oauthproto.DefaultHTTPClient() will be used.
 	HTTPClient *http.Client
 }
 
@@ -358,7 +324,7 @@ func exchangeToken(
 	}
 
 	if client == nil {
-		client = defaultHTTPClient
+		client = oauthproto.DefaultHTTPClient()
 	}
 
 	body, err := executeTokenExchangeRequest(client, req)
@@ -457,14 +423,17 @@ func createTokenExchangeRequest(
 
 // executeTokenExchangeRequest sends the HTTP request and returns the response body.
 func executeTokenExchangeRequest(client *http.Client, req *http.Request) ([]byte, error) {
-	resp, err := client.Do(req) // #nosec G704 -- URL is the configured token exchange endpoint
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			// Non-fatal: response body cleanup failure
-			slog.Debug("Failed to close response body", "error", err)
+		// Close without draining — matches oauthproto.DoTokenRequest. The
+		// LimitReader below caps how much we read; draining the remainder
+		// would be unbounded on oversized or never-terminating bodies and
+		// defeat the 1 MiB memory cap. Connection reuse is the tradeoff.
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			slog.Debug("token exchange: close response body", "error", closeErr)
 		}
 	}()
 

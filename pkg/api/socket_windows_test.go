@@ -59,6 +59,19 @@ func TestSocketURL_RoundTrip_NamedPipe(t *testing.T) {
 	assert.Equal(t, addr, got)
 }
 
+// TestSocketURL_RoundTrip_AFUnix pins that socketURL output for an AF_UNIX
+// drive-letter path is always parseable by ParseUnixSocketPath, closing the
+// producer/consumer loop on the case where percent-encoding matters most.
+// Without the synthetic leading slash in socketURL, url.URL.String() emits
+// only two slashes and url.Parse mis-reads the drive letter as host:port.
+func TestSocketURL_RoundTrip_AFUnix(t *testing.T) {
+	t.Parallel()
+	addr := `C:\path\thv.sock`
+	got, err := discovery.ParseUnixSocketPath(socketURL(addr))
+	require.NoError(t, err)
+	assert.Equal(t, addr, got)
+}
+
 func TestSetupUnixSocket_NamedPipe(t *testing.T) {
 	t.Parallel()
 	pipePath := uniqueTestPipe()

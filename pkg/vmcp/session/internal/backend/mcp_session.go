@@ -5,6 +5,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -385,40 +386,62 @@ func initAndQueryCapabilities(
 
 	if serverCaps.Resources != nil {
 		resResult, listErr := c.ListResources(ctx, mcp.ListResourcesRequest{})
-		if listErr != nil {
+		switch {
+		case errors.Is(listErr, mcp.ErrMethodNotFound):
+			// Spec violation: backend advertised the resources capability in its
+			// initialize response but does not implement resources/list. Recover
+			// with an empty resource set so the backend's tools remain usable
+			// instead of failing init outright. See issue #5231.
+			slog.Warn("backend advertised resources capability but does not implement resources/list",
+				"backendID", target.WorkloadID,
+				"method", "resources/list",
+			)
+		case listErr != nil:
 			return nil, fmt.Errorf("list resources failed: %w", listErr)
-		}
-		for _, r := range resResult.Resources {
-			caps.Resources = append(caps.Resources, vmcp.Resource{
-				URI:         r.URI,
-				Name:        r.Name,
-				Description: r.Description,
-				MimeType:    r.MIMEType,
-				BackendID:   target.WorkloadID,
-			})
+		default:
+			for _, r := range resResult.Resources {
+				caps.Resources = append(caps.Resources, vmcp.Resource{
+					URI:         r.URI,
+					Name:        r.Name,
+					Description: r.Description,
+					MimeType:    r.MIMEType,
+					BackendID:   target.WorkloadID,
+				})
+			}
 		}
 	}
 
 	if serverCaps.Prompts != nil {
 		promptsResult, listErr := c.ListPrompts(ctx, mcp.ListPromptsRequest{})
-		if listErr != nil {
+		switch {
+		case errors.Is(listErr, mcp.ErrMethodNotFound):
+			// Spec violation: backend advertised the prompts capability in its
+			// initialize response but does not implement prompts/list. Recover
+			// with an empty prompt set so the backend's tools remain usable
+			// instead of failing init outright. See issue #5231.
+			slog.Warn("backend advertised prompts capability but does not implement prompts/list",
+				"backendID", target.WorkloadID,
+				"method", "prompts/list",
+			)
+		case listErr != nil:
 			return nil, fmt.Errorf("list prompts failed: %w", listErr)
-		}
-		for _, p := range promptsResult.Prompts {
-			args := make([]vmcp.PromptArgument, len(p.Arguments))
-			for j, a := range p.Arguments {
-				args[j] = vmcp.PromptArgument{
-					Name:        a.Name,
-					Description: a.Description,
-					Required:    a.Required,
+		default:
+			for _, p := range promptsResult.Prompts {
+				args := make([]vmcp.PromptArgument, len(p.Arguments))
+				for j, a := range p.Arguments {
+					args[j] = vmcp.PromptArgument{
+						Name:        a.Name,
+						Description: a.Description,
+						Required:    a.Required,
+					}
 				}
+				caps.Prompts = append(caps.Prompts, vmcp.Prompt{
+					Name:        p.Name,
+					Description: p.Description,
+					Arguments:   args,
+					BackendID:   target.WorkloadID,
+				})
 			}
-			caps.Prompts = append(caps.Prompts, vmcp.Prompt{
-				Name:        p.Name,
-				Description: p.Description,
-				Arguments:   args,
-				BackendID:   target.WorkloadID,
-			})
 		}
 	}
 

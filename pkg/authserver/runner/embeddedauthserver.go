@@ -60,6 +60,14 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		return nil, fmt.Errorf("config is required")
 	}
 
+	// Fail loudly on operator-supplied misconfiguration (e.g. a baseline
+	// scope absent from scopes_supported) BEFORE touching storage or any
+	// other side-effecting work, so a bad config never reaches the network
+	// or filesystem.
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid run config: %w", err)
+	}
+
 	// Create the storage backend FIRST so the DCR resolver and the auth
 	// server share the same persistence. Both MemoryStorage and RedisStorage
 	// satisfy storage.DCRCredentialStore (verified by package-level var _

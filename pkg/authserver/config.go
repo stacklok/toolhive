@@ -72,8 +72,13 @@ type RunConfig struct {
 	ScopesSupported []string `json:"scopes_supported,omitempty" yaml:"scopes_supported,omitempty"`
 
 	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every
-	// DCR registration. Empty means current behavior is preserved (registered scope =
-	// client-requested, or DefaultScopes if empty).
+	// DCR registration. All values must appear in ScopesSupported; the auth server
+	// rejects this RunConfig at startup otherwise. Empty means current behavior is
+	// preserved (registered scope = client-requested or DefaultScopes if empty).
+	// When BaselineClientScopes is non-empty, ScopesSupported must be set
+	// explicitly: validation runs before defaults are applied, so an empty
+	// ScopesSupported won't be substituted with registration.DefaultScopes for
+	// purposes of the subset check.
 	//nolint:lll // field tags require full JSON+YAML names
 	BaselineClientScopes []string `json:"baseline_client_scopes,omitempty" yaml:"baseline_client_scopes,omitempty"`
 
@@ -85,6 +90,23 @@ type RunConfig struct {
 	// Storage configures the storage backend for the auth server.
 	// If nil, defaults to in-memory storage.
 	Storage *storage.RunConfig `json:"storage,omitempty" yaml:"storage,omitempty"`
+}
+
+// Validate checks that the on-disk RunConfig is internally consistent. Called
+// by the runner before resolving secrets and building the runtime Config; it
+// catches operator-supplied misconfiguration early so server startup fails
+// loudly instead of degrading silently at runtime.
+func (c *RunConfig) Validate() error {
+	return c.validateBaselineClientScopes()
+}
+
+// validateBaselineClientScopes ensures every entry in BaselineClientScopes is
+// also present in ScopesSupported. If a baseline scope is not advertised by
+// ScopesSupported, the embedded DCR handler would later try to register a
+// client with a scope the server does not support, which fosite rejects at
+// /oauth/authorize with invalid_scope.
+func (c *RunConfig) validateBaselineClientScopes() error {
+	return registration.ValidateScopeSubset(c.BaselineClientScopes, c.ScopesSupported, "baseline_client_scopes")
 }
 
 // SigningKeyRunConfig configures where to load signing keys from.

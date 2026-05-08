@@ -18,11 +18,49 @@
 package registration
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
+
+// ValidateScopeSubset checks that every scope in subset is also present in
+// superset, returning an error that names fieldName and the offending scope.
+//
+// This is the shared implementation for two defense-in-depth validation gates:
+//
+//  1. RunConfig.Validate (pkg/authserver/config.go) — the earliest gate, run
+//     when the operator-supplied YAML is first loaded. It rejects the config
+//     before any network listener is opened, so misconfiguration fails loudly
+//     at startup rather than silently at runtime.
+//
+//  2. NewAuthorizationServerConfig (pkg/authserver/server/provider.go) — the
+//     second gate, run when an in-memory AuthorizationServerParams struct is
+//     converted to a live server config. This defends against callers that
+//     construct params programmatically and bypass the YAML-loading path.
+//
+// Both gates call this helper so the error message format is identical
+// regardless of which layer catches the violation.
+//
+// fieldName should be the wire-format or display name of the field being
+// validated (e.g. "baseline_client_scopes"). It is embedded verbatim in the
+// returned error.
+func ValidateScopeSubset(subset, superset []string, fieldName string) error {
+	if len(subset) == 0 {
+		return nil
+	}
+	supported := make(map[string]bool, len(superset))
+	for _, s := range superset {
+		supported[s] = true
+	}
+	for _, s := range subset {
+		if !supported[s] {
+			return fmt.Errorf("%s contains %q which is not in scopes_supported", fieldName, s)
+		}
+	}
+	return nil
+}
 
 // DCR error codes per RFC 7591 Section 3.2.2
 const (

@@ -171,6 +171,44 @@ func ScopesHash(scopes []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// validateDCRCredentialsForStore enforces the rejection contract that every
+// DCRCredentialStore implementation must apply before persisting. Extracting
+// it as a free function called by every backend prevents the validation set
+// from drifting across implementations: a record that fails loud against one
+// backend cannot silently persist against another.
+//
+// Rejected inputs: nil creds, an unpopulated Key (empty Issuer, RedirectURI,
+// or ScopesHash), and missing RFC 7591 mandatory response fields (ClientID,
+// AuthorizationEndpoint, TokenEndpoint). An empty ScopesHash is rejected
+// because the canonical digest of any scope set — including the empty-scope
+// set via ScopesHash(nil) — is non-empty, so an empty string can only be a
+// caller bug. ClientSecret is left permissive because RFC 7591 §2 public
+// clients (auth method "none") legitimately register without a secret.
+func validateDCRCredentialsForStore(creds *DCRCredentials) error {
+	if creds == nil {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials cannot be nil")
+	}
+	if creds.Key.Issuer == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials key issuer cannot be empty")
+	}
+	if creds.Key.RedirectURI == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials key redirect_uri cannot be empty")
+	}
+	if creds.Key.ScopesHash == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials key scopes_hash cannot be empty")
+	}
+	if creds.ClientID == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials client_id cannot be empty")
+	}
+	if creds.AuthorizationEndpoint == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials authorization_endpoint cannot be empty")
+	}
+	if creds.TokenEndpoint == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials token_endpoint cannot be empty")
+	}
+	return nil
+}
+
 // DCRCredentials is the persisted form of an RFC 7591 Dynamic Client
 // Registration result. All fields are populated from the upstream's DCR
 // response. The RFC 7592 management fields (RegistrationAccessToken,
@@ -189,8 +227,8 @@ func ScopesHash(scopes []string) string {
 // Entries are long-lived — RFC 7591 client registrations do not expire unless
 // the upstream asserts client_secret_expires_at. The in-memory backend
 // retains entries for the process lifetime and is intentionally excluded from
-// the periodic cleanup loop. The Redis backend (future sub-issue) applies
-// TTL via SetEX when ClientSecretExpiresAt is non-zero.
+// the periodic cleanup loop. The Redis backend applies TTL via SET with a
+// duration when ClientSecretExpiresAt is non-zero.
 type DCRCredentials struct {
 	// Key is the canonical cache key: (Issuer, RedirectURI, ScopesHash).
 	Key DCRKey
@@ -225,8 +263,8 @@ type DCRCredentials struct {
 	// rather than special-casing 0.
 	//
 	// When non-zero, this is the authoritative signal a backend uses to TTL
-	// the persisted entry: the Redis backend (sub-issue 2) plumbs it through
-	// SetEX so the row evicts before the upstream rejects the secret at the
+	// the persisted entry: the Redis backend plumbs it through SET with a
+	// duration so the row evicts before the upstream rejects the secret at the
 	// token endpoint. The in-memory backend ignores this field — entries
 	// persist for the process lifetime and the resolver re-checks the
 	// expiry on read.
@@ -234,8 +272,8 @@ type DCRCredentials struct {
 }
 
 // DCRCredentialStore is a narrow, segregated interface for persisting
-// dynamic-client-registration credentials. Both MemoryStorage and a future
-// Redis-backed store implement it; an authserver backed by Redis shares DCR
+// dynamic-client-registration credentials. Both MemoryStorage and
+// RedisStorage implement it; an authserver backed by Redis shares DCR
 // credentials across replicas and restarts.
 //
 // # Cross-replica limitation
@@ -254,10 +292,11 @@ type DCRCredentials struct {
 //
 // Implementations SHOULD honor a non-zero DCRCredentials.ClientSecretExpiresAt
 // as a backend-level TTL when the underlying store supports one (e.g. Redis
-// SetEX) so an entry evicts before the upstream rejects the secret at the
-// token endpoint. Backends without a native TTL (e.g. the in-memory backend)
-// retain the field verbatim and rely on the caller — typically the runner's
-// resolver — to re-check expiry on read; see MemoryStorage.GetDCRCredentials.
+// SET with a duration) so an entry evicts before the upstream rejects the
+// secret at the token endpoint. Backends without a native TTL (e.g. the
+// in-memory backend) retain the field verbatim and rely on the caller —
+// typically the runner's resolver — to re-check expiry on read; see
+// MemoryStorage.GetDCRCredentials.
 // A zero ClientSecretExpiresAt means the upstream did not assert an expiry
 // and no TTL is applied.
 //

@@ -353,6 +353,60 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 	}
 }
 
+func TestRunConfigValidate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		config  RunConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:   "nil baseline scopes passes",
+			config: RunConfig{ScopesSupported: []string{"openid", "profile"}, BaselineClientScopes: nil},
+		},
+		{
+			name:   "empty baseline scopes passes",
+			config: RunConfig{ScopesSupported: []string{"openid", "profile"}, BaselineClientScopes: []string{}},
+		},
+		{
+			name:   "single baseline entry in supported set passes",
+			config: RunConfig{ScopesSupported: []string{"openid", "profile", "email"}, BaselineClientScopes: []string{"openid"}},
+		},
+		{
+			name:   "all baseline entries in supported set passes",
+			config: RunConfig{ScopesSupported: []string{"openid", "profile", "email", "offline_access"}, BaselineClientScopes: []string{"openid", "offline_access"}},
+		},
+		{
+			name:    "baseline contains scope not in supported rejects with specific error",
+			config:  RunConfig{ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"openid", "offline_access"}},
+			wantErr: true,
+			errMsg:  `"offline_access" which is not in scopes_supported`,
+		},
+		{
+			name:    "non-nil baseline with nil supported rejects",
+			config:  RunConfig{ScopesSupported: nil, BaselineClientScopes: []string{"openid"}},
+			wantErr: true,
+			errMsg:  "openid",
+		},
+		{
+			name:    "first missing scope is reported when multiple are missing",
+			config:  RunConfig{ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"foo", "bar"}},
+			wantErr: true,
+			errMsg:  "foo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.config.Validate()
+			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
 func TestDCRUpstreamConfigValidate(t *testing.T) {
 	t.Parallel()
 

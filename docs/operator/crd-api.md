@@ -147,7 +147,9 @@ _Appears in:_
 
 
 TokenExchangeConfig configures the OAuth 2.0 token exchange auth strategy.
-This strategy exchanges incoming tokens for backend-specific tokens using RFC 8693.
+When no variant is specified, standard RFC 8693 token exchange is used.
+Named variants (e.g., "entra") provide purpose-built configuration for
+specific identity providers. The "raw" variant allows custom grant types.
 
 
 
@@ -164,6 +166,27 @@ _Appears in:_
 | `scopes` _string array_ | Scopes are the requested scopes for the exchanged token. |  |  |
 | `subjectTokenType` _string_ | SubjectTokenType is the token type of the incoming subject token.<br />Defaults to "urn:ietf:params:oauth:token-type:access_token" if not specified. |  |  |
 | `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's token to use as the<br />subject token. When set, the token is looked up from Identity.UpstreamTokens<br />instead of using Identity.Token.<br />When left empty and an embedded authorization server is configured, the system<br />automatically populates this field with the first configured upstream provider name.<br />Set it explicitly to override that default or to select a specific provider when<br />multiple upstreams are configured. |  |  |
+| `variant` _string_ | Variant selects a token exchange variant with purpose-built configuration.<br />When omitted, standard RFC 8693 token exchange is used (existing behavior). |  |  |
+| `raw` _[auth.types.TokenExchangeRawAuthConfig](#authtypestokenexchangerawauthconfig)_ | Raw holds extension configuration for non-standard token exchange flows.<br />Required when variant is "raw". Optional for named variants. |  |  |
+
+
+#### auth.types.TokenExchangeRawAuthConfig
+
+
+
+TokenExchangeRawAuthConfig holds extension configuration for non-standard token exchange flows.
+For variant "raw": grantTypeUrn and parameters are used directly.
+For named variants (e.g., "entra"): the handler reads variant-specific keys from parameters.
+
+
+
+_Appears in:_
+- [auth.types.TokenExchangeConfig](#authtypestokenexchangeconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `grantTypeUrn` _string_ | GrantTypeURN is the OAuth 2.0 grant_type value to send in the token request.<br />Required for variant "raw". Not used by named variants (handler sets it). |  |  |
+| `parameters` _object (keys:string, values:string)_ | Parameters are additional key-value pairs passed to the variant handler. |  |  |
 
 
 #### auth.types.UpstreamInjectConfig

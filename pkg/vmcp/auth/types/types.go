@@ -45,6 +45,15 @@ const (
 	StrategyTypeAwsSts = "aws_sts"
 )
 
+// Token exchange variant identifiers.
+const (
+	// TokenExchangeVariantEntra selects the Microsoft Entra OBO (On-Behalf-Of) flow.
+	TokenExchangeVariantEntra = "entra"
+
+	// TokenExchangeVariantRaw selects a custom grant type with explicit URN and parameters.
+	TokenExchangeVariantRaw = "raw"
+)
+
 // BackendAuthStrategy defines how to authenticate to a specific backend.
 //
 // This struct provides type-safe configuration for different authentication strategies
@@ -90,8 +99,24 @@ type HeaderInjectionConfig struct {
 	HeaderValueEnv string `json:"headerValueEnv,omitempty" yaml:"headerValueEnv,omitempty"`
 }
 
+// TokenExchangeRawAuthConfig holds extension configuration for non-standard token exchange flows.
+// For variant "raw": grantTypeUrn and parameters are used directly.
+// For named variants (e.g., "entra"): the handler reads variant-specific keys from parameters.
+// +kubebuilder:object:generate=true
+// +gendoc
+type TokenExchangeRawAuthConfig struct {
+	// GrantTypeURN is the OAuth 2.0 grant_type value to send in the token request.
+	// Required for variant "raw". Not used by named variants (handler sets it).
+	GrantTypeURN string `json:"grantTypeUrn,omitempty" yaml:"grantTypeUrn,omitempty"`
+
+	// Parameters are additional key-value pairs passed to the variant handler.
+	Parameters map[string]string `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+}
+
 // TokenExchangeConfig configures the OAuth 2.0 token exchange auth strategy.
-// This strategy exchanges incoming tokens for backend-specific tokens using RFC 8693.
+// When no variant is specified, standard RFC 8693 token exchange is used.
+// Named variants (e.g., "entra") provide purpose-built configuration for
+// specific identity providers. The "raw" variant allows custom grant types.
 // +kubebuilder:object:generate=true
 // +gendoc
 type TokenExchangeConfig struct {
@@ -127,6 +152,14 @@ type TokenExchangeConfig struct {
 	// Set it explicitly to override that default or to select a specific provider when
 	// multiple upstreams are configured.
 	SubjectProviderName string `json:"subjectProviderName,omitempty" yaml:"subjectProviderName,omitempty"`
+
+	// Variant selects a token exchange variant with purpose-built configuration.
+	// When omitted, standard RFC 8693 token exchange is used (existing behavior).
+	Variant string `json:"variant,omitempty" yaml:"variant,omitempty"`
+
+	// Raw holds extension configuration for non-standard token exchange flows.
+	// Required when variant is "raw". Optional for named variants.
+	Raw *TokenExchangeRawAuthConfig `json:"raw,omitempty" yaml:"raw,omitempty"`
 }
 
 // UpstreamInjectConfig configures the upstream inject auth strategy.

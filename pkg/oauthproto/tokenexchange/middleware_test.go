@@ -272,20 +272,20 @@ func TestCreateTokenExchangeMiddleware_Success(t *testing.T) {
 					receivedScopes = r.Form.Get("scope")
 				}
 
-				body := oauthtest.NewResponse().
-					WithAccessToken("exchanged-token").
-					WithExpiresIn(3600).
-					Build()
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write(body)
-			}))
-			defer exchangeServer.Close()
+			body := oauthtest.NewResponse().
+				WithAccessToken("exchanged-token").
+				WithExpiresIn(3600).
+				Build()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(body)
+		}))
+		defer exchangeServer.Close()
 
-			config := Config{
-				TokenURL:                exchangeServer.URL,
-				ClientID:                "test-client-id",
-				ClientSecret:            "test-client-secret",
+		config := Config{
+			TokenURL:                exchangeServer.URL,
+			ClientID:                "test-client-id",
+			ClientSecret:            "test-client-secret",
 				Audience:                "https://api.example.com",
 				Scopes:                  tt.scopes,
 				HeaderStrategy:          tt.headerStrategy,
@@ -446,9 +446,9 @@ func TestCreateTokenExchangeMiddleware_Failures(t *testing.T) {
 		{
 			name: "invalid injection config",
 			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
-				body := oauthtest.NewResponse().
-					WithAccessToken("exchanged-token").
-					Build()
+			body := oauthtest.NewResponse().
+				WithAccessToken("exchanged-token").
+				Build()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write(body)
@@ -681,10 +681,10 @@ func TestCreateTokenExchangeMiddleware_EnvironmentVariable(t *testing.T) {
 					receivedClientSecret = password
 				}
 
-				body := oauthtest.NewResponse().
-					WithAccessToken("exchanged-token").
-					WithExpiresIn(3600).
-					Build()
+			body := oauthtest.NewResponse().
+				WithAccessToken("exchanged-token").
+				WithExpiresIn(3600).
+				Build()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write(body)

@@ -230,11 +230,17 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	Storage *AuthServerStorageConfig `json:"storage,omitempty"`
 
-	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
-	// For an embedded auth server, this can be determined by the servers (MCP or vMCP) it serves.
-
-	// ScopesSupported is the list of OAuth 2.0 scopes that this authorization server supports.
-	// For an embedded auth server, this can be derived from the server's (MCP or vMCP) OIDC configuration.
+	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
+	// included in every client registration. The embedded auth server unions these
+	// scopes into the registered set returned by RFC 7591 Dynamic Client
+	// Registration, so a client that narrows the `scope` field at /oauth/register
+	// can still request the baseline scopes at /oauth/authorize. All values must
+	// be present in the upstream-derived scopesSupported set; the auth server
+	// fails to start if any value is missing.
+	// +kubebuilder:validation:MaxItems=10
+	// +listType=atomic
+	// +optional
+	BaselineClientScopes []string `json:"baselineClientScopes,omitempty"`
 }
 
 // TokenLifespanConfig holds configuration for token lifetimes.

@@ -87,6 +87,20 @@ spec:
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
+                  baselineClientScopes:
+                    description: |-
+                      BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
+                      included in every client registration. The embedded auth server unions these
+                      scopes into the registered set returned by RFC 7591 Dynamic Client
+                      Registration, so a client that narrows the `scope` field at /oauth/register
+                      can still request the baseline scopes at /oauth/authorize. All values must
+                      be present in the upstream-derived scopesSupported set; the auth server
+                      fails to start if any value is missing.
+                    items:
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -2723,6 +2737,20 @@ spec:
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
+                  baselineClientScopes:
+                    description: |-
+                      BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
+                      included in every client registration. The embedded auth server unions these
+                      scopes into the registered set returned by RFC 7591 Dynamic Client
+                      Registration, so a client that narrows the `scope` field at /oauth/register
+                      can still request the baseline scopes at /oauth/authorize. All values must
+                      be present in the upstream-derived scopesSupported set; the auth server
+                      fails to start if any value is missing.
+                    items:
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing

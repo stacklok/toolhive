@@ -1582,7 +1582,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 
 		// Store now contains the resolution under the canonical DCRKey.
 		redirectURI := server.URL + "/oauth/callback"
-		key := DCRKey{
+		key := storage.DCRKey{
 			Issuer:      server.URL,
 			RedirectURI: redirectURI,
 			ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
@@ -1721,7 +1721,7 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 	// boot persisted the resolution there directly (no separate in-memory
 	// store was created).
 	redirectURI := server.URL + "/oauth/callback"
-	key := DCRKey{
+	key := storage.DCRKey{
 		Issuer:      server.URL,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
@@ -1901,7 +1901,7 @@ func TestEmbeddedAuthServer_DCRStorePersistsAcrossClose(t *testing.T) {
 	// replica and cross-restart reuse paths depend on: that the
 	// resolution lives in storage, not in process-local cache state.
 	redirectURI := server.URL + "/oauth/callback"
-	key := DCRKey{
+	key := storage.DCRKey{
 		Issuer:      server.URL,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
@@ -1926,7 +1926,7 @@ func TestEmbeddedAuthServer_DCRStorePersistsAcrossClose(t *testing.T) {
 // URL-bearing error from Close. It exists so
 // TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog can verify that the
 // deferred-cleanup gate routes both closeErr and retErr through
-// sanitizeErrorForLog, scrubbing any query / userinfo / fragment that might
+// dcr.SanitizeErrorForLog, scrubbing any query / userinfo / fragment that might
 // carry credentials in a future regression.
 type urlErrorOnCloseStorage struct {
 	storage.Storage
@@ -1944,7 +1944,7 @@ func (s *urlErrorOnCloseStorage) Close() error {
 // TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog pins the post-#5196
 // invariant that the deferred-cleanup slog.Warn at the top of
 // newEmbeddedAuthServerWithStorage routes both closeErr and retErr through
-// sanitizeErrorForLog, so a future regression that drops the call (or that
+// dcr.SanitizeErrorForLog, so a future regression that drops the call (or that
 // changes the error chain to inline an upstream response body containing a
 // userinfo/query/fragment) cannot silently leak secrets to operator logs.
 //

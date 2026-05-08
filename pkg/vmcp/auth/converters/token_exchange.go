@@ -34,9 +34,11 @@ func (*TokenExchangeConverter) ConvertToStrategy(
 		return nil, fmt.Errorf("token exchange config is nil")
 	}
 
-	// Normalize SubjectTokenType to full URN if needed
+	// Normalize SubjectTokenType to full URN if needed.
+	// Only do this for standard RFC 8693 token exchange — named variants pass
+	// the field through unchanged so handler-specific semantics are preserved.
 	subjectTokenType := tokenExchange.SubjectTokenType
-	if subjectTokenType != "" {
+	if tokenExchange.Variant == "" && subjectTokenType != "" {
 		switch subjectTokenType {
 		case "access_token":
 			subjectTokenType = "urn:ietf:params:oauth:token-type:access_token" // #nosec G101 - not a credential
@@ -54,6 +56,24 @@ func (*TokenExchangeConverter) ConvertToStrategy(
 		Scopes:              tokenExchange.Scopes,
 		SubjectTokenType:    subjectTokenType,
 		SubjectProviderName: tokenExchange.SubjectProviderName,
+		Variant:             tokenExchange.Variant,
+	}
+
+	// Map TokenExchangeRawConfig → authtypes.TokenExchangeRawAuthConfig with a
+	// deep-copied Parameters map to avoid aliasing between CRD-side state and
+	// the runtime config.
+	if tokenExchange.Raw != nil {
+		var params map[string]string
+		if tokenExchange.Raw.Parameters != nil {
+			params = make(map[string]string, len(tokenExchange.Raw.Parameters))
+			for k, v := range tokenExchange.Raw.Parameters {
+				params[k] = v
+			}
+		}
+		tokenExchangeConfig.Raw = &authtypes.TokenExchangeRawAuthConfig{
+			GrantTypeURN: tokenExchange.Raw.GrantTypeURN,
+			Parameters:   params,
+		}
 	}
 
 	// Note: ClientSecretEnv is set by the controller when used in operator-managed ConfigMaps.

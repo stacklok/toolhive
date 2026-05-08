@@ -60,8 +60,83 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						TokenURL: "https://example.com/token",
+						Audience: "https://api.example.com",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "tokenExchange missing audience returns error",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-token-no-audience",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
 					Type:          ExternalAuthTypeTokenExchange,
 					TokenExchange: &TokenExchangeConfig{TokenURL: "https://example.com/token"},
+				},
+			},
+			expectErr: true,
+		},
+		{
+			name: "tokenExchange entra variant without tokenUrl is valid",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-entra",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						Variant: "entra",
+						Raw: &TokenExchangeRawConfig{
+							Parameters: map[string]string{"tenantId": "my-tenant"},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "tokenExchange raw variant requires grantTypeUrn",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-raw-missing-urn",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						TokenURL: "https://example.com/token",
+						Variant:  "raw",
+						Raw:      &TokenExchangeRawConfig{},
+					},
+				},
+			},
+			expectErr: true,
+		},
+		{
+			name: "tokenExchange raw variant valid",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-raw-valid",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{
+						TokenURL: "https://example.com/token",
+						Variant:  "raw",
+						Raw: &TokenExchangeRawConfig{
+							GrantTypeURN: "urn:custom:grant-type",
+							Parameters:   map[string]string{"foo": "bar"},
+						},
+					},
 				},
 			},
 			expectErr: false,

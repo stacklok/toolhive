@@ -94,14 +94,37 @@ type MCPExternalAuthConfigSpec struct {
 	UpstreamInject *UpstreamInjectSpec `json:"upstreamInject,omitempty"`
 }
 
-// TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
-// This configuration is used to exchange incoming authentication tokens for tokens
-// that can be used with external services.
+// TokenExchangeRawConfig holds extension configuration for non-standard token exchange flows.
+// For variant “raw”: grantTypeUrn and parameters are used directly.
+// For named variants (e.g., “entra”): the handler reads variant-specific keys from parameters.
+type TokenExchangeRawConfig struct {
+	// GrantTypeURN is the OAuth 2.0 grant_type value to send in the token request.
+	// Required for variant “raw”. Not used by named variants (handler sets it).
+	// +optional
+	GrantTypeURN string `json:”grantTypeUrn,omitempty”`
+
+	// Parameters are additional key-value pairs passed to the variant handler.
+	// +kubebuilder:validation:MaxProperties=20
+	// +optional
+	Parameters map[string]string `json:”parameters,omitempty”`
+}
+
+// TokenExchangeConfig holds configuration for OAuth 2.0 token exchange.
+// When no variant is specified, standard RFC 8693 token exchange is used.
+// Named variants (e.g., “entra”) provide purpose-built configuration for
+// specific identity providers. The “raw” variant allows custom grant types.
 // The structure matches the tokenexchange.Config from pkg/oauthproto/tokenexchange/middleware.go
+//
+// +kubebuilder:validation:XValidation:rule=”(!has(self.variant) || self.variant == '' || self.variant == 'raw') ? self.tokenUrl != '' : true”,message=”tokenUrl is required for standard (no variant) and 'raw' variant token exchange”
+// +kubebuilder:validation:XValidation:rule=”(has(self.variant) && self.variant == 'raw') ? (has(self.raw) && self.raw.grantTypeUrn != '') : true”,message=”raw.grantTypeUrn is required when variant is 'raw'”
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type TokenExchangeConfig struct {
-	// TokenURL is the OAuth 2.0 token endpoint URL for token exchange
-	// +kubebuilder:validation:Required
-	TokenURL string `json:"tokenUrl"`
+	// TokenURL is the OAuth 2.0 token endpoint URL for token exchange.
+	// Required for standard RFC 8693 and "raw" variants.
+	// Optional for named variants (e.g., "entra") which derive the URL from parameters.
+	// +optional
+	TokenURL string `json:"tokenUrl,omitempty"`
 
 	// ClientID is the OAuth 2.0 client identifier
 	// Optional for some token exchange flows (e.g., Google Cloud Workforce Identity)
@@ -113,9 +136,10 @@ type TokenExchangeConfig struct {
 	// +optional
 	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
-	// Audience is the target audience for the exchanged token
-	// +kubebuilder:validation:Required
-	Audience string `json:"audience"`
+	// Audience is the target audience for the exchanged token.
+	// Required for standard RFC 8693 token exchange. Not used by entra (use scopes instead).
+	// +optional
+	Audience string `json:"audience,omitempty"`
 
 	// Scopes is a list of OAuth 2.0 scopes to request for the exchanged token
 	// +listType=atomic
@@ -146,6 +170,19 @@ type TokenExchangeConfig struct {
 	// provider when multiple upstreams are configured.
 	// +optional
 	SubjectProviderName string `json:"subjectProviderName,omitempty"`
+
+	// Variant selects a token exchange variant with purpose-built configuration.
+	// When omitted, standard RFC 8693 token exchange is used (existing behavior).
+	// Named variants (e.g., "entra") provide purpose-built configuration for
+	// specific identity providers. The "raw" variant allows custom grant types.
+	// +kubebuilder:validation:Enum="";entra;raw
+	// +optional
+	Variant string `json:"variant,omitempty"`
+
+	// Raw holds extension configuration for non-standard token exchange flows.
+	// Required when variant is "raw". Optional for named variants.
+	// +optional
+	Raw *TokenExchangeRawConfig `json:"raw,omitempty"`
 }
 
 // HeaderInjectionConfig holds configuration for custom HTTP header injection authentication.
@@ -1033,8 +1070,9 @@ func (r *MCPExternalAuthConfig) Validate() error {
 			return fmt.Errorf("upstreamInject requires a non-empty providerName")
 		}
 		return nil
-	case ExternalAuthTypeTokenExchange,
-		ExternalAuthTypeHeaderInjection,
+	case ExternalAuthTypeTokenExchange:
+		return r.validateTokenExchange()
+	case ExternalAuthTypeHeaderInjection,
 		ExternalAuthTypeBearerToken,
 		ExternalAuthTypeUnauthenticated:
 		// No complex validation needed for these types
@@ -1253,6 +1291,41 @@ func ValidateAdditionalAuthorizationParams(prefix string, params map[string]stri
 	if err := oauthparams.Validate(params); err != nil {
 		return fmt.Errorf("%s.additionalAuthorizationParams: %w", prefix, err)
 	}
+	return nil
+}
+
+// validateTokenExchange validates tokenExchange type configuration based on the
+// variant discriminator. CEL rules cover the structural requirements; this method
+// adds business-logic checks (e.g., audience required for standard RFC 8693).
+func (r *MCPExternalAuthConfig) validateTokenExchange() error {
+	tc := r.Spec.TokenExchange
+	if tc == nil {
+		return nil
+	}
+
+	switch tc.Variant {
+	case "": // Standard RFC 8693
+		if tc.TokenURL == "" {
+			return fmt.Errorf("tokenExchange: tokenUrl is required")
+		}
+		if tc.Audience == "" {
+			return fmt.Errorf("tokenExchange: audience is required")
+		}
+	case "entra":
+		// No CRD-level validation — the variant handler validates its own
+		// parameters at runtime.
+	case "raw":
+		if tc.Raw == nil {
+			return fmt.Errorf("tokenExchange: raw config is required when variant is 'raw'")
+		}
+		if tc.Raw.GrantTypeURN == "" {
+			return fmt.Errorf("tokenExchange: raw.grantTypeUrn is required when variant is 'raw'")
+		}
+		if tc.TokenURL == "" {
+			return fmt.Errorf("tokenExchange: tokenUrl is required when variant is 'raw'")
+		}
+	}
+
 	return nil
 }
 

@@ -450,9 +450,10 @@ spec:
                         type: object
                         x-kubernetes-validations:
                         - message: exactly one of addr or sentinelConfig must be set
-                          rule: (self.addr.size() > 0) != has(self.sentinelConfig)
+                          rule: (has(self.addr) && self.addr.size() > 0) != has(self.sentinelConfig)
                         - message: clusterMode requires addr to be set
-                          rule: '!self.clusterMode || self.addr.size() > 0'
+                          rule: '!(has(self.clusterMode) && self.clusterMode) || (has(self.addr)
+                            && self.addr.size() > 0)'
                       type:
                         default: memory
                         description: |-
@@ -1620,9 +1621,10 @@ spec:
                         type: object
                         x-kubernetes-validations:
                         - message: exactly one of addr or sentinelConfig must be set
-                          rule: (self.addr.size() > 0) != has(self.sentinelConfig)
+                          rule: (has(self.addr) && self.addr.size() > 0) != has(self.sentinelConfig)
                         - message: clusterMode requires addr to be set
-                          rule: '!self.clusterMode || self.addr.size() > 0'
+                          rule: '!(has(self.clusterMode) && self.clusterMode) || (has(self.addr)
+                            && self.addr.size() > 0)'
                       type:
                         default: memory
                         description: |-

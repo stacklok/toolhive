@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -61,6 +62,28 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	if dcrErr != nil {
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return
+	}
+
+	// Union with the operator-configured scope baseline. RFC 7591 §3.2.1 permits
+	// the AS to replace requested client metadata values during registration; we
+	// use that to expand the registered scope set so a client whose DCR request
+	// narrowed the scope field can still request the baseline at /oauth/authorize.
+	// h.config.BaselineClientScopes is validated at startup to be a subset of
+	// ScopesSupported, so the union is guaranteed to be a subset of advertised
+	// scopes. Operators should keep the baseline narrow (e.g. openid,
+	// offline_access) — every DCR-registered client gains the ability to request
+	// these scopes at /oauth/authorize regardless of what they registered with.
+	if len(h.config.BaselineClientScopes) > 0 {
+		effective := unionScopes(scopes, h.config.BaselineClientScopes)
+		if !slices.Equal(effective, scopes) {
+			slog.Warn("DCR registered scope set expanded by baseline_client_scopes",
+				"client_name", validated.ClientName,
+				"requested", scopes,
+				"effective", effective,
+				"baseline", h.config.BaselineClientScopes,
+			)
+			scopes = effective
+		}
 	}
 
 	// Generate client ID
@@ -123,9 +146,10 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	slog.Debug("registered new DCR client", logAttrs...)
 
 	// Build response per RFC 7591 Section 3.2.1.
-	// Scope reflects the scopes actually granted to this client (from
-	// ValidateScopes above), not all server-supported scopes. This lets
-	// the client know exactly which scopes it can request.
+	// Scope reflects the scopes actually granted to this client (validated
+	// against ScopesSupported and, if configured, unioned with
+	// BaselineClientScopes), not all server-supported scopes. This lets the
+	// client know exactly which scopes it can request.
 	response := registration.DCRResponse{
 		ClientID:                clientID,
 		ClientIDIssuedAt:        time.Now().Unix(),

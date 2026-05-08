@@ -136,28 +136,41 @@ func assertSideCovered(t *testing.T, typ reflect.Type, s side, spec DriftSpec) {
 
 func assertTableSanity(t *testing.T, crdType, runtimeType reflect.Type, spec DriftSpec) {
 	t.Helper()
+	assertNoEmptyOrDuplicateMappings(t, spec)
+	assertNoMappedAndIgnored(t, spec)
+	assertJustificationsNonEmpty(t, spec)
+	assertNoCrossPollination(t, spec)
+	assertNoStaleEntries(t, sideCRD, crdType, spec)
+	assertNoStaleEntries(t, sideRuntime, runtimeType, spec)
+}
 
+// assertNoEmptyOrDuplicateMappings requires both halves of every Mappings
+// entry to be non-empty (using require so an empty key doesn't pollute the
+// duplicate-detection map with cascading failures) and asserts that no path
+// on either side appears more than once.
+func assertNoEmptyOrDuplicateMappings(t *testing.T, spec DriftSpec) {
+	t.Helper()
 	seenCRD := make(map[string]int, len(spec.Mappings))
 	seenRuntime := make(map[string]int, len(spec.Mappings))
-
-	// require so that an empty CRD/Runtime field doesn't pollute the dup
-	// maps below with empty-string keys (which would cause cascading
-	// misleading failures).
 	for i, m := range spec.Mappings {
 		require.NotEmptyf(t, m.CRD, "%s: Mappings[%d].CRD must not be empty", spec.Domain, i)
 		require.NotEmptyf(t, m.Runtime, "%s: Mappings[%d].Runtime must not be empty", spec.Domain, i)
 		seenCRD[m.CRD]++
 		seenRuntime[m.Runtime]++
 	}
-
 	for path, count := range seenCRD {
 		assert.Equalf(t, 1, count, "%s: CRD path %q appears %d times in Mappings", spec.Domain, path, count)
 	}
 	for path, count := range seenRuntime {
 		assert.Equalf(t, 1, count, "%s: runtime path %q appears %d times in Mappings", spec.Domain, path, count)
 	}
+}
 
-	// Overlap between mapped and ignored on the same side.
+// assertNoMappedAndIgnored fails if a Mappings entry's CRD or Runtime path
+// also appears in the corresponding ignore map. A path can be classified as
+// mapped or as ignored, never both.
+func assertNoMappedAndIgnored(t *testing.T, spec DriftSpec) {
+	t.Helper()
 	for _, m := range spec.Mappings {
 		if _, dup := spec.IgnoredOnCRDOnly[m.CRD]; dup {
 			t.Errorf("%s: CRD path %q is both mapped and listed in IgnoredOnCRDOnly", spec.Domain, m.CRD)
@@ -166,46 +179,61 @@ func assertTableSanity(t *testing.T, crdType, runtimeType reflect.Type, spec Dri
 			t.Errorf("%s: runtime path %q is both mapped and listed in IgnoredOnRuntimeOnly", spec.Domain, m.Runtime)
 		}
 	}
+}
 
-	// Justifications must be non-empty.
+// assertJustificationsNonEmpty checks every entry in both ignore maps has
+// a non-empty justification string.
+func assertJustificationsNonEmpty(t *testing.T, spec DriftSpec) {
+	t.Helper()
 	for path, reason := range spec.IgnoredOnCRDOnly {
 		assert.NotEmptyf(t, reason, "%s: IgnoredOnCRDOnly[%q] must include a justification", spec.Domain, path)
 	}
 	for path, reason := range spec.IgnoredOnRuntimeOnly {
 		assert.NotEmptyf(t, reason, "%s: IgnoredOnRuntimeOnly[%q] must include a justification", spec.Domain, path)
 	}
+}
 
-	// Cross-pollination: a path can't be classified two different ways.
+// assertNoCrossPollination fails if a path is classified as ignored on both
+// sides — usually a copy-paste mistake when shifting a field across the
+// boundary.
+func assertNoCrossPollination(t *testing.T, spec DriftSpec) {
+	t.Helper()
 	for path := range spec.IgnoredOnCRDOnly {
 		if _, dup := spec.IgnoredOnRuntimeOnly[path]; dup {
 			t.Errorf("%s: path %q is listed in BOTH IgnoredOnCRDOnly and IgnoredOnRuntimeOnly", spec.Domain, path)
 		}
 	}
+}
 
-	// Stale-leaf check: every path in mapping/ignore tables must still be a
-	// live leaf on its respective type. Catches table entries left behind
-	// after a field rename or deletion, which would otherwise mask the
-	// change.
-	crdLeaves := liveLeafSet(crdType)
+// assertNoStaleEntries fails for any mapping/ignore-table entry that is no
+// longer a live leaf on the given type. Catches entries left behind after a
+// field rename or deletion, which would otherwise mask the change.
+func assertNoStaleEntries(t *testing.T, s side, typ reflect.Type, spec DriftSpec) {
+	t.Helper()
+	leaves := liveLeafSet(typ)
+
+	mappingPath := func(m FieldMapping) string {
+		if s == sideCRD {
+			return m.CRD
+		}
+		return m.Runtime
+	}
+	ignoreTable := spec.IgnoredOnCRDOnly
+	ignoreLabel := "IgnoredOnCRDOnly"
+	if s == sideRuntime {
+		ignoreTable = spec.IgnoredOnRuntimeOnly
+		ignoreLabel = "IgnoredOnRuntimeOnly"
+	}
+
 	for _, m := range spec.Mappings {
-		if _, live := crdLeaves[m.CRD]; !live {
-			t.Errorf("%s: Mappings entry %q is not a live leaf on %s — stale entry?", spec.Domain, m.CRD, crdType.String())
+		path := mappingPath(m)
+		if _, live := leaves[path]; !live {
+			t.Errorf("%s: Mappings entry %q is not a live leaf on %s — stale entry?", spec.Domain, path, typ.String())
 		}
 	}
-	for path := range spec.IgnoredOnCRDOnly {
-		if _, live := crdLeaves[path]; !live {
-			t.Errorf("%s: IgnoredOnCRDOnly entry %q is not a live leaf on %s — stale entry?", spec.Domain, path, crdType.String())
-		}
-	}
-	runtimeLeaves := liveLeafSet(runtimeType)
-	for _, m := range spec.Mappings {
-		if _, live := runtimeLeaves[m.Runtime]; !live {
-			t.Errorf("%s: Mappings entry %q is not a live leaf on %s — stale entry?", spec.Domain, m.Runtime, runtimeType.String())
-		}
-	}
-	for path := range spec.IgnoredOnRuntimeOnly {
-		if _, live := runtimeLeaves[path]; !live {
-			t.Errorf("%s: IgnoredOnRuntimeOnly entry %q is not a live leaf on %s — stale entry?", spec.Domain, path, runtimeType.String())
+	for path := range ignoreTable {
+		if _, live := leaves[path]; !live {
+			t.Errorf("%s: %s entry %q is not a live leaf on %s — stale entry?", spec.Domain, ignoreLabel, path, typ.String())
 		}
 	}
 }

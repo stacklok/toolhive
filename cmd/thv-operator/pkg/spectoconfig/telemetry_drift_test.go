@@ -79,6 +79,7 @@ var telemetryIgnoredOnRuntimeOnly = map[string]string{
 // etc.), add the three tables in that domain's package and call
 // AssertNoDrift with the matching type parameters.
 func TestTelemetryConfigDrift(t *testing.T) {
+	t.Parallel()
 	testutil.AssertNoDrift[telemetry.Config, v1beta1.MCPTelemetryConfigSpec](t, testutil.DriftSpec{
 		Domain:               "telemetry",
 		Mappings:             telemetryFieldMappings,

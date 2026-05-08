@@ -20,33 +20,22 @@ package spectoconfig
 //                                     runtime side, with a justification.
 //
 // When either side gains or loses a field, exactly one of these tables must
-// be updated. The "Mapping table sanity" test guards the tables themselves
-// (no duplicates, no empty entries, no overlap with the ignore lists).
+// be updated. testutil.AssertNoDrift handles the verification — see its
+// godoc for the failure modes covered.
 
 import (
-	"reflect"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 )
 
-// FieldMapping pairs a CRD-side leaf path with a runtime-side leaf path. Both
-// sides must be present unless the field is in one of the ignore maps.
-type FieldMapping struct {
-	CRD     string
-	Runtime string
-}
-
 // telemetryFieldMappings is the source of truth for CRD<->runtime field
 // links. One entry per leaf field that exists on both sides. The CRD path is
 // rooted at MCPTelemetryConfigSpec; the runtime path is rooted at
 // telemetry.Config.
-var telemetryFieldMappings = []FieldMapping{
+var telemetryFieldMappings = []testutil.FieldMapping{
 	{CRD: "openTelemetry.endpoint", Runtime: "endpoint"},
 	{CRD: "openTelemetry.insecure", Runtime: "insecure"},
 	{CRD: "openTelemetry.headers", Runtime: "headers"},
@@ -80,153 +69,20 @@ var telemetryIgnoredOnRuntimeOnly = map[string]string{
 		"telemetry.ResolveServiceName; intentionally absent from the shared MCPTelemetryConfig",
 	"serviceVersion":       "resolved at runtime from binary version (issue #2296)",
 	"environmentVariables": "CLI-only, not applicable to CRD-managed telemetry",
-	"caCertPath": "filesystem path injected by runconfig.AppendTelemetryRunnerOption after the operator computes the volume mount " +
-		"path from openTelemetry.caBundleRef; not user-facing in the CRD",
+	"caCertPath": "filesystem path assigned by runconfig.AddMCPTelemetryConfigRefOptions (cmd/thv-operator/pkg/runconfig/telemetry.go) " +
+		"after the operator computes the volume-mount path from openTelemetry.caBundleRef; not user-facing in the CRD",
 }
 
-// TestTelemetryConfigDrift_CRDFieldsCovered walks MCPTelemetryConfigSpec and
-// requires every leaf path to appear either as a CRD entry in
-// telemetryFieldMappings or as a key in telemetryIgnoredOnCRDOnly.
-func TestTelemetryConfigDrift_CRDFieldsCovered(t *testing.T) {
-	t.Parallel()
-
-	mappedCRD := make(map[string]struct{}, len(telemetryFieldMappings))
-	for _, m := range telemetryFieldMappings {
-		mappedCRD[m.CRD] = struct{}{}
-	}
-
-	leaves := testutil.FlattenJSONLeafFields(reflect.TypeOf(v1beta1.MCPTelemetryConfigSpec{}))
-	for _, leaf := range leaves {
-		if _, ok := mappedCRD[leaf]; ok {
-			continue
-		}
-		if _, ok := telemetryIgnoredOnCRDOnly[leaf]; ok {
-			continue
-		}
-		t.Errorf(
-			"v1beta1.MCPTelemetryConfigSpec field %q is unclassified.\n"+
-				"Action: add it to telemetryFieldMappings (with the corresponding telemetry.Config path)\n"+
-				"        OR add it to telemetryIgnoredOnCRDOnly with a justification string.",
-			leaf,
-		)
-	}
-}
-
-// TestTelemetryConfigDrift_RuntimeFieldsCovered walks telemetry.Config and
-// requires every leaf path to appear either as a Runtime entry in
-// telemetryFieldMappings or as a key in telemetryIgnoredOnRuntimeOnly.
-func TestTelemetryConfigDrift_RuntimeFieldsCovered(t *testing.T) {
-	t.Parallel()
-
-	mappedRuntime := make(map[string]struct{}, len(telemetryFieldMappings))
-	for _, m := range telemetryFieldMappings {
-		mappedRuntime[m.Runtime] = struct{}{}
-	}
-
-	leaves := testutil.FlattenJSONLeafFields(reflect.TypeOf(telemetry.Config{}))
-	for _, leaf := range leaves {
-		if _, ok := mappedRuntime[leaf]; ok {
-			continue
-		}
-		if _, ok := telemetryIgnoredOnRuntimeOnly[leaf]; ok {
-			continue
-		}
-		t.Errorf(
-			"telemetry.Config field %q is unclassified.\n"+
-				"Action: add it to telemetryFieldMappings (with the corresponding MCPTelemetryConfigSpec path)\n"+
-				"        OR add it to telemetryIgnoredOnRuntimeOnly with a justification string.",
-			leaf,
-		)
-	}
-}
-
-// TestTelemetryConfigDrift_MappingTableSanity guards the mapping tables
-// themselves. It catches mistakes like duplicate paths, empty entries, and
-// overlap between mapped and ignored fields.
-func TestTelemetryConfigDrift_MappingTableSanity(t *testing.T) {
-	t.Parallel()
-
-	seenCRD := make(map[string]int, len(telemetryFieldMappings))
-	seenRuntime := make(map[string]int, len(telemetryFieldMappings))
-
-	// Use require for the per-entry NotEmpty checks so that an empty CRD
-	// or Runtime field doesn't pollute the duplicate maps below with an
-	// empty-string key — that would trigger a misleading cascade.
-	for i, m := range telemetryFieldMappings {
-		require.NotEmptyf(t, m.CRD, "telemetryFieldMappings[%d].CRD must not be empty", i)
-		require.NotEmptyf(t, m.Runtime, "telemetryFieldMappings[%d].Runtime must not be empty", i)
-		seenCRD[m.CRD]++
-		seenRuntime[m.Runtime]++
-	}
-
-	for path, count := range seenCRD {
-		assert.Equalf(t, 1, count, "CRD path %q appears %d times in telemetryFieldMappings", path, count)
-	}
-	for path, count := range seenRuntime {
-		assert.Equalf(t, 1, count, "runtime path %q appears %d times in telemetryFieldMappings", path, count)
-	}
-
-	// Overlap with ignore lists.
-	for _, m := range telemetryFieldMappings {
-		if _, dup := telemetryIgnoredOnCRDOnly[m.CRD]; dup {
-			t.Errorf("CRD path %q is both mapped and listed in telemetryIgnoredOnCRDOnly", m.CRD)
-		}
-		if _, dup := telemetryIgnoredOnRuntimeOnly[m.Runtime]; dup {
-			t.Errorf("runtime path %q is both mapped and listed in telemetryIgnoredOnRuntimeOnly", m.Runtime)
-		}
-	}
-
-	// Justifications must be non-empty.
-	for path, reason := range telemetryIgnoredOnCRDOnly {
-		assert.NotEmptyf(t, reason, "telemetryIgnoredOnCRDOnly[%q] must include a justification", path)
-	}
-	for path, reason := range telemetryIgnoredOnRuntimeOnly {
-		assert.NotEmptyf(t, reason, "telemetryIgnoredOnRuntimeOnly[%q] must include a justification", path)
-	}
-
-	// A leaf path can't be classified two different ways. An entry in both
-	// ignore maps is a copy-paste mistake when shifting a field across the
-	// boundary — fail loudly instead of silently allowing the contradiction.
-	for path := range telemetryIgnoredOnCRDOnly {
-		if _, dup := telemetryIgnoredOnRuntimeOnly[path]; dup {
-			t.Errorf("path %q is listed in BOTH telemetryIgnoredOnCRDOnly and telemetryIgnoredOnRuntimeOnly", path)
-		}
-	}
-
-	// Every path in the mapping/ignore tables must still be a live leaf on
-	// its respective type. Catches stale entries left behind by field
-	// renames or deletions, which would otherwise mask the rename.
-	crdLeaves := liveLeafSet(reflect.TypeOf(v1beta1.MCPTelemetryConfigSpec{}))
-	for _, m := range telemetryFieldMappings {
-		if _, live := crdLeaves[m.CRD]; !live {
-			t.Errorf("telemetryFieldMappings entry %q is not a live leaf on v1beta1.MCPTelemetryConfigSpec — stale entry?", m.CRD)
-		}
-	}
-	for path := range telemetryIgnoredOnCRDOnly {
-		if _, live := crdLeaves[path]; !live {
-			t.Errorf("telemetryIgnoredOnCRDOnly entry %q is not a live leaf on v1beta1.MCPTelemetryConfigSpec — stale entry?", path)
-		}
-	}
-	runtimeLeaves := liveLeafSet(reflect.TypeOf(telemetry.Config{}))
-	for _, m := range telemetryFieldMappings {
-		if _, live := runtimeLeaves[m.Runtime]; !live {
-			t.Errorf("telemetryFieldMappings entry %q is not a live leaf on telemetry.Config — stale entry?", m.Runtime)
-		}
-	}
-	for path := range telemetryIgnoredOnRuntimeOnly {
-		if _, live := runtimeLeaves[path]; !live {
-			t.Errorf("telemetryIgnoredOnRuntimeOnly entry %q is not a live leaf on telemetry.Config — stale entry?", path)
-		}
-	}
-}
-
-// liveLeafSet returns the set of leaf paths reachable from t, for use in
-// stale-entry checks against the drift mapping/ignore tables.
-func liveLeafSet(t reflect.Type) map[string]struct{} {
-	leaves := testutil.FlattenJSONLeafFields(t)
-	out := make(map[string]struct{}, len(leaves))
-	for _, l := range leaves {
-		out[l] = struct{}{}
-	}
-	return out
+// TestTelemetryConfigDrift exercises the full bidirectional drift contract
+// between v1beta1.MCPTelemetryConfigSpec (CRD) and telemetry.Config (runtime)
+// via the shared testutil harness. To extend to another domain (OIDC, vMCP,
+// etc.), add the three tables in that domain's package and call
+// AssertNoDrift with the matching type parameters.
+func TestTelemetryConfigDrift(t *testing.T) {
+	testutil.AssertNoDrift[telemetry.Config, v1beta1.MCPTelemetryConfigSpec](t, testutil.DriftSpec{
+		Domain:               "telemetry",
+		Mappings:             telemetryFieldMappings,
+		IgnoredOnCRDOnly:     telemetryIgnoredOnCRDOnly,
+		IgnoredOnRuntimeOnly: telemetryIgnoredOnRuntimeOnly,
+	})
 }

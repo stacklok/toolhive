@@ -94,6 +94,15 @@ type recursive struct {
 	Next *recursive `json:"next,omitempty"`
 }
 
+// withNamedInlineTag pins encoding/json semantics: the `,inline` token is a
+// Kubernetes documentation idiom and is ignored by encoding/json. A NAMED
+// field with `json:"inner,inline"` must marshal as `"inner":{...}` (nested),
+// never flattened — and the walker must reflect that.
+type withNamedInlineTag struct {
+	Inner leafInner `json:"inner,inline"` //nolint:revive // inline is a valid kubernetes json tag option
+	Top   string    `json:"top"`
+}
+
 // --- Tests -----------------------------------------------------------------
 
 func TestFlattenJSONLeafFields(t *testing.T) {
@@ -158,6 +167,13 @@ func TestFlattenJSONLeafFields(t *testing.T) {
 			name: "embedded struct with ,inline flattens",
 			in:   withEmbeddedInline{},
 			want: []string{"bar", "foo"},
+		},
+		{
+			// encoding/json ignores `,inline`; only anonymous embedding
+			// flattens. A named field tagged `,inline` must stay nested.
+			name: "named field with ,inline tag stays nested",
+			in:   withNamedInlineTag{},
+			want: []string{"inner.a", "inner.b", "top"},
 		},
 		{
 			name: "unexported field is skipped",

@@ -89,19 +89,19 @@ func walkStruct(t reflect.Type, prefix string, leafSet map[string]struct{}, visi
 			continue
 		}
 
-		name, inline, omit := parseJSONTag(field)
+		name, omit := parseJSONTag(field)
 		if omit {
 			continue
 		}
 
-		// Determine the path segment for this field.
+		// Determine the path segment for this field. Match encoding/json
+		// semantics: only anonymous embedded fields are flattened, and only
+		// when they have no explicit JSON name. The `,inline` tag option is
+		// a Kubernetes documentation idiom — encoding/json itself ignores
+		// it, so a NAMED field tagged `json:"foo,inline"` actually marshals
+		// as `"foo":{...}` and must NOT be flattened by the walker.
 		segment := func() string {
-			// Anonymous fields are inlined by encoding/json when they have no
-			// json name (or an explicit `,inline` tag). Treat them as inline.
-			if field.Anonymous && (name == "" || inline) {
-				return ""
-			}
-			if inline {
+			if field.Anonymous && name == "" {
 				return ""
 			}
 			if name == "" {
@@ -175,27 +175,22 @@ func recurseStruct(t reflect.Type, prefix string, leafSet map[string]struct{}, v
 	walkStruct(t, prefix, leafSet, visited)
 }
 
-// parseJSONTag extracts (name, inline, omit) from the json struct tag.
+// parseJSONTag extracts (name, omit) from the json struct tag.
 //   - name is the explicit JSON name (empty when not specified).
-//   - inline is true when the tag includes ",inline".
 //   - omit is true when the tag is "-" (field must be skipped entirely).
-func parseJSONTag(field reflect.StructField) (string, bool, bool) {
+//
+// Other tag options (`,omitempty`, `,inline`, `,string`, ...) are
+// intentionally ignored — they don't affect the path enumeration.
+func parseJSONTag(field reflect.StructField) (string, bool) {
 	tag, ok := field.Tag.Lookup("json")
 	if !ok {
-		return "", false, false
+		return "", false
 	}
 	if tag == "-" {
-		return "", false, true
+		return "", true
 	}
-	parts := strings.Split(tag, ",")
-	name := parts[0]
-	inline := false
-	for _, p := range parts[1:] {
-		if p == "inline" {
-			inline = true
-		}
-	}
-	return name, inline, false
+	name, _, _ := strings.Cut(tag, ",")
+	return name, false
 }
 
 // joinPath joins prefix and segment with a dot, handling empty segments

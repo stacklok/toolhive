@@ -155,6 +155,116 @@ func TestRegisterClientHandler_ScopeInResponse(t *testing.T) {
 		"DCR response should include granted scopes per RFC 7591 Section 3.2.1")
 }
 
+func TestRegisterClientHandler_BaselineClientScopes(t *testing.T) {
+	t.Parallel()
+
+	// DefaultScopes is ["openid","profile","email","offline_access"].
+	// Tests build ScopesSupported from DefaultScopes plus any extra scopes
+	// required by the case.
+
+	tests := []struct {
+		name                 string
+		requestScope         string
+		baselineClientScopes []string
+		extraScopesSupported []string // appended to DefaultScopes in ScopesSupported
+		expectedScopes       []string
+	}{
+		{
+			// When scope is empty, ValidateScopes returns DefaultScopes.
+			// The baseline adds "custom:scope" (not in DefaultScopes), so the
+			// union expands the set: DefaultScopes + ["custom:scope"].
+			name:                 "empty client scope with non-empty baseline adds baseline scope",
+			requestScope:         "",
+			baselineClientScopes: []string{"custom:scope"},
+			extraScopesSupported: []string{"custom:scope"},
+			expectedScopes:       append(append([]string{}, registration.DefaultScopes...), "custom:scope"),
+		},
+		{
+			// Requested scopes already contain the baseline; no expansion occurs.
+			name:                 "baseline is subset of requested scopes no expansion",
+			requestScope:         "openid profile email offline_access",
+			baselineClientScopes: []string{"openid"},
+			extraScopesSupported: nil,
+			expectedScopes:       []string{"openid", "profile", "email", "offline_access"},
+		},
+		{
+			// Partial overlap: baseline shares "openid" with the request but adds
+			// "offline_access" not in the request. Exercises the dedup+append paths
+			// of unionScopes in the same handler call.
+			name:                 "partial overlap baseline appends only non-overlapping scopes",
+			requestScope:         "openid profile",
+			baselineClientScopes: []string{"openid", "offline_access"},
+			extraScopesSupported: nil,
+			expectedScopes:       []string{"openid", "profile", "offline_access"},
+		},
+		{
+			// Canonical regression: client registers with "openid" only,
+			// baseline adds "offline_access" → union is both.
+			name:                 "disjoint baseline expands registered scope set",
+			requestScope:         "openid",
+			baselineClientScopes: []string{"offline_access"},
+			extraScopesSupported: nil,
+			expectedScopes:       []string{"openid", "offline_access"},
+		},
+		{
+			// Nil baseline must not alter the registered scope set.
+			name:                 "nil baseline preserves existing behavior",
+			requestScope:         "openid",
+			baselineClientScopes: nil,
+			extraScopesSupported: nil,
+			expectedScopes:       []string{"openid"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			stor := mocks.NewMockStorage(ctrl)
+			var capturedClient fosite.Client
+			stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, c fosite.Client) error {
+					capturedClient = c
+					return nil
+				})
+
+			// Defensive copy of DefaultScopes (a package-level var) before extending,
+			// so per-case extraScopesSupported never mutates the global.
+			scopesSupported := append(append([]string{}, registration.DefaultScopes...), tc.extraScopesSupported...)
+			cfg := &server.AuthorizationServerConfig{
+				Config:               &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+				ScopesSupported:      scopesSupported,
+				BaselineClientScopes: tc.baselineClientScopes,
+			}
+			handler := &Handler{storage: stor, config: cfg}
+
+			reqBody, err := json.Marshal(registration.DCRRequest{
+				RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
+				Scope:        tc.requestScope,
+			})
+			require.NoError(t, err)
+
+			req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader(reqBody))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			handler.RegisterClientHandler(w, req)
+
+			require.Equal(t, http.StatusCreated, w.Code)
+
+			var resp registration.DCRResponse
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+			assert.Equal(t, registration.FormatScopes(tc.expectedScopes), resp.Scope,
+				"DCR response scope must equal the union of requested and baseline scopes")
+
+			require.NotNil(t, capturedClient, "storage was not called")
+			assert.Equal(t, fosite.Arguments(tc.expectedScopes), capturedClient.GetScopes(),
+				"the union of requested and baseline scopes must reach storage")
+		})
+	}
+}
+
 func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 	t.Parallel()
 

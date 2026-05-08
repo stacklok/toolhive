@@ -178,9 +178,11 @@ func (*TokenExchangeStrategy) authenticateWithClientCredentials(
 // Validate checks if the required configuration fields are present and valid.
 //
 // This method verifies that:
-//   - TokenURL is present and valid
+//   - TokenURL is present and valid (or omitted for named variants that derive it)
 //   - Optional fields (if present) have correct types and values
 //   - ClientSecret is only provided when ClientID is present
+//
+// For named variants (e.g., entra), some fields like TokenURL may be optional.
 //
 // This validation is typically called during configuration parsing to fail fast
 // if the strategy is misconfigured.
@@ -198,6 +200,8 @@ type tokenExchangeConfig struct {
 	Scopes              []string
 	SubjectTokenType    string
 	SubjectProviderName string
+	Variant             string
+	RawConfig           *tokenexchange.RawExchangeConfig
 }
 
 // parseClientSecret parses and validates ClientSecret or ClientSecretEnv from TokenExchangeConfig.
@@ -237,9 +241,15 @@ func (s *TokenExchangeStrategy) parseTokenExchangeConfig(strategy *authtypes.Bac
 	config := &tokenExchangeConfig{}
 	tokenExchangeCfg := strategy.TokenExchange
 
-	// Required: TokenURL
-	if tokenExchangeCfg.TokenURL == "" {
-		return nil, fmt.Errorf("TokenURL is required in token_exchange configuration")
+	// Normalize variant to lowercase to match VariantRegistry and config validator behavior.
+	variant := strings.ToLower(tokenExchangeCfg.Variant)
+
+	// TokenURL is required for standard RFC 8693 and "raw" variants.
+	// Named variants (e.g., "entra") may derive tokenUrl from their parameters.
+	if variant == "" || variant == authtypes.TokenExchangeVariantRaw {
+		if tokenExchangeCfg.TokenURL == "" {
+			return nil, fmt.Errorf("TokenURL is required in token_exchange configuration")
+		}
 	}
 	config.TokenURL = tokenExchangeCfg.TokenURL
 
@@ -261,18 +271,39 @@ func (s *TokenExchangeStrategy) parseTokenExchangeConfig(strategy *authtypes.Bac
 		config.Scopes = tokenExchangeCfg.Scopes
 	}
 
-	// Optional: SubjectTokenType
-	if tokenExchangeCfg.SubjectTokenType != "" {
-		// Validate if provided
+	// SubjectTokenType normalization is RFC 8693-specific. Named variants pass
+	// the field through unchanged.
+	if variant == "" && tokenExchangeCfg.SubjectTokenType != "" {
 		normalized, err := tokenexchange.NormalizeTokenType(tokenExchangeCfg.SubjectTokenType)
 		if err != nil {
 			return nil, fmt.Errorf("invalid SubjectTokenType: %w", err)
 		}
 		config.SubjectTokenType = normalized
+	} else {
+		config.SubjectTokenType = tokenExchangeCfg.SubjectTokenType
 	}
 
 	// Optional: SubjectProviderName
 	config.SubjectProviderName = tokenExchangeCfg.SubjectProviderName
+
+	// Variant passthrough (already normalized to lowercase above)
+	config.Variant = variant
+
+	// Map types.TokenExchangeRawAuthConfig → tokenexchange.RawExchangeConfig.
+	// Deep-copy the Parameters map to prevent aliasing with the cached server template.
+	if tokenExchangeCfg.Raw != nil {
+		var params map[string]string
+		if tokenExchangeCfg.Raw.Parameters != nil {
+			params = make(map[string]string, len(tokenExchangeCfg.Raw.Parameters))
+			for k, v := range tokenExchangeCfg.Raw.Parameters {
+				params[k] = v
+			}
+		}
+		config.RawConfig = &tokenexchange.RawExchangeConfig{
+			GrantTypeURN: tokenExchangeCfg.Raw.GrantTypeURN,
+			Parameters:   params,
+		}
+	}
 
 	return config, nil
 }
@@ -314,6 +345,8 @@ func (s *TokenExchangeStrategy) getOrCreateServerConfig(
 		Audience:         config.Audience,
 		Scopes:           config.Scopes,
 		SubjectTokenType: config.SubjectTokenType,
+		Variant:          config.Variant,
+		RawConfig:        config.RawConfig,
 	}
 
 	s.exchangeConfigs[cacheKey] = template
@@ -348,15 +381,23 @@ func (s *TokenExchangeStrategy) createUserConfig(
 
 // buildCacheKey creates a unique cache key for server-level configs.
 // The key includes all parameters that differentiate backend servers:
+//   - variant: Token exchange variant (e.g., "entra", "raw", or empty for RFC 8693)
 //   - token_url: OAuth token endpoint
 //   - client_id: OAuth client identifier
 //   - audience: Target audience
 //   - scopes: Requested scopes (sorted for consistency)
 //   - subject_token_type: Type of subject token
 //   - subject_provider_name: Upstream provider for subject token selection
+//   - raw_config: Variant-specific extension parameters (GrantTypeURN + sorted Parameters)
 //
 // Note: No user identity is included - server configs are shared across users.
 func buildCacheKey(config *tokenExchangeConfig) string {
+	// Handle variant (empty becomes nonePlaceholder)
+	variant := config.Variant
+	if variant == "" {
+		variant = nonePlaceholder
+	}
+
 	// Handle client_id (empty becomes nonePlaceholder)
 	clientID := config.ClientID
 	if clientID == "" {
@@ -390,13 +431,32 @@ func buildCacheKey(config *tokenExchangeConfig) string {
 		providerName = nonePlaceholder
 	}
 
-	// Format: token_url:client_id:audience:scopes:subject_token_type:subject_provider_name
-	return fmt.Sprintf("%s:%s:%s:%s:%s:%s",
+	// Handle RawConfig (GrantTypeURN + sorted Parameters)
+	rawStr := nonePlaceholder
+	if config.RawConfig != nil {
+		parts := []string{config.RawConfig.GrantTypeURN}
+		if len(config.RawConfig.Parameters) > 0 {
+			keys := make([]string, 0, len(config.RawConfig.Parameters))
+			for k := range config.RawConfig.Parameters {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				parts = append(parts, k+"="+config.RawConfig.Parameters[k])
+			}
+		}
+		rawStr = strings.Join(parts, ";")
+	}
+
+	// Format: variant:token_url:client_id:audience:scopes:subject_token_type:subject_provider_name:raw_config
+	return fmt.Sprintf("%s:%s:%s:%s:%s:%s:%s:%s",
+		variant,
 		config.TokenURL,
 		clientID,
 		audience,
 		scopesStr,
 		tokenType,
 		providerName,
+		rawStr,
 	)
 }

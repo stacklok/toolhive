@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -464,6 +465,137 @@ func TestEmbeddedAuthServer_ResourceCleanup(t *testing.T) {
 	// Close is idempotent - second call should not error
 	err = authServer.Close()
 	require.NoError(t, err)
+}
+
+// TestEmbeddedAuthServer_BaselineClientScopes_RegressionForDCRScopeNarrowing
+// is a regression test for the Claude Code DCR scope-narrowing bug
+// (anthropics/claude-code#4540). Claude Code registers with a narrowed scope
+// (e.g. "openid") but later requests the full set at /oauth/authorize.
+// The fix unions BaselineClientScopes into every DCR registration so the
+// client's registered set always includes the operator-configured baseline,
+// preventing fosite from rejecting the subsequent authorize request with
+// invalid_scope.
+//
+//nolint:paralleltest,tparallel // Subtests intentionally sequential - second reuses first's client_id
+func TestEmbeddedAuthServer_BaselineClientScopes_RegressionForDCRScopeNarrowing(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	upstream := helpers.NewMockUpstreamIDP(t)
+
+	cfg := helpers.NewTestAuthServerConfig(t, upstream.URL(),
+		helpers.WithScopesSupported([]string{"openid", "offline_access"}),
+		helpers.WithBaselineClientScopes([]string{"offline_access"}),
+	)
+
+	authServer := helpers.NewEmbeddedAuthServer(ctx, t, cfg)
+
+	server := httptest.NewServer(authServer.Handler())
+	t.Cleanup(server.Close)
+
+	client := helpers.NewOAuthClient(server.URL)
+
+	var clientID string
+
+	t.Run("DCR response echoes the baseline-augmented scope set", func(t *testing.T) {
+		clientMetadata := map[string]interface{}{
+			"client_name":   "Claude Code",
+			"redirect_uris": []string{"http://localhost:8080/callback"},
+			"grant_types":   []string{"authorization_code", "refresh_token"},
+			// Narrow scope — the bug-trigger pattern from Claude Code
+			"scope": "openid",
+		}
+
+		result, statusCode, err := client.RegisterClient(clientMetadata)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, statusCode, "DCR registration should succeed")
+
+		clientID = result["client_id"].(string)
+		require.NotEmpty(t, clientID)
+
+		// The registered scope set must include "offline_access" from the baseline
+		// even though the client only requested "openid".
+		registeredScope, ok := result["scope"].(string)
+		require.True(t, ok, "scope field should be a string in DCR response")
+		// Order: requested scopes first, then non-overlapping baseline (unionScopes contract).
+		assert.Equal(t, "openid offline_access", registeredScope,
+			"DCR response scope must be the union of requested+baseline scopes")
+	})
+
+	t.Run("authorize accepts a request for the unioned scope set", func(t *testing.T) {
+		// Pre-fix: fosite would reject this with invalid_scope because the
+		// registered client only had "openid" in its scope set. Post-fix: the
+		// client has "openid offline_access" so the authorize request succeeds.
+		params := url.Values{
+			"response_type": {"code"},
+			"client_id":     {clientID},
+			"redirect_uri":  {"http://localhost:8080/callback"},
+			"scope":         {"openid offline_access"},
+			"state":         {"test-state-baseline-regression"},
+			"resource":      {cfg.AllowedAudiences[0]},
+		}
+
+		resp, err := client.StartAuthorization(params)
+		require.NoError(t, err)
+		defer func() {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}()
+
+		// Must redirect to upstream — NOT a 400 invalid_scope.
+		assert.Equal(t, http.StatusFound, resp.StatusCode,
+			"authorize must accept the full scope set that includes the baseline; pre-fix this returned 400 invalid_scope")
+
+		location := resp.Header.Get("Location")
+		assert.NotEmpty(t, location)
+
+		redirectURL, err := url.Parse(location)
+		require.NoError(t, err)
+		assert.Contains(t, redirectURL.String(), upstream.URL())
+	})
+
+	t.Run("authorize rejects a scope not in scopes_supported", func(t *testing.T) {
+		// Negative case: even with the baseline expansion, scopes that aren't
+		// in ScopesSupported must still be rejected. This guards against silent
+		// privilege escalation if BaselineClientScopes ever drifts.
+		params := url.Values{
+			"response_type": {"code"},
+			"client_id":     {clientID},
+			"redirect_uri":  {"http://localhost:8080/callback"},
+			"scope":         {"openid offline_access admin:read"},
+			"state":         {"test-state-baseline-negative"},
+			"resource":      {cfg.AllowedAudiences[0]},
+		}
+
+		resp, err := client.StartAuthorization(params)
+		require.NoError(t, err)
+		defer func() {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}()
+
+		// Fosite rejects with invalid_scope. Depending on whether the redirect URI
+		// has been validated by that point, this surfaces either as a 400 or as a
+		// redirect (3xx) to redirect_uri with error=invalid_scope in the query.
+		// Both are acceptable; the contract is "NOT a redirect to the upstream IDP"
+		// and "NOT a 200 success".
+		if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
+			// Redirect-with-error case — verify it points to the registered
+			// redirect_uri (loopback), NOT the upstream.
+			location := resp.Header.Get("Location")
+			require.NotEmpty(t, location)
+			assert.NotContains(t, location, upstream.URL(),
+				"rejected request must NOT redirect to the upstream IDP")
+			redirectURL, err := url.Parse(location)
+			require.NoError(t, err)
+			assert.Contains(t, redirectURL.RawQuery, "invalid_scope",
+				"rejection error must be invalid_scope")
+		} else {
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode,
+				"unsupported scope must produce 400 invalid_scope (or redirect-with-error)")
+		}
+	})
 }
 
 // generateTestECKey generates a test EC private key for signing.

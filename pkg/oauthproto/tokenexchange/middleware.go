@@ -82,6 +82,14 @@ type Config struct {
 
 	// ExternalTokenHeaderName is the name of the custom header to use when HeaderStrategy is "custom"
 	ExternalTokenHeaderName string `json:"external_token_header_name,omitempty"`
+
+	// Variant selects a token exchange variant (e.g., "entra", "raw").
+	// When empty, standard RFC 8693 token exchange is used.
+	Variant string `json:"variant,omitempty"`
+
+	// RawConfig holds variant-specific extension configuration.
+	// Set when Variant is non-empty. The variant handler determines which fields are used.
+	RawConfig *RawExchangeConfig `json:"raw_config,omitempty"`
 }
 
 // Middleware wraps token exchange middleware functionality
@@ -294,6 +302,8 @@ func createTokenExchangeMiddleware(
 		Audience:         config.Audience,
 		Scopes:           config.Scopes,
 		SubjectTokenType: config.SubjectTokenType,
+		Variant:          config.Variant,
+		RawConfig:        config.RawConfig,
 		// SubjectTokenProvider will be set per request
 	}
 

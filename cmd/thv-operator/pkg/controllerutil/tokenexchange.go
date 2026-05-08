@@ -155,10 +155,15 @@ func addTokenExchangeConfig(
 		headerStrategy = "custom"
 	}
 
-	// Normalize SubjectTokenType to full URN (accepts both short forms and full URNs)
-	normalizedTokenType, err := tokenexchange.NormalizeTokenType(tokenExchangeSpec.SubjectTokenType)
-	if err != nil {
-		return fmt.Errorf("invalid subject token type: %w", err)
+	// Normalize SubjectTokenType to full URN only for standard RFC 8693 (no variant).
+	// Variant handlers handle their own token type semantics.
+	normalizedTokenType := tokenExchangeSpec.SubjectTokenType
+	if tokenExchangeSpec.Variant == "" {
+		var err error
+		normalizedTokenType, err = tokenexchange.NormalizeTokenType(tokenExchangeSpec.SubjectTokenType)
+		if err != nil {
+			return fmt.Errorf("invalid subject token type: %w", err)
+		}
 	}
 
 	// Build token exchange configuration
@@ -172,6 +177,19 @@ func addTokenExchangeConfig(
 		SubjectTokenType:        normalizedTokenType,
 		HeaderStrategy:          headerStrategy,
 		ExternalTokenHeaderName: tokenExchangeSpec.ExternalTokenHeaderName,
+		Variant:                 tokenExchangeSpec.Variant,
+	}
+
+	// Deep-copy Raw extension config to avoid aliasing the CRD-side state.
+	if tokenExchangeSpec.Raw != nil {
+		params := make(map[string]string, len(tokenExchangeSpec.Raw.Parameters))
+		for k, v := range tokenExchangeSpec.Raw.Parameters {
+			params[k] = v
+		}
+		tokenExchangeConfig.RawConfig = &tokenexchange.RawExchangeConfig{
+			GrantTypeURN: tokenExchangeSpec.Raw.GrantTypeURN,
+			Parameters:   params,
+		}
 	}
 
 	// Use WithTokenExchangeConfig to add configuration

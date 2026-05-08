@@ -171,6 +171,7 @@ func newEmbeddedAuthServerWithStorage(
 		AuthCodeLifespan:             authCodeLifespan,
 		Upstreams:                    upstreams,
 		ScopesSupported:              cfg.ScopesSupported,
+		BaselineClientScopes:         cfg.BaselineClientScopes,
 		AllowedAudiences:             cfg.AllowedAudiences,
 	}
 

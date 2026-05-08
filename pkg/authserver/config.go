@@ -484,6 +484,17 @@ type Config struct {
 	// /.well-known/oauth-authorization-server discovery endpoints.
 	ScopesSupported []string
 
+	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes the embedded
+	// DCR handler unions into every newly registered client's scope set. Empty
+	// means current behavior is preserved (DCR registers exactly what the client
+	// requested, or registration.DefaultScopes if the client requested none).
+	// All entries must also be present in ScopesSupported.
+	// When BaselineClientScopes is non-empty, ScopesSupported must be set
+	// explicitly: applyDefaults rejects an empty ScopesSupported in that case
+	// rather than silently substituting DefaultScopes, which would otherwise
+	// mask the operator's intent.
+	BaselineClientScopes []string
+
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
 	// Per RFC 8707, the "resource" parameter in authorization and token requests is
 	// validated against this list. MCP clients are required to include the resource
@@ -753,6 +764,12 @@ func (c *Config) applyDefaults() error {
 			"warning", "JWTs will be invalid after restart")
 	}
 	if len(c.ScopesSupported) == 0 {
+		if len(c.BaselineClientScopes) > 0 {
+			return fmt.Errorf(
+				"baseline_client_scopes is non-empty but scopes_supported is empty: " +
+					"scopes_supported must be set explicitly when baseline_client_scopes is configured",
+			)
+		}
 		c.ScopesSupported = registration.DefaultScopes
 		slog.Debug("applied default scopes_supported", "scopes", c.ScopesSupported)
 	}

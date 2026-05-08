@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
@@ -436,6 +439,65 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 			t.Parallel()
 			err := tt.config.Validate()
 			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+func TestConfigApplyDefaults_BaselineClientScopes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		scopesSupported      []string
+		baselineClientScopes []string
+		wantErr              bool
+		errMsg               string
+		wantDefaultScopes    bool
+	}{
+		{
+			name:              "empty scopes_supported and empty baseline — defaults substituted",
+			wantDefaultScopes: true,
+		},
+		{
+			name:            "scopes_supported set and empty baseline — no substitution",
+			scopesSupported: []string{"openid", "profile"},
+		},
+		{
+			name:                 "scopes_supported set and baseline non-empty — no substitution no error",
+			scopesSupported:      []string{"openid", "profile"},
+			baselineClientScopes: []string{"openid"},
+		},
+		{
+			name:                 "empty scopes_supported and non-empty baseline — error",
+			baselineClientScopes: []string{"openid"},
+			wantErr:              true,
+			errMsg:               "baseline_client_scopes is non-empty but scopes_supported is empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &Config{
+				ScopesSupported:      tt.scopesSupported,
+				BaselineClientScopes: tt.baselineClientScopes,
+			}
+
+			err := cfg.applyDefaults()
+
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.errMsg)
+				return
+			}
+
+			require.NoError(t, err)
+			if tt.wantDefaultScopes {
+				require.Equal(t, registration.DefaultScopes, cfg.ScopesSupported)
+			} else {
+				require.Equal(t, tt.scopesSupported, cfg.ScopesSupported)
+			}
 		})
 	}
 }

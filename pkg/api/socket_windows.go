@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 
@@ -95,10 +96,21 @@ func cleanupUnixSocket(address string) {
 
 // socketURL returns the URL form of a Unix-socket or named-pipe address for
 // the discovery file. Named pipes are emitted as npipe://<name> where <name>
-// is everything after the \\.\pipe\ prefix.
+// is everything after the \\.\pipe\ prefix. AF_UNIX paths are emitted as
+// unix:///<path> so a Windows drive-letter path round-trips through net/url
+// cleanly (the previous concatenation form produced unix://C:\... , which
+// url.Parse rejects with "invalid port").
+//
+// The synthetic leading slash is required: with Host == "" and a Path that
+// does not start with /, url.URL.String() emits only scheme://+path (two
+// slashes), and url.Parse then mis-reads the drive letter as host:port.
+// Forcing the leading slash yields the three-slash form, and the consumer
+// (ParseUnixSocketPath) strips that synthetic slash before the drive letter
+// so the round-trip closes.
 func socketURL(address string) string {
 	if isNamedPipeAddress(address) {
-		return "npipe://" + address[len(namedPipePrefix):]
+		name := address[len(namedPipePrefix):]
+		return (&url.URL{Scheme: "npipe", Host: name}).String()
 	}
-	return "unix://" + address
+	return (&url.URL{Scheme: "unix", Path: "/" + address}).String()
 }

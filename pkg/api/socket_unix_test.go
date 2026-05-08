@@ -10,11 +10,25 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/server/discovery"
 )
 
 func TestSocketURL_Unix(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "unix:///tmp/test.sock", socketURL("/tmp/test.sock"))
+}
+
+// TestSocketURL_RoundTrip_Unix pins that socketURL output is always parseable
+// by ParseUnixSocketPath, closing the producer/consumer loop. Without the
+// net/url-based emit form this would silently break for any path that needs
+// percent-encoding.
+func TestSocketURL_RoundTrip_Unix(t *testing.T) {
+	t.Parallel()
+	addr := "/tmp/test.sock"
+	got, err := discovery.ParseUnixSocketPath(socketURL(addr))
+	require.NoError(t, err)
+	assert.Equal(t, addr, got)
 }
 
 func TestIsNamedPipeAddress(t *testing.T) {

@@ -116,3 +116,24 @@ func TestCleanupUnixSocket_NamedPipe_NoOp(t *testing.T) {
 	// cleanly.
 	cleanupUnixSocket(`\\.\pipe\thv-api-cleanup-noop`)
 }
+
+// TestSetupUnixSocket_NamedPipe_FirstInstanceWins pins winio's first-wins
+// semantics: ListenPipe sets FILE_FLAG_FIRST_PIPE_INSTANCE, so a second
+// listener targeting the same name must fail. This is the safety net the
+// discovery layer relies on to detect a stale-PID conflict; if a future winio
+// bump silently relaxed it, two thv processes could bind the same pipe and
+// quietly race for traffic.
+func TestSetupUnixSocket_NamedPipe_FirstInstanceWins(t *testing.T) {
+	t.Parallel()
+	pipePath := uniqueTestPipe()
+
+	first, err := setupUnixSocket(pipePath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = first.Close() })
+
+	// setupUnixSocket returns (nil, err) on the named-pipe failure path, so
+	// no defensive Close is needed for the second listener.
+	_, err = setupUnixSocket(pipePath)
+	require.Error(t, err, "second ListenPipe on the same name must fail")
+	assert.Contains(t, err.Error(), "failed to create named pipe listener")
+}

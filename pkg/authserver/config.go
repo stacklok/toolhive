@@ -71,6 +71,12 @@ type RunConfig struct {
 	// If empty, defaults to registration.DefaultScopes (["openid", "profile", "email", "offline_access"]).
 	ScopesSupported []string `json:"scopes_supported,omitempty" yaml:"scopes_supported,omitempty"`
 
+	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every
+	// DCR registration. Empty means current behavior is preserved (registered scope =
+	// client-requested, or DefaultScopes if empty).
+	//nolint:lll // field tags require full JSON+YAML names
+	BaselineClientScopes []string `json:"baseline_client_scopes,omitempty" yaml:"baseline_client_scopes,omitempty"`
+
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
 	// Per RFC 8707, the "resource" parameter in authorization and token requests is
 	// validated against this list. Required for MCP compliance.

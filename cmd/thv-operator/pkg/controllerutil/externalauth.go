@@ -44,20 +44,28 @@ func GenerateUniqueHeaderInjectionEnvVarName(configName string) string {
 	return fmt.Sprintf("TOOLHIVE_HEADER_INJECTION_VALUE_%s", sanitized)
 }
 
-// HeaderForwardPlaintextEnvVarPrefix is the prefix the operator uses when
-// emitting per-(owner, header) literal-value env vars on a workload pod for
-// MCPServerEntry / MCPRemoteProxy headerForward.AddPlaintextHeaders entries.
-// The vMCP runtime walks env vars matching this prefix at startup to
-// reconstruct the per-backend HeaderForwardConfig in static mode.
-const HeaderForwardPlaintextEnvVarPrefix = "TOOLHIVE_HEADER_PLAINTEXT_"
+// HeaderForwardManifestEnvVarPrefix is the prefix the operator uses when
+// emitting one JSON-encoded manifest env var per backend on a workload pod
+// for MCPServerEntry / MCPRemoteProxy headerForward configuration.
+//
+// The full env var name is "TOOLHIVE_HEADER_FORWARD_<NORMALIZED_OWNER>";
+// the value is JSON-encoded vmcp.HeaderForwardConfig with original header
+// names preserved (uppercased/sanitized normalization can't recover hyphens
+// or original casing on the receive side, so we carry the literal names in
+// the JSON value instead). Plaintext header values appear inline; secret-
+// backed entries carry only the secret identifier — the actual Secret
+// value rides a sibling TOOLHIVE_SECRET_HEADER_FORWARD_<H>_<OWNER> env var
+// emitted via valueFrom.secretKeyRef and resolved at request time by
+// secrets.EnvironmentProvider.
+const HeaderForwardManifestEnvVarPrefix = "TOOLHIVE_HEADER_FORWARD_"
 
 // HeaderForwardSecretEnvVarPrefix is the prefix the operator uses when
 // emitting per-(owner, header) valueFrom.secretKeyRef env vars on a
 // workload pod for MCPServerEntry / MCPRemoteProxy
 // headerForward.AddHeadersFromSecret entries. The full env var name is
-// TOOLHIVE_SECRET_HEADER_FORWARD_<HEADER>_<OWNER>; the prefix below
-// matches the literal "TOOLHIVE_SECRET_HEADER_FORWARD_" segment so the
-// vMCP runtime can iterate them at startup.
+// TOOLHIVE_SECRET_HEADER_FORWARD_<HEADER>_<OWNER>; the secret identifier
+// the runtime hands to secrets.EnvironmentProvider is the same name with
+// the leading "TOOLHIVE_SECRET_" stripped (i.e. "HEADER_FORWARD_<H>_<O>").
 const HeaderForwardSecretEnvVarPrefix = "TOOLHIVE_SECRET_HEADER_FORWARD_"
 
 // normalizeHeaderForEnvVar applies the canonical sanitization used in every
@@ -94,23 +102,16 @@ func GenerateHeaderForwardSecretEnvVarName(ownerName, headerName string) (envVar
 	return envVarName, secretIdentifier
 }
 
-// GenerateHeaderForwardPlaintextEnvVarName generates the environment variable
-// name for a per-(owner, header) literal plaintext header value emitted on a
-// workload pod. The vMCP runtime walks variables with the
-// HeaderForwardPlaintextEnvVarPrefix at startup, parses the suffix back into
-// (ownerName, headerName), and constructs the per-backend HeaderForwardConfig.
+// GenerateHeaderForwardManifestEnvVarName generates the environment variable
+// name for the JSON-encoded headerForward manifest emitted per backend on
+// the vMCP pod. One env var per backend; the JSON value carries every
+// configured header (plaintext values inline, secret entries by identifier).
 //
-// The header name and owner sanitization is identical to the secret-ref
-// generator (shared via normalizeHeaderForEnvVar) so a header that goes
-// through one path never collides with the other.
-//
-// Returns:
-//   - envVarName: full env var name (e.g. "TOOLHIVE_HEADER_PLAINTEXT_X_API_KEY_MY_OWNER")
-//   - normalizedHeader: the sanitized header segment ("X_API_KEY")
-//   - normalizedOwner: the sanitized owner segment ("MY_OWNER")
-func GenerateHeaderForwardPlaintextEnvVarName(ownerName, headerName string) (envVarName, normalizedHeader, normalizedOwner string) {
-	normalizedHeader = normalizeHeaderForEnvVar(headerName)
+// Returns the full env var name (e.g. "TOOLHIVE_HEADER_FORWARD_MY_OWNER")
+// and the normalized owner segment ("MY_OWNER") used when iterating env
+// vars matching HeaderForwardManifestEnvVarPrefix.
+func GenerateHeaderForwardManifestEnvVarName(ownerName string) (envVarName, normalizedOwner string) {
 	normalizedOwner = normalizeHeaderForEnvVar(ownerName)
-	envVarName = fmt.Sprintf("%s%s_%s", HeaderForwardPlaintextEnvVarPrefix, normalizedHeader, normalizedOwner)
-	return envVarName, normalizedHeader, normalizedOwner
+	envVarName = fmt.Sprintf("%s%s", HeaderForwardManifestEnvVarPrefix, normalizedOwner)
+	return envVarName, normalizedOwner
 }

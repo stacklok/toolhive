@@ -505,17 +505,18 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 }
 
 // buildHeaderForwardEnvVarsForEntries iterates entry-type workloads and emits
-// one env var per (entry, header) declared in spec.headerForward.
+// header-forward env vars on the vMCP pod for each entry that declares
+// spec.headerForward.
 //
-// Plaintext entries (AddPlaintextHeaders) become literal-value env vars named
-// per HeaderForwardPlaintextEnvVarPrefix; the vMCP runtime walks them at
-// startup and copies the values into Backend.HeaderForward.AddPlaintextHeaders.
-//
-// Secret-backed entries (AddHeadersFromSecret) become valueFrom.secretKeyRef
-// env vars named TOOLHIVE_SECRET_HEADER_FORWARD_<HEADER>_<ENTRY> so the
-// Secret value is injected by Kubernetes at pod start and never enters the
-// operator's view of the world. The runtime resolves them via
-// secrets.EnvironmentProvider at request time inside resolveHeaderForward.
+// One JSON-encoded manifest env var per backend carries the full
+// HeaderForwardConfig with original header names preserved
+// (TOOLHIVE_HEADER_FORWARD_<NORMALIZED_ENTRY>). Plaintext header values
+// appear inline in the JSON; secret-backed entries carry only the secret
+// identifier — the Secret value rides a sibling
+// TOOLHIVE_SECRET_HEADER_FORWARD_<HEADER>_<ENTRY> env var emitted via
+// valueFrom.secretKeyRef so the value never enters the operator's view of
+// the world and resolves at request time inside resolveHeaderForward via
+// secrets.EnvironmentProvider.
 //
 // Scoping by entry name prevents collisions when multiple entries in the
 // group declare the same header name.
@@ -544,11 +545,6 @@ func (r *VirtualMCPServerReconciler) buildHeaderForwardEnvVarsForEntries(
 		return nil, fmt.Errorf("failed to list MCPServerEntries: %w", err)
 	}
 
-	// Iterate workloads in the order the caller supplied them and, for each
-	// entry, iterate its headers in the order the API returns them. The
-	// caller is responsible for stable workload ordering; per-header order
-	// inside a single entry is sorted below for determinism since map
-	// iteration in Go is unordered.
 	var envVars []corev1.EnvVar
 	for _, workload := range typedWorkloads {
 		if workload.Type != workloads.WorkloadTypeMCPServerEntry {
@@ -559,23 +555,22 @@ func (r *VirtualMCPServerReconciler) buildHeaderForwardEnvVarsForEntries(
 			continue
 		}
 
-		// Plaintext headers — emit literal env vars in sorted order for
-		// deterministic Deployment-spec rendering. Sorting matters because
-		// map iteration in Go is unordered: without it, two reconciles with
-		// the same input could produce env-var lists that differ only in
-		// order, causing spurious Deployment-spec updates and pod rollouts.
-		plaintextHeaders := sortedKeys(entry.Spec.HeaderForward.AddPlaintextHeaders)
-		for _, headerName := range plaintextHeaders {
-			envVarName, _, _ := ctrlutil.GenerateHeaderForwardPlaintextEnvVarName(entry.Name, headerName)
+		manifest, err := buildHeaderForwardManifestForEntry(entry)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build header-forward manifest for entry %q: %w", entry.Name, err)
+		}
+		if manifest != "" {
+			manifestVarName, _ := ctrlutil.GenerateHeaderForwardManifestEnvVarName(entry.Name)
 			envVars = append(envVars, corev1.EnvVar{
-				Name:  envVarName,
-				Value: entry.Spec.HeaderForward.AddPlaintextHeaders[headerName],
+				Name:  manifestVarName,
+				Value: manifest,
 			})
 		}
 
-		// Secret-backed headers — emit valueFrom.secretKeyRef env vars.
-		// AddHeadersFromSecret is a slice in the v1beta1 API so order is
-		// already deterministic from the user's manifest.
+		// Secret-backed headers — emit valueFrom.secretKeyRef env vars so
+		// the resolved Secret value never enters the operator's view of the
+		// world. AddHeadersFromSecret is a slice in the v1beta1 API so the
+		// order is already deterministic from the user's manifest.
 		for _, ref := range entry.Spec.HeaderForward.AddHeadersFromSecret {
 			if ref.ValueSecretRef == nil {
 				continue
@@ -598,15 +593,64 @@ func (r *VirtualMCPServerReconciler) buildHeaderForwardEnvVarsForEntries(
 	return envVars, nil
 }
 
-// sortedKeys returns the keys of m in lexicographic order. Used to make
-// env-var emission deterministic across reconciles when iterating maps.
-func sortedKeys[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+// headerForwardManifest is the JSON shape carried in the per-backend
+// TOOLHIVE_HEADER_FORWARD_<entry> env var. It mirrors vmcp.HeaderForwardConfig
+// at the wire level so the runtime can json.Unmarshal directly into that
+// type without an intermediate operator-side model. Header keys preserve
+// the original casing the user authored on the CRD — that's the whole
+// point of carrying them in the JSON value rather than encoding them into
+// the env var name.
+type headerForwardManifest struct {
+	AddPlaintextHeaders  map[string]string `json:"addPlaintextHeaders,omitempty"`
+	AddHeadersFromSecret map[string]string `json:"addHeadersFromSecret,omitempty"`
+}
+
+// buildHeaderForwardManifestForEntry builds the JSON-encoded manifest for
+// a single MCPServerEntry. AddHeadersFromSecret values carry the secret
+// identifier (HEADER_FORWARD_<H>_<OWNER>) the runtime hands to
+// secrets.EnvironmentProvider at request time; the resolved Secret value
+// itself never appears in the JSON.
+//
+// Returns the empty string when the entry has no plaintext or
+// secret-backed entries — the caller skips emitting the env var in that
+// case to keep Deployment specs minimal.
+func buildHeaderForwardManifestForEntry(entry *mcpv1beta1.MCPServerEntry) (string, error) {
+	if entry == nil || entry.Spec.HeaderForward == nil {
+		return "", nil
 	}
-	sort.Strings(out)
-	return out
+	src := entry.Spec.HeaderForward
+
+	manifest := headerForwardManifest{}
+	if len(src.AddPlaintextHeaders) > 0 {
+		manifest.AddPlaintextHeaders = make(map[string]string, len(src.AddPlaintextHeaders))
+		for k, v := range src.AddPlaintextHeaders {
+			manifest.AddPlaintextHeaders[k] = v
+		}
+	}
+
+	for _, ref := range src.AddHeadersFromSecret {
+		if ref.ValueSecretRef == nil {
+			continue
+		}
+		_, identifier := ctrlutil.GenerateHeaderForwardSecretEnvVarName(entry.Name, ref.HeaderName)
+		if manifest.AddHeadersFromSecret == nil {
+			manifest.AddHeadersFromSecret = make(map[string]string)
+		}
+		manifest.AddHeadersFromSecret[ref.HeaderName] = identifier
+	}
+
+	if len(manifest.AddPlaintextHeaders) == 0 && len(manifest.AddHeadersFromSecret) == 0 {
+		return "", nil
+	}
+
+	// json.Marshal sorts map keys alphabetically by default, giving
+	// deterministic Deployment-spec rendering across reconciles regardless
+	// of Go's randomized map iteration.
+	out, err := json.Marshal(manifest)
+	if err != nil {
+		return "", fmt.Errorf("marshal manifest: %w", err)
+	}
+	return string(out), nil
 }
 
 // discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs from workloads in the group

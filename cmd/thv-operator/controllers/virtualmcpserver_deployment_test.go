@@ -1168,7 +1168,7 @@ func TestBuildHeaderForwardEnvVarsForEntries(t *testing.T) {
 			},
 		},
 		{
-			name: "entry with plaintext headers emits literal-value env vars in sorted order",
+			name: "entry with plaintext headers emits one JSON manifest env var preserving original casing",
 			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "github-copilot", Namespace: "default"},
@@ -1190,17 +1190,18 @@ func TestBuildHeaderForwardEnvVarsForEntries(t *testing.T) {
 			},
 			validate: func(t *testing.T, env []corev1.EnvVar) {
 				t.Helper()
-				require.Len(t, env, 2)
-				// X_MCP_TOOLSETS sorts before X_TRACE_ID.
-				assert.Equal(t, "TOOLHIVE_HEADER_PLAINTEXT_X_MCP_TOOLSETS_GITHUB_COPILOT", env[0].Name)
-				assert.Equal(t, "projects,issues,pull_requests", env[0].Value)
+				require.Len(t, env, 1)
+				assert.Equal(t, "TOOLHIVE_HEADER_FORWARD_GITHUB_COPILOT", env[0].Name)
 				assert.Nil(t, env[0].ValueFrom)
-				assert.Equal(t, "TOOLHIVE_HEADER_PLAINTEXT_X_TRACE_ID_GITHUB_COPILOT", env[1].Name)
-				assert.Equal(t, "abc123", env[1].Value)
+				// json.Marshal sorts map keys alphabetically.
+				assert.JSONEq(t,
+					`{"addPlaintextHeaders":{"X-MCP-Toolsets":"projects,issues,pull_requests","X-Trace-Id":"abc123"}}`,
+					env[0].Value,
+				)
 			},
 		},
 		{
-			name: "entry with secret-backed headers emits valueFrom.secretKeyRef env vars",
+			name: "entry with secret-backed headers emits both manifest and valueFrom.secretKeyRef env var",
 			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "stripe", Namespace: "default"},
@@ -1227,13 +1228,20 @@ func TestBuildHeaderForwardEnvVarsForEntries(t *testing.T) {
 			},
 			validate: func(t *testing.T, env []corev1.EnvVar) {
 				t.Helper()
-				require.Len(t, env, 1)
-				assert.Equal(t, "TOOLHIVE_SECRET_HEADER_FORWARD_X_API_KEY_STRIPE", env[0].Name)
-				assert.Empty(t, env[0].Value)
-				require.NotNil(t, env[0].ValueFrom)
-				require.NotNil(t, env[0].ValueFrom.SecretKeyRef)
-				assert.Equal(t, "stripe-key", env[0].ValueFrom.SecretKeyRef.Name)
-				assert.Equal(t, "token", env[0].ValueFrom.SecretKeyRef.Key)
+				require.Len(t, env, 2)
+
+				assert.Equal(t, "TOOLHIVE_HEADER_FORWARD_STRIPE", env[0].Name)
+				assert.JSONEq(t,
+					`{"addHeadersFromSecret":{"X-API-Key":"HEADER_FORWARD_X_API_KEY_STRIPE"}}`,
+					env[0].Value,
+				)
+
+				assert.Equal(t, "TOOLHIVE_SECRET_HEADER_FORWARD_X_API_KEY_STRIPE", env[1].Name)
+				assert.Empty(t, env[1].Value)
+				require.NotNil(t, env[1].ValueFrom)
+				require.NotNil(t, env[1].ValueFrom.SecretKeyRef)
+				assert.Equal(t, "stripe-key", env[1].ValueFrom.SecretKeyRef.Name)
+				assert.Equal(t, "token", env[1].ValueFrom.SecretKeyRef.Key)
 			},
 		},
 		{
@@ -1272,16 +1280,25 @@ func TestBuildHeaderForwardEnvVarsForEntries(t *testing.T) {
 			validate: func(t *testing.T, env []corev1.EnvVar) {
 				t.Helper()
 				require.Len(t, env, 3)
-				assert.Equal(t, "TOOLHIVE_HEADER_PLAINTEXT_X_TRACE_ALPHA", env[0].Name)
-				assert.Equal(t, "alpha-trace", env[0].Value)
+
+				assert.Equal(t, "TOOLHIVE_HEADER_FORWARD_ALPHA", env[0].Name)
+				assert.JSONEq(t,
+					`{"addPlaintextHeaders":{"X-Trace":"alpha-trace"},"addHeadersFromSecret":{"X-Token":"HEADER_FORWARD_X_TOKEN_ALPHA"}}`,
+					env[0].Value,
+				)
+
 				assert.Equal(t, "TOOLHIVE_SECRET_HEADER_FORWARD_X_TOKEN_ALPHA", env[1].Name)
 				require.NotNil(t, env[1].ValueFrom)
-				assert.Equal(t, "TOOLHIVE_HEADER_PLAINTEXT_X_TRACE_BETA", env[2].Name)
-				assert.Equal(t, "beta-trace", env[2].Value)
+
+				assert.Equal(t, "TOOLHIVE_HEADER_FORWARD_BETA", env[2].Name)
+				assert.JSONEq(t,
+					`{"addPlaintextHeaders":{"X-Trace":"beta-trace"}}`,
+					env[2].Value,
+				)
 			},
 		},
 		{
-			name: "deterministic across reconciles — same input produces same output",
+			name: "deterministic across reconciles — JSON map keys are sorted",
 			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "default"},
@@ -1302,14 +1319,15 @@ func TestBuildHeaderForwardEnvVarsForEntries(t *testing.T) {
 			},
 			validate: func(t *testing.T, env []corev1.EnvVar) {
 				t.Helper()
-				require.Len(t, env, 4)
-				names := []string{env[0].Name, env[1].Name, env[2].Name, env[3].Name}
-				assert.Equal(t, []string{
-					"TOOLHIVE_HEADER_PLAINTEXT_X_A_DEMO",
-					"TOOLHIVE_HEADER_PLAINTEXT_X_B_DEMO",
-					"TOOLHIVE_HEADER_PLAINTEXT_X_C_DEMO",
-					"TOOLHIVE_HEADER_PLAINTEXT_X_D_DEMO",
-				}, names)
+				require.Len(t, env, 1)
+				assert.Equal(t, "TOOLHIVE_HEADER_FORWARD_DEMO", env[0].Name)
+				// json.Marshal emits map keys in sorted order; assert the
+				// exact byte sequence so a future Go change (or accidental
+				// reordering) trips the test.
+				assert.Equal(t,
+					`{"addPlaintextHeaders":{"X-A":"1","X-B":"2","X-C":"3","X-D":"4"}}`,
+					env[0].Value,
+				)
 			},
 		},
 	}

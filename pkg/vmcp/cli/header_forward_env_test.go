@@ -13,10 +13,10 @@ import (
 )
 
 // TestReadHeaderForwardFromEnv covers reconstructing the per-backend
-// HeaderForwardConfig from env vars the operator emitted on the vMCP pod.
-// Plaintext and secret-backed entries are both decoded; secret entries
-// carry only the identifier (the value is resolved later via
-// secrets.EnvironmentProvider at request time).
+// HeaderForwardConfig from the JSON-encoded TOOLHIVE_HEADER_FORWARD_<entry>
+// env vars the operator emits on the vMCP pod. Original header casing /
+// punctuation is preserved by the JSON value, so the runtime reconstructs
+// "X-MCP-Toolsets" rather than "X_MCP_TOOLSETS".
 func TestReadHeaderForwardFromEnv(t *testing.T) {
 	t.Parallel()
 
@@ -37,7 +37,7 @@ func TestReadHeaderForwardFromEnv(t *testing.T) {
 		},
 		{
 			name:               "no static backends yields nil",
-			env:                []string{"TOOLHIVE_HEADER_PLAINTEXT_X_TRACE_DEMO=t"},
+			env:                []string{`TOOLHIVE_HEADER_FORWARD_DEMO={"addPlaintextHeaders":{"X-Trace":"t"}}`},
 			staticBackendNames: nil,
 			validate: func(t *testing.T, m map[string]*vmcp.HeaderForwardConfig) {
 				t.Helper()
@@ -45,9 +45,9 @@ func TestReadHeaderForwardFromEnv(t *testing.T) {
 			},
 		},
 		{
-			name: "plaintext header decodes",
+			name: "plaintext header decodes preserving original casing and hyphens",
 			env: []string{
-				"TOOLHIVE_HEADER_PLAINTEXT_X_MCP_TOOLSETS_GITHUB_COPILOT=projects,issues",
+				`TOOLHIVE_HEADER_FORWARD_GITHUB_COPILOT={"addPlaintextHeaders":{"X-MCP-Toolsets":"projects,issues"}}`,
 				"PATH=/bin",
 			},
 			staticBackendNames: []string{"github-copilot"},
@@ -55,13 +55,18 @@ func TestReadHeaderForwardFromEnv(t *testing.T) {
 				t.Helper()
 				cfg := m["github-copilot"]
 				require.NotNil(t, cfg)
-				assert.Equal(t, map[string]string{"X_MCP_TOOLSETS": "projects,issues"}, cfg.AddPlaintextHeaders)
+				assert.Equal(t, map[string]string{"X-MCP-Toolsets": "projects,issues"}, cfg.AddPlaintextHeaders)
 				assert.Empty(t, cfg.AddHeadersFromSecret)
 			},
 		},
 		{
-			name: "secret header decodes to identifier (value not captured)",
+			name: "secret header decodes to identifier (value not in manifest)",
 			env: []string{
+				`TOOLHIVE_HEADER_FORWARD_STRIPE={"addHeadersFromSecret":{"X-Api-Key":"HEADER_FORWARD_X_API_KEY_STRIPE"}}`,
+				// The secret-value env var carries the resolved value via
+				// secretKeyRef; its presence here just shows that
+				// readHeaderForwardFromEnv ignores it (the existing
+				// resolveHeaderForward path consumes it at request time).
 				"TOOLHIVE_SECRET_HEADER_FORWARD_X_API_KEY_STRIPE=resolved-secret-value",
 			},
 			staticBackendNames: []string{"stripe"},
@@ -71,15 +76,29 @@ func TestReadHeaderForwardFromEnv(t *testing.T) {
 				require.NotNil(t, cfg)
 				assert.Empty(t, cfg.AddPlaintextHeaders)
 				assert.Equal(t,
-					map[string]string{"X_API_KEY": "HEADER_FORWARD_X_API_KEY_STRIPE"},
+					map[string]string{"X-Api-Key": "HEADER_FORWARD_X_API_KEY_STRIPE"},
 					cfg.AddHeadersFromSecret,
 				)
 			},
 		},
 		{
+			name: "secret env var alone (no manifest) yields no entry",
+			env: []string{
+				"TOOLHIVE_SECRET_HEADER_FORWARD_X_TOKEN_DEMO=resolved",
+			},
+			staticBackendNames: []string{"demo"},
+			validate: func(t *testing.T, m map[string]*vmcp.HeaderForwardConfig) {
+				t.Helper()
+				// A secret env var without a matching manifest is dropped.
+				// In production the operator emits both, so this can't happen
+				// in practice — but the runtime stays defensive.
+				assert.Empty(t, m)
+			},
+		},
+		{
 			name: "stray env var with unknown backend is ignored",
 			env: []string{
-				"TOOLHIVE_HEADER_PLAINTEXT_X_TRACE_GHOST=should-be-dropped",
+				`TOOLHIVE_HEADER_FORWARD_GHOST={"addPlaintextHeaders":{"X-Trace":"x"}}`,
 			},
 			staticBackendNames: []string{"alpha"},
 			validate: func(t *testing.T, m map[string]*vmcp.HeaderForwardConfig) {
@@ -88,29 +107,25 @@ func TestReadHeaderForwardFromEnv(t *testing.T) {
 			},
 		},
 		{
-			name: "header name with multiple underscores splits at the right boundary",
+			name: "malformed manifest is skipped without failing other backends",
 			env: []string{
-				"TOOLHIVE_HEADER_PLAINTEXT_X_GITHUB_COPILOT_TOKEN_GITHUB_COPILOT=t",
+				`TOOLHIVE_HEADER_FORWARD_BROKEN=not-json`,
+				`TOOLHIVE_HEADER_FORWARD_DEMO={"addPlaintextHeaders":{"X-Trace":"ok"}}`,
 			},
-			staticBackendNames: []string{"github-copilot"},
+			staticBackendNames: []string{"broken", "demo"},
 			validate: func(t *testing.T, m map[string]*vmcp.HeaderForwardConfig) {
 				t.Helper()
-				cfg := m["github-copilot"]
+				assert.NotContains(t, m, "broken")
+				cfg := m["demo"]
 				require.NotNil(t, cfg)
-				// Header reconstructs as everything before the trailing
-				// "_GITHUB_COPILOT" (the normalized backend name).
-				assert.Equal(t,
-					map[string]string{"X_GITHUB_COPILOT_TOKEN": "t"},
-					cfg.AddPlaintextHeaders,
-				)
+				assert.Equal(t, map[string]string{"X-Trace": "ok"}, cfg.AddPlaintextHeaders)
 			},
 		},
 		{
-			name: "mixed plaintext + secret across multiple backends scoped per backend",
+			name: "mixed plaintext + secret in one manifest scoped per backend",
 			env: []string{
-				"TOOLHIVE_HEADER_PLAINTEXT_X_TRACE_ALPHA=alpha-trace",
-				"TOOLHIVE_SECRET_HEADER_FORWARD_X_TOKEN_ALPHA=alpha-secret-value",
-				"TOOLHIVE_HEADER_PLAINTEXT_X_TRACE_BETA=beta-trace",
+				`TOOLHIVE_HEADER_FORWARD_ALPHA={"addPlaintextHeaders":{"X-Trace":"alpha-trace"},"addHeadersFromSecret":{"X-Token":"HEADER_FORWARD_X_TOKEN_ALPHA"}}`,
+				`TOOLHIVE_HEADER_FORWARD_BETA={"addPlaintextHeaders":{"X-Trace":"beta-trace"}}`,
 			},
 			staticBackendNames: []string{"alpha", "beta"},
 			validate: func(t *testing.T, m map[string]*vmcp.HeaderForwardConfig) {
@@ -118,15 +133,15 @@ func TestReadHeaderForwardFromEnv(t *testing.T) {
 
 				alpha := m["alpha"]
 				require.NotNil(t, alpha)
-				assert.Equal(t, map[string]string{"X_TRACE": "alpha-trace"}, alpha.AddPlaintextHeaders)
+				assert.Equal(t, map[string]string{"X-Trace": "alpha-trace"}, alpha.AddPlaintextHeaders)
 				assert.Equal(t,
-					map[string]string{"X_TOKEN": "HEADER_FORWARD_X_TOKEN_ALPHA"},
+					map[string]string{"X-Token": "HEADER_FORWARD_X_TOKEN_ALPHA"},
 					alpha.AddHeadersFromSecret,
 				)
 
 				beta := m["beta"]
 				require.NotNil(t, beta)
-				assert.Equal(t, map[string]string{"X_TRACE": "beta-trace"}, beta.AddPlaintextHeaders)
+				assert.Equal(t, map[string]string{"X-Trace": "beta-trace"}, beta.AddPlaintextHeaders)
 				assert.Empty(t, beta.AddHeadersFromSecret)
 			},
 		},
@@ -134,14 +149,14 @@ func TestReadHeaderForwardFromEnv(t *testing.T) {
 			name: "malformed env entry without '=' is skipped",
 			env: []string{
 				"NO_EQUALS_HERE",
-				"TOOLHIVE_HEADER_PLAINTEXT_X_TRACE_DEMO=ok",
+				`TOOLHIVE_HEADER_FORWARD_DEMO={"addPlaintextHeaders":{"X-Trace":"ok"}}`,
 			},
 			staticBackendNames: []string{"demo"},
 			validate: func(t *testing.T, m map[string]*vmcp.HeaderForwardConfig) {
 				t.Helper()
 				cfg := m["demo"]
 				require.NotNil(t, cfg)
-				assert.Equal(t, map[string]string{"X_TRACE": "ok"}, cfg.AddPlaintextHeaders)
+				assert.Equal(t, map[string]string{"X-Trace": "ok"}, cfg.AddPlaintextHeaders)
 			},
 		},
 	}

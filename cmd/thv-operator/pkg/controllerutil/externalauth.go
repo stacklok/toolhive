@@ -59,21 +59,12 @@ func GenerateUniqueHeaderInjectionEnvVarName(configName string) string {
 // secrets.EnvironmentProvider.
 const HeaderForwardManifestEnvVarPrefix = "TOOLHIVE_HEADER_FORWARD_"
 
-// HeaderForwardSecretEnvVarPrefix is the prefix the operator uses when
-// emitting per-(owner, header) valueFrom.secretKeyRef env vars on a
-// workload pod for MCPServerEntry / MCPRemoteProxy
-// headerForward.AddHeadersFromSecret entries. The full env var name is
-// TOOLHIVE_SECRET_HEADER_FORWARD_<HEADER>_<OWNER>; the secret identifier
-// the runtime hands to secrets.EnvironmentProvider is the same name with
-// the leading "TOOLHIVE_SECRET_" stripped (i.e. "HEADER_FORWARD_<H>_<O>").
-const HeaderForwardSecretEnvVarPrefix = "TOOLHIVE_SECRET_HEADER_FORWARD_"
-
-// normalizeHeaderForEnvVar applies the canonical sanitization used in every
+// NormalizeHeaderForEnvVar applies the canonical sanitization used in every
 // header-forward env-var name: uppercase, hyphens to underscores, anything
 // outside [A-Z0-9_] also to underscore. Both the secret-ref and the
 // plaintext-value emitters MUST share this function so a header that
 // round-trips through one branch never collides with the other.
-func normalizeHeaderForEnvVar(s string) string {
+func NormalizeHeaderForEnvVar(s string) string {
 	upper := strings.ToUpper(strings.ReplaceAll(s, "-", "_"))
 	return envVarSanitizer.ReplaceAllString(upper, "_")
 }
@@ -89,8 +80,8 @@ func normalizeHeaderForEnvVar(s string) string {
 // Returns the full environment variable name (e.g., "TOOLHIVE_SECRET_HEADER_FORWARD_X_API_KEY_MY_OWNER")
 // and the secret identifier portion (e.g., "HEADER_FORWARD_X_API_KEY_MY_OWNER") for use in RunConfig.
 func GenerateHeaderForwardSecretEnvVarName(ownerName, headerName string) (envVarName, secretIdentifier string) {
-	sanitizedHeader := normalizeHeaderForEnvVar(headerName)
-	sanitizedOwner := normalizeHeaderForEnvVar(ownerName)
+	sanitizedHeader := NormalizeHeaderForEnvVar(headerName)
+	sanitizedOwner := NormalizeHeaderForEnvVar(ownerName)
 
 	// Build the secret identifier (what gets stored in RunConfig.AddHeadersFromSecret)
 	secretIdentifier = fmt.Sprintf("HEADER_FORWARD_%s_%s", sanitizedHeader, sanitizedOwner)
@@ -111,7 +102,7 @@ func GenerateHeaderForwardSecretEnvVarName(ownerName, headerName string) (envVar
 // and the normalized owner segment ("MY_OWNER") used when iterating env
 // vars matching HeaderForwardManifestEnvVarPrefix.
 func GenerateHeaderForwardManifestEnvVarName(ownerName string) (envVarName, normalizedOwner string) {
-	normalizedOwner = normalizeHeaderForEnvVar(ownerName)
+	normalizedOwner = NormalizeHeaderForEnvVar(ownerName)
 	envVarName = fmt.Sprintf("%s%s", HeaderForwardManifestEnvVarPrefix, normalizedOwner)
 	return envVarName, normalizedOwner
 }

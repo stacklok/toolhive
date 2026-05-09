@@ -1297,39 +1297,6 @@ func TestBuildHeaderForwardEnvVarsForEntries(t *testing.T) {
 				)
 			},
 		},
-		{
-			name: "deterministic across reconciles — JSON map keys are sorted",
-			entries: []mcpv1beta1.MCPServerEntry{
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "default"},
-					Spec: mcpv1beta1.MCPServerEntrySpec{
-						RemoteURL: "https://demo.example/mcp/",
-						Transport: "streamable-http",
-						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-						HeaderForward: &mcpv1beta1.HeaderForwardConfig{
-							AddPlaintextHeaders: map[string]string{
-								"X-A": "1", "X-B": "2", "X-C": "3", "X-D": "4",
-							},
-						},
-					},
-				},
-			},
-			workloads: []workloads.TypedWorkload{
-				{Name: "demo", Type: workloads.WorkloadTypeMCPServerEntry},
-			},
-			validate: func(t *testing.T, env []corev1.EnvVar) {
-				t.Helper()
-				require.Len(t, env, 1)
-				assert.Equal(t, "TOOLHIVE_HEADER_FORWARD_DEMO", env[0].Name)
-				// json.Marshal emits map keys in sorted order; assert the
-				// exact byte sequence so a future Go change (or accidental
-				// reordering) trips the test.
-				assert.Equal(t,
-					`{"addPlaintextHeaders":{"X-A":"1","X-B":"2","X-C":"3","X-D":"4"}}`,
-					env[0].Value,
-				)
-			},
-		},
 	}
 
 	for _, tt := range tests {

@@ -28,6 +28,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -593,18 +594,6 @@ func (r *VirtualMCPServerReconciler) buildHeaderForwardEnvVarsForEntries(
 	return envVars, nil
 }
 
-// headerForwardManifest is the JSON shape carried in the per-backend
-// TOOLHIVE_HEADER_FORWARD_<entry> env var. It mirrors vmcp.HeaderForwardConfig
-// at the wire level so the runtime can json.Unmarshal directly into that
-// type without an intermediate operator-side model. Header keys preserve
-// the original casing the user authored on the CRD — that's the whole
-// point of carrying them in the JSON value rather than encoding them into
-// the env var name.
-type headerForwardManifest struct {
-	AddPlaintextHeaders  map[string]string `json:"addPlaintextHeaders,omitempty"`
-	AddHeadersFromSecret map[string]string `json:"addHeadersFromSecret,omitempty"`
-}
-
 // buildHeaderForwardManifestForEntry builds the JSON-encoded manifest for
 // a single MCPServerEntry. AddHeadersFromSecret values carry the secret
 // identifier (HEADER_FORWARD_<H>_<OWNER>) the runtime hands to
@@ -620,14 +609,12 @@ func buildHeaderForwardManifestForEntry(entry *mcpv1beta1.MCPServerEntry) (strin
 	}
 	src := entry.Spec.HeaderForward
 
-	manifest := headerForwardManifest{}
-	if len(src.AddPlaintextHeaders) > 0 {
-		manifest.AddPlaintextHeaders = make(map[string]string, len(src.AddPlaintextHeaders))
-		for k, v := range src.AddPlaintextHeaders {
-			manifest.AddPlaintextHeaders[k] = v
-		}
+	// Build vmcp.HeaderForwardConfig directly so the JSON shape is the
+	// runtime contract — there is no intermediate operator-side type to
+	// drift away from it. Header keys preserve original casing.
+	manifest := vmcptypes.HeaderForwardConfig{
+		AddPlaintextHeaders: src.AddPlaintextHeaders,
 	}
-
 	for _, ref := range src.AddHeadersFromSecret {
 		if ref.ValueSecretRef == nil {
 			continue

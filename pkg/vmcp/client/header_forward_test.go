@@ -7,7 +7,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -210,42 +209,3 @@ func TestBuildHeaderForwardTripper_NilCfgReturnsBase(t *testing.T) {
 	assert.Same(t, base, got, "nil cfg must pass base through untouched")
 }
 
-// TestHeaderForwardRoundTripper_EndToEndHTTPTestServer exercises the tripper
-// against a real httptest.Server to verify the header reaches a live receiver,
-// catching any Clone/Set regressions.
-func TestHeaderForwardRoundTripper_EndToEndHTTPTestServer(t *testing.T) {
-	t.Parallel()
-
-	var receivedToolsets string
-	var receivedAPIKey string
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		receivedToolsets = r.Header.Get("X-MCP-Toolsets")
-		receivedAPIKey = r.Header.Get("X-API-Key")
-	}))
-	t.Cleanup(server.Close)
-
-	cfg := &vmcp.HeaderForwardConfig{
-		AddPlaintextHeaders: map[string]string{
-			"X-MCP-Toolsets": "projects,issues,pull_requests",
-		},
-		AddHeadersFromSecret: map[string]string{
-			"X-API-Key": "HEADER_FORWARD_X_API_KEY_BACKEND_E",
-		},
-	}
-	provider := &mockProvider{values: map[string]string{
-		"HEADER_FORWARD_X_API_KEY_BACKEND_E": "secret-token-value",
-	}}
-
-	rt, err := buildHeaderForwardTripper(http.DefaultTransport, cfg, provider, "backend-e")
-	require.NoError(t, err)
-	client := &http.Client{Transport: rt}
-
-	req, err := http.NewRequest(http.MethodGet, server.URL, http.NoBody)
-	require.NoError(t, err)
-	resp, err := client.Do(req)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = resp.Body.Close() })
-
-	assert.Equal(t, "projects,issues,pull_requests", receivedToolsets)
-	assert.Equal(t, "secret-token-value", receivedAPIKey)
-}

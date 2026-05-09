@@ -643,11 +643,9 @@ audit:
 				return
 			}
 
-			// Verify configuration. Load returns *RuntimeConfig; the
-			// shared want() helpers operate on *Config — pass the
-			// embedded value through.
+			// Verify configuration
 			if tt.want != nil && cfg != nil {
-				tt.want(t, &cfg.Config)
+				tt.want(t, cfg)
 			}
 		})
 	}
@@ -768,7 +766,7 @@ aggregation:
 			}
 
 			validator := NewValidator()
-			err = validator.Validate(&cfg.Config)
+			err = validator.Validate(cfg)
 
 			if tt.shouldPass && err != nil {
 				t.Errorf("Validate() unexpected error = %v", err)

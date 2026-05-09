@@ -1,13 +1,23 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package config
+// Package runtime hosts the operator-only on-disk wrapper around
+// pkg/vmcp/config.Config. Living in a subpackage keeps the wrapper out of
+// the source set scanned by crdref-gen (which globs pkg/vmcp/config/*.go,
+// not subpackages) and out of the type graph that controller-gen walks for
+// CRD schema generation. Both keep operator-resolved sidecar fields off the
+// public CRD surface.
+package runtime
+
+import (
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+)
 
 // RuntimeConfig is the on-disk shape the operator writes to the vMCP
 // ConfigMap and the vMCP binary parses on startup. It embeds the public
-// Config (the user-facing API surface that VirtualMCPServerSpec exposes) and
-// is the place to add operator-resolved fields that should NOT appear in the
-// CRD schema.
+// vmcpconfig.Config (the user-facing API surface that VirtualMCPServerSpec
+// exposes) and is the place to add operator-resolved fields that should NOT
+// appear in the CRD schema.
 //
 // Why a wrapper: cmd/thv-operator/api/v1beta1/virtualmcpserver_types.go
 // types Spec.Config as `config.Config`. controller-gen renders the CRD
@@ -28,8 +38,8 @@ package config
 //   - Not a CRD type. RuntimeConfig has no kubebuilder markers and must
 //     never be field-referenced from any v1beta1 type. The single way to
 //     leak this struct's fields into the CRD is to retype
-//     VirtualMCPServerSpec.Config from `config.Config` to
-//     `config.RuntimeConfig`. Don't.
+//     VirtualMCPServerSpec.Config from `vmcpconfig.Config` to
+//     `runtime.RuntimeConfig`. Don't.
 //
 //   - No top-level field on RuntimeConfig may share a JSON or YAML key with
 //     any Config field. encoding/json (which inlines via anonymous-field
@@ -38,5 +48,5 @@ package config
 //     precedence than encoding/json's outer-wins rule. The disjoint-tag
 //     test in runtime_config_test.go pins this.
 type RuntimeConfig struct {
-	Config `json:",inline" yaml:",inline"` //nolint:revive // inline is a valid kubernetes json/yaml tag option
+	vmcpconfig.Config `json:",inline" yaml:",inline"` //nolint:revive // inline is a valid kubernetes json/yaml tag option
 }

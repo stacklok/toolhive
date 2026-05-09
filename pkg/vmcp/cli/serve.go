@@ -462,40 +462,32 @@ func getStatusReportingInterval(cfg *config.Config) time.Duration {
 }
 
 // loadAndValidateConfig loads and validates the vMCP configuration file.
-//
-// The loader returns *RuntimeConfig (which embeds Config inline). Today
-// there are no operator-resolved sidecar fields on RuntimeConfig, so we
-// unwrap to *Config to keep the existing serve pipeline tight. When a
-// downstream consumer needs a sidecar field (e.g. a per-backend
-// HeaderForward map populated from MCPServerEntry references), promote
-// this function's return type to *config.RuntimeConfig and thread the
-// wrapper through the pipeline to that consumer.
 func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	slog.Info(fmt.Sprintf("Loading configuration from: %s", configPath))
 
 	envReader := &env.OSReader{}
 	loader := config.NewYAMLLoader(configPath, envReader)
-	rc, err := loader.Load()
+	cfg, err := loader.Load()
 	if err != nil {
 		slog.Error(fmt.Sprintf("Failed to load configuration: %v", err))
 		return nil, fmt.Errorf("configuration loading failed: %w", err)
 	}
 
 	validator := config.NewValidator()
-	if err := validator.Validate(&rc.Config); err != nil {
+	if err := validator.Validate(cfg); err != nil {
 		slog.Error(fmt.Sprintf("Configuration validation failed: %v", err))
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
 	slog.Info("configuration loaded and validated successfully")
-	slog.Info(fmt.Sprintf("  Name: %s", rc.Name))
-	slog.Info(fmt.Sprintf("  Group: %s", rc.Group))
-	slog.Info(fmt.Sprintf("  Conflict Resolution: %s", rc.Aggregation.ConflictResolution))
-	if len(rc.CompositeTools) > 0 {
-		slog.Info(fmt.Sprintf("  Composite Tools: %d defined", len(rc.CompositeTools)))
+	slog.Info(fmt.Sprintf("  Name: %s", cfg.Name))
+	slog.Info(fmt.Sprintf("  Group: %s", cfg.Group))
+	slog.Info(fmt.Sprintf("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution))
+	if len(cfg.CompositeTools) > 0 {
+		slog.Info(fmt.Sprintf("  Composite Tools: %d defined", len(cfg.CompositeTools)))
 	}
 
-	return &rc.Config, nil
+	return cfg, nil
 }
 
 // generateQuickModeConfig constructs a minimal in-memory config for zero-config

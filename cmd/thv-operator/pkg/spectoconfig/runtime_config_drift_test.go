@@ -13,6 +13,7 @@ import (
 
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	vmcpruntimeconfig "github.com/stacklok/toolhive/pkg/vmcp/config/runtime"
 )
 
 // runtimeOnlyLeafJustifications enumerates leaf paths that exist on
@@ -55,7 +56,7 @@ func TestRuntimeConfigSeam(t *testing.T) {
 	t.Parallel()
 
 	configLeaves := setOf(testutil.FlattenJSONLeafFields(reflect.TypeOf(vmcpconfig.Config{})))
-	runtimeLeaves := setOf(testutil.FlattenJSONLeafFields(reflect.TypeOf(vmcpconfig.RuntimeConfig{})))
+	runtimeLeaves := setOf(testutil.FlattenJSONLeafFields(reflect.TypeOf(vmcpruntimeconfig.RuntimeConfig{})))
 
 	t.Run("RuntimeConfig is a superset of Config", func(t *testing.T) {
 		t.Parallel()

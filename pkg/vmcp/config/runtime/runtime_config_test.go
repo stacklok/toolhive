@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package config
+package runtime
 
 import (
 	"os"
@@ -12,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
+
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // TestRuntimeConfig_MarshalsIdenticallyToConfig pins the invariant that
@@ -27,10 +29,10 @@ func TestRuntimeConfig_MarshalsIdenticallyToConfig(t *testing.T) {
 	// populated — the YAML library walks reachable fields, and any
 	// divergence between Config and RuntimeConfig (extra top-level key)
 	// would surface even on a near-empty value.
-	cfg := Config{
+	cfg := vmcpconfig.Config{
 		Name:  "demo",
 		Group: "demo-group",
-		Backends: []StaticBackendConfig{
+		Backends: []vmcpconfig.StaticBackendConfig{
 			{Name: "b1", URL: "https://example.test", Transport: "streamable-http"},
 		},
 	}
@@ -55,10 +57,10 @@ func TestRuntimeConfig_MarshalsIdenticallyToConfig(t *testing.T) {
 func TestRuntimeConfig_Load_RoundTrip(t *testing.T) {
 	t.Parallel()
 
-	cfg := Config{
+	cfg := vmcpconfig.Config{
 		Name:  "demo",
 		Group: "demo-group",
-		IncomingAuth: &IncomingAuthConfig{
+		IncomingAuth: &vmcpconfig.IncomingAuthConfig{
 			Type: "anonymous",
 		},
 	}
@@ -68,7 +70,7 @@ func TestRuntimeConfig_Load_RoundTrip(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(tmp, yamlBytes, 0o600))
 
-	loader := NewYAMLLoader(tmp, &fakeEnv{})
+	loader := vmcpconfig.NewYAMLLoader(tmp, &fakeEnv{})
 	rc, err := loader.Load()
 	require.NoError(t, err)
 	require.NotNil(t, rc)
@@ -88,7 +90,7 @@ func TestRuntimeConfig_Load_RoundTrip(t *testing.T) {
 func TestRuntimeConfig_DisjointTopLevelTags(t *testing.T) {
 	t.Parallel()
 
-	configKeys := topLevelTagKeys(reflect.TypeOf(Config{}))
+	configKeys := topLevelTagKeys(reflect.TypeOf(vmcpconfig.Config{}))
 	runtimeOuterKeys := outerOnlyTagKeys(reflect.TypeOf(RuntimeConfig{}))
 
 	for _, key := range runtimeOuterKeys {

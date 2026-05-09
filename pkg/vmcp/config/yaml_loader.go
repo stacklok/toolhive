@@ -30,35 +30,36 @@ func NewYAMLLoader(filePath string, envReader env.Reader) *YAMLLoader {
 	}
 }
 
-// Load reads and parses the YAML configuration file into a RuntimeConfig.
+// Load reads and parses the YAML configuration file.
 // Uses strict unmarshalling to reject unknown fields.
 //
-// The returned RuntimeConfig embeds Config inline, so existing callers that
-// only need user-facing fields can use rc.<field> exactly as they would have
-// with the previous *Config return. Callers that consume operator-resolved
-// sidecar fields (e.g. backend HeaderForward maps populated from
-// MCPServerEntry references) read them off RuntimeConfig directly.
-func (l *YAMLLoader) Load() (*RuntimeConfig, error) {
+// Note: when the operator writes the vMCP ConfigMap it wraps Config in
+// runtime.RuntimeConfig (see pkg/vmcp/config/runtime). Today the wrapper
+// adds no extra keys, so parsing into Config directly succeeds. When a
+// future operator-resolved sidecar field lands on RuntimeConfig, callers
+// that need it should use runtime.Load instead, which parses into the
+// wrapper.
+func (l *YAMLLoader) Load() (*Config, error) {
 	data, err := os.ReadFile(l.filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
 	// Use yaml.Decoder with KnownFields for strict unmarshalling
-	var rc RuntimeConfig
+	var cfg Config
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true) // Reject unknown fields
 
-	if err := decoder.Decode(&rc); err != nil {
+	if err := decoder.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse YAML: %w", err)
 	}
 
 	// Post-process the config
-	if err := l.postProcess(&rc.Config); err != nil {
+	if err := l.postProcess(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to process config: %w", err)
 	}
 
-	return &rc, nil
+	return &cfg, nil
 }
 
 // postProcess applies post-load processing to the config:

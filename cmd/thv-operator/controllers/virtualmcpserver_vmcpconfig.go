@@ -22,6 +22,7 @@ import (
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	vmcpruntimeconfig "github.com/stacklok/toolhive/pkg/vmcp/config/runtime"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -89,7 +90,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	// to the ConfigMap without leaking into the public Config (and therefore
 	// the CRD schema). Today RuntimeConfig embeds Config inline and adds no
 	// extra keys, so the marshalled YAML is byte-identical.
-	runtime := vmcpconfig.RuntimeConfig{Config: *config}
+	runtime := vmcpruntimeconfig.RuntimeConfig{Config: *config}
 	vmcpConfigYAML, err := yaml.Marshal(runtime)
 	if err != nil {
 		return fmt.Errorf("failed to marshal vmcp config: %w", err)

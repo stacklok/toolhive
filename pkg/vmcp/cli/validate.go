@@ -30,12 +30,11 @@ func Validate(_ context.Context, cfg ValidateConfig) error {
 
 	envReader := &env.OSReader{}
 	loader := config.NewYAMLLoader(cfg.ConfigPath, envReader)
-	rc, err := loader.Load()
+	vmcpCfg, err := loader.Load()
 	if err != nil {
 		slog.Error(fmt.Sprintf("Failed to load configuration: %v", err))
 		return fmt.Errorf("configuration loading failed: %w", err)
 	}
-	vmcpCfg := &rc.Config
 
 	slog.Debug("configuration loaded successfully, performing validation")
 

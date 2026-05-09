@@ -208,4 +208,3 @@ func TestBuildHeaderForwardTripper_NilCfgReturnsBase(t *testing.T) {
 	require.NoError(t, err)
 	assert.Same(t, base, got, "nil cfg must pass base through untouched")
 }
-

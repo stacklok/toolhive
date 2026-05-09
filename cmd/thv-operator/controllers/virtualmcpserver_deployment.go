@@ -358,6 +358,17 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	// Mount outgoing auth secrets
 	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp, typedWorkloads)...)
 
+	// Mount per-(entry, header) env vars for MCPServerEntry headerForward.
+	// Plaintext entries are emitted as literal-value env vars; secret entries
+	// as valueFrom.secretKeyRef. The vMCP runtime walks the well-known prefixes
+	// at startup to reconstruct the per-backend HeaderForwardConfig in static
+	// mode (issue #4996).
+	headerEnv, err := r.buildHeaderForwardEnvVarsForEntries(ctx, vmcp.Namespace, typedWorkloads)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build header forward env vars: %w", err)
+	}
+	env = append(env, headerEnv...)
+
 	// Always mount HMAC secret for session token binding.
 	env = append(env, r.buildHMACSecretEnvVar(vmcp))
 
@@ -491,6 +502,111 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 	}
 
 	return env
+}
+
+// buildHeaderForwardEnvVarsForEntries iterates entry-type workloads and emits
+// one env var per (entry, header) declared in spec.headerForward.
+//
+// Plaintext entries (AddPlaintextHeaders) become literal-value env vars named
+// per HeaderForwardPlaintextEnvVarPrefix; the vMCP runtime walks them at
+// startup and copies the values into Backend.HeaderForward.AddPlaintextHeaders.
+//
+// Secret-backed entries (AddHeadersFromSecret) become valueFrom.secretKeyRef
+// env vars named TOOLHIVE_SECRET_HEADER_FORWARD_<HEADER>_<ENTRY> so the
+// Secret value is injected by Kubernetes at pod start and never enters the
+// operator's view of the world. The runtime resolves them via
+// secrets.EnvironmentProvider at request time inside resolveHeaderForward.
+//
+// Scoping by entry name prevents collisions when multiple entries in the
+// group declare the same header name.
+//
+// Returns (nil, nil) when no entries declare any HeaderForward — the common
+// case, producing no env-var churn on the Deployment spec.
+func (r *VirtualMCPServerReconciler) buildHeaderForwardEnvVarsForEntries(
+	ctx context.Context,
+	namespace string,
+	typedWorkloads []workloads.TypedWorkload,
+) ([]corev1.EnvVar, error) {
+	// Early return if no MCPServerEntry workloads to avoid unnecessary API calls.
+	hasEntries := false
+	for _, workload := range typedWorkloads {
+		if workload.Type == workloads.WorkloadTypeMCPServerEntry {
+			hasEntries = true
+			break
+		}
+	}
+	if !hasEntries {
+		return nil, nil
+	}
+
+	entryMap, err := r.listMCPServerEntriesAsMap(ctx, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list MCPServerEntries: %w", err)
+	}
+
+	// Iterate workloads in the order the caller supplied them and, for each
+	// entry, iterate its headers in the order the API returns them. The
+	// caller is responsible for stable workload ordering; per-header order
+	// inside a single entry is sorted below for determinism since map
+	// iteration in Go is unordered.
+	var envVars []corev1.EnvVar
+	for _, workload := range typedWorkloads {
+		if workload.Type != workloads.WorkloadTypeMCPServerEntry {
+			continue
+		}
+		entry, found := entryMap[workload.Name]
+		if !found || entry.Spec.HeaderForward == nil {
+			continue
+		}
+
+		// Plaintext headers — emit literal env vars in sorted order for
+		// deterministic Deployment-spec rendering. Sorting matters because
+		// map iteration in Go is unordered: without it, two reconciles with
+		// the same input could produce env-var lists that differ only in
+		// order, causing spurious Deployment-spec updates and pod rollouts.
+		plaintextHeaders := sortedKeys(entry.Spec.HeaderForward.AddPlaintextHeaders)
+		for _, headerName := range plaintextHeaders {
+			envVarName, _, _ := ctrlutil.GenerateHeaderForwardPlaintextEnvVarName(entry.Name, headerName)
+			envVars = append(envVars, corev1.EnvVar{
+				Name:  envVarName,
+				Value: entry.Spec.HeaderForward.AddPlaintextHeaders[headerName],
+			})
+		}
+
+		// Secret-backed headers — emit valueFrom.secretKeyRef env vars.
+		// AddHeadersFromSecret is a slice in the v1beta1 API so order is
+		// already deterministic from the user's manifest.
+		for _, ref := range entry.Spec.HeaderForward.AddHeadersFromSecret {
+			if ref.ValueSecretRef == nil {
+				continue
+			}
+			envVarName, _ := ctrlutil.GenerateHeaderForwardSecretEnvVarName(entry.Name, ref.HeaderName)
+			envVars = append(envVars, corev1.EnvVar{
+				Name: envVarName,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: ref.ValueSecretRef.Name,
+						},
+						Key: ref.ValueSecretRef.Key,
+					},
+				},
+			})
+		}
+	}
+
+	return envVars, nil
+}
+
+// sortedKeys returns the keys of m in lexicographic order. Used to make
+// env-var emission deterministic across reconciles when iterating maps.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs from workloads in the group

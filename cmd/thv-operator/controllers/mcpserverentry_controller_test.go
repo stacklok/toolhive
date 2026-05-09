@@ -330,6 +330,81 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryValid},
 			},
 		},
+		{
+			name: "headerForward plaintext only - no secret validation needed",
+			entry: func() *mcpv1beta1.MCPServerEntry {
+				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
+				e.Spec.HeaderForward = &mcpv1beta1.HeaderForwardConfig{
+					AddPlaintextHeaders: map[string]string{"X-MCP-Toolsets": "projects,issues"},
+				}
+				return e
+			}(),
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseValid,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryValid},
+			},
+		},
+		{
+			name: "headerForward secret ref exists",
+			entry: func() *mcpv1beta1.MCPServerEntry {
+				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
+				e.Spec.HeaderForward = &mcpv1beta1.HeaderForwardConfig{
+					AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+						{
+							HeaderName:     "X-API-Key",
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "api-key-secret", Key: "token"},
+						},
+					},
+				}
+				return e
+			}(),
+			objects: []client.Object{
+				newMCPGroup(mcpv1beta1.MCPGroupPhaseReady),
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: "api-key-secret", Namespace: testEntryNS},
+					Data:       map[string][]byte{"token": []byte("secret-value")},
+				},
+			},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseValid,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryHeaderSecretsValid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryValid},
+			},
+		},
+		{
+			name: "headerForward secret ref missing flips entry to Failed",
+			entry: func() *mcpv1beta1.MCPServerEntry {
+				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
+				e.Spec.HeaderForward = &mcpv1beta1.HeaderForwardConfig{
+					AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+						{
+							HeaderName:     "X-API-Key",
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "missing-secret", Key: "token"},
+						},
+					},
+				}
+				return e
+			}(),
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryHeaderSecretNotFound},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
+			},
+		},
 	}
 
 	for _, tt := range tests {

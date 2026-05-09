@@ -85,6 +85,12 @@ func (r *MCPServerEntryReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 	allValid = valid && allValid
 
+	valid, err = r.validateHeaderForwardSecretRefs(ctx, entry)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	allValid = valid && allValid
+
 	// Compute overall phase and Valid condition
 	r.updateOverallStatus(entry, allValid)
 
@@ -295,6 +301,60 @@ func (r *MCPServerEntryReconciler) validateCABundleRef(
 		Status:             metav1.ConditionTrue,
 		Reason:             mcpv1beta1.ConditionReasonMCPServerEntryCABundleRefValid,
 		Message:            "Referenced CA bundle ConfigMap exists",
+		ObservedGeneration: entry.Generation,
+	})
+	return true, nil
+}
+
+// validateHeaderForwardSecretRefs checks that every Secret referenced by
+// spec.headerForward.addHeadersFromSecret exists in the entry's namespace.
+// Skipped (condition removed) when no Secret-backed headers are declared.
+// Returns (valid, error) where a non-nil error means a transient API failure
+// that should be requeued.
+func (r *MCPServerEntryReconciler) validateHeaderForwardSecretRefs(
+	ctx context.Context,
+	entry *mcpv1beta1.MCPServerEntry,
+) (bool, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	if entry.Spec.HeaderForward == nil || len(entry.Spec.HeaderForward.AddHeadersFromSecret) == 0 {
+		meta.RemoveStatusCondition(&entry.Status.Conditions,
+			mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated)
+		return true, nil
+	}
+
+	for _, ref := range entry.Spec.HeaderForward.AddHeadersFromSecret {
+		if ref.ValueSecretRef == nil {
+			continue
+		}
+		secret := &corev1.Secret{}
+		secretKey := types.NamespacedName{
+			Namespace: entry.Namespace,
+			Name:      ref.ValueSecretRef.Name,
+		}
+		if err := r.Get(ctx, secretKey, secret); err != nil {
+			if errors.IsNotFound(err) {
+				meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
+					Type:   mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated,
+					Status: metav1.ConditionFalse,
+					Reason: mcpv1beta1.ConditionReasonMCPServerEntryHeaderSecretNotFound,
+					Message: fmt.Sprintf("Secret %q referenced for header %q not found",
+						ref.ValueSecretRef.Name, ref.HeaderName),
+					ObservedGeneration: entry.Generation,
+				})
+				return false, nil
+			}
+			ctxLogger.Error(err, "Failed to get referenced header Secret",
+				"secret", ref.ValueSecretRef.Name, "header", ref.HeaderName)
+			return false, err
+		}
+	}
+
+	meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1beta1.ConditionReasonMCPServerEntryHeaderSecretsValid,
+		Message:            "All referenced header Secrets exist",
 		ObservedGeneration: entry.Generation,
 	})
 	return true, nil

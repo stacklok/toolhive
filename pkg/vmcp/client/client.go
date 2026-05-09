@@ -27,6 +27,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -64,6 +65,11 @@ type httpBackendClient struct {
 	// registry manages authentication strategies for outgoing requests to backend MCP servers.
 	// Must not be nil - use UnauthenticatedStrategy for no authentication.
 	registry vmcpauth.OutgoingAuthRegistry
+
+	// secretsProvider resolves TOOLHIVE_SECRET_<ident> env vars at client-creation
+	// time for per-backend header-forward injection. Nil when no backends declare
+	// headerForward.AddHeadersFromSecret — plaintext-only backends do not require it.
+	secretsProvider secrets.Provider
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -80,7 +86,8 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendC
 	}
 
 	c := &httpBackendClient{
-		registry: registry,
+		registry:        registry,
+		secretsProvider: secrets.NewEnvironmentProvider(),
 	}
 	c.clientFactory = c.defaultClientFactory
 	return c, nil
@@ -294,6 +301,14 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		authStrategy: authStrategy,
 		authConfig:   target.AuthConfig,
 		target:       target,
+	}
+
+	// Inject per-backend HTTP headers from MCPServerEntry.spec.headerForward.
+	// Resolves plaintext + secret-backed headers once here; auth (inner) always
+	// wins over user-supplied headers because it runs after this tripper.
+	baseTransport, err = buildHeaderForwardTripper(baseTransport, target.HeaderForward, h.secretsProvider, target.WorkloadID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build header-forward transport: %w", err)
 	}
 
 	// Extract identity and health-check marker from context and propagate them to backend

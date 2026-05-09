@@ -566,10 +566,24 @@ func discoverBackends(
 	if len(cfg.Backends) > 0 {
 		// Static mode: use pre-configured backends from config.
 		slog.Info(fmt.Sprintf("Static mode: using %d pre-configured backends", len(cfg.Backends)))
+
+		// Reconstruct per-backend HeaderForwardConfig from env vars the
+		// operator emitted on this pod. Plaintext header values arrive as
+		// literal env vars; secret-backed headers carry only identifiers
+		// here and resolve later via secrets.EnvironmentProvider at request
+		// time. Returns nil/empty when no entry in the group declared
+		// headerForward — the common case.
+		backendNames := make([]string, len(cfg.Backends))
+		for i, b := range cfg.Backends {
+			backendNames[i] = b.Name
+		}
+		headerForwardByBackend := readHeaderForwardFromEnv(os.Environ(), backendNames)
+
 		discoverer = aggregator.NewUnifiedBackendDiscovererWithStaticBackends(
 			cfg.Backends,
 			cfg.OutgoingAuth,
 			cfg.Group,
+			headerForwardByBackend,
 		)
 	} else {
 		// Dynamic mode: discover backends at runtime from the active workload manager (K8s or local).

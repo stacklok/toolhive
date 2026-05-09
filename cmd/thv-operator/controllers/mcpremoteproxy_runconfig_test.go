@@ -856,3 +856,89 @@ func TestLabelsForRunConfigRemoteProxy(t *testing.T) {
 	result := labelsForRunConfigRemoteProxy("test-proxy")
 	assert.Equal(t, expected, result)
 }
+
+// TestPopulateScalingConfigForRemoteProxy tests SessionRedis injection into RunConfig
+// from MCPRemoteProxy.spec.sessionStorage. Mirrors TestPopulateScalingConfig in
+// mcpserver_runconfig_test.go. MCPRemoteProxy has no BackendReplicas concept (no
+// backend StatefulSet), so we only cover the SessionRedis path.
+func TestPopulateScalingConfigForRemoteProxy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		storage  *mcpv1beta1.SessionStorageConfig
+		expected func(t *testing.T, sc *runner.ScalingConfig)
+	}{
+		{
+			name:    "nil sessionStorage — ScalingConfig stays nil",
+			storage: nil,
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				assert.Nil(t, sc)
+			},
+		},
+		{
+			name:    "memory provider — ScalingConfig stays nil",
+			storage: &mcpv1beta1.SessionStorageConfig{Provider: "memory"},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				assert.Nil(t, sc)
+			},
+		},
+		{
+			name: "redis — address/db/keyPrefix written to SessionRedis",
+			storage: &mcpv1beta1.SessionStorageConfig{
+				Provider:  mcpv1beta1.SessionStorageProviderRedis,
+				Address:   "redis.default.svc:6379",
+				DB:        2,
+				KeyPrefix: "thv:",
+			},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				require.NotNil(t, sc)
+				require.NotNil(t, sc.SessionRedis)
+				assert.Equal(t, "redis.default.svc:6379", sc.SessionRedis.Address)
+				assert.Equal(t, int32(2), sc.SessionRedis.DB)
+				assert.Equal(t, "thv:", sc.SessionRedis.KeyPrefix)
+			},
+		},
+		{
+			name: "redis with passwordRef — password NOT in SessionRedis",
+			storage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "redis:6379",
+				PasswordRef: &mcpv1beta1.SecretKeyRef{
+					Name: "redis-secret",
+					Key:  "password",
+				},
+			},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				require.NotNil(t, sc)
+				require.NotNil(t, sc.SessionRedis)
+				assert.Equal(t, "redis:6379", sc.SessionRedis.Address)
+				// Password must NOT leak into the RunConfig — it's injected
+				// separately as the THV_SESSION_REDIS_PASSWORD pod env var
+				// by buildRedisPasswordEnvVarForRemoteProxy.
+				data, err := json.Marshal(sc)
+				require.NoError(t, err)
+				assert.NotContains(t, string(data), "redis-secret")
+				assert.NotContains(t, string(data), "password")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			runConfig := &runner.RunConfig{}
+			proxy := &mcpv1beta1.MCPRemoteProxy{
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
+					SessionStorage: tt.storage,
+				},
+			}
+			populateScalingConfigForRemoteProxy(runConfig, proxy)
+			tt.expected(t, runConfig.ScalingConfig)
+		})
+	}
+}

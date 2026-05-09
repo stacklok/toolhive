@@ -190,7 +190,7 @@ func TestInit_RenderedYAMLIsValid(t *testing.T) {
 	require.NoError(t, err)
 
 	validator := vmcpconfig.NewValidator()
-	require.NoError(t, validator.Validate(cfg))
+	require.NoError(t, validator.Validate(&cfg.Config))
 
 	assert.Equal(t, "test-group", cfg.Group)
 	assert.Equal(t, "test-group-vmcp", cfg.Name)

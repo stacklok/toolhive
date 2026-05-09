@@ -1281,20 +1281,24 @@ func TestBuildHeaderForwardEnvVarsForEntries(t *testing.T) {
 				t.Helper()
 				require.Len(t, env, 3)
 
+				// After sort.Slice by Name:
+				//   TOOLHIVE_HEADER_FORWARD_ALPHA
+				//   TOOLHIVE_HEADER_FORWARD_BETA
+				//   TOOLHIVE_SECRET_HEADER_FORWARD_X_TOKEN_ALPHA
 				assert.Equal(t, "TOOLHIVE_HEADER_FORWARD_ALPHA", env[0].Name)
 				assert.JSONEq(t,
 					`{"addPlaintextHeaders":{"X-Trace":"alpha-trace"},"addHeadersFromSecret":{"X-Token":"HEADER_FORWARD_X_TOKEN_ALPHA"}}`,
 					env[0].Value,
 				)
 
-				assert.Equal(t, "TOOLHIVE_SECRET_HEADER_FORWARD_X_TOKEN_ALPHA", env[1].Name)
-				require.NotNil(t, env[1].ValueFrom)
-
-				assert.Equal(t, "TOOLHIVE_HEADER_FORWARD_BETA", env[2].Name)
+				assert.Equal(t, "TOOLHIVE_HEADER_FORWARD_BETA", env[1].Name)
 				assert.JSONEq(t,
 					`{"addPlaintextHeaders":{"X-Trace":"beta-trace"}}`,
-					env[2].Value,
+					env[1].Value,
 				)
+
+				assert.Equal(t, "TOOLHIVE_SECRET_HEADER_FORWARD_X_TOKEN_ALPHA", env[2].Name)
+				require.NotNil(t, env[2].ValueFrom)
 			},
 		},
 	}
@@ -1327,4 +1331,92 @@ func TestBuildHeaderForwardEnvVarsForEntries(t *testing.T) {
 			tt.validate(t, env)
 		})
 	}
+}
+
+// TestBuildHeaderForwardEnvVarsForEntries_ShuffledInputDeterministic verifies
+// that the env-var emission is byte-identical regardless of the order
+// typedWorkloads arrives in. The function sorts internally; this test pins
+// that contract so a future refactor that drops the sort is caught
+// immediately. Together with the comment block in the function, this
+// closes the deployment-update-loop hazard from informer-cache ordering.
+func TestBuildHeaderForwardEnvVarsForEntries_ShuffledInputDeterministic(t *testing.T) {
+	t.Parallel()
+
+	entries := []mcpv1beta1.MCPServerEntry{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "alpha", Namespace: "default"},
+			Spec: mcpv1beta1.MCPServerEntrySpec{
+				RemoteURL: "https://alpha.example/",
+				Transport: "streamable-http",
+				GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "g"},
+				HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+					AddPlaintextHeaders: map[string]string{"X-Trace": "alpha-trace"},
+					AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+						{HeaderName: "X-Token", ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "alpha-secret", Key: "tok"}},
+					},
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "beta", Namespace: "default"},
+			Spec: mcpv1beta1.MCPServerEntrySpec{
+				RemoteURL: "https://beta.example/",
+				Transport: "streamable-http",
+				GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "g"},
+				HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+					AddPlaintextHeaders: map[string]string{"X-Trace": "beta-trace"},
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "gamma", Namespace: "default"},
+			Spec: mcpv1beta1.MCPServerEntrySpec{
+				RemoteURL: "https://gamma.example/",
+				Transport: "streamable-http",
+				GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "g"},
+				HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+					AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+						{HeaderName: "X-Key", ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "gamma-secret", Key: "key"}},
+					},
+				},
+			},
+		},
+	}
+
+	// Two workload orderings — natural and reversed.
+	natural := []workloads.TypedWorkload{
+		{Name: "alpha", Type: workloads.WorkloadTypeMCPServerEntry},
+		{Name: "beta", Type: workloads.WorkloadTypeMCPServerEntry},
+		{Name: "gamma", Type: workloads.WorkloadTypeMCPServerEntry},
+	}
+	reversed := []workloads.TypedWorkload{
+		{Name: "gamma", Type: workloads.WorkloadTypeMCPServerEntry},
+		{Name: "beta", Type: workloads.WorkloadTypeMCPServerEntry},
+		{Name: "alpha", Type: workloads.WorkloadTypeMCPServerEntry},
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	objs := make([]client.Object, 0, len(entries))
+	for i := range entries {
+		objs = append(objs, &entries[i])
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objs...).
+		Build()
+
+	r := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: scheme}
+
+	envNatural, err := r.buildHeaderForwardEnvVarsForEntries(t.Context(), "default", natural)
+	require.NoError(t, err)
+
+	envReversed, err := r.buildHeaderForwardEnvVarsForEntries(t.Context(), "default", reversed)
+	require.NoError(t, err)
+
+	assert.Equal(t, envNatural, envReversed,
+		"buildHeaderForwardEnvVarsForEntries must produce byte-identical output regardless of input workload order")
 }

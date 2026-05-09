@@ -4,6 +4,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -66,6 +67,7 @@ func (h *headerForwardRoundTripper) RoundTrip(req *http.Request) (*http.Response
 // are rejected to prevent Host, Content-Length, Authorization, hop-by-hop, and
 // X-Forwarded-* spoofing via user-supplied config.
 func buildHeaderForwardTripper(
+	ctx context.Context,
 	base http.RoundTripper,
 	cfg *vmcp.HeaderForwardConfig,
 	provider secrets.Provider,
@@ -75,7 +77,7 @@ func buildHeaderForwardTripper(
 		return base, nil
 	}
 
-	headers, err := resolveHeaderForward(cfg, provider, backendName)
+	headers, err := resolveHeaderForward(ctx, cfg, provider, backendName)
 	if err != nil {
 		return nil, err
 	}
@@ -92,6 +94,7 @@ func buildHeaderForwardTripper(
 // Returns an error if any header name is in middleware.RestrictedHeaders or if
 // any referenced secret identifier is not present in the environment.
 func resolveHeaderForward(
+	ctx context.Context,
 	cfg *vmcp.HeaderForwardConfig,
 	provider secrets.Provider,
 	backendName string,
@@ -132,7 +135,7 @@ func resolveHeaderForward(
 				backendName, canonical,
 			)
 		}
-		value, err := provider.GetSecret(nil, identifier) //nolint:staticcheck // provider ignores ctx
+		value, err := provider.GetSecret(ctx, identifier)
 		if err != nil {
 			// Do not include the identifier or value in any user-facing error;
 			// the log is the only place we record the identifier, not the value.

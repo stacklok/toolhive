@@ -17,10 +17,10 @@ import (
 	"log/slog"
 	"sort"
 
-	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 	workloadsmgr "github.com/stacklok/toolhive/pkg/workloads"
@@ -38,7 +38,7 @@ type backendDiscoverer struct {
 	// headerForwardByBackend is keyed by the NORMALIZED backend name (the
 	// suffix the operator emits in TOOLHIVE_HEADER_FORWARD_<entry>). The
 	// canonical backend name from the static config is normalized on
-	// lookup via ctrlutil.NormalizeHeaderForEnvVar so the keying matches
+	// lookup via wirefmt.NormalizeForEnvVar so the keying matches
 	// the operator-side env-var encoding. Nil/empty when no entry declared
 	// headerForward. Only populated in static mode — dynamic mode reads
 	// headerForward directly from the MCPServerEntry CRD.
@@ -289,7 +289,7 @@ func (d *backendDiscoverer) discoverFromStaticConfig() []vmcp.Backend {
 			Type:          vmcp.BackendType(staticBackend.Type),
 			CABundlePath:  staticBackend.CABundlePath,
 			HealthStatus:  vmcp.BackendHealthy, // Assume healthy, actual health check happens later
-			HeaderForward: d.headerForwardByBackend[ctrlutil.NormalizeHeaderForEnvVar(staticBackend.Name)],
+			HeaderForward: d.headerForwardByBackend[wirefmt.NormalizeForEnvVar(staticBackend.Name)],
 			Metadata:      staticBackend.Metadata,
 		}
 

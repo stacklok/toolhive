@@ -121,6 +121,25 @@ func TestReadHeaderForwardFromEnv(t *testing.T) {
 				assert.Equal(t, map[string]string{"X-Trace": "ok"}, cfg.AddPlaintextHeaders)
 			},
 		},
+		{
+			// DNS-1123 forbids underscores in MCPServerEntry names today, so
+			// real entries with the same NormalizeForEnvVar output cannot
+			// coexist. We pass two manifests that share the same suffix
+			// directly to verify the runtime keeps "last wins" behavior and
+			// surfaces a warning rather than silently dropping the first.
+			name: "duplicate manifest suffix retains last value",
+			env: []string{
+				`TOOLHIVE_HEADER_FORWARD_DUP={"addPlaintextHeaders":{"X-Trace":"first"}}`,
+				`TOOLHIVE_HEADER_FORWARD_DUP={"addPlaintextHeaders":{"X-Trace":"second"}}`,
+			},
+			validate: func(t *testing.T, m map[string]*vmcp.HeaderForwardConfig) {
+				t.Helper()
+				cfg := m["DUP"]
+				require.NotNil(t, cfg)
+				assert.Equal(t, map[string]string{"X-Trace": "second"}, cfg.AddPlaintextHeaders,
+					"duplicate manifest must keep the later value (last-write-wins)")
+			},
+		},
 	}
 
 	for _, tt := range tests {

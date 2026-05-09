@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -561,7 +562,7 @@ func (r *VirtualMCPServerReconciler) buildHeaderForwardEnvVarsForEntries(
 			return nil, fmt.Errorf("failed to build header-forward manifest for entry %q: %w", entry.Name, err)
 		}
 		if manifest != "" {
-			manifestVarName, _ := ctrlutil.GenerateHeaderForwardManifestEnvVarName(entry.Name)
+			manifestVarName, _ := wirefmt.ManifestEnvVarName(entry.Name)
 			envVars = append(envVars, corev1.EnvVar{
 				Name:  manifestVarName,
 				Value: manifest,
@@ -576,7 +577,7 @@ func (r *VirtualMCPServerReconciler) buildHeaderForwardEnvVarsForEntries(
 			if ref.ValueSecretRef == nil {
 				continue
 			}
-			envVarName, _ := ctrlutil.GenerateHeaderForwardSecretEnvVarName(entry.Name, ref.HeaderName)
+			envVarName, _ := wirefmt.SecretEnvVarName(entry.Name, ref.HeaderName)
 			envVars = append(envVars, corev1.EnvVar{
 				Name: envVarName,
 				ValueFrom: &corev1.EnvVarSource{
@@ -590,6 +591,17 @@ func (r *VirtualMCPServerReconciler) buildHeaderForwardEnvVarsForEntries(
 			})
 		}
 	}
+
+	// Sort the resulting env vars by Name. The Kubernetes informer cache
+	// returns items in non-deterministic order (Go map iteration), so
+	// without sorting the env vars appear in a different sequence on each
+	// reconcile. reflect.DeepEqual in containerNeedsUpdate is order-
+	// sensitive, so non-deterministic ordering causes a continuous
+	// deployment update loop. Mirrors the pattern in
+	// discoverExternalAuthConfigSecrets / discoverInlineExternalAuthConfigSecrets.
+	sort.Slice(envVars, func(i, j int) bool {
+		return envVars[i].Name < envVars[j].Name
+	})
 
 	return envVars, nil
 }
@@ -619,7 +631,7 @@ func buildHeaderForwardManifestForEntry(entry *mcpv1beta1.MCPServerEntry) (strin
 		if ref.ValueSecretRef == nil {
 			continue
 		}
-		_, identifier := ctrlutil.GenerateHeaderForwardSecretEnvVarName(entry.Name, ref.HeaderName)
+		_, identifier := wirefmt.SecretEnvVarName(entry.Name, ref.HeaderName)
 		if manifest.AddHeadersFromSecret == nil {
 			manifest.AddHeadersFromSecret = make(map[string]string)
 		}

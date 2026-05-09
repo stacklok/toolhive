@@ -5,6 +5,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -14,16 +15,27 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 // mockProvider is an in-memory stand-in for secrets.Provider so tests don't rely
 // on process env. It only implements GetSecret; other methods return errors.
+//
+// errors maps an identifier to a per-key error to inject — used to verify that
+// resolveHeaderForward propagates non-NotFound errors (transient backend
+// failures, permission errors, etc.) without translating them to NotFound.
 type mockProvider struct {
 	values map[string]string
+	errors map[string]error
 }
 
 func (m *mockProvider) GetSecret(_ context.Context, name string) (string, error) {
+	if m.errors != nil {
+		if err, ok := m.errors[name]; ok {
+			return "", err
+		}
+	}
 	if v, ok := m.values[name]; ok {
 		return v, nil
 	}
@@ -132,7 +144,7 @@ func TestResolveHeaderForward_PlaintextAndSecretMerged(t *testing.T) {
 		"HEADER_FORWARD_X_API_KEY_BACKEND_A": "resolved-from-env",
 	}}
 
-	hdr, err := resolveHeaderForward(cfg, provider, "backend-a")
+	hdr, err := resolveHeaderForward(t.Context(), cfg, provider, "backend-a")
 	require.NoError(t, err)
 	assert.Equal(t, "acme", hdr.Get("X-Tenant"))
 	assert.Equal(t, "resolved-from-env", hdr.Get("X-Api-Key"))
@@ -148,55 +160,76 @@ func TestResolveHeaderForward_SecretNotFoundReturnsError(t *testing.T) {
 	}
 	provider := &mockProvider{values: map[string]string{}}
 
-	hdr, err := resolveHeaderForward(cfg, provider, "backend-a")
+	hdr, err := resolveHeaderForward(t.Context(), cfg, provider, "backend-a")
 	require.Error(t, err)
 	assert.Nil(t, hdr)
 	// Error must not leak the identifier or the backend's private values.
 	assert.NotContains(t, err.Error(), "HEADER_FORWARD_X_API_KEY_BACKEND_A")
 }
 
+// TestResolveHeaderForward_RestrictedHeaderRejected iterates the full
+// middleware.RestrictedHeaders set and verifies every entry is rejected via
+// both the plaintext and secret-backed paths. Hardcoding a subset would let a
+// future addition to RestrictedHeaders silently fall out of coverage.
 func TestResolveHeaderForward_RestrictedHeaderRejected(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		cfg  *vmcp.HeaderForwardConfig
-	}{
-		{
-			name: "plaintext Host rejected",
-			cfg: &vmcp.HeaderForwardConfig{
-				AddPlaintextHeaders: map[string]string{"Host": "attacker.example"},
-			},
-		},
-		{
-			name: "plaintext Authorization rejected via secret not tested here",
-			cfg: &vmcp.HeaderForwardConfig{
-				AddPlaintextHeaders: map[string]string{"Transfer-Encoding": "chunked"},
-			},
-		},
-		{
-			name: "secret-backed X-Forwarded-For rejected",
-			cfg: &vmcp.HeaderForwardConfig{
-				AddHeadersFromSecret: map[string]string{
-					"X-Forwarded-For": "HEADER_FORWARD_X_FORWARDED_FOR_X",
-				},
-			},
-		},
-	}
+	require.NotEmpty(t, middleware.RestrictedHeaders, "guard against empty map")
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for header := range middleware.RestrictedHeaders {
+		t.Run("plaintext_"+header, func(t *testing.T) {
 			t.Parallel()
-			_, err := resolveHeaderForward(tt.cfg, &mockProvider{}, "backend-x")
+			cfg := &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{header: "x"},
+			}
+			_, err := resolveHeaderForward(t.Context(), cfg, &mockProvider{}, "backend-x")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "restricted")
+		})
+
+		t.Run("secret_"+header, func(t *testing.T) {
+			t.Parallel()
+			cfg := &vmcp.HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{header: "HEADER_FORWARD_RESTRICTED"},
+			}
+			_, err := resolveHeaderForward(t.Context(), cfg, &mockProvider{}, "backend-x")
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "restricted")
 		})
 	}
 }
 
+// TestResolveHeaderForward_NonNotFoundProviderError verifies that a transient
+// secret-provider failure (e.g. permission denied, timeout) is propagated with
+// its original chain intact — distinct from the user-facing "not found"
+// message produced for ErrSecretNotFound.
+func TestResolveHeaderForward_NonNotFoundProviderError(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("permission denied calling secrets backend")
+	cfg := &vmcp.HeaderForwardConfig{
+		AddHeadersFromSecret: map[string]string{
+			"X-API-Key": "HEADER_FORWARD_X_API_KEY_BACKEND_A",
+		},
+	}
+	provider := &mockProvider{
+		errors: map[string]error{
+			"HEADER_FORWARD_X_API_KEY_BACKEND_A": wantErr,
+		},
+	}
+
+	hdr, err := resolveHeaderForward(t.Context(), cfg, provider, "backend-a")
+	require.Error(t, err)
+	assert.Nil(t, hdr)
+	require.ErrorIs(t, err, wantErr,
+		"non-NotFound provider errors must be wrapped with %%w so callers can errors.Is them")
+	assert.NotContains(t, err.Error(), "not found",
+		"only ErrSecretNotFound should produce the user-facing 'not found' message")
+}
+
 func TestResolveHeaderForward_NilCfgReturnsNil(t *testing.T) {
 	t.Parallel()
-	hdr, err := resolveHeaderForward(nil, nil, "x")
+	hdr, err := resolveHeaderForward(t.Context(), nil, nil, "x")
 	require.NoError(t, err)
 	assert.Nil(t, hdr)
 }
@@ -204,7 +237,7 @@ func TestResolveHeaderForward_NilCfgReturnsNil(t *testing.T) {
 func TestBuildHeaderForwardTripper_NilCfgReturnsBase(t *testing.T) {
 	t.Parallel()
 	base := &captureTripper{}
-	got, err := buildHeaderForwardTripper(base, nil, nil, "x")
+	got, err := buildHeaderForwardTripper(t.Context(), base, nil, nil, "x")
 	require.NoError(t, err)
 	assert.Same(t, base, got, "nil cfg must pass base through untouched")
 }

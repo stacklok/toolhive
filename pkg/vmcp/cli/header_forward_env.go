@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"strings"
 
-	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 )
 
 // readHeaderForwardFromEnv reconstructs the per-backend
@@ -41,10 +41,10 @@ func readHeaderForwardFromEnv(envEntries []string) map[string]*vmcp.HeaderForwar
 	out := make(map[string]*vmcp.HeaderForwardConfig)
 	for _, entry := range envEntries {
 		name, value, ok := strings.Cut(entry, "=")
-		if !ok || !strings.HasPrefix(name, ctrlutil.HeaderForwardManifestEnvVarPrefix) {
+		if !ok || !strings.HasPrefix(name, wirefmt.ManifestEnvVarPrefix) {
 			continue
 		}
-		ownerSegment := strings.TrimPrefix(name, ctrlutil.HeaderForwardManifestEnvVarPrefix)
+		ownerSegment := strings.TrimPrefix(name, wirefmt.ManifestEnvVarPrefix)
 
 		var cfg vmcp.HeaderForwardConfig
 		if err := json.Unmarshal([]byte(value), &cfg); err != nil {
@@ -54,6 +54,19 @@ func readHeaderForwardFromEnv(envEntries []string) map[string]*vmcp.HeaderForwar
 			slog.Warn("invalid headerForward manifest from env, skipping",
 				"envvar", name, "error", err)
 			continue
+		}
+		// wirefmt.NormalizeForEnvVar maps two distinct entry names with the
+		// same uppercased+sanitized form to the same env-var suffix (e.g.
+		// "github-copilot" and "github_copilot"). DNS-1123 forbids
+		// underscores in entry names, so this collision is unreachable in
+		// production today — but a future relaxation, a migration that
+		// allows mixed casing, or a third-party producing manifests can all
+		// land us here. Surface the collision loudly: the second config
+		// silently overwriting the first would mask a misconfiguration that
+		// is otherwise extremely hard to debug.
+		if _, dup := out[ownerSegment]; dup {
+			slog.Warn("duplicate headerForward manifest env var; later value overrides earlier",
+				"envvar", name, "ownerSegment", ownerSegment)
 		}
 		out[ownerSegment] = &cfg
 	}

@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -32,6 +33,10 @@ const (
 
 	// mcpServerEntryCABundleRefField is the field index key for CABundleRef ConfigMap lookups.
 	mcpServerEntryCABundleRefField = "spec.caBundleRef.configMapRef.name"
+
+	// mcpServerEntryHeaderSecretRefField is the field index key for
+	// spec.headerForward.addHeadersFromSecret[*].valueSecretRef.name lookups.
+	mcpServerEntryHeaderSecretRefField = "spec.headerForward.addHeadersFromSecret.valueSecretRef.name"
 )
 
 // MCPServerEntryReconciler reconciles a MCPServerEntry object.
@@ -46,6 +51,7 @@ type MCPServerEntryReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpgroups,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Reconcile validates referenced resources and updates status conditions.
 func (r *MCPServerEntryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -143,6 +149,38 @@ func (r *MCPServerEntryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			mcpServerEntryCABundleRefField, err)
 	}
 
+	// Set up field index for headerForward Secret refs. Used by the Secret
+	// watch below so a Secret create/update/delete reconciles every entry that
+	// references it — without this index we would have to list all entries on
+	// every Secret event.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1beta1.MCPServerEntry{},
+		mcpServerEntryHeaderSecretRefField,
+		func(obj client.Object) []string {
+			entry := obj.(*mcpv1beta1.MCPServerEntry)
+			if entry.Spec.HeaderForward == nil {
+				return nil
+			}
+			seen := make(map[string]struct{}, len(entry.Spec.HeaderForward.AddHeadersFromSecret))
+			names := make([]string, 0, len(entry.Spec.HeaderForward.AddHeadersFromSecret))
+			for _, ref := range entry.Spec.HeaderForward.AddHeadersFromSecret {
+				if ref.ValueSecretRef == nil {
+					continue
+				}
+				if _, ok := seen[ref.ValueSecretRef.Name]; ok {
+					continue
+				}
+				seen[ref.ValueSecretRef.Name] = struct{}{}
+				names = append(names, ref.ValueSecretRef.Name)
+			}
+			return names
+		},
+	); err != nil {
+		return fmt.Errorf("unable to create field index for MCPServerEntry %s: %w",
+			mcpServerEntryHeaderSecretRefField, err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPServerEntry{}).
 		Watches(
@@ -156,6 +194,10 @@ func (r *MCPServerEntryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&corev1.ConfigMap{},
 			handler.EnqueueRequestsFromMapFunc(r.findEntriesForConfigMap),
+		).
+		Watches(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.findEntriesForHeaderSecret),
 		).
 		Complete(r)
 }
@@ -307,10 +349,17 @@ func (r *MCPServerEntryReconciler) validateCABundleRef(
 }
 
 // validateHeaderForwardSecretRefs checks that every Secret referenced by
-// spec.headerForward.addHeadersFromSecret exists in the entry's namespace.
-// Skipped (condition removed) when no Secret-backed headers are declared.
-// Returns (valid, error) where a non-nil error means a transient API failure
-// that should be requeued.
+// spec.headerForward.addHeadersFromSecret exists AND that the named key
+// inside it is present in the entry's namespace. Skipped (condition removed)
+// when no Secret-backed headers are declared.
+//
+// All ref-level failures are aggregated into one condition message — a user
+// fixing two missing secrets at once should see both surface together rather
+// than one-per-reconcile.
+//
+// Returns (valid, error) where a non-nil error means a transient API
+// failure that should be requeued. Key-not-found and Secret-not-found are
+// surfaced via the condition (valid=false, err=nil).
 func (r *MCPServerEntryReconciler) validateHeaderForwardSecretRefs(
 	ctx context.Context,
 	entry *mcpv1beta1.MCPServerEntry,
@@ -323,6 +372,7 @@ func (r *MCPServerEntryReconciler) validateHeaderForwardSecretRefs(
 		return true, nil
 	}
 
+	var failures []string
 	for _, ref := range entry.Spec.HeaderForward.AddHeadersFromSecret {
 		if ref.ValueSecretRef == nil {
 			continue
@@ -334,27 +384,40 @@ func (r *MCPServerEntryReconciler) validateHeaderForwardSecretRefs(
 		}
 		if err := r.Get(ctx, secretKey, secret); err != nil {
 			if errors.IsNotFound(err) {
-				meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-					Type:   mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated,
-					Status: metav1.ConditionFalse,
-					Reason: mcpv1beta1.ConditionReasonMCPServerEntryHeaderSecretNotFound,
-					Message: fmt.Sprintf("Secret %q referenced for header %q not found",
-						ref.ValueSecretRef.Name, ref.HeaderName),
-					ObservedGeneration: entry.Generation,
-				})
-				return false, nil
+				failures = append(failures, fmt.Sprintf(
+					"Secret %q referenced for header %q not found",
+					ref.ValueSecretRef.Name, ref.HeaderName))
+				continue
 			}
+			// Transient API failure (rate-limit, network, etc.) — requeue
+			// rather than condition-flip. The next reconcile will re-validate.
 			ctxLogger.Error(err, "Failed to get referenced header Secret",
 				"secret", ref.ValueSecretRef.Name, "header", ref.HeaderName)
 			return false, err
 		}
+		if _, ok := secret.Data[ref.ValueSecretRef.Key]; !ok {
+			failures = append(failures, fmt.Sprintf(
+				"Secret %q has no key %q referenced for header %q",
+				ref.ValueSecretRef.Name, ref.ValueSecretRef.Key, ref.HeaderName))
+		}
+	}
+
+	if len(failures) > 0 {
+		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonMCPServerEntryHeaderSecretNotFound,
+			Message:            strings.Join(failures, "; "),
+			ObservedGeneration: entry.Generation,
+		})
+		return false, nil
 	}
 
 	meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
 		Type:               mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated,
 		Status:             metav1.ConditionTrue,
 		Reason:             mcpv1beta1.ConditionReasonMCPServerEntryHeaderSecretsValid,
-		Message:            "All referenced header Secrets exist",
+		Message:            "All referenced header Secrets exist with required keys",
 		ObservedGeneration: entry.Generation,
 	})
 	return true, nil
@@ -466,6 +529,44 @@ func (r *MCPServerEntryReconciler) findEntriesForGroup(
 		client.MatchingFields{"spec.groupRef": group.Name},
 	); err != nil {
 		ctxLogger.Error(err, "Failed to list MCPServerEntries for group change")
+		return nil
+	}
+
+	requests := make([]reconcile.Request, len(entryList.Items))
+	for i, entry := range entryList.Items {
+		requests[i] = reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Namespace: entry.Namespace,
+				Name:      entry.Name,
+			},
+		}
+	}
+	return requests
+}
+
+// findEntriesForHeaderSecret maps Secret changes to MCPServerEntry reconcile
+// requests for entries that reference the Secret in
+// spec.headerForward.addHeadersFromSecret. This ensures that creating the
+// referenced Secret (or rotating its contents) flips the validation condition
+// from false → true within one reconcile, instead of waiting for the resync.
+func (r *MCPServerEntryReconciler) findEntriesForHeaderSecret(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	ctxLogger := log.FromContext(ctx)
+
+	secret, ok := obj.(*corev1.Secret)
+	if !ok {
+		ctxLogger.Error(nil, "Object is not a Secret", "object", obj.GetName())
+		return nil
+	}
+
+	entryList := &mcpv1beta1.MCPServerEntryList{}
+	if err := r.List(ctx, entryList,
+		client.InNamespace(secret.Namespace),
+		client.MatchingFields{mcpServerEntryHeaderSecretRefField: secret.Name},
+	); err != nil {
+		ctxLogger.Error(err, "Failed to list MCPServerEntries for header Secret change")
 		return nil
 	}
 

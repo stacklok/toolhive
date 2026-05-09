@@ -15,6 +15,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	runconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig"
@@ -291,7 +292,7 @@ func addHeaderForwardConfigOptions(proxy *mcpv1beta1.MCPRemoteProxy, options *[]
 				continue
 			}
 			// Get the secret identifier (not the full env var name)
-			_, secretIdentifier := ctrlutil.GenerateHeaderForwardSecretEnvVarName(proxy.Name, headerSecret.HeaderName)
+			_, secretIdentifier := wirefmt.SecretEnvVarName(proxy.Name, headerSecret.HeaderName)
 			headerSecrets[headerSecret.HeaderName] = secretIdentifier
 		}
 		*options = append(*options, runner.WithHeaderForwardSecrets(headerSecrets))

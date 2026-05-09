@@ -17,8 +17,8 @@ import (
 )
 
 // TestRuntimeConfig_MarshalsIdenticallyToConfig pins the invariant that
-// today RuntimeConfig adds no extra serialized keys. If a future commit
-// adds an operator-resolved field on RuntimeConfig the YAML will diverge,
+// today runtime.Config adds no extra serialized keys. If a future commit
+// adds an operator-resolved field on runtime.Config the YAML will diverge,
 // at which point this test should be updated to re-marshal and re-load via
 // the operator's actual write/read path. The point here is to catch
 // accidental divergence before the operator-only fields land.
@@ -27,7 +27,7 @@ func TestRuntimeConfig_MarshalsIdenticallyToConfig(t *testing.T) {
 
 	// Use a representative-ish Config value. We don't need every field
 	// populated — the YAML library walks reachable fields, and any
-	// divergence between Config and RuntimeConfig (extra top-level key)
+	// divergence between Config and runtime.Config (extra top-level key)
 	// would surface even on a near-empty value.
 	cfg := vmcpconfig.Config{
 		Name:  "demo",
@@ -40,12 +40,12 @@ func TestRuntimeConfig_MarshalsIdenticallyToConfig(t *testing.T) {
 	configYAML, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 
-	runtimeYAML, err := yaml.Marshal(RuntimeConfig{Config: cfg})
+	runtimeYAML, err := yaml.Marshal(Config{Config: cfg})
 	require.NoError(t, err)
 
 	require.Equal(
 		t, string(configYAML), string(runtimeYAML),
-		"RuntimeConfig must marshal identically to Config until operator-only fields are added. "+
+		"runtime.Config must marshal identically to Config until operator-only fields are added. "+
 			"If you intentionally added a sidecar field, update this test to assert the new shape.",
 	)
 }
@@ -64,7 +64,7 @@ func TestRuntimeConfig_Load_RoundTrip(t *testing.T) {
 			Type: "anonymous",
 		},
 	}
-	yamlBytes, err := yaml.Marshal(RuntimeConfig{Config: cfg})
+	yamlBytes, err := yaml.Marshal(Config{Config: cfg})
 	require.NoError(t, err)
 
 	tmp := filepath.Join(t.TempDir(), "config.yaml")
@@ -81,30 +81,30 @@ func TestRuntimeConfig_Load_RoundTrip(t *testing.T) {
 }
 
 // TestRuntimeConfig_DisjointTopLevelTags pins the invariant that no
-// top-level field on RuntimeConfig may share a JSON or YAML key with any
+// top-level field on runtime.Config may share a JSON or YAML key with any
 // Config field. encoding/json (anonymous-field promotion, outer wins) and
 // yaml.v3 (`,inline`, may error or differ in precedence) handle collisions
 // differently — a collision would silently produce divergent serialization
-// and ambiguous round-trip behaviour. Today RuntimeConfig has no extra
+// and ambiguous round-trip behaviour. Today runtime.Config has no extra
 // fields so this test is trivially green; the value is forward-looking.
 func TestRuntimeConfig_DisjointTopLevelTags(t *testing.T) {
 	t.Parallel()
 
 	configKeys := topLevelTagKeys(reflect.TypeOf(vmcpconfig.Config{}))
-	runtimeOuterKeys := outerOnlyTagKeys(reflect.TypeOf(RuntimeConfig{}))
+	runtimeOuterKeys := outerOnlyTagKeys(reflect.TypeOf(Config{}))
 
 	for _, key := range runtimeOuterKeys {
 		_, jsonClash := configKeys.json[key.json]
 		_, yamlClash := configKeys.yaml[key.yaml]
 		require.Falsef(
 			t, jsonClash,
-			"RuntimeConfig field %q has JSON key %q that collides with a Config field — "+
+			"runtime.Config field %q has JSON key %q that collides with a Config field — "+
 				"yaml.v3 inline and encoding/json anonymous-promotion handle collisions differently",
 			key.fieldName, key.json,
 		)
 		require.Falsef(
 			t, yamlClash,
-			"RuntimeConfig field %q has YAML key %q that collides with a Config field",
+			"runtime.Config field %q has YAML key %q that collides with a Config field",
 			key.fieldName, key.yaml,
 		)
 	}
@@ -150,7 +150,7 @@ func topLevelTagKeys(t reflect.Type) tagKeySets {
 }
 
 // outerOnlyTagKeys returns ONLY the non-embedded fields of t, with their
-// JSON and YAML names. Used to identify "extra" RuntimeConfig fields that
+// JSON and YAML names. Used to identify "extra" runtime.Config fields that
 // might collide with the embedded Config's fields.
 func outerOnlyTagKeys(t reflect.Type) []fieldTagKey {
 	var out []fieldTagKey

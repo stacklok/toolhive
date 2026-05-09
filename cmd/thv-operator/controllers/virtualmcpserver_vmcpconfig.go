@@ -86,12 +86,13 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	// Note: gopkg.in/yaml.v3 produces deterministic output by sorting map keys alphabetically.
 	// This ensures stable checksums for triggering pod rollouts only when content actually changes.
 	//
-	// Wrap in RuntimeConfig so future operator-resolved fields can be added
-	// to the ConfigMap without leaking into the public Config (and therefore
-	// the CRD schema). Today RuntimeConfig embeds Config inline and adds no
-	// extra keys, so the marshalled YAML is byte-identical.
-	runtime := vmcpruntimeconfig.RuntimeConfig{Config: *config}
-	vmcpConfigYAML, err := yaml.Marshal(runtime)
+	// Wrap in runtime.Config so future operator-resolved fields can be
+	// added to the ConfigMap without leaking into the public
+	// vmcpconfig.Config (and therefore the CRD schema). Today runtime.Config
+	// embeds vmcpconfig.Config inline and adds no extra keys, so the
+	// marshalled YAML is byte-identical.
+	runtimeCfg := vmcpruntimeconfig.Config{Config: *config}
+	vmcpConfigYAML, err := yaml.Marshal(runtimeCfg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal vmcp config: %w", err)
 	}

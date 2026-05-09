@@ -184,5 +184,5 @@ func tagName(f reflect.StructField, key, fallback string) string {
 // returning empty for everything is fine.
 type fakeEnv struct{}
 
-func (*fakeEnv) Getenv(string) string         { return "" }
+func (*fakeEnv) Getenv(string) string            { return "" }
 func (*fakeEnv) LookupEnv(string) (string, bool) { return "", false }

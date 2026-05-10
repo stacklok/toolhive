@@ -99,10 +99,10 @@ func TestManifestEnvVarName(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                   string
-		ownerName              string
-		expectedEnvVarName     string
-		expectedNormalizedOwn  string
+		name                  string
+		ownerName             string
+		expectedEnvVarName    string
+		expectedNormalizedOwn string
 	}{
 		{
 			name:                  "hyphen owner",

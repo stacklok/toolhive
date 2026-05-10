@@ -5,6 +5,7 @@ package runner
 
 import (
 	"fmt"
+	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -45,6 +46,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		headerfwd.HeaderForwardMiddlewareName: headerfwd.CreateMiddleware,
 		validating.MiddlewareType:             validating.CreateMiddleware,
 		mutating.MiddlewareType:               mutating.CreateMiddleware,
+		stripAuthMiddlewareType:               createStripAuthMiddleware,
 	}
 }
 
@@ -330,8 +332,9 @@ func addUsageMetricsMiddleware(middlewares []types.MiddlewareConfig, configDisab
 
 // addUpstreamSwapMiddleware adds upstream swap middleware if the embedded auth server is configured.
 // This middleware exchanges ToolHive JWTs for upstream IdP tokens.
-// The middleware is only added when EmbeddedAuthServerConfig is set; if UpstreamSwapConfig
-// is nil, default configuration values are used.
+// The middleware is only added when EmbeddedAuthServerConfig is set and
+// DisableUpstreamTokenInjection is false. If UpstreamSwapConfig is nil,
+// default configuration values are used.
 func addUpstreamSwapMiddleware(
 	middlewares []types.MiddlewareConfig,
 	config *RunConfig,
@@ -339,6 +342,12 @@ func addUpstreamSwapMiddleware(
 	// Only add middleware if embedded auth server is configured
 	if config.EmbeddedAuthServerConfig == nil {
 		return middlewares, nil
+	}
+
+	// When upstream token injection is disabled, strip the Authorization header
+	// so the client's ToolHive JWT doesn't leak to the upstream server.
+	if config.EmbeddedAuthServerConfig.DisableUpstreamTokenInjection {
+		return addAuthHeaderStripMiddleware(middlewares)
 	}
 
 	// Use provided config or defaults
@@ -395,6 +404,45 @@ func injectUpstreamProviderIfNeeded(
 
 	return cedar.InjectUpstreamProvider(authzCfg, providerName)
 }
+
+// stripAuthMiddlewareType is the type identifier for the auth header stripping middleware.
+const stripAuthMiddlewareType = "strip-auth"
+
+// addAuthHeaderStripMiddleware adds a middleware that removes the Authorization header
+// before forwarding to the upstream. This prevents the client's ToolHive JWT from
+// leaking to upstream servers that don't expect it.
+func addAuthHeaderStripMiddleware(
+	middlewares []types.MiddlewareConfig,
+) ([]types.MiddlewareConfig, error) {
+	mwConfig, err := types.NewMiddlewareConfig(stripAuthMiddlewareType, struct{}{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create strip-auth middleware config: %w", err)
+	}
+	return append(middlewares, *mwConfig), nil
+}
+
+// createStripAuthMiddleware is the factory function for the auth header stripping middleware.
+func createStripAuthMiddleware(_ *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
+	mw := &stripAuthMiddleware{}
+	runner.AddMiddleware(stripAuthMiddlewareType, mw)
+	return nil
+}
+
+// stripAuthMiddleware removes the Authorization header from requests.
+type stripAuthMiddleware struct{}
+
+// Handler returns the middleware function.
+func (*stripAuthMiddleware) Handler() types.MiddlewareFunction {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Header.Del("Authorization")
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// Close cleans up resources.
+func (*stripAuthMiddleware) Close() error { return nil }
 
 // addAWSStsMiddleware adds AWS STS middleware if configured.
 // Returns an error if AWSStsConfig is set but RemoteURL is empty, because

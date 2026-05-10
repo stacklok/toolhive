@@ -79,6 +79,12 @@ type RunConfig struct {
 	// Storage configures the storage backend for the auth server.
 	// If nil, defaults to in-memory storage.
 	Storage *storage.RunConfig `json:"storage,omitempty" yaml:"storage,omitempty"`
+
+	// DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.
+	// When true, the embedded auth server handles OAuth flows for clients but does not
+	// inject upstream IdP tokens into requests forwarded to the backend MCP server.
+	//nolint:lll // field tags require full JSON+YAML names
+	DisableUpstreamTokenInjection bool `json:"disable_upstream_token_injection,omitempty" yaml:"disable_upstream_token_injection,omitempty"`
 }
 
 // SigningKeyRunConfig configures where to load signing keys from.

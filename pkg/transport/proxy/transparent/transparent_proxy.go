@@ -522,6 +522,14 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		req.Host = req.URL.Host
 	}
 
+	slog.Debug("outbound request to upstream",
+		"method", req.Method,
+		"url", req.URL.String(),
+		"host", req.Host,
+		"accept", req.Header.Get("Accept"),
+		"content_type", req.Header.Get("Content-Type"),
+	)
+
 	reqBody := readRequestBody(req)
 
 	// thv proxy does not provide the transport type, so we need to detect it from the request
@@ -610,6 +618,13 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		slog.Error("failed to forward request", "error", err)
 		return nil, err
 	}
+
+	slog.Debug("upstream response received",
+		"status", resp.StatusCode,
+		"url", req.URL.String(),
+		"content_type", resp.Header.Get("Content-Type"),
+		"mcp_session_id", resp.Header.Get("Mcp-Session-Id"),
+	)
 
 	// Check for 401 Unauthorized response (bearer token authentication failure)
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -1006,7 +1021,15 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
-			pr.SetXForwarded()
+
+			// Only set X-Forwarded-* headers for local backends.
+			// For remote upstreams, these headers leak the proxy's hostname
+			// (X-Forwarded-Host) to third-party servers, which can cause
+			// 307 redirect loops when the upstream uses that header to
+			// construct redirect URLs pointing back to the proxy.
+			if !p.isRemote {
+				pr.SetXForwarded()
+			}
 
 			// Route to the originating backend pod when session metadata contains backend_url.
 			// Falls back to static targetURL when the session doesn't exist or has no backend_url.

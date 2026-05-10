@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 
@@ -220,6 +219,19 @@ func TestInitAndQueryCapabilities_RecoversFromMethodNotFound(t *testing.T) {
 	t.Parallel()
 
 	helloTool := mcp.Tool{Name: "hello"}
+	greetResource := mcp.Resource{
+		URI:         "file:///greet.txt",
+		Name:        "greet",
+		Description: "greeting fixture",
+		MIMEType:    "text/plain",
+	}
+	echoPrompt := mcp.Prompt{
+		Name:        "echo",
+		Description: "echoes its input",
+		Arguments: []mcp.PromptArgument{
+			{Name: "msg", Description: "what to echo", Required: true},
+		},
+	}
 
 	tests := []struct {
 		name             string
@@ -227,9 +239,10 @@ func TestInitAndQueryCapabilities_RecoversFromMethodNotFound(t *testing.T) {
 		wantTools        int
 		wantResources    int
 		wantPrompts      int
-		wantToolsCalled  bool
+		wantToolsCalls   int
 		wantResListCalls int
 		wantPromptCalls  int
+		assertCaps       func(t *testing.T, caps *vmcp.CapabilityList)
 	}{
 		{
 			name: "resources/list -32601 after server advertised resources",
@@ -242,7 +255,7 @@ func TestInitAndQueryCapabilities_RecoversFromMethodNotFound(t *testing.T) {
 			wantTools:        1,
 			wantResources:    0,
 			wantPrompts:      0,
-			wantToolsCalled:  true,
+			wantToolsCalls:   1,
 			wantResListCalls: 1,
 		},
 		{
@@ -256,7 +269,7 @@ func TestInitAndQueryCapabilities_RecoversFromMethodNotFound(t *testing.T) {
 			wantTools:       1,
 			wantResources:   0,
 			wantPrompts:     0,
-			wantToolsCalled: true,
+			wantToolsCalls:  1,
 			wantPromptCalls: 1,
 		},
 		{
@@ -272,9 +285,59 @@ func TestInitAndQueryCapabilities_RecoversFromMethodNotFound(t *testing.T) {
 			wantTools:        1,
 			wantResources:    0,
 			wantPrompts:      0,
-			wantToolsCalled:  true,
+			wantToolsCalls:   1,
 			wantResListCalls: 1,
 			wantPromptCalls:  1,
+		},
+		{
+			name: "resources/list success populates caps with backend ID",
+			fb: &fakeBackend{
+				advertiseTools:     true,
+				advertiseResources: true,
+				tools:              []mcp.Tool{helloTool},
+				resources:          []mcp.Resource{greetResource},
+			},
+			wantTools:        1,
+			wantResources:    1,
+			wantPrompts:      0,
+			wantToolsCalls:   1,
+			wantResListCalls: 1,
+			assertCaps: func(t *testing.T, caps *vmcp.CapabilityList) {
+				t.Helper()
+				require.Len(t, caps.Resources, 1)
+				got := caps.Resources[0]
+				assert.Equal(t, greetResource.URI, got.URI)
+				assert.Equal(t, greetResource.Name, got.Name)
+				assert.Equal(t, greetResource.Description, got.Description)
+				assert.Equal(t, greetResource.MIMEType, got.MimeType)
+				assert.Equal(t, "fake-backend", got.BackendID)
+			},
+		},
+		{
+			name: "prompts/list success populates caps with arguments and backend ID",
+			fb: &fakeBackend{
+				advertiseTools:   true,
+				advertisePrompts: true,
+				tools:            []mcp.Tool{helloTool},
+				prompts:          []mcp.Prompt{echoPrompt},
+			},
+			wantTools:       1,
+			wantResources:   0,
+			wantPrompts:     1,
+			wantToolsCalls:  1,
+			wantPromptCalls: 1,
+			assertCaps: func(t *testing.T, caps *vmcp.CapabilityList) {
+				t.Helper()
+				require.Len(t, caps.Prompts, 1)
+				got := caps.Prompts[0]
+				assert.Equal(t, echoPrompt.Name, got.Name)
+				assert.Equal(t, echoPrompt.Description, got.Description)
+				assert.Equal(t, "fake-backend", got.BackendID)
+				require.Len(t, got.Arguments, 1)
+				assert.Equal(t, echoPrompt.Arguments[0].Name, got.Arguments[0].Name)
+				assert.Equal(t, echoPrompt.Arguments[0].Description, got.Arguments[0].Description)
+				assert.True(t, got.Arguments[0].Required)
+			},
 		},
 	}
 
@@ -302,15 +365,17 @@ func TestInitAndQueryCapabilities_RecoversFromMethodNotFound(t *testing.T) {
 			// tools/list must have been reached — proving the backend's tool
 			// surface remains usable even after a recoverable list-method
 			// failure on resources/prompts.
-			if tc.wantToolsCalled {
-				assert.Equal(t, 1, tc.fb.callCount(string(mcp.MethodToolsList)),
-					"tools/list must be invoked exactly once")
+			if tc.wantToolsCalls > 0 {
+				assert.Equal(t, tc.wantToolsCalls, tc.fb.callCount(string(mcp.MethodToolsList)))
 			}
 			if tc.wantResListCalls > 0 {
 				assert.Equal(t, tc.wantResListCalls, tc.fb.callCount(string(mcp.MethodResourcesList)))
 			}
 			if tc.wantPromptCalls > 0 {
 				assert.Equal(t, tc.wantPromptCalls, tc.fb.callCount(string(mcp.MethodPromptsList)))
+			}
+			if tc.assertCaps != nil {
+				tc.assertCaps(t, caps)
 			}
 		})
 	}
@@ -373,8 +438,7 @@ func TestInitAndQueryCapabilities_FatalErrors(t *testing.T) {
 
 			_, err := initAndQueryCapabilities(context.Background(), c, target)
 			require.Error(t, err)
-			assert.True(t, strings.Contains(err.Error(), tc.errSubstr),
-				"error %q must contain %q", err.Error(), tc.errSubstr)
+			assert.ErrorContains(t, err, tc.errSubstr)
 		})
 	}
 }

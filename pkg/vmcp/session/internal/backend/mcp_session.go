@@ -388,12 +388,14 @@ func initAndQueryCapabilities(
 		resResult, listErr := c.ListResources(ctx, mcp.ListResourcesRequest{})
 		switch {
 		case errors.Is(listErr, mcp.ErrMethodNotFound):
-			// Spec violation: backend advertised the resources capability in its
-			// initialize response but does not implement resources/list. Recover
-			// with an empty resource set so the backend's tools remain usable
-			// instead of failing init outright. See issue #5231.
+			// Tolerate JSON-RPC -32601 here so a backend that advertises the
+			// resources capability but does not implement resources/list (e.g.
+			// Atlassian Rovo, see #5231) still contributes its tools instead of
+			// being dropped. HTTP-level method absence is intentionally fatal.
 			slog.Warn("backend advertised resources capability but does not implement resources/list",
 				"backendID", target.WorkloadID,
+				"name", target.WorkloadName,
+				"baseURL", target.BaseURL,
 				"method", "resources/list",
 			)
 		case listErr != nil:
@@ -415,12 +417,14 @@ func initAndQueryCapabilities(
 		promptsResult, listErr := c.ListPrompts(ctx, mcp.ListPromptsRequest{})
 		switch {
 		case errors.Is(listErr, mcp.ErrMethodNotFound):
-			// Spec violation: backend advertised the prompts capability in its
-			// initialize response but does not implement prompts/list. Recover
-			// with an empty prompt set so the backend's tools remain usable
-			// instead of failing init outright. See issue #5231.
+			// Tolerate JSON-RPC -32601 here so a backend that advertises the
+			// prompts capability but does not implement prompts/list (e.g.
+			// Atlassian Rovo, see #5231) still contributes its tools instead of
+			// being dropped. HTTP-level method absence is intentionally fatal.
 			slog.Warn("backend advertised prompts capability but does not implement prompts/list",
 				"backendID", target.WorkloadID,
+				"name", target.WorkloadName,
+				"baseURL", target.BaseURL,
 				"method", "prompts/list",
 			)
 		case listErr != nil:

@@ -115,8 +115,9 @@ type TokenExchangeRawConfig struct {
 // specific identity providers. The “raw” variant allows custom grant types.
 // The structure matches the tokenexchange.Config from pkg/oauthproto/tokenexchange/middleware.go
 //
-// +kubebuilder:validation:XValidation:rule=”(!has(self.variant) || self.variant == '' || self.variant == 'raw') ? self.tokenUrl != '' : true”,message=”tokenUrl is required for standard (no variant) and 'raw' variant token exchange”
-// +kubebuilder:validation:XValidation:rule=”(has(self.variant) && self.variant == 'raw') ? (has(self.raw) && self.raw.grantTypeUrn != '') : true”,message=”raw.grantTypeUrn is required when variant is 'raw'”
+// +kubebuilder:validation:XValidation:rule=”(!has(self.variant) || self.variant == 'raw') ? has(self.tokenUrl) : true”,message=”tokenUrl is required for standard (no variant) and 'raw' variant token exchange”
+// +kubebuilder:validation:XValidation:rule=”(has(self.variant) && self.variant == 'raw') ? (has(self.raw) && has(self.raw.grantTypeUrn)) : true”,message=”raw.grantTypeUrn is required when variant is 'raw'”
+// +kubebuilder:validation:XValidation:rule=”!has(self.variant) ? has(self.audience) : true”,message=”audience is required for standard (no variant) token exchange”
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type TokenExchangeConfig struct {

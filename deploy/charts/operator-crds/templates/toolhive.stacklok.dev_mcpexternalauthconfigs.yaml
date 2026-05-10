@@ -1085,11 +1085,13 @@ spec:
                 x-kubernetes-validations:
                 - message: tokenUrl is required for standard (no variant) and 'raw'
                     variant token exchange
-                  rule: '(!has(self.variant) || self.variant == '''' || self.variant
-                    == ''raw'') ? self.tokenUrl != '''' : true'
+                  rule: '(!has(self.variant) || self.variant == ''raw'') ? has(self.tokenUrl)
+                    : true'
                 - message: raw.grantTypeUrn is required when variant is 'raw'
                   rule: '(has(self.variant) && self.variant == ''raw'') ? (has(self.raw)
-                    && self.raw.grantTypeUrn != '''') : true'
+                    && has(self.raw.grantTypeUrn)) : true'
+                - message: audience is required for standard (no variant) token exchange
+                  rule: '!has(self.variant) ? has(self.audience) : true'
               type:
                 description: Type is the type of external authentication to configure
                 enum:
@@ -2316,11 +2318,13 @@ spec:
                 x-kubernetes-validations:
                 - message: tokenUrl is required for standard (no variant) and 'raw'
                     variant token exchange
-                  rule: '(!has(self.variant) || self.variant == '''' || self.variant
-                    == ''raw'') ? self.tokenUrl != '''' : true'
+                  rule: '(!has(self.variant) || self.variant == ''raw'') ? has(self.tokenUrl)
+                    : true'
                 - message: raw.grantTypeUrn is required when variant is 'raw'
                   rule: '(has(self.variant) && self.variant == ''raw'') ? (has(self.raw)
-                    && self.raw.grantTypeUrn != '''') : true'
+                    && has(self.raw.grantTypeUrn)) : true'
+                - message: audience is required for standard (no variant) token exchange
+                  rule: '!has(self.variant) ? has(self.audience) : true'
               type:
                 description: Type is the type of external authentication to configure
                 enum:

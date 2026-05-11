@@ -566,6 +566,20 @@ components:
             `{authorization_endpoint_base_url}/oauth/authorize` instead of `{issuer}/oauth/authorize`.
             All other endpoints remain derived from the issuer.
           type: string
+        baseline_client_scopes:
+          description: |-
+            BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every
+            DCR registration. All values must appear in ScopesSupported; the auth server
+            rejects this RunConfig at startup otherwise. Empty means current behavior is
+            preserved (registered scope = client-requested or DefaultScopes if empty).
+            When BaselineClientScopes is non-empty, ScopesSupported must be set
+            explicitly: validation runs before defaults are applied, so an empty
+            ScopesSupported won't be substituted with registration.DefaultScopes for
+            purposes of the subset check.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         hmac_secret_files:
           description: |-
             HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes

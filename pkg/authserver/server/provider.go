@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -215,6 +216,12 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 	}
 	if err := validateParams(cfg); err != nil {
 		return nil, err
+	}
+
+	if len(cfg.BaselineClientScopes) > 0 {
+		slog.Info("DCR registrations will be auto-granted baseline scopes",
+			"scopes", cfg.BaselineClientScopes,
+		)
 	}
 
 	// Build JWK from signing key

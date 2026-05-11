@@ -223,6 +223,13 @@ spec:
                       can still request the baseline scopes at /oauth/authorize. All values must
                       be present in the upstream-derived scopesSupported set; the auth server
                       fails to start if any value is missing.
+
+                      Security: every client registered via /oauth/register will gain the
+                      ability to request these scopes at /oauth/authorize, regardless of what
+                      the client itself requested. Keep the baseline narrow (typically
+                      "openid" and "offline_access"). Adding a privileged scope here — e.g.
+                      "admin:read" — would grant it to every DCR-registered client, including
+                      public clients like Claude Code, Cursor, and VS Code.
                     items:
                       type: string
                     maxItems: 10
@@ -1408,6 +1415,13 @@ spec:
                       can still request the baseline scopes at /oauth/authorize. All values must
                       be present in the upstream-derived scopesSupported set; the auth server
                       fails to start if any value is missing.
+
+                      Security: every client registered via /oauth/register will gain the
+                      ability to request these scopes at /oauth/authorize, regardless of what
+                      the client itself requested. Keep the baseline narrow (typically
+                      "openid" and "offline_access"). Adding a privileged scope here — e.g.
+                      "admin:read" — would grant it to every DCR-registered client, including
+                      public clients like Claude Code, Cursor, and VS Code.
                     items:
                       type: string
                     maxItems: 10

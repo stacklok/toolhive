@@ -76,7 +76,12 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	if len(h.config.BaselineClientScopes) > 0 {
 		effective := unionScopes(scopes, h.config.BaselineClientScopes)
 		if !slices.Equal(effective, scopes) {
-			slog.Warn("DCR registered scope set expanded by baseline_client_scopes",
+			// Baseline-driven expansion is the intended behavior whenever
+			// baseline_client_scopes is configured, so per-registration
+			// audit lives at Debug rather than Warn. Operator-visible
+			// signal that the baseline is in effect comes from a one-time
+			// Info log at server startup (NewAuthorizationServerConfig).
+			slog.Debug("DCR registered scope set expanded by baseline_client_scopes",
 				"client_name", validated.ClientName,
 				"requested", scopes,
 				"effective", effective,

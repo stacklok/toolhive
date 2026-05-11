@@ -25,8 +25,9 @@
 //
 // As of issue #5145 sub-issue 4a (the slice that lifted this code out of
 // pkg/authserver/runner), the public functions on this package take
-// embedded-authserver types — *authserver.OAuth2UpstreamRunConfig,
-// *authserver.DCRUpstreamConfig, *upstream.OAuth2Config — directly on
+// embedded-authserver types — *authserver.OAuth2UpstreamRunConfig and
+// *upstream.OAuth2Config (with *authserver.DCRUpstreamConfig reached
+// transitively via OAuth2UpstreamRunConfig.DCRConfig) — directly on
 // their signatures. This matches the embedded authserver's existing
 // internal shapes verbatim and was the cheapest move-only change.
 //
@@ -76,33 +77,39 @@ import (
 // concurrent registrations. Followers wait for the leader's result and
 // observe the same Resolution.
 //
-// Lifetime: process-wide. This intentionally contrasts with
-// EmbeddedAuthServer.dcrStore, which is per-instance. The asymmetry is
-// load-bearing: the singleflight only deduplicates the in-flight network
-// call, while the cache deduplicates the resolution itself across calls.
-// Process-wide flight means concurrent EmbeddedAuthServer instances in
-// the same process targeting the same upstream still get deduplicated;
-// the per-instance cache is correct because each instance independently
-// decides whether the resolution is fresh enough to reuse. A future
-// Redis-backed store would still want this in-process gate so a single
-// replica does not double-register against itself.
+// Lifetime: process-wide. This intentionally contrasts with the
+// CredentialStore the embedded authserver constructs and injects into
+// ResolveCredentials, which is per-instance for the memory backend and
+// shared across replicas for Redis. The asymmetry is load-bearing: the
+// singleflight only deduplicates the in-flight network call, while the
+// cache deduplicates the resolution itself across calls. Process-wide
+// flight means concurrent EmbeddedAuthServer instances in the same
+// process targeting the same upstream still get deduplicated; the
+// injected cache decides whether the resolution is fresh enough to
+// reuse. A Redis-backed store still wants this in-process gate so a
+// single replica does not double-register against itself.
 //
-// Cross-consumer caveat (matters once issue #5145 sub-issue 4b lands the
-// CLI flow as the second consumer): because dcrFlight is package-global,
-// two consumers that happen to construct identical Keys (same issuer, same
-// redirect URI, same scopes hash) will share a single in-flight
-// registration even if they semantically want different client profiles.
-// The current call sites do not collide — the embedded authserver's
-// redirect URI lives on the AS origin, the CLI flow's lives on a
-// loopback — but a future consumer that defaults its redirect URI into
-// either of those spaces would silently coalesce. Keep this in mind when
-// adding a third consumer.
+// Cross-consumer caveat (matters once issue #5145 sub-issue 4b (#5219)
+// lands the CLI flow as the second consumer): because dcrFlight is
+// package-global, two consumers that happen to construct identical Keys
+// (same issuer, same redirect URI, same scopes hash) will share a single
+// in-flight registration even if they semantically want different
+// client profiles. The current call sites do not collide — the embedded
+// authserver's redirect URI lives on the AS origin, the CLI flow's lives
+// on a loopback — but a future consumer that defaults its redirect URI
+// into either of those spaces would silently coalesce.
+//
+// TODO(#5219): the flight key must gain a consumer-identifier component
+// when 4b wires the second consumer. Today the colliding-Key risk is
+// theoretical; once two profiles share this group it becomes a
+// correctness hazard the resolver itself must defend against. Track
+// resolution against the 4b PR's design discussion.
 var dcrFlight singleflight.Group
 
 // flightKeyOf canonicalises a Key into the singleflight string used by
 // dcrFlight. The "\n" separator is safe because newline is not a valid byte
-// in any of the three components: OAuth scope tokens (RFC 6749 §3.3), URI
-// reference characters (RFC 3986 §2), or hex digests (the form
+// in any of the three components: URI reference characters in Issuer and
+// RedirectURI (RFC 3986 §2), and hex digits in ScopesHash (the form
 // storage.ScopesHash always emits). Exposed as a function so tests and
 // future inspection helpers can compute the exact key the resolver would
 // route through dcrFlight without re-implementing the concatenation.
@@ -583,6 +590,17 @@ func LogStepError(upstreamName string, err error) {
 // host:port) are not sanitised; the current DCR flow never embeds
 // those in errors, and broadening the match risks false positives on
 // unrelated text.
+//
+// IMPORTANT — caller responsibility: this function strips credentials
+// only from http(s) URLs. Callers that may receive errors containing
+// non-http(s) URLs with credential-bearing components (e.g.
+// redis://user:pass@host, postgres://…, smtp://…) MUST verify those
+// URLs are not credential-bearing before logging, or sanitise them
+// separately. The function name reads generic but the implementation is
+// scheme-specific by design — broadening the regex would risk false
+// positives on prose. A future shared sanitiser covering more schemes
+// is appropriate as a follow-up once a second non-http(s) call site
+// appears.
 func SanitizeErrorForLog(err error) string {
 	if err == nil {
 		return ""
@@ -1283,9 +1301,15 @@ func newDCRHTTPClient(initialAccessToken string) *http.Client {
 //
 // This duplicates the logic in pkg/authserver/runner/embeddedauthserver.go
 // because the DCR package is profile-agnostic and must not reach back into
-// the runner — but the secret-resolution shape (file-or-env) is the same one
-// every consumer needs. Future consolidation can move this into a shared
-// pkg/secrets-style helper if a third caller appears.
+// the runner — but the secret-resolution shape (file-or-env) is the same
+// one every consumer needs. There is no production caller in this PR; the
+// helper is staged here so sub-issue 4b (#5219) can wire it as part of the
+// CLI flow migration, at which point the runner-side twin and this copy
+// SHOULD be promoted to a shared helper (e.g. pkg/auth/secretref) with
+// both consumers migrated in the same PR — at that point this duplication
+// has served its purpose and is the right thing to remove. The parallel
+// TestResolveSecret suite in secret_test.go guards against drift between
+// the two copies in the meantime.
 func resolveSecret(file, envVar string) (string, error) {
 	if file != "" {
 		// #nosec G304 - file path is from configuration, not user input

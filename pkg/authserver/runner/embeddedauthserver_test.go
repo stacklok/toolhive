@@ -286,6 +286,17 @@ func TestParseTokenLifespans(t *testing.T) {
 	})
 }
 
+// TestResolveSecret pins the runner-package resolveSecret against the
+// observable contract its parallel twin in pkg/auth/dcr/secret_test.go
+// (TestResolveSecret + TestResolveSecretWithEnvVar) covers. The two
+// helpers are byte-identical by deliberate duplication (see the doc
+// comment on each func resolveSecret); a behaviour change here without
+// the same change in pkg/auth/dcr/resolver.go::resolveSecret will be
+// caught by the dcr-side suite, and vice versa. Keep the two suites
+// behaviourally in lockstep — when consolidating both copies into a
+// shared helper (planned for sub-issue 4b, #5219), this drift-guard
+// pair becomes unnecessary and SHOULD be replaced with a single
+// authoritative suite.
 func TestResolveSecret(t *testing.T) {
 	t.Parallel()
 
@@ -335,6 +346,9 @@ func TestResolveSecret(t *testing.T) {
 
 // TestResolveSecretWithEnvVar tests resolveSecret with environment variables.
 // These tests cannot use t.Parallel() because they use t.Setenv().
+//
+// Drift-guard twin: see the doc comment on TestResolveSecret above.
+// The dcr-side parallel suite lives at pkg/auth/dcr/secret_test.go.
 func TestResolveSecretWithEnvVar(t *testing.T) {
 	t.Run("file takes precedence over env var", func(t *testing.T) {
 		tmpDir := t.TempDir()
@@ -1580,7 +1594,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID)
 		assert.Equal(t, "dcr-client-secret", got[0].OAuth2Config.ClientSecret)
 
-		// Store now contains the resolution under the canonical DCRKey.
+		// Store now contains the resolution under the canonical storage.DCRKey.
 		redirectURI := server.URL + "/oauth/callback"
 		key := storage.DCRKey{
 			Issuer:      server.URL,
@@ -1589,7 +1603,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		}
 		cached, ok, err := store.Get(context.Background(), key)
 		require.NoError(t, err)
-		require.True(t, ok, "store should contain the DCR resolution keyed by DCRKey")
+		require.True(t, ok, "store should contain the DCR resolution keyed by storage.DCRKey")
 		assert.Equal(t, "dcr-client-id", cached.ClientID)
 
 		// First call must have hit the mock AS at least once (metadata +
@@ -1663,10 +1677,12 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 // TestNewEmbeddedAuthServer_DCRBoot drives the full NewEmbeddedAuthServer
 // boot path against a mock upstream AS: signing keys are generated
 // ephemerally, storage defaults to memory, and the DCR resolver runs
-// inside the constructor. It verifies that (a) the constructor plumbs a
-// dcrStore onto EmbeddedAuthServer, (b) that store is populated with the
-// canonical DCRKey after boot, and (c) the caller's original
-// RunConfig.Upstreams[i] slice element is unchanged.
+// inside the constructor. It verifies that (a) the constructor wires
+// the shared storage.DCRCredentialStore into the DCR resolver (via the
+// dcr.CredentialStore adapter passed to buildUpstreamConfigs), (b) that
+// store is populated with the canonical storage.DCRKey after boot, and
+// (c) the caller's original RunConfig.Upstreams[i] slice element is
+// unchanged.
 //
 // This complements TestBuildUpstreamConfigs_DCR by exercising the full
 // wiring — signing-key creation, HMAC secret defaults, storage
@@ -1715,11 +1731,11 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 	assert.Greater(t, atomic.LoadInt32(requestCount), int32(0),
 		"DCR boot should have issued network I/O to the mock AS")
 
-	// The store on the EmbeddedAuthServer contains the canonical DCRKey
-	// for this upstream — the accessor delegates to the same
-	// storage.DCRCredentialStore createStorage produced, so a successful
-	// boot persisted the resolution there directly (no separate in-memory
-	// store was created).
+	// The store on the EmbeddedAuthServer contains the canonical
+	// storage.DCRKey for this upstream — the accessor delegates to the
+	// same storage.DCRCredentialStore createStorage produced, so a
+	// successful boot persisted the resolution there directly (no
+	// separate in-memory store was created).
 	redirectURI := server.URL + "/oauth/callback"
 	key := storage.DCRKey{
 		Issuer:      server.URL,

@@ -245,6 +245,8 @@ type EmbeddedAuthServerConfig struct {
 	// "admin:read" — would grant it to every DCR-registered client, including
 	// public clients like Claude Code, Cursor, and VS Code.
 	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:Pattern=`^[\x21\x23-\x5B\x5D-\x7E]+$`
 	// +listType=atomic
 	// +optional
 	BaselineClientScopes []string `json:"baselineClientScopes,omitempty"`

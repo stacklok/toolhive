@@ -104,6 +104,8 @@ spec:
                       "admin:read" — would grant it to every DCR-registered client, including
                       public clients like Claude Code, Cursor, and VS Code.
                     items:
+                      minLength: 1
+                      pattern: ^[\x21\x23-\x5B\x5D-\x7E]+$
                       type: string
                     maxItems: 10
                     type: array
@@ -2761,6 +2763,8 @@ spec:
                       "admin:read" — would grant it to every DCR-registered client, including
                       public clients like Claude Code, Cursor, and VS Code.
                     items:
+                      minLength: 1
+                      pattern: ^[\x21\x23-\x5B\x5D-\x7E]+$
                       type: string
                     maxItems: 10
                     type: array

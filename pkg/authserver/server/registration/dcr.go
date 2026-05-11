@@ -28,20 +28,10 @@ import (
 // ValidateScopeSubset checks that every scope in subset is also present in
 // superset, returning an error that names fieldName and the offending scope.
 //
-// This is the shared implementation for two defense-in-depth validation gates:
-//
-//  1. RunConfig.Validate (pkg/authserver/config.go) — the earliest gate, run
-//     when the operator-supplied YAML is first loaded. It rejects the config
-//     before any network listener is opened, so misconfiguration fails loudly
-//     at startup rather than silently at runtime.
-//
-//  2. NewAuthorizationServerConfig (pkg/authserver/server/provider.go) — the
-//     second gate, run when an in-memory AuthorizationServerParams struct is
-//     converted to a live server config. This defends against callers that
-//     construct params programmatically and bypass the YAML-loading path.
-//
-// Both gates call this helper so the error message format is identical
-// regardless of which layer catches the violation.
+// Shared across the layers that validate baseline-scope configuration so the
+// error message format is identical wherever the violation is caught (a
+// caller using YAML-loaded config and a caller constructing config
+// programmatically both see the same wording).
 //
 // fieldName should be the wire-format or display name of the field being
 // validated (e.g. "baseline_client_scopes"). It is embedded verbatim in the

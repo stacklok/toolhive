@@ -541,6 +541,14 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("at least one allowed audience is required for MCP compliance (RFC 8707 resource parameter validation)")
 	}
 
+	// BaselineClientScopes must be a subset of ScopesSupported. RunConfig.Validate
+	// catches this for the YAML-loaded path, but a caller that constructs Config
+	// directly bypasses that; failing here gives them a clearer call stack than
+	// the inner validateParams in the provider layer.
+	if err := registration.ValidateScopeSubset(c.BaselineClientScopes, c.ScopesSupported, "baseline_client_scopes"); err != nil {
+		return err
+	}
+
 	slog.Debug("authserver config validation passed",
 		"issuer", c.Issuer,
 		"upstream_count", len(c.Upstreams),

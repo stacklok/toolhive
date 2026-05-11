@@ -109,6 +109,10 @@ func TestConfigValidate(t *testing.T) {
 		{name: "OIDC with oauth2_config set rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOIDC, OIDCConfig: validOIDCUpstream, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "oauth2_config must not be set"},
 		{name: "OAuth2 with oidc_config set rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream, OIDCConfig: validOIDCUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "oidc_config must not be set"},
 
+		// BaselineClientScopes subset gate (mirrors RunConfig.Validate but on the
+		// runtime Config — catches direct constructors that bypass YAML loading).
+		{name: "baseline scope not in scopes_supported", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"offline_access"}}, wantErr: true, errMsg: `baseline_client_scopes contains "offline_access"`},
+
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid nil key provider", config: Config{Issuer: "https://example.com", HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},

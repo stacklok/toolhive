@@ -129,16 +129,16 @@ func TestVirtualMCPServerSpecRateLimitingJSONRoundtrip(t *testing.T) {
 			Address:  "redis.default.svc.cluster.local:6379",
 		},
 		Config: vmcpconfig.Config{
-			RateLimiting: &vmcpconfig.RateLimitConfig{
-				Shared: &vmcpconfig.RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
-				PerUser: &vmcpconfig.RateLimitBucket{
+			RateLimiting: &RateLimitConfig{
+				Shared: &RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+				PerUser: &RateLimitBucket{
 					MaxTokens:    2,
 					RefillPeriod: metav1.Duration{Duration: time.Minute},
 				},
-				Tools: []vmcpconfig.ToolRateLimitConfig{
+				Tools: []ToolRateLimitConfig{
 					{
 						Name: "backend_a_echo",
-						Shared: &vmcpconfig.RateLimitBucket{
+						Shared: &RateLimitBucket{
 							MaxTokens:    5,
 							RefillPeriod: metav1.Duration{Duration: 30 * time.Second},
 						},

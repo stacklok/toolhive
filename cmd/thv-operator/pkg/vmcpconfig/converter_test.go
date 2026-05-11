@@ -1612,15 +1612,15 @@ func TestConverter_RateLimitingPassThrough(t *testing.T) {
 		Spec: mcpv1beta1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 			Config: vmcpconfig.Config{
-				RateLimiting: &vmcpconfig.RateLimitConfig{
-					PerUser: &vmcpconfig.RateLimitBucket{
+				RateLimiting: &mcpv1beta1.RateLimitConfig{
+					PerUser: &mcpv1beta1.RateLimitBucket{
 						MaxTokens:    2,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
-					Tools: []vmcpconfig.ToolRateLimitConfig{
+					Tools: []mcpv1beta1.ToolRateLimitConfig{
 						{
 							Name: "backend_a_echo",
-							Shared: &vmcpconfig.RateLimitBucket{
+							Shared: &mcpv1beta1.RateLimitBucket{
 								MaxTokens:    5,
 								RefillPeriod: metav1.Duration{Duration: 30 * time.Second},
 							},

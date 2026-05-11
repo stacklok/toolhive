@@ -112,8 +112,8 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 		Context("rateLimiting", func() {
 			It("should reject rate limiting without redis session storage", func() {
 				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-rl-no-redis", nil)
-				vmcp.Spec.Config.RateLimiting = &vmcpconfig.RateLimitConfig{
-					Shared: &vmcpconfig.RateLimitBucket{
+				vmcp.Spec.Config.RateLimiting = &mcpv1beta1.RateLimitConfig{
+					Shared: &mcpv1beta1.RateLimitBucket{
 						MaxTokens:    1,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
@@ -129,8 +129,8 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 					Provider: "redis",
 					Address:  "redis:6379",
 				})
-				vmcp.Spec.Config.RateLimiting = &vmcpconfig.RateLimitConfig{
-					PerUser: &vmcpconfig.RateLimitBucket{
+				vmcp.Spec.Config.RateLimiting = &mcpv1beta1.RateLimitConfig{
+					PerUser: &mcpv1beta1.RateLimitBucket{
 						MaxTokens:    1,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
@@ -153,8 +153,8 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 						Audience: "test-audience",
 					},
 				}
-				vmcp.Spec.Config.RateLimiting = &vmcpconfig.RateLimitConfig{
-					PerUser: &vmcpconfig.RateLimitBucket{
+				vmcp.Spec.Config.RateLimiting = &mcpv1beta1.RateLimitConfig{
+					PerUser: &mcpv1beta1.RateLimitBucket{
 						MaxTokens:    1,
 						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},

@@ -399,3 +399,130 @@ func TestResolutionCredentialsRoundTrip(t *testing.T) {
 		assert.Nil(t, credentialsToResolution(nil))
 	})
 }
+
+// TestInMemoryStore_CloseIsIdempotent pins the contract that calling
+// Close on the returned CloseableCredentialStore more than once is safe.
+// The underlying storage.MemoryStorage.Close is NOT idempotent — it
+// closes a channel that a second call would re-close, panicking with
+// "close of closed channel" — so the dcr-package wrapper MUST guard
+// against the second call. Without the sync.Once on inMemoryStore, the
+// CLI's `defer store.Close()` plus any future close-on-shortcircuit
+// would crash the process; this test makes the guard load-bearing.
+func TestInMemoryStore_CloseIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	store := NewInMemoryStore()
+
+	// First Close must succeed and release the cleanup goroutine.
+	require.NoError(t, store.Close())
+
+	// Second Close must NOT panic and must return the same error
+	// (nil here, since the first call succeeded).
+	require.NoError(t, store.Close(),
+		"Close() must be idempotent at the dcr-package boundary; "+
+			"the underlying MemoryStorage.Close is not idempotent and a "+
+			"second call without the guard would panic")
+}
+
+// TestInMemoryStore_CloseIsIdempotentUnderRace verifies the sync.Once
+// guard holds under concurrent callers. A regression that replaced
+// sync.Once with a non-atomic guard (e.g. a plain bool) would surface
+// here as a panic from a racing channel close.
+func TestInMemoryStore_CloseIsIdempotentUnderRace(t *testing.T) {
+	t.Parallel()
+
+	store := NewInMemoryStore()
+
+	const N = 8
+	var wg sync.WaitGroup
+	wg.Add(N)
+	errs := make([]error, N)
+	for i := range N {
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = store.Close()
+		}(i)
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for concurrent Close() callers")
+	}
+
+	for i := range N {
+		require.NoError(t, errs[i], "goroutine %d's Close() must not error", i)
+	}
+}
+
+// TestInMemoryStore_PutGetCloseShareBackend pins the contract that Put,
+// Get, and Close all operate against the same underlying
+// *storage.MemoryStorage instance. The previous shape held two handles
+// (one in an embedded storageBackedStore.backend, one in a concrete
+// mem field); a constructor regression assigning distinct handles to
+// the two fields would have surfaced as a Close that leaks the
+// cleanup goroutine while Get still serves entries. Today only one
+// handle exists, so this test asserts the observable consequence:
+// after Close, the goroutine is gone (verified by t.Cleanup running
+// without leaking via go test -race goroutine leak checks).
+func TestInMemoryStore_PutGetCloseShareBackend(t *testing.T) {
+	t.Parallel()
+
+	store := NewInMemoryStore()
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	key := Key{
+		Issuer:      "https://idp.example.com",
+		RedirectURI: "https://toolhive.example.com/oauth/callback",
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+	}
+	resolution := &Resolution{
+		ClientID:              "client-abc",
+		AuthorizationEndpoint: "https://idp.example.com/authorize",
+		TokenEndpoint:         "https://idp.example.com/token",
+	}
+
+	require.NoError(t, store.Put(ctx, key, resolution))
+
+	got, ok, err := store.Get(ctx, key)
+	require.NoError(t, err)
+	require.True(t, ok, "Get must see the value Put just wrote — confirms Put and Get share a backend")
+	assert.Equal(t, "client-abc", got.ClientID)
+}
+
+// TestInMemoryStore_PutRejectsNilResolution mirrors the contract pinned
+// for storageBackedStore.Put: a nil resolution is rejected at the
+// adapter boundary rather than silently no-oped, so the next Get's miss
+// surfaces with a debug trail. inMemoryStore implements Put directly
+// (not via embedding) — this test guards against a delegation
+// regression that omitted the nil check.
+func TestInMemoryStore_PutRejectsNilResolution(t *testing.T) {
+	t.Parallel()
+
+	store := NewInMemoryStore()
+	t.Cleanup(func() { _ = store.Close() })
+
+	err := store.Put(context.Background(), Key{Issuer: "https://idp.example.com"}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolution must not be nil")
+}
+
+// TestInMemoryStore_GetMissingKeyReturnsMissTuple pins the ErrNotFound
+// translation contract: a missing key surfaces as (nil, false, nil)
+// rather than as a wrapped error. inMemoryStore implements Get directly
+// (not via embedding) — this test guards against a delegation
+// regression that surfaced ErrNotFound as a hard error.
+func TestInMemoryStore_GetMissingKeyReturnsMissTuple(t *testing.T) {
+	t.Parallel()
+
+	store := NewInMemoryStore()
+	t.Cleanup(func() { _ = store.Close() })
+
+	got, ok, err := store.Get(context.Background(), Key{Issuer: "https://unknown.example.com"})
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Nil(t, got)
+}

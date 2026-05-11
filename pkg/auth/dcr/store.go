@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -109,41 +110,72 @@ type CloseableCredentialStore interface {
 // type-assertion. (CLI flows that complete in a single invocation can
 // also rely on process exit.)
 func NewInMemoryStore() CloseableCredentialStore {
-	mem := storage.NewMemoryStorage()
-	// Single backend handle is held by both the embedded storageBackedStore
-	// (which serves Get/Put) and the concrete *storage.MemoryStorage field
-	// (which serves Close). Sharing the handle guarantees Close releases
-	// the same goroutine that Get/Put exercise — a regression introducing
-	// two distinct backends would surface as a Close that leaks while Get
-	// still serves entries.
-	return &inMemoryStore{
-		storageBackedStore: storageBackedStore{backend: mem},
-		mem:                mem,
-	}
+	return &inMemoryStore{mem: storage.NewMemoryStorage()}
 }
 
 // inMemoryStore is the CloseableCredentialStore returned by
-// NewInMemoryStore. It embeds storageBackedStore for Get/Put behaviour
-// and adds Close so the caller can release the underlying MemoryStorage
-// cleanup goroutine.
+// NewInMemoryStore. It holds exactly one *storage.MemoryStorage handle,
+// which serves Get / Put / Close. No embedding of storageBackedStore —
+// embedding would introduce a second handle to the same backend (typed
+// as the broad storage.DCRCredentialStore interface) and require a
+// manual "keep these two in sync" invariant the compiler could not
+// enforce. The single-field shape gives Get / Put / Close one
+// authoritative source.
 //
-// The mem field is a *storage.MemoryStorage — the concrete type whose
-// Close method we want to call. Holding it directly (instead of
-// type-asserting storageBackedStore.backend) satisfies the
-// "Option pattern must be compile-time safe" rule in
-// .claude/rules/go-style.md: the inMemoryStore type guarantees at
-// compile time that the backend supports Close, so a future refactor
-// that injects a non-closeable backend would fail to build rather than
-// silently leak the cleanup goroutine.
+// Get / Put logic is intentionally duplicated with storageBackedStore
+// rather than delegated through it: the two methods are three lines
+// each, and avoiding the embedding is a strictly stronger structural
+// guarantee than DRY here. credentialsToResolution /
+// resolutionToCredentials remain shared.
+//
+// closeOnce makes Close() idempotent at the dcr-package boundary even
+// though storage.MemoryStorage.Close() is not — calling
+// MemoryStorage.Close() twice panics on `close of closed channel`. The
+// CLI's `defer store.Close()` is single-call today, but guarding here
+// means future call sites that close-on-shortcircuit-then-defer (or
+// test helpers that close-then-reuse) cannot panic the process.
 type inMemoryStore struct {
-	storageBackedStore
-	mem *storage.MemoryStorage
+	mem       *storage.MemoryStorage
+	closeOnce sync.Once
+	closeErr  error
 }
 
-// Close releases the embedded MemoryStorage. Safe to call multiple times;
-// see storage.MemoryStorage.Close for idempotency guarantees.
+// Get implements CredentialStore by delegating to the embedded
+// *storage.MemoryStorage. The ErrNotFound translation matches
+// storageBackedStore.Get; see that method for the rationale.
+func (s *inMemoryStore) Get(ctx context.Context, key Key) (*Resolution, bool, error) {
+	creds, err := s.mem.GetDCRCredentials(ctx, key)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return credentialsToResolution(creds), true, nil
+}
+
+// Put implements CredentialStore by delegating to the embedded
+// *storage.MemoryStorage. The nil-resolution rejection matches
+// storageBackedStore.Put; see that method for the rationale.
+func (s *inMemoryStore) Put(ctx context.Context, key Key, resolution *Resolution) error {
+	if resolution == nil {
+		return fmt.Errorf("dcr: resolution must not be nil")
+	}
+	creds := resolutionToCredentials(key, resolution)
+	return s.mem.StoreDCRCredentials(ctx, creds)
+}
+
+// Close releases the embedded MemoryStorage cleanup goroutine. Safe to
+// call multiple times: the underlying storage.MemoryStorage.Close
+// closes a channel and is NOT itself idempotent (a second call panics
+// on `close of closed channel`); the closeOnce here makes the
+// dcr-package boundary contract idempotent regardless. Subsequent
+// calls return the same error (if any) the first call produced.
 func (s *inMemoryStore) Close() error {
-	return s.mem.Close()
+	s.closeOnce.Do(func() {
+		s.closeErr = s.mem.Close()
+	})
+	return s.closeErr
 }
 
 // storageBackedStore is the dcr-package CredentialStore wrapping a

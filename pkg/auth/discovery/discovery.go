@@ -27,6 +27,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -585,28 +586,130 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 	return newOAuthFlow(ctx, oauthConfig, config)
 }
 
-// handleDynamicRegistration handles the dynamic client registration process
+// handleDynamicRegistration handles the dynamic client registration process.
+//
+// Persistence model (option (b) from #5219): the resolver runs against an
+// in-memory dcr.CredentialStore for the duration of a single CLI
+// invocation, so within one PerformOAuthFlow call concurrent goroutines
+// share the singleflight (proving the inherited "singleflight
+// deduplication" property). Cross-invocation persistence is handled
+// outside the resolver by pkg/auth/remote/handler.go, which reads
+// CachedClientID / CachedClientSecretRef before this code path runs and
+// short-circuits to a refresh-token flow when a usable cached client
+// exists. Wrapping the secretProvider into a dcr.CredentialStore adapter
+// (option (a)) was rejected here as out-of-scope churn: the existing
+// remote-handler caching already preserves cross-invocation reuse, and
+// the resolver's intra-call singleflight is what this migration needs.
 func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuthFlowConfig) error {
 	discoveredDoc, err := getDiscoveryDocument(ctx, issuer, config)
 	if err != nil {
 		return fmt.Errorf("failed to discover registration endpoint: %w", err)
 	}
 
-	registrationResponse, err := registerDynamicClient(ctx, config, discoveredDoc)
+	// Check if the provider supports Dynamic Client Registration before
+	// invoking the resolver. The CLI-flag hint below is intentional: this
+	// function is CLI-facing (pkg/auth/discovery is not a protocol-level
+	// package) and the flags named here are the correct fallback for
+	// operators who need to supply credentials manually. The
+	// protocol-neutral version of this message lives in
+	// pkg/oauthproto.handleHTTPResponse for the HTTP 404/405/501 paths.
+	if discoveredDoc.RegistrationEndpoint == "" {
+		return fmt.Errorf("this provider does not support Dynamic Client Registration (DCR). " +
+			"Please configure OAuth client credentials using --remote-auth-client-id and --remote-auth-client-secret flags, " +
+			"or register a client manually with the provider")
+	}
+
+	resolution, err := resolveDCRCredentials(ctx, issuer, config, discoveredDoc)
 	if err != nil {
 		return err
 	}
 
-	// Update config with registered client credentials
-	config.ClientID = registrationResponse.ClientID
-	config.ClientSecret = registrationResponse.ClientSecret
+	// Update config with registered client credentials. The remote handler
+	// at pkg/auth/remote/handler.go reads ClientID / ClientSecret off
+	// OAuthFlowResult and persists them into CachedClientID /
+	// CachedClientSecretRef for the next invocation.
+	config.ClientID = resolution.ClientID
+	config.ClientSecret = resolution.ClientSecret
 
-	if discoveredDoc.RegistrationEndpoint != "" {
-		config.AuthorizeURL = discoveredDoc.AuthorizationEndpoint
-		config.TokenURL = discoveredDoc.TokenEndpoint
+	// Surface the resolved authorization / token endpoints to the OAuth
+	// flow. The resolver returns the endpoints it used for registration
+	// (caller-supplied if specified, discovered otherwise), so
+	// downstream OAuth-config construction can rely on these fields
+	// being populated.
+	if resolution.AuthorizationEndpoint != "" {
+		config.AuthorizeURL = resolution.AuthorizationEndpoint
+	}
+	if resolution.TokenEndpoint != "" {
+		config.TokenURL = resolution.TokenEndpoint
 	}
 
 	return nil
+}
+
+// resolveDCRCredentials routes the CLI-flow DCR registration through the
+// shared pkg/auth/dcr resolver, inheriting its singleflight deduplication,
+// S256 PKCE gating, RFC 7591 §3.2.1 expiry-driven refetch, bearer-token
+// transport with redirect refusal, and panic recovery.
+//
+// The redirect URI is a loopback per RFC 8252 §7.3 — this is the CLI's
+// existing public-client model, and PublicClient=true tells the resolver
+// to register with token_endpoint_auth_method=none and to refuse when
+// S256 PKCE is not advertised (rather than silently downgrading).
+func resolveDCRCredentials(
+	ctx context.Context,
+	issuer string,
+	config *OAuthFlowConfig,
+	discoveredDoc *oauthproto.OIDCDiscoveryDocument,
+) (*dcr.Resolution, error) {
+	redirectURI := fmt.Sprintf("http://localhost:%d/callback", config.CallbackPort)
+
+	req := &dcr.Request{
+		Issuer:                issuer,
+		RedirectURI:           redirectURI,
+		Scopes:                config.Scopes,
+		RegistrationEndpoint:  discoveredDoc.RegistrationEndpoint,
+		AuthorizationEndpoint: discoveredDoc.AuthorizationEndpoint,
+		TokenEndpoint:         discoveredDoc.TokenEndpoint,
+		PublicClient:          true,
+	}
+	// Prefer the issuer-derived OIDC discovery URL when the upstream
+	// advertised one in the cached doc — gives the resolver access to
+	// code_challenge_methods_supported so the S256 gate can be evaluated.
+	// When neither the doc nor the issuer provide one, fall back to the
+	// RegistrationEndpoint-direct path; the resolver's S256 gate then
+	// refuses registration (which the CLI surfaces unchanged).
+	if discoveredDoc.Issuer != "" {
+		req.DiscoveryURL = strings.TrimRight(discoveredDoc.Issuer, "/") + "/.well-known/openid-configuration"
+		// DiscoveryURL is mutually exclusive with RegistrationEndpoint in
+		// the resolver — drop the explicit endpoint so discovery drives
+		// every endpoint (the metadata.RegistrationEndpoint we already
+		// have will be returned by the discovery fetch).
+		req.RegistrationEndpoint = ""
+	}
+
+	// In-memory store: scoped to this PerformOAuthFlow invocation. The
+	// remote handler at pkg/auth/remote/handler.go handles cross-
+	// invocation persistence via its own CachedClientID /
+	// CachedClientSecretRef fields. Closing releases the underlying
+	// MemoryStorage cleanup goroutine; doing so on the success path is
+	// important for long-lived processes that call PerformOAuthFlow many
+	// times.
+	store := dcr.NewInMemoryStore()
+	defer func() {
+		if closer, ok := store.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}()
+
+	resolution, err := dcr.ResolveCredentials(ctx, req, store)
+	if err != nil {
+		// Surface the structured error to the boundary log so operators
+		// see one slog.Error record with the step / issuer / redirect_uri
+		// attributes, then wrap with the CLI-facing prefix.
+		dcr.LogStepError(issuer, err)
+		return nil, fmt.Errorf("dynamic client registration failed: %w", err)
+	}
+	return resolution, nil
 }
 
 // getDiscoveryDocument retrieves the OIDC discovery document
@@ -718,39 +821,6 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 		ClientID:     oauthConfig.ClientID,
 		ClientSecret: oauthConfig.ClientSecret,
 	}, nil
-}
-
-func registerDynamicClient(
-	ctx context.Context,
-	config *OAuthFlowConfig,
-	discoveredDoc *oauthproto.OIDCDiscoveryDocument,
-) (*oauthproto.DynamicClientRegistrationResponse, error) {
-
-	// Check if the provider supports Dynamic Client Registration.
-	// The CLI-flag hint below is intentional: this function is CLI-facing
-	// (pkg/auth/discovery is not a protocol-level package) and the flags
-	// named here are the correct fallback for operators who need to supply
-	// credentials manually. The protocol-neutral version of this message lives
-	// in pkg/oauthproto.handleHTTPResponse for the HTTP 404/405/501 paths.
-	// TODO(#4978): when authserver wiring is added, consider surfacing a
-	// more structured error type here so non-CLI consumers can inspect the cause.
-	if discoveredDoc.RegistrationEndpoint == "" {
-		return nil, fmt.Errorf("this provider does not support Dynamic Client Registration (DCR). " +
-			"Please configure OAuth client credentials using --remote-auth-client-id and --remote-auth-client-secret flags, " +
-			"or register a client manually with the provider")
-	}
-
-	// Build the CLI-specific DCR request (loopback redirect URI per RFC 8252 Section 7.3)
-	registrationRequest := NewDynamicClientRegistrationRequest(config.Scopes, config.CallbackPort)
-
-	// Perform dynamic client registration; nil client uses the default HTTP client.
-	registrationResponse, err := oauthproto.RegisterClientDynamically(
-		ctx, discoveredDoc.RegistrationEndpoint, registrationRequest, nil)
-	if err != nil {
-		return nil, fmt.Errorf("dynamic client registration failed: %w", err)
-	}
-
-	return registrationResponse, nil
 }
 
 // FetchResourceMetadata as specified in RFC 9728

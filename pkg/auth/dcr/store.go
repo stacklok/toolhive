@@ -71,6 +71,44 @@ func NewStorageBackedStore(backend storage.DCRCredentialStore) CredentialStore {
 	return &storageBackedStore{backend: backend}
 }
 
+// NewInMemoryStore returns a CredentialStore whose entries live only for
+// the lifetime of the returned value. This is the constructor consumers
+// reach for when they have no shared durable backend — most notably the
+// CLI OAuth flow, which manages cross-invocation credential persistence
+// outside the resolver (in pkg/auth/remote/handler.go's CachedClientID /
+// CachedClientSecretRef fields) and only needs the resolver's intra-call
+// singleflight + S256 PKCE / expiry-refetch behaviour for one
+// PerformOAuthFlow call.
+//
+// The implementation delegates to storage.NewMemoryStorage to share the
+// same Get/Put/scope-hash semantics as the durable backends, including
+// the background cleanup goroutine. Callers that need to release that
+// goroutine before process exit should call Close on the returned value
+// when finished — the returned CredentialStore implements io.Closer so
+// callers can use a defer in a single line. (CLI flows that complete in
+// a single invocation can rely on process exit.)
+func NewInMemoryStore() CredentialStore {
+	return &inMemoryStore{
+		storageBackedStore: storageBackedStore{backend: storage.NewMemoryStorage()},
+	}
+}
+
+// inMemoryStore is the CredentialStore returned by NewInMemoryStore. It
+// embeds storageBackedStore for Get/Put behaviour and adds Close so the
+// caller can release the underlying MemoryStorage cleanup goroutine.
+type inMemoryStore struct {
+	storageBackedStore
+}
+
+// Close releases the embedded MemoryStorage. Safe to call multiple times;
+// see storage.MemoryStorage.Close for idempotency guarantees.
+func (s *inMemoryStore) Close() error {
+	if closer, ok := s.backend.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 // storageBackedStore is the dcr-package CredentialStore wrapping a
 // storage.DCRCredentialStore. Its methods are the only place that converts
 // between the resolver's *Resolution and the persisted
@@ -144,8 +182,9 @@ func resolutionToCredentials(key Key, res *Resolution) *storage.DCRCredentials {
 
 // credentialsToResolution is the inverse of resolutionToCredentials. The
 // RedirectURI is recovered from the persisted Key so consumers that read it
-// off the resolution (e.g. ConsumeResolution, which writes it back onto a
-// run-config copy when the caller left it empty) see the canonical value.
+// off the resolution (e.g. pkg/authserver/runner.consumeResolution, which
+// writes it back onto a run-config copy when the caller left it empty)
+// see the canonical value.
 //
 // ClientIDIssuedAt is left zero because it is not persisted. Callers that
 // care about it (none today) must read it directly from the live RFC 7591

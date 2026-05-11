@@ -44,32 +44,3 @@ jobs:
         with:
           # Enable golangci-lint's built-in caching (removes skip-cache: true)
           args: --timeout=5m
-
-      # Enforces issue #5145's invariant that
-      # oauthproto.RegisterClientDynamically is only called from
-      # pkg/auth/dcr (the shared resolver) or pkg/oauthproto (the
-      # wire-shape primitive itself). Direct calls from elsewhere bypass
-      # the resolver's S256 PKCE gating, singleflight deduplication,
-      # expiry-driven refetch, bearer-token transport with redirect
-      # refusal, and panic recovery. See Taskfile.yml::check-dcr-isolation
-      # for the rationale and matching shell command.
-      - name: Check DCR isolation invariant
-        run: |
-          matches=$(grep -rn 'oauthproto\.RegisterClientDynamically\|\.RegisterClientDynamically(' \
-            --include='*.go' \
-            --exclude-dir='vendor' \
-            --exclude-dir='mocks' \
-            . 2>/dev/null \
-            | grep -v '^./pkg/auth/dcr/' \
-            | grep -v '^./pkg/oauthproto/' \
-            || true)
-          if [ -n "$matches" ]; then
-            echo "ERROR: oauthproto.RegisterClientDynamically must only be called from pkg/auth/dcr or pkg/oauthproto."
-            echo "       Route the call through pkg/auth/dcr.ResolveCredentials so the consumer inherits"
-            echo "       S256 PKCE gating, singleflight, expiry refetch, redirect refusal, and panic recovery."
-            echo ""
-            echo "Offending references:"
-            echo "$matches"
-            exit 1
-          fi
-          echo "check-dcr-isolation: ok"

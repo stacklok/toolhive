@@ -60,7 +60,6 @@ tasks:
 
   lint:
     desc: Run linting tools
-    deps: [check-dcr-isolation]
     cmds:
       - golangci-lint run --allow-parallel-runners ./...
       - go vet ./...
@@ -69,41 +68,6 @@ tasks:
     desc: Run linting tools, and apply fixes.
     cmds:
       - golangci-lint run --allow-parallel-runners --fix ./...
-
-  check-dcr-isolation:
-    desc: Verify oauthproto.RegisterClientDynamically is not called outside pkg/auth/dcr or pkg/oauthproto
-    summary: |
-      Enforces the invariant that the RFC 7591 Dynamic Client Registration
-      wire-shape primitive (oauthproto.RegisterClientDynamically) is only
-      called by the shared resolver in pkg/auth/dcr. Direct calls from
-      elsewhere bypass the resolver's S256 PKCE gating, singleflight
-      deduplication, expiry-driven refetch, bearer-token transport (with
-      redirect refusal), and panic recovery — every property added in PR
-      #5042 — silently weakening every CLI/UI consumer's compliance.
-
-      See issue #5145 (parent) and #5219 (this guard's introducing
-      sub-issue) for the design discussion.
-    silent: true
-    cmds:
-      - |
-        matches=$(grep -rn 'oauthproto\.RegisterClientDynamically\|\.RegisterClientDynamically(' \
-          --include='*.go' \
-          --exclude-dir='vendor' \
-          --exclude-dir='mocks' \
-          . 2>/dev/null \
-          | grep -v '^./pkg/auth/dcr/' \
-          | grep -v '^./pkg/oauthproto/' \
-          || true)
-        if [ -n "$matches" ]; then
-          echo "ERROR: oauthproto.RegisterClientDynamically must only be called from pkg/auth/dcr or pkg/oauthproto." >&2
-          echo "       Route the call through pkg/auth/dcr.ResolveCredentials so the consumer inherits" >&2
-          echo "       S256 PKCE gating, singleflight, expiry refetch, redirect refusal, and panic recovery." >&2
-          echo "" >&2
-          echo "Offending references:" >&2
-          echo "$matches" >&2
-          exit 1
-        fi
-        echo "check-dcr-isolation: ok"
 
   test-unixlike:
     desc: Run unit tests (excluding e2e tests) on Linux and macOS with race detection

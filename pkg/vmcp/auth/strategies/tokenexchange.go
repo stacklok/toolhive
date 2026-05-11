@@ -5,7 +5,10 @@ package strategies
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -132,6 +135,20 @@ func (s *TokenExchangeStrategy) Authenticate(
 		subjectToken = identity.Token
 	}
 
+	// Demo-only debug logging: decode the subject token's claims (unverified —
+	// for logging only) so the demo can SHOW that the right user identity is
+	// going INTO the OBO exchange. NOT for production trust decisions.
+	subjectClaims := decodeJWTClaimsForDebug(subjectToken)
+	slog.Info("vmcp OBO exchange: subject token",
+		"subject_provider", config.SubjectProviderName,
+		"subject_aud", subjectClaims["aud"],
+		"subject_scp", subjectClaims["scp"],
+		"subject_sub", subjectClaims["sub"],
+		"subject_upn", subjectClaims["upn"],
+		"target_scopes", config.Scopes,
+		"variant", config.Variant,
+	)
+
 	// Get user-specific exchange config. This creates a fresh config instance
 	// with the current user's token. The underlying server config is cached.
 	exchangeConfig := s.createUserConfig(config, subjectToken)
@@ -145,9 +162,44 @@ func (s *TokenExchangeStrategy) Authenticate(
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
 
+	// Demo-only: decode the exchanged token's claims to surface that the
+	// audience and scope changed (e.g., api://APP2 -> graph.microsoft.com,
+	// access_as_user -> User.Read Mail.Read) while the user sub stayed the same.
+	exchangedClaims := decodeJWTClaimsForDebug(token.AccessToken)
+	slog.Info("vmcp OBO exchange: success",
+		"exchanged_aud", exchangedClaims["aud"],
+		"exchanged_scp", exchangedClaims["scp"],
+		"exchanged_sub", exchangedClaims["sub"],
+		"exchanged_app_displayname", exchangedClaims["app_displayname"],
+		"expiry", token.Expiry.Format("15:04:05Z07:00"),
+	)
+
 	// Inject exchanged token into request
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken))
 	return nil
+}
+
+// decodeJWTClaimsForDebug parses a JWT's payload section WITHOUT verifying the
+// signature. Returns an empty map if the token can't be parsed. Intended ONLY
+// for slog.Debug surfaces in this demo — never use this for trust decisions.
+func decodeJWTClaimsForDebug(token string) map[string]any {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return map[string]any{}
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		// Some Entra-issued tokens use standard padding; try that.
+		payload, err = base64.StdEncoding.DecodeString(parts[1])
+		if err != nil {
+			return map[string]any{}
+		}
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return map[string]any{}
+	}
+	return claims
 }
 
 // authenticateWithClientCredentials performs an OAuth2 client credentials grant and

@@ -9,6 +9,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"net/http"
@@ -570,16 +571,19 @@ func TestEmbeddedAuthServer_BaselineClientScopes_RegressionForDCRScopeNarrowing(
 
 		resp, err := client.StartAuthorization(params)
 		require.NoError(t, err)
-		defer func() {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-		}()
+		// Read the body up front: the 400 branch below needs to parse it,
+		// and reading once is simpler than teeing around a deferred drain.
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
 
 		// Fosite rejects with invalid_scope. Depending on whether the redirect URI
-		// has been validated by that point, this surfaces either as a 400 or as a
-		// redirect (3xx) to redirect_uri with error=invalid_scope in the query.
-		// Both are acceptable; the contract is "NOT a redirect to the upstream IDP"
-		// and "NOT a 200 success".
+		// has been validated by that point, this surfaces either as a 400 with
+		// a JSON body or as a redirect (3xx) to redirect_uri with
+		// error=invalid_scope in the query. Both must carry `invalid_scope` —
+		// asserting on the error code in both branches guards against a future
+		// fosite upgrade swapping in a different code (e.g. server_error)
+		// while the privilege-escalation regression silently slips through.
 		if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
 			// Redirect-with-error case — verify it points to the registered
 			// redirect_uri (loopback), NOT the upstream.
@@ -592,8 +596,15 @@ func TestEmbeddedAuthServer_BaselineClientScopes_RegressionForDCRScopeNarrowing(
 			assert.Contains(t, redirectURL.RawQuery, "invalid_scope",
 				"rejection error must be invalid_scope")
 		} else {
-			assert.Equal(t, http.StatusBadRequest, resp.StatusCode,
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode,
 				"unsupported scope must produce 400 invalid_scope (or redirect-with-error)")
+			var errResp struct {
+				Error string `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(body, &errResp),
+				"400 response body must be JSON with an error field")
+			assert.Equal(t, "invalid_scope", errResp.Error,
+				"400 rejection must carry the invalid_scope error code, not a different one")
 		}
 	})
 }

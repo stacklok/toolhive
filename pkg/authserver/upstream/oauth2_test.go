@@ -16,6 +16,7 @@ package upstream
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -2199,12 +2200,15 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity_IdentityFromToken(t *testing
 		assert.Equal(t, "User One", identity.Name)
 		assert.Equal(t, "u1@example.com", identity.Email)
 		assert.NotEmpty(t, identity.Tokens.AccessToken)
+		assert.False(t, identity.Synthetic, "IdentityFromToken path must not produce synthetic identities")
 	})
 
 	t.Run("@upstreamjwt modifier resolves identity from JWT-shaped access token", func(t *testing.T) {
 		t.Parallel()
 
-		RegisterModifiers()
+		// RegisterModifiers is called once by TestMain before all tests run.
+		// Do not call it again here: gjson.AddModifier writes to a shared map and
+		// races with concurrent reads in parallel subtests.
 
 		accessToken := makeJWT(`{"sub":"u-jwt-1","name":"JWT User","email":"jwt@example.com"}`)
 		tokenBody := fmt.Sprintf(`{"access_token":%q,"token_type":"Bearer"}`, accessToken)
@@ -2234,6 +2238,42 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity_IdentityFromToken(t *testing
 		assert.Equal(t, "JWT User", identity.Name)
 		assert.Equal(t, "jwt@example.com", identity.Email)
 		assert.False(t, identity.Synthetic)
+	})
+
+	t.Run("@upstreamjwt modifier accepts hand-forged unsigned JWT", func(t *testing.T) {
+		t.Parallel()
+
+		// Construct a JWT with a garbage signature. The payload is valid base64url-encoded
+		// JSON, but the signature is not the real HMAC/RSA output. This test pins the
+		// intentional no-signature-check behavior. A future contributor who adds
+		// verification must update the trust model docs and this test.
+		header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+		payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"forged-subject"}`))
+		forgedJWT := header + "." + payload + ".INVALIDSIG"
+
+		tokenBody := fmt.Sprintf(`{"access_token":%q,"token_type":"Bearer"}`, forgedJWT)
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				SubjectPath: "access_token|@upstreamjwt|sub",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		identity, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		// No signature verification — extraction succeeds despite the forged signature.
+		assert.Equal(t, "forged-subject", identity.Subject)
 	})
 
 	t.Run("identityFromToken bypasses userinfo endpoint entirely", func(t *testing.T) {
@@ -2421,10 +2461,13 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity_IdentityFromToken(t *testing
 		assert.Empty(t, identity.Email, "synthesized identity has no email")
 	})
 
-	t.Run("refresh path does not trigger identity extraction", func(t *testing.T) {
+	t.Run("IdentityFromToken configured does not cause RefreshTokens to fail when identity field is absent", func(t *testing.T) {
 		t.Parallel()
 
-		tokenBody := `{"access_token":"refreshed","token_type":"Bearer","refresh_token":"new-rt","username":"u1"}`
+		// Token body intentionally does NOT include "username". If extraction ran on
+		// the refresh path, it would fail (path absent) and RefreshTokens would error.
+		// A successful return proves extraction was NOT run on the refresh path.
+		tokenBody := `{"access_token":"refreshed","token_type":"Bearer","refresh_token":"new-refresh"}`
 		tokenSrv := newTokenResponseServer(t, tokenBody)
 
 		config := &OAuth2Config{
@@ -2443,18 +2486,11 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity_IdentityFromToken(t *testing
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		// RefreshTokens must not blow up and must return valid tokens.
+		// RefreshTokens must succeed even though "username" is absent from the
+		// response, proving that identity extraction is skipped on the refresh path.
 		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "")
 		require.NoError(t, err)
 		assert.Equal(t, "refreshed", tokens.AccessToken)
-
-		// Verify that the wrapped client on the refresh path uses nil identityCfg
-		// by inspecting the transport after constructing it the same way RefreshTokens does.
-		_, rewriter := wrapHTTPClientForTokenExchange(provider.httpClient, provider.config.TokenResponseMapping, nil, provider.config.TokenEndpoint)
-		// When only mapping is nil and identityCfg is nil, wrapHTTPClientForTokenExchange
-		// returns the original client and nil rewriter. When mapping is non-nil,
-		// the rewriter has nil identityCfg. Here, both are nil, so rewriter is nil.
-		assert.Nil(t, rewriter, "refresh path rewriter must be nil when both mapping and identityCfg are nil")
 	})
 
 	t.Run("error message does not contain token body content", func(t *testing.T) {

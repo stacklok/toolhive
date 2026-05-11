@@ -159,7 +159,7 @@ type OAuth2Config struct {
 	// body when the upstream provider includes identity claims there (e.g.,
 	// Snowflake's `username`, Slack's `authed_user.id`). When set, the embedded
 	// auth server skips the userinfo HTTP call entirely. See the CRD type
-	// (cmd/thv-operator/api/v1alpha1.IdentityFromTokenConfig) for the
+	// (cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) for the
 	// authoritative trust-model and uniqueness documentation.
 	IdentityFromToken *IdentityFromTokenConfig `json:"identity_from_token,omitempty" yaml:"identity_from_token,omitempty"`
 }
@@ -336,7 +336,7 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 		"token_endpoint", config.TokenEndpoint,
 	)
 
-	if config.UserInfo == nil {
+	if config.UserInfo == nil && config.IdentityFromToken == nil {
 		// Surface synthesis mode at construction so operators see it once
 		// per provider rather than only inferring from missing claims later.
 		slog.Warn("oauth2 upstream has no userinfo configured; using synthesis mode "+
@@ -443,8 +443,10 @@ func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, 
 			if exchanged.extractionErr != nil {
 				return nil, exchanged.extractionErr
 			}
-			// Unreachable in practice: when identity is nil the rewriter always
-			// sets extractionErr. Kept as a safe fallback.
+			// Defense-in-depth: the rewriter guarantees one of extractedIdentity or
+			// extractionErr is set when the token endpoint returns 200. This branch
+			// fires only if that invariant is ever relaxed (e.g., a non-200-success
+			// status the oauth2 library accepts, or a future rewriter change).
 			return nil, fmt.Errorf(
 				"%w: identityFromToken configured but extraction failed",
 				ErrIdentityResolutionFailed,
@@ -632,7 +634,7 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 		return nil, errors.New("refresh token is required")
 	}
 
-	slog.Info("refreshing tokens",
+	slog.Debug("refreshing tokens",
 		"token_endpoint", p.config.TokenEndpoint,
 		"scope_count", len(p.oauth2Config.Scopes),
 	)

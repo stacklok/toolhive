@@ -29,6 +29,12 @@ import (
 // If extraction fails, extractionErr holds the cause so callers can surface
 // operator-actionable diagnostics (path names, type descriptions) without
 // re-reading the response body.
+//
+// Single-use contract: each instance handles exactly one token exchange and
+// must not be shared across goroutines or reused for multiple exchanges. The
+// caller reads extractedIdentity and extractionErr after Exchange returns —
+// that return is the synchronization edge, so no mutex is needed for this
+// one-shot usage pattern.
 type tokenResponseRewriter struct {
 	base              http.RoundTripper
 	mapping           *TokenResponseMapping

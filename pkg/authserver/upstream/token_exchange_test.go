@@ -215,7 +215,7 @@ func TestTokenResponseRewriter_NonTokenEndpoint(t *testing.T) {
 	assert.False(t, hasAccessToken)
 }
 
-func TestWrapHTTPClientWithMapping_NilMapping(t *testing.T) {
+func TestWrapHTTPClientForTokenExchange_NilMapping(t *testing.T) {
 	t.Parallel()
 
 	original := &http.Client{}
@@ -384,20 +384,24 @@ func TestTokenResponseRewriter_IdentityCfgSet(t *testing.T) {
 	assert.Equal(t, "u1", transport.extractedIdentity.Subject)
 }
 
-// TestTokenResponseRewriter_IdentityFromRawBody verifies the raw-body
-// invariant: identity is resolved against the pre-rewrite body. The fixture
-// places the subject at a nested path ("authed_user.id") and configures a
-// mapping that lifts access_token to the top level; the assertion confirms
-// extraction reads the original nested location, not a post-rewrite shape.
+// TestTokenResponseRewriter_IdentityFromRawBody verifies the ordering invariant:
+// identity extraction runs against the pre-rewrite body, not the post-rewrite body.
+//
+// The fixture uses token_type as the identity field. rewriteTokenResponse
+// unconditionally sets token_type to "Bearer", so:
+//   - extraction pre-rewrite reads "raw-marker" (the original value)
+//   - extraction post-rewrite would read "Bearer" (the rewritten value)
+//
+// Asserting Subject == "raw-marker" can only pass if extraction ran before the rewrite.
 func TestTokenResponseRewriter_IdentityFromRawBody(t *testing.T) {
 	t.Parallel()
 
-	rawBody := `{"authed_user":{"access_token":"x","id":"U1234"},"username":""}`
+	rawBody := `{"access_token":"x","token_type":"raw-marker"}`
 	server := httptest.NewServer(tokenEndpointHandler(rawBody))
 	t.Cleanup(server.Close)
 
-	mapping := &TokenResponseMapping{AccessTokenPath: "authed_user.access_token"}
-	identityCfg := &IdentityFromTokenConfig{SubjectPath: "authed_user.id"}
+	mapping := &TokenResponseMapping{AccessTokenPath: "access_token"}
+	identityCfg := &IdentityFromTokenConfig{SubjectPath: "token_type"}
 	client, _ := wrapHTTPClientForTokenExchange(http.DefaultClient, mapping, identityCfg, server.URL)
 
 	transport, ok := client.Transport.(*tokenResponseRewriter)
@@ -410,11 +414,12 @@ func TestTokenResponseRewriter_IdentityFromRawBody(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	// Identity should be extracted from the raw body where authed_user.id == "U1234"
+	// Subject must be "raw-marker" — this can only be true if extraction ran
+	// before rewriteTokenResponse replaced token_type with "Bearer".
 	require.NotNil(t, transport.extractedIdentity)
-	assert.Equal(t, "U1234", transport.extractedIdentity.Subject)
+	assert.Equal(t, "raw-marker", transport.extractedIdentity.Subject)
 
-	// The rewritten body should have access_token lifted to top-level
+	// Confirm the rewrite did run (token_type in the response is now "Bearer").
 	respBody, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	var parsed map[string]any

@@ -249,7 +249,7 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 	// today, but a future config-loader bug or hand-built runtime config could
 	// silently drop the operator's intent without this signal.
 	if p.config.IdentityFromToken != nil {
-		slog.Warn("OIDC provider ignoring IdentityFromToken; identity is resolved from the validated ID token")
+		slog.Debug("OIDC provider ignoring IdentityFromToken; identity is resolved from the validated ID token")
 	}
 	exchanged, err := p.exchangeCodeForTokens(ctx, code, codeVerifier)
 	if err != nil {

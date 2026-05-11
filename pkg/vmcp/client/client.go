@@ -444,6 +444,17 @@ func wrapBackendError(err error, backendID string, operation string) error {
 		return fmt.Errorf("%w: failed to %s for backend %s: %v",
 			vmcp.ErrAuthenticationFailed, operation, backendID, err)
 	}
+	// transport.ErrAuthorizationRequired is returned (wrapped in *transport.Error
+	// and *transport.AuthorizationRequiredError) for 401 responses with a
+	// WWW-Authenticate header. transport.ErrOAuthAuthorizationRequired is the
+	// companion sentinel from the OAuth-handler path. Both must map to
+	// ErrAuthenticationFailed so health monitoring engages the auth-aware
+	// branch (#4935) instead of treating the probe as unhealthy (#5223).
+	if errors.Is(err, transport.ErrAuthorizationRequired) ||
+		errors.Is(err, transport.ErrOAuthAuthorizationRequired) {
+		return fmt.Errorf("%w: failed to %s for backend %s: %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
 	// ErrLegacySSEServer is returned for any 4xx (except 401) on initialize POST.
 	// This includes 403 (auth rejection) and 404/405 (endpoint not found/method not allowed).
 	// We cannot distinguish auth failures from routing errors without the raw status code,

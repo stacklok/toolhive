@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -450,6 +451,14 @@ func TestIsAuthenticationError(t *testing.T) {
 		{name: "404 not found", err: errors.New("404 not found"), expectErr: false},
 		{name: "500 internal server error", err: errors.New("500 internal server error"), expectErr: false},
 		{name: "hostname with 401", err: errors.New("http://backend401.example.com"), expectErr: false},
+		// Pin against accidental loosening of the "authorization required"
+		// substring matcher: a validation message of the form "field
+		// 'authorization' required" must not be misclassified as an auth
+		// failure. The current matcher uses the contiguous substring
+		// "authorization required" (one space, no punctuation), so this
+		// string does not match — but a future loosening (e.g. allowing
+		// any whitespace) would silently regress.
+		{name: "validation message containing 'authorization' and 'required'", err: errors.New("field 'authorization' required"), expectErr: false},
 		{name: "nil error", err: nil, expectErr: false},
 	}
 
@@ -633,6 +642,16 @@ func TestHealthChecker_CheckHealth_AuthErrorsCategorizesAsUnauthenticated(t *tes
 			name: "mcp-go ErrUnauthorized wrapped as ErrAuthenticationFailed by wrapBackendError",
 			err:  fmt.Errorf("%w: failed to initialize for backend my-backend: unauthorized (401)", vmcp.ErrAuthenticationFailed),
 		},
+		{
+			// Issue #5223: mcp-go v0.49.0+ returns *AuthorizationRequiredError for
+			// 401 with WWW-Authenticate, wrapped in *transport.Error. Both layers
+			// Unwrap() to transport.ErrAuthorizationRequired. The string fallback
+			// must recognize "authorization required" so the probe error reaches
+			// health monitoring as BackendUnauthenticated rather than falling
+			// through to BackendUnhealthy and producing WARN spam.
+			name: "transport.Error wrapping AuthorizationRequiredError",
+			err:  transport.NewError(&transport.AuthorizationRequiredError{}),
+		},
 	}
 
 	for _, tt := range tests {
@@ -696,6 +715,31 @@ func TestHealthChecker_CheckHealth_AuthErrorWithOutgoingAuthIsHealthy(t *testing
 			name:       "upstream_inject + wrapped sentinel",
 			authConfig: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUpstreamInject},
 			err:        fmt.Errorf("%w: unauthorized (401)", vmcp.ErrAuthenticationFailed),
+		},
+		{
+			// Issue #5223 exact reproducer: North's github-copilot-entry backend
+			// behind an upstreamInject auth strategy. Probe carries no user creds;
+			// mcp-go returns the typed authorization-required chain. Once correctly
+			// classified as auth, #4935's logic must take over and report
+			// BackendHealthy with nil err so the monitor records a successful
+			// check, the circuit breaker stays closed, and the WARN spam stops.
+			name:       "upstream_inject + transport.Error wrapping AuthorizationRequiredError",
+			authConfig: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUpstreamInject},
+			err:        transport.NewError(&transport.AuthorizationRequiredError{}),
+		},
+		{
+			// Same mcp-go chain as the upstream_inject row above; this row pins
+			// that token_exchange flows through the same authErrorStatus branch.
+			name:       "token_exchange + transport.Error wrapping AuthorizationRequiredError",
+			authConfig: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeTokenExchange},
+			err:        transport.NewError(&transport.AuthorizationRequiredError{}),
+		},
+		{
+			// Same mcp-go chain as the upstream_inject row above; this row pins
+			// that header_injection flows through the same authErrorStatus branch.
+			name:       "header_injection + transport.Error wrapping AuthorizationRequiredError",
+			authConfig: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeHeaderInjection},
+			err:        transport.NewError(&transport.AuthorizationRequiredError{}),
 		},
 	}
 

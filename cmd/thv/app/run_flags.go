@@ -1146,65 +1146,30 @@ func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionUR
 	return nil
 }
 
-// createTelemetryConfig creates a telemetry configuration if any telemetry parameters are provided
+// createTelemetryConfig creates a telemetry configuration if any telemetry parameters are provided.
+//
+// The bool inputs have already been resolved by getTelemetryFromFlags
+// (which layers global config defaults under any flag the user did not set),
+// so we forward them as non-nil *bool to the shared builder. This keeps the
+// CLI and the API's POST /api/v1/workloads path on the same build path; see
+// issue #5253.
 func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
 	otelServiceName string, otelTracingEnabled bool, otelMetricsEnabled bool, otelSamplingRate float64, otelHeaders []string,
 	otelInsecure bool, otelEnvironmentVariables []string, otelCustomAttributes string,
 	otelUseLegacyAttributes bool) *telemetry.Config {
-	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
-		return nil
-	}
-
-	// If both tracing and metrics are disabled, skip telemetry entirely.
-	// This allows users to disable telemetry via global config while keeping
-	// the endpoint configured for later re-enablement.
-	if !otelTracingEnabled && !otelMetricsEnabled && !otelEnablePrometheusMetricsPath {
-		return nil
-	}
-
-	// Parse headers from key=value format
-	headers := make(map[string]string)
-	for _, header := range otelHeaders {
-		parts := strings.SplitN(header, "=", 2)
-		if len(parts) == 2 {
-			headers[parts[0]] = parts[1]
-		}
-	}
-
-	// Process environment variables - split comma-separated values
-	var processedEnvVars []string
-	for _, envVarEntry := range otelEnvironmentVariables {
-		// Split by comma and trim whitespace
-		envVars := strings.Split(envVarEntry, ",")
-		for _, envVar := range envVars {
-			trimmed := strings.TrimSpace(envVar)
-			if trimmed != "" {
-				processedEnvVars = append(processedEnvVars, trimmed)
-			}
-		}
-	}
-
-	// Parse custom attributes
-	customAttrs, err := telemetry.ParseCustomAttributes(otelCustomAttributes)
-	if err != nil {
-		// Log the error but don't fail - telemetry is optional
-		slog.Warn(fmt.Sprintf("Failed to parse custom attributes: %v", err))
-		customAttrs = nil
-	}
-
-	telemetryCfg := &telemetry.Config{
-		Endpoint:                    otelEndpoint,
-		ServiceName:                 otelServiceName,
-		ServiceVersion:              "", // resolved at runtime in NewProvider()
-		TracingEnabled:              otelTracingEnabled,
-		MetricsEnabled:              otelMetricsEnabled,
-		Headers:                     headers,
-		Insecure:                    otelInsecure,
-		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
-		EnvironmentVariables:        processedEnvVars,
-		CustomAttributes:            customAttrs,
-		UseLegacyAttributes:         otelUseLegacyAttributes,
-	}
-	telemetryCfg.SetSamplingRateFromFloat(otelSamplingRate)
-	return telemetryCfg
+	return runner.BuildTelemetryConfigFromAppConfig(
+		cfg.OpenTelemetryConfig{
+			Endpoint:                    otelEndpoint,
+			SamplingRate:                otelSamplingRate,
+			EnvVars:                     otelEnvironmentVariables,
+			MetricsEnabled:              &otelMetricsEnabled,
+			TracingEnabled:              &otelTracingEnabled,
+			Insecure:                    otelInsecure,
+			EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
+			UseLegacyAttributes:         &otelUseLegacyAttributes,
+		},
+		otelServiceName,
+		otelHeaders,
+		otelCustomAttributes,
+	)
 }

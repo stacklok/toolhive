@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -312,6 +313,12 @@ func (s *WorkloadService) BuildFullRunConfig(
 	// call are consistent with each other, even if a concurrent registry update fires mid-call.
 	cfg := s.configProvider.GetConfig()
 
+	// Apply telemetry defaults from the application config so workloads created
+	// via the API inherit the same OTEL settings as workloads created via
+	// "thv run". The API request struct does not expose OTEL fields, so the
+	// application config is the only source. See issue #5253.
+	telemetryConfig := runner.BuildTelemetryConfigFromAppConfig(cfg.OTEL, "", nil, "")
+
 	// Resolve registry source URLs and server name when the server was discovered via registry lookup.
 	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, cfg)
 	regServerName := runner.ResolveRegistryServerName(serverMetadata)
@@ -342,7 +349,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			req.OIDC.ClientID, "", "", "", "", false, false, req.OIDC.Scopes),
 		runner.WithToolsFilter(req.ToolsFilter),
 		runner.WithToolsOverride(toolsOverride),
-		runner.WithTelemetryConfigFromFlags("", false, false, false, "", 0.0, nil, false, nil, false),
+		runner.WithTelemetryConfig(telemetryConfig),
 		runner.WithRegistrySourceURLs(regAPIURL, regURL),
 		runner.WithRegistryServerName(regServerName),
 	}
@@ -382,6 +389,10 @@ func (s *WorkloadService) BuildFullRunConfig(
 		}
 	}
 
+	// Resolve the OTel service name from the workload name when not explicitly
+	// set. Mirrors what the CLI does in configureMiddlewareAndAuthOptions.
+	telemetry.ResolveServiceName(telemetryConfig, req.Name)
+
 	// Configure middleware from flags
 	options = append(options,
 		runner.WithMiddlewareFromFlags(
@@ -389,7 +400,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			nil, // tokenExchangeConfig - not supported via API yet
 			req.ToolsFilter,
 			toolsOverride,
-			nil,
+			telemetryConfig,
 			req.AuthzConfig,
 			false,
 			"",

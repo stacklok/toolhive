@@ -2032,6 +2032,7 @@ _Appears in:_
 | `resourceOverrides` _[api.v1beta1.ResourceOverrides](#apiv1beta1resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  | Optional: \{\} <br /> |
 | `groupRef` _[api.v1beta1.MCPGroupRef](#apiv1beta1mcpgroupref)_ | GroupRef references the MCPGroup this proxy belongs to.<br />The referenced MCPGroup must be in the same namespace. |  | Optional: \{\} <br /> |
 | `sessionAffinity` _string_ | SessionAffinity controls whether the Service routes repeated client connections to the same pod.<br />MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.<br />Set to "None" for stateless servers or when using an external load balancer with its own affinity. | ClientIP | Enum: [ClientIP None] <br />Optional: \{\} <br /> |
+| `sessionStorage` _[api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When nil, no session storage is configured and the proxy falls back to<br />pod-local in-memory session state — incompatible with multi-replica<br />deployments behind load balancers that don't preserve client-IP affinity<br />(e.g. AWS ALB across multiple AZs).<br />The transparent proxy validates `Mcp-Session-Id` against this store on<br />every non-initialize request (see pkg/transport/proxy/transparent/<br />transparent_proxy.go) and rewrites client-facing session IDs to backend<br />session IDs using session metadata. Both lookups require shared state<br />across replicas.<br />Mirrors MCPServer.spec.sessionStorage and VirtualMCPServer.spec.sessionStorage. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPRemoteProxyStatus
@@ -3093,6 +3094,7 @@ into the vMCP ConfigMap so the vMCP process receives connection parameters at st
 
 
 _Appears in:_
+- [api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)
 - [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
 - [api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)
 

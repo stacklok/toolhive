@@ -136,6 +136,22 @@ type MCPRemoteProxySpec struct {
 	// +kubebuilder:default=ClientIP
 	// +optional
 	SessionAffinity string `json:"sessionAffinity,omitempty"`
+
+	// SessionStorage configures session storage for stateful horizontal scaling.
+	// When nil, no session storage is configured and the proxy falls back to
+	// pod-local in-memory session state — incompatible with multi-replica
+	// deployments behind load balancers that don't preserve client-IP affinity
+	// (e.g. AWS ALB across multiple AZs).
+	//
+	// The transparent proxy validates `Mcp-Session-Id` against this store on
+	// every non-initialize request (see pkg/transport/proxy/transparent/
+	// transparent_proxy.go) and rewrites client-facing session IDs to backend
+	// session IDs using session metadata. Both lookups require shared state
+	// across replicas.
+	//
+	// Mirrors MCPServer.spec.sessionStorage and VirtualMCPServer.spec.sessionStorage.
+	// +optional
+	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty"`
 }
 
 // MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy

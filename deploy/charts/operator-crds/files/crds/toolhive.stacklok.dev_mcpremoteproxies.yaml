@@ -435,6 +435,63 @@ spec:
                 - ClientIP
                 - None
                 type: string
+              sessionStorage:
+                description: |-
+                  SessionStorage configures session storage for stateful horizontal scaling.
+                  When nil, no session storage is configured and the proxy falls back to
+                  pod-local in-memory session state — incompatible with multi-replica
+                  deployments behind load balancers that don't preserve client-IP affinity
+                  (e.g. AWS ALB across multiple AZs).
+
+                  The transparent proxy validates `Mcp-Session-Id` against this store on
+                  every non-initialize request (see pkg/transport/proxy/transparent/
+                  transparent_proxy.go) and rewrites client-facing session IDs to backend
+                  session IDs using session metadata. Both lookups require shared state
+                  across replicas.
+
+                  Mirrors MCPServer.spec.sessionStorage and VirtualMCPServer.spec.sessionStorage.
+                properties:
+                  address:
+                    description: Address is the Redis server address (required when
+                      provider is redis)
+                    minLength: 1
+                    type: string
+                  db:
+                    default: 0
+                    description: DB is the Redis database number
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  keyPrefix:
+                    description: KeyPrefix is an optional prefix for all Redis keys
+                      used by ToolHive
+                    type: string
+                  passwordRef:
+                    description: PasswordRef is a reference to a Secret key containing
+                      the Redis password
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  provider:
+                    description: Provider is the session storage backend type
+                    enum:
+                    - memory
+                    - redis
+                    type: string
+                required:
+                - provider
+                type: object
+                x-kubernetes-validations:
+                - message: address is required
+                  rule: 'self.provider == ''redis'' ? has(self.address) : true'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
@@ -1018,6 +1075,63 @@ spec:
                 - ClientIP
                 - None
                 type: string
+              sessionStorage:
+                description: |-
+                  SessionStorage configures session storage for stateful horizontal scaling.
+                  When nil, no session storage is configured and the proxy falls back to
+                  pod-local in-memory session state — incompatible with multi-replica
+                  deployments behind load balancers that don't preserve client-IP affinity
+                  (e.g. AWS ALB across multiple AZs).
+
+                  The transparent proxy validates `Mcp-Session-Id` against this store on
+                  every non-initialize request (see pkg/transport/proxy/transparent/
+                  transparent_proxy.go) and rewrites client-facing session IDs to backend
+                  session IDs using session metadata. Both lookups require shared state
+                  across replicas.
+
+                  Mirrors MCPServer.spec.sessionStorage and VirtualMCPServer.spec.sessionStorage.
+                properties:
+                  address:
+                    description: Address is the Redis server address (required when
+                      provider is redis)
+                    minLength: 1
+                    type: string
+                  db:
+                    default: 0
+                    description: DB is the Redis database number
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  keyPrefix:
+                    description: KeyPrefix is an optional prefix for all Redis keys
+                      used by ToolHive
+                    type: string
+                  passwordRef:
+                    description: PasswordRef is a reference to a Secret key containing
+                      the Redis password
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  provider:
+                    description: Provider is the session storage backend type
+                    enum:
+                    - memory
+                    - redis
+                    type: string
+                required:
+                - provider
+                type: object
+                x-kubernetes-validations:
+                - message: address is required
+                  rule: 'self.provider == ''redis'' ? has(self.address) : true'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.

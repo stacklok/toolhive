@@ -22,6 +22,7 @@ import (
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
@@ -582,7 +583,44 @@ func (d *k8sDiscoverer) mcpServerEntryToBackend(ctx context.Context, entry *mcpv
 		return nil
 	}
 
+	// Per-backend HTTP header injection. Mirrors the static-mode operator
+	// path in cmd/thv-operator/controllers/virtualmcpserver_deployment.go::buildHeaderForwardManifestForEntry:
+	// plaintext values verbatim, secret refs translated to identifiers
+	// (HEADER_FORWARD_<H>_<OWNER>) the round tripper resolves at request
+	// time via secrets.EnvironmentProvider.
+	backend.HeaderForward = headerForwardFromEntry(entry)
+
 	return backend
+}
+
+// headerForwardFromEntry projects MCPServerEntry.spec.headerForward onto the
+// runtime *vmcp.HeaderForwardConfig the round tripper consumes. Returns nil
+// when the entry has no headerForward configured. Secret values never
+// appear here — only identifiers, which are dereferenced at request time.
+func headerForwardFromEntry(entry *mcpv1beta1.MCPServerEntry) *vmcp.HeaderForwardConfig {
+	if entry == nil || entry.Spec.HeaderForward == nil {
+		return nil
+	}
+	src := entry.Spec.HeaderForward
+
+	cfg := &vmcp.HeaderForwardConfig{
+		AddPlaintextHeaders: src.AddPlaintextHeaders,
+	}
+	for _, ref := range src.AddHeadersFromSecret {
+		if ref.ValueSecretRef == nil {
+			continue
+		}
+		_, identifier := wirefmt.SecretEnvVarName(entry.Name, ref.HeaderName)
+		if cfg.AddHeadersFromSecret == nil {
+			cfg.AddHeadersFromSecret = make(map[string]string)
+		}
+		cfg.AddHeadersFromSecret[ref.HeaderName] = identifier
+	}
+
+	if len(cfg.AddPlaintextHeaders) == 0 && len(cfg.AddHeadersFromSecret) == 0 {
+		return nil
+	}
+	return cfg
 }
 
 // mapMCPServerEntryPhaseToHealth converts a MCPServerEntryPhase to a backend health status.

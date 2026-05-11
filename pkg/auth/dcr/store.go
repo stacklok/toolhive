@@ -55,25 +55,19 @@ type CredentialStore interface {
 	Put(ctx context.Context, key Key, resolution *Resolution) error
 }
 
-// NewInMemoryStore returns a thread-safe in-memory CredentialStore intended
-// for tests and single-replica development deployments. It is a thin adapter
-// over storage.NewMemoryStorage so the resolver-side cache and the
-// authserver's main storage backend share a single in-memory implementation.
-//
-// Production deployments should use a Redis-backed
-// storage.DCRCredentialStore (instantiated via storage.NewRedisStorage and
-// passed through this package's storage-backed adapter), which addresses
-// cross-replica sharing, durability, and cross-process coordination.
-func NewInMemoryStore() CredentialStore {
-	return NewStorageBackedStore(storage.NewMemoryStorage())
-}
-
 // NewStorageBackedStore returns a CredentialStore that delegates to a
 // storage.DCRCredentialStore for durable persistence and translates
 // Resolution values into DCRCredentials at the boundary. The returned
 // store is safe for concurrent use because the underlying
 // storage.DCRCredentialStore must be (per its interface contract).
+//
+// Panics if backend is nil — a nil backend is unambiguously a programming
+// error and silent acceptance would only delay the eventual nil-pointer
+// dereference to the first Get/Put call, far from the constructor site.
 func NewStorageBackedStore(backend storage.DCRCredentialStore) CredentialStore {
+	if backend == nil {
+		panic("dcr: NewStorageBackedStore: backend must not be nil")
+	}
 	return &storageBackedStore{backend: backend}
 }
 

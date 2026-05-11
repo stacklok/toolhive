@@ -10,9 +10,8 @@ package dcr
 //
 // The struct collects exactly the fields the resolver reads:
 //
-//   - Identity: Issuer (this caller's logical issuer, used to key the cache
-//     and to default RedirectURI when the caller leaves it empty), Scopes,
-//     and RedirectURI.
+//   - Identity: Issuer (the caller's logical scope — see the Issuer field
+//     doc for what each consumer puts there), Scopes, and RedirectURI.
 //   - Endpoint discovery: DiscoveryURL or RegistrationEndpoint, with optional
 //     explicit AuthorizationEndpoint / TokenEndpoint overrides.
 //   - Registration metadata: InitialAccessToken, ClientName. The caller is
@@ -28,12 +27,33 @@ package dcr
 // Constructing a Request is the caller's responsibility; the resolver does
 // not clone or mutate it.
 type Request struct {
-	// Issuer is the caller's logical issuer identifier. Used to key the
-	// cache and (when RedirectURI is empty) to derive a default redirect
-	// URI of {Issuer}/oauth/callback. Required.
+	// Issuer is the caller's logical scope for cache keying and (when
+	// RedirectURI is empty) the basis for the default redirect URI
+	// ({Issuer}/oauth/callback). Required.
 	//
-	// This is *not* the upstream's issuer — that is recovered from
-	// DiscoveryURL inside the resolver for RFC 8414 §3.3 verification.
+	// What each consumer puts here:
+	//
+	//   - Embedded authserver: its own issuer identifier. The authserver
+	//     owns a distinct logical identity from the upstream IdP, and
+	//     defaulting RedirectURI to {Issuer}/oauth/callback lands the
+	//     callback on the authserver's origin (correct).
+	//   - CLI OAuth flow: the upstream OAuth provider's issuer URL,
+	//     because the CLI has no separate logical issuer of its own. The
+	//     CLI always supplies an explicit loopback RedirectURI per
+	//     RFC 8252 §7.3, so the redirect-URI defaulting is never
+	//     exercised on this path.
+	//
+	// The resolver's cache key is (Issuer, RedirectURI, ScopesHash); the
+	// two consumers do not collide on the key because the embedded
+	// authserver's RedirectURI lives on the authserver's origin and the
+	// CLI's lives on a loopback (RFC 8252 §7.3) — even when Issuer
+	// happens to match between the two profiles, the RedirectURI
+	// component keeps the cache key distinct. See the cross-consumer
+	// caveat on dcrFlight in resolver.go for the wider invariant.
+	//
+	// Issuer is *not* used for RFC 8414 §3.3 metadata verification —
+	// that uses an issuer recovered from DiscoveryURL inside the
+	// resolver.
 	Issuer string
 
 	// RedirectURI is the redirect URI to register with the upstream. When

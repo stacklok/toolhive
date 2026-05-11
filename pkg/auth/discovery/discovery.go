@@ -596,10 +596,22 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 // outside the resolver by pkg/auth/remote/handler.go, which reads
 // CachedClientID / CachedClientSecretRef before this code path runs and
 // short-circuits to a refresh-token flow when a usable cached client
-// exists. Wrapping the secretProvider into a dcr.CredentialStore adapter
-// (option (a)) was rejected here as out-of-scope churn: the existing
-// remote-handler caching already preserves cross-invocation reuse, and
-// the resolver's intra-call singleflight is what this migration needs.
+// exists.
+//
+// One consequence of option (b) is that the resolver's RFC 7591 §3.2.1
+// expiry-driven refetch does NOT participate in the CLI's cross-
+// invocation persistence loop: each PerformOAuthFlow call builds a fresh
+// in-memory store, so a "cached but expired" entry from the previous
+// invocation never reaches the resolver. Cross-invocation expiry is the
+// remote handler's responsibility (its HasCachedClientCredentials gate
+// runs ahead of this code path). Within a single invocation, the
+// resolver's expiry check is still in the loop and would fire if the
+// same call site somehow registered, persisted, and re-queried the
+// in-memory store — but the CLI never does this today.
+//
+// Wrapping the remote handler's secretProvider into a dcr.CredentialStore
+// adapter (option (a)) would close that loop and is the natural follow-up;
+// it was rejected here as out-of-scope churn for sub-issue 4b.
 func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuthFlowConfig) error {
 	discoveredDoc, err := getDiscoveryDocument(ctx, issuer, config)
 	if err != nil {
@@ -655,6 +667,31 @@ func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuth
 // existing public-client model, and PublicClient=true tells the resolver
 // to register with token_endpoint_auth_method=none and to refuse when
 // S256 PKCE is not advertised (rather than silently downgrading).
+//
+// Redundant discovery fetch — acknowledged trade-off. The CLI's
+// pre-discovery layer (pkg/auth/remote/handler.go via
+// ValidateAndDiscoverAuthServer) populates OAuthFlowConfig.AuthorizeURL /
+// TokenURL / RegistrationEndpoint but does NOT carry the upstream's
+// code_challenge_methods_supported through to here — that field is the
+// S256 PKCE gate's only input, and AuthServerInfo does not model it. So
+// when the CLI already has endpoints in hand, the resolver MUST still
+// re-fetch the upstream's discovery document to evaluate the gate; the
+// alternative ("skip the gate on the pre-discovered path") would either
+// regress the inherited-S256 acceptance criterion or silently downgrade
+// to a non-public-PKCE registration. Threading
+// code_challenge_methods_supported through AuthServerInfo (and updating
+// every caller of ValidateAndDiscoverAuthServer) would close this loop
+// and is the natural follow-up; it is out of scope for sub-issue 4b.
+//
+// Threat-model correctness in the multi-tenant case: a few upstreams
+// (multi-tenant IdPs) serve their OIDC discovery document at a path
+// the issuer-derived well-known URL would not reach. For those
+// providers the remote handler's pre-discovery already accepted the
+// non-well-known URL via DiscoverActualIssuer; the resolver's second
+// fetch against {issuer}/.well-known/openid-configuration may then 404.
+// The CLI surfaces a clean resolver error in that case rather than
+// silently registering. This is a known limitation of the option (b)
+// migration and is documented for follow-up.
 func resolveDCRCredentials(
 	ctx context.Context,
 	issuer string,
@@ -663,43 +700,46 @@ func resolveDCRCredentials(
 ) (*dcr.Resolution, error) {
 	redirectURI := fmt.Sprintf("http://localhost:%d/callback", config.CallbackPort)
 
+	// dcr.Request.Issuer carries the caller's logical scope for cache
+	// keying. The CLI flow has no separate logical issuer of its own, so
+	// it deliberately reuses the upstream's issuer URL here. This is
+	// safe because the resolver's cache key is (Issuer, RedirectURI,
+	// ScopesHash) and the CLI always supplies an explicit loopback
+	// RedirectURI per RFC 8252 §7.3 — even if a future embedded-authserver
+	// upstream happened to share Issuer with a CLI invocation, the
+	// distinct RedirectURI keeps the cache keys apart. See the Issuer
+	// field doc on dcr.Request for the wider semantics.
 	req := &dcr.Request{
 		Issuer:                issuer,
 		RedirectURI:           redirectURI,
 		Scopes:                config.Scopes,
-		RegistrationEndpoint:  discoveredDoc.RegistrationEndpoint,
 		AuthorizationEndpoint: discoveredDoc.AuthorizationEndpoint,
 		TokenEndpoint:         discoveredDoc.TokenEndpoint,
 		PublicClient:          true,
 	}
-	// Prefer the issuer-derived OIDC discovery URL when the upstream
-	// advertised one in the cached doc — gives the resolver access to
-	// code_challenge_methods_supported so the S256 gate can be evaluated.
-	// When neither the doc nor the issuer provide one, fall back to the
-	// RegistrationEndpoint-direct path; the resolver's S256 gate then
-	// refuses registration (which the CLI surfaces unchanged).
+
+	// Route the resolver through discovery (not direct registration
+	// endpoint) so the upstream's code_challenge_methods_supported is
+	// available to the S256 PKCE gate. See the function-level doc for
+	// why a second fetch is required even when endpoints are already in
+	// hand. The discovered metadata.RegistrationEndpoint will round-trip
+	// through the fetch — explicit AuthorizationEndpoint / TokenEndpoint
+	// overrides still win for endpoint selection.
+	//
+	// discoveredDoc.Issuer is non-empty for every reachable caller (both
+	// branches of getDiscoveryDocument set it), so the conditional is
+	// defence-in-depth against a future refactor that produces an empty-
+	// issuer doc; on that branch DiscoveryURL stays empty and the
+	// resolver would have nothing to fetch, surfacing a clean validation
+	// error rather than dereferencing an empty URL.
 	if discoveredDoc.Issuer != "" {
 		req.DiscoveryURL = strings.TrimRight(discoveredDoc.Issuer, "/") + "/.well-known/openid-configuration"
-		// DiscoveryURL is mutually exclusive with RegistrationEndpoint in
-		// the resolver — drop the explicit endpoint so discovery drives
-		// every endpoint (the metadata.RegistrationEndpoint we already
-		// have will be returned by the discovery fetch).
-		req.RegistrationEndpoint = ""
+	} else {
+		req.RegistrationEndpoint = discoveredDoc.RegistrationEndpoint
 	}
 
-	// In-memory store: scoped to this PerformOAuthFlow invocation. The
-	// remote handler at pkg/auth/remote/handler.go handles cross-
-	// invocation persistence via its own CachedClientID /
-	// CachedClientSecretRef fields. Closing releases the underlying
-	// MemoryStorage cleanup goroutine; doing so on the success path is
-	// important for long-lived processes that call PerformOAuthFlow many
-	// times.
 	store := dcr.NewInMemoryStore()
-	defer func() {
-		if closer, ok := store.(interface{ Close() error }); ok {
-			_ = closer.Close()
-		}
-	}()
+	defer func() { _ = store.Close() }()
 
 	resolution, err := dcr.ResolveCredentials(ctx, req, store)
 	if err != nil {
@@ -712,7 +752,17 @@ func resolveDCRCredentials(
 	return resolution, nil
 }
 
-// getDiscoveryDocument retrieves the OIDC discovery document
+// getDiscoveryDocument retrieves the OIDC discovery document.
+//
+// The "pre-discovered" short-circuit synthesises a document from
+// OAuthFlowConfig fields populated by earlier discovery in the remote
+// handler (pkg/auth/remote/handler.go via ValidateAndDiscoverAuthServer).
+// On that path the synthesised document carries only the endpoint URLs,
+// NOT the server-capability fields (code_challenge_methods_supported,
+// token_endpoint_auth_methods_supported, scopes_supported) — those
+// remain at their zero values. resolveDCRCredentials handles this by
+// re-issuing a discovery fetch through the resolver (see its doc for
+// the rationale and trade-off).
 func getDiscoveryDocument(
 	ctx context.Context,
 	issuer string,

@@ -40,10 +40,18 @@ import (
 //
 // Expiry-driven refetch and panic recovery are pinned by the resolver's
 // own test suite in pkg/auth/dcr; this file does not duplicate them
-// because the CLI flow does not exercise either path in a CLI-specific
-// way (the CLI's persistence layer lives outside the resolver, so expiry
-// refetch is observable only via the remote handler's cached fields, not
-// via PerformOAuthFlow alone).
+// because under the option (b) persistence model the CLI flow does not
+// exercise either path in a CLI-specific way. Specifically, the
+// resolver's RFC 7591 §3.2.1 expiry refetch is in the loop only within
+// a single PerformOAuthFlow call (which the CLI never makes repeat
+// queries inside). Cross-invocation expiry is handled by the remote
+// handler at pkg/auth/remote/handler.go via its HasCachedClientCredentials
+// gate, which runs BEFORE this code path and short-circuits to a
+// refresh-token flow when a usable cached client exists. The gap between
+// "the resolver supports expiry refetch" and "the CLI's cross-invocation
+// persistence loop uses it" is the option (b) trade-off documented on
+// handleDynamicRegistration; option (a) would close that gap and is the
+// natural follow-up.
 
 // dcrTestServerConfig controls the mock upstream's behaviour for the CLI
 // inherited-property tests below.

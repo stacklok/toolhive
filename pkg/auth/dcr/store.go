@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -71,42 +72,78 @@ func NewStorageBackedStore(backend storage.DCRCredentialStore) CredentialStore {
 	return &storageBackedStore{backend: backend}
 }
 
-// NewInMemoryStore returns a CredentialStore whose entries live only for
-// the lifetime of the returned value. This is the constructor consumers
-// reach for when they have no shared durable backend — most notably the
-// CLI OAuth flow, which manages cross-invocation credential persistence
-// outside the resolver (in pkg/auth/remote/handler.go's CachedClientID /
-// CachedClientSecretRef fields) and only needs the resolver's intra-call
-// singleflight + S256 PKCE / expiry-refetch behaviour for one
-// PerformOAuthFlow call.
+// CloseableCredentialStore is a CredentialStore that also releases an
+// underlying resource (typically a background goroutine) when closed.
+// NewInMemoryStore returns this interface so callers can call Close()
+// directly without a runtime type assertion — Close() being part of the
+// returned type at compile time prevents the silent-no-op failure mode
+// that .claude/rules/go-style.md warns about ("Never define a local
+// anonymous interface inside an option and type-assert against it to
+// check capability — a silent no-op results if the target doesn't
+// implement it.").
+//
+// NewStorageBackedStore returns the base CredentialStore because its
+// backends (storage.MemoryStorage shared across the authserver,
+// storage.RedisStorage) are owned by the authserver runner and closed
+// through that lifecycle, not by the dcr package.
+type CloseableCredentialStore interface {
+	CredentialStore
+	io.Closer
+}
+
+// NewInMemoryStore returns a CloseableCredentialStore whose entries live
+// only for the lifetime of the returned value. This is the constructor
+// consumers reach for when they have no shared durable backend — most
+// notably the CLI OAuth flow, which manages cross-invocation credential
+// persistence outside the resolver (in pkg/auth/remote/handler.go's
+// CachedClientID / CachedClientSecretRef fields) and only needs the
+// resolver's intra-call singleflight + S256 PKCE / expiry-refetch
+// behaviour for one PerformOAuthFlow call.
 //
 // The implementation delegates to storage.NewMemoryStorage to share the
 // same Get/Put/scope-hash semantics as the durable backends, including
 // the background cleanup goroutine. Callers that need to release that
-// goroutine before process exit should call Close on the returned value
-// when finished — the returned CredentialStore implements io.Closer so
-// callers can use a defer in a single line. (CLI flows that complete in
-// a single invocation can rely on process exit.)
-func NewInMemoryStore() CredentialStore {
+// goroutine before process exit MUST call Close on the returned value
+// when finished — the return type is CloseableCredentialStore precisely
+// so the call site can `defer store.Close()` without a runtime
+// type-assertion. (CLI flows that complete in a single invocation can
+// also rely on process exit.)
+func NewInMemoryStore() CloseableCredentialStore {
+	mem := storage.NewMemoryStorage()
+	// Single backend handle is held by both the embedded storageBackedStore
+	// (which serves Get/Put) and the concrete *storage.MemoryStorage field
+	// (which serves Close). Sharing the handle guarantees Close releases
+	// the same goroutine that Get/Put exercise — a regression introducing
+	// two distinct backends would surface as a Close that leaks while Get
+	// still serves entries.
 	return &inMemoryStore{
-		storageBackedStore: storageBackedStore{backend: storage.NewMemoryStorage()},
+		storageBackedStore: storageBackedStore{backend: mem},
+		mem:                mem,
 	}
 }
 
-// inMemoryStore is the CredentialStore returned by NewInMemoryStore. It
-// embeds storageBackedStore for Get/Put behaviour and adds Close so the
-// caller can release the underlying MemoryStorage cleanup goroutine.
+// inMemoryStore is the CloseableCredentialStore returned by
+// NewInMemoryStore. It embeds storageBackedStore for Get/Put behaviour
+// and adds Close so the caller can release the underlying MemoryStorage
+// cleanup goroutine.
+//
+// The mem field is a *storage.MemoryStorage — the concrete type whose
+// Close method we want to call. Holding it directly (instead of
+// type-asserting storageBackedStore.backend) satisfies the
+// "Option pattern must be compile-time safe" rule in
+// .claude/rules/go-style.md: the inMemoryStore type guarantees at
+// compile time that the backend supports Close, so a future refactor
+// that injects a non-closeable backend would fail to build rather than
+// silently leak the cleanup goroutine.
 type inMemoryStore struct {
 	storageBackedStore
+	mem *storage.MemoryStorage
 }
 
 // Close releases the embedded MemoryStorage. Safe to call multiple times;
 // see storage.MemoryStorage.Close for idempotency guarantees.
 func (s *inMemoryStore) Close() error {
-	if closer, ok := s.backend.(interface{ Close() error }); ok {
-		return closer.Close()
-	}
-	return nil
+	return s.mem.Close()
 }
 
 // storageBackedStore is the dcr-package CredentialStore wrapping a

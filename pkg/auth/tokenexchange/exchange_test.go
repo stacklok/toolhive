@@ -21,60 +21,13 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/oauthtest"
 )
 
 const (
 	// testSubjectToken is a test subject token value used across multiple test cases
 	testSubjectToken = "test-subject-token"
 )
-
-// Test helper - builder pattern for creating mock responses
-
-// responseBuilder builds test OAuth 2.0 token exchange responses.
-type responseBuilder struct {
-	resp response
-}
-
-// newResponse creates a new response builder with sensible defaults.
-// Returns a minimal valid response (access_token, token_type, issued_token_type).
-func newResponse() *responseBuilder {
-	return &responseBuilder{
-		resp: response{
-			AccessToken:     "token",
-			IssuedTokenType: oauthproto.TokenTypeAccessToken,
-			TokenType:       "Bearer",
-		},
-	}
-}
-
-// withAccessToken sets a custom access token.
-func (b *responseBuilder) withAccessToken(token string) *responseBuilder {
-	b.resp.AccessToken = token
-	return b
-}
-
-// withExpiry sets the token expiry in seconds.
-func (b *responseBuilder) withExpiry(seconds int) *responseBuilder {
-	b.resp.ExpiresIn = seconds
-	return b
-}
-
-// withRefreshToken adds a refresh token to the response.
-func (b *responseBuilder) withRefreshToken(token string) *responseBuilder {
-	b.resp.RefreshToken = token
-	return b
-}
-
-// withScope sets the scope for the response.
-func (b *responseBuilder) withScope(scope string) *responseBuilder {
-	b.resp.Scope = scope
-	return b
-}
-
-// build returns the constructed response.
-func (b *responseBuilder) build() response {
-	return b.resp
-}
 
 // TestNormalizeTokenType tests the NormalizeTokenType function.
 func TestNormalizeTokenType(t *testing.T) {
@@ -205,15 +158,15 @@ func TestTokenSource_Token_Success(t *testing.T) {
 		assert.Empty(t, r.Form.Get("client_secret"), "client_secret should not be in request body")
 
 		// Return successful response
-		resp := newResponse().
-			withAccessToken("exchanged-access-token").
-			withScope("read write").
-			withExpiry(3600).
-			build()
+		body := oauthtest.NewResponse().
+			WithAccessToken("exchanged-access-token").
+			WithScope("read write").
+			WithExpiresIn(3600).
+			Build()
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		err = json.NewEncoder(w).Encode(resp)
+		_, err = w.Write(body)
 		require.NoError(t, err)
 	}))
 	t.Cleanup(server.Close)
@@ -248,15 +201,15 @@ func TestTokenSource_Token_WithRefreshToken(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		resp := newResponse().
-			withAccessToken("exchanged-access-token").
-			withRefreshToken("refresh-token-value").
-			withExpiry(3600).
-			build()
+		body := oauthtest.NewResponse().
+			WithAccessToken("exchanged-access-token").
+			WithRefreshToken("refresh-token-value").
+			WithExpiresIn(3600).
+			Build()
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(body)
 	}))
 	t.Cleanup(server.Close)
 
@@ -283,12 +236,12 @@ func TestTokenSource_Token_NoExpiry(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		resp := newResponse().withAccessToken("exchanged-access-token").build()
-		// No expiry (ExpiresIn: 0)
+		body := oauthtest.NewResponse().WithAccessToken("exchanged-access-token").Build()
+		// No expiry (ExpiresIn unset → omitted)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(body)
 	}))
 	t.Cleanup(server.Close)
 
@@ -363,7 +316,9 @@ func TestTokenSource_Token_ContextCancellation(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, token)
-	assert.Contains(t, err.Error(), "token exchange request failed")
+	// oauth.DoTokenRequest wraps transport-level failures (including
+	// context cancellation) with "oauth: token request failed".
+	assert.Contains(t, err.Error(), "oauth: token request failed")
 }
 
 // TestExchangeToken_HTTPErrorResponses tests various HTTP error responses.
@@ -406,7 +361,7 @@ func TestExchangeToken_HTTPErrorResponses(t *testing.T) {
 			name:         "503 Service Unavailable",
 			statusCode:   http.StatusServiceUnavailable,
 			responseBody: "Service temporarily unavailable",
-			// Non-JSON body: ErrorCode stays empty, body cleared to prevent info leak.
+			// Non-JSON body: ErrorCode stays empty, body cleared.
 		},
 	}
 
@@ -443,6 +398,8 @@ func TestExchangeToken_HTTPErrorResponses(t *testing.T) {
 			assert.Equal(t, tt.statusCode, retrieveErr.Response.StatusCode)
 			assert.Equal(t, tt.expectedErrorCode, retrieveErr.ErrorCode)
 			assert.Equal(t, tt.expectedDescription, retrieveErr.ErrorDescription)
+			// Regression: exchangeToken must scrub RetrieveError.Body so raw
+			// upstream content cannot leak into error strings.
 			assert.Nil(t, retrieveErr.Body)
 		})
 	}
@@ -495,7 +452,7 @@ func TestExchangeToken_MalformedJSON(t *testing.T) {
 
 			require.Error(t, err)
 			assert.Nil(t, resp)
-			assert.Contains(t, err.Error(), "failed to parse token exchange response")
+			assert.Contains(t, err.Error(), "oauth: cannot parse token response")
 		})
 	}
 }
@@ -537,10 +494,9 @@ func TestExchangeToken_DefaultValues(t *testing.T) {
 		assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", r.Form.Get("subject_token_type"))
 		assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", r.Form.Get("requested_token_type"))
 
-		resp := newResponse().build()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(oauthtest.NewResponse().Build())
 	}))
 	t.Cleanup(server.Close)
 
@@ -572,10 +528,9 @@ func TestExchangeToken_OptionalFields(t *testing.T) {
 		assert.Equal(t, "actor-token-value", r.Form.Get("actor_token"))
 		assert.Equal(t, "urn:ietf:params:oauth:token-type:jwt", r.Form.Get("actor_token_type"))
 
-		resp := newResponse().build()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(oauthtest.NewResponse().Build())
 	}))
 	t.Cleanup(server.Close)
 
@@ -613,10 +568,9 @@ func TestExchangeToken_ActorTokenWithoutType(t *testing.T) {
 		assert.Equal(t, "actor-token-value", r.Form.Get("actor_token"))
 		assert.Empty(t, r.Form.Get("actor_token_type"))
 
-		resp := newResponse().build()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(oauthtest.NewResponse().Build())
 	}))
 	t.Cleanup(server.Close)
 
@@ -650,7 +604,9 @@ func TestExchangeToken_InvalidURL(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	assert.Contains(t, err.Error(), "failed to create token exchange request")
+	// Request construction now goes through oauth.NewFormRequest and the
+	// tokenexchange call site wraps with its own prefix.
+	assert.Contains(t, err.Error(), "tokenexchange: build request")
 }
 
 // TestExchangeToken_NetworkError tests error handling for network failures.
@@ -668,7 +624,8 @@ func TestExchangeToken_NetworkError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	assert.Contains(t, err.Error(), "token exchange request failed")
+	// oauth.DoTokenRequest wraps transport-level failures with this prefix.
+	assert.Contains(t, err.Error(), "oauth: token request failed")
 }
 
 // TestExchangeToken_ResponseSizeLimit tests that large responses are properly limited.
@@ -698,9 +655,10 @@ func TestExchangeToken_ResponseSizeLimit(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	// The io.LimitReader allows reading up to 1MB, then truncates the response
-	// This causes a JSON parsing error rather than a read error
-	assert.Contains(t, err.Error(), "failed to parse token exchange response")
+	// oauth.DoTokenRequest uses io.LimitReader to cap the body at 1 MiB, then
+	// truncates further bytes. That produces a JSON parse failure rather than
+	// a read error, surfaced as "oauth: cannot parse token response".
+	assert.Contains(t, err.Error(), "oauth: cannot parse token response")
 }
 
 // TestExchangeToken_NoCredentialLeakage tests that credentials are not leaked in error messages.
@@ -779,10 +737,9 @@ func TestExchangeToken_FormEncoding(t *testing.T) {
 		// Verify that special characters are properly decoded
 		assert.Equal(t, specialChars, r.Form.Get("subject_token"))
 
-		resp := newResponse().build()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(oauthtest.NewResponse().Build())
 	}))
 	t.Cleanup(server.Close)
 
@@ -808,14 +765,13 @@ func TestExchangeToken_ContentLength(t *testing.T) {
 		assert.NotEmpty(t, contentLength)
 
 		// Read body and verify it matches Content-Length
-		body, err := io.ReadAll(r.Body)
+		reqBody, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
-		assert.Equal(t, contentLength, fmt.Sprintf("%d", len(body)))
+		assert.Equal(t, contentLength, fmt.Sprintf("%d", len(reqBody)))
 
-		resp := newResponse().build()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(oauthtest.NewResponse().Build())
 	}))
 	t.Cleanup(server.Close)
 
@@ -896,10 +852,10 @@ func TestSubjectTokenProvider_Variants(t *testing.T) {
 
 			// Create server within subtest to avoid race conditions with parallel execution
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				resp := newResponse().withAccessToken("exchanged-token").build()
+				body := oauthtest.NewResponse().WithAccessToken("exchanged-token").Build()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(resp)
+				_, _ = w.Write(body)
 			}))
 			t.Cleanup(server.Close)
 
@@ -945,10 +901,9 @@ func TestExchangeToken_EmptyClientCredentials(t *testing.T) {
 		assert.Empty(t, r.Form.Get("client_id"))
 		assert.Empty(t, r.Form.Get("client_secret"))
 
-		resp := newResponse().build()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(oauthtest.NewResponse().Build())
 	}))
 	t.Cleanup(server.Close)
 
@@ -983,10 +938,9 @@ func TestExchangeToken_OnlyClientID(t *testing.T) {
 		assert.Empty(t, r.Form.Get("client_id"))
 		assert.Empty(t, r.Form.Get("client_secret"))
 
-		resp := newResponse().build()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(oauthtest.NewResponse().Build())
 	}))
 	t.Cleanup(server.Close)
 
@@ -1010,15 +964,15 @@ func TestExchangeToken_ResponseFields(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		resp := newResponse().
-			withAccessToken("access-token-value").
-			withScope("openid profile email").
-			withRefreshToken("refresh-token-value").
-			withExpiry(7200).
-			build()
+		body := oauthtest.NewResponse().
+			WithAccessToken("access-token-value").
+			WithScope("openid profile email").
+			WithRefreshToken("refresh-token-value").
+			WithExpiresIn(7200).
+			Build()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(body)
 	}))
 	t.Cleanup(server.Close)
 
@@ -1031,12 +985,14 @@ func TestExchangeToken_ResponseFields(t *testing.T) {
 	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
 
 	require.NoError(t, err)
-	assert.Equal(t, "access-token-value", resp.AccessToken)
+	assert.Equal(t, "access-token-value", resp.Token.AccessToken)
 	assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", resp.IssuedTokenType)
-	assert.Equal(t, "Bearer", resp.TokenType)
-	assert.Equal(t, 7200, resp.ExpiresIn)
+	assert.Equal(t, "Bearer", resp.Token.TokenType)
+	// expires_in is folded into Token.Expiry by oauth.ParseTokenResponse.
+	assert.False(t, resp.Token.Expiry.IsZero())
+	assert.WithinDuration(t, time.Now().Add(7200*time.Second), resp.Token.Expiry, 5*time.Second)
 	assert.Equal(t, "openid profile email", resp.Scope)
-	assert.Equal(t, "refresh-token-value", resp.RefreshToken)
+	assert.Equal(t, "refresh-token-value", resp.Token.RefreshToken)
 }
 
 // TestExchangeToken_MinimalResponse tests response with only required fields.
@@ -1046,11 +1002,11 @@ func TestExchangeToken_MinimalResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Minimal valid response according to RFC 8693
 		// All three fields (access_token, token_type, issued_token_type) are required
-		resp := newResponse().withAccessToken("access-token-value").build()
+		body := oauthtest.NewResponse().WithAccessToken("access-token-value").Build()
 		// ExpiresIn, Scope, RefreshToken are optional
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(body)
 	}))
 	t.Cleanup(server.Close)
 
@@ -1063,12 +1019,13 @@ func TestExchangeToken_MinimalResponse(t *testing.T) {
 	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
 
 	require.NoError(t, err)
-	assert.Equal(t, "access-token-value", resp.AccessToken)
-	assert.Equal(t, "Bearer", resp.TokenType)
+	assert.Equal(t, "access-token-value", resp.Token.AccessToken)
+	assert.Equal(t, "Bearer", resp.Token.TokenType)
 	assert.Equal(t, oauthproto.TokenTypeAccessToken, resp.IssuedTokenType)
-	assert.Equal(t, 0, resp.ExpiresIn)
+	// Absent expires_in leaves Token.Expiry as the zero value.
+	assert.True(t, resp.Token.Expiry.IsZero())
 	assert.Empty(t, resp.Scope)
-	assert.Empty(t, resp.RefreshToken)
+	assert.Empty(t, resp.Token.RefreshToken)
 }
 
 // TestExchangeToken_ScopeArray tests that scope array is properly converted to space-separated string.
@@ -1116,10 +1073,9 @@ func TestExchangeToken_ScopeArray(t *testing.T) {
 					assert.Equal(t, tt.expectedScope, r.Form.Get("scope"))
 				}
 
-				resp := newResponse().build()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(resp)
+				_, _ = w.Write(oauthtest.NewResponse().Build())
 			}))
 			t.Cleanup(server.Close)
 
@@ -1239,31 +1195,6 @@ func TestExchangeRequest_StructFields(t *testing.T) {
 	assert.Equal(t, "subject-token-type", req.SubjectTokenType)
 }
 
-// TestResponse_JSONTags tests that response struct has correct JSON tags.
-func TestResponse_JSONTags(t *testing.T) {
-	t.Parallel()
-
-	jsonData := `{
-		"access_token": "test-access-token",
-		"issued_token_type": "test-issued-token-type",
-		"token_type": "test-token-type",
-		"expires_in": 3600,
-		"scope": "test-scope",
-		"refresh_token": "test-refresh-token"
-	}`
-
-	var resp response
-	err := json.Unmarshal([]byte(jsonData), &resp)
-
-	require.NoError(t, err)
-	assert.Equal(t, "test-access-token", resp.AccessToken)
-	assert.Equal(t, "test-issued-token-type", resp.IssuedTokenType)
-	assert.Equal(t, "test-token-type", resp.TokenType)
-	assert.Equal(t, 3600, resp.ExpiresIn)
-	assert.Equal(t, "test-scope", resp.Scope)
-	assert.Equal(t, "test-refresh-token", resp.RefreshToken)
-}
-
 // TestClientAuthentication_Fields tests clientAuthentication struct fields.
 func TestClientAuthentication_Fields(t *testing.T) {
 	t.Parallel()
@@ -1323,10 +1254,9 @@ func TestExchangeToken_URLValues(t *testing.T) {
 		// Store received form values
 		receivedValues = r.Form
 
-		resp := newResponse().build()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(oauthtest.NewResponse().Build())
 	}))
 	t.Cleanup(server.Close)
 
@@ -1388,10 +1318,9 @@ func TestExchangeToken_BasicAuthURLEncoding(t *testing.T) {
 		assert.Equal(t, url.QueryEscape(specialClientID), username, "ClientID should be URL-encoded")
 		assert.Equal(t, url.QueryEscape(specialClientSecret), password, "ClientSecret should be URL-encoded")
 
-		resp := newResponse().build()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(oauthtest.NewResponse().Build())
 	}))
 	t.Cleanup(server.Close)
 
@@ -1468,6 +1397,42 @@ func TestExchangeConfig_Validate_SubjectTokenType(t *testing.T) {
 	}
 }
 
+// TestExchangeConfig_Validate_NormalizesSubjectTokenType pins the
+// mutation behavior of Validate(): the short-form token type (e.g.
+// "access_token") is written back onto the config as the full RFC 8693
+// URN. pkg/vmcp/auth/strategies/tokenexchange.go and pkg/runner/
+// config_builder.go read this field post-Validate and depend on the
+// normalization.
+func TestExchangeConfig_Validate_NormalizesSubjectTokenType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "short access_token", input: "access_token", want: oauthproto.TokenTypeAccessToken},
+		{name: "short id_token", input: "id_token", want: oauthproto.TokenTypeIDToken},
+		{name: "short jwt", input: "jwt", want: oauthproto.TokenTypeJWT},
+		{name: "already-normalized URN passes through unchanged", input: oauthproto.TokenTypeAccessToken, want: oauthproto.TokenTypeAccessToken},
+		{name: "empty stays empty", input: "", want: ""},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := &ExchangeConfig{
+				TokenURL:             "https://example.com/token",
+				SubjectTokenProvider: func() (string, error) { return "tok", nil },
+				SubjectTokenType:     tc.input,
+			}
+			require.NoError(t, c.Validate())
+			assert.Equal(t, tc.want, c.SubjectTokenType)
+		})
+	}
+}
+
 // TestTokenSource_Token_RequestedTokenTypeAndResource verifies that
 // ExchangeConfig.RequestedTokenType and ExchangeConfig.Resource propagate
 // through tokenSource.Token() onto the token-exchange form body.
@@ -1521,10 +1486,9 @@ func TestTokenSource_Token_RequestedTokenTypeAndResource(t *testing.T) {
 				assert.Equal(t, tt.wantRequestedTokenType, r.Form.Get("requested_token_type"))
 				assert.Equal(t, tt.wantResource, r.Form.Get("resource"))
 
-				resp := newResponse().build()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(resp)
+				_, _ = w.Write(oauthtest.NewResponse().Build())
 			}))
 			t.Cleanup(server.Close)
 

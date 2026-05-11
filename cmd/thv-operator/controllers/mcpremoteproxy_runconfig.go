@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 )
 
 // ensureRunConfigConfigMap ensures the RunConfig ConfigMap exists and is up to date for MCPRemoteProxy
@@ -291,7 +292,7 @@ func addHeaderForwardConfigOptions(proxy *mcpv1beta1.MCPRemoteProxy, options *[]
 				continue
 			}
 			// Get the secret identifier (not the full env var name)
-			_, secretIdentifier := ctrlutil.GenerateHeaderForwardSecretEnvVarName(proxy.Name, headerSecret.HeaderName)
+			_, secretIdentifier := wirefmt.SecretEnvVarName(proxy.Name, headerSecret.HeaderName)
 			headerSecrets[headerSecret.HeaderName] = secretIdentifier
 		}
 		*options = append(*options, runner.WithHeaderForwardSecrets(headerSecrets))

@@ -18,6 +18,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 )
 
 // deploymentForMCPRemoteProxy returns a MCPRemoteProxy Deployment object
@@ -278,7 +279,7 @@ func buildHeaderForwardSecretEnvVars(proxy *mcpv1beta1.MCPRemoteProxy) []corev1.
 		}
 
 		// Generate env var name following the TOOLHIVE_SECRET_ pattern
-		envVarName, _ := ctrlutil.GenerateHeaderForwardSecretEnvVarName(proxy.Name, headerSecret.HeaderName)
+		envVarName, _ := wirefmt.SecretEnvVarName(proxy.Name, headerSecret.HeaderName)
 
 		envVars = append(envVars, corev1.EnvVar{
 			Name: envVarName,

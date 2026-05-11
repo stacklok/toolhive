@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 	workloadsmgr "github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -33,6 +34,15 @@ type backendDiscoverer struct {
 	authConfig       *config.OutgoingAuthConfig
 	staticBackends   []config.StaticBackendConfig // Pre-configured backends for static mode
 	groupRef         string                       // Group reference for static mode metadata
+
+	// headerForwardByBackend is keyed by the NORMALIZED backend name (the
+	// suffix the operator emits in TOOLHIVE_HEADER_FORWARD_<entry>). The
+	// canonical backend name from the static config is normalized on
+	// lookup via wirefmt.NormalizeForEnvVar so the keying matches
+	// the operator-side env-var encoding. Nil/empty when no entry declared
+	// headerForward. Only populated in static mode — dynamic mode reads
+	// headerForward directly from the MCPServerEntry CRD.
+	headerForwardByBackend map[string]*vmcp.HeaderForwardConfig
 }
 
 // NewUnifiedBackendDiscoverer creates a unified backend discoverer that works with both
@@ -55,17 +65,24 @@ func NewUnifiedBackendDiscoverer(
 
 // NewUnifiedBackendDiscovererWithStaticBackends creates a backend discoverer for static mode
 // with pre-configured backends, eliminating the need for K8s API access.
+//
+// headerForwardByBackend carries per-backend HeaderForwardConfig (keyed by
+// backend name) constructed at startup from the operator-emitted env vars.
+// Pass nil when no entry in the group declares headerForward — the discoverer
+// will simply leave Backend.HeaderForward nil for every backend.
 func NewUnifiedBackendDiscovererWithStaticBackends(
 	staticBackends []config.StaticBackendConfig,
 	authConfig *config.OutgoingAuthConfig,
 	groupRef string,
+	headerForwardByBackend map[string]*vmcp.HeaderForwardConfig,
 ) BackendDiscoverer {
 	return &backendDiscoverer{
-		workloadsManager: nil, // Not needed in static mode
-		groupsManager:    nil, // Not needed in static mode
-		authConfig:       authConfig,
-		staticBackends:   staticBackends,
-		groupRef:         groupRef,
+		workloadsManager:       nil, // Not needed in static mode
+		groupsManager:          nil, // Not needed in static mode
+		authConfig:             authConfig,
+		staticBackends:         staticBackends,
+		groupRef:               groupRef,
+		headerForwardByBackend: headerForwardByBackend,
 	}
 }
 
@@ -272,6 +289,7 @@ func (d *backendDiscoverer) discoverFromStaticConfig() []vmcp.Backend {
 			Type:          vmcp.BackendType(staticBackend.Type),
 			CABundlePath:  staticBackend.CABundlePath,
 			HealthStatus:  vmcp.BackendHealthy, // Assume healthy, actual health check happens later
+			HeaderForward: d.headerForwardByBackend[wirefmt.NormalizeForEnvVar(staticBackend.Name)],
 			Metadata:      staticBackend.Metadata,
 		}
 

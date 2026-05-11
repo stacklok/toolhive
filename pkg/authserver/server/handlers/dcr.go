@@ -151,10 +151,12 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	slog.Debug("registered new DCR client", logAttrs...)
 
 	// Build response per RFC 7591 Section 3.2.1.
-	// Scope reflects the scopes actually granted to this client (validated
-	// against ScopesSupported and, if configured, unioned with
-	// BaselineClientScopes), not all server-supported scopes. This lets the
-	// client know exactly which scopes it can request.
+	// Scope reflects the scopes actually granted to this client: the
+	// client-supplied scope set was validated against ScopesSupported by
+	// ValidateScopes above, then (if configured) unioned with
+	// BaselineClientScopes — which is itself guaranteed by startup-time
+	// validation to be a subset of ScopesSupported. The unioned set is NOT
+	// re-validated here.
 	response := registration.DCRResponse{
 		ClientID:                clientID,
 		ClientIDIssuedAt:        time.Now().Unix(),

@@ -376,6 +376,7 @@ func RegistryRouter(serveMode bool) http.Handler {
 	r.Get("/{name}", routes.getRegistry)
 	r.Put("/{name}", routes.updateRegistry)
 	r.Delete("/{name}", routes.removeRegistry)
+	r.Post("/{name}/refresh", routes.refreshRegistry)
 
 	// Add nested routes for servers within a registry
 	r.Route("/{name}/servers", func(r chi.Router) {
@@ -512,6 +513,51 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
+		slog.Error("failed to encode response", "error", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+}
+
+//	 refreshRegistry
+//
+//		@Summary		Refresh registry cache
+//		@Description	Force a refresh of the server-side registry cache for the default registry
+//		@Tags			registry
+//		@Produce		json
+//		@Param			name	path		string	true	"Registry name (must be 'default')"
+//		@Success		200	{object}	map[string]string	"Registry refreshed"
+//		@Failure		404	{string}	string				"Not Found"
+//		@Failure		500	{string}	string				"Internal Server Error"
+//		@Failure		503	{object}	registryErrorResponse	"Registry authentication required or upstream registry unavailable"
+//		@Router			/api/v1beta/registry/{name}/refresh [post]
+func (rr *RegistryRoutes) refreshRegistry(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+
+	// Only "default" registry is supported currently
+	if name != defaultRegistryName {
+		http.Error(w, "Registry not found", http.StatusNotFound)
+		return
+	}
+
+	provider, ok := rr.getCurrentProvider(w)
+	if !ok {
+		return
+	}
+
+	if cached, ok := provider.(*regpkg.CachedAPIRegistryProvider); ok {
+		if err := cached.ForceRefresh(); err != nil {
+			if writeProviderError(w, err) {
+				return
+			}
+			slog.Error("failed to refresh registry", "error", err)
+			http.Error(w, "Failed to refresh registry", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "refreshed"}); err != nil {
 		slog.Error("failed to encode response", "error", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return

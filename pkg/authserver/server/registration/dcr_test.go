@@ -615,3 +615,82 @@ func TestDefaultGrantTypesAndResponseTypes(t *testing.T) {
 	// Verify default response types include code
 	assert.Contains(t, defaultResponseTypes, "code")
 }
+
+func TestValidateScopeSubset(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		subset    []string
+		superset  []string
+		fieldName string
+		wantErr   bool
+		errMsg    string
+	}{
+		{
+			name:      "nil subset passes",
+			subset:    nil,
+			superset:  []string{"openid", "profile"},
+			fieldName: "baseline_client_scopes",
+		},
+		{
+			name:      "empty subset passes",
+			subset:    []string{},
+			superset:  []string{"openid", "profile"},
+			fieldName: "baseline_client_scopes",
+		},
+		{
+			name:      "all subset entries present in superset passes",
+			subset:    []string{"openid", "profile"},
+			superset:  []string{"openid", "profile", "email", "offline_access"},
+			fieldName: "baseline_client_scopes",
+		},
+		{
+			name:      "single entry not in superset returns error",
+			subset:    []string{"offline_access"},
+			superset:  []string{"openid"},
+			fieldName: "baseline_client_scopes",
+			wantErr:   true,
+			errMsg:    `baseline_client_scopes contains "offline_access" which is not in scopes_supported`,
+		},
+		{
+			name:      "first offending entry reported in error",
+			subset:    []string{"foo", "bar"},
+			superset:  []string{"openid"},
+			fieldName: "baseline_client_scopes",
+			wantErr:   true,
+			errMsg:    `baseline_client_scopes contains "foo" which is not in scopes_supported`,
+		},
+		{
+			name:      "non-nil subset with nil superset returns error",
+			subset:    []string{"openid"},
+			superset:  nil,
+			fieldName: "baseline_client_scopes",
+			wantErr:   true,
+			errMsg:    `baseline_client_scopes contains "openid" which is not in scopes_supported`,
+		},
+		{
+			name:      "fieldName is embedded in error message",
+			subset:    []string{"missing"},
+			superset:  []string{"openid"},
+			fieldName: "my_custom_field",
+			wantErr:   true,
+			errMsg:    `my_custom_field contains "missing" which is not in scopes_supported`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := ValidateScopeSubset(tt.subset, tt.superset, tt.fieldName)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

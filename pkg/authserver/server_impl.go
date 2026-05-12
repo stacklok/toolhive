@@ -131,6 +131,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		SigningKeyAlgorithm:          signingKey.Algorithm,
 		SigningKey:                   signingKey.Key,
 		ScopesSupported:              cfg.ScopesSupported,
+		BaselineClientScopes:         cfg.BaselineClientScopes,
 		AllowedAudiences:             cfg.AllowedAudiences,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
 	}

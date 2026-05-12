@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -58,6 +59,14 @@ type EmbeddedAuthServer struct {
 func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*EmbeddedAuthServer, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
+	}
+
+	// Fail loudly on operator-supplied misconfiguration (e.g. a baseline
+	// scope absent from scopes_supported) BEFORE touching storage or any
+	// other side-effecting work, so a bad config never reaches the network
+	// or filesystem.
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid run config: %w", err)
 	}
 
 	// Create the storage backend FIRST so the DCR resolver and the auth
@@ -152,7 +161,15 @@ func newEmbeddedAuthServerWithStorage(
 		return nil, fmt.Errorf("failed to build upstream configs: %w", err)
 	}
 
-	// 6. Build the resolved Config
+	// 6. Build the resolved Config.
+	//
+	// Defensive copies of the scope/audience slices: cfg is operator-supplied
+	// input that may be retained or mutated by the caller (e.g. tests, a
+	// future hot-reload path). The DCR handler reads these slices on every
+	// request, so a mid-request mutation of the original would race. Cloning
+	// here once at the boundary lets all downstream stages share by reference
+	// safely. Cost is negligible — each slice is bounded by validation (≤10
+	// for BaselineClientScopes, low cardinality in practice for the others).
 	resolvedCfg := authserver.Config{
 		Issuer:                       cfg.Issuer,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
@@ -162,8 +179,9 @@ func newEmbeddedAuthServerWithStorage(
 		RefreshTokenLifespan:         refreshLifespan,
 		AuthCodeLifespan:             authCodeLifespan,
 		Upstreams:                    upstreams,
-		ScopesSupported:              cfg.ScopesSupported,
-		AllowedAudiences:             cfg.AllowedAudiences,
+		ScopesSupported:              slices.Clone(cfg.ScopesSupported),
+		BaselineClientScopes:         slices.Clone(cfg.BaselineClientScopes),
+		AllowedAudiences:             slices.Clone(cfg.AllowedAudiences),
 	}
 
 	// 7. Create the auth server. authserver.New also asserts the DCR

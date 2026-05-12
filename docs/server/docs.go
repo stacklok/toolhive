@@ -516,6 +516,14 @@ const docTemplate = `{
                         "description": "AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint\nin the OAuth discovery document. When set, the discovery document will advertise\n` + "`" + `{authorization_endpoint_base_url}/oauth/authorize` + "`" + ` instead of ` + "`" + `{issuer}/oauth/authorize` + "`" + `.\nAll other endpoints remain derived from the issuer.",
                         "type": "string"
                     },
+                    "baseline_client_scopes": {
+                        "description": "BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every\nDCR registration. All values must appear in ScopesSupported; the auth server\nrejects this RunConfig at startup otherwise. Empty means current behavior is\npreserved (registered scope = client-requested, or DefaultScopes if empty).\nWhen ScopesSupported is empty, the subset check uses registration.DefaultScopes\n(the same set applyDefaults would substitute at startup) — so\nBaselineClientScopes containing standard OIDC scopes works without enumerating\nScopesSupported explicitly.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "hmac_secret_files": {
                         "description": "HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes\nand refresh tokens (opaque tokens).\nFirst file is the current secret (must be at least 32 bytes), subsequent files\nare for rotation/verification of existing tokens.\nIf empty, an ephemeral secret will be auto-generated (development only).",
                         "items": {

@@ -55,7 +55,11 @@ operator:
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0
 
-  # -- Environment variables to set in the operator container
+  # -- Environment variables to set in the operator container. Supported
+  # toolhive-specific variables include:
+  # - TOOLHIVE_SKIP_UPDATE_CHECK: set to "true" to disable the operator's
+  #   periodic update check against the ToolHive update API. Also disables
+  #   the usage-metrics collection that is gated on the same check.
   env: []
 
   # -- List of ports to expose from the operator container

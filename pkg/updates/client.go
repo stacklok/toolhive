@@ -53,12 +53,13 @@ const (
 
 	buildTypeRelease    = "release"
 	buildTypeLocalBuild = "local_build"
-
-	// EnvVarSkipUpdateCheck disables update checks when set to "true"
-	// (case-insensitive). Disabling update checks also disables update-derived
-	// usage metrics.
-	EnvVarSkipUpdateCheck = "TOOLHIVE_SKIP_UPDATE_CHECK"
 )
+
+// EnvVarSkipUpdateCheck disables update checks when set to "true"
+// (case-insensitive). Disabling update checks also disables update-derived
+// usage metrics, because usagemetrics.ShouldEnableMetrics gates on
+// ShouldSkipUpdateChecks.
+const EnvVarSkipUpdateCheck = "TOOLHIVE_SKIP_UPDATE_CHECK"
 
 // ciEnvVars contains environment variables that indicate CI environments
 var ciEnvVars = []string{

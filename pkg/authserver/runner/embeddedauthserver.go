@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -103,13 +104,13 @@ func newEmbeddedAuthServerWithStorage(
 ) (retEAS *EmbeddedAuthServer, retErr error) {
 	// From here on, any error must close stor before returning.
 	//
-	// Both errors are passed through sanitizeErrorForLog before being
+	// Both errors are passed through dcr.SanitizeErrorForLog before being
 	// recorded: closeErr for symmetry with retErr, retErr because the
 	// most common cause of reaching this gate is a wrapped DCR failure
 	// whose error chain may inline several KiB of the upstream's raw
 	// /register response body — that body is attacker-influenced and may
 	// contain URL components that carry credentials (userinfo, query,
-	// fragment). The existing logDCRStepError boundary log routes
+	// fragment). The existing dcr.LogStepError boundary log routes
 	// through the same sanitiser; keep the two log paths consistent so
 	// the cleanup log cannot regress to a less-defended state. The
 	// "cause" key matches the package-wide vocabulary for the
@@ -118,8 +119,8 @@ func newEmbeddedAuthServerWithStorage(
 		if retErr != nil {
 			if closeErr := stor.Close(); closeErr != nil {
 				slog.Warn("failed to close storage on NewEmbeddedAuthServer error path",
-					"error", sanitizeErrorForLog(closeErr),
-					"cause", sanitizeErrorForLog(retErr),
+					"error", dcr.SanitizeErrorForLog(closeErr),
+					"cause", dcr.SanitizeErrorForLog(retErr),
 				)
 			}
 		}
@@ -156,7 +157,7 @@ func newEmbeddedAuthServerWithStorage(
 	// 5. Build upstream configurations. The DCR resolver caches RFC 7591
 	// resolutions in dcrStore so re-entrant boot/reload paths reuse
 	// previously-registered upstream clients instead of re-registering.
-	upstreams, err := buildUpstreamConfigs(ctx, cfg.Upstreams, cfg.Issuer, newStorageBackedStore(dcrStore))
+	upstreams, err := buildUpstreamConfigs(ctx, cfg.Upstreams, cfg.Issuer, dcr.NewStorageBackedStore(dcrStore))
 	if err != nil {
 		return nil, fmt.Errorf("failed to build upstream configs: %w", err)
 	}
@@ -373,21 +374,21 @@ func parseTokenLifespans(cfg *authserver.TokenLifespanRunConfig) (access, refres
 // RFC 7591 Dynamic Client Registration against the upstream authorization
 // server (hitting the network on first call, using dcrStore on subsequent
 // calls) and overlays the resulting ClientID / ClientSecret onto the output
-// config via consumeResolution + applyResolutionToOAuth2Config. The
+// config via dcr.ConsumeResolution + dcr.ApplyResolutionToOAuth2Config. The
 // caller's runConfigs slice is not mutated: in-place mutation of
 // caller-provided values surprises callers and can cause data races, so
 // each element is cloned before applying DCR resolution.
 //
 // Error logging: this function is the boundary for DCR errors — on any
-// failure from resolveDCRCredentials it emits exactly one structured
-// slog.Error via logDCRStepError and returns the wrapped error to the
+// failure from dcr.ResolveCredentials it emits exactly one structured
+// slog.Error via dcr.LogStepError and returns the wrapped error to the
 // caller without logging further. The resolver itself does not log
 // errors, which avoids the log-and-return double-reporting pattern.
 func buildUpstreamConfigs(
 	ctx context.Context,
 	runConfigs []authserver.UpstreamRunConfig,
 	issuer string,
-	dcrStore dcrResolutionCache,
+	dcrStore dcr.CredentialStore,
 ) ([]authserver.UpstreamConfig, error) {
 	configs := make([]authserver.UpstreamConfig, 0, len(runConfigs))
 
@@ -396,26 +397,28 @@ func buildUpstreamConfigs(
 		// mutates the caller's slice element.
 		rcCopy := rc
 
-		var dcrResolution *DCRResolution
-		// needsDCR returns false for nil input, so the explicit Type ==
+		var dcrResolution *dcr.Resolution
+		// dcr.NeedsDCR returns false for nil input, so the explicit Type ==
 		// OAuth2 guard is redundant. Keeping a single source of truth for
 		// "does this upstream require DCR" avoids drift if the condition
 		// ever needs to be extended (e.g., to support OIDC DCR).
-		if needsDCR(rcCopy.OAuth2Config) {
-			// Deep-copy the OAuth2 sub-config so consumeResolution writes to the
-			// copy, not the caller's OAuth2UpstreamRunConfig pointer.
-			o2Copy := *rcCopy.OAuth2Config
-			rcCopy.OAuth2Config = &o2Copy
+		if dcr.NeedsDCR(rcCopy.OAuth2Config) {
+			// Take a local copy of the OAuth2 sub-config. dcr.ResolveCredentials
+			// reads it but does not mutate; dcr.ConsumeResolution is value-in /
+			// value-out, so the caller's original OAuth2Config pointer target
+			// is never reached by either call.
+			o2 := *rcCopy.OAuth2Config
 
-			resolution, err := resolveDCRCredentials(ctx, &o2Copy, issuer, dcrStore)
+			resolution, err := dcr.ResolveCredentials(ctx, &o2, issuer, dcrStore)
 			if err != nil {
 				// Emit the single boundary Error record with enough context to
 				// correlate the failure back to this upstream; then return the
 				// wrapped error without further logging.
-				logDCRStepError(rc.Name, err)
+				dcr.LogStepError(rc.Name, err)
 				return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
 			}
-			consumeResolution(&o2Copy, resolution)
+			o2 = dcr.ConsumeResolution(o2, resolution)
+			rcCopy.OAuth2Config = &o2
 			dcrResolution = resolution
 		}
 
@@ -425,12 +428,13 @@ func buildUpstreamConfigs(
 		}
 
 		// Apply the DCR-resolved ClientSecret to the built OAuth2Config.
-		// The split between consumeResolution (run-config fields) and
-		// applyResolutionToOAuth2Config (inline-only ClientSecret) is
-		// documented in dcr.go — both calls must be paired to produce a
-		// fully-resolved DCR client.
+		// The split between dcr.ConsumeResolution (run-config fields) and
+		// dcr.ApplyResolutionToOAuth2Config (inline-only ClientSecret) is
+		// documented in pkg/auth/dcr/resolver.go — both calls must be
+		// paired to produce a fully-resolved DCR client.
 		if dcrResolution != nil && cfg.OAuth2Config != nil {
-			applyResolutionToOAuth2Config(cfg.OAuth2Config, dcrResolution)
+			applied := dcr.ApplyResolutionToOAuth2Config(*cfg.OAuth2Config, dcrResolution)
+			cfg.OAuth2Config = &applied
 		}
 
 		configs = append(configs, *cfg)

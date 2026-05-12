@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package runner
+package dcr
 
 import (
 	"context"
@@ -23,12 +23,12 @@ func TestStorageBackedStore_PutGet_RoundTrip(t *testing.T) {
 	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
-	key := DCRKey{
+	key := Key{
 		Issuer:      "https://idp.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
-	resolution := &DCRResolution{
+	resolution := &Resolution{
 		ClientID:                "client-abc",
 		ClientSecret:            "secret-xyz",
 		AuthorizationEndpoint:   "https://idp.example.com/authorize",
@@ -59,7 +59,7 @@ func TestStorageBackedStore_Get_MissingKey(t *testing.T) {
 	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
-	got, ok, err := store.Get(ctx, DCRKey{Issuer: "https://unknown.example.com"})
+	got, ok, err := store.Get(ctx, Key{Issuer: "https://unknown.example.com"})
 	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Nil(t, got)
@@ -71,22 +71,22 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
-	keyA := DCRKey{
+	keyA := Key{
 		Issuer:      "https://idp-a.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
-	keyB := DCRKey{
+	keyB := Key{
 		Issuer:      "https://idp-b.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
-	keyC := DCRKey{
+	keyC := Key{
 		Issuer:      "https://idp-a.example.com",
 		RedirectURI: "https://other.example.com/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
-	keyD := DCRKey{
+	keyD := Key{
 		Issuer:      "https://idp-a.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid", "email"}),
@@ -96,8 +96,8 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 	// AuthorizationEndpoint / TokenEndpoint per validateDCRCredentialsForStore;
 	// supply a minimal valid resolution so the storage-backed adapter accepts
 	// the Put, since the test asserts key-distinctness and not field shape.
-	resolution := func(clientID string) *DCRResolution {
-		return &DCRResolution{
+	resolution := func(clientID string) *Resolution {
+		return &Resolution{
 			ClientID:              clientID,
 			AuthorizationEndpoint: "https://idp.example.com/authorize",
 			TokenEndpoint:         "https://idp.example.com/token",
@@ -110,7 +110,7 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 	require.NoError(t, store.Put(ctx, keyD, resolution("d")))
 
 	for _, tc := range []struct {
-		key      DCRKey
+		key      Key
 		expected string
 	}{
 		{keyA, "a"},
@@ -131,7 +131,7 @@ func TestStorageBackedStore_Put_OverwritesExisting(t *testing.T) {
 	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
-	key := DCRKey{
+	key := Key{
 		Issuer:      "https://idp.example.com",
 		RedirectURI: "https://x.example.com/cb",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
@@ -143,12 +143,12 @@ func TestStorageBackedStore_Put_OverwritesExisting(t *testing.T) {
 		Authorization: "https://idp.example.com/authorize",
 		Token:         "https://idp.example.com/token",
 	}
-	require.NoError(t, store.Put(ctx, key, &DCRResolution{
+	require.NoError(t, store.Put(ctx, key, &Resolution{
 		ClientID:              "first",
 		AuthorizationEndpoint: endpoints.Authorization,
 		TokenEndpoint:         endpoints.Token,
 	}))
-	require.NoError(t, store.Put(ctx, key, &DCRResolution{
+	require.NoError(t, store.Put(ctx, key, &Resolution{
 		ClientID:              "second",
 		AuthorizationEndpoint: endpoints.Authorization,
 		TokenEndpoint:         endpoints.Token,
@@ -169,7 +169,7 @@ func TestStorageBackedStore_Put_RejectsNilResolution(t *testing.T) {
 
 	store := newMemoryDCRStore(t)
 	ctx := context.Background()
-	key := DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x.example.com/cb"}
+	key := Key{Issuer: "https://idp.example.com", RedirectURI: "https://x.example.com/cb"}
 
 	err := store.Put(ctx, key, nil)
 	require.Error(t, err)
@@ -187,12 +187,12 @@ func TestStorageBackedStore_GetReturnsDefensiveCopy(t *testing.T) {
 	store := newMemoryDCRStore(t)
 	ctx := context.Background()
 
-	key := DCRKey{
+	key := Key{
 		Issuer:      "https://idp.example.com",
 		RedirectURI: "https://x.example.com/cb",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
-	require.NoError(t, store.Put(ctx, key, &DCRResolution{
+	require.NoError(t, store.Put(ctx, key, &Resolution{
 		ClientID:              "orig",
 		AuthorizationEndpoint: "https://idp.example.com/authorize",
 		TokenEndpoint:         "https://idp.example.com/token",
@@ -217,7 +217,7 @@ func TestStorageBackedStore_GetReturnsDefensiveCopy(t *testing.T) {
 // TestStorageBackedStore_ConcurrentAccess fans out N goroutines
 // performing alternating Put / Get against overlapping and disjoint keys,
 // exercising the safe-for-concurrent-use contract advertised on the
-// dcrResolutionCache interface. The contract is satisfied by the underlying
+// CredentialStore interface. The contract is satisfied by the underlying
 // storage.DCRCredentialStore (which holds the lock); this test runs under
 // `go test -race` so any future regression that drops the storage backend's
 // guarantee, or an adapter change that races on its own state, fails loudly.
@@ -238,15 +238,15 @@ func TestStorageBackedStore_ConcurrentAccess(t *testing.T) {
 	// Two key spaces: overlapping (every worker writes the same keys, so the
 	// lock must serialise their writes) and disjoint (each worker has its own
 	// key space, so reads never see another worker's writes).
-	overlappingKey := func(i int) DCRKey {
-		return DCRKey{
+	overlappingKey := func(i int) Key {
+		return Key{
 			Issuer:      "https://idp.example.com",
 			RedirectURI: "https://thv.example.com/oauth/callback",
 			ScopesHash:  fmt.Sprintf("overlap-%d", i%4),
 		}
 	}
-	disjointKey := func(worker, i int) DCRKey {
-		return DCRKey{
+	disjointKey := func(worker, i int) Key {
+		return Key{
 			Issuer:      fmt.Sprintf("https://idp-%d.example.com", worker),
 			RedirectURI: "https://thv.example.com/oauth/callback",
 			ScopesHash:  fmt.Sprintf("disjoint-%d", i),
@@ -261,7 +261,7 @@ func TestStorageBackedStore_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			ctx := context.Background()
 			for i := 0; i < opsPerWorker; i++ {
-				resolution := &DCRResolution{
+				resolution := &Resolution{
 					ClientID:              fmt.Sprintf("worker-%d-op-%d", worker, i),
 					AuthorizationEndpoint: "https://idp.example.com/authorize",
 					TokenEndpoint:         "https://idp.example.com/token",
@@ -302,9 +302,9 @@ func TestStorageBackedStore_ConcurrentAccess(t *testing.T) {
 // TestResolutionCredentialsRoundTrip pins the field-by-field contract
 // between resolutionToCredentials and credentialsToResolution: which
 // fields survive a round-trip, which are intentionally dropped, and
-// which are recovered from the persisted DCRKey. The test exists
+// which are recovered from the persisted Key. The test exists
 // because the two converters are the seam where a field added to either
-// DCRResolution or storage.DCRCredentials must be paired with an update
+// Resolution or storage.DCRCredentials must be paired with an update
 // here; without coverage, a future field addition would silently fail
 // to persist across an authserver restart.
 //
@@ -315,7 +315,7 @@ func TestStorageBackedStore_ConcurrentAccess(t *testing.T) {
 // dropped from DCRCredentials and recovered via Key.RedirectURI on
 // read.
 //
-// ProviderName is the one DCRCredentials field with no DCRResolution
+// ProviderName is the one DCRCredentials field with no Resolution
 // counterpart. It is documented in storage.DCRCredentials as "debug /
 // audit only — never used as a primary key" and no current consumer
 // reads it. The decision to leave it unpopulated by the runner is
@@ -327,13 +327,13 @@ func TestResolutionCredentialsRoundTrip(t *testing.T) {
 	now := time.Now().UTC().Round(time.Second)
 	expiry := now.Add(30 * 24 * time.Hour)
 
-	key := DCRKey{
+	key := Key{
 		Issuer:      "https://idp.example.com",
 		RedirectURI: "https://thv.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
 
-	original := &DCRResolution{
+	original := &Resolution{
 		ClientID:                "round-trip-client-id",
 		ClientSecret:            "round-trip-secret",
 		AuthorizationEndpoint:   "https://idp.example.com/authorize",
@@ -358,7 +358,7 @@ func TestResolutionCredentialsRoundTrip(t *testing.T) {
 	assert.Equal(t, key, creds.Key,
 		"Key must round-trip via the explicit parameter")
 	assert.Empty(t, creds.ProviderName,
-		"ProviderName has no DCRResolution counterpart and is intentionally not populated; "+
+		"ProviderName has no Resolution counterpart and is intentionally not populated; "+
 			"a future contributor threading it through must update this assertion and the converters together")
 
 	roundTripped := credentialsToResolution(creds)

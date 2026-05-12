@@ -134,7 +134,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// ToolHive-embedded AS that is performing the registration), not the
 	// upstream AS being registered against. That distinction is important
 	// when correlating these logs with the resolver's logs in
-	// pkg/authserver/runner/dcr.go, which use "issuer" to mean the
+	// pkg/auth/dcr/resolver.go, which use "issuer" to mean the
 	// upstream AS. The two uses live at opposite ends of the DCR flow.
 	// No "upstream" attribute is emitted because the /oauth/register
 	// endpoint has no upstream concept.

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package runner
+package dcr
 
 import (
 	"context"
@@ -146,12 +146,12 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 	// Pre-populate the cache with a resolution matching the key we will
 	// look up.
 	redirectURI := issuer + "/oauth/callback"
-	key := DCRKey{
+	key := Key{
 		Issuer:      issuer,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
-	preloaded := &DCRResolution{
+	preloaded := &Resolution{
 		ClientID:              "preloaded-id",
 		ClientSecret:          "preloaded-secret",
 		AuthorizationEndpoint: "https://preloaded/authorize",
@@ -166,7 +166,7 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 		},
 	}
 
-	got, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	got, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "preloaded-id", got.ClientID)
 	assert.Equal(t, "preloaded-secret", got.ClientSecret)
@@ -197,7 +197,7 @@ func TestResolveDCRCredentials_RegistersOnCacheMiss(t *testing.T) {
 		},
 	}
 
-	res, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "test-client-id", res.ClientID)
 	assert.Equal(t, "test-client-secret", res.ClientSecret)
@@ -218,7 +218,7 @@ func TestResolveDCRCredentials_RegistersOnCacheMiss(t *testing.T) {
 
 	// Cache was populated.
 	cached, ok, err := cache.Get(context.Background(),
-		DCRKey{Issuer: issuer, RedirectURI: issuer + "/oauth/callback", ScopesHash: storage.ScopesHash([]string{"openid", "profile"})})
+		Key{Issuer: issuer, RedirectURI: issuer + "/oauth/callback", ScopesHash: storage.ScopesHash([]string{"openid", "profile"})})
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "test-client-id", cached.ClientID)
@@ -240,7 +240,7 @@ func TestResolveDCRCredentials_ExplicitEndpointsOverride(t *testing.T) {
 		},
 	}
 
-	res, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "https://explicit.example.com/authorize", res.AuthorizationEndpoint)
 	assert.Equal(t, "https://explicit.example.com/token", res.TokenEndpoint)
@@ -273,7 +273,7 @@ func TestResolveDCRCredentials_InitialAccessTokenAsBearer(t *testing.T) {
 		},
 	}
 
-	_, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer iat-secret-value", gotAuthHeader)
 }
@@ -337,7 +337,7 @@ func TestResolveDCRCredentials_DoesNotForwardBearerOnRedirect(t *testing.T) {
 		},
 	}
 
-	_, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.Error(t, err, "registration must fail when the upstream returns a redirect")
 	assert.ErrorIs(t, err, errDCRRedirectRefused,
 		"the resolver must refuse to follow registration-endpoint redirects")
@@ -405,7 +405,7 @@ func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
 				},
 			}
 
-			res, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+			res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 			require.NoError(t, err)
 			assert.Equal(t, tc.expected, res.TokenEndpointAuthMethod)
 		})
@@ -444,7 +444,7 @@ func TestResolveDCRCredentials_RefusesNoneWithoutS256(t *testing.T) {
 				},
 			}
 
-			_, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+			_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "S256",
 				"error must mention the missing S256 advertisement so operators can correlate")
@@ -469,7 +469,7 @@ func TestResolveDCRCredentials_EmptyAuthMethodIntersectionErrors(t *testing.T) {
 			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 		},
 	}
-	_, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no supported token_endpoint_auth_method")
 }
@@ -496,7 +496,7 @@ func TestResolveDCRCredentials_SynthesisedRegistrationEndpoint(t *testing.T) {
 		},
 	}
 
-	res, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "test-client-id", res.ClientID)
 	assert.Equal(t, "/register", gotPath)
@@ -531,7 +531,7 @@ func TestResolveDCRCredentials_RegistrationEndpointDirectBypassesDiscovery(t *te
 		},
 	}
 
-	res, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "direct-id", res.ClientID)
 	assert.Equal(t, int32(0), atomic.LoadInt32(&discoveryHits),
@@ -554,7 +554,7 @@ func TestResolveDCRCredentials_RejectsInvalidInputs(t *testing.T) {
 		name       string
 		rc         *authserver.OAuth2UpstreamRunConfig
 		issuer     string
-		cache      dcrResolutionCache
+		cache      CredentialStore
 		wantErrSub string
 	}{
 		{
@@ -596,7 +596,7 @@ func TestResolveDCRCredentials_RejectsInvalidInputs(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := resolveDCRCredentials(context.Background(), tc.rc, tc.issuer, tc.cache)
+			_, err := ResolveCredentials(context.Background(), tc.rc, tc.issuer, tc.cache)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErrSub)
 		})
@@ -627,7 +627,7 @@ func TestNeedsDCR(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.expected, needsDCR(tc.rc))
+			assert.Equal(t, tc.expected, NeedsDCR(tc.rc))
 		})
 	}
 }
@@ -635,16 +635,16 @@ func TestNeedsDCR(t *testing.T) {
 func TestConsumeResolution_RespectsExplicitEndpoints(t *testing.T) {
 	t.Parallel()
 
-	rc := &authserver.OAuth2UpstreamRunConfig{
+	rc := authserver.OAuth2UpstreamRunConfig{
 		AuthorizationEndpoint: "https://explicit/authorize",
 		TokenEndpoint:         "https://explicit/token",
 	}
-	res := &DCRResolution{
+	res := &Resolution{
 		ClientID:              "got-client",
 		AuthorizationEndpoint: "https://discovered/authorize",
 		TokenEndpoint:         "https://discovered/token",
 	}
-	consumeResolution(rc, res)
+	rc = ConsumeResolution(rc, res)
 	assert.Equal(t, "got-client", rc.ClientID)
 	assert.Equal(t, "https://explicit/authorize", rc.AuthorizationEndpoint)
 	assert.Equal(t, "https://explicit/token", rc.TokenEndpoint)
@@ -653,40 +653,40 @@ func TestConsumeResolution_RespectsExplicitEndpoints(t *testing.T) {
 func TestConsumeResolution_FillsMissingEndpoints(t *testing.T) {
 	t.Parallel()
 
-	rc := &authserver.OAuth2UpstreamRunConfig{}
-	res := &DCRResolution{
+	rc := authserver.OAuth2UpstreamRunConfig{}
+	res := &Resolution{
 		ClientID:              "got-client",
 		AuthorizationEndpoint: "https://discovered/authorize",
 		TokenEndpoint:         "https://discovered/token",
 	}
-	consumeResolution(rc, res)
+	rc = ConsumeResolution(rc, res)
 	assert.Equal(t, "got-client", rc.ClientID)
 	assert.Equal(t, "https://discovered/authorize", rc.AuthorizationEndpoint)
 	assert.Equal(t, "https://discovered/token", rc.TokenEndpoint)
 }
 
 // TestConsumeResolution_ClearsDCRConfig pins the contract that
-// consumeResolution clears DCRConfig on the run-config copy after writing
+// ConsumeResolution clears DCRConfig on the run-config copy after writing
 // the resolved ClientID. Without this, OAuth2UpstreamRunConfig.Validate
 // (run by buildPureOAuth2Config downstream) trips its ClientID-xor-
 // DCRConfig rule on the resolved copy and rejects the upstream at boot.
 func TestConsumeResolution_ClearsDCRConfig(t *testing.T) {
 	t.Parallel()
 
-	rc := &authserver.OAuth2UpstreamRunConfig{
+	rc := authserver.OAuth2UpstreamRunConfig{
 		DCRConfig: &authserver.DCRUpstreamConfig{
 			RegistrationEndpoint: "https://idp.example.com/register",
 		},
 	}
-	res := &DCRResolution{
+	res := &Resolution{
 		ClientID: "dcr-issued-client",
 	}
 
-	consumeResolution(rc, res)
+	rc = ConsumeResolution(rc, res)
 
 	assert.Equal(t, "dcr-issued-client", rc.ClientID)
 	assert.Nil(t, rc.DCRConfig,
-		"consumeResolution must clear DCRConfig so the resolved copy satisfies the ClientID-xor-DCRConfig invariant")
+		"ConsumeResolution must clear DCRConfig so the resolved copy satisfies the ClientID-xor-DCRConfig invariant")
 }
 
 func TestResolveUpstreamRedirectURI(t *testing.T) {
@@ -791,7 +791,7 @@ func TestResolveDCRCredentials_DiscoveryURLHonoured(t *testing.T) {
 		},
 	}
 
-	res, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "tenant-client", res.ClientID)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&discoveryHits),
@@ -832,7 +832,7 @@ func TestResolveDCRCredentials_DiscoveryURLIssuerMismatchRejected(t *testing.T) 
 		},
 	}
 
-	_, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "issuer mismatch")
 }
@@ -860,7 +860,7 @@ func TestResolveDCRCredentials_DiscoveredScopesFallback(t *testing.T) {
 		},
 	}
 
-	_, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.NoError(t, err)
 
 	var req oauthproto.DynamicClientRegistrationRequest
@@ -890,7 +890,7 @@ func TestResolveDCRCredentials_EmptyScopesOmitted(t *testing.T) {
 		},
 	}
 
-	res, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "test-client-id", res.ClientID)
 
@@ -937,7 +937,7 @@ func TestResolveDCRCredentials_UpstreamIssuerDerivedFromDiscoveryURL(t *testing.
 		},
 	}
 
-	res, err := resolveDCRCredentials(context.Background(), rc, ourIssuer, cache)
+	res, err := ResolveCredentials(context.Background(), rc, ourIssuer, cache)
 	require.NoError(t, err,
 		"resolver must derive expectedIssuer from DiscoveryURL, not from the caller's issuer")
 	assert.Equal(t, "test-client-id", res.ClientID)
@@ -1010,18 +1010,18 @@ func TestDeriveExpectedIssuerFromDiscoveryURL(t *testing.T) {
 	}
 }
 
-// countingStore is a dcrResolutionCache decorator that counts the number of
+// countingStore is a CredentialStore decorator that counts the number of
 // Get calls that returned a hit. The singleflight coalescing test uses it
 // to assert that no concurrent caller observed a cache hit during the run:
 // a hit during the test would mean a goroutine raced past the gate, took
 // the cache-lookup short-circuit instead of joining the singleflight, and
 // silently weakened the test's coverage.
 type countingStore struct {
-	inner dcrResolutionCache
+	inner CredentialStore
 	hits  atomic.Int32
 }
 
-func (c *countingStore) Get(ctx context.Context, key DCRKey) (*DCRResolution, bool, error) {
+func (c *countingStore) Get(ctx context.Context, key Key) (*Resolution, bool, error) {
 	res, ok, err := c.inner.Get(ctx, key)
 	if ok {
 		c.hits.Add(1)
@@ -1029,18 +1029,18 @@ func (c *countingStore) Get(ctx context.Context, key DCRKey) (*DCRResolution, bo
 	return res, ok, err
 }
 
-func (c *countingStore) Put(ctx context.Context, key DCRKey, res *DCRResolution) error {
+func (c *countingStore) Put(ctx context.Context, key Key, res *Resolution) error {
 	return c.inner.Put(ctx, key, res)
 }
 
 // TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers pins the
-// behaviour that N concurrent callers for the same DCRKey result in exactly
+// behaviour that N concurrent callers for the same Key result in exactly
 // one RegisterClientDynamically call against the upstream — preventing the
 // orphaned-registration class of bug raised in PR #5042 review.
 //
 // "Exactly one registration" is necessary but not sufficient to prove the
 // singleflight coalescing path actually fired: a late-arriving goroutine
-// that reached resolveDCRCredentials after the leader's cache.Put would
+// that reached ResolveCredentials after the leader's cache.Put would
 // short-circuit through lookupCachedResolution, take the cache hit, and
 // still leave registrationCalls == 1. A countingStore wrapper makes that
 // regression loud — we assert no caller observed a cache hit, so any timing
@@ -1071,14 +1071,14 @@ func TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers(t *testing
 	}
 
 	const N = 8
-	results := make([]*DCRResolution, N)
+	results := make([]*Resolution, N)
 	errs := make([]error, N)
 	var wg sync.WaitGroup
 	wg.Add(N)
 	for i := 0; i < N; i++ {
 		go func(idx int) {
 			defer wg.Done()
-			res, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+			res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 			results[idx] = res
 			errs[idx] = err
 		}(i)
@@ -1100,7 +1100,7 @@ func TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers(t *testing
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for concurrent resolveDCRCredentials goroutines")
+		t.Fatal("timeout waiting for concurrent ResolveCredentials goroutines")
 	}
 
 	for i := 0; i < N; i++ {
@@ -1199,21 +1199,21 @@ func TestResolveUpstreamRedirectURI_PreservesIssuerPath(t *testing.T) {
 }
 
 // TestConsumeResolution_DoesNotOverwritePreProvisionedClientID verifies
-// the defence-in-depth in consumeResolution: a caller that bypasses
-// validateResolveInputs and invokes consumeResolution directly with a
+// the defence-in-depth in ConsumeResolution: a caller that bypasses
+// validateResolveInputs and invokes ConsumeResolution directly with a
 // pre-provisioned ClientID does not have it silently clobbered.
 func TestConsumeResolution_DoesNotOverwritePreProvisionedClientID(t *testing.T) {
 	t.Parallel()
 
-	rc := &authserver.OAuth2UpstreamRunConfig{
+	rc := authserver.OAuth2UpstreamRunConfig{
 		ClientID: "pre-provisioned",
 	}
-	res := &DCRResolution{
+	res := &Resolution{
 		ClientID: "would-be-overwrite",
 	}
-	consumeResolution(rc, res)
+	rc = ConsumeResolution(rc, res)
 	assert.Equal(t, "pre-provisioned", rc.ClientID,
-		"consumeResolution must not overwrite a non-empty ClientID")
+		"ConsumeResolution must not overwrite a non-empty ClientID")
 }
 
 // TestResolveDCREndpoints_DirectRegistrationEndpointValidated covers
@@ -1321,14 +1321,14 @@ type failingDCRStore struct {
 	putErr error
 }
 
-func (f failingDCRStore) Get(_ context.Context, _ DCRKey) (*DCRResolution, bool, error) {
+func (f failingDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, error) {
 	if f.getErr != nil {
 		return nil, false, f.getErr
 	}
 	return nil, false, nil
 }
 
-func (f failingDCRStore) Put(_ context.Context, _ DCRKey, _ *DCRResolution) error {
+func (f failingDCRStore) Put(_ context.Context, _ Key, _ *Resolution) error {
 	return f.putErr
 }
 
@@ -1348,7 +1348,7 @@ func TestResolveDCRCredentials_CacheGetFailureWrapped(t *testing.T) {
 		},
 	}
 
-	_, err := resolveDCRCredentials(context.Background(), rc, "https://idp.example.com", store)
+	_, err := ResolveCredentials(context.Background(), rc, "https://idp.example.com", store)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, storeErr,
 		"cache.Get error must be wrapped with %%w so callers can inspect the cause")
@@ -1377,7 +1377,7 @@ func TestResolveDCRCredentials_CachePutFailureWrapped(t *testing.T) {
 		},
 	}
 
-	_, err := resolveDCRCredentials(context.Background(), rc, server.URL, store)
+	_, err := ResolveCredentials(context.Background(), rc, server.URL, store)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, storeErr,
 		"cache.Put error must be wrapped with %%w so callers can inspect the cause")
@@ -1389,7 +1389,7 @@ func TestResolveDCRCredentials_CachePutFailureWrapped(t *testing.T) {
 
 // TestBuildResolution_PopulatesRFC7591ExpiryFields covers the conversion of
 // the int64 epoch fields client_id_issued_at and client_secret_expires_at
-// into time.Time on DCRResolution. The wire convention "0 means absent /
+// into time.Time on Resolution. The wire convention "0 means absent /
 // does not expire" is preserved as the zero time.Time.
 func TestBuildResolution_PopulatesRFC7591ExpiryFields(t *testing.T) {
 	t.Parallel()
@@ -1482,7 +1482,7 @@ func TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret(t *testing.T) {
 	}
 
 	// First call: registers, populates cache with already-expired entry.
-	res1, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	res1, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.NoError(t, err)
 	require.NotNil(t, res1)
 	require.False(t, res1.ClientSecretExpiresAt.IsZero(),
@@ -1492,7 +1492,7 @@ func TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret(t *testing.T) {
 	require.EqualValues(t, 1, atomic.LoadInt32(&registrationCalls))
 
 	// Second call: the cached entry is expired, so the resolver must refetch.
-	res2, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+	res2, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 	require.NoError(t, err)
 	require.NotNil(t, res2)
 	assert.EqualValues(t, 2, atomic.LoadInt32(&registrationCalls),
@@ -1536,9 +1536,9 @@ func TestResolveDCRCredentials_HonoursFutureExpiryAndZero(t *testing.T) {
 				},
 			}
 
-			_, err := resolveDCRCredentials(context.Background(), rc, issuer, cache)
+			_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
 			require.NoError(t, err)
-			_, err = resolveDCRCredentials(context.Background(), rc, issuer, cache)
+			_, err = ResolveCredentials(context.Background(), rc, issuer, cache)
 			require.NoError(t, err)
 
 			assert.EqualValues(t, 1, atomic.LoadInt32(&registrationCalls),
@@ -1555,11 +1555,11 @@ type panickingPutDCRStore struct {
 	panicValue any
 }
 
-func (panickingPutDCRStore) Get(_ context.Context, _ DCRKey) (*DCRResolution, bool, error) {
+func (panickingPutDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, error) {
 	return nil, false, nil
 }
 
-func (s panickingPutDCRStore) Put(_ context.Context, _ DCRKey, _ *DCRResolution) error {
+func (s panickingPutDCRStore) Put(_ context.Context, _ Key, _ *Resolution) error {
 	panic(s.panicValue)
 }
 
@@ -1567,10 +1567,10 @@ func (s panickingPutDCRStore) Put(_ context.Context, _ DCRKey, _ *DCRResolution)
 // behaviour that a panic inside the singleflight closure does not propagate
 // up as a panic to either the leader goroutine or any of the followers.
 // singleflight.Group re-panics the leader's panic in every follower, so
-// without the recover N concurrent callers for the same DCRKey would all
+// without the recover N concurrent callers for the same Key would all
 // crash with the same value. The defer/recover converts the panic to a
 // *dcrStepError(dcrStepRegister, ..., Stack: <captured>); the boundary
-// caller's logDCRStepError emits the single Error record and every caller
+// caller's LogStepError emits the single Error record and every caller
 // gets the same wrapped error.
 func TestResolveDCRCredentials_RecoversPanicInsideSingleflight(t *testing.T) {
 	t.Parallel()
@@ -1604,7 +1604,7 @@ func TestResolveDCRCredentials_RecoversPanicInsideSingleflight(t *testing.T) {
 					panicked[idx] = true
 				}
 			}()
-			_, errs[idx] = resolveDCRCredentials(context.Background(), rc, issuer, store)
+			_, errs[idx] = ResolveCredentials(context.Background(), rc, issuer, store)
 		}(i)
 	}
 
@@ -1628,7 +1628,7 @@ func TestResolveDCRCredentials_RecoversPanicInsideSingleflight(t *testing.T) {
 			"goroutine %d's error must include the panic value so the cause is recoverable", i)
 
 		// The captured stack and dcrStepRegister tag must travel with the
-		// returned error so the boundary log (logDCRStepError) emits a
+		// returned error so the boundary log (LogStepError) emits a
 		// single Error record without a duplicate in-defer log.
 		var stepErr *dcrStepError
 		require.True(t, errors.As(errs[i], &stepErr),
@@ -1673,11 +1673,11 @@ func TestDcrStepError(t *testing.T) {
 		assert.Equal(t, "https://app/cb", got.RedirectURI)
 	})
 
-	t.Run("resolveDCRCredentials wraps every failure in a dcrStepError", func(t *testing.T) {
+	t.Run("ResolveCredentials wraps every failure in a dcrStepError", func(t *testing.T) {
 		t.Parallel()
 
 		// Precondition failure → dcrStepValidate.
-		_, err := resolveDCRCredentials(context.Background(), nil, "https://as",
+		_, err := ResolveCredentials(context.Background(), nil, "https://as",
 			newMemoryDCRStore(t))
 		require.Error(t, err)
 		var stepErr *dcrStepError
@@ -1781,7 +1781,7 @@ func TestSanitizeErrorForLog(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.expected, sanitizeErrorForLog(tc.in))
+			assert.Equal(t, tc.expected, SanitizeErrorForLog(tc.in))
 		})
 	}
 }

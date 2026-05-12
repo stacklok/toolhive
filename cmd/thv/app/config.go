@@ -16,7 +16,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
-
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage application configuration",

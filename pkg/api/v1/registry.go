@@ -57,7 +57,7 @@ func writeRegistryAuthRequiredError(w http.ResponseWriter) {
 const RegistryUnavailableCode = "registry_unavailable"
 
 // RegistryLegacyFormatCode is the machine-readable error code returned in the
-// structured JSON 503 response when the configured registry source serves data
+// structured JSON 502 response when the configured registry source serves data
 // in the legacy ToolHive format instead of the upstream MCP registry format.
 // Desktop clients (Studio) match on this value to display a targeted recovery
 // flow (reset to default registry, point to a `?format=upstream` endpoint, or
@@ -76,17 +76,21 @@ func writeRegistryUnavailableError(w http.ResponseWriter, unavailableErr *regpkg
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// writeRegistryLegacyFormatError writes a structured JSON 503 response when the
-// configured registry source returns data in the legacy ToolHive format. The
-// message embeds legacyhint.MigrationMessage so CLI users still see the
-// actionable migration step, while desktop clients can branch on Code.
+// writeRegistryLegacyFormatError writes a structured JSON 502 Bad Gateway
+// response when the configured registry source returns data in the legacy
+// ToolHive format. HTTP 502 is correct per RFC 9110 §15.6.3: thv serve is
+// acting as a gateway to the upstream registry, and the upstream returned a
+// response we cannot process. It also aligns with the existing PUT handler
+// which already returns 502 for the same legacy-format detection. The message
+// embeds legacyhint.MigrationMessage so CLI users still see the actionable
+// migration step, while desktop clients can branch on Code.
 func writeRegistryLegacyFormatError(w http.ResponseWriter, legacyErr *regpkg.LegacyFormatError) {
 	body := registryErrorResponse{
 		Code:    RegistryLegacyFormatCode,
 		Message: legacyErr.Error(),
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusServiceUnavailable)
+	w.WriteHeader(http.StatusBadGateway)
 	_ = json.NewEncoder(w).Encode(body)
 }
 

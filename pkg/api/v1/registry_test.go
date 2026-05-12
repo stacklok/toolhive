@@ -140,10 +140,11 @@ func TestRegistryAPI_GetEndpoint_UnavailableUpstream(t *testing.T) {
 	}
 }
 
-// TestRegistryAPI_GetEndpoint_LegacyFormat tests that GET endpoints return 503
+// TestRegistryAPI_GetEndpoint_LegacyFormat tests that GET endpoints return 502
 // with a structured "registry_legacy_format" code when the configured custom
-// registry URL serves data in the legacy ToolHive format. Mirrors the
-// UnavailableUpstream test above but covers the new typed error path.
+// registry URL serves data in the legacy ToolHive format. 502 is correct per
+// RFC 9110 §15.6.3: thv serve acts as a gateway to the upstream registry and
+// the upstream returned a response we cannot process.
 //
 //nolint:paralleltest // Uses global registry provider singleton
 func TestRegistryAPI_GetEndpoint_LegacyFormat(t *testing.T) {
@@ -224,8 +225,8 @@ func TestRegistryAPI_GetEndpoint_LegacyFormat(t *testing.T) {
 			w := httptest.NewRecorder()
 			ep.handler(w, req)
 
-			assert.Equal(t, http.StatusServiceUnavailable, w.Code,
-				"Expected 503 Service Unavailable when registry is in legacy format")
+			assert.Equal(t, http.StatusBadGateway, w.Code,
+				"Expected 502 Bad Gateway when registry is in legacy format")
 
 			var body registryErrorResponse
 			err := json.NewDecoder(w.Body).Decode(&body)

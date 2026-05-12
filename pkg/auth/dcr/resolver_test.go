@@ -1650,6 +1650,21 @@ func TestSanitizeErrorForLog(t *testing.T) {
 			in:       fmt.Errorf("GET HTTPS://as.example.com/register?token=leak failed"),
 			expected: "GET https://as.example.com/register failed",
 		},
+		// Redis scheme coverage — the embedded-authserver DCR path
+		// persists through pkg/authserver/storage/redis.go, and a
+		// redis-go error chain on the Get/Put critical path can embed a
+		// sentinel/cluster URL with credentials. Without these the
+		// sanitiser would leave the password in the slog.Error attribute.
+		{
+			name:     "redis URL userinfo is stripped",
+			in:       fmt.Errorf("dial redis://user:secret@redis.internal:6379/0 failed"),
+			expected: "dial redis://redis.internal:6379/0 failed",
+		},
+		{
+			name:     "rediss URL userinfo is stripped",
+			in:       fmt.Errorf("dial rediss://user:secret@redis.internal:6379/0 failed"),
+			expected: "dial rediss://redis.internal:6379/0 failed",
+		},
 	}
 
 	for _, tc := range tests {

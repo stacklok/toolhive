@@ -101,13 +101,24 @@ var dcrFlight singleflight.Group
 
 // flightKeyOf canonicalises a Key into the singleflight string used by
 // dcrFlight. The "\n" separator is safe because newline is not a valid byte
-// in any of the three components: URI reference characters in Issuer and
-// RedirectURI (RFC 3986 §2), and hex digits in ScopesHash (the form
-// storage.ScopesHash always emits). Exposed as a function so tests and
-// future inspection helpers can compute the exact key the resolver would
-// route through dcrFlight without re-implementing the concatenation.
+// in any of the four components: URI reference characters in Issuer and
+// RedirectURI (RFC 3986 §2), hex digits in ScopesHash (the form
+// storage.ScopesHash always emits), and a single "1"/"0" character for
+// PublicClient. Exposed as a function so tests and future inspection
+// helpers can compute the exact key the resolver would route through
+// dcrFlight without re-implementing the concatenation.
+//
+// PublicClient is included to mirror the persisted DCRKey: a public PKCE
+// registration and a confidential-client registration that happened to
+// share an Issuer/RedirectURI/ScopesHash tuple must not coalesce through
+// the singleflight, because a follower would receive a registration of
+// the wrong client shape from the leader.
 func flightKeyOf(key Key) string {
-	return key.Issuer + "\n" + key.RedirectURI + "\n" + key.ScopesHash
+	publicFlag := "0"
+	if key.PublicClient {
+		publicFlag = "1"
+	}
+	return key.Issuer + "\n" + key.RedirectURI + "\n" + key.ScopesHash + "\n" + publicFlag
 }
 
 // defaultUpstreamRedirectPath is the redirect path derived from the issuer
@@ -315,9 +326,10 @@ func ResolveCredentials(
 
 	scopes := slices.Clone(req.Scopes)
 	key := Key{
-		Issuer:      req.Issuer,
-		RedirectURI: redirectURI,
-		ScopesHash:  storage.ScopesHash(scopes),
+		Issuer:       req.Issuer,
+		RedirectURI:  redirectURI,
+		ScopesHash:   storage.ScopesHash(scopes),
+		PublicClient: req.PublicClient,
 	}
 
 	// Cache lookup short-circuits before any network I/O.
@@ -391,7 +403,9 @@ func registerAndCache(
 	if err != nil {
 		return nil, newDCRStepError(dcrStepMetadata, req.Issuer, redirectURI, err)
 	}
-	applyExplicitEndpointOverrides(endpoints, req)
+	if err := applyExplicitEndpointOverrides(endpoints, req); err != nil {
+		return nil, newDCRStepError(dcrStepMetadata, req.Issuer, redirectURI, err)
+	}
 
 	// Token-endpoint auth method: intersect server support with our
 	// preference order; default to client_secret_basic if the server does
@@ -493,22 +507,21 @@ func LogStepError(upstreamName string, err error) {
 // URL?q=1, retrying") is preserved — see trimURLTrailingPunctuation
 // for the list of characters considered terminators.
 //
-// Scope: the regex matches http:// and https:// schemes
-// (case-insensitively per RFC 3986 §3.1). Other schemes (file://, raw
-// host:port) are not sanitised; the current DCR flow never embeds
-// those in errors, and broadening the match risks false positives on
-// unrelated text.
+// Scope: the regex matches http://, https://, redis://, and rediss://
+// schemes (case-insensitively per RFC 3986 §3.1). The redis schemes are
+// included because the embedded-authserver DCR path persists through
+// pkg/authserver/storage/redis.go and a redis-go error chain on the
+// Get/Put critical path can embed a sentinel/cluster URL with
+// credentials. Other schemes (file://, postgres://, smtp://, raw
+// host:port) are NOT sanitised; if a future call site flows error
+// strings from one of those into LogStepError, extend the regex here
+// rather than re-implementing the sanitiser at the call site.
 //
 // IMPORTANT — caller responsibility: this function strips credentials
-// only from http(s) URLs. Callers that may receive errors containing
-// non-http(s) URLs with credential-bearing components (e.g.
-// redis://user:pass@host, postgres://…, smtp://…) MUST verify those
+// only from the schemes listed above. Callers that may receive errors
+// containing other credential-bearing URL schemes MUST verify those
 // URLs are not credential-bearing before logging, or sanitise them
-// separately. The function name reads generic but the implementation is
-// scheme-specific by design — broadening the regex would risk false
-// positives on prose. A future shared sanitiser covering more schemes
-// is appropriate as a follow-up once a second non-http(s) call site
-// appears.
+// separately.
 func SanitizeErrorForLog(err error) string {
 	if err == nil {
 		return ""
@@ -564,13 +577,15 @@ func trimURLTrailingPunctuation(s string) (core, tail string) {
 // queryStrippingPattern matches URL-shaped substrings inside an error
 // message — sufficient to reach the url.Parse path in SanitizeErrorForLog
 // and let it decide whether a secret-bearing component exists to strip.
-// The regexp is intentionally narrow (http/https schemes only) to avoid
-// false positives, but matches schemes case-insensitively per RFC 3986
-// §3.1 since upstream metadata or user input can carry mixed-case
-// schemes. Trailing sentence punctuation that the character class
-// happens to include (e.g. '.', ',', ')') is stripped by
+// The regexp covers the schemes that actually flow through the DCR
+// resolver's error paths today (http/https from upstream calls, redis/
+// rediss from the persistent CredentialStore on the embedded-authserver
+// path). It matches schemes case-insensitively per RFC 3986 §3.1 since
+// upstream metadata or user input can carry mixed-case schemes.
+// Trailing sentence punctuation that the character class happens to
+// include (e.g. '.', ',', ')') is stripped by
 // trimURLTrailingPunctuation before the match is parsed.
-var queryStrippingPattern = regexp.MustCompile(`(?i)https?://[^\s"']+`)
+var queryStrippingPattern = regexp.MustCompile(`(?i)(?:https?|rediss?)://[^\s"']+`)
 
 // -----------------------------------------------------------------------------
 // Private helpers
@@ -681,13 +696,27 @@ func lookupCachedResolution(
 // authorizationEndpoint / tokenEndpoint in endpoints with explicit values
 // from req when req specifies them. Explicit caller configuration always
 // wins over discovery.
-func applyExplicitEndpointOverrides(endpoints *dcrEndpoints, req *Request) {
+//
+// Both overrides run through validateUpstreamEndpointURL even though the
+// known consumer call sites only ever populate these fields from
+// already-validated sources. validateUpstreamEndpointURL is the documented
+// gatekeeper "every point where an endpoint URL enters the resolver from
+// outside" — applying it here closes the override path's gap rather than
+// relying on the caller-side validation to never drift.
+func applyExplicitEndpointOverrides(endpoints *dcrEndpoints, req *Request) error {
 	if req.AuthorizationEndpoint != "" {
+		if err := validateUpstreamEndpointURL(req.AuthorizationEndpoint, "authorization_endpoint"); err != nil {
+			return fmt.Errorf("explicit %w", err)
+		}
 		endpoints.authorizationEndpoint = req.AuthorizationEndpoint
 	}
 	if req.TokenEndpoint != "" {
+		if err := validateUpstreamEndpointURL(req.TokenEndpoint, "token_endpoint"); err != nil {
+			return fmt.Errorf("explicit %w", err)
+		}
 		endpoints.tokenEndpoint = req.TokenEndpoint
 	}
+	return nil
 }
 
 // chooseRegistrationScopes selects the scopes to send in the registration

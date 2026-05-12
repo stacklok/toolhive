@@ -1951,7 +1951,7 @@ func TestRedisKeyGeneration(t *testing.T) {
 		assert.Equal(t, "test:auth:reqid:access:req-123", result)
 	})
 
-	t.Run("redisDCRKey", func(t *testing.T) {
+	t.Run("redisDCRKey confidential", func(t *testing.T) {
 		t.Parallel()
 		result := redisDCRKey("test:auth:", DCRKey{
 			Issuer:      "https://thv.example.com",
@@ -1960,7 +1960,20 @@ func TestRedisKeyGeneration(t *testing.T) {
 		})
 		// 23 = len("https://thv.example.com"), 38 = len("https://thv.example.com/oauth/callback")
 		assert.Equal(t,
-			"test:auth:dcr:23:https://thv.example.com:38:https://thv.example.com/oauth/callback:abc123",
+			"test:auth:dcr:23:https://thv.example.com:38:https://thv.example.com/oauth/callback:abc123:0",
+			result)
+	})
+
+	t.Run("redisDCRKey public", func(t *testing.T) {
+		t.Parallel()
+		result := redisDCRKey("test:auth:", DCRKey{
+			Issuer:       "https://thv.example.com",
+			RedirectURI:  "https://thv.example.com/oauth/callback",
+			ScopesHash:   "abc123",
+			PublicClient: true,
+		})
+		assert.Equal(t,
+			"test:auth:dcr:23:https://thv.example.com:38:https://thv.example.com/oauth/callback:abc123:1",
 			result)
 	})
 }
@@ -2010,6 +2023,20 @@ func TestRedisDCRKey_Distinct(t *testing.T) {
 			name: "colons inside redirect_uri",
 			a:    mk("https://idp.example.com", "https://x.example.com:443/cb", "h1"),
 			b:    mk("https://idp.example.com", "https://x.example.com/cb:443", "h1"),
+		},
+		{
+			// Public-client and confidential-client registrations for the
+			// same upstream/scopes/redirect must not share a cache entry.
+			// Pins the trailing PublicClient flag in the Redis key.
+			name: "different PublicClient flag",
+			a: DCRKey{
+				Issuer: "https://idp.example.com", RedirectURI: "https://x/cb", ScopesHash: "h1",
+				PublicClient: false,
+			},
+			b: DCRKey{
+				Issuer: "https://idp.example.com", RedirectURI: "https://x/cb", ScopesHash: "h1",
+				PublicClient: true,
+			},
 		},
 	}
 

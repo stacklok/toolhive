@@ -120,16 +120,27 @@ func (t *UpstreamTokens) IsExpired(now time.Time) bool {
 // future Redis backend must hash keys identically; keeping the canonical form
 // next to the persistence implementations prevents drift.
 type DCRKey struct {
-	// Issuer is *this* auth server's issuer identifier — the local issuer
-	// of the embedded authorization server that performed the registration,
-	// NOT the upstream's. The cache is keyed by this value because two
-	// different local issuers registering against the same upstream are
-	// distinct OAuth clients and must not share credentials.
+	// Issuer is the registration consumer's issuer identifier. The dual
+	// semantic depends on the consumer profile:
+	//   - Embedded authorization server: its OWN local issuer (the embedded
+	//     authserver that performed the registration).
+	//   - CLI / direct OAuth flow: the UPSTREAM authorization server's
+	//     issuer, because the CLI has no separate local issuer of its own.
+	// The cache is keyed by this value because two different consumers
+	// registering against the same upstream are distinct OAuth clients and
+	// must not share credentials. The (Issuer, RedirectURI, ScopesHash,
+	// PublicClient) tuple keeps the two consumer profiles' entries apart
+	// via the RedirectURI component (the embedded authserver registers an
+	// AS-origin callback while the CLI registers a loopback callback), so a
+	// collision between profiles is impossible by construction even when
+	// the upstream is the same.
 	Issuer string
 
 	// RedirectURI is the redirect URI registered with the upstream
-	// authorization server. Lives on the local issuer's origin since it is
-	// where the upstream sends the user back after authentication.
+	// authorization server. Embedded-authserver callers register an
+	// AS-origin callback; CLI callers register an RFC 8252 loopback
+	// callback. The two address spaces are disjoint, which is what makes
+	// the per-consumer cache namespace structurally safe today.
 	RedirectURI string
 
 	// ScopesHash is the SHA-256 hex digest of the sorted, deduplicated scope
@@ -137,6 +148,19 @@ type DCRKey struct {
 	// hand at call sites; the canonical form must be a single source of truth
 	// so the key matches across processes and backends.
 	ScopesHash string
+
+	// PublicClient indicates the registration was issued for a public
+	// (PKCE) client with token_endpoint_auth_method=none, as opposed to a
+	// confidential client with a shared secret. Including this in the key
+	// is defense-in-depth: it makes the "public vs confidential
+	// registrations must not share cache entries" property structural
+	// rather than relying on RedirectURI happening to differ between
+	// consumer profiles. Without this field, a future caller that defaulted
+	// its redirect URI into the same address space as an existing consumer
+	// (and asked for a public registration where the cached entry was
+	// confidential, or vice versa) would silently receive a wrong-shape
+	// resolution.
+	PublicClient bool
 }
 
 // ScopesHash returns the SHA-256 hex digest of the canonical OAuth scope set,

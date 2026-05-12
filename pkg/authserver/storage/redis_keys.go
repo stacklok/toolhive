@@ -97,23 +97,29 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // redisDCRKey generates a Redis key for a DCR credential entry, identifying the
 // (Issuer, RedirectURI, ScopesHash) tuple that DCRKey canonicalises.
 //
-// Format: "{prefix}dcr:<len(issuer)>:<issuer>:<len(redirect_uri)>:<redirect_uri>:<scopes_hash>"
+// Format: "{prefix}dcr:<len(issuer)>:<issuer>:<len(redirect_uri)>:<redirect_uri>:<scopes_hash>:<public>"
 //
 // The first two segments are length-prefixed to handle colons in RedirectURI
 // (and, for symmetry, Issuer) without ambiguity, mirroring redisProviderKey.
 // ScopesHash is expected to be a SHA-256 hex digest produced by
 // storage.ScopesHash — only [0-9a-f] and never colon-bearing — so it is
-// appended without a length prefix. The format is robust for that domain;
-// validateDCRCredentialsForStore (called by every Store path) already
-// rejects an empty ScopesHash, and callers are required to compute the hash
-// via storage.ScopesHash. Length-prefix collision-safety is preserved on
-// the leading segments either way.
+// appended without a length prefix. The trailing PublicClient flag is the
+// literal "1" or "0" so confidential and public registrations never share a
+// cache entry even when the leading components coincide. The format is
+// robust for that domain; validateDCRCredentialsForStore (called by every
+// Store path) already rejects an empty ScopesHash, and callers are required
+// to compute the hash via storage.ScopesHash. Length-prefix collision-safety
+// is preserved on the leading segments either way.
 func redisDCRKey(prefix string, key DCRKey) string {
-	return fmt.Sprintf("%s%s:%d:%s:%d:%s:%s",
+	publicFlag := "0"
+	if key.PublicClient {
+		publicFlag = "1"
+	}
+	return fmt.Sprintf("%s%s:%d:%s:%d:%s:%s:%s",
 		prefix, KeyTypeDCR,
 		len(key.Issuer), key.Issuer,
 		len(key.RedirectURI), key.RedirectURI,
-		key.ScopesHash)
+		key.ScopesHash, publicFlag)
 }
 
 // redisUpstreamKey generates a Redis key for a per-provider upstream token entry.

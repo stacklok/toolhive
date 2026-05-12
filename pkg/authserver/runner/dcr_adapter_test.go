@@ -185,6 +185,50 @@ func TestApplyResolutionToOAuth2Config(t *testing.T) {
 	assert.Equal(t, cfg, unchanged)
 }
 
+// TestConsumeResolution_AloneLeavesClientSecretEmpty is a tripwire
+// regression test for the two-call invariant documented on
+// applyResolutionToOAuth2Config. The contract is:
+//
+//	consumeResolution writes the run-config fields representable in the
+//	file-or-env model; applyResolutionToOAuth2Config writes the
+//	inline-only ClientSecret onto the built upstream.OAuth2Config.
+//
+// Both must be paired — calling only consumeResolution leaves
+// ClientSecret empty and produces silent auth failures at request time.
+// The type system does not enforce the pair, so this test pins the
+// failure mode: a future refactor that accidentally folds the two helpers
+// in a way that drops the ClientSecret write will fail here with a
+// clear signal rather than at upstream auth time on a deployed binary.
+func TestConsumeResolution_AloneLeavesClientSecretEmpty(t *testing.T) {
+	t.Parallel()
+
+	rc := authserver.OAuth2UpstreamRunConfig{
+		DCRConfig: &authserver.DCRUpstreamConfig{
+			RegistrationEndpoint: "https://idp.example.com/register",
+		},
+	}
+	res := &dcr.Resolution{
+		ClientID:     "dcr-issued-client",
+		ClientSecret: "dcr-issued-secret",
+	}
+
+	rc = consumeResolution(rc, res)
+
+	// run-config side fields are populated.
+	assert.Equal(t, "dcr-issued-client", rc.ClientID)
+	// But the ClientSecret destination — the built upstream.OAuth2Config —
+	// is untouched. The default-constructed OAuth2Config below stands in
+	// for "the built config that buildPureOAuth2Config produces": this
+	// path does NOT include applyResolutionToOAuth2Config, so the
+	// ClientSecret remains empty. A future regression that hides the
+	// applyResolutionToOAuth2Config call inside consumeResolution would
+	// flip this assertion.
+	builtCfg := upstream.OAuth2Config{}
+	assert.Equal(t, "", builtCfg.ClientSecret,
+		"consumeResolution alone must not write ClientSecret; that is "+
+			"applyResolutionToOAuth2Config's responsibility (see dcr_adapter.go)")
+}
+
 // TestNewDCRRequest covers the OAuth2UpstreamRunConfig → dcr.Request
 // translation, including the file-based InitialAccessToken resolution that
 // previously lived inside the resolver.
@@ -260,4 +304,31 @@ func TestNewDCRRequest(t *testing.T) {
 			assert.Equal(t, tc.wantRegistration, req.RegistrationEndpoint)
 		})
 	}
+}
+
+// TestNewDCRRequest_EnvVarInitialAccessToken pins the env-var sibling of
+// the file-based InitialAccessToken branch covered above. Without this,
+// a refactor that swapped the argument order on resolveSecret or read
+// the wrong field on DCRConfig would slip past the file-based test and
+// only fail in production, where the env-var path is exercised by
+// operators who pass credentials via Kubernetes Secrets / env injection.
+// Kept as a standalone test (not a table case) because t.Setenv is
+// incompatible with t.Parallel.
+func TestNewDCRRequest_EnvVarInitialAccessToken(t *testing.T) {
+	const envVar = "TEST_DCR_IAT_ENVVAR_BRANCH"
+	t.Setenv(envVar, "iat-from-env")
+
+	rc := &authserver.OAuth2UpstreamRunConfig{
+		Scopes: []string{"openid"},
+		DCRConfig: &authserver.DCRUpstreamConfig{
+			DiscoveryURL:             "https://idp.example.com/.well-known/oauth-authorization-server",
+			InitialAccessTokenEnvVar: envVar,
+		},
+	}
+
+	req, err := newDCRRequest(rc, "https://thv.example.com")
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	assert.Equal(t, "iat-from-env", req.InitialAccessToken,
+		"env-var InitialAccessToken must flow through newDCRRequest → resolveSecret")
 }

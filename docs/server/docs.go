@@ -517,7 +517,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "baseline_client_scopes": {
-                        "description": "BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every\nDCR registration. All values must appear in ScopesSupported; the auth server\nrejects this RunConfig at startup otherwise. Empty means current behavior is\npreserved (registered scope = client-requested or DefaultScopes if empty).\nWhen BaselineClientScopes is non-empty, ScopesSupported must be set\nexplicitly: validation runs before defaults are applied, so an empty\nScopesSupported won't be substituted with registration.DefaultScopes for\npurposes of the subset check.",
+                        "description": "BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every\nDCR registration. All values must appear in ScopesSupported; the auth server\nrejects this RunConfig at startup otherwise. Empty means current behavior is\npreserved (registered scope = client-requested, or DefaultScopes if empty).\nWhen ScopesSupported is empty, the subset check uses registration.DefaultScopes\n(the same set applyDefaults would substitute at startup) — so\nBaselineClientScopes containing standard OIDC scopes works without enumerating\nScopesSupported explicitly.",
                         "items": {
                             "type": "string"
                         },

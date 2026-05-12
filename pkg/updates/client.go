@@ -53,6 +53,11 @@ const (
 
 	buildTypeRelease    = "release"
 	buildTypeLocalBuild = "local_build"
+
+	// EnvVarSkipUpdateCheck disables update checks when set to "true"
+	// (case-insensitive). Disabling update checks also disables update-derived
+	// usage metrics.
+	EnvVarSkipUpdateCheck = "TOOLHIVE_SKIP_UPDATE_CHECK"
 )
 
 // ciEnvVars contains environment variables that indicate CI environments
@@ -153,8 +158,12 @@ func (d *defaultVersionClient) GetComponent() string {
 }
 
 // ShouldSkipUpdateChecks returns true if update checks should be skipped.
-// This includes CI environments and other scenarios where automated update checking is undesirable.
+// This includes CI environments, an explicit opt-out via TOOLHIVE_SKIP_UPDATE_CHECK,
+// and other scenarios where automated update checking is undesirable.
 func ShouldSkipUpdateChecks() bool {
+	if strings.EqualFold(os.Getenv(EnvVarSkipUpdateCheck), "true") {
+		return true
+	}
 	// Check if running in any known CI environment
 	for _, envVar := range ciEnvVars {
 		if os.Getenv(envVar) != "" {

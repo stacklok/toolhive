@@ -123,6 +123,11 @@ type Config struct {
 	// If nil, no authorization is performed.
 	AuthzMiddleware func(http.Handler) http.Handler
 
+	// ScriptMiddleware is the optional Starlark script execution middleware.
+	// Sits above (outer to) authz so scripts only see/call authorized tools.
+	// If nil, the execute_tool_script virtual tool is not available.
+	ScriptMiddleware func(http.Handler) http.Handler
+
 	// AuthInfoHandler is the optional handler for /.well-known/oauth-protected-resource endpoint.
 	// Exposes OIDC discovery information about the protected resource.
 	AuthInfoHandler http.Handler
@@ -573,10 +578,16 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
 	// Code wraps: auth+parser → audit → discovery → annotation-enrichment →
-	//   authz → backend-enrichment → MCP-parsing → telemetry
+	//   script(+parser) → authz → backend-enrichment → MCP-parsing → telemetry
 	// Execution order: recovery → header-val → auth+parser → audit →
-	//   discovery → annotation-enrichment → authz → backend-enrichment →
-	//   MCP-parsing → telemetry → handler
+	//   discovery → annotation-enrichment → parser → script →
+	//   authz → backend-enrichment → MCP-parsing → telemetry → handler
+	//
+	// Script middleware sits between annotation-enrichment and authz:
+	// - Auth (identity) runs before script — requests are authenticated
+	// - Authz runs AFTER script — execute_tool_script itself is not authorized,
+	//   but inner tool calls dispatched from scripts flow through authz
+	// - Script middleware composes its own parser internally
 
 	var mcpHandler http.Handler = streamableServer
 
@@ -606,6 +617,19 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	if s.config.AuthzMiddleware != nil {
 		mcpHandler = s.config.AuthzMiddleware(mcpHandler)
 		slog.Info("authorization middleware enabled for MCP endpoints (post-discovery)")
+	}
+
+	// Apply script middleware if configured (wraps outer to authz).
+	// In execution order, script middleware runs BEFORE authz: it intercepts
+	// execute_tool_script calls directly. Inner tool calls dispatched from
+	// within scripts flow through next (which includes authz), so they are
+	// individually authorized. Recursive execute_tool_script calls are
+	// naturally prevented because next does not include the script middleware.
+	// The script middleware composes its own MCP parsing middleware internally,
+	// so it does not depend on any upstream parser.
+	if s.config.ScriptMiddleware != nil {
+		mcpHandler = s.config.ScriptMiddleware(mcpHandler)
+		slog.Info("script middleware enabled for MCP endpoints")
 	}
 
 	// Apply annotation enrichment middleware (runs after discovery, before authz in execution).

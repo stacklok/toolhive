@@ -113,6 +113,20 @@ func GetParsedMCPRequest(ctx context.Context) *ParsedMCPRequest {
 	return nil
 }
 
+// ClearParsedMCPRequest returns a new context with the parsed MCP request
+// removed. This forces ParsingMiddleware to re-parse the request body on the
+// next pass, which is necessary when dispatching synthetic inner requests
+// (e.g., tool calls from within a script).
+//
+// Implementation note: storing nil causes GetParsedMCPRequest to return nil
+// (the type assertion to *ParsedMCPRequest yields a nil pointer), which
+// makes ParsingMiddleware's guard (GetParsedMCPRequest != nil) fall through
+// and trigger re-parsing. This contract depends on GetParsedMCPRequest
+// checking the returned pointer value, not just the type assertion success.
+func ClearParsedMCPRequest(ctx context.Context) context.Context {
+	return context.WithValue(ctx, MCPRequestContextKey, nil)
+}
+
 // shouldParseMCPRequest determines if the request should be parsed as an MCP request.
 func shouldParseMCPRequest(r *http.Request) bool {
 	// Only parse POST requests with JSON content type

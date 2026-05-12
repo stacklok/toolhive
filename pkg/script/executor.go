@@ -25,6 +25,11 @@ type executor struct {
 
 // Execute runs a Starlark script against the bound tools.
 func (e *executor) Execute(ctx context.Context, script string, data map[string]interface{}) (*mcp.CallToolResult, error) {
+	// Apply per-script execution timeout to bound total wall-clock time
+	// including all tool calls.
+	ctx, cancel := context.WithTimeout(ctx, e.config.ScriptTimeout)
+	defer cancel()
+
 	globals := e.buildGlobals(ctx)
 
 	// Inject data arguments, rejecting any that shadow builtins or tools

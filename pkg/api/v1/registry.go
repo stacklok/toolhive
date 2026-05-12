@@ -94,6 +94,30 @@ func writeRegistryLegacyFormatError(w http.ResponseWriter, legacyErr *regpkg.Leg
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// writeProviderError translates a registry provider error into a structured
+// HTTP response if it matches a known failure mode (auth required, legacy
+// format, upstream unavailable) and returns true. The caller is responsible
+// for writing a generic fallback response when this returns false.
+func writeProviderError(w http.ResponseWriter, err error) bool {
+	if isRegistryAuthError(err) {
+		writeRegistryAuthRequiredError(w)
+		return true
+	}
+	var legacyErr *regpkg.LegacyFormatError
+	if errors.As(err, &legacyErr) {
+		slog.Warn("upstream registry in legacy format", "error", err)
+		writeRegistryLegacyFormatError(w, legacyErr)
+		return true
+	}
+	var unavailableErr *regpkg.UnavailableError
+	if errors.As(err, &unavailableErr) {
+		slog.Error("upstream registry unavailable", "error", err)
+		writeRegistryUnavailableError(w, unavailableErr)
+		return true
+	}
+	return false
+}
+
 // resolveAuthStatus returns the auth_status and auth_type strings for API responses
 // by delegating to the AuthManager.
 func (rr *RegistryRoutes) resolveAuthStatus() (authStatus, authType string) {
@@ -289,20 +313,7 @@ func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Prov
 	}
 	provider, err := regpkg.GetDefaultProviderWithConfig(rr.configProvider, opts...)
 	if err != nil {
-		if isRegistryAuthError(err) {
-			writeRegistryAuthRequiredError(w)
-			return nil, false
-		}
-		var legacyErr *regpkg.LegacyFormatError
-		if errors.As(err, &legacyErr) {
-			slog.Error("upstream registry in legacy format", "error", err)
-			writeRegistryLegacyFormatError(w, legacyErr)
-			return nil, false
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
+		if writeProviderError(w, err) {
 			return nil, false
 		}
 		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
@@ -401,20 +412,7 @@ func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request)
 
 	reg, err := provider.GetRegistry()
 	if err != nil {
-		if isRegistryAuthError(err) {
-			writeRegistryAuthRequiredError(w)
-			return
-		}
-		var legacyErr *regpkg.LegacyFormatError
-		if errors.As(err, &legacyErr) {
-			slog.Error("upstream registry in legacy format", "error", err)
-			writeRegistryLegacyFormatError(w, legacyErr)
-			return
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
+		if writeProviderError(w, err) {
 			return
 		}
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
@@ -488,20 +486,7 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 
 	reg, err := provider.GetRegistry()
 	if err != nil {
-		if isRegistryAuthError(err) {
-			writeRegistryAuthRequiredError(w)
-			return
-		}
-		var legacyErr *regpkg.LegacyFormatError
-		if errors.As(err, &legacyErr) {
-			slog.Error("upstream registry in legacy format", "error", err)
-			writeRegistryLegacyFormatError(w, legacyErr)
-			return
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
+		if writeProviderError(w, err) {
 			return
 		}
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
@@ -781,20 +766,7 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	// Get the full registry to access both container and remote servers
 	reg, err := provider.GetRegistry()
 	if err != nil {
-		if isRegistryAuthError(err) {
-			writeRegistryAuthRequiredError(w)
-			return
-		}
-		var legacyErr *regpkg.LegacyFormatError
-		if errors.As(err, &legacyErr) {
-			slog.Error("upstream registry in legacy format", "error", err)
-			writeRegistryLegacyFormatError(w, legacyErr)
-			return
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
+		if writeProviderError(w, err) {
 			return
 		}
 		slog.Error("failed to get registry", "error", err)

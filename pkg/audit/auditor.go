@@ -56,6 +56,16 @@ func NewAuditLogger(w io.Writer) *slog.Logger {
 
 	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
 		Level: LevelAudit,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			// Replace the custom audit level with "AUDIT" string for better
+			// compatibility with log aggregation systems (Loki, Elasticsearch, etc.)
+			// that expect standard level names. This prevents audit events from
+			// appearing as "INFO+2" which breaks level-based filtering.
+			if a.Key == slog.LevelKey && a.Value.Any() == LevelAudit {
+				a.Value = slog.StringValue("AUDIT")
+			}
+			return a
+		},
 	})
 
 	return slog.New(handler)

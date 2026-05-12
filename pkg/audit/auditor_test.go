@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1000,5 +1001,55 @@ func TestMiddlewareDetectsJSONRPCErrors(t *testing.T) {
 
 		logOutput := logBuf.String()
 		assert.NotContains(t, logOutput, OutcomeApplicationError)
+	})
+}
+
+func TestAuditLoggerLevelFormat(t *testing.T) {
+	t.Parallel()
+
+	t.Run("renders audit level as AUDIT not INFO+2", func(t *testing.T) {
+		t.Parallel()
+		var logBuf bytes.Buffer
+		logger := NewAuditLogger(&logBuf)
+
+		// Log an audit event
+		logger.Log(nil, LevelAudit, "test audit event",
+			"audit_id", "test-123",
+			"type", "test_event")
+
+		logOutput := logBuf.String()
+		// Should contain "AUDIT" not "INFO+2"
+		assert.Contains(t, logOutput, `"level":"AUDIT"`)
+		assert.NotContains(t, logOutput, "INFO+2")
+		assert.NotContains(t, logOutput, "INFO+")
+	})
+
+	t.Run("preserves standard log levels", func(t *testing.T) {
+		t.Parallel()
+		var logBuf bytes.Buffer
+		// Create a logger with DEBUG level to capture all levels
+		handler := slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+				if a.Key == slog.LevelKey && a.Value.Any() == LevelAudit {
+					a.Value = slog.StringValue("AUDIT")
+				}
+				return a
+			},
+		})
+		logger := slog.New(handler)
+
+		// Test that INFO logs still render as INFO
+		logger.Info("info message")
+		logOutput := logBuf.String()
+		assert.Contains(t, logOutput, `"level":"INFO"`)
+
+		// Reset buffer
+		logBuf.Reset()
+
+		// Test that WARN logs still render as WARN
+		logger.Warn("warn message")
+		logOutput = logBuf.String()
+		assert.Contains(t, logOutput, `"level":"WARN"`)
 	})
 }

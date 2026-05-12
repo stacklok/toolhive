@@ -2033,6 +2033,7 @@ components:
           description: Version is the package version (required for npm, pypi, nuget;
             optional for mcpb; not used by oci where version is in the identifier)
           example: 1.0.2
+          maxLength: 255
           minLength: 1
           type: string
       type: object
@@ -3510,6 +3511,8 @@ components:
           type: string
         version:
           example: 1.0.2
+          maxLength: 255
+          minLength: 1
           type: string
         websiteUrl:
           example: https://modelcontextprotocol.io/examples

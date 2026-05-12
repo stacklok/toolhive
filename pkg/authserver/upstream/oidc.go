@@ -242,27 +242,36 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 		return nil, errors.New("OIDC endpoints not discovered")
 	}
 
-	tokens, err := p.exchangeCodeForTokens(ctx, code, codeVerifier)
+	// OIDC resolves identity from the validated ID token, not the token response
+	// body, so the extracted identity return value is intentionally discarded.
+	// Defense-in-depth: warn if the OAuth2 base config carries a non-nil
+	// IdentityFromToken — the field is structurally absent on the OIDC CRD type
+	// today, but a future config-loader bug or hand-built runtime config could
+	// silently drop the operator's intent without this signal.
+	if p.config.IdentityFromToken != nil {
+		slog.Debug("OIDC provider ignoring IdentityFromToken; identity is resolved from the validated ID token")
+	}
+	exchanged, err := p.exchangeCodeForTokens(ctx, code, codeVerifier)
 	if err != nil {
 		return nil, err
 	}
 
 	// OIDC-specific: ID token MUST be present per Section 3.1.3.3.
-	if tokens.IDToken == "" {
+	if exchanged.tokens.IDToken == "" {
 		return nil, fmt.Errorf("%w: ID token required for OIDC provider", ErrIdentityResolutionFailed)
 	}
 
 	// Validate ID token with nonce in a single pass — no double-validation.
-	validatedToken, err := p.validateIDToken(ctx, tokens.IDToken, nonce)
+	validatedToken, err := p.validateIDToken(ctx, exchanged.tokens.IDToken, nonce)
 	if err != nil {
 		slog.Debug("id token validation failed", "error", err)
 		return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
 	}
 
 	slog.Debug("authorization code exchange successful",
-		"has_refresh_token", tokens.RefreshToken != "",
-		"has_id_token", tokens.IDToken != "",
-		"expires_at", expiresAtLogValue(tokens.ExpiresAt),
+		"has_refresh_token", exchanged.tokens.RefreshToken != "",
+		"has_id_token", exchanged.tokens.IDToken != "",
+		"expires_at", expiresAtLogValue(exchanged.tokens.ExpiresAt),
 	)
 
 	// Extract optional standard claims (name, email) from ID token
@@ -278,7 +287,7 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 	}
 
 	return &Identity{
-		Tokens:  tokens,
+		Tokens:  exchanged.tokens,
 		Subject: validatedToken.Subject,
 		Name:    idClaims.Name,
 		Email:   idClaims.Email,

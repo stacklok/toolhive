@@ -12,14 +12,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
+	"github.com/modelcontextprotocol/registry/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/registry"
+	regauth "github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
 func CreateTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider, func()) {
@@ -254,6 +258,209 @@ func TestRegistryRouter(t *testing.T) {
 	provider, _ := CreateTestConfigProvider(t, nil)
 	routes := NewRegistryRoutesWithProvider(provider)
 	assert.NotNil(t, routes)
+}
+
+//nolint:paralleltest // Uses global registry provider singleton
+func TestRefreshRegistry_RefreshesServerSideCache(t *testing.T) {
+	var (
+		mu          sync.RWMutex
+		serverNames = []string{"io.example/old-server"}
+	)
+
+	setServerNames := func(names ...string) {
+		mu.Lock()
+		defer mu.Unlock()
+		serverNames = append([]string(nil), names...)
+	}
+	getServerNames := func() []string {
+		mu.RLock()
+		defer mu.RUnlock()
+		return append([]string(nil), serverNames...)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v0.1/servers" {
+			http.NotFound(w, r)
+			return
+		}
+
+		names := getServerNames()
+		servers := make([]v0.ServerResponse, 0, len(names))
+		for _, name := range names {
+			servers = append(servers, v0.ServerResponse{
+				Server: v0.ServerJSON{
+					Schema:      "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+					Name:        name,
+					Description: "Test registry server",
+					Version:     "1.0.0",
+					Packages: []model.Package{
+						{
+							RegistryType: model.RegistryTypeOCI,
+							Identifier:   "ghcr.io/example/" + strings.ReplaceAll(name, "/", "-") + ":1.0.0",
+							Transport: model.Transport{
+								Type: "stdio",
+							},
+						},
+					},
+				},
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(v0.ServerListResponse{
+			Servers: servers,
+			Metadata: v0.Metadata{
+				Count: len(servers),
+			},
+		}); err != nil {
+			t.Errorf("failed to encode registry response: %v", err)
+		}
+	}))
+	defer upstream.Close()
+
+	cacheFile, err := regauth.RegistryCacheFilePath(upstream.URL)
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(cacheFile))
+	t.Cleanup(func() {
+		_ = os.Remove(cacheFile)
+	})
+
+	cfg := &config.Config{
+		RegistryApiUrl:         upstream.URL,
+		AllowPrivateRegistryIp: true,
+	}
+	configProvider, cleanup := CreateTestConfigProvider(t, cfg)
+	defer cleanup()
+
+	registry.ResetDefaultProvider()
+	t.Cleanup(registry.ResetDefaultProvider)
+
+	routes := &RegistryRoutes{
+		configProvider: configProvider,
+		configService:  registry.NewConfiguratorWithProvider(configProvider),
+		serveMode:      true,
+	}
+
+	first := getRegistryForTest(t, routes)
+	require.Equal(t, 1, first.ServerCount)
+	require.Contains(t, first.Registry.Servers, "io.example/old-server")
+
+	setServerNames("io.example/old-server", "io.example/new-server")
+
+	staleRegistry := getRegistryForTest(t, routes)
+	require.Equal(t, 1, staleRegistry.ServerCount)
+	require.NotContains(t, staleRegistry.Registry.Servers, "io.example/new-server")
+
+	staleServers := listServersForTest(t, routes)
+	require.Len(t, staleServers.Servers, 1)
+
+	refreshReq := requestWithRegistryName(http.MethodPost, "/default/refresh", "default")
+	refreshRecorder := httptest.NewRecorder()
+	routes.refreshRegistry(refreshRecorder, refreshReq)
+	require.Equal(t, http.StatusOK, refreshRecorder.Code)
+
+	var refreshBody map[string]string
+	require.NoError(t, json.NewDecoder(refreshRecorder.Body).Decode(&refreshBody))
+	require.Equal(t, "refreshed", refreshBody["status"])
+
+	refreshedRegistry := getRegistryForTest(t, routes)
+	require.Equal(t, 2, refreshedRegistry.ServerCount)
+	require.Contains(t, refreshedRegistry.Registry.Servers, "io.example/new-server")
+
+	refreshedServers := listServersForTest(t, routes)
+	require.Len(t, refreshedServers.Servers, 2)
+}
+
+//nolint:paralleltest // Uses global registry provider singleton
+func TestRefreshRegistry_NonDefaultRegistryNotFound(t *testing.T) {
+	registry.ResetDefaultProvider()
+	t.Cleanup(registry.ResetDefaultProvider)
+
+	routes := &RegistryRoutes{}
+	req := requestWithRegistryName(http.MethodPost, "/other/refresh", "other")
+	w := httptest.NewRecorder()
+
+	routes.refreshRegistry(w, req)
+
+	require.Equal(t, http.StatusNotFound, w.Code)
+	require.Contains(t, w.Body.String(), "Registry not found")
+}
+
+//nolint:paralleltest // Uses global registry provider singleton
+func TestRefreshRegistry_UnavailableUpstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream unavailable", http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	cacheFile, err := regauth.RegistryCacheFilePath(upstream.URL)
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(cacheFile))
+	t.Cleanup(func() {
+		_ = os.Remove(cacheFile)
+	})
+
+	cfg := &config.Config{
+		RegistryApiUrl:         upstream.URL,
+		AllowPrivateRegistryIp: true,
+	}
+	configProvider, cleanup := CreateTestConfigProvider(t, cfg)
+	defer cleanup()
+
+	registry.ResetDefaultProvider()
+	t.Cleanup(registry.ResetDefaultProvider)
+
+	routes := &RegistryRoutes{
+		configProvider: configProvider,
+		configService:  registry.NewConfiguratorWithProvider(configProvider),
+		serveMode:      true,
+	}
+
+	req := requestWithRegistryName(http.MethodPost, "/default/refresh", "default")
+	w := httptest.NewRecorder()
+
+	routes.refreshRegistry(w, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+
+	var body registryErrorResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+	require.Equal(t, RegistryUnavailableCode, body.Code)
+}
+
+func requestWithRegistryName(method, target, name string) *http.Request {
+	req := httptest.NewRequest(method, target, http.NoBody)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("name", name)
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+}
+
+func getRegistryForTest(t *testing.T, routes *RegistryRoutes) getRegistryResponse {
+	t.Helper()
+
+	req := requestWithRegistryName(http.MethodGet, "/default", "default")
+	w := httptest.NewRecorder()
+	routes.getRegistry(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var response getRegistryResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&response))
+	return response
+}
+
+func listServersForTest(t *testing.T, routes *RegistryRoutes) listServersResponse {
+	t.Helper()
+
+	req := requestWithRegistryName(http.MethodGet, "/default/servers", "default")
+	w := httptest.NewRecorder()
+	routes.listServers(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var response listServersResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&response))
+	return response
 }
 
 //nolint:paralleltest // Cannot use t.Parallel() with t.Setenv() in Go 1.24+

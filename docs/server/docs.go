@@ -4867,6 +4867,71 @@ const docTemplate = `{
                 ]
             }
         },
+        "/api/v1beta/registry/{name}/refresh": {
+            "post": {
+                "description": "Force a refresh of the server-side registry cache for the default registry",
+                "parameters": [
+                    {
+                        "description": "Registry name (must be 'default')",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": {
+                                        "type": "string"
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Registry refreshed"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "Refresh registry cache",
+                "tags": [
+                    "registry"
+                ]
+            }
+        },
         "/api/v1beta/registry/{name}/servers": {
             "get": {
                 "description": "Get a list of servers in a specific registry",

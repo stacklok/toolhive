@@ -233,6 +233,7 @@ func TestMCPServerReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) 
 		require.NoError(t, r.updateOIDCConfigReferencingWorkloads(ctx, cfg, "new"))
 		newRef := mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "new"}
 		assert.ElementsMatch(t, []mcpv1beta1.WorkloadReference{existingRef, newRef}, cfg.Status.ReferencingWorkloads)
+		assert.EqualValues(t, 2, cfg.Status.ReferenceCount)
 	})
 
 	t.Run("does not duplicate existing reference", func(t *testing.T) {
@@ -251,6 +252,7 @@ func TestMCPServerReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) 
 
 		require.NoError(t, r.updateOIDCConfigReferencingWorkloads(ctx, cfg, "existing"))
 		assert.Len(t, cfg.Status.ReferencingWorkloads, 1)
+		assert.EqualValues(t, 1, cfg.Status.ReferenceCount)
 	})
 }
 

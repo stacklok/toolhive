@@ -185,6 +185,10 @@ type MCPOIDCConfigStatus struct {
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
 
+	// ReferenceCount is the number of workloads referencing this config.
+	// +optional
+	ReferenceCount int32 `json:"referenceCount,omitempty"`
+
 	// ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.
 	// Each entry identifies the workload by kind and name.
 	// +listType=map
@@ -199,7 +203,7 @@ type MCPOIDCConfigStatus struct {
 // +kubebuilder:resource:shortName=mcpoidc,categories=toolhive
 // +kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-// +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
+// +kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPOIDCConfig is the Schema for the mcpoidcconfigs API.

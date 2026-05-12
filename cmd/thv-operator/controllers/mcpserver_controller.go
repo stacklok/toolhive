@@ -2298,12 +2298,19 @@ func (r *MCPServerReconciler) updateOIDCConfigReferencingWorkloads(
 	// Check if already listed
 	for _, entry := range oidcConfig.Status.ReferencingWorkloads {
 		if entry.Kind == ref.Kind && entry.Name == ref.Name {
+			if oidcConfig.Status.ReferenceCount != workloadReferenceCount(oidcConfig.Status.ReferencingWorkloads) {
+				oidcConfig.Status.ReferenceCount = workloadReferenceCount(oidcConfig.Status.ReferencingWorkloads)
+				if err := r.Status().Update(ctx, oidcConfig); err != nil {
+					return fmt.Errorf("failed to update MCPOIDCConfig ReferenceCount: %w", err)
+				}
+			}
 			return nil
 		}
 	}
 
 	// Add the workload reference
 	oidcConfig.Status.ReferencingWorkloads = append(oidcConfig.Status.ReferencingWorkloads, ref)
+	oidcConfig.Status.ReferenceCount = workloadReferenceCount(oidcConfig.Status.ReferencingWorkloads)
 	if err := r.Status().Update(ctx, oidcConfig); err != nil {
 		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingWorkloads: %w", err)
 	}

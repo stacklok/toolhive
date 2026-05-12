@@ -129,8 +129,10 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	referencingWorkloads, err := r.findReferencingWorkloads(ctx, oidcConfig)
 	if err != nil {
 		logger.Error(err, "Failed to find referencing workloads")
-	} else if !ctrlutil.WorkloadRefsEqual(oidcConfig.Status.ReferencingWorkloads, referencingWorkloads) {
+	} else if !ctrlutil.WorkloadRefsEqual(oidcConfig.Status.ReferencingWorkloads, referencingWorkloads) ||
+		oidcConfig.Status.ReferenceCount != workloadReferenceCount(referencingWorkloads) {
 		oidcConfig.Status.ReferencingWorkloads = referencingWorkloads
+		oidcConfig.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
 		conditionChanged = true
 	}
 
@@ -181,6 +183,7 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 				ObservedGeneration: oidcConfig.Generation,
 			})
 			oidcConfig.Status.ReferencingWorkloads = referencingWorkloads
+			oidcConfig.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
 			if updateErr := r.Status().Update(ctx, oidcConfig); updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
 			}

@@ -362,6 +362,7 @@ func TestToolConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *te
 	require.NoError(t, err)
 	assert.NotEmpty(t, updatedConfig.Status.ConfigHash)
 	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads, "No servers should be referencing yet")
+	assert.EqualValues(t, 0, updatedConfig.Status.ReferenceCount)
 
 	// Verify Valid condition is set after initial reconciliation
 	cond := k8smeta.FindStatusCondition(updatedConfig.Status.Conditions, mcpv1beta1.ConditionToolConfigValid)
@@ -392,6 +393,7 @@ func TestToolConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *te
 	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
 		mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "new-server"},
 		"ReferencingWorkloads should be updated even without hash change")
+	assert.EqualValues(t, 1, updatedConfig.Status.ReferenceCount)
 }
 
 func TestToolConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *testing.T) {
@@ -458,6 +460,7 @@ func TestToolConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *tes
 	require.NoError(t, err)
 	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
 		mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server-to-delete"})
+	assert.EqualValues(t, 1, updatedConfig.Status.ReferenceCount)
 
 	// Delete the MCPServer
 	require.NoError(t, fakeClient.Delete(ctx, mcpServer))
@@ -470,6 +473,7 @@ func TestToolConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *tes
 	require.NoError(t, err)
 	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads,
 		"ReferencingWorkloads should be empty after server deletion")
+	assert.EqualValues(t, 0, updatedConfig.Status.ReferenceCount)
 }
 
 func TestToolConfigReconciler_ValidConditionObservedGeneration(t *testing.T) {

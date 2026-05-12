@@ -101,8 +101,10 @@ func (r *ToolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	referencingWorkloads, err := r.findReferencingWorkloads(ctx, toolConfig)
 	if err != nil {
 		logger.Error(err, "Failed to find referencing workloads")
-	} else if !ctrlutil.WorkloadRefsEqual(toolConfig.Status.ReferencingWorkloads, referencingWorkloads) {
+	} else if !ctrlutil.WorkloadRefsEqual(toolConfig.Status.ReferencingWorkloads, referencingWorkloads) ||
+		toolConfig.Status.ReferenceCount != workloadReferenceCount(referencingWorkloads) {
 		toolConfig.Status.ReferencingWorkloads = referencingWorkloads
+		toolConfig.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
 		conditionChanged = true
 	}
 
@@ -147,6 +149,7 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	}
 	ctrlutil.SortWorkloadRefs(refs)
 	toolConfig.Status.ReferencingWorkloads = refs
+	toolConfig.Status.ReferenceCount = workloadReferenceCount(refs)
 
 	// Update the MCPToolConfig status
 	if err := r.Status().Update(ctx, toolConfig); err != nil {
@@ -202,6 +205,7 @@ func (r *ToolConfigReconciler) handleDeletion(ctx context.Context, toolConfig *m
 				ObservedGeneration: toolConfig.Generation,
 			})
 			toolConfig.Status.ReferencingWorkloads = referencingWorkloads
+			toolConfig.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
 			if updateErr := r.Status().Update(ctx, toolConfig); updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
 			}

@@ -34,7 +34,7 @@ func (e *UnavailableError) Unwrap() error {
 
 // LegacyFormatError indicates the registry source contains data in the legacy
 // ToolHive registry format instead of the upstream MCP registry format.
-// API handlers translate this into a structured HTTP 503 with a
+// API handlers translate this into a structured HTTP 502 with a
 // "registry_legacy_format" code so desktop clients can surface a targeted
 // recovery flow (instead of a generic error screen).
 //

@@ -133,7 +133,7 @@ func TestLegacyFormatError_ErrorsIs(t *testing.T) {
 }
 
 // TestLegacyFormatError_ErrorsAs verifies the typed extraction used by the
-// API layer to surface a structured 503 response with the source URL.
+// API layer to surface a structured 502 response with the source URL.
 func TestLegacyFormatError_ErrorsAs(t *testing.T) {
 	t.Parallel()
 

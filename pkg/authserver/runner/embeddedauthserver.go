@@ -385,12 +385,13 @@ func buildUpstreamConfigs(
 		// "does this upstream require DCR" avoids drift if the condition
 		// ever needs to be extended (e.g., to support OIDC DCR).
 		if dcr.NeedsDCR(rcCopy.OAuth2Config) {
-			// Deep-copy the OAuth2 sub-config so dcr.ConsumeResolution writes to the
-			// copy, not the caller's OAuth2UpstreamRunConfig pointer.
-			o2Copy := *rcCopy.OAuth2Config
-			rcCopy.OAuth2Config = &o2Copy
+			// Take a local copy of the OAuth2 sub-config. dcr.ResolveCredentials
+			// reads it but does not mutate; dcr.ConsumeResolution is value-in /
+			// value-out, so the caller's original OAuth2Config pointer target
+			// is never reached by either call.
+			o2 := *rcCopy.OAuth2Config
 
-			resolution, err := dcr.ResolveCredentials(ctx, &o2Copy, issuer, dcrStore)
+			resolution, err := dcr.ResolveCredentials(ctx, &o2, issuer, dcrStore)
 			if err != nil {
 				// Emit the single boundary Error record with enough context to
 				// correlate the failure back to this upstream; then return the
@@ -398,7 +399,8 @@ func buildUpstreamConfigs(
 				dcr.LogStepError(rc.Name, err)
 				return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
 			}
-			dcr.ConsumeResolution(&o2Copy, resolution)
+			o2 = dcr.ConsumeResolution(o2, resolution)
+			rcCopy.OAuth2Config = &o2
 			dcrResolution = resolution
 		}
 
@@ -413,7 +415,8 @@ func buildUpstreamConfigs(
 		// documented in pkg/auth/dcr/resolver.go — both calls must be
 		// paired to produce a fully-resolved DCR client.
 		if dcrResolution != nil && cfg.OAuth2Config != nil {
-			dcr.ApplyResolutionToOAuth2Config(cfg.OAuth2Config, dcrResolution)
+			applied := dcr.ApplyResolutionToOAuth2Config(*cfg.OAuth2Config, dcrResolution)
+			cfg.OAuth2Config = &applied
 		}
 
 		configs = append(configs, *cfg)

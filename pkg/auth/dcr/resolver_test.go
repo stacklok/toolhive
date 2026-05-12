@@ -635,7 +635,7 @@ func TestNeedsDCR(t *testing.T) {
 func TestConsumeResolution_RespectsExplicitEndpoints(t *testing.T) {
 	t.Parallel()
 
-	rc := &authserver.OAuth2UpstreamRunConfig{
+	rc := authserver.OAuth2UpstreamRunConfig{
 		AuthorizationEndpoint: "https://explicit/authorize",
 		TokenEndpoint:         "https://explicit/token",
 	}
@@ -644,7 +644,7 @@ func TestConsumeResolution_RespectsExplicitEndpoints(t *testing.T) {
 		AuthorizationEndpoint: "https://discovered/authorize",
 		TokenEndpoint:         "https://discovered/token",
 	}
-	ConsumeResolution(rc, res)
+	rc = ConsumeResolution(rc, res)
 	assert.Equal(t, "got-client", rc.ClientID)
 	assert.Equal(t, "https://explicit/authorize", rc.AuthorizationEndpoint)
 	assert.Equal(t, "https://explicit/token", rc.TokenEndpoint)
@@ -653,13 +653,13 @@ func TestConsumeResolution_RespectsExplicitEndpoints(t *testing.T) {
 func TestConsumeResolution_FillsMissingEndpoints(t *testing.T) {
 	t.Parallel()
 
-	rc := &authserver.OAuth2UpstreamRunConfig{}
+	rc := authserver.OAuth2UpstreamRunConfig{}
 	res := &Resolution{
 		ClientID:              "got-client",
 		AuthorizationEndpoint: "https://discovered/authorize",
 		TokenEndpoint:         "https://discovered/token",
 	}
-	ConsumeResolution(rc, res)
+	rc = ConsumeResolution(rc, res)
 	assert.Equal(t, "got-client", rc.ClientID)
 	assert.Equal(t, "https://discovered/authorize", rc.AuthorizationEndpoint)
 	assert.Equal(t, "https://discovered/token", rc.TokenEndpoint)
@@ -673,7 +673,7 @@ func TestConsumeResolution_FillsMissingEndpoints(t *testing.T) {
 func TestConsumeResolution_ClearsDCRConfig(t *testing.T) {
 	t.Parallel()
 
-	rc := &authserver.OAuth2UpstreamRunConfig{
+	rc := authserver.OAuth2UpstreamRunConfig{
 		DCRConfig: &authserver.DCRUpstreamConfig{
 			RegistrationEndpoint: "https://idp.example.com/register",
 		},
@@ -682,7 +682,7 @@ func TestConsumeResolution_ClearsDCRConfig(t *testing.T) {
 		ClientID: "dcr-issued-client",
 	}
 
-	ConsumeResolution(rc, res)
+	rc = ConsumeResolution(rc, res)
 
 	assert.Equal(t, "dcr-issued-client", rc.ClientID)
 	assert.Nil(t, rc.DCRConfig,
@@ -1205,13 +1205,13 @@ func TestResolveUpstreamRedirectURI_PreservesIssuerPath(t *testing.T) {
 func TestConsumeResolution_DoesNotOverwritePreProvisionedClientID(t *testing.T) {
 	t.Parallel()
 
-	rc := &authserver.OAuth2UpstreamRunConfig{
+	rc := authserver.OAuth2UpstreamRunConfig{
 		ClientID: "pre-provisioned",
 	}
 	res := &Resolution{
 		ClientID: "would-be-overwrite",
 	}
-	ConsumeResolution(rc, res)
+	rc = ConsumeResolution(rc, res)
 	assert.Equal(t, "pre-provisioned", rc.ClientID,
 		"ConsumeResolution must not overwrite a non-empty ClientID")
 }

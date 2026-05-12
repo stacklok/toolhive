@@ -229,23 +229,26 @@ func NeedsDCR(rc *authserver.OAuth2UpstreamRunConfig) bool {
 	return rc.ClientID == "" && rc.DCRConfig != nil
 }
 
-// ConsumeResolution copies resolved credentials and endpoints from res into
-// rc and consumes rc.DCRConfig (sets it to nil), transitioning the run-
-// config copy from "DCR-pending" (ClientID == "" && DCRConfig != nil) to
-// "DCR-resolved" (ClientID populated && DCRConfig == nil). The "consume"
-// name is deliberate: a second call after the first is a no-op only
-// because the first cleared DCRConfig — this is a one-shot state
-// transition, not an idempotent default-fill.
+// ConsumeResolution returns a copy of rc with the resolved credentials and
+// endpoints from res copied in and DCRConfig consumed (set to nil),
+// transitioning the run-config from "DCR-pending" (ClientID == "" &&
+// DCRConfig != nil) to "DCR-resolved" (ClientID populated && DCRConfig
+// == nil). The "consume" name is deliberate: a second call on the
+// returned value is a no-op only because the first cleared DCRConfig —
+// this is a one-shot state transition, not an idempotent default-fill.
 //
-// Callers must pass a COPY of the upstream run-config so the caller's
-// original is unaffected; ConsumeResolution does not clone rc internally.
+// rc is taken by value and the modified copy is returned. The caller's
+// original is never observably mutated; the value-in / value-out shape
+// makes the no-mutation contract compile-time enforced rather than a
+// prose discipline the caller is required to remember. Pointer-typed
+// fields (DCRConfig) share storage with the caller's copy via the struct
+// shallow-copy, but the only mutation here is to assign nil to the
+// copy's DCRConfig — nil-assignment to the local field does not reach
+// back through the original pointer.
 //
 // Why DCRConfig is cleared: OAuth2UpstreamRunConfig.Validate enforces
 // ClientID xor DCRConfig — a resolved copy that left DCRConfig set would
-// fail the validator that runs downstream in buildPureOAuth2Config. The
-// caller's *original* OAuth2Config is unaffected because
-// buildUpstreamConfigs deep-copies before resolution; only the post-
-// resolution copy is mutated here.
+// fail the validator that runs downstream in buildPureOAuth2Config.
 //
 // ClientID, the endpoints, and RedirectURI are written only when rc leaves
 // them empty — explicit caller configuration always wins. The conditional
@@ -261,15 +264,15 @@ func NeedsDCR(rc *authserver.OAuth2UpstreamRunConfig) bool {
 // RedirectURI, which authserver.Config validation requires.
 //
 // Note on ClientSecret: ConsumeResolution does NOT write the resolved
-// secret to rc because OAuth2UpstreamRunConfig models secrets as file-or-
-// env references only. To propagate the DCR-resolved secret into the
-// final upstream.OAuth2Config, callers must pair this call with
+// secret because OAuth2UpstreamRunConfig models secrets as file-or-env
+// references only. To propagate the DCR-resolved secret into the final
+// upstream.OAuth2Config, callers must pair this call with
 // ApplyResolutionToOAuth2Config once the config has been built. Keeping
 // the two helpers side-by-side localises the DCR-specific application
 // logic.
-func ConsumeResolution(rc *authserver.OAuth2UpstreamRunConfig, res *Resolution) {
-	if rc == nil || res == nil {
-		return
+func ConsumeResolution(rc authserver.OAuth2UpstreamRunConfig, res *Resolution) authserver.OAuth2UpstreamRunConfig {
+	if res == nil {
+		return rc
 	}
 	if rc.ClientID == "" {
 		rc.ClientID = res.ClientID
@@ -284,28 +287,35 @@ func ConsumeResolution(rc *authserver.OAuth2UpstreamRunConfig, res *Resolution) 
 	if rc.RedirectURI == "" {
 		rc.RedirectURI = res.RedirectURI
 	}
+	return rc
 }
 
-// ApplyResolutionToOAuth2Config overlays the DCR-resolved ClientSecret onto
-// a built *upstream.OAuth2Config. This is the companion to
+// ApplyResolutionToOAuth2Config returns a copy of cfg with the DCR-
+// resolved ClientSecret overlaid onto it. This is the companion to
 // ConsumeResolution: where that function writes fields representable in
 // the file-or-env run-config model, this one writes the inline-only
 // ClientSecret directly on the runtime config.
 //
-// The split exists because buildPureOAuth2Config intentionally retains a
-// narrow file-or-env contract (no DCR awareness) and because OAuth2's
-// ClientSecret on the run-config is modelled as a reference rather than
-// an inline string. Any future output path from OAuth2UpstreamRunConfig
-// to upstream.OAuth2Config must call BOTH ConsumeResolution (run-config
-// side) AND ApplyResolutionToOAuth2Config (built-config side) to get a
-// fully-resolved DCR client. Forgetting the second call leaves
-// ClientSecret empty and produces silent auth failures at request time —
-// the type system does not enforce the pair, so the invariant lives here.
-func ApplyResolutionToOAuth2Config(cfg *upstream.OAuth2Config, res *Resolution) {
-	if cfg == nil || res == nil {
-		return
+// cfg is taken by value and the modified copy is returned, mirroring
+// ConsumeResolution. The no-mutation contract is compile-time enforced
+// by the signature rather than a prose discipline.
+//
+// The split between these two helpers exists because buildPureOAuth2Config
+// intentionally retains a narrow file-or-env contract (no DCR awareness)
+// and because OAuth2's ClientSecret on the run-config is modelled as a
+// reference rather than an inline string. Any future output path from
+// OAuth2UpstreamRunConfig to upstream.OAuth2Config must call BOTH
+// ConsumeResolution (run-config side) AND ApplyResolutionToOAuth2Config
+// (built-config side) to get a fully-resolved DCR client. Forgetting the
+// second call leaves ClientSecret empty and produces silent auth failures
+// at request time — the type system does not enforce the pair, so the
+// invariant lives here.
+func ApplyResolutionToOAuth2Config(cfg upstream.OAuth2Config, res *Resolution) upstream.OAuth2Config {
+	if res == nil {
+		return cfg
 	}
 	cfg.ClientSecret = res.ClientSecret
+	return cfg
 }
 
 // Step identifiers for structured error logs emitted by the caller of

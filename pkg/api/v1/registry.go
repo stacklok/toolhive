@@ -554,8 +554,21 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 
 	// Always overwrite auth: if auth is provided, set it; if not, clear it.
 	// This prevents stale tokens from being sent to the wrong registry server.
-	if req.Auth != nil {
-		if err := rr.processAuthUpdate(r.Context(), req.Auth); err != nil {
+	//
+	// When auth is omitted, an enterprise-registered AuthDefaulter (if any)
+	// gets a chance to supply issuer/client_id from /.well-known discovery so
+	// Studio and `thv config set-registry` work without distributing OAuth
+	// params out of band.
+	authReq := req.Auth
+	if authReq == nil {
+		if issuer, clientID := regpkg.ResolveAuthDefaults(
+			r.Context(), "", "", regpkg.ActiveAuthDefaulter(),
+		); issuer != "" && clientID != "" {
+			authReq = &UpdateRegistryAuthRequest{Issuer: issuer, ClientID: clientID}
+		}
+	}
+	if authReq != nil {
+		if err := rr.processAuthUpdate(r.Context(), authReq); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}

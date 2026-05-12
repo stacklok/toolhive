@@ -567,3 +567,72 @@ func TestMCPOIDCConfig_Validate(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPOIDCConfigReconciler_ReferenceCountUpdatedWithWorkloads(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-config",
+			Namespace:  "default",
+			Generation: 1,
+		},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+				Issuer:   "https://issuer.example.com",
+				ClientID: "test-client",
+			},
+		},
+	}
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server-to-track",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image: "test-image",
+			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+				Name: "test-config",
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(oidcConfig, mcpServer).
+		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
+		Build()
+	reconciler := &MCPOIDCConfigReconciler{Client: fakeClient, Scheme: scheme}
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: oidcConfig.Name, Namespace: oidcConfig.Namespace}}
+
+	result, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Greater(t, result.RequeueAfter, time.Duration(0))
+
+	_, err = reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	_, err = reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var updatedConfig mcpv1beta1.MCPOIDCConfig
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &updatedConfig))
+	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
+		mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: "server-to-track"})
+	assert.EqualValues(t, 1, updatedConfig.Status.ReferenceCount)
+
+	require.NoError(t, fakeClient.Delete(ctx, mcpServer))
+
+	_, err = reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &updatedConfig))
+	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads)
+	assert.EqualValues(t, 0, updatedConfig.Status.ReferenceCount)
+}

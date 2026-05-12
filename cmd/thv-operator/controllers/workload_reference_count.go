@@ -10,9 +10,13 @@ import (
 )
 
 func workloadReferenceCount(refs []mcpv1beta1.WorkloadReference) int32 {
-	if len(refs) > math.MaxInt32 {
+	return workloadReferenceCountFromLen(len(refs))
+}
+
+func workloadReferenceCountFromLen(length int) int32 {
+	if length > math.MaxInt32 {
 		return math.MaxInt32
 	}
 
-	return int32(len(refs)) //nolint:gosec // guarded above against int32 overflow
+	return int32(length) //nolint:gosec // guarded above against int32 overflow
 }

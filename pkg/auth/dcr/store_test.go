@@ -495,7 +495,7 @@ func TestInMemoryStore_PutGetCloseShareBackend(t *testing.T) {
 
 // TestInMemoryStore_PutRejectsNilResolution mirrors the contract pinned
 // for storageBackedStore.Put: a nil resolution is rejected at the
-// adapter boundary rather than silently no-oped, so the next Get's miss
+// adapter boundary rather than silently no-oped, so the next Get miss
 // surfaces with a debug trail. inMemoryStore implements Put directly
 // (not via embedding) — this test guards against a delegation
 // regression that omitted the nil check.

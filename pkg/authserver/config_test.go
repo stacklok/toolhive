@@ -112,6 +112,7 @@ func TestConfigValidate(t *testing.T) {
 		// BaselineClientScopes subset gate (mirrors RunConfig.Validate but on the
 		// runtime Config — catches direct constructors that bypass YAML loading).
 		{name: "baseline scope not in scopes_supported", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"offline_access"}}, wantErr: true, errMsg: `baseline_client_scopes contains "offline_access"`},
+		{name: "nil supported with baseline in DefaultScopes passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, ScopesSupported: nil, BaselineClientScopes: []string{"offline_access"}}},
 
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -389,10 +390,14 @@ func TestRunConfigValidate(t *testing.T) {
 			errMsg:  `"offline_access" which is not in scopes_supported`,
 		},
 		{
-			name:    "non-nil baseline with nil supported rejects",
-			config:  RunConfig{ScopesSupported: nil, BaselineClientScopes: []string{"openid"}},
+			name:   "nil supported with baseline in DefaultScopes passes",
+			config: RunConfig{ScopesSupported: nil, BaselineClientScopes: []string{"offline_access"}},
+		},
+		{
+			name:    "nil supported with baseline outside DefaultScopes rejects",
+			config:  RunConfig{ScopesSupported: nil, BaselineClientScopes: []string{"custom_scope"}},
 			wantErr: true,
-			errMsg:  "openid",
+			errMsg:  `"custom_scope"`,
 		},
 		{
 			name:    "first missing scope is reported when multiple are missing",
@@ -526,10 +531,9 @@ func TestConfigApplyDefaults_BaselineClientScopes(t *testing.T) {
 			baselineClientScopes: []string{"openid"},
 		},
 		{
-			name:                 "empty scopes_supported and non-empty baseline — error",
+			name:                 "empty scopes_supported with non-empty baseline applies DefaultScopes",
 			baselineClientScopes: []string{"openid"},
-			wantErr:              true,
-			errMsg:               "baseline_client_scopes is non-empty but scopes_supported is empty",
+			wantDefaultScopes:    true,
 		},
 	}
 

@@ -74,11 +74,11 @@ type RunConfig struct {
 	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every
 	// DCR registration. All values must appear in ScopesSupported; the auth server
 	// rejects this RunConfig at startup otherwise. Empty means current behavior is
-	// preserved (registered scope = client-requested or DefaultScopes if empty).
-	// When BaselineClientScopes is non-empty, ScopesSupported must be set
-	// explicitly: validation runs before defaults are applied, so an empty
-	// ScopesSupported won't be substituted with registration.DefaultScopes for
-	// purposes of the subset check.
+	// preserved (registered scope = client-requested, or DefaultScopes if empty).
+	// When ScopesSupported is empty, the subset check uses registration.DefaultScopes
+	// (the same set applyDefaults would substitute at startup) — so
+	// BaselineClientScopes containing standard OIDC scopes works without enumerating
+	// ScopesSupported explicitly.
 	//nolint:lll // field tags require full JSON+YAML names
 	BaselineClientScopes []string `json:"baseline_client_scopes,omitempty" yaml:"baseline_client_scopes,omitempty"`
 
@@ -105,8 +105,17 @@ func (c *RunConfig) Validate() error {
 // ScopesSupported, the embedded DCR handler would later try to register a
 // client with a scope the server does not support, which fosite rejects at
 // /oauth/authorize with invalid_scope.
+//
+// When ScopesSupported is empty, the check uses registration.DefaultScopes as
+// the superset (matching what applyDefaults would substitute at startup), so
+// operators can omit ScopesSupported and still configure standard OIDC scopes
+// as baseline without error.
 func (c *RunConfig) validateBaselineClientScopes() error {
-	return registration.ValidateScopeSubset(c.BaselineClientScopes, c.ScopesSupported, "baseline_client_scopes")
+	effective := c.ScopesSupported
+	if len(effective) == 0 {
+		effective = registration.DefaultScopes
+	}
+	return registration.ValidateScopeSubset(c.BaselineClientScopes, effective, "baseline_client_scopes")
 }
 
 // SigningKeyRunConfig configures where to load signing keys from.
@@ -488,11 +497,10 @@ type Config struct {
 	// DCR handler unions into every newly registered client's scope set. Empty
 	// means current behavior is preserved (DCR registers exactly what the client
 	// requested, or registration.DefaultScopes if the client requested none).
-	// All entries must also be present in ScopesSupported.
-	// When BaselineClientScopes is non-empty, ScopesSupported must be set
-	// explicitly: applyDefaults rejects an empty ScopesSupported in that case
-	// rather than silently substituting DefaultScopes, which would otherwise
-	// mask the operator's intent.
+	// All entries must also be present in ScopesSupported. When ScopesSupported
+	// is empty, the validation gate uses registration.DefaultScopes as the
+	// superset — so standard OIDC scopes (e.g. "offline_access") work without
+	// enumerating ScopesSupported explicitly.
 	BaselineClientScopes []string
 
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
@@ -545,8 +553,16 @@ func (c *Config) Validate() error {
 	// catches this for the YAML-loaded path, but a caller that constructs Config
 	// directly bypasses that; failing here gives them a clearer call stack than
 	// the inner validateParams in the provider layer.
-	if err := registration.ValidateScopeSubset(c.BaselineClientScopes, c.ScopesSupported, "baseline_client_scopes"); err != nil {
-		return err
+	// When ScopesSupported is empty, use DefaultScopes as the superset (matching
+	// what applyDefaults substitutes at startup).
+	{
+		effective := c.ScopesSupported
+		if len(effective) == 0 {
+			effective = registration.DefaultScopes
+		}
+		if err := registration.ValidateScopeSubset(c.BaselineClientScopes, effective, "baseline_client_scopes"); err != nil {
+			return err
+		}
 	}
 
 	slog.Debug("authserver config validation passed",
@@ -772,12 +788,6 @@ func (c *Config) applyDefaults() error {
 			"warning", "JWTs will be invalid after restart")
 	}
 	if len(c.ScopesSupported) == 0 {
-		if len(c.BaselineClientScopes) > 0 {
-			return fmt.Errorf(
-				"baseline_client_scopes is non-empty but scopes_supported is empty: " +
-					"scopes_supported must be set explicitly when baseline_client_scopes is configured",
-			)
-		}
 		c.ScopesSupported = registration.DefaultScopes
 		slog.Debug("applied default scopes_supported", "scopes", c.ScopesSupported)
 	}

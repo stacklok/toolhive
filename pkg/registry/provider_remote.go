@@ -82,7 +82,7 @@ func (p *RemoteRegistryProvider) validateConnectivity() error {
 	}
 
 	if legacyhint.Looks(data) {
-		return fmt.Errorf("registry at %s: %s", p.registryURL, legacyhint.MigrationMessage)
+		return &LegacyFormatError{URL: p.registryURL}
 	}
 
 	var upstream types.UpstreamRegistry

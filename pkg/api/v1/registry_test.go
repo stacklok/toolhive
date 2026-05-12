@@ -140,6 +140,113 @@ func TestRegistryAPI_GetEndpoint_UnavailableUpstream(t *testing.T) {
 	}
 }
 
+// TestRegistryAPI_GetEndpoint_LegacyFormat tests that GET endpoints return 502
+// with a structured "registry_legacy_format" code when the configured custom
+// registry URL serves data in the legacy ToolHive format. 502 is correct per
+// RFC 9110 §15.6.3: thv serve acts as a gateway to the upstream registry and
+// the upstream returned a response we cannot process.
+//
+//nolint:paralleltest // Uses global registry provider singleton
+func TestRegistryAPI_GetEndpoint_LegacyFormat(t *testing.T) {
+	// Mock server that returns a valid HTTP 200 but with legacy ToolHive
+	// registry JSON (top-level "servers" instead of nested "data.servers").
+	// validateConnectivity() must detect this and reject the provider with a
+	// *LegacyFormatError.
+	legacyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"version": "1.0.0",
+			"servers": {"example": {"image": "example:latest"}}
+		}`))
+	}))
+	defer legacyServer.Close()
+
+	// Configure registry to point at the mock legacy-format server via the
+	// remote URL provider path (RegistryUrl, not RegistryApiUrl).
+	cfg := &config.Config{
+		RegistryUrl:            legacyServer.URL,
+		AllowPrivateRegistryIp: true,
+	}
+	configProvider, cleanup := CreateTestConfigProvider(t, cfg)
+	defer cleanup()
+
+	registry.ResetDefaultProvider()
+	t.Cleanup(registry.ResetDefaultProvider)
+
+	routes := &RegistryRoutes{
+		configProvider: configProvider,
+		configService:  registry.NewConfiguratorWithProvider(configProvider),
+		serveMode:      true,
+	}
+
+	endpoints := []struct {
+		name      string
+		method    string
+		path      string
+		handler   http.HandlerFunc
+		urlParams map[string]string
+	}{
+		{
+			name:    "listRegistries",
+			method:  http.MethodGet,
+			path:    "/",
+			handler: routes.listRegistries,
+		},
+		{
+			name:      "getRegistry",
+			method:    http.MethodGet,
+			path:      "/default",
+			handler:   routes.getRegistry,
+			urlParams: map[string]string{"name": "default"},
+		},
+		{
+			name:      "listServers",
+			method:    http.MethodGet,
+			path:      "/default/servers",
+			handler:   routes.listServers,
+			urlParams: map[string]string{"name": "default"},
+		},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.name, func(t *testing.T) {
+			registry.ResetDefaultProvider()
+
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			if ep.urlParams != nil {
+				rctx := chi.NewRouteContext()
+				for k, v := range ep.urlParams {
+					rctx.URLParams.Add(k, v)
+				}
+				req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+			}
+
+			w := httptest.NewRecorder()
+			ep.handler(w, req)
+
+			assert.Equal(t, http.StatusBadGateway, w.Code,
+				"Expected 502 Bad Gateway when registry is in legacy format")
+
+			var body registryErrorResponse
+			err := json.NewDecoder(w.Body).Decode(&body)
+			require.NoError(t, err, "Response should be valid JSON")
+			assert.Equal(t, RegistryLegacyFormatCode, body.Code,
+				"Response code should be registry_legacy_format")
+			// The body must carry the actionable migration hint so CLI users
+			// and desktop clients both have something to act on.
+			assert.Contains(t, body.Message, "legacy ToolHive format",
+				"Response message should mention the legacy format")
+			assert.Contains(t, body.Message, "thv registry convert",
+				"Response message should include the migration command hint")
+			assert.Contains(t, body.Message, legacyServer.URL,
+				"Response message should identify the offending source URL")
+			assert.Contains(t, w.Header().Get("Content-Type"), "application/json",
+				"Response Content-Type should be application/json")
+		})
+	}
+}
+
 func TestRegistryRouter(t *testing.T) {
 	t.Parallel()
 

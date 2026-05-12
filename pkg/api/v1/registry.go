@@ -56,6 +56,14 @@ func writeRegistryAuthRequiredError(w http.ResponseWriter) {
 // structured JSON 503 response when the upstream registry is unreachable.
 const RegistryUnavailableCode = "registry_unavailable"
 
+// RegistryLegacyFormatCode is the machine-readable error code returned in the
+// structured JSON 502 response when the configured registry source serves data
+// in the legacy ToolHive format instead of the upstream MCP registry format.
+// Desktop clients (Studio) match on this value to display a targeted recovery
+// flow (reset to default registry, point to a `?format=upstream` endpoint, or
+// run `thv registry convert`).
+const RegistryLegacyFormatCode = "registry_legacy_format"
+
 // writeRegistryUnavailableError writes a structured JSON 503 response when the
 // upstream registry cannot be reached or returns an unexpected error (e.g. 404).
 func writeRegistryUnavailableError(w http.ResponseWriter, unavailableErr *regpkg.UnavailableError) {
@@ -65,6 +73,24 @@ func writeRegistryUnavailableError(w http.ResponseWriter, unavailableErr *regpkg
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// writeRegistryLegacyFormatError writes a structured JSON 502 Bad Gateway
+// response when the configured registry source returns data in the legacy
+// ToolHive format. HTTP 502 is correct per RFC 9110 §15.6.3: thv serve is
+// acting as a gateway to the upstream registry, and the upstream returned a
+// response we cannot process. It also aligns with the existing PUT handler
+// which already returns 502 for the same legacy-format detection. The message
+// embeds legacyhint.MigrationMessage so CLI users still see the actionable
+// migration step, while desktop clients can branch on Code.
+func writeRegistryLegacyFormatError(w http.ResponseWriter, legacyErr *regpkg.LegacyFormatError) {
+	body := registryErrorResponse{
+		Code:    RegistryLegacyFormatCode,
+		Message: legacyErr.Error(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadGateway)
 	_ = json.NewEncoder(w).Encode(body)
 }
 
@@ -267,6 +293,12 @@ func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Prov
 			writeRegistryAuthRequiredError(w)
 			return nil, false
 		}
+		var legacyErr *regpkg.LegacyFormatError
+		if errors.As(err, &legacyErr) {
+			slog.Error("upstream registry in legacy format", "error", err)
+			writeRegistryLegacyFormatError(w, legacyErr)
+			return nil, false
+		}
 		var unavailableErr *regpkg.UnavailableError
 		if errors.As(err, &unavailableErr) {
 			slog.Error("upstream registry unavailable", "error", err)
@@ -373,6 +405,12 @@ func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request)
 			writeRegistryAuthRequiredError(w)
 			return
 		}
+		var legacyErr *regpkg.LegacyFormatError
+		if errors.As(err, &legacyErr) {
+			slog.Error("upstream registry in legacy format", "error", err)
+			writeRegistryLegacyFormatError(w, legacyErr)
+			return
+		}
 		var unavailableErr *regpkg.UnavailableError
 		if errors.As(err, &unavailableErr) {
 			slog.Error("upstream registry unavailable", "error", err)
@@ -452,6 +490,12 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if isRegistryAuthError(err) {
 			writeRegistryAuthRequiredError(w)
+			return
+		}
+		var legacyErr *regpkg.LegacyFormatError
+		if errors.As(err, &legacyErr) {
+			slog.Error("upstream registry in legacy format", "error", err)
+			writeRegistryLegacyFormatError(w, legacyErr)
 			return
 		}
 		var unavailableErr *regpkg.UnavailableError
@@ -739,6 +783,12 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if isRegistryAuthError(err) {
 			writeRegistryAuthRequiredError(w)
+			return
+		}
+		var legacyErr *regpkg.LegacyFormatError
+		if errors.As(err, &legacyErr) {
+			slog.Error("upstream registry in legacy format", "error", err)
+			writeRegistryLegacyFormatError(w, legacyErr)
 			return
 		}
 		var unavailableErr *regpkg.UnavailableError

@@ -52,6 +52,12 @@ func getRegistryProvider(w http.ResponseWriter) (regpkg.Provider, bool) {
 			writeRegistryAuthRequiredError(w)
 			return nil, false
 		}
+		var legacyErr *regpkg.LegacyFormatError
+		if errors.As(err, &legacyErr) {
+			slog.Error("upstream registry in legacy format", "error", err)
+			writeRegistryLegacyFormatError(w, legacyErr)
+			return nil, false
+		}
 		var unavailableErr *regpkg.UnavailableError
 		if errors.As(err, &unavailableErr) {
 			slog.Error("upstream registry unavailable", "error", err)

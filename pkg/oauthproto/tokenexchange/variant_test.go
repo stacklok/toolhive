@@ -5,7 +5,6 @@ package tokenexchange
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/oauthtest"
 )
 
 // TestVariantRegistry tests the VariantRegistry Register and Get methods
@@ -433,14 +433,10 @@ func TestTokenSource_WithVariant(t *testing.T) {
 		assert.Equal(t, "https://graph.microsoft.com/.default", form.Get("scope"))
 
 		// Return an Entra-style response (no issued_token_type).
-		resp := Response{
-			AccessToken: wantAccessToken,
-			TokenType:   "Bearer",
-			ExpiresIn:   3600,
-		}
+		body = oauthtest.NewResponse().WithAccessToken(wantAccessToken).WithExpiresIn(3600).Build()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		err = json.NewEncoder(w).Encode(resp)
+		_, err = w.Write(body)
 		require.NoError(t, err)
 	}))
 	t.Cleanup(server.Close)
@@ -518,10 +514,10 @@ func TestTokenSource_WithVariant_ResolvesTokenURL(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		resp := newResponse().withAccessToken("resolved-token").build()
+		body := oauthtest.NewResponse().WithAccessToken("resolved-token").Build()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(body)
 	}))
 	t.Cleanup(server.Close)
 

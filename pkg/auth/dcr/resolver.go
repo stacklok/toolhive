@@ -221,8 +221,9 @@ type Resolution struct {
 	ClientSecretExpiresAt time.Time
 
 	// CreatedAt is the wall-clock time at which the resolution was completed.
-	// Used by Step 2g observability to compute staleness against
-	// dcrStaleAgeThreshold.
+	// Used by the staleness observability in lookupCachedResolution to
+	// compute age against dcrStaleAgeThreshold and emit a warn log when a
+	// cached registration exceeds the threshold.
 	CreatedAt time.Time
 }
 
@@ -765,8 +766,10 @@ func performRegistration(
 		Scopes:                  scopes,
 	}
 
-	// Call exactly once — no retry loop. Step 2g will add retry/backoff at a
-	// higher layer if needed.
+	// Call exactly once — no retry loop. If retry/backoff against
+	// transient upstream failures becomes useful it belongs at a higher
+	// layer (above ResolveCredentials), so the singleflight and cache
+	// semantics here stay simple: one attempt per resolution per process.
 	response, err := oauthproto.RegisterClientDynamically(ctx, registrationEndpoint, registrationRequest, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("dcr: register client: %w", err)

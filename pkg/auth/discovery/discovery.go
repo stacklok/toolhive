@@ -602,12 +602,17 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 // expiry-driven refetch does NOT participate in the CLI's cross-
 // invocation persistence loop: each PerformOAuthFlow call builds a fresh
 // in-memory store, so a "cached but expired" entry from the previous
-// invocation never reaches the resolver. Cross-invocation expiry is the
-// remote handler's responsibility (its HasCachedClientCredentials gate
-// runs ahead of this code path). Within a single invocation, the
-// resolver's expiry check is still in the loop and would fire if the
-// same call site somehow registered, persisted, and re-queried the
-// in-memory store — but the CLI never does this today.
+// invocation never reaches the resolver. Cross-invocation expiry is also
+// NOT enforced by the remote handler's gate today —
+// HasCachedClientCredentials only checks CachedClientID != "" and does
+// not consult CachedSecretExpiry, so an expired-but-still-cached client
+// gets reused on the next invocation and surfaces as a token-endpoint
+// failure rather than a clean DCR re-registration. Tightening the gate
+// to also check CachedSecretExpiry is open follow-up work; the
+// behaviour today is "cross-invocation expiry is unhandled". Within a
+// single invocation, the resolver's expiry check is still in the loop
+// and would fire if the same call site somehow registered, persisted,
+// and re-queried the in-memory store — but the CLI never does this today.
 //
 // Wrapping the remote handler's secretProvider into a dcr.CredentialStore
 // adapter (option (a)) would close that loop and is the natural follow-up;

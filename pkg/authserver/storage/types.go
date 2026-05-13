@@ -135,8 +135,8 @@ type DCRKey struct {
 	// RFC 8252 §7.3 — the two address spaces are disjoint), so a collision
 	// between profiles is impossible by construction even when the
 	// upstream is the same. Public-client vs confidential-client
-	// separation rides on that same RedirectURI disjointness at both the
-	// persistent-cache and in-process singleflight layers; encoding it on
+	// separation rides on that same disjoint-RedirectURI property at both
+	// the persistent-cache and in-process singleflight layers; encoding it on
 	// the key would invalidate every existing Redis-cached entry across a
 	// deployment without buying additional protection. If a future
 	// consumer brings the two address spaces into collision the key

@@ -168,7 +168,6 @@ jobs:
           echo "Using toolhive-core version: $CORE_VERSION"
           gh release download "$CORE_VERSION" \
             --repo stacklok/toolhive-core \
-            --pattern "toolhive-legacy-registry.schema.json" \
             --pattern "upstream-registry.schema.json" \
             --pattern "publisher-provided.schema.json" \
             --pattern "skill.schema.json" \

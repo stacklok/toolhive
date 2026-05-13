@@ -98,15 +98,8 @@ type DefaultManager struct {
 	statuses       statuses.StatusManager
 	configProvider config.Provider
 
-	// retryConfig holds tunable parameters for the RunWorkload retry loop.
-	// Production callers leave this nil so RunWorkload uses defaultRetryConfig();
-	// tests inject smaller values for fast execution.
 	retryConfig *retryConfig
-
-	// newRunner is the factory used by RunWorkload to construct the per-attempt
-	// runner. Production callers leave this nil so RunWorkload falls back to
-	// runner.NewRunner; tests inject a mock factory.
-	newRunner mcpRunnerFactory
+	newRunner   mcpRunnerFactory
 }
 
 // mcpRunner is the subset of *runner.Runner that RunWorkload's retry loop
@@ -135,6 +128,19 @@ func defaultRetryConfig() retryConfig {
 		maxBackoff:         60 * time.Second,
 		stableRunThreshold: 30 * time.Second,
 	}
+}
+
+// managerOption configures a DefaultManager.
+type managerOption func(*DefaultManager)
+
+// withRetryConfig overrides the retry loop's tunable parameters.
+func withRetryConfig(cfg retryConfig) managerOption {
+	return func(d *DefaultManager) { d.retryConfig = &cfg }
+}
+
+// withRunnerFactory overrides the per-attempt runner constructor.
+func withRunnerFactory(f mcpRunnerFactory) managerOption {
+	return func(d *DefaultManager) { d.newRunner = f }
 }
 
 // retryConfigOrDefault returns the manager's retryConfig if set, otherwise defaults.
@@ -477,7 +483,8 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 	newRunner := d.newRunnerOrDefault()
 	retryDelay := cfg.initialDelay
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	attempt := 1
+	for attempt <= maxRetries {
 		if attempt > 1 {
 			slog.Info("restart attempt", "attempt", attempt, "maxRetries", maxRetries, "workload", runConfig.BaseName, "delay", retryDelay)
 			time.Sleep(retryDelay)
@@ -530,26 +537,22 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 					slog.Warn("failed to set workload status to starting", "workload", runConfig.BaseName, "error", statusErr)
 				}
 
-				// If the workload ran past the stable threshold, reset the retry
-				// counter. Without this reset, sustained external disturbances (a
-				// flapping container runtime, host sleep/wake) that repeatedly kill a
-				// healthy container exhaust the retry budget across many *successful*
-				// short runs, and the manager eventually gives up on a workload that
-				// would have kept recovering once the disturbance ended.
+				// Without this reset of the attempt count, sustained external
+				// disruption (Docker daemon flap, host sleep/wake) exhausts the
+				// retry budget through repeated short healthy restarts, and the
+				// manager gives up on a workload that would have recovered once
+				// the disruption ended.
 				if stable {
 					slog.Debug("resetting retry counter after stable run",
 						"workload", runConfig.BaseName, "duration", runDuration)
-					// Setting attempt to 0 means the for-clause's attempt++ on `continue`
-					// lands at 1, so the `if attempt > 1` sleep block is skipped and the
-					// next run starts immediately. retryDelay is reset so that any later
-					// failures within this fresh sequence use the initial backoff.
-					attempt = 0
+					attempt = 1
 					retryDelay = cfg.initialDelay
 					continue
 				}
 
 				// If we haven't exhausted retries, continue the loop
 				if attempt < maxRetries {
+					attempt++
 					continue
 				}
 

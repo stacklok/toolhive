@@ -1209,7 +1209,7 @@ func TestDefaultManager_RunWorkload_RetryCounterReset(t *testing.T) {
 	// margin between "short" and "stable" run durations so scheduler jitter
 	// on a busy CI host does not flip a "short" run to "stable". Production
 	// thresholds are an order of magnitude larger.
-	testCfg := &retryConfig{
+	testCfg := retryConfig{
 		maxRetries:         3,
 		initialDelay:       1 * time.Millisecond,
 		maxBackoff:         5 * time.Millisecond,
@@ -1290,11 +1290,9 @@ func TestDefaultManager_RunWorkload_RetryCounterReset(t *testing.T) {
 				AnyTimes()
 
 			factory := &fakeRunnerFactory{outcomes: tt.outcomes}
-			manager := &DefaultManager{
-				statuses:    mockStatusMgr,
-				retryConfig: testCfg,
-				newRunner:   factory.factory(),
-			}
+			manager := &DefaultManager{statuses: mockStatusMgr}
+			withRetryConfig(testCfg)(manager)
+			withRunnerFactory(factory.factory())(manager)
 
 			err := manager.RunWorkload(context.Background(), &runner.RunConfig{BaseName: "retry-test"})
 

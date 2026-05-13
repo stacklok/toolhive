@@ -97,29 +97,31 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // redisDCRKey generates a Redis key for a DCR credential entry, identifying the
 // (Issuer, RedirectURI, ScopesHash) tuple that DCRKey canonicalises.
 //
-// Format: "{prefix}dcr:<len(issuer)>:<issuer>:<len(redirect_uri)>:<redirect_uri>:<scopes_hash>:<public>"
+// Format: "{prefix}dcr:<len(issuer)>:<issuer>:<len(redirect_uri)>:<redirect_uri>:<scopes_hash>"
 //
 // The first two segments are length-prefixed to handle colons in RedirectURI
 // (and, for symmetry, Issuer) without ambiguity, mirroring redisProviderKey.
 // ScopesHash is expected to be a SHA-256 hex digest produced by
 // storage.ScopesHash — only [0-9a-f] and never colon-bearing — so it is
-// appended without a length prefix. The trailing PublicClient flag is the
-// literal "1" or "0" so confidential and public registrations never share a
-// cache entry even when the leading components coincide. The format is
-// robust for that domain; validateDCRCredentialsForStore (called by every
-// Store path) already rejects an empty ScopesHash, and callers are required
-// to compute the hash via storage.ScopesHash. Length-prefix collision-safety
-// is preserved on the leading segments either way.
+// appended without a length prefix. The format is robust for that domain;
+// validateDCRCredentialsForStore (called by every Store path) already
+// rejects an empty ScopesHash, and callers are required to compute the hash
+// via storage.ScopesHash. Length-prefix collision-safety is preserved on
+// the leading segments either way.
+//
+// The public-vs-confidential client distinction is intentionally NOT
+// encoded here — see DCRKey's doc for the rationale. Today's two consumers
+// register on disjoint RedirectURI address spaces (AS-origin vs RFC 8252
+// loopback) so the persisted key cannot collide across profiles. A future
+// consumer that defaults its RedirectURI into either space would need to
+// add the distinguishing component back to the key format alongside an
+// explicit migration story for existing Redis-cached entries.
 func redisDCRKey(prefix string, key DCRKey) string {
-	publicFlag := "0"
-	if key.PublicClient {
-		publicFlag = "1"
-	}
-	return fmt.Sprintf("%s%s:%d:%s:%d:%s:%s:%s",
+	return fmt.Sprintf("%s%s:%d:%s:%d:%s:%s",
 		prefix, KeyTypeDCR,
 		len(key.Issuer), key.Issuer,
 		len(key.RedirectURI), key.RedirectURI,
-		key.ScopesHash, publicFlag)
+		key.ScopesHash)
 }
 
 // redisUpstreamKey generates a Redis key for a per-provider upstream token entry.

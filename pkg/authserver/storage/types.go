@@ -128,12 +128,20 @@ type DCRKey struct {
 	//     issuer, because the CLI has no separate local issuer of its own.
 	// The cache is keyed by this value because two different consumers
 	// registering against the same upstream are distinct OAuth clients and
-	// must not share credentials. The (Issuer, RedirectURI, ScopesHash,
-	// PublicClient) tuple keeps the two consumer profiles' entries apart
-	// via the RedirectURI component (the embedded authserver registers an
-	// AS-origin callback while the CLI registers a loopback callback), so a
-	// collision between profiles is impossible by construction even when
-	// the upstream is the same.
+	// must not share credentials. The (Issuer, RedirectURI, ScopesHash)
+	// tuple keeps the two consumer profiles' entries apart via the
+	// RedirectURI component (the embedded authserver registers an
+	// AS-origin callback while the CLI registers a loopback callback per
+	// RFC 8252 §7.3 — the two address spaces are disjoint), so a collision
+	// between profiles is impossible by construction even when the
+	// upstream is the same. Public-client vs confidential-client
+	// separation rides on that same RedirectURI disjointness at both the
+	// persistent-cache and in-process singleflight layers; encoding it on
+	// the key would invalidate every existing Redis-cached entry across a
+	// deployment without buying additional protection. If a future
+	// consumer brings the two address spaces into collision the key
+	// format must gain a consumer-identifier component alongside an
+	// explicit migration story.
 	Issuer string
 
 	// RedirectURI is the redirect URI registered with the upstream
@@ -148,19 +156,6 @@ type DCRKey struct {
 	// hand at call sites; the canonical form must be a single source of truth
 	// so the key matches across processes and backends.
 	ScopesHash string
-
-	// PublicClient indicates the registration was issued for a public
-	// (PKCE) client with token_endpoint_auth_method=none, as opposed to a
-	// confidential client with a shared secret. Including this in the key
-	// is defense-in-depth: it makes the "public vs confidential
-	// registrations must not share cache entries" property structural
-	// rather than relying on RedirectURI happening to differ between
-	// consumer profiles. Without this field, a future caller that defaulted
-	// its redirect URI into the same address space as an existing consumer
-	// (and asked for a public registration where the cached entry was
-	// confidential, or vice versa) would silently receive a wrong-shape
-	// resolution.
-	PublicClient bool
 }
 
 // ScopesHash returns the SHA-256 hex digest of the canonical OAuth scope set,

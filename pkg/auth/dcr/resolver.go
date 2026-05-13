@@ -93,32 +93,33 @@ import (
 // The two current call sites do not collide by construction — the embedded
 // authserver's redirect URI lives on the AS origin, and the CLI flow's
 // redirect URI lives on a loopback (http://localhost:{port}/callback per
-// RFC 8252 §7.3). A future consumer that defaults its redirect URI into
-// either of those spaces would silently coalesce; if a third profile is
-// added the flight key MUST gain a consumer-identifier component so a
-// collision is impossible rather than improbable.
+// RFC 8252 §7.3), so the disjoint RedirectURI address spaces separate
+// the public-client and confidential-client profiles at both the
+// singleflight and the persistent-cache layers. A future consumer that
+// defaults its redirect URI into either of those spaces would silently
+// coalesce; if a third profile is added the flight key (and persisted
+// DCRKey) MUST gain a consumer-identifier component so a collision is
+// impossible rather than improbable.
 var dcrFlight singleflight.Group
 
 // flightKeyOf canonicalises a Key into the singleflight string used by
-// dcrFlight. The "\n" separator is safe because newline is not a valid byte
-// in any of the four components: URI reference characters in Issuer and
-// RedirectURI (RFC 3986 §2), hex digits in ScopesHash (the form
-// storage.ScopesHash always emits), and a single "1"/"0" character for
-// PublicClient. Exposed as a function so tests and future inspection
-// helpers can compute the exact key the resolver would route through
-// dcrFlight without re-implementing the concatenation.
+// dcrFlight. The "\n" separator is safe because newline is not a valid
+// byte in any of the three components: URI reference characters in
+// Issuer and RedirectURI (RFC 3986 §2), and hex digits in ScopesHash
+// (the form storage.ScopesHash always emits). Exposed as a function so
+// tests and future inspection helpers can compute the exact key the
+// resolver would route through dcrFlight without re-implementing the
+// concatenation.
 //
-// PublicClient is included to mirror the persisted DCRKey: a public PKCE
-// registration and a confidential-client registration that happened to
-// share an Issuer/RedirectURI/ScopesHash tuple must not coalesce through
-// the singleflight, because a follower would receive a registration of
-// the wrong client shape from the leader.
+// PublicClient is intentionally NOT part of the flight key — the
+// dcrFlight doc above explains why: today's two consumers register on
+// disjoint RedirectURI address spaces (AS-origin vs RFC 8252 loopback),
+// so the public-client and confidential-client profiles cannot share a
+// flight key by construction. The same property protects the persisted
+// DCRKey from cross-profile coalescence; the two layers are aligned
+// rather than asymmetric.
 func flightKeyOf(key Key) string {
-	publicFlag := "0"
-	if key.PublicClient {
-		publicFlag = "1"
-	}
-	return key.Issuer + "\n" + key.RedirectURI + "\n" + key.ScopesHash + "\n" + publicFlag
+	return key.Issuer + "\n" + key.RedirectURI + "\n" + key.ScopesHash
 }
 
 // defaultUpstreamRedirectPath is the redirect path derived from the issuer
@@ -326,10 +327,9 @@ func ResolveCredentials(
 
 	scopes := slices.Clone(req.Scopes)
 	key := Key{
-		Issuer:       req.Issuer,
-		RedirectURI:  redirectURI,
-		ScopesHash:   storage.ScopesHash(scopes),
-		PublicClient: req.PublicClient,
+		Issuer:      req.Issuer,
+		RedirectURI: redirectURI,
+		ScopesHash:  storage.ScopesHash(scopes),
 	}
 
 	// Cache lookup short-circuits before any network I/O.

@@ -4,7 +4,11 @@
 package dcr
 
 import (
+	"io"
+	"os"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
@@ -25,4 +29,22 @@ func newMemoryDCRStore(t *testing.T) CredentialStore {
 	stor := storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = stor.Close() })
 	return NewStorageBackedStore(stor)
+}
+
+// readTokenFile reads a secret from disk and returns its trimmed contents,
+// mirroring the production embeddedauthserver.resolveSecret semantics so
+// resolver tests can populate Request.InitialAccessToken from a file path.
+func readTokenFile(t *testing.T, path string) string {
+	t.Helper()
+	f, err := os.Open(path) //nolint:gosec // G304: test-only helper, paths are constructed under t.TempDir()
+	require.NoError(t, err)
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	require.NoError(t, err)
+	// Trim trailing newline conventionally appended by Kubernetes mounts /
+	// shell heredocs — same trim production code performs.
+	for len(data) > 0 && (data[len(data)-1] == '\n' || data[len(data)-1] == ' ' || data[len(data)-1] == '\t' || data[len(data)-1] == '\r') {
+		data = data[:len(data)-1]
+	}
+	return string(data)
 }

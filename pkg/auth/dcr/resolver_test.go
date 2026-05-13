@@ -21,7 +21,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -159,14 +158,13 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 	}
 	require.NoError(t, cache.Put(context.Background(), key, preloaded))
 
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		Scopes: []string{"openid", "profile"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: issuer + "/.well-known/openid-configuration",
-		},
+	req := &Request{
+		Issuer:       issuer,
+		Scopes:       []string{"openid", "profile"},
+		DiscoveryURL: issuer + "/.well-known/openid-configuration",
 	}
 
-	got, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	got, err := ResolveCredentials(context.Background(), req, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "preloaded-id", got.ClientID)
 	assert.Equal(t, "preloaded-secret", got.ClientSecret)
@@ -190,14 +188,13 @@ func TestResolveDCRCredentials_RegistersOnCacheMiss(t *testing.T) {
 
 	cache := newMemoryDCRStore(t)
 	issuer := server.URL
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		Scopes: []string{"openid", "profile"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
-		},
+	req := &Request{
+		Issuer:       issuer,
+		Scopes:       []string{"openid", "profile"},
+		DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 	}
 
-	res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	res, err := ResolveCredentials(context.Background(), req, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "test-client-id", res.ClientID)
 	assert.Equal(t, "test-client-secret", res.ClientSecret)
@@ -211,10 +208,10 @@ func TestResolveDCRCredentials_RegistersOnCacheMiss(t *testing.T) {
 	assert.Empty(t, gotAuthHeader)
 
 	// Verify the request body carried the expected fields.
-	var req oauthproto.DynamicClientRegistrationRequest
-	require.NoError(t, json.Unmarshal(gotBody, &req))
-	assert.Equal(t, []string{issuer + "/oauth/callback"}, req.RedirectURIs)
-	assert.ElementsMatch(t, []string{"openid", "profile"}, []string(req.Scopes))
+	var dcrReq oauthproto.DynamicClientRegistrationRequest
+	require.NoError(t, json.Unmarshal(gotBody, &dcrReq))
+	assert.Equal(t, []string{issuer + "/oauth/callback"}, dcrReq.RedirectURIs)
+	assert.ElementsMatch(t, []string{"openid", "profile"}, []string(dcrReq.Scopes))
 
 	// Cache was populated.
 	cached, ok, err := cache.Get(context.Background(),
@@ -231,16 +228,15 @@ func TestResolveDCRCredentials_ExplicitEndpointsOverride(t *testing.T) {
 	cache := newMemoryDCRStore(t)
 	issuer := server.URL
 
-	rc := &authserver.OAuth2UpstreamRunConfig{
+	req := &Request{
+		Issuer:                issuer,
 		AuthorizationEndpoint: "https://explicit.example.com/authorize",
 		TokenEndpoint:         "https://explicit.example.com/token",
 		Scopes:                []string{"openid"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
-		},
+		DiscoveryURL:          issuer + "/.well-known/oauth-authorization-server",
 	}
 
-	res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	res, err := ResolveCredentials(context.Background(), req, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "https://explicit.example.com/authorize", res.AuthorizationEndpoint)
 	assert.Equal(t, "https://explicit.example.com/token", res.TokenEndpoint)
@@ -265,15 +261,14 @@ func TestResolveDCRCredentials_InitialAccessTokenAsBearer(t *testing.T) {
 
 	cache := newMemoryDCRStore(t)
 	issuer := server.URL
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		Scopes: []string{"openid"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL:           issuer + "/.well-known/oauth-authorization-server",
-			InitialAccessTokenFile: tokenPath,
-		},
+	req := &Request{
+		Issuer:             issuer,
+		Scopes:             []string{"openid"},
+		DiscoveryURL:       issuer + "/.well-known/oauth-authorization-server",
+		InitialAccessToken: readTokenFile(t, tokenPath),
 	}
 
-	_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	_, err := ResolveCredentials(context.Background(), req, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer iat-secret-value", gotAuthHeader)
 }
@@ -329,15 +324,14 @@ func TestResolveDCRCredentials_DoesNotForwardBearerOnRedirect(t *testing.T) {
 
 	cache := newMemoryDCRStore(t)
 	issuer := upstream.URL
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		Scopes: []string{"openid"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL:           issuer + "/.well-known/oauth-authorization-server",
-			InitialAccessTokenFile: tokenPath,
-		},
+	req := &Request{
+		Issuer:             issuer,
+		Scopes:             []string{"openid"},
+		DiscoveryURL:       issuer + "/.well-known/oauth-authorization-server",
+		InitialAccessToken: readTokenFile(t, tokenPath),
 	}
 
-	_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	_, err := ResolveCredentials(context.Background(), req, cache)
 	require.Error(t, err, "registration must fail when the upstream returns a redirect")
 	assert.ErrorIs(t, err, errDCRRedirectRefused,
 		"the resolver must refuse to follow registration-endpoint redirects")
@@ -398,14 +392,13 @@ func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
 			})
 			cache := newMemoryDCRStore(t)
 			issuer := server.URL
-			rc := &authserver.OAuth2UpstreamRunConfig{
-				Scopes: []string{"openid"},
-				DCRConfig: &authserver.DCRUpstreamConfig{
-					DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
-				},
+			req := &Request{
+				Issuer:       issuer,
+				Scopes:       []string{"openid"},
+				DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 			}
 
-			res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+			res, err := ResolveCredentials(context.Background(), req, cache)
 			require.NoError(t, err)
 			assert.Equal(t, tc.expected, res.TokenEndpointAuthMethod)
 		})
@@ -437,14 +430,13 @@ func TestResolveDCRCredentials_RefusesNoneWithoutS256(t *testing.T) {
 			})
 			cache := newMemoryDCRStore(t)
 			issuer := server.URL
-			rc := &authserver.OAuth2UpstreamRunConfig{
-				Scopes: []string{"openid"},
-				DCRConfig: &authserver.DCRUpstreamConfig{
-					DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
-				},
+			req := &Request{
+				Issuer:       issuer,
+				Scopes:       []string{"openid"},
+				DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 			}
 
-			_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+			_, err := ResolveCredentials(context.Background(), req, cache)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "S256",
 				"error must mention the missing S256 advertisement so operators can correlate")
@@ -463,13 +455,12 @@ func TestResolveDCRCredentials_EmptyAuthMethodIntersectionErrors(t *testing.T) {
 	})
 	cache := newMemoryDCRStore(t)
 	issuer := server.URL
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		Scopes: []string{"openid"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
-		},
+	req := &Request{
+		Issuer:       issuer,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 	}
-	_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	_, err := ResolveCredentials(context.Background(), req, cache)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no supported token_endpoint_auth_method")
 }
@@ -489,14 +480,13 @@ func TestResolveDCRCredentials_SynthesisedRegistrationEndpoint(t *testing.T) {
 	})
 	cache := newMemoryDCRStore(t)
 	issuer := server.URL
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		Scopes: []string{"openid"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
-		},
+	req := &Request{
+		Issuer:       issuer,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 	}
 
-	res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	res, err := ResolveCredentials(context.Background(), req, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "test-client-id", res.ClientID)
 	assert.Equal(t, "/register", gotPath)
@@ -522,16 +512,15 @@ func TestResolveDCRCredentials_RegistrationEndpointDirectBypassesDiscovery(t *te
 
 	cache := newMemoryDCRStore(t)
 	issuer := server.URL
-	rc := &authserver.OAuth2UpstreamRunConfig{
+	req := &Request{
+		Issuer:                issuer,
 		AuthorizationEndpoint: issuer + "/authorize",
 		TokenEndpoint:         issuer + "/token",
 		Scopes:                []string{"openid"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			RegistrationEndpoint: issuer + "/custom/register",
-		},
+		RegistrationEndpoint:  issuer + "/custom/register",
 	}
 
-	res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	res, err := ResolveCredentials(context.Background(), req, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "direct-id", res.ClientID)
 	assert.Equal(t, int32(0), atomic.LoadInt32(&discoveryHits),
@@ -540,55 +529,56 @@ func TestResolveDCRCredentials_RegistrationEndpointDirectBypassesDiscovery(t *te
 }
 
 // TestResolveDCRCredentials_RejectsInvalidInputs covers every branch of
-// validateResolveInputs in one place: nil run-config, pre-provisioned
-// ClientID, missing DCRConfig, empty issuer, and nil credential store. The
-// previous split into two single-branch tests left three branches uncovered.
+// validateResolveInputs in one place: nil request, empty issuer, neither
+// discovery_url nor registration_endpoint set, both set, and nil
+// credential store.
 func TestResolveDCRCredentials_RejectsInvalidInputs(t *testing.T) {
 	t.Parallel()
 
-	validCfg := &authserver.DCRUpstreamConfig{
-		RegistrationEndpoint: "https://example.com/register",
-	}
-
 	tests := []struct {
 		name       string
-		rc         *authserver.OAuth2UpstreamRunConfig
-		issuer     string
+		req        *Request
 		cache      CredentialStore
 		wantErrSub string
 	}{
 		{
-			name:       "nil run-config",
-			rc:         nil,
-			issuer:     "https://example.com",
+			name:       "nil request",
+			req:        nil,
 			cache:      newMemoryDCRStore(t),
-			wantErrSub: "oauth2 upstream run-config is required",
+			wantErrSub: "request is required",
 		},
 		{
-			name:       "pre-provisioned client_id",
-			rc:         &authserver.OAuth2UpstreamRunConfig{ClientID: "preprovisioned", DCRConfig: validCfg},
-			issuer:     "https://example.com",
-			cache:      newMemoryDCRStore(t),
-			wantErrSub: "pre-provisioned",
-		},
-		{
-			name:       "missing dcr_config",
-			rc:         &authserver.OAuth2UpstreamRunConfig{},
-			issuer:     "https://example.com",
-			cache:      newMemoryDCRStore(t),
-			wantErrSub: "no dcr_config",
-		},
-		{
-			name:       "empty issuer",
-			rc:         &authserver.OAuth2UpstreamRunConfig{DCRConfig: validCfg},
-			issuer:     "",
+			name: "empty issuer",
+			req: &Request{
+				RegistrationEndpoint: "https://example.com/register",
+			},
 			cache:      newMemoryDCRStore(t),
 			wantErrSub: "issuer is required",
 		},
 		{
-			name:       "nil cache",
-			rc:         &authserver.OAuth2UpstreamRunConfig{DCRConfig: validCfg},
-			issuer:     "https://example.com",
+			name: "neither discovery_url nor registration_endpoint set",
+			req: &Request{
+				Issuer: "https://example.com",
+			},
+			cache:      newMemoryDCRStore(t),
+			wantErrSub: "must set either discovery_url or registration_endpoint",
+		},
+		{
+			name: "both discovery_url and registration_endpoint set",
+			req: &Request{
+				Issuer:               "https://example.com",
+				DiscoveryURL:         "https://example.com/.well-known/oauth-authorization-server",
+				RegistrationEndpoint: "https://example.com/register",
+			},
+			cache:      newMemoryDCRStore(t),
+			wantErrSub: "mutually exclusive",
+		},
+		{
+			name: "nil cache",
+			req: &Request{
+				Issuer:               "https://example.com",
+				RegistrationEndpoint: "https://example.com/register",
+			},
 			cache:      nil,
 			wantErrSub: "credential store is required",
 		},
@@ -596,97 +586,11 @@ func TestResolveDCRCredentials_RejectsInvalidInputs(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := ResolveCredentials(context.Background(), tc.rc, tc.issuer, tc.cache)
+			_, err := ResolveCredentials(context.Background(), tc.req, tc.cache)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErrSub)
 		})
 	}
-}
-
-func TestNeedsDCR(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		rc       *authserver.OAuth2UpstreamRunConfig
-		expected bool
-	}{
-		{name: "nil", rc: nil, expected: false},
-		{name: "empty client_id and dcr_config", rc: &authserver.OAuth2UpstreamRunConfig{
-			DCRConfig: &authserver.DCRUpstreamConfig{},
-		}, expected: true},
-		{name: "client_id without dcr", rc: &authserver.OAuth2UpstreamRunConfig{
-			ClientID: "x",
-		}, expected: false},
-		{name: "client_id wins over dcr_config (defensive AND semantic)", rc: &authserver.OAuth2UpstreamRunConfig{
-			ClientID:  "x",
-			DCRConfig: &authserver.DCRUpstreamConfig{},
-		}, expected: false},
-		{name: "both empty", rc: &authserver.OAuth2UpstreamRunConfig{}, expected: false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tc.expected, NeedsDCR(tc.rc))
-		})
-	}
-}
-
-func TestConsumeResolution_RespectsExplicitEndpoints(t *testing.T) {
-	t.Parallel()
-
-	rc := authserver.OAuth2UpstreamRunConfig{
-		AuthorizationEndpoint: "https://explicit/authorize",
-		TokenEndpoint:         "https://explicit/token",
-	}
-	res := &Resolution{
-		ClientID:              "got-client",
-		AuthorizationEndpoint: "https://discovered/authorize",
-		TokenEndpoint:         "https://discovered/token",
-	}
-	rc = ConsumeResolution(rc, res)
-	assert.Equal(t, "got-client", rc.ClientID)
-	assert.Equal(t, "https://explicit/authorize", rc.AuthorizationEndpoint)
-	assert.Equal(t, "https://explicit/token", rc.TokenEndpoint)
-}
-
-func TestConsumeResolution_FillsMissingEndpoints(t *testing.T) {
-	t.Parallel()
-
-	rc := authserver.OAuth2UpstreamRunConfig{}
-	res := &Resolution{
-		ClientID:              "got-client",
-		AuthorizationEndpoint: "https://discovered/authorize",
-		TokenEndpoint:         "https://discovered/token",
-	}
-	rc = ConsumeResolution(rc, res)
-	assert.Equal(t, "got-client", rc.ClientID)
-	assert.Equal(t, "https://discovered/authorize", rc.AuthorizationEndpoint)
-	assert.Equal(t, "https://discovered/token", rc.TokenEndpoint)
-}
-
-// TestConsumeResolution_ClearsDCRConfig pins the contract that
-// ConsumeResolution clears DCRConfig on the run-config copy after writing
-// the resolved ClientID. Without this, OAuth2UpstreamRunConfig.Validate
-// (run by buildPureOAuth2Config downstream) trips its ClientID-xor-
-// DCRConfig rule on the resolved copy and rejects the upstream at boot.
-func TestConsumeResolution_ClearsDCRConfig(t *testing.T) {
-	t.Parallel()
-
-	rc := authserver.OAuth2UpstreamRunConfig{
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			RegistrationEndpoint: "https://idp.example.com/register",
-		},
-	}
-	res := &Resolution{
-		ClientID: "dcr-issued-client",
-	}
-
-	rc = ConsumeResolution(rc, res)
-
-	assert.Equal(t, "dcr-issued-client", rc.ClientID)
-	assert.Nil(t, rc.DCRConfig,
-		"ConsumeResolution must clear DCRConfig so the resolved copy satisfies the ClientID-xor-DCRConfig invariant")
 }
 
 func TestResolveUpstreamRedirectURI(t *testing.T) {
@@ -784,14 +688,13 @@ func TestResolveDCRCredentials_DiscoveryURLHonoured(t *testing.T) {
 
 	cache := newMemoryDCRStore(t)
 	issuer := server.URL
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		Scopes: []string{"openid"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: issuer + "/tenants/acme/metadata",
-		},
+	req := &Request{
+		Issuer:       issuer,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: issuer + "/tenants/acme/metadata",
 	}
 
-	res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	res, err := ResolveCredentials(context.Background(), req, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "tenant-client", res.ClientID)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&discoveryHits),
@@ -825,14 +728,13 @@ func TestResolveDCRCredentials_DiscoveryURLIssuerMismatchRejected(t *testing.T) 
 
 	cache := newMemoryDCRStore(t)
 	issuer := server.URL
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		Scopes: []string{"openid"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: issuer + "/metadata",
-		},
+	req := &Request{
+		Issuer:       issuer,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: issuer + "/metadata",
 	}
 
-	_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	_, err := ResolveCredentials(context.Background(), req, cache)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "issuer mismatch")
 }
@@ -852,20 +754,19 @@ func TestResolveDCRCredentials_DiscoveredScopesFallback(t *testing.T) {
 	})
 	cache := newMemoryDCRStore(t)
 	issuer := server.URL
-	rc := &authserver.OAuth2UpstreamRunConfig{
+	req := &Request{
 		// Scopes intentionally left empty so the resolver falls back to
 		// the discovered scopes_supported.
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
-		},
+		Issuer:       issuer,
+		DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 	}
 
-	_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	_, err := ResolveCredentials(context.Background(), req, cache)
 	require.NoError(t, err)
 
-	var req oauthproto.DynamicClientRegistrationRequest
-	require.NoError(t, json.Unmarshal(gotBody, &req))
-	assert.ElementsMatch(t, []string{"openid", "profile", "email"}, []string(req.Scopes),
+	var dcrReq oauthproto.DynamicClientRegistrationRequest
+	require.NoError(t, json.Unmarshal(gotBody, &dcrReq))
+	assert.ElementsMatch(t, []string{"openid", "profile", "email"}, []string(dcrReq.Scopes),
 		"registration request must carry the discovered scopes_supported")
 }
 
@@ -884,13 +785,12 @@ func TestResolveDCRCredentials_EmptyScopesOmitted(t *testing.T) {
 	})
 	cache := newMemoryDCRStore(t)
 	issuer := server.URL
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
-		},
+	req := &Request{
+		Issuer:       issuer,
+		DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 	}
 
-	res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	res, err := ResolveCredentials(context.Background(), req, cache)
 	require.NoError(t, err)
 	assert.Equal(t, "test-client-id", res.ClientID)
 
@@ -926,18 +826,17 @@ func TestResolveDCRCredentials_UpstreamIssuerDerivedFromDiscoveryURL(t *testing.
 	// embeddedauthserver.go: buildUpstreamConfigs(... cfg.Issuer ...)).
 	ourIssuer := "https://our-auth.example.com"
 
-	rc := &authserver.OAuth2UpstreamRunConfig{
+	req := &Request{
+		Issuer: ourIssuer,
 		// Explicit redirect URI so the resolver does not try to default
 		// it from ourIssuer (which would still work, but isolating the
 		// concern under test keeps the failure mode crisp).
-		RedirectURI: "https://our-auth.example.com/oauth/callback",
-		Scopes:      []string{"openid"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
-		},
+		RedirectURI:  "https://our-auth.example.com/oauth/callback",
+		Scopes:       []string{"openid"},
+		DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
 	}
 
-	res, err := ResolveCredentials(context.Background(), rc, ourIssuer, cache)
+	res, err := ResolveCredentials(context.Background(), req, cache)
 	require.NoError(t, err,
 		"resolver must derive expectedIssuer from DiscoveryURL, not from the caller's issuer")
 	assert.Equal(t, "test-client-id", res.ClientID)
@@ -1063,11 +962,10 @@ func TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers(t *testing
 
 	cache := &countingStore{inner: newMemoryDCRStore(t)}
 	issuer := server.URL
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		Scopes: []string{"openid", "profile"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
-		},
+	req := &Request{
+		Issuer:       issuer,
+		Scopes:       []string{"openid", "profile"},
+		DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 	}
 
 	const N = 8
@@ -1078,7 +976,7 @@ func TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers(t *testing
 	for i := 0; i < N; i++ {
 		go func(idx int) {
 			defer wg.Done()
-			res, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+			res, err := ResolveCredentials(context.Background(), req, cache)
 			results[idx] = res
 			errs[idx] = err
 		}(i)
@@ -1198,24 +1096,6 @@ func TestResolveUpstreamRedirectURI_PreservesIssuerPath(t *testing.T) {
 	}
 }
 
-// TestConsumeResolution_DoesNotOverwritePreProvisionedClientID verifies
-// the defence-in-depth in ConsumeResolution: a caller that bypasses
-// validateResolveInputs and invokes ConsumeResolution directly with a
-// pre-provisioned ClientID does not have it silently clobbered.
-func TestConsumeResolution_DoesNotOverwritePreProvisionedClientID(t *testing.T) {
-	t.Parallel()
-
-	rc := authserver.OAuth2UpstreamRunConfig{
-		ClientID: "pre-provisioned",
-	}
-	res := &Resolution{
-		ClientID: "would-be-overwrite",
-	}
-	rc = ConsumeResolution(rc, res)
-	assert.Equal(t, "pre-provisioned", rc.ClientID,
-		"ConsumeResolution must not overwrite a non-empty ClientID")
-}
-
 // TestResolveDCREndpoints_DirectRegistrationEndpointValidated covers
 // PR #5042 review comment #10: the cfg.RegistrationEndpoint short-circuit
 // branch validates the URL locally before performRegistration constructs a
@@ -1247,8 +1127,8 @@ func TestResolveDCREndpoints_DirectRegistrationEndpointValidated(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			cfg := &authserver.DCRUpstreamConfig{RegistrationEndpoint: tc.registrationEndpoint}
-			_, err := resolveDCREndpoints(context.Background(), cfg)
+			req := &Request{RegistrationEndpoint: tc.registrationEndpoint}
+			_, err := resolveDCREndpoints(context.Background(), req)
 			if tc.wantErrSub == "" {
 				require.NoError(t, err)
 				return
@@ -1342,13 +1222,12 @@ func TestResolveDCRCredentials_CacheGetFailureWrapped(t *testing.T) {
 	storeErr := errors.New("simulated backend failure")
 	store := failingDCRStore{getErr: storeErr}
 
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			RegistrationEndpoint: "https://idp.example.com/register",
-		},
+	req := &Request{
+		Issuer:               "https://idp.example.com",
+		RegistrationEndpoint: "https://idp.example.com/register",
 	}
 
-	_, err := ResolveCredentials(context.Background(), rc, "https://idp.example.com", store)
+	_, err := ResolveCredentials(context.Background(), req, store)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, storeErr,
 		"cache.Get error must be wrapped with %%w so callers can inspect the cause")
@@ -1370,14 +1249,13 @@ func TestResolveDCRCredentials_CachePutFailureWrapped(t *testing.T) {
 	storeErr := errors.New("simulated put backend failure")
 	store := failingDCRStore{putErr: storeErr}
 
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		Scopes: []string{"openid"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
-		},
+	req := &Request{
+		Issuer:       server.URL,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
 	}
 
-	_, err := ResolveCredentials(context.Background(), rc, server.URL, store)
+	_, err := ResolveCredentials(context.Background(), req, store)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, storeErr,
 		"cache.Put error must be wrapped with %%w so callers can inspect the cause")
@@ -1474,15 +1352,14 @@ func TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret(t *testing.T) {
 
 	cache := newMemoryDCRStore(t)
 	issuer := server.URL
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		Scopes: []string{"openid"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
-		},
+	req := &Request{
+		Issuer:       issuer,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 	}
 
 	// First call: registers, populates cache with already-expired entry.
-	res1, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	res1, err := ResolveCredentials(context.Background(), req, cache)
 	require.NoError(t, err)
 	require.NotNil(t, res1)
 	require.False(t, res1.ClientSecretExpiresAt.IsZero(),
@@ -1492,7 +1369,7 @@ func TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret(t *testing.T) {
 	require.EqualValues(t, 1, atomic.LoadInt32(&registrationCalls))
 
 	// Second call: the cached entry is expired, so the resolver must refetch.
-	res2, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+	res2, err := ResolveCredentials(context.Background(), req, cache)
 	require.NoError(t, err)
 	require.NotNil(t, res2)
 	assert.EqualValues(t, 2, atomic.LoadInt32(&registrationCalls),
@@ -1529,16 +1406,15 @@ func TestResolveDCRCredentials_HonoursFutureExpiryAndZero(t *testing.T) {
 			})
 			cache := newMemoryDCRStore(t)
 			issuer := server.URL
-			rc := &authserver.OAuth2UpstreamRunConfig{
-				Scopes: []string{"openid"},
-				DCRConfig: &authserver.DCRUpstreamConfig{
-					DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
-				},
+			req := &Request{
+				Issuer:       issuer,
+				Scopes:       []string{"openid"},
+				DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 			}
 
-			_, err := ResolveCredentials(context.Background(), rc, issuer, cache)
+			_, err := ResolveCredentials(context.Background(), req, cache)
 			require.NoError(t, err)
-			_, err = ResolveCredentials(context.Background(), rc, issuer, cache)
+			_, err = ResolveCredentials(context.Background(), req, cache)
 			require.NoError(t, err)
 
 			assert.EqualValues(t, 1, atomic.LoadInt32(&registrationCalls),
@@ -1579,11 +1455,10 @@ func TestResolveDCRCredentials_RecoversPanicInsideSingleflight(t *testing.T) {
 	store := panickingPutDCRStore{panicValue: "boom"}
 
 	issuer := server.URL
-	rc := &authserver.OAuth2UpstreamRunConfig{
-		Scopes: []string{"openid"},
-		DCRConfig: &authserver.DCRUpstreamConfig{
-			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
-		},
+	req := &Request{
+		Issuer:       issuer,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 	}
 
 	const N = 6
@@ -1604,7 +1479,7 @@ func TestResolveDCRCredentials_RecoversPanicInsideSingleflight(t *testing.T) {
 					panicked[idx] = true
 				}
 			}()
-			_, errs[idx] = ResolveCredentials(context.Background(), rc, issuer, store)
+			_, errs[idx] = ResolveCredentials(context.Background(), req, store)
 		}(i)
 	}
 
@@ -1677,8 +1552,7 @@ func TestDcrStepError(t *testing.T) {
 		t.Parallel()
 
 		// Precondition failure → dcrStepValidate.
-		_, err := ResolveCredentials(context.Background(), nil, "https://as",
-			newMemoryDCRStore(t))
+		_, err := ResolveCredentials(context.Background(), nil, newMemoryDCRStore(t))
 		require.Error(t, err)
 		var stepErr *dcrStepError
 		require.True(t, errors.As(err, &stepErr))
@@ -1775,6 +1649,21 @@ func TestSanitizeErrorForLog(t *testing.T) {
 			name:     "uppercase scheme is sanitised",
 			in:       fmt.Errorf("GET HTTPS://as.example.com/register?token=leak failed"),
 			expected: "GET https://as.example.com/register failed",
+		},
+		// Redis scheme coverage — the embedded-authserver DCR path
+		// persists through pkg/authserver/storage/redis.go, and a
+		// redis-go error chain on the Get/Put critical path can embed a
+		// sentinel/cluster URL with credentials. Without these the
+		// sanitiser would leave the password in the slog.Error attribute.
+		{
+			name:     "redis URL userinfo is stripped",
+			in:       fmt.Errorf("dial redis://user:secret@redis.internal:6379/0 failed"),
+			expected: "dial redis://redis.internal:6379/0 failed",
+		},
+		{
+			name:     "rediss URL userinfo is stripped",
+			in:       fmt.Errorf("dial rediss://user:secret@redis.internal:6379/0 failed"),
+			expected: "dial rediss://redis.internal:6379/0 failed",
 		},
 	}
 

@@ -286,17 +286,15 @@ func TestParseTokenLifespans(t *testing.T) {
 	})
 }
 
-// TestResolveSecret pins the runner-package resolveSecret against the
-// observable contract its parallel twin in pkg/auth/dcr/secret_test.go
-// (TestResolveSecret + TestResolveSecretWithEnvVar) covers. The two
-// helpers are byte-identical by deliberate duplication (see the doc
-// comment on each func resolveSecret); a behaviour change here without
-// the same change in pkg/auth/dcr/resolver.go::resolveSecret will be
-// caught by the dcr-side suite, and vice versa. Keep the two suites
-// behaviourally in lockstep — when consolidating both copies into a
-// shared helper (planned for sub-issue 4b, #5219), this drift-guard
-// pair becomes unnecessary and SHOULD be replaced with a single
-// authoritative suite.
+// TestResolveSecret pins the observable contract of the runner-package
+// resolveSecret helper: file-precedence, whitespace-trimming, and the
+// explicit error modes for missing-file / unset-env. resolveSecret is
+// the single authoritative implementation in the codebase; the
+// pkg/auth/dcr package no longer carries a parallel copy (removed in
+// #5219 sub-issue 4b, when the resolver's input was neutralised and the
+// embedded-authserver adapter took responsibility for resolving the
+// file-or-env reference into Request.InitialAccessToken at the call
+// site).
 func TestResolveSecret(t *testing.T) {
 	t.Parallel()
 
@@ -346,9 +344,6 @@ func TestResolveSecret(t *testing.T) {
 
 // TestResolveSecretWithEnvVar tests resolveSecret with environment variables.
 // These tests cannot use t.Parallel() because they use t.Setenv().
-//
-// Drift-guard twin: see the doc comment on TestResolveSecret above.
-// The dcr-side parallel suite lives at pkg/auth/dcr/secret_test.go.
 func TestResolveSecretWithEnvVar(t *testing.T) {
 	t.Run("file takes precedence over env var", func(t *testing.T) {
 		tmpDir := t.TempDir()

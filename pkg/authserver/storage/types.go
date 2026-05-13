@@ -120,16 +120,35 @@ func (t *UpstreamTokens) IsExpired(now time.Time) bool {
 // future Redis backend must hash keys identically; keeping the canonical form
 // next to the persistence implementations prevents drift.
 type DCRKey struct {
-	// Issuer is *this* auth server's issuer identifier — the local issuer
-	// of the embedded authorization server that performed the registration,
-	// NOT the upstream's. The cache is keyed by this value because two
-	// different local issuers registering against the same upstream are
-	// distinct OAuth clients and must not share credentials.
+	// Issuer is the registration consumer's issuer identifier. The dual
+	// semantic depends on the consumer profile:
+	//   - Embedded authorization server: its OWN local issuer (the embedded
+	//     authserver that performed the registration).
+	//   - CLI / direct OAuth flow: the UPSTREAM authorization server's
+	//     issuer, because the CLI has no separate local issuer of its own.
+	// The cache is keyed by this value because two different consumers
+	// registering against the same upstream are distinct OAuth clients and
+	// must not share credentials. The (Issuer, RedirectURI, ScopesHash)
+	// tuple keeps the two consumer profiles' entries apart via the
+	// RedirectURI component (the embedded authserver registers an
+	// AS-origin callback while the CLI registers a loopback callback per
+	// RFC 8252 §7.3 — the two address spaces are disjoint), so a collision
+	// between profiles is impossible by construction even when the
+	// upstream is the same. Public-client vs confidential-client
+	// separation rides on that same disjoint-RedirectURI property at both
+	// the persistent-cache and in-process singleflight layers; encoding it on
+	// the key would invalidate every existing Redis-cached entry across a
+	// deployment without buying additional protection. If a future
+	// consumer brings the two address spaces into collision the key
+	// format must gain a consumer-identifier component alongside an
+	// explicit migration story.
 	Issuer string
 
 	// RedirectURI is the redirect URI registered with the upstream
-	// authorization server. Lives on the local issuer's origin since it is
-	// where the upstream sends the user back after authentication.
+	// authorization server. Embedded-authserver callers register an
+	// AS-origin callback; CLI callers register an RFC 8252 loopback
+	// callback. The two address spaces are disjoint, which is what makes
+	// the per-consumer cache namespace structurally safe today.
 	RedirectURI string
 
 	// ScopesHash is the SHA-256 hex digest of the sorted, deduplicated scope

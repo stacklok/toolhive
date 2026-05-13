@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"sync"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -69,6 +71,111 @@ func NewStorageBackedStore(backend storage.DCRCredentialStore) CredentialStore {
 		panic("dcr: NewStorageBackedStore: backend must not be nil")
 	}
 	return &storageBackedStore{backend: backend}
+}
+
+// CloseableCredentialStore is a CredentialStore that also releases an
+// underlying resource (typically a background goroutine) when closed.
+// NewInMemoryStore returns this interface so callers can call Close()
+// directly without a runtime type assertion — Close() being part of the
+// returned type at compile time prevents the silent-no-op failure mode
+// that .claude/rules/go-style.md warns about ("Never define a local
+// anonymous interface inside an option and type-assert against it to
+// check capability — a silent no-op results if the target doesn't
+// implement it.").
+//
+// NewStorageBackedStore returns the base CredentialStore because its
+// backends (storage.MemoryStorage shared across the authserver,
+// storage.RedisStorage) are owned by the authserver runner and closed
+// through that lifecycle, not by the dcr package.
+type CloseableCredentialStore interface {
+	CredentialStore
+	io.Closer
+}
+
+// NewInMemoryStore returns a CloseableCredentialStore whose entries live
+// only for the lifetime of the returned value. This is the constructor
+// consumers reach for when they have no shared durable backend — most
+// notably the CLI OAuth flow, which manages cross-invocation credential
+// persistence outside the resolver (in pkg/auth/remote/handler.go's
+// CachedClientID / CachedClientSecretRef fields) and only needs the
+// resolver's intra-call singleflight + S256 PKCE / expiry-refetch
+// behaviour for one PerformOAuthFlow call.
+//
+// The implementation delegates to storage.NewMemoryStorage to share the
+// same Get/Put/scope-hash semantics as the durable backends, including
+// the background cleanup goroutine. Callers that need to release that
+// goroutine before process exit MUST call Close on the returned value
+// when finished — the return type is CloseableCredentialStore precisely
+// so the call site can `defer store.Close()` without a runtime
+// type-assertion. (CLI flows that complete in a single invocation can
+// also rely on process exit.)
+func NewInMemoryStore() CloseableCredentialStore {
+	return &inMemoryStore{mem: storage.NewMemoryStorage()}
+}
+
+// inMemoryStore is the CloseableCredentialStore returned by
+// NewInMemoryStore. It holds exactly one *storage.MemoryStorage handle,
+// which serves Get / Put / Close. No embedding of storageBackedStore —
+// embedding would introduce a second handle to the same backend (typed
+// as the broad storage.DCRCredentialStore interface) and require a
+// manual "keep these two in sync" invariant the compiler could not
+// enforce. The single-field shape gives Get / Put / Close one
+// authoritative source.
+//
+// Get / Put logic is intentionally duplicated with storageBackedStore
+// rather than delegated through it: the two methods are three lines
+// each, and avoiding the embedding is a strictly stronger structural
+// guarantee than DRY here. credentialsToResolution /
+// resolutionToCredentials remain shared.
+//
+// closeOnce makes Close() idempotent at the dcr-package boundary even
+// though storage.MemoryStorage.Close() is not — calling
+// MemoryStorage.Close() twice panics on `close of closed channel`. The
+// CLI's `defer store.Close()` is single-call today, but guarding here
+// means future call sites that close-on-shortcircuit-then-defer (or
+// test helpers that close-then-reuse) cannot panic the process.
+type inMemoryStore struct {
+	mem       *storage.MemoryStorage
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// Get implements CredentialStore by delegating to the embedded
+// *storage.MemoryStorage. The ErrNotFound translation matches
+// storageBackedStore.Get; see that method for the rationale.
+func (s *inMemoryStore) Get(ctx context.Context, key Key) (*Resolution, bool, error) {
+	creds, err := s.mem.GetDCRCredentials(ctx, key)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return credentialsToResolution(creds), true, nil
+}
+
+// Put implements CredentialStore by delegating to the embedded
+// *storage.MemoryStorage. The nil-resolution rejection matches
+// storageBackedStore.Put; see that method for the rationale.
+func (s *inMemoryStore) Put(ctx context.Context, key Key, resolution *Resolution) error {
+	if resolution == nil {
+		return fmt.Errorf("dcr: resolution must not be nil")
+	}
+	creds := resolutionToCredentials(key, resolution)
+	return s.mem.StoreDCRCredentials(ctx, creds)
+}
+
+// Close releases the embedded MemoryStorage cleanup goroutine. Safe to
+// call multiple times: the underlying storage.MemoryStorage.Close
+// closes a channel and is NOT itself idempotent (a second call panics
+// on `close of closed channel`); the closeOnce here makes the
+// dcr-package boundary contract idempotent regardless. Subsequent
+// calls return the same error (if any) the first call produced.
+func (s *inMemoryStore) Close() error {
+	s.closeOnce.Do(func() {
+		s.closeErr = s.mem.Close()
+	})
+	return s.closeErr
 }
 
 // storageBackedStore is the dcr-package CredentialStore wrapping a
@@ -144,8 +251,9 @@ func resolutionToCredentials(key Key, res *Resolution) *storage.DCRCredentials {
 
 // credentialsToResolution is the inverse of resolutionToCredentials. The
 // RedirectURI is recovered from the persisted Key so consumers that read it
-// off the resolution (e.g. ConsumeResolution, which writes it back onto a
-// run-config copy when the caller left it empty) see the canonical value.
+// off the resolution (e.g. pkg/authserver/runner.consumeResolution, which
+// writes it back onto a run-config copy when the caller left it empty)
+// see the canonical value.
 //
 // ClientIDIssuedAt is left zero because it is not persisted. Callers that
 // care about it (none today) must read it directly from the live RFC 7591

@@ -44,7 +44,6 @@ cmd/thv-operator/.task/
 # Test coverage
 coverage*
 
-crd-helm-wrapper
 cmd/vmcp/__debug_bin*
 /vmcp
 .worktrees/

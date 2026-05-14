@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1027,29 +1026,16 @@ func TestAuditLoggerLevelFormat(t *testing.T) {
 	t.Run("preserves standard log levels", func(t *testing.T) {
 		t.Parallel()
 		var logBuf bytes.Buffer
-		// Create a logger with DEBUG level to capture all levels
-		handler := slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-				if a.Key == slog.LevelKey && a.Value.Any() == LevelAudit {
-					a.Value = slog.StringValue("AUDIT")
-				}
-				return a
-			},
-		})
-		logger := slog.New(handler)
+		logger := NewAuditLogger(&logBuf)
 
-		// Test that INFO logs still render as INFO
-		logger.Info("info message")
-		logOutput := logBuf.String()
-		assert.Contains(t, logOutput, `"level":"INFO"`)
-
-		// Reset buffer
-		logBuf.Reset()
-
-		// Test that WARN logs still render as WARN
+		// NewAuditLogger sets Level: LevelAudit (= slog.Level(2)), so INFO
+		// (slog.Level(0)) is filtered out before ReplaceAttr runs and can't
+		// be exercised through the production logger. WARN (slog.Level(4))
+		// is above LevelAudit and passes through, so we use it to confirm
+		// the production ReplaceAttr path doesn't mis-label non-audit events.
 		logger.Warn("warn message")
-		logOutput = logBuf.String()
+		logOutput := logBuf.String()
 		assert.Contains(t, logOutput, `"level":"WARN"`)
+		assert.NotContains(t, logOutput, `"level":"AUDIT"`)
 	})
 }

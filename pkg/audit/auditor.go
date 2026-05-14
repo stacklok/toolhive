@@ -61,8 +61,10 @@ func NewAuditLogger(w io.Writer) *slog.Logger {
 			// compatibility with log aggregation systems (Loki, Elasticsearch, etc.)
 			// that expect standard level names. This prevents audit events from
 			// appearing as "INFO+2" which breaks level-based filtering.
-			if a.Key == slog.LevelKey && a.Value.Any() == LevelAudit {
-				a.Value = slog.StringValue("AUDIT")
+			if a.Key == slog.LevelKey {
+				if level, ok := a.Value.Any().(slog.Level); ok && level == LevelAudit {
+					a.Value = slog.StringValue("AUDIT")
+				}
 			}
 			return a
 		},

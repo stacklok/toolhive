@@ -357,7 +357,7 @@ thv config usage-metrics enable
 
 **Purpose**: Exchanges incoming JWT tokens for external service tokens using OAuth 2.0 Token Exchange (RFC 8693).
 
-**Location**: `pkg/auth/tokenexchange/middleware.go`
+**Location**: `pkg/oauthproto/tokenexchange/middleware.go`
 
 **Responsibilities**:
 - Extract claims from authenticated JWT tokens

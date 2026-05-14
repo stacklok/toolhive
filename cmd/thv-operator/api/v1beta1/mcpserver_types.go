@@ -7,6 +7,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
 )
 
 // Condition types for MCPServer
@@ -86,12 +88,29 @@ const (
 const (
 	// ConditionTypeExternalAuthConfigValidated indicates whether the ExternalAuthConfig is valid
 	ConditionTypeExternalAuthConfigValidated = "ExternalAuthConfigValidated"
+
+	// ConditionTypeWebhookConfigValidated indicates whether the WebhookConfig is valid
+	ConditionTypeWebhookConfigValidated = "WebhookConfigValidated"
+
+	// ConditionTypeAuthzPrimaryUpstreamProviderIgnored is an advisory condition set
+	// when spec.authzConfig.inline.primaryUpstreamProvider is non-empty on a CR type
+	// that has no embedded auth server (MCPServer / MCPRemoteProxy). The field has
+	// no effect on those resources and is documented as VirtualMCPServer-only.
+	ConditionTypeAuthzPrimaryUpstreamProviderIgnored = "AuthzPrimaryUpstreamProviderIgnored"
 )
 
 const (
 	// ConditionReasonExternalAuthConfigMultiUpstream indicates the ExternalAuthConfig has multiple upstreams,
 	// which is not supported for MCPServer (use VirtualMCPServer for multi-upstream).
 	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
+
+	// ConditionReasonWebhookConfigInvalid indicates the referenced webhook config is invalid or missing
+	ConditionReasonWebhookConfigInvalid = "WebhookConfigInvalid"
+
+	// ConditionReasonAuthzPrimaryUpstreamProviderIgnored indicates that
+	// primaryUpstreamProvider is set on a CR type without an embedded auth server,
+	// where the field has no runtime effect.
+	ConditionReasonAuthzPrimaryUpstreamProviderIgnored = "PrimaryUpstreamProviderIgnored"
 )
 
 const (
@@ -287,6 +306,11 @@ type MCPServerSpec struct {
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
 
+	// WebhookConfigRef references a MCPWebhookConfig resource for webhook middleware configuration.
+	// The referenced MCPWebhookConfig must exist in the same namespace as this MCPServer.
+	// +optional
+	WebhookConfigRef *WebhookConfigRef `json:"webhookConfigRef,omitempty"`
+
 	// AuthServerRef optionally references a resource that configures an embedded
 	// OAuth 2.0/OIDC authorization server to authenticate MCP clients.
 	// Currently the only supported kind is MCPExternalAuthConfig (type: embeddedAuthServer).
@@ -351,7 +375,7 @@ type MCPServerSpec struct {
 	// RateLimiting defines rate limiting configuration for the MCP server.
 	// Requires Redis session storage to be configured for distributed rate limiting.
 	// +optional
-	RateLimiting *RateLimitConfig `json:"rateLimiting,omitempty"`
+	RateLimiting *ratelimittypes.RateLimitConfig `json:"rateLimiting,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -503,69 +527,17 @@ type SessionStorageConfig struct {
 }
 
 // RateLimitConfig defines rate limiting configuration for an MCP server.
-// At least one of shared, perUser, or tools must be configured.
-//
-// +kubebuilder:validation:XValidation:rule="has(self.shared) || has(self.perUser) || (has(self.tools) && size(self.tools) > 0)",message="at least one of shared, perUser, or tools must be configured"
-//
-//nolint:lll // CEL validation rules exceed line length limit
-type RateLimitConfig struct {
-	// Shared is a token bucket shared across all users for the entire server.
-	// +optional
-	Shared *RateLimitBucket `json:"shared,omitempty"`
-
-	// PerUser is a token bucket applied independently to each authenticated user
-	// at the server level. Requires authentication to be enabled.
-	// Each unique userID creates Redis keys that expire after 2x refillPeriod.
-	// Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys.
-	// +optional
-	PerUser *RateLimitBucket `json:"perUser,omitempty"`
-
-	// Tools defines per-tool rate limit overrides.
-	// Each entry applies additional rate limits to calls targeting a specific tool name.
-	// A request must pass both the server-level limit and the per-tool limit.
-	// +listType=map
-	// +listMapKey=name
-	// +optional
-	Tools []ToolRateLimitConfig `json:"tools,omitempty"`
-}
+// +gendoc
+type RateLimitConfig = ratelimittypes.RateLimitConfig
 
 // RateLimitBucket defines a token bucket configuration with a maximum capacity
-// and a refill period. Used by both shared (global) and per-user rate limits.
-type RateLimitBucket struct {
-	// MaxTokens is the maximum number of tokens (bucket capacity).
-	// This is also the burst size: the maximum number of requests that can be served
-	// instantaneously before the bucket is depleted.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Minimum=1
-	MaxTokens int32 `json:"maxTokens"`
-
-	// RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
-	// The effective refill rate is maxTokens / refillPeriod tokens per second.
-	// Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
-	// +kubebuilder:validation:Required
-	RefillPeriod metav1.Duration `json:"refillPeriod"`
-}
+// and a refill period. Used by both shared and per-user rate limits.
+// +gendoc
+type RateLimitBucket = ratelimittypes.RateLimitBucket
 
 // ToolRateLimitConfig defines rate limits for a specific tool.
-// At least one of shared or perUser must be configured.
-//
-// +kubebuilder:validation:XValidation:rule="has(self.shared) || has(self.perUser)",message="at least one of shared or perUser must be configured"
-//
-//nolint:lll // kubebuilder marker exceeds line length
-type ToolRateLimitConfig struct {
-	// Name is the MCP tool name this limit applies to.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-
-	// Shared token bucket for this specific tool.
-	// +optional
-	Shared *RateLimitBucket `json:"shared,omitempty"`
-
-	// PerUser token bucket configuration for this tool.
-	// +optional
-	PerUser *RateLimitBucket `json:"perUser,omitempty"`
-}
+// +gendoc
+type ToolRateLimitConfig = ratelimittypes.ToolRateLimitConfig
 
 // Permission profile types
 const (
@@ -682,6 +654,20 @@ type AuthzConfigRef struct {
 	Inline *InlineAuthzConfig `json:"inline,omitempty"`
 }
 
+// ExplicitPrimaryUpstreamProvider returns the user-specified primary upstream
+// provider name from the authz config, or "" if none is set.
+//
+// Currently reads from inline config only. ConfigMap-sourced authz needs to
+// load and parse the referenced ConfigMap; until that path lands (see the
+// matching TODO in cmd/thv-operator/pkg/vmcpconfig/converter.go), configMap
+// users always fall through to auto-selection of the first upstream.
+func (r *AuthzConfigRef) ExplicitPrimaryUpstreamProvider() string {
+	if r == nil || r.Inline == nil {
+		return ""
+	}
+	return r.Inline.PrimaryUpstreamProvider
+}
+
 // ConfigMapAuthzRef references a ConfigMap containing authorization configuration
 type ConfigMapAuthzRef struct {
 	// Name is the name of the ConfigMap
@@ -714,6 +700,14 @@ type AuthServerRef struct {
 	// Name is the name of the referenced resource in the same namespace.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
+// WebhookConfigRef defines a reference to a MCPWebhookConfig resource.
+// The referenced MCPWebhookConfig must be in the same namespace as the MCPServer.
+type WebhookConfigRef struct {
+	// Name is the name of the MCPWebhookConfig resource
+	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 }
 
@@ -754,6 +748,23 @@ type InlineAuthzConfig struct {
 	// +kubebuilder:default="[]"
 	// +optional
 	EntitiesJSON string `json:"entitiesJson,omitempty"`
+
+	// PrimaryUpstreamProvider names the upstream IDP whose access token's claims
+	// Cedar should evaluate. Currently honored only when the parent
+	// AuthzConfigRef.Type is "inline"; configMap-sourced policies will support
+	// this in a future release (see #5208). Only meaningful for VirtualMCPServer
+	// with an embedded auth server. When empty and an embedded auth server has
+	// upstreams configured, the controller defaults to the first upstream
+	// provider. The name must match one of the upstreams declared on
+	// spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
+	// rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
+	// have no embedded auth server; setting this field on those CRs surfaces an
+	// AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	PrimaryUpstreamProvider string `json:"primaryUpstreamProvider,omitempty"`
 }
 
 // AuditConfig defines audit logging configuration for the MCP server
@@ -827,6 +838,10 @@ type MCPServerStatus struct {
 	// TelemetryConfigHash is the hash of the referenced MCPTelemetryConfig spec for change detection
 	// +optional
 	TelemetryConfigHash string `json:"telemetryConfigHash,omitempty"`
+
+	// WebhookConfigHash is the hash of the referenced MCPWebhookConfig spec
+	// +optional
+	WebhookConfigHash string `json:"webhookConfigHash,omitempty"`
 
 	// URL is the URL where the MCP server can be accessed
 	// +optional

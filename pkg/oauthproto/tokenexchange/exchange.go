@@ -6,34 +6,15 @@ package tokenexchange
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
-	"time"
 
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/oauthproto"
-)
-
-const (
-	// defaultHTTPTimeout is the timeout for HTTP requests
-	defaultHTTPTimeout = 30 * time.Second
-
-	// maxResponseBodySize is the maximum size for reading response bodies (1 MB)
-	maxResponseBodySize = 1 << 20
-
-	// redactedPlaceholder is used to redact sensitive values in string representations
-	redactedPlaceholder = "[REDACTED]"
-
-	// emptyPlaceholder is used to indicate empty/missing values in string representations
-	emptyPlaceholder = "<empty>"
 )
 
 // NormalizeTokenType converts a short token type name to its full URN.
@@ -67,39 +48,6 @@ func NormalizeTokenType(tokenType string) (string, error) {
 	}
 }
 
-// oAuthError represents an OAuth 2.0 error response as defined in RFC 6749 Section 5.2.
-type oAuthError struct {
-	Error            string `json:"error"`
-	ErrorDescription string `json:"error_description,omitempty"`
-	ErrorURI         string `json:"error_uri,omitempty"`
-	StatusCode       int    `json:"-"`
-}
-
-func (e *oAuthError) String() string {
-	if e.ErrorURI != "" {
-		return fmt.Sprintf("OAuth error %q (status %d): see %s", e.Error, e.StatusCode, e.ErrorURI)
-	}
-	return fmt.Sprintf("OAuth error %q (status %d)", e.Error, e.StatusCode)
-}
-
-// parseOAuthError attempts to parse an OAuth error response from the given response body.
-func parseOAuthError(statusCode int, body []byte) *oAuthError {
-	var oauthErr oAuthError
-	if err := json.Unmarshal(body, &oauthErr); err != nil {
-		return nil
-	}
-	if oauthErr.Error == "" {
-		return nil
-	}
-	oauthErr.StatusCode = statusCode
-	return &oauthErr
-}
-
-// defaultHTTPClient is the default HTTP client used for token exchange requests.
-var defaultHTTPClient = &http.Client{
-	Timeout: defaultHTTPTimeout,
-}
-
 // actingParty represents the acting party in a token exchange delegation scenario.
 // When present, it indicates that the actor token holder is acting on behalf of the subject token holder.
 type actingParty struct {
@@ -125,64 +73,25 @@ type exchangeRequest struct {
 
 // String implements fmt.Stringer for exchangeRequest, redacting sensitive tokens.
 func (r exchangeRequest) String() string {
-	subjectToken := redactedPlaceholder
-	if r.SubjectToken == "" {
-		subjectToken = emptyPlaceholder
-	}
-
 	actorToken := "<none>"
 	if r.ActingParty != nil {
-		actorToken = redactedPlaceholder
-		if r.ActingParty.ActorToken == "" {
-			actorToken = emptyPlaceholder
-		}
+		actorToken = oauthproto.Redact(r.ActingParty.ActorToken)
 	}
 
 	return fmt.Sprintf("exchangeRequest{GrantType: %s, Audience: %s, Resource: %s, Scope: %v, SubjectToken: %s, ActorToken: %s}",
-		r.GrantType, r.Audience, r.Resource, r.Scope, subjectToken, actorToken)
-}
-
-// response is used to decode the remote server response during an OAuth 2.0 token exchange.
-type response struct {
-	AccessToken     string `json:"access_token"` //nolint:gosec // G117: field legitimately holds sensitive data
-	IssuedTokenType string `json:"issued_token_type"`
-	TokenType       string `json:"token_type"`
-	ExpiresIn       int    `json:"expires_in"`
-	Scope           string `json:"scope"`
-	RefreshToken    string `json:"refresh_token"` //nolint:gosec // G117: field legitimately holds sensitive data
-}
-
-// String implements fmt.Stringer for response, redacting sensitive tokens.
-func (r response) String() string {
-	accessToken := redactedPlaceholder
-	if r.AccessToken == "" {
-		accessToken = emptyPlaceholder
-	}
-
-	refreshToken := redactedPlaceholder
-	if r.RefreshToken == "" {
-		refreshToken = emptyPlaceholder
-	}
-
-	return fmt.Sprintf("response{AccessToken: %s, TokenType: %s, ExpiresIn: %d, RefreshToken: %s}",
-		accessToken, r.TokenType, r.ExpiresIn, refreshToken)
+		r.GrantType, r.Audience, r.Resource, r.Scope, oauthproto.Redact(r.SubjectToken), actorToken)
 }
 
 // clientAuthentication represents OAuth client credentials for token exchange.
 type clientAuthentication struct {
 	ClientID     string
-	ClientSecret string //nolint:gosec // G117
+	ClientSecret string
 }
 
 // String implements fmt.Stringer for clientAuthentication, redacting the client secret.
 func (c clientAuthentication) String() string {
-	clientSecret := redactedPlaceholder
-	if c.ClientSecret == "" {
-		clientSecret = emptyPlaceholder
-	}
-
 	return fmt.Sprintf("clientAuthentication{ClientID: %s, ClientSecret: %s}",
-		c.ClientID, clientSecret)
+		c.ClientID, oauthproto.Redact(c.ClientSecret))
 }
 
 // ExchangeConfig holds the configuration for token exchange.
@@ -194,7 +103,7 @@ type ExchangeConfig struct {
 	ClientID string
 
 	// ClientSecret is the OAuth 2.0 client secret
-	ClientSecret string //nolint:gosec // G117
+	ClientSecret string
 
 	// Audience is the target audience for the exchanged token (optional per RFC 8693)
 	Audience string
@@ -224,11 +133,18 @@ type ExchangeConfig struct {
 	SubjectTokenProvider func() (string, error)
 
 	// HTTPClient is the HTTP client to use for token exchange requests.
-	// If nil, defaultHTTPClient will be used.
+	// If nil, oauthproto.DefaultHTTPClient() will be used.
 	HTTPClient *http.Client
 }
 
 // Validate checks if the ExchangeConfig contains all required fields.
+//
+// Side effect: when SubjectTokenType is provided as a short form
+// ("access_token", "id_token", "jwt"), Validate normalizes it to the full
+// RFC 8693 URN and writes the result back onto the receiver. Callers in
+// pkg/vmcp/auth/strategies/tokenexchange.go and pkg/runner/config_builder.go
+// read the normalized value after Validate returns, so this mutation is part
+// of the documented contract.
 func (c *ExchangeConfig) Validate() error {
 	if c.TokenURL == "" {
 		return fmt.Errorf("TokenURL is required")
@@ -330,33 +246,18 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 		return nil, err
 	}
 
-	// Validate required RFC 8693 response fields
-	if resp.AccessToken == "" {
-		return nil, fmt.Errorf("token exchange: server returned empty access_token")
+	// RFC 8693 Section 2.2.1 requires token_type in the response. The shared
+	// oauthproto.ParseTokenResponse is intentionally permissive on this field
+	// (matching x/oauth2); token exchange tightens it back.
+	if resp.Token.TokenType == "" {
+		return nil, fmt.Errorf("token exchange: server returned empty token_type (required by RFC 8693)")
 	}
-	if resp.TokenType == "" {
-		return nil, fmt.Errorf("token exchange: server returned empty token_type")
-	}
+	// RFC 8693 Section 2.2.1 requires issued_token_type in the response.
 	if resp.IssuedTokenType == "" {
 		return nil, fmt.Errorf("token exchange: server returned empty issued_token_type (required by RFC 8693)")
 	}
 
-	// Build oauth2.Token
-	token := &oauth2.Token{
-		AccessToken: resp.AccessToken,
-		TokenType:   resp.TokenType,
-	}
-
-	// Set expiry if provided
-	if resp.ExpiresIn > 0 {
-		token.Expiry = time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second)
-	}
-
-	if resp.RefreshToken != "" {
-		token.RefreshToken = resp.RefreshToken
-	}
-
-	return token, nil
+	return resp.Token, nil
 }
 
 // TokenSource returns an oauth2.TokenSource that performs token exchange.
@@ -375,36 +276,35 @@ func exchangeToken(
 	request *exchangeRequest,
 	auth clientAuthentication,
 	client *http.Client,
-) (*response, error) {
-	data, err := buildTokenExchangeFormData(request)
+) (*oauthproto.TokenResponse, error) {
+	data, err := buildFormData(request)
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := createTokenExchangeRequest(ctx, endpoint, data, auth)
+	req, err := oauthproto.NewFormRequest(ctx, endpoint, data, auth.ClientID, auth.ClientSecret)
 	if err != nil {
+		return nil, fmt.Errorf("tokenexchange: build request: %w", err)
+	}
+
+	resp, err := oauthproto.DoTokenRequest(client, req)
+	if err != nil {
+		// Preserve the pre-refactor behavior: scrub RetrieveError.Body so raw
+		// upstream content cannot leak into error strings via err.Error().
+		// pkg/oauthproto deliberately preserves Body for general-purpose
+		// callers; tokenexchange opts back into the stricter behavior because
+		// its errors propagate through vmcp / runner paths that may log them.
+		var retrieveErr *oauth2.RetrieveError
+		if errors.As(err, &retrieveErr) {
+			retrieveErr.Body = nil
+		}
 		return nil, err
 	}
-
-	if client == nil {
-		client = defaultHTTPClient
-	}
-
-	body, err := executeTokenExchangeRequest(client, req)
-	if err != nil {
-		return nil, err
-	}
-
-	tokenResp, err := parseTokenExchangeResponse(body)
-	if err != nil {
-		return nil, err
-	}
-
-	return tokenResp, nil
+	return resp, nil
 }
 
-// buildTokenExchangeFormData constructs the form data for a token exchange request according to RFC 8693.
-func buildTokenExchangeFormData(request *exchangeRequest) (url.Values, error) {
+// buildFormData constructs the form data for a token exchange request according to RFC 8693.
+func buildFormData(request *exchangeRequest) (url.Values, error) {
 	data := url.Values{}
 
 	// Grant type is always token exchange
@@ -455,85 +355,4 @@ func addOptionalFields(data url.Values, request *exchangeRequest) {
 			data.Set("actor_token_type", request.ActingParty.ActorTokenType)
 		}
 	}
-}
-
-// createTokenExchangeRequest creates an HTTP POST request for token exchange.
-// Client credentials are sent via HTTP Basic Authentication as recommended by RFC 6749 Section 2.3.1.
-func createTokenExchangeRequest(
-	ctx context.Context,
-	endpoint string,
-	data url.Values,
-	auth clientAuthentication,
-) (*http.Request, error) {
-	encodedData := data.Encode()
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(encodedData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create token exchange request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Content-Length", strconv.Itoa(len(encodedData)))
-
-	// Add client authentication via HTTP Basic Auth per RFC 6749 Section 2.3.1
-	// Per RFC 6749 and Go's SetBasicAuth documentation, credentials must be URL-encoded
-	// before being passed to SetBasicAuth for OAuth2 compatibility
-	if auth.ClientID != "" && auth.ClientSecret != "" {
-		req.SetBasicAuth(url.QueryEscape(auth.ClientID), url.QueryEscape(auth.ClientSecret))
-	}
-
-	return req, nil
-}
-
-// executeTokenExchangeRequest sends the HTTP request and returns the response body.
-func executeTokenExchangeRequest(client *http.Client, req *http.Request) ([]byte, error) {
-	resp, err := client.Do(req) // #nosec G704 -- URL is the configured token exchange endpoint
-	if err != nil {
-		return nil, fmt.Errorf("token exchange request failed: %w", err)
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			// Non-fatal: response body cleanup failure
-			slog.Debug("Failed to close response body", "error", err)
-		}
-	}()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read token exchange response: %w", err)
-	}
-
-	if err := validateResponseStatus(resp.StatusCode, body); err != nil {
-		return nil, err
-	}
-
-	return body, nil
-}
-
-// validateResponseStatus checks the HTTP status code and returns an error if not successful.
-func validateResponseStatus(statusCode int, body []byte) error {
-	if statusCode >= 200 && statusCode <= 299 {
-		return nil
-	}
-
-	// Try to parse as OAuth error first
-	if oauthErr := parseOAuthError(statusCode, body); oauthErr != nil {
-		//nolint:gosec // G706: OAuth error codes are standard protocol values, not user input
-		slog.Debug("Token exchange OAuth error", "oauth_error_code", oauthErr.Error, "description", oauthErr.ErrorDescription)
-		return errors.New(oauthErr.String())
-	}
-
-	//nolint:gosec // G706: status code and body length are safe diagnostic values
-	slog.Debug("Token exchange failed", "status", statusCode, "body_length", len(body))
-	return fmt.Errorf("token exchange failed with status %d", statusCode)
-}
-
-// parseTokenExchangeResponse parses the token exchange response body.
-func parseTokenExchangeResponse(body []byte) (*response, error) {
-	var tokenResp response
-	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		slog.Debug("Failed to parse token exchange response", "error", err)
-		return nil, errors.New("failed to parse token exchange response")
-	}
-
-	return &tokenResp, nil
 }

@@ -16,6 +16,10 @@ import (
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 //
+// +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="config.rateLimiting requires sessionStorage with provider 'redis'"
+// +kubebuilder:validation:XValidation:rule="!(has(self.config) && has(self.config.rateLimiting) && has(self.config.rateLimiting.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="config.rateLimiting.perUser requires incomingAuth.type oidc"
+// +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools) || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="per-tool perUser rate limiting requires incomingAuth.type oidc"
+//
 //nolint:lll // CEL validation rules exceed line length limit
 type VirtualMCPServerSpec struct {
 	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
@@ -399,6 +403,20 @@ const (
 	// alongside multiple upstream providers and the first upstream has been chosen as
 	// the Cedar claim source. The advisory message names the selected upstream.
 	ConditionReasonAuthzUpstreamAutoSelected = "AuthzUpstreamAutoSelected"
+
+	// ConditionReasonAuthzUpstreamUnknown indicates that
+	// spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider names an upstream
+	// IDP that is not declared on spec.authServerConfig.upstreamProviders. Cedar
+	// would otherwise deny every request at runtime; reject at admission instead.
+	ConditionReasonAuthzUpstreamUnknown = "AuthzUpstreamUnknown"
+
+	// ConditionReasonAuthzPrimaryProviderRequiresAuthServer indicates that
+	// spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider is set but
+	// spec.authServerConfig is not configured. The field names an upstream IDP
+	// on the embedded auth server, which is required for it to take effect.
+	// Distinct from AuthzUpstreamUnknown so tooling (alertmanager rules,
+	// dashboards) can route the two misconfigurations separately.
+	ConditionReasonAuthzPrimaryProviderRequiresAuthServer = "AuthzPrimaryProviderRequiresAuthServer"
 
 	// ConditionReasonVirtualMCPServerTelemetryConfigRefValid indicates the referenced MCPTelemetryConfig is valid
 	ConditionReasonVirtualMCPServerTelemetryConfigRefValid = "TelemetryConfigRefValid"

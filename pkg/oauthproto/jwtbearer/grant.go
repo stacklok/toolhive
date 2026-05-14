@@ -1,0 +1,168 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package jwtbearer
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"golang.org/x/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
+)
+
+// Config holds configuration for an OAuth 2.0 JWT Bearer Grant (RFC 7523).
+type Config struct {
+	// TokenURL is the target authorization server's token endpoint (required).
+	TokenURL string
+
+	// ClientID is the OAuth client identifier at the target AS. When both ClientID
+	// and ClientSecret are set, the request is authenticated with HTTP Basic per
+	// RFC 6749 Section 2.3.1. Public-client identification via a body client_id
+	// parameter (RFC 6749 Section 3.2.1) is not supported — XAA / ID-JAG §8.1
+	// requires confidential clients, and that is the only intended consumer.
+	ClientID string
+
+	// ClientSecret is the OAuth client secret at the target AS.
+	ClientSecret string //nolint:gosec // G101: field name, not a credential
+
+	// Scopes are the requested scopes for the access token.
+	Scopes []string
+
+	// AssertionProvider returns the JWT assertion (e.g., the ID-JAG from Step A).
+	// Called on each Token() invocation; must not be nil. The returned JWT must
+	// satisfy RFC 7523 Section 3 (iss/sub/aud/exp); aud should typically be the
+	// target AS's token endpoint (TokenURL). The provider must be safe for
+	// concurrent use — Token() may be called from multiple goroutines (e.g.,
+	// when wrapped in oauth2.ReuseTokenSource).
+	AssertionProvider func() (string, error)
+
+	// HTTPClient is the HTTP client to use. If nil, oauthproto.DefaultHTTPClient()
+	// is used.
+	HTTPClient *http.Client
+}
+
+// Validate checks that the Config contains all required fields.
+func (c *Config) Validate() error {
+	if c.TokenURL == "" {
+		return fmt.Errorf("TokenURL is required")
+	}
+
+	if c.AssertionProvider == nil {
+		return fmt.Errorf("AssertionProvider is required")
+	}
+
+	// Validate TokenURL: must be https (or http on localhost) per RFC 6749 Section 3.2
+	// and RFC 7523 Section 7. Reuses the repo-wide endpoint validator for scheme,
+	// and adds host and fragment checks that it does not perform.
+	if err := networking.ValidateEndpointURL(c.TokenURL); err != nil {
+		return fmt.Errorf("TokenURL: %w", err)
+	}
+	u, err := url.Parse(c.TokenURL)
+	if err != nil {
+		return fmt.Errorf("TokenURL is not a valid URL: %w", err)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("TokenURL must include a host")
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("TokenURL must not contain a fragment")
+	}
+	if u.User != nil {
+		return fmt.Errorf("TokenURL must not contain embedded credentials")
+	}
+
+	return nil
+}
+
+// String implements fmt.Stringer for Config, redacting sensitive fields.
+func (c *Config) String() string {
+	assertion := oauthproto.Redact("")
+	if c.AssertionProvider != nil {
+		assertion = oauthproto.Redact("set")
+	}
+
+	return fmt.Sprintf("Config{TokenURL: %s, ClientID: %s, ClientSecret: %s, Scopes: %v, Assertion: %s}",
+		c.TokenURL, c.ClientID, oauthproto.Redact(c.ClientSecret), c.Scopes, assertion)
+}
+
+// Compile-time assertion that *tokenSource implements oauth2.TokenSource.
+var _ oauth2.TokenSource = (*tokenSource)(nil)
+
+// TokenSource returns an oauth2.TokenSource that performs the JWT Bearer grant.
+func (c *Config) TokenSource(ctx context.Context) oauth2.TokenSource {
+	return &tokenSource{
+		ctx:  ctx,
+		conf: c,
+	}
+}
+
+// tokenSource implements oauth2.TokenSource for the JWT Bearer grant.
+type tokenSource struct {
+	ctx  context.Context
+	conf *Config
+}
+
+// Token implements the oauth2.TokenSource interface.
+// It performs the JWT Bearer grant and returns an oauth2.Token.
+func (ts *tokenSource) Token() (*oauth2.Token, error) {
+	conf := ts.conf
+
+	if err := conf.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
+	assertion, err := conf.AssertionProvider()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get assertion: %w", err)
+	}
+
+	data := buildFormData(assertion, conf.Scopes)
+
+	req, err := oauthproto.NewFormRequest(ts.ctx, conf.TokenURL, data, conf.ClientID, conf.ClientSecret)
+	if err != nil {
+		return nil, fmt.Errorf("jwtbearer: build request: %w", err)
+	}
+
+	resp, err := oauthproto.DoTokenRequest(conf.HTTPClient, req)
+	if err != nil {
+		// Scrub RetrieveError.Body so raw upstream content cannot leak into
+		// error strings via err.Error(). pkg/oauthproto deliberately preserves
+		// Body for general-purpose callers; jwtbearer opts back into the
+		// stricter behavior because its errors propagate through vmcp / runner
+		// paths that may log them. Matches pkg/oauthproto/tokenexchange.
+		var retrieveErr *oauth2.RetrieveError
+		if errors.As(err, &retrieveErr) {
+			retrieveErr.Body = nil
+		}
+		return nil, err
+	}
+
+	// RFC 6749 Section 5.1 requires token_type in the response. The shared
+	// oauthproto.ParseTokenResponse is intentionally permissive on this field
+	// (matching x/oauth2); the JWT Bearer grant tightens it back.
+	if resp.Token.TokenType == "" {
+		return nil, fmt.Errorf("jwtbearer: server returned empty token_type (required by RFC 6749 Section 5.1)")
+	}
+
+	return resp.Token, nil
+}
+
+// buildFormData constructs the form data for a JWT Bearer grant request.
+func buildFormData(assertion string, scopes []string) url.Values {
+	data := url.Values{}
+	data.Set("grant_type", oauthproto.GrantTypeJWTBearer)
+	data.Set("assertion", assertion)
+
+	if len(scopes) > 0 {
+		data.Set("scope", strings.Join(scopes, " "))
+	}
+
+	return data
+}

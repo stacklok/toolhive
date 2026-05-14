@@ -13,6 +13,7 @@ import (
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	upstreammocks "github.com/stacklok/toolhive/pkg/authserver/upstream/mocks"
@@ -145,9 +146,16 @@ func TestNewServer_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	// Create mocks
-	mockStorage := storagemocks.NewMockStorage(ctrl)
 	mockUpstream := upstreammocks.NewMockOAuth2Provider(ctrl)
+
+	// Use a real MemoryStorage rather than storagemocks.MockStorage: the
+	// constructor type-asserts the storage to storage.DCRCredentialStore (per
+	// the F6 design — Storage no longer embeds DCRCredentialStore), and
+	// generated MockStorage does not implement DCRCredentialStore. This test
+	// exercises the constructor flow, not specific storage method calls, so
+	// a real MemoryStorage is sufficient and keeps the assertion path real.
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
 
 	// Create valid config
 	cfg := Config{
@@ -165,7 +173,7 @@ func TestNewServer_Success(t *testing.T) {
 
 	// Call newServer with the mock factory
 	ctx := context.Background()
-	srv, err := newServer(ctx, cfg, mockStorage, withUpstreamFactory(mockFactory))
+	srv, err := newServer(ctx, cfg, stor, withUpstreamFactory(mockFactory))
 
 	if err != nil {
 		t.Fatalf("newServer() unexpected error: %v", err)
@@ -176,7 +184,7 @@ func TestNewServer_Success(t *testing.T) {
 	if srv.Handler() == nil {
 		t.Error("server.Handler() returned nil")
 	}
-	if srv.IDPTokenStorage() != mockStorage {
+	if srv.IDPTokenStorage() != stor {
 		t.Error("server.IDPTokenStorage() did not return expected storage")
 	}
 }

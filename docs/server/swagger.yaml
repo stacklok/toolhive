@@ -31,31 +31,15 @@ components:
           description: Version is the schema version of the registry
           type: string
       type: object
-    github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket:
-      description: |-
-        PerUser token bucket configuration for this tool.
-        +optional
-      properties:
-        maxTokens:
-          description: |-
-            MaxTokens is the maximum number of tokens (bucket capacity).
-            This is also the burst size: the maximum number of requests that can be served
-            instantaneously before the bucket is depleted.
-            +kubebuilder:validation:Required
-            +kubebuilder:validation:Minimum=1
-          type: integer
-        refillPeriod:
-          $ref: '#/components/schemas/v1.Duration'
-      type: object
     github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitConfig:
       description: |-
         RateLimitConfig contains the CRD rate limiting configuration.
         When set, rate limiting middleware is added to the proxy middleware chain.
       properties:
         perUser:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket'
         shared:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket'
         tools:
           description: |-
             Tools defines per-tool rate limit overrides.
@@ -65,22 +49,9 @@ components:
             +listMapKey=name
             +optional
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.ToolRateLimitConfig'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.ToolRateLimitConfig'
           type: array
           uniqueItems: false
-      type: object
-    github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.ToolRateLimitConfig:
-      properties:
-        name:
-          description: |-
-            Name is the MCP tool name this limit applies to.
-            +kubebuilder:validation:Required
-            +kubebuilder:validation:MinLength=1
-          type: string
-        perUser:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket'
-        shared:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitBucket'
       type: object
     github_com_stacklok_toolhive_pkg_audit.Config:
       description: |-
@@ -355,44 +326,6 @@ components:
         use_pkce:
           type: boolean
       type: object
-    github_com_stacklok_toolhive_pkg_auth_tokenexchange.Config:
-      description: TokenExchangeConfig contains token exchange configuration for external
-        authentication
-      properties:
-        audience:
-          description: Audience is the target audience for the exchanged token
-          type: string
-        client_id:
-          description: ClientID is the OAuth 2.0 client identifier
-          type: string
-        client_secret:
-          description: ClientSecret is the OAuth 2.0 client secret
-          type: string
-        external_token_header_name:
-          description: ExternalTokenHeaderName is the name of the custom header to
-            use when HeaderStrategy is "custom"
-          type: string
-        header_strategy:
-          description: |-
-            HeaderStrategy determines how to inject the token
-            Valid values: HeaderStrategyReplace (default), HeaderStrategyCustom
-          type: string
-        scopes:
-          description: Scopes is the list of scopes to request for the exchanged token
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        subject_token_type:
-          description: |-
-            SubjectTokenType specifies the type of the subject token being exchanged.
-            Common values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.
-            If empty, defaults to oauthproto.TokenTypeAccessToken.
-          type: string
-        token_url:
-          description: TokenURL is the OAuth 2.0 token endpoint URL
-          type: string
-      type: object
     github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config:
       description: |-
         UpstreamSwapConfig contains configuration for upstream token swap middleware.
@@ -604,6 +537,20 @@ components:
             `{authorization_endpoint_base_url}/oauth/authorize` instead of `{issuer}/oauth/authorize`.
             All other endpoints remain derived from the issuer.
           type: string
+        baseline_client_scopes:
+          description: |-
+            BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every
+            DCR registration. All values must appear in ScopesSupported; the auth server
+            rejects this RunConfig at startup otherwise. Empty means current behavior is
+            preserved (registered scope = client-requested, or DefaultScopes if empty).
+            When ScopesSupported is empty, the subset check uses registration.DefaultScopes
+            (the same set applyDefaults would substitute at startup) — so
+            BaselineClientScopes containing standard OIDC scopes works without enumerating
+            ScopesSupported explicitly.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         hmac_secret_files:
           description: |-
             HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes
@@ -820,13 +767,17 @@ components:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig'
         addr:
           description: |-
-            Addr is the Redis server address for standalone mode (e.g., "host:port").
+            Addr is the Redis server address (host:port). Required for standalone and cluster modes.
             Mutually exclusive with SentinelConfig.
           type: string
         auth_type:
           description: AuthType must be "aclUser" - only ACL user authentication is
             supported.
           type: string
+        cluster_mode:
+          description: ClusterMode enables the Redis Cluster protocol. Requires Addr
+            to be set.
+          type: boolean
         dial_timeout:
           description: DialTimeout is the timeout for establishing connections (e.g.,
             "5s").
@@ -1139,6 +1090,73 @@ components:
           description: Whether to print resolved overlay paths for debugging
           type: boolean
       type: object
+    github_com_stacklok_toolhive_pkg_oauthproto_tokenexchange.Config:
+      description: TokenExchangeConfig contains token exchange configuration for external
+        authentication
+      properties:
+        audience:
+          description: Audience is the target audience for the exchanged token
+          type: string
+        client_id:
+          description: ClientID is the OAuth 2.0 client identifier
+          type: string
+        client_secret:
+          description: ClientSecret is the OAuth 2.0 client secret
+          type: string
+        external_token_header_name:
+          description: ExternalTokenHeaderName is the name of the custom header to
+            use when HeaderStrategy is "custom"
+          type: string
+        header_strategy:
+          description: |-
+            HeaderStrategy determines how to inject the token
+            Valid values: HeaderStrategyReplace (default), HeaderStrategyCustom
+          type: string
+        scopes:
+          description: Scopes is the list of scopes to request for the exchanged token
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        subject_token_type:
+          description: |-
+            SubjectTokenType specifies the type of the subject token being exchanged.
+            Common values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.
+            If empty, defaults to oauthproto.TokenTypeAccessToken.
+          type: string
+        token_url:
+          description: TokenURL is the OAuth 2.0 token endpoint URL
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket:
+      description: |-
+        PerUser token bucket configuration for this tool.
+        +optional
+      properties:
+        maxTokens:
+          description: |-
+            MaxTokens is the maximum number of tokens (bucket capacity).
+            This is also the burst size: the maximum number of requests that can be served
+            instantaneously before the bucket is depleted.
+            +kubebuilder:validation:Required
+            +kubebuilder:validation:Minimum=1
+          type: integer
+        refillPeriod:
+          $ref: '#/components/schemas/v1.Duration'
+      type: object
+    github_com_stacklok_toolhive_pkg_ratelimit_types.ToolRateLimitConfig:
+      properties:
+        name:
+          description: |-
+            Name is the MCP tool name this limit applies to.
+            +kubebuilder:validation:Required
+            +kubebuilder:validation:MinLength=1
+          type: string
+        perUser:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket'
+        shared:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket'
+      type: object
     github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig:
       description: |-
         AuthConfig contains the non-secret OAuth configuration when auth is configured.
@@ -1375,7 +1393,7 @@ components:
             ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations
           type: string
         token_exchange_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth_tokenexchange.Config'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_oauthproto_tokenexchange.Config'
         tools_filter:
           description: |-
             DEPRECATED: Middleware configuration.
@@ -2029,6 +2047,7 @@ components:
           description: Version is the package version (required for npm, pypi, nuget;
             optional for mcpb; not used by oci where version is in the identifier)
           example: 1.0.2
+          maxLength: 255
           minLength: 1
           type: string
       type: object
@@ -3506,6 +3525,8 @@ components:
           type: string
         version:
           example: 1.0.2
+          maxLength: 255
+          minLength: 1
           type: string
         websiteUrl:
           example: https://modelcontextprotocol.io/examples
@@ -3994,6 +4015,47 @@ paths:
                 type: string
           description: Gateway Timeout - Registry unreachable
       summary: Update registry configuration
+      tags:
+      - registry
+  /api/v1beta/registry/{name}/refresh:
+    post:
+      description: Force a refresh of the server-side registry cache for the default
+        registry
+      parameters:
+      - description: Registry name (must be 'default')
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+          description: Registry refreshed
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/pkg_api_v1.registryErrorResponse'
+          description: Registry authentication required or upstream registry unavailable
+      summary: Refresh registry cache
       tags:
       - registry
   /api/v1beta/registry/{name}/servers:

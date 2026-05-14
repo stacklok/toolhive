@@ -119,6 +119,14 @@ func IsAuthenticationError(err error) bool {
 		return true
 	}
 
+	// mcp-go ErrAuthorizationRequired ("authorization required") and
+	// ErrOAuthAuthorizationRequired ("no valid token available, authorization
+	// required") string forms. Used as a fallback when the typed sentinel is
+	// not preserved through the error chain (issue #5223).
+	if strings.Contains(errLower, "authorization required") {
+		return true
+	}
+
 	return false
 }
 

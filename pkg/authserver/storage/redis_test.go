@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,7 +104,7 @@ func TestRedisConfig_Validation(t *testing.T) {
 		{
 			name:    "neither addr nor sentinel config",
 			cfg:     RedisConfig{ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"}, KeyPrefix: "test:"},
-			wantErr: "one of addr (standalone) or sentinel configuration is required",
+			wantErr: "one of addr (standalone or cluster) or sentinel configuration is required",
 		},
 		{
 			name: "addr and sentinel config both set",
@@ -113,7 +114,26 @@ func TestRedisConfig_Validation(t *testing.T) {
 				ACLUserConfig:  &ACLUserConfig{Username: "u", Password: "p"},
 				KeyPrefix:      "test:",
 			},
-			wantErr: "addr and sentinel configuration are mutually exclusive",
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "cluster mode with sentinel config",
+			cfg: RedisConfig{
+				ClusterMode:    true,
+				SentinelConfig: &SentinelConfig{MasterName: "m", SentinelAddrs: []string{"localhost:26379"}},
+				ACLUserConfig:  &ACLUserConfig{Username: "u", Password: "p"},
+				KeyPrefix:      "test:",
+			},
+			wantErr: "cluster mode cannot be used with sentinel",
+		},
+		{
+			name: "cluster mode without addr",
+			cfg: RedisConfig{
+				ClusterMode:   true,
+				ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"},
+				KeyPrefix:     "test:",
+			},
+			wantErr: "cluster mode requires addr",
 		},
 		{
 			name:    "missing sentinel master name",
@@ -220,6 +240,28 @@ func TestNewRedisStorage_Standalone_WithMiniredis(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	require.NoError(t, s.Health(ctx))
+}
+
+func TestNewRedisStorage_Cluster_ConnectionFailure(t *testing.T) {
+	t.Parallel()
+
+	cfg := RedisConfig{
+		Addr:        "localhost:19998",
+		ClusterMode: true,
+		ACLUserConfig: &ACLUserConfig{
+			Username: "user",
+			Password: "pass",
+		},
+		KeyPrefix:   "test:",
+		DialTimeout: 100 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	_, err := NewRedisStorage(ctx, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to connect to redis")
 }
 
 // --- Client Tests ---
@@ -1908,6 +1950,95 @@ func TestRedisKeyGeneration(t *testing.T) {
 		result := redisSetKey("test:auth:", KeyTypeReqIDAccess, "req-123")
 		assert.Equal(t, "test:auth:reqid:access:req-123", result)
 	})
+
+	t.Run("redisDCRKey", func(t *testing.T) {
+		t.Parallel()
+		result := redisDCRKey("test:auth:", DCRKey{
+			Issuer:      "https://thv.example.com",
+			RedirectURI: "https://thv.example.com/oauth/callback",
+			ScopesHash:  "abc123",
+		})
+		// 23 = len("https://thv.example.com"), 38 = len("https://thv.example.com/oauth/callback")
+		assert.Equal(t,
+			"test:auth:dcr:23:https://thv.example.com:38:https://thv.example.com/oauth/callback:abc123",
+			result)
+	})
+}
+
+// TestRedisDCRKey_Distinct pins the colon-safe lookup contract: any pair of
+// distinct DCRKey tuples must serialise to distinct Redis keys, even when one
+// component contains the literal substring of another. This is the property
+// the length-prefixed encoding exists to guarantee — a plain
+// fmt.Sprintf("%s:%s:%s", ...) form would collide for these inputs.
+func TestRedisDCRKey_Distinct(t *testing.T) {
+	t.Parallel()
+
+	mk := func(issuer, redirect, scopes string) DCRKey {
+		return DCRKey{Issuer: issuer, RedirectURI: redirect, ScopesHash: scopes}
+	}
+
+	tests := []struct {
+		name string
+		a, b DCRKey
+	}{
+		{
+			name: "different issuer",
+			a:    mk("https://idp-a.example.com", "https://x/cb", "h1"),
+			b:    mk("https://idp-b.example.com", "https://x/cb", "h1"),
+		},
+		{
+			name: "different redirect_uri",
+			a:    mk("https://idp.example.com", "https://x/cb", "h1"),
+			b:    mk("https://idp.example.com", "https://y/cb", "h1"),
+		},
+		{
+			name: "different scopes hash",
+			a:    mk("https://idp.example.com", "https://x/cb", "h1"),
+			b:    mk("https://idp.example.com", "https://x/cb", "h2"),
+		},
+		{
+			// Without length prefixing, ("ab", "cd") and ("a", "bcd") would
+			// both yield ":ab:cd:" as the issuer/redirect segment after a
+			// fmt.Sprintf collapse. The length prefix prevents that.
+			name: "redirect_uri-issuer boundary collision (length-prefix property)",
+			a:    mk("ab", "cd", "h1"),
+			b:    mk("a", "bcd", "h1"),
+		},
+		{
+			// RedirectURI legitimately contains colons (e.g. ":443"). A plain
+			// "%s:%s:%s" key would be ambiguous; the length prefix is not.
+			name: "colons inside redirect_uri",
+			a:    mk("https://idp.example.com", "https://x.example.com:443/cb", "h1"),
+			b:    mk("https://idp.example.com", "https://x.example.com/cb:443", "h1"),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ka := redisDCRKey("test:auth:", tc.a)
+			kb := redisDCRKey("test:auth:", tc.b)
+			assert.NotEqual(t, ka, kb, "distinct DCRKey tuples must produce distinct Redis keys")
+		})
+	}
+}
+
+// TestRedisDCRKey_Deterministic pins that the key helper is a pure function:
+// the same DCRKey produces the same Redis key on every call, with no hidden
+// state (e.g. accidental use of map iteration order).
+func TestRedisDCRKey_Deterministic(t *testing.T) {
+	t.Parallel()
+
+	key := DCRKey{
+		Issuer:      "https://idp.example.com",
+		RedirectURI: "https://thv.example.com/oauth/callback",
+		ScopesHash:  ScopesHash([]string{"openid", "profile", "email"}),
+	}
+
+	first := redisDCRKey("test:auth:", key)
+	for i := 0; i < 4; i++ {
+		assert.Equal(t, first, redisDCRKey("test:auth:", key))
+	}
 }
 
 // --- Health Check Tests ---
@@ -2139,4 +2270,454 @@ func TestRedisStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 			require.Equal(t, fixture, *got)
 		})
 	})
+}
+
+// --- DCR Credentials Storage ---
+
+// dcrFixtureKey returns a populated DCRKey for use in DCR tests.
+func dcrFixtureKey() DCRKey {
+	return DCRKey{
+		Issuer:      "https://thv.example.com",
+		RedirectURI: "https://thv.example.com/oauth/callback",
+		ScopesHash:  ScopesHash([]string{"openid", "profile"}),
+	}
+}
+
+func TestRedisStorage_DCRCredentials_RoundTrip(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		// Truncate to second precision: time fields are stored as int64 unix seconds.
+		createdAt := time.Now().Truncate(time.Second)
+		expiresAt := createdAt.Add(24 * time.Hour)
+
+		creds := &DCRCredentials{
+			Key:                     dcrFixtureKey(),
+			ProviderName:            "atlassian",
+			ClientID:                "client-abc",
+			ClientSecret:            "secret-xyz",
+			TokenEndpointAuthMethod: "client_secret_basic",
+			RegistrationAccessToken: "rat-123",
+			RegistrationClientURI:   "https://idp.example.com/register/client-abc",
+			AuthorizationEndpoint:   "https://idp.example.com/authorize",
+			TokenEndpoint:           "https://idp.example.com/token",
+			CreatedAt:               createdAt,
+			ClientSecretExpiresAt:   expiresAt,
+		}
+
+		require.NoError(t, s.StoreDCRCredentials(ctx, creds))
+
+		got, err := s.GetDCRCredentials(ctx, creds.Key)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		// Every field round-trips, including the embedded Key.
+		assert.Equal(t, *creds, *got)
+	})
+}
+
+func TestRedisStorage_DCRCredentials_OverwriteSemantics(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		key := dcrFixtureKey()
+		mk := func(clientID string) *DCRCredentials {
+			return &DCRCredentials{
+				Key:                   key,
+				ClientID:              clientID,
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+			}
+		}
+
+		require.NoError(t, s.StoreDCRCredentials(ctx, mk("first")))
+		require.NoError(t, s.StoreDCRCredentials(ctx, mk("second")))
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "second", got.ClientID)
+	})
+}
+
+func TestRedisStorage_DCRCredentials_NotFound(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		key  DCRKey
+	}{
+		{
+			name: "populated key with no stored entry",
+			key:  dcrFixtureKey(),
+		},
+		// Unpopulated keys cannot match any stored row (Store rejects them),
+		// so a Get against one is a normal miss — not a separate error class.
+		// This pins consistency with MemoryStorage.GetDCRCredentials.
+		{
+			name: "empty issuer",
+			key:  DCRKey{Issuer: "", RedirectURI: "https://x/cb"},
+		},
+		{
+			name: "empty redirect_uri",
+			key:  DCRKey{Issuer: "https://idp.example.com", RedirectURI: ""},
+		},
+		{
+			name: "empty scopes_hash",
+			key:  DCRKey{Issuer: "https://idp.example.com", RedirectURI: "https://x/cb", ScopesHash: ""},
+		},
+		{
+			name: "fully empty key",
+			key:  DCRKey{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+				_, err := s.GetDCRCredentials(ctx, tc.key)
+				requireRedisNotFoundError(t, err)
+			})
+		})
+	}
+}
+
+func TestRedisStorage_DCRCredentials_DistinctKeysCoexist(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		mkKey := func(issuer, redirect string, scopes []string) DCRKey {
+			return DCRKey{Issuer: issuer, RedirectURI: redirect, ScopesHash: ScopesHash(scopes)}
+		}
+		mk := func(key DCRKey, clientID string) *DCRCredentials {
+			return &DCRCredentials{
+				Key:                   key,
+				ClientID:              clientID,
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+			}
+		}
+		entries := []*DCRCredentials{
+			mk(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid"}), "a"),
+			mk(mkKey("https://idp-b.example.com", "https://x/cb", []string{"openid"}), "b"),
+			mk(mkKey("https://idp-a.example.com", "https://y/cb", []string{"openid"}), "c"),
+			mk(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid", "email"}), "d"),
+		}
+		for _, e := range entries {
+			require.NoError(t, s.StoreDCRCredentials(ctx, e))
+		}
+
+		for _, want := range entries {
+			got, err := s.GetDCRCredentials(ctx, want.Key)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, want.ClientID, got.ClientID)
+		}
+	})
+}
+
+// TestRedisStorage_DCRCredentials_StoreInvalidInputRejected mirrors
+// TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected: every input
+// rejected by validateDCRCredentialsForStore must produce
+// fosite.ErrInvalidRequest and leave no row behind in Redis.
+func TestRedisStorage_DCRCredentials_StoreInvalidInputRejected(t *testing.T) {
+	t.Parallel()
+
+	// validCreds returns a fully-populated DCRCredentials that subtests
+	// mutate to isolate a single missing field. Keeping every other field
+	// valid ensures the assertion proves which field was rejected.
+	validCreds := func() *DCRCredentials {
+		return &DCRCredentials{
+			Key: DCRKey{
+				Issuer:      "https://idp.example.com",
+				RedirectURI: "https://x/cb",
+				ScopesHash:  ScopesHash([]string{"openid"}),
+			},
+			ClientID:              "abc",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}
+	}
+
+	tests := []struct {
+		name    string
+		mutator func(*DCRCredentials) *DCRCredentials
+	}{
+		{
+			name:    "nil creds",
+			mutator: func(*DCRCredentials) *DCRCredentials { return nil },
+		},
+		{
+			name: "empty issuer",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.Key.Issuer = ""
+				return c
+			},
+		},
+		{
+			name: "empty redirect_uri",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.Key.RedirectURI = ""
+				return c
+			},
+		},
+		{
+			name: "empty scopes_hash",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.Key.ScopesHash = ""
+				return c
+			},
+		},
+		{
+			name: "empty client_id",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.ClientID = ""
+				return c
+			},
+		},
+		{
+			name: "empty authorization_endpoint",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.AuthorizationEndpoint = ""
+				return c
+			},
+		},
+		{
+			name: "empty token_endpoint",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.TokenEndpoint = ""
+				return c
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+				err := s.StoreDCRCredentials(ctx, tc.mutator(validCreds()))
+				assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
+				// Pin the fail-loud contract: a rejected Store must not leave
+				// any row behind, even under a partially-populated key. This
+				// mirrors MemoryStorage's `s.Stats().DCRCredentials == 0` guard
+				// (see TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected).
+				assert.Empty(t, mr.Keys(), "rejected Store must not leave any DCR row behind")
+			})
+		})
+	}
+}
+
+// TestRedisStorage_DCRCredentials_GetReturnsDefensiveCopy pins the
+// defensive-copy contract: mutating a returned value must not be visible to
+// subsequent reads. The Redis backend gets this for free from JSON
+// deserialisation, but the test pins the contract so a future change (e.g.
+// caching) cannot silently break it.
+func TestRedisStorage_DCRCredentials_GetReturnsDefensiveCopy(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		key := dcrFixtureKey()
+		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "orig",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}))
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		got.ClientID = "mutated"
+
+		refetched, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "orig", refetched.ClientID)
+	})
+}
+
+// TestRedisStorage_DCRCredentials_TTL pins the RFC 7591 §3.2.1
+// client_secret_expires_at semantics:
+//   - When ClientSecretExpiresAt is non-zero, the Redis row carries a TTL
+//     so it evicts before the upstream rejects the secret.
+//   - When ClientSecretExpiresAt is zero ("never"), the row is persistent
+//     (Redis TTL of -1).
+//   - When ClientSecretExpiresAt is in the past at write time, the row
+//     is written with the bounded `pastExpiryDCRTTL` (1 second) so an
+//     already-expired secret self-evicts almost immediately rather than
+//     persisting forever (see StoreDCRCredentials docstring).
+func TestRedisStorage_DCRCredentials_TTL(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-zero expiry sets a TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			expires := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+			require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-with-expiry",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+				ClientSecretExpiresAt: expires,
+			}))
+
+			ttl := mr.TTL(redisDCRKey("test:auth:", key))
+			assert.Greater(t, ttl, time.Duration(0), "TTL should be positive when ClientSecretExpiresAt is in the future")
+			// Allow some slack for elapsed time between Set and TTL read.
+			assert.LessOrEqual(t, ttl, 24*time.Hour)
+		})
+	})
+
+	t.Run("zero expiry means no TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-no-expiry",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+				// ClientSecretExpiresAt deliberately zero.
+			}))
+
+			// miniredis returns 0 (not -1) for "no TTL"; the integration test
+			// asserts the real Redis -1 behaviour separately.
+			assert.Equal(t, time.Duration(0), mr.TTL(redisDCRKey("test:auth:", key)),
+				"row should be persistent when ClientSecretExpiresAt is zero")
+		})
+	})
+
+	t.Run("past expiry uses bounded TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := dcrFixtureKey()
+			past := time.Now().Add(-time.Hour).Truncate(time.Second)
+			require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-past-expiry",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+				ClientSecretExpiresAt: past,
+			}))
+
+			// Pin the bounded-TTL contract for past-expiry writes:
+			// the row exists immediately after the write (so a resolver that
+			// re-reads can observe the expiry timestamp and re-register), the
+			// stored ClientSecretExpiresAt round-trips, and the TTL is exactly
+			// pastExpiryDCRTTL — not 0 (which would persist forever) and not
+			// the negative time.Until() value.
+			got, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, past.Unix(), got.ClientSecretExpiresAt.Unix())
+			assert.Equal(t, pastExpiryDCRTTL, mr.TTL(redisDCRKey("test:auth:", key)),
+				"past-expiry write must use the bounded pastExpiryDCRTTL, not TTL=0")
+		})
+	})
+}
+
+// TestRedisStorage_DCRCredentials_ConcurrentAccess pins race-freedom of
+// concurrent Put/Get under -race. Mirrors the Memory baseline by exercising
+// both an overlapping keyspace (every goroutine hammers the same key, so
+// reads can observe any goroutine's last write) and a disjoint keyspace
+// (per-goroutine key, so each goroutine's Get must always hit). With go
+// test -race this catches a future change that drops the lock or returns
+// an internal pointer instead of a defensive copy.
+//
+// Errors from spawned goroutines are reported via an atomic counter checked
+// from the test goroutine after wg.Wait() — calling require.NoError /
+// FailNow from a goroutine other than the one running the test function
+// is undefined behaviour per the testing.T docs.
+func TestRedisStorage_DCRCredentials_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
+	t.Run("overlapping_key", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			runDCRConcurrentAccess(ctx, t, s, dcrConcurrentOverlappingKey, 10*time.Second)
+		})
+	})
+
+	t.Run("disjoint_keys", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			runDCRConcurrentAccess(ctx, t, s, dcrConcurrentDisjointKeys, 10*time.Second)
+		})
+	})
+}
+
+// dcrConcurrentMode selects the keyspace strategy used by
+// runDCRConcurrentAccess. Two strategies — overlapping (every goroutine
+// writes/reads the same key) and disjoint (each goroutine has its own key) —
+// mirror the Memory baseline rationale at
+// TestMemoryStorage_DCRCredentials_ConcurrentAccess.
+type dcrConcurrentMode int
+
+const (
+	dcrConcurrentOverlappingKey dcrConcurrentMode = iota
+	dcrConcurrentDisjointKeys
+)
+
+// runDCRConcurrentAccess fans out goroutines doing alternating
+// StoreDCRCredentials / GetDCRCredentials and asserts no Store errored and,
+// when the keyspace is disjoint, that every Get hit. Shared between the
+// unit-test (miniredis) and integration-test (real Redis) suites — the
+// integration suite passes a longer deadline.
+func runDCRConcurrentAccess(
+	ctx context.Context,
+	t *testing.T,
+	s *RedisStorage,
+	mode dcrConcurrentMode,
+	deadline time.Duration,
+) {
+	t.Helper()
+
+	const (
+		goroutines = 8
+		iterations = 16
+	)
+
+	keyFor := func(gid, _ int) DCRKey {
+		switch mode {
+		case dcrConcurrentOverlappingKey:
+			return dcrFixtureKey()
+		case dcrConcurrentDisjointKeys:
+			return DCRKey{
+				Issuer:      fmt.Sprintf("https://idp-%d.example.com", gid),
+				RedirectURI: "https://x/cb",
+				ScopesHash:  ScopesHash([]string{"openid"}),
+			}
+		}
+		t.Fatalf("unknown dcrConcurrentMode %d", mode)
+		return DCRKey{}
+	}
+
+	mkCreds := func(key DCRKey, gid, i int) *DCRCredentials {
+		return &DCRCredentials{
+			Key:                   key,
+			ClientID:              fmt.Sprintf("client-%d-%d", gid, i),
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}
+	}
+
+	var (
+		storeErrCount int32
+		getErrCount   int32
+	)
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		gid := g
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				key := keyFor(gid, i)
+				if err := s.StoreDCRCredentials(ctx, mkCreds(key, gid, i)); err != nil {
+					atomic.AddInt32(&storeErrCount, 1)
+					continue
+				}
+				if _, err := s.GetDCRCredentials(ctx, key); err != nil {
+					// In the disjoint keyspace, every goroutine just wrote its own
+					// key; a miss is a real error. In the overlapping keyspace,
+					// the immediate Get can race with another goroutine's
+					// rewrite-then-evict only if a TTL expires mid-test, which
+					// none of these credentials use, so a miss there is also an
+					// error to track.
+					atomic.AddInt32(&getErrCount, 1)
+				}
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(deadline):
+		t.Fatal("timeout waiting for concurrent DCR access goroutines")
+	}
+
+	assert.Zero(t, atomic.LoadInt32(&storeErrCount), "no concurrent Store should have errored")
+	assert.Zero(t, atomic.LoadInt32(&getErrCount), "no concurrent Get should have errored")
 }

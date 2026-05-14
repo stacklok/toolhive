@@ -402,7 +402,25 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.monitoringCtx, r.monitoringCancel = context.WithCancel(ctx)
 			// Create adapter to bridge statuses.StatusManager to auth.StatusUpdater
 			adapter := &statusManagerAdapter{sm: r.statusManager}
-			r.authenticatedTokenSource = auth.NewMonitoredTokenSource(r.monitoringCtx, tokenSource, r.Config.BaseName, adapter)
+
+			// Capture the upstream issuer and resolved client_id so the DCR
+			// remediation warning emitted by isTransientNetworkError on a
+			// permanent 4xx (indicating a stale RFC 7591 registration)
+			// carries enough context for an operator to identify which
+			// upstream AS + client_id to re-register. Precedence (cached
+			// CIMD > cached DCR > static) lives next to
+			// resolveClientCredentials in pkg/auth/remote so both call
+			// sites stay in sync.
+			upstream, clientID := r.Config.RemoteAuthConfig.LogContext()
+
+			r.authenticatedTokenSource = auth.NewMonitoredTokenSource(
+				r.monitoringCtx,
+				tokenSource,
+				r.Config.BaseName,
+				upstream,
+				clientID,
+				adapter,
+			)
 			tokenSource = r.authenticatedTokenSource
 			r.authenticatedTokenSource.StartBackgroundMonitoring()
 		}

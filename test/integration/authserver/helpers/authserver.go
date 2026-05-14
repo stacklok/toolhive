@@ -21,13 +21,14 @@ type AuthServerOption func(*authServerConfig)
 
 // authServerConfig holds configuration for creating a test auth server.
 type authServerConfig struct {
-	issuer           string
-	upstreams        []authserver.UpstreamRunConfig
-	allowedAudiences []string
-	signingKeyConfig *authserver.SigningKeyRunConfig
-	hmacSecretFiles  []string
-	tokenLifespans   *authserver.TokenLifespanRunConfig
-	scopesSupported  []string
+	issuer               string
+	upstreams            []authserver.UpstreamRunConfig
+	allowedAudiences     []string
+	signingKeyConfig     *authserver.SigningKeyRunConfig
+	hmacSecretFiles      []string
+	tokenLifespans       *authserver.TokenLifespanRunConfig
+	scopesSupported      []string
+	baselineClientScopes []string
 }
 
 // WithIssuer sets the issuer URL.
@@ -76,6 +77,14 @@ func WithTokenLifespans(cfg *authserver.TokenLifespanRunConfig) AuthServerOption
 func WithScopesSupported(scopes []string) AuthServerOption {
 	return func(c *authServerConfig) {
 		c.scopesSupported = scopes
+	}
+}
+
+// WithBaselineClientScopes sets the baseline client scopes that are unioned
+// into every DCR registration response regardless of what the client requested.
+func WithBaselineClientScopes(scopes []string) AuthServerOption {
+	return func(c *authServerConfig) {
+		c.baselineClientScopes = scopes
 	}
 }
 
@@ -130,14 +139,15 @@ func NewTestAuthServerConfig(tb testing.TB, upstreamURL string, opts ...AuthServ
 	}
 
 	return &authserver.RunConfig{
-		SchemaVersion:    authserver.CurrentSchemaVersion,
-		Issuer:           cfg.issuer,
-		SigningKeyConfig: cfg.signingKeyConfig,
-		HMACSecretFiles:  cfg.hmacSecretFiles,
-		TokenLifespans:   cfg.tokenLifespans,
-		Upstreams:        cfg.upstreams,
-		ScopesSupported:  cfg.scopesSupported,
-		AllowedAudiences: cfg.allowedAudiences,
+		SchemaVersion:        authserver.CurrentSchemaVersion,
+		Issuer:               cfg.issuer,
+		SigningKeyConfig:     cfg.signingKeyConfig,
+		HMACSecretFiles:      cfg.hmacSecretFiles,
+		TokenLifespans:       cfg.tokenLifespans,
+		Upstreams:            cfg.upstreams,
+		ScopesSupported:      cfg.scopesSupported,
+		BaselineClientScopes: cfg.baselineClientScopes,
+		AllowedAudiences:     cfg.allowedAudiences,
 	}
 }
 

@@ -83,6 +83,17 @@ Configures authentication for clients connecting to the Virtual MCP server. Reus
   - `audience` (string, required): Must be unique per server to prevent token replay
   - `scopes` ([]string, optional): Defaults to `["openid"]`
 - `authzConfig` (AuthzConfigRef, optional): Authorization policy configuration
+  - `type` (string, required): `inline` or `configMap`
+  - `inline` (InlineAuthzConfig, required when type=inline): Inline Cedar policies
+    - `policies` ([]string, required): Cedar policy strings
+    - `entitiesJson` (string, optional): Cedar entities (JSON)
+    - `primaryUpstreamProvider` (string, optional): Names the upstream IDP whose
+      access token claims Cedar should evaluate. Only meaningful when
+      `spec.authServerConfig` is set with multiple upstreamProviders. When
+      empty, the controller defaults to the first upstream. Must match a
+      configured upstream name; the VirtualMCPServer is rejected with
+      `AuthServerConfigValidated=False` otherwise.
+  - `configMap` (ConfigMapAuthzRef, required when type=configMap): Reference to a ConfigMap holding policies
 
 **Important**: The `type` field must always be explicitly specified. When no authentication is required, use `type: anonymous`.
 

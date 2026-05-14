@@ -41,7 +41,7 @@ thv serve [flags]
       --sentry-dsn string                 Sentry DSN for error tracking and distributed tracing (falls back to SENTRY_DSN env var)
       --sentry-environment string         Sentry environment name, e.g. production or development (falls back to SENTRY_ENVIRONMENT env var)
       --sentry-traces-sample-rate float   Sentry traces sample rate (0.0-1.0) for performance monitoring (default 1)
-      --socket string                     UNIX socket path to bind the server to (overrides host and port if provided)
+      --socket string                     UNIX socket path or, on Windows, a named pipe (\\.\pipe\<name>) to bind the server to (overrides host and port if provided)
 ```
 
 ### Options inherited from parent commands

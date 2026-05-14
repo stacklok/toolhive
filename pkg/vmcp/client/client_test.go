@@ -1001,6 +1001,34 @@ func TestWrapBackendError(t *testing.T) {
 			err:          context.DeadlineExceeded,
 			wantSentinel: vmcp.ErrTimeout,
 		},
+		{
+			// mcp-go v0.49.0 added ErrAuthorizationRequired for 401 responses
+			// with a WWW-Authenticate header. Issue #5223: probe of GitHub
+			// Copilot's MCP returns this; without recognizing the sentinel here
+			// the error falls through to ErrBackendUnavailable and the health
+			// monitor never engages the auth-aware branch (#4935).
+			name:         "ErrAuthorizationRequired maps to ErrAuthenticationFailed",
+			err:          transport.ErrAuthorizationRequired,
+			wantSentinel: vmcp.ErrAuthenticationFailed,
+		},
+		{
+			// Production chain mcp-go produces: transport.Error wrapping
+			// *AuthorizationRequiredError. Error() formats as
+			// "transport error: authorization required" — byte-for-byte
+			// the string seen in North's WARN logs (issue #5223). Both
+			// layers Unwrap() to the sentinel so errors.Is must succeed.
+			name:         "wrapped AuthorizationRequiredError (production chain) maps to ErrAuthenticationFailed",
+			err:          transport.NewError(&transport.AuthorizationRequiredError{}),
+			wantSentinel: vmcp.ErrAuthenticationFailed,
+		},
+		{
+			// Companion sentinel for the OAuth-handler path. Less hot in
+			// practice but belongs in the same matcher block; the existing
+			// transport.ErrUnauthorized check would not catch it.
+			name:         "ErrOAuthAuthorizationRequired maps to ErrAuthenticationFailed",
+			err:          transport.ErrOAuthAuthorizationRequired,
+			wantSentinel: vmcp.ErrAuthenticationFailed,
+		},
 	}
 
 	for _, tt := range tests {

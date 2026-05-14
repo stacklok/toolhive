@@ -76,7 +76,7 @@ type MCPExternalAuthConfigList struct {
 //+kubebuilder:resource:shortName=mcpg;mcpgroup,categories=toolhive
 //+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.serverCount"
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='MCPServersChecked')].status"
+//+kubebuilder:printcolumn:name="Checked",type="string",JSONPath=".status.conditions[?(@.type=='MCPServersChecked')].status"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // MCPGroup is the deprecated v1alpha1 version of the MCPGroup resource.
@@ -276,6 +276,34 @@ type MCPTelemetryConfigList struct {
 	Items           []MCPTelemetryConfig `json:"items"`
 }
 
+// ─── MCPWebhookConfig ────────────────────────────────────────────────────────
+
+//+kubebuilder:object:root=true
+//+kubebuilder:storageversion
+//+kubebuilder:subresource:status
+//+kubebuilder:resource:shortName=mwc,categories=toolhive
+//+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+//+kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
+//+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// MCPWebhookConfig is the Schema for the mcpwebhookconfigs API.
+type MCPWebhookConfig struct {
+	metav1.TypeMeta   `json:",inline"` // nolint:revive
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   v1beta1.MCPWebhookConfigSpec   `json:"spec,omitempty"`
+	Status v1beta1.MCPWebhookConfigStatus `json:"status,omitempty"`
+}
+
+//+kubebuilder:object:root=true
+
+// MCPWebhookConfigList contains a list of MCPWebhookConfig.
+type MCPWebhookConfigList struct {
+	metav1.TypeMeta `json:",inline"` // nolint:revive
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []MCPWebhookConfig `json:"items"`
+}
+
 // ─── MCPToolConfig ───────────────────────────────────────────────────────────
 
 //+kubebuilder:object:root=true
@@ -378,6 +406,7 @@ func init() {
 		&MCPServer{}, &MCPServerList{},
 		&MCPServerEntry{}, &MCPServerEntryList{},
 		&MCPTelemetryConfig{}, &MCPTelemetryConfigList{},
+		&MCPWebhookConfig{}, &MCPWebhookConfigList{},
 		&MCPToolConfig{}, &MCPToolConfigList{},
 		&VirtualMCPCompositeToolDefinition{}, &VirtualMCPCompositeToolDefinitionList{},
 		&VirtualMCPServer{}, &VirtualMCPServerList{},

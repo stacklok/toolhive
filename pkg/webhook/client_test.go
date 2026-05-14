@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,16 @@ func TestNewClient(t *testing.T) {
 			config: Config{
 				Name: "",
 				URL:  "",
+			},
+			expectError: true,
+		},
+		{
+			name: "hmac configured with empty resolved secret",
+			config: Config{
+				Name:          "test",
+				URL:           "https://example.com/webhook",
+				FailurePolicy: FailurePolicyFail,
+				HMACSecretRef: "/etc/toolhive/webhooks/test/hmac",
 			},
 			expectError: true,
 		},
@@ -310,6 +321,73 @@ func TestClientHMACSigningHeaders(t *testing.T) {
 	assert.NotEmpty(t, capturedHeaders.Get(SignatureHeader), "expected %s header", SignatureHeader)
 	assert.Contains(t, capturedHeaders.Get(SignatureHeader), "sha256=")
 	assert.NotEmpty(t, capturedHeaders.Get(TimestampHeader), "expected %s header", TimestampHeader)
+}
+
+func TestClientRereadsMountedHMACSecret(t *testing.T) {
+	t.Parallel()
+
+	type signedRequest struct {
+		body      []byte
+		signature string
+		timestamp int64
+	}
+	var requests []signedRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		timestamp, err := strconv.ParseInt(r.Header.Get(TimestampHeader), 10, 64)
+		require.NoError(t, err)
+		requests = append(requests, signedRequest{
+			body:      body,
+			signature: r.Header.Get(SignatureHeader),
+			timestamp: timestamp,
+		})
+
+		resp := Response{
+			Version: APIVersion,
+			UID:     "test-uid",
+			Allowed: true,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(resp))
+	}))
+	defer server.Close()
+
+	secretPath := filepath.Join(t.TempDir(), "hmac")
+	require.NoError(t, os.WriteFile(secretPath, []byte("initial-secret"), 0o600))
+
+	cfg := Config{
+		Name:          "test-hmac-file",
+		URL:           server.URL,
+		Timeout:       5 * time.Second,
+		FailurePolicy: FailurePolicyFail,
+		TLSConfig:     &TLSConfig{InsecureSkipVerify: true},
+		HMACSecretRef: secretPath,
+	}
+	client, err := NewClient(cfg, TypeValidating, []byte("initial-secret"))
+	require.NoError(t, err)
+
+	req := &Request{
+		Version:   APIVersion,
+		UID:       "test-uid",
+		Timestamp: time.Now(),
+		Principal: &auth.PrincipalInfo{Subject: "user1"},
+		Context: &RequestContext{
+			ServerName: "test-server",
+			SourceIP:   "127.0.0.1",
+			Transport:  "sse",
+		},
+	}
+
+	_, err = client.Call(t.Context(), req)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(secretPath, []byte("rotated-secret"), 0o600))
+	_, err = client.Call(t.Context(), req)
+	require.NoError(t, err)
+
+	require.Len(t, requests, 2)
+	assert.True(t, VerifySignature([]byte("initial-secret"), requests[0].timestamp, requests[0].body, requests[0].signature))
+	assert.True(t, VerifySignature([]byte("rotated-secret"), requests[1].timestamp, requests[1].body, requests[1].signature))
 }
 
 func TestClientNoHMACHeadersWithoutSecret(t *testing.T) {
@@ -703,6 +781,69 @@ func TestDoHTTPCallReadError(t *testing.T) {
 	var networkErr *NetworkError
 	assert.True(t, errors.As(err, &networkErr))
 	assert.Contains(t, err.Error(), "forced read error")
+}
+
+// TestClientErrorDoesNotLeakResponseBody verifies that when the webhook returns
+// a non-2xx response, the response body bytes are not embedded in the returned
+// error chain. This prevents an SSRF-adjacent information-exfiltration path
+// where bytes from an internal service reached via a misconfigured webhook URL
+// would otherwise be surfaced into higher-level error logs.
+func TestClientErrorDoesNotLeakResponseBody(t *testing.T) {
+	t.Parallel()
+
+	const sentinel = "INTERNAL_LEAK_TOKEN"
+
+	tests := []struct {
+		name       string
+		statusCode int
+	}{
+		{name: "500 Internal Server Error", statusCode: http.StatusInternalServerError},
+		{name: "503 Service Unavailable", statusCode: http.StatusServiceUnavailable},
+		{name: "422 Unprocessable Entity", statusCode: http.StatusUnprocessableEntity},
+		{name: "418 I'm a teapot", statusCode: http.StatusTeapot},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte("response containing " + sentinel + " somewhere in the body"))
+			}))
+			defer server.Close()
+
+			cfg := Config{
+				Name:          "leak-test",
+				URL:           server.URL,
+				Timeout:       5 * time.Second,
+				FailurePolicy: FailurePolicyFail,
+			}
+
+			client := newTestClient(cfg, TypeValidating, nil)
+
+			req := &Request{
+				Version:   APIVersion,
+				UID:       "test-uid",
+				Timestamp: time.Now(),
+				Principal: &auth.PrincipalInfo{Subject: "user1"},
+				Context: &RequestContext{
+					ServerName: "test-server",
+					SourceIP:   "127.0.0.1",
+					Transport:  "sse",
+				},
+			}
+
+			_, err := client.Call(t.Context(), req)
+			require.Error(t, err)
+
+			errMsg := err.Error()
+			assert.Contains(t, errMsg, strconv.Itoa(tt.statusCode),
+				"error should surface the HTTP status code so callers can distinguish failure modes")
+			assert.NotContains(t, errMsg, sentinel,
+				"error must not embed response body bytes — they may come from an internal service reached via a misconfigured URL")
+		})
+	}
 }
 
 type mockRoundTripper struct {

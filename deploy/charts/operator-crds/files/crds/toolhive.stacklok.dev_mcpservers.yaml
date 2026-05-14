@@ -138,6 +138,23 @@ spec:
                         minItems: 1
                         type: array
                         x-kubernetes-list-type: atomic
+                      primaryUpstreamProvider:
+                        description: |-
+                          PrimaryUpstreamProvider names the upstream IDP whose access token's claims
+                          Cedar should evaluate. Currently honored only when the parent
+                          AuthzConfigRef.Type is "inline"; configMap-sourced policies will support
+                          this in a future release (see #5208). Only meaningful for VirtualMCPServer
+                          with an embedded auth server. When empty and an embedded auth server has
+                          upstreams configured, the controller defaults to the first upstream
+                          provider. The name must match one of the upstreams declared on
+                          spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
+                          rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
+                          have no embedded auth server; setting this field on those CRs surfaces an
+                          AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
+                        maxLength: 63
+                        minLength: 1
+                        pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                        type: string
                     required:
                     - policies
                     type: object
@@ -740,6 +757,17 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              webhookConfigRef:
+                description: |-
+                  WebhookConfigRef references a MCPWebhookConfig resource for webhook middleware configuration.
+                  The referenced MCPWebhookConfig must exist in the same namespace as this MCPServer.
+                properties:
+                  name:
+                    description: Name is the name of the MCPWebhookConfig resource
+                    type: string
+                required:
+                - name
+                type: object
             required:
             - image
             type: object
@@ -864,6 +892,10 @@ spec:
                 type: string
               url:
                 description: URL is the URL where the MCP server can be accessed
+                type: string
+              webhookConfigHash:
+                description: WebhookConfigHash is the hash of the referenced MCPWebhookConfig
+                  spec
                 type: string
             type: object
         type: object
@@ -987,6 +1019,23 @@ spec:
                         minItems: 1
                         type: array
                         x-kubernetes-list-type: atomic
+                      primaryUpstreamProvider:
+                        description: |-
+                          PrimaryUpstreamProvider names the upstream IDP whose access token's claims
+                          Cedar should evaluate. Currently honored only when the parent
+                          AuthzConfigRef.Type is "inline"; configMap-sourced policies will support
+                          this in a future release (see #5208). Only meaningful for VirtualMCPServer
+                          with an embedded auth server. When empty and an embedded auth server has
+                          upstreams configured, the controller defaults to the first upstream
+                          provider. The name must match one of the upstreams declared on
+                          spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
+                          rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
+                          have no embedded auth server; setting this field on those CRs surfaces an
+                          AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
+                        maxLength: 63
+                        minLength: 1
+                        pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                        type: string
                     required:
                     - policies
                     type: object
@@ -1589,6 +1638,17 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              webhookConfigRef:
+                description: |-
+                  WebhookConfigRef references a MCPWebhookConfig resource for webhook middleware configuration.
+                  The referenced MCPWebhookConfig must exist in the same namespace as this MCPServer.
+                properties:
+                  name:
+                    description: Name is the name of the MCPWebhookConfig resource
+                    type: string
+                required:
+                - name
+                type: object
             required:
             - image
             type: object
@@ -1713,6 +1773,10 @@ spec:
                 type: string
               url:
                 description: URL is the URL where the MCP server can be accessed
+                type: string
+              webhookConfigHash:
+                description: WebhookConfigHash is the hash of the referenced MCPWebhookConfig
+                  spec
                 type: string
             type: object
         type: object

@@ -5,6 +5,7 @@ package workloads
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1828,4 +1829,176 @@ func TestFetchCABundleData(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHeaderForwardFromEntry covers the dynamic-mode projection of
+// MCPServerEntry.spec.headerForward into the runtime *vmcp.HeaderForwardConfig.
+// The shape MUST match what the operator emits in the static-mode JSON
+// manifest env var so both code paths feed equivalent data into the round
+// tripper.
+func TestHeaderForwardFromEntry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		entry *mcpv1beta1.MCPServerEntry
+		want  *vmcp.HeaderForwardConfig
+	}{
+		{
+			name:  "nil entry yields nil",
+			entry: nil,
+			want:  nil,
+		},
+		{
+			name: "entry without headerForward yields nil",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: testNamespace},
+				Spec:       mcpv1beta1.MCPServerEntrySpec{RemoteURL: "https://x"},
+			},
+			want: nil,
+		},
+		{
+			name: "plaintext only — header names preserved verbatim",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "github-copilot", Namespace: testNamespace},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddPlaintextHeaders: map[string]string{
+							"X-MCP-Toolsets": "projects,issues",
+							"X-Trace-Id":     "kind-test",
+						},
+					},
+				},
+			},
+			want: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"X-MCP-Toolsets": "projects,issues",
+					"X-Trace-Id":     "kind-test",
+				},
+			},
+		},
+		{
+			name: "secret only — values become identifiers",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "stripe", Namespace: testNamespace},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+							{
+								HeaderName: "X-API-Key",
+								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+									Name: "stripe-key",
+									Key:  "token",
+								},
+							},
+						},
+					},
+				},
+			},
+			want: &vmcp.HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{
+					"X-API-Key": "HEADER_FORWARD_X_API_KEY_STRIPE",
+				},
+			},
+		},
+		{
+			name: "mixed plaintext + secret",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "alpha", Namespace: testNamespace},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddPlaintextHeaders: map[string]string{"X-Trace": "alpha-trace"},
+						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+							{
+								HeaderName: "X-Token",
+								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+									Name: "alpha-secret",
+									Key:  "tok",
+								},
+							},
+						},
+					},
+				},
+			},
+			want: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{"X-Trace": "alpha-trace"},
+				AddHeadersFromSecret: map[string]string{
+					"X-Token": "HEADER_FORWARD_X_TOKEN_ALPHA",
+				},
+			},
+		},
+		{
+			name: "secret ref with nil ValueSecretRef is skipped — empty config returns nil",
+			entry: &mcpv1beta1.MCPServerEntry{
+				ObjectMeta: metav1.ObjectMeta{Name: "ghost", Namespace: testNamespace},
+				Spec: mcpv1beta1.MCPServerEntrySpec{
+					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+							{HeaderName: "X-Stray", ValueSecretRef: nil},
+						},
+					},
+				},
+			},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := headerForwardFromEntry(tt.entry)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestHeaderForwardParity_StaticVsDynamic pins that the dynamic-mode
+// projection produces a runtime-equivalent shape to what the operator's
+// static-mode JSON manifest serializes. If either path drifts, the round
+// tripper sees a different Backend.HeaderForward depending on mode —
+// which is exactly the bug pattern PR #5239 fixes for static mode and
+// this finding (F2) extends to dynamic mode.
+//
+// The test compares the JSON serialization of the dynamic-mode result
+// to a hand-written manifest that mirrors what
+// virtualmcpserver_deployment.go::buildHeaderForwardManifestForEntry
+// would emit for the same entry. The two are required to be byte-equal
+// after json.Marshal (which sorts map keys).
+func TestHeaderForwardParity_StaticVsDynamic(t *testing.T) {
+	t.Parallel()
+
+	entry := &mcpv1beta1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "github-copilot-fake", Namespace: testNamespace},
+		Spec: mcpv1beta1.MCPServerEntrySpec{
+			RemoteURL: "https://api.example/mcp",
+			Transport: "streamable-http",
+			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "g"},
+			HeaderForward: &mcpv1beta1.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"X-MCP-Toolsets": "projects,issues,pull_requests",
+					"X-Trace-Id":     "kind-test",
+				},
+				AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+					{
+						HeaderName: "X-Api-Key",
+						ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+							Name: "test-secret",
+							Key:  "token",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	dynamic := headerForwardFromEntry(entry)
+	require.NotNil(t, dynamic)
+
+	dynamicJSON, err := json.Marshal(dynamic)
+	require.NoError(t, err)
+
+	const wantStaticManifestJSON = `{"addPlaintextHeaders":{"X-MCP-Toolsets":"projects,issues,pull_requests","X-Trace-Id":"kind-test"},"addHeadersFromSecret":{"X-Api-Key":"HEADER_FORWARD_X_API_KEY_GITHUB_COPILOT_FAKE"}}`
+
+	assert.JSONEq(t, wantStaticManifestJSON, string(dynamicJSON),
+		"dynamic-mode HeaderForward must marshal to the same shape as the static-mode operator manifest")
 }

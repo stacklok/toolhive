@@ -42,20 +42,24 @@ operator:
   # above for convenience.
   defaultImagePullSecrets: []
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.26.1
+  image: ghcr.io/stacklok/toolhive/operator:v0.27.2
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.26.1
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.27.2
 
   # -- Image to use for Virtual MCP Server (vMCP) deployments
-  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.26.1
+  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.27.2
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0
 
-  # -- Environment variables to set in the operator container
+  # -- Environment variables to set in the operator container. Supported
+  # toolhive-specific variables include:
+  # - TOOLHIVE_SKIP_UPDATE_CHECK: set to "true" to disable the operator's
+  #   periodic update check against the ToolHive update API. Also disables
+  #   the usage-metrics collection that is gated on the same check.
   env: []
 
   # -- List of ports to expose from the operator container

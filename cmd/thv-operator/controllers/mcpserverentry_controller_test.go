@@ -137,6 +137,10 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 			status   metav1.ConditionStatus
 			reason   string
 		}
+		// extraCheck runs additional assertions on the post-reconcile entry
+		// state — used when matching condition reasons isn't enough (e.g.
+		// asserting message content for aggregated failures).
+		extraCheck func(t *testing.T, entry *mcpv1beta1.MCPServerEntry)
 	}{
 		{
 			name: "happy path - all refs valid",
@@ -330,6 +334,149 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryValid},
 			},
 		},
+		{
+			name: "headerForward plaintext only - no secret validation needed",
+			entry: func() *mcpv1beta1.MCPServerEntry {
+				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
+				e.Spec.HeaderForward = &mcpv1beta1.HeaderForwardConfig{
+					AddPlaintextHeaders: map[string]string{"X-MCP-Toolsets": "projects,issues"},
+				}
+				return e
+			}(),
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseValid,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryValid},
+			},
+		},
+		{
+			name: "headerForward secret ref exists",
+			entry: func() *mcpv1beta1.MCPServerEntry {
+				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
+				e.Spec.HeaderForward = &mcpv1beta1.HeaderForwardConfig{
+					AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+						{
+							HeaderName:     "X-API-Key",
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "api-key-secret", Key: "token"},
+						},
+					},
+				}
+				return e
+			}(),
+			objects: []client.Object{
+				newMCPGroup(mcpv1beta1.MCPGroupPhaseReady),
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: "api-key-secret", Namespace: testEntryNS},
+					Data:       map[string][]byte{"token": []byte("secret-value")},
+				},
+			},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseValid,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryHeaderSecretsValid},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPServerEntryValid},
+			},
+		},
+		{
+			name: "headerForward secret ref missing flips entry to Failed",
+			entry: func() *mcpv1beta1.MCPServerEntry {
+				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
+				e.Spec.HeaderForward = &mcpv1beta1.HeaderForwardConfig{
+					AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+						{
+							HeaderName:     "X-API-Key",
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "missing-secret", Key: "token"},
+						},
+					},
+				}
+				return e
+			}(),
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryHeaderSecretNotFound},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
+			},
+		},
+		{
+			name: "headerForward secret exists but key is missing flips entry to Failed",
+			entry: func() *mcpv1beta1.MCPServerEntry {
+				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
+				e.Spec.HeaderForward = &mcpv1beta1.HeaderForwardConfig{
+					AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+						{
+							HeaderName:     "X-API-Key",
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "api-key-secret", Key: "absent-key"},
+						},
+					},
+				}
+				return e
+			}(),
+			objects: []client.Object{
+				newMCPGroup(mcpv1beta1.MCPGroupPhaseReady),
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: "api-key-secret", Namespace: testEntryNS},
+					Data:       map[string][]byte{"token": []byte("secret-value")},
+				},
+			},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryHeaderSecretNotFound},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
+			},
+		},
+		{
+			name: "headerForward multiple secret refs failures are aggregated",
+			entry: func() *mcpv1beta1.MCPServerEntry {
+				e := newMCPServerEntry(testEntryGroupRef, nil, nil)
+				e.Spec.HeaderForward = &mcpv1beta1.HeaderForwardConfig{
+					AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+						{
+							HeaderName:     "X-API-Key",
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "missing-1", Key: "token"},
+						},
+						{
+							HeaderName:     "X-Other",
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: "missing-2", Key: "value"},
+						},
+					},
+				}
+				return e
+			}(),
+			objects:   []client.Object{newMCPGroup(mcpv1beta1.MCPGroupPhaseReady)},
+			wantPhase: mcpv1beta1.MCPServerEntryPhaseFailed,
+			conditions: []struct {
+				condType string
+				status   metav1.ConditionStatus
+				reason   string
+			}{
+				{mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryHeaderSecretNotFound},
+				{mcpv1beta1.ConditionTypeMCPServerEntryValid, metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPServerEntryInvalid},
+			},
+			extraCheck: func(t *testing.T, entry *mcpv1beta1.MCPServerEntry) {
+				t.Helper()
+				cond := meta.FindStatusCondition(entry.Status.Conditions,
+					mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated)
+				require.NotNil(t, cond)
+				assert.Contains(t, cond.Message, "missing-1")
+				assert.Contains(t, cond.Message, "missing-2")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -387,6 +534,9 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 
 			for _, c := range tt.conditions {
 				assertCondition(t, updatedEntry.Status.Conditions, c.condType, c.status, c.reason)
+			}
+			if tt.extraCheck != nil {
+				tt.extraCheck(t, &updatedEntry)
 			}
 		})
 	}

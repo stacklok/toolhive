@@ -117,7 +117,8 @@ func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
@@ -189,7 +190,8 @@ func TestMCPServerReconciler_DeploymentForMCPServer_OpenShift(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
@@ -267,7 +269,8 @@ func TestMCPServerReconciler_DeploymentForMCPServer_PlatformDetectionError(t *te
 	}
 
 	ctx := context.Background()
-	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	deployment, err := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
+	require.NoError(t, err)
 
 	require.NotNil(t, deployment, "Deployment should not be nil")
 

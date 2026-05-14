@@ -94,6 +94,20 @@ type MemoryStorage struct {
 	// This enables O(1) lookup during authentication callbacks.
 	providerIdentities map[string]*ProviderIdentity
 
+	// dcrCredentials maps DCRKey -> DCRCredentials for RFC 7591 Dynamic Client
+	// Registration credentials. Entries are intentionally excluded from the
+	// periodic cleanupExpired loop: DCR registrations are long-lived and the
+	// authoritative expiry signal is RFC 7591 client_secret_expires_at, which
+	// is honored at read time by callers (and by the future Redis backend's
+	// SetEX TTL). Growth is bounded by upstream count × distinct scope sets
+	// ever registered for each upstream during the process lifetime; for a
+	// stable configuration this collapses to the upstream count, but rotating
+	// scope sets (operator-driven scope changes, or upstream
+	// scopes_supported rotations re-derived by the resolver) accumulate
+	// stale entries that survive until process restart. The Redis backend's
+	// SetEX TTL mitigates this in production deployments.
+	dcrCredentials map[DCRKey]*DCRCredentials
+
 	// cleanupInterval is how often the background cleanup runs
 	cleanupInterval time.Duration
 
@@ -129,6 +143,7 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		clientAssertionJWTs:   make(map[string]time.Time),
 		users:                 make(map[string]*User),
 		providerIdentities:    make(map[string]*ProviderIdentity),
+		dcrCredentials:        make(map[DCRKey]*DCRCredentials),
 		cleanupInterval:       DefaultCleanupInterval,
 		stopCleanup:           make(chan struct{}),
 		cleanupDone:           make(chan struct{}),
@@ -1188,6 +1203,65 @@ func (s *MemoryStorage) GetUserProviderIdentities(_ context.Context, userID stri
 }
 
 // -----------------------
+// DCR Credentials Storage
+// -----------------------
+
+// cloneDCRCredentials returns a field-by-field copy of c, or nil if c is nil.
+// All fields are values (no slices, maps, or pointers), so a shallow copy is
+// sufficient — adding a new reference-typed field requires updating this
+// helper to deep-copy that field.
+func cloneDCRCredentials(c *DCRCredentials) *DCRCredentials {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	return &cp
+}
+
+// StoreDCRCredentials persists DCR credentials for the given key.
+// The credentials are stored under their own Key field; callers must populate
+// it before calling. A defensive copy is made so subsequent caller mutations
+// do not affect persisted state.
+//
+// Overwrites any existing entry for the same Key. The in-memory backend
+// applies no native TTL — DCR registrations are long-lived and bounded by
+// the operator-configured upstream count, and ClientSecretExpiresAt is
+// retained verbatim for callers to re-check on read (see the interface
+// docstring's "TTL handling" section).
+//
+// Validation is delegated to validateDCRCredentialsForStore so the rejection
+// set stays in sync with sibling backends.
+func (s *MemoryStorage) StoreDCRCredentials(_ context.Context, creds *DCRCredentials) error {
+	if err := validateDCRCredentialsForStore(creds); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.dcrCredentials[creds.Key] = cloneDCRCredentials(creds)
+	return nil
+}
+
+// GetDCRCredentials retrieves DCR credentials by key.
+// Returns a defensive copy; returns ErrNotFound (wrapped) on miss.
+func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key DCRKey) (*DCRCredentials, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entry, ok := s.dcrCredentials[key]
+	if !ok {
+		slog.Debug("dcr credentials not found",
+			"issuer", key.Issuer,
+			"redirect_uri", key.RedirectURI,
+		)
+		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("DCR credentials not found"))
+	}
+
+	return cloneDCRCredentials(entry), nil
+}
+
+// -----------------------
 // Metrics/Stats (for testing and monitoring)
 // -----------------------
 
@@ -1204,6 +1278,7 @@ type Stats struct {
 	ClientAssertionJWTs   int
 	Users                 int
 	ProviderIdentities    int
+	DCRCredentials        int
 }
 
 // Stats returns current statistics about storage contents.
@@ -1224,6 +1299,7 @@ func (s *MemoryStorage) Stats() Stats {
 		ClientAssertionJWTs:   len(s.clientAssertionJWTs),
 		Users:                 len(s.users),
 		ProviderIdentities:    len(s.providerIdentities),
+		DCRCredentials:        len(s.dcrCredentials),
 	}
 }
 
@@ -1234,4 +1310,5 @@ var (
 	_ ClientRegistry              = (*MemoryStorage)(nil)
 	_ UpstreamTokenStorage        = (*MemoryStorage)(nil)
 	_ UserStorage                 = (*MemoryStorage)(nil)
+	_ DCRCredentialStore          = (*MemoryStorage)(nil)
 )

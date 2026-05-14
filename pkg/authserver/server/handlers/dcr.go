@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -63,6 +64,33 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
+	// Union with the operator-configured scope baseline. RFC 7591 §3.2.1 permits
+	// the AS to replace requested client metadata values during registration; we
+	// use that to expand the registered scope set so a client whose DCR request
+	// narrowed the scope field can still request the baseline at /oauth/authorize.
+	// h.config.BaselineClientScopes is validated at startup to be a subset of
+	// ScopesSupported, so the union is guaranteed to be a subset of advertised
+	// scopes. Operators should keep the baseline narrow (e.g. openid,
+	// offline_access) — every DCR-registered client gains the ability to request
+	// these scopes at /oauth/authorize regardless of what they registered with.
+	if len(h.config.BaselineClientScopes) > 0 {
+		effective := unionScopes(scopes, h.config.BaselineClientScopes)
+		if !slices.Equal(effective, scopes) {
+			// Baseline-driven expansion is the intended behavior whenever
+			// baseline_client_scopes is configured, so per-registration
+			// audit lives at Debug rather than Warn. Operator-visible
+			// signal that the baseline is in effect comes from a one-time
+			// Info log at server startup (NewAuthorizationServerConfig).
+			slog.Debug("DCR registered scope set expanded by baseline_client_scopes",
+				"client_name", validated.ClientName,
+				"requested", scopes,
+				"effective", effective,
+				"baseline", h.config.BaselineClientScopes,
+			)
+			scopes = effective
+		}
+	}
+
 	// Generate client ID
 	clientID := uuid.NewString()
 
@@ -95,15 +123,40 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	slog.Debug("registered new DCR client",
+	// Successful DCR registration is a normal operational event, not a
+	// long-running operation, so it logs at Debug to stay silent at INFO+.
+	// client_id, software_id, token_endpoint_auth_method, and scopes are
+	// public client metadata per RFC 7591 and not credentials. If audit
+	// signal is desired in future, the right home is a dedicated audit-
+	// log emission path rather than promoting this record to INFO.
+	//
+	// Note: the "issuer" attribute here identifies THIS server (the
+	// ToolHive-embedded AS that is performing the registration), not the
+	// upstream AS being registered against. That distinction is important
+	// when correlating these logs with the resolver's logs in
+	// pkg/auth/dcr/resolver.go, which use "issuer" to mean the
+	// upstream AS. The two uses live at opposite ends of the DCR flow.
+	// No "upstream" attribute is emitted because the /oauth/register
+	// endpoint has no upstream concept.
+	logAttrs := []any{
 		"client_id", clientID,
-		"client_name", validated.ClientName,
-	)
+		"software_id", validated.SoftwareID,
+		"token_endpoint_auth_method", validated.TokenEndpointAuthMethod,
+		"scopes", scopes,
+	}
+	if issuer := h.issuer(); issuer != "" {
+		logAttrs = append(logAttrs, "issuer", issuer)
+	}
+	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
+	slog.Debug("registered new DCR client", logAttrs...)
 
 	// Build response per RFC 7591 Section 3.2.1.
-	// Scope reflects the scopes actually granted to this client (from
-	// ValidateScopes above), not all server-supported scopes. This lets
-	// the client know exactly which scopes it can request.
+	// Scope reflects the scopes actually granted to this client: the
+	// client-supplied scope set was validated against ScopesSupported by
+	// ValidateScopes above, then (if configured) unioned with
+	// BaselineClientScopes — which is itself guaranteed by startup-time
+	// validation to be a subset of ScopesSupported. The unioned set is NOT
+	// re-validated here.
 	response := registration.DCRResponse{
 		ClientID:                clientID,
 		ClientIDIssuedAt:        time.Now().Unix(),

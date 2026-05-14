@@ -19,6 +19,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth/tokensource"
 	"github.com/stacklok/toolhive/pkg/llm"
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/test/e2e"
 )
@@ -52,6 +53,14 @@ type llmClientTestCase struct {
 	// expectedKeys maps JSON pointer paths to a function that validates the value.
 	// The function receives (gatewayURL, proxyBaseURL) for flexibility.
 	expectedKeys map[string]func(gatewayURL, proxyURL string) string
+
+	// envFilePath returns the absolute path to the .env file that thv will write,
+	// or nil when the client has no .env file to manage.
+	envFilePath func(tempDir string) string
+
+	// expectedEnvKeys maps env var names to resolver functions, checked in the
+	// .env file written by setup. Only used when envFilePath is non-nil.
+	expectedEnvKeys map[string]func(gatewayURL, proxyURL string) string
 
 	// skipOnOS is a GOOS value ("linux", "darwin") on which the test is skipped.
 	// Empty means the test runs everywhere.
@@ -89,11 +98,20 @@ func allClientTestCases() []llmClientTestCase {
 			settingsPath: func(tempDir string) string {
 				return filepath.Join(tempDir, ".gemini", "settings.json")
 			},
-			mode: "direct",
+			mode: "proxy",
 			expectedKeys: map[string]func(string, string) string{
-				"/auth/tokenCommand": func(_, _ string) string { return "llm token" },
-				"/baseUrl": func(gatewayURL, _ string) string {
-					return gatewayURL
+				// Force API-key auth so GOOGLE_GEMINI_BASE_URL is respected.
+				"/security/auth/selectedType": func(_, _ string) string { return "gemini-api-key" },
+			},
+			// Gemini CLI reads these from process.env, so thv writes them to .env.
+			envFilePath: func(tempDir string) string {
+				return filepath.Join(tempDir, ".gemini", ".env")
+			},
+			expectedEnvKeys: map[string]func(string, string) string{
+				"GEMINI_API_KEY": func(_, _ string) string { return clientThvProxy },
+				// ProxyOrigin strips the path so Gemini CLI can append /v1beta/...
+				"GOOGLE_GEMINI_BASE_URL": func(_, proxyURL string) string {
+					return llmgateway.ProxyOriginOf(proxyURL)
 				},
 			},
 		},
@@ -321,6 +339,20 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 						"JSON pointer %s should contain %q in %s", pointer, expectedSubstr, settingsFile)
 				}
 
+				// Verify the .env file was written (if applicable).
+				if clientTC.envFilePath != nil {
+					envFile := clientTC.envFilePath(tempDir)
+					By(fmt.Sprintf("[%s] verifying .env file was written: %s", clientTC.name, envFile))
+					envData, err := os.ReadFile(envFile)
+					Expect(err).ToNot(HaveOccurred(), ".env file should exist after setup")
+					envContent := string(envData)
+					for key, valueFn := range clientTC.expectedEnvKeys {
+						expectedVal := valueFn(gatewayURL, proxyBaseURL)
+						Expect(envContent).To(ContainSubstring(key+"="+expectedVal),
+							".env file should contain %s=%s", key, expectedVal)
+					}
+				}
+
 				// Verify config show reflects this client.
 				By(fmt.Sprintf("[%s] verifying config show contains this client", clientTC.name))
 				showOut, _ := thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
@@ -352,6 +384,19 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 					_, found := jsonPointerGet(after, pointer)
 					Expect(found).To(BeFalse(),
 						"JSON pointer %s should be absent after teardown in %s", pointer, settingsFile)
+				}
+
+				// Verify the .env file had thv-managed entries removed (if applicable).
+				if clientTC.envFilePath != nil {
+					envFile := clientTC.envFilePath(tempDir)
+					By(fmt.Sprintf("[%s] verifying .env file entries were removed: %s", clientTC.name, envFile))
+					envData, err := os.ReadFile(envFile)
+					Expect(err).ToNot(HaveOccurred(), ".env file should still exist after teardown")
+					envContent := string(envData)
+					for key := range clientTC.expectedEnvKeys {
+						Expect(envContent).ToNot(ContainSubstring(key+"="),
+							".env file should not contain %s after teardown", key)
+					}
 				}
 
 				showOut, _ = thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
@@ -442,17 +487,24 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 			Expect(json.Unmarshal(data, &claudeAfter)).To(Succeed())
 			Expect(claudeAfter).ToNot(HaveKey("apiKeyHelper"))
 
-			By("verifying gemini-cli settings are still patched")
+			By("verifying gemini-cli settings.json still has auth type patched")
 			geminiSettings := filepath.Join(tempDir, ".gemini", "settings.json")
 			data, err = os.ReadFile(geminiSettings)
 			Expect(err).ToNot(HaveOccurred())
 			var geminiAfter map[string]any
 			Expect(json.Unmarshal(data, &geminiAfter)).To(Succeed())
-			tokenCmd, found := jsonPointerGet(geminiAfter, "/auth/tokenCommand")
+			authType, found := jsonPointerGet(geminiAfter, "/security/auth/selectedType")
 			Expect(found).To(BeTrue(),
-				"gemini-cli /auth/tokenCommand should still be present after claude-code teardown")
-			Expect(tokenCmd).To(ContainSubstring("llm token"),
-				"gemini-cli tokenCommand should still reference 'llm token' after claude-code teardown")
+				"gemini-cli /security/auth/selectedType should still be present after claude-code teardown")
+			Expect(authType).To(Equal("gemini-api-key"),
+				"gemini-cli auth type should still be gemini-api-key after claude-code teardown")
+
+			By("verifying gemini-cli .env file still has proxy env vars")
+			geminiEnv := filepath.Join(tempDir, ".gemini", ".env")
+			envData, envErr := os.ReadFile(geminiEnv)
+			Expect(envErr).ToNot(HaveOccurred(), ".env file should still exist after claude-code teardown")
+			Expect(string(envData)).To(ContainSubstring("GOOGLE_GEMINI_BASE_URL="),
+				"gemini-cli GOOGLE_GEMINI_BASE_URL should still be in .env after claude-code teardown")
 
 			By("verifying ConfiguredTools has only gemini-cli")
 			showOut, _ = thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()

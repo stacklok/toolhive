@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportmiddleware "github.com/stacklok/toolhive/pkg/transport/middleware"
@@ -91,6 +92,9 @@ type Watcher interface {
 type Config struct {
 	// Name is the server name exposed in MCP protocol
 	Name string
+
+	// Namespace is the namespace used to scope distributed runtime state.
+	Namespace string
 
 	// Version is the server version
 	Version string
@@ -181,6 +185,10 @@ type Config struct {
 	// session persistence; the Redis password is read from the
 	// THV_SESSION_REDIS_PASSWORD environment variable.
 	SessionStorage *vmcpconfig.SessionStorageConfig
+
+	// RateLimiting configures Redis-backed rate limiting for tools/call requests.
+	// When nil, rate limiting is disabled.
+	RateLimiting *ratelimittypes.RateLimitConfig
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -253,6 +261,9 @@ type Server struct {
 	// Populated during Start() initialization before blocking; no mutex needed
 	// since Stop() is only called after Start()'s select returns.
 	shutdownFuncs []func(context.Context) error
+
+	// rateLimitMiddleware is initialized once during New() when configured.
+	rateLimitMiddleware func(http.Handler) http.Handler
 }
 
 // buildSessionDataStorage constructs the DataStorage backend from cfg.
@@ -318,6 +329,9 @@ func New(
 	}
 	if cfg.Name == "" {
 		cfg.Name = "toolhive-vmcp"
+	}
+	if cfg.Namespace == "" {
+		cfg.Namespace = "local"
 	}
 	if cfg.Version == "" {
 		cfg.Version = "0.1.0"
@@ -485,6 +499,14 @@ func New(
 	if optimizerCleanup != nil {
 		srv.shutdownFuncs = append(srv.shutdownFuncs, optimizerCleanup)
 	}
+	rateLimitMiddleware, rateLimitCleanup, err := srv.buildRateLimitMiddleware(ctx)
+	if err != nil {
+		return nil, err
+	}
+	srv.rateLimitMiddleware = rateLimitMiddleware
+	if rateLimitCleanup != nil {
+		srv.shutdownFuncs = append(srv.shutdownFuncs, rateLimitCleanup)
+	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
 	// See handleSessionRegistration for implementation details.
@@ -571,91 +593,9 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Debug("embedded authorization server routes registered")
 	}
 
-	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth+parser → audit → discovery → annotation-enrichment →
-	//   authz → backend-enrichment → MCP-parsing → telemetry
-	// Execution order: recovery → header-val → auth+parser → audit →
-	//   discovery → annotation-enrichment → authz → backend-enrichment →
-	//   MCP-parsing → telemetry → handler
-
-	var mcpHandler http.Handler = streamableServer
-
-	if s.config.TelemetryProvider != nil {
-		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
-		slog.Info("telemetry middleware enabled for MCP endpoints")
-	}
-
-	// Apply MCP parsing middleware to extract JSON-RPC method from request body.
-	// This runs before telemetry so that recordMetrics can label metrics with the
-	// actual mcp_method (e.g. "tools/call", "initialize") instead of "unknown".
-	// Note: ParsingMiddleware is also composed inside the auth middleware (for audit/authz).
-	// The second application here is a no-op because the context already holds a
-	// ParsedMCPRequest; it exists only so the telemetry layer works correctly even
-	// when auth middleware is nil.
-	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
-
-	// Apply backend enrichment middleware if audit is configured
-	// This runs after discovery populates the routing table, so it can extract backend names
-	if s.config.AuditConfig != nil {
-		mcpHandler = s.backendEnrichmentMiddleware(mcpHandler)
-		slog.Info("backend enrichment middleware enabled for audit events")
-	}
-
-	// Apply authorization middleware if configured (runs AFTER discovery in execution).
-	// Wrapping it here (before discovery wrap) means discovery runs first, then authz.
-	if s.config.AuthzMiddleware != nil {
-		mcpHandler = s.config.AuthzMiddleware(mcpHandler)
-		slog.Info("authorization middleware enabled for MCP endpoints (post-discovery)")
-	}
-
-	// Apply annotation enrichment middleware (runs after discovery, before authz in execution).
-	// Reads tool annotations from discovered capabilities and injects them into the
-	// request context so the authz middleware can make annotation-aware decisions.
-	if s.config.AuthzMiddleware != nil {
-		mcpHandler = AnnotationEnrichmentMiddleware(mcpHandler)
-		slog.Info("annotation enrichment middleware enabled for MCP endpoints")
-	}
-
-	// Apply discovery middleware (runs after audit/auth middleware)
-	// Discovery middleware performs per-request capability aggregation with user context.
-	// vmcpSessionMgr (MultiSessionGetter) is used to retrieve the fully-formed MultiSession
-	// for subsequent requests so the routing table can be injected into context.
-	// The backend registry provides a dynamic backend list (supports DynamicRegistry for K8s).
-	// The health monitor enables filtering based on current health status (respects circuit breaker).
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
-
-	var healthStatusProvider health.StatusProvider
-	if healthMon != nil {
-		healthStatusProvider = healthMon
-	}
-	mcpHandler = discovery.Middleware(
-		s.discoveryMgr, s.backendRegistry, s.vmcpSessionMgr, healthStatusProvider,
-		discovery.WithSessionScopedRouting(),
-	)(mcpHandler)
-	slog.Info("discovery middleware enabled for lazy per-user capability discovery")
-
-	// Apply audit middleware if configured (runs after auth, before discovery)
-	if s.config.AuditConfig != nil {
-		if err := s.config.AuditConfig.Validate(); err != nil {
-			return nil, fmt.Errorf("invalid audit configuration: %w", err)
-		}
-		auditor, err := audit.NewAuditorWithTransport(
-			s.config.AuditConfig,
-			"streamable-http", // vMCP uses streamable HTTP transport
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create auditor: %w", err)
-		}
-		mcpHandler = auditor.Middleware(mcpHandler)
-		slog.Info("audit middleware enabled for MCP endpoints")
-	}
-
-	// Apply authentication middleware if configured (runs first in chain)
-	if s.config.AuthMiddleware != nil {
-		mcpHandler = s.config.AuthMiddleware(mcpHandler)
-		slog.Info("authentication middleware enabled for MCP endpoints")
+	mcpHandler, err := s.buildMCPHandler(streamableServer)
+	if err != nil {
+		return nil, err
 	}
 
 	// Apply Accept header validation (rejects GET requests without Accept: text/event-stream)
@@ -675,6 +615,97 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	mux.Handle("/", mcpHandler)
 
 	return mux, nil
+}
+
+func (s *Server) buildMCPHandler(streamableServer http.Handler) (http.Handler, error) {
+	// Wrapping order is inside-out; execution is outside-in:
+	// auth → MCP parser → rate limit → audit → discovery → annotation enrichment →
+	// authz → backend enrichment → telemetry → streamable HTTP handler.
+	mcpHandler := streamableServer
+
+	if s.config.TelemetryProvider != nil {
+		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
+		slog.Info("telemetry middleware enabled for MCP endpoints")
+	}
+	mcpHandler = s.applyBackendEnrichment(mcpHandler)
+	mcpHandler = s.applyAuthorization(mcpHandler)
+	mcpHandler = s.applyDiscovery(mcpHandler)
+
+	var err error
+	mcpHandler, err = s.applyAudit(mcpHandler)
+	if err != nil {
+		return nil, err
+	}
+	mcpHandler = s.applyRateLimiting(mcpHandler)
+
+	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
+	if s.config.AuthMiddleware != nil {
+		mcpHandler = s.config.AuthMiddleware(mcpHandler)
+		slog.Info("authentication middleware enabled for MCP endpoints")
+	}
+	return mcpHandler, nil
+}
+
+func (s *Server) applyBackendEnrichment(next http.Handler) http.Handler {
+	if s.config.AuditConfig == nil {
+		return next
+	}
+	slog.Info("backend enrichment middleware enabled for audit events")
+	return s.backendEnrichmentMiddleware(next)
+}
+
+func (s *Server) applyAuthorization(next http.Handler) http.Handler {
+	if s.config.AuthzMiddleware == nil {
+		return next
+	}
+	next = s.config.AuthzMiddleware(next)
+	slog.Info("authorization middleware enabled for MCP endpoints (post-discovery)")
+	next = AnnotationEnrichmentMiddleware(next)
+	slog.Info("annotation enrichment middleware enabled for MCP endpoints")
+	return next
+}
+
+func (s *Server) applyDiscovery(next http.Handler) http.Handler {
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	var healthStatusProvider health.StatusProvider
+	if healthMon != nil {
+		healthStatusProvider = healthMon
+	}
+	next = discovery.Middleware(
+		s.discoveryMgr, s.backendRegistry, s.vmcpSessionMgr, healthStatusProvider,
+		discovery.WithSessionScopedRouting(),
+	)(next)
+	slog.Info("discovery middleware enabled for lazy per-user capability discovery")
+	return next
+}
+
+func (s *Server) applyAudit(next http.Handler) (http.Handler, error) {
+	if s.config.AuditConfig == nil {
+		return next, nil
+	}
+	if err := s.config.AuditConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid audit configuration: %w", err)
+	}
+	auditor, err := audit.NewAuditorWithTransport(
+		s.config.AuditConfig,
+		"streamable-http", // vMCP uses streamable HTTP transport
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create auditor: %w", err)
+	}
+	slog.Info("audit middleware enabled for MCP endpoints")
+	return auditor.Middleware(next), nil
+}
+
+func (s *Server) applyRateLimiting(next http.Handler) http.Handler {
+	if s.rateLimitMiddleware == nil {
+		return next
+	}
+	slog.Info("rate limit middleware enabled for MCP endpoints")
+	return s.rateLimitMiddleware(next)
 }
 
 // Start starts the Virtual MCP Server and begins serving requests.

@@ -98,6 +98,8 @@ const (
 	KimiCli ClientApp = "kimi-cli"
 	// Factory represents the Factory.ai Droid CLI.
 	Factory ClientApp = "factory"
+	// CopilotCli represents the GitHub Copilot CLI.
+	CopilotCli ClientApp = "copilot-cli"
 )
 
 const (
@@ -1002,6 +1004,25 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".factory", skillsDirName},
 		SkillsProjectPath: []string{".factory", skillsDirName},
+	},
+	{
+		ClientType:           CopilotCli,
+		Description:          "GitHub Copilot CLI",
+		SettingsFile:         "mcp-config.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".copilot"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          httpTransportLabel,
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: httpTransportLabel,
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          defaultURLFieldName,
+			types.TransportTypeSSE:            defaultURLFieldName,
+			types.TransportTypeStreamableHTTP: defaultURLFieldName,
+		},
 	},
 	{
 		// Xcode does not support MCP; it is an LLM-gateway-only entry.

@@ -909,6 +909,7 @@ components:
       - codex
       - kimi-cli
       - factory
+      - copilot-cli
       type: string
       x-enum-varnames:
       - RooCode
@@ -938,6 +939,7 @@ components:
       - Codex
       - KimiCli
       - Factory
+      - CopilotCli
     github_com_stacklok_toolhive_pkg_client.ClientAppStatus:
       properties:
         client_type:

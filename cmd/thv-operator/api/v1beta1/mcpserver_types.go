@@ -652,16 +652,46 @@ type AuthzConfigRef struct {
 	// Only used when Type is "inline"
 	// +optional
 	Inline *InlineAuthzConfig `json:"inline,omitempty"`
+
+	// GroupClaimName is the JWT claim key that contains group membership for the
+	// principal. When set, takes priority over the well-known defaults
+	// ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+	// groups under a URI-style claim (e.g. "https://example.com/groups"). When
+	// Type is "configMap", a group_claim_name entry in the referenced ConfigMap
+	// is overridden by this field if both are set.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	GroupClaimName string `json:"groupClaimName,omitempty"`
+
+	// RoleClaimName is the JWT claim key that contains role membership for the
+	// principal. When set, the claim is extracted separately from GroupClaimName
+	// and both are mapped to the configured GroupEntityType. When Type is
+	// "configMap", a role_claim_name entry in the referenced ConfigMap is
+	// overridden by this field if both are set.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	RoleClaimName string `json:"roleClaimName,omitempty"`
+
+	// GroupEntityType is the Cedar entity type name used for principal parent
+	// UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+	// empty. Must match the entity type used in the static entity store for
+	// transitive `in` checks (e.g. `ClaimGroup → PlatformRole`) to resolve.
+	// Namespaced names (`Foo::Bar`) are not yet supported. When Type is
+	// "configMap", a group_entity_type entry in the referenced ConfigMap is
+	// overridden by this field if both are set.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
+	GroupEntityType string `json:"groupEntityType,omitempty"`
 }
 
-// ExplicitPrimaryUpstreamProvider returns the user-specified primary upstream
-// provider name from the authz config, or "" if none is set.
-//
-// Currently reads from inline config only. ConfigMap-sourced authz needs to
-// load and parse the referenced ConfigMap; until that path lands (see the
-// matching TODO in cmd/thv-operator/pkg/vmcpconfig/converter.go), configMap
-// users always fall through to auto-selection of the first upstream.
-func (r *AuthzConfigRef) ExplicitPrimaryUpstreamProvider() string {
+// DeprecatedInlinePrimaryUpstreamProvider returns the legacy inline
+// PrimaryUpstreamProvider value, or "" when the field or the AuthzConfigRef
+// is nil. The field has moved to spec.authServerConfig.primaryUpstreamProvider
+// on VirtualMCPServer; this accessor is the single read point for the
+// deprecated location so callers can emit a deprecation warning when it
+// returns a non-empty value.
+func (r *AuthzConfigRef) DeprecatedInlinePrimaryUpstreamProvider() string {
 	if r == nil || r.Inline == nil {
 		return ""
 	}
@@ -736,7 +766,11 @@ func (r *MCPGroupRef) GetName() string {
 	return r.Name
 }
 
-// InlineAuthzConfig contains direct authorization configuration
+// InlineAuthzConfig contains direct authorization configuration.
+//
+// Source-agnostic Cedar JWT-claim mapping settings (GroupClaimName,
+// RoleClaimName, GroupEntityType) live on the parent AuthzConfigRef so they
+// work the same way for inline and configMap-sourced authz.
 type InlineAuthzConfig struct {
 	// Policies is a list of Cedar policy strings
 	// +kubebuilder:validation:Required
@@ -744,22 +778,26 @@ type InlineAuthzConfig struct {
 	// +listType=atomic
 	Policies []string `json:"policies"`
 
-	// EntitiesJSON is a JSON string representing Cedar entities
+	// EntitiesJSON is a JSON string representing Cedar entities. Required when
+	// transitive policies (e.g. `ClaimGroup → PlatformRole`) need a static
+	// entity store; defaults to "[]".
 	// +kubebuilder:default="[]"
 	// +optional
 	EntitiesJSON string `json:"entitiesJson,omitempty"`
 
-	// PrimaryUpstreamProvider names the upstream IDP whose access token's claims
-	// Cedar should evaluate. Currently honored only when the parent
-	// AuthzConfigRef.Type is "inline"; configMap-sourced policies will support
-	// this in a future release (see #5208). Only meaningful for VirtualMCPServer
-	// with an embedded auth server. When empty and an embedded auth server has
-	// upstreams configured, the controller defaults to the first upstream
-	// provider. The name must match one of the upstreams declared on
-	// spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
-	// rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
-	// have no embedded auth server; setting this field on those CRs surfaces an
-	// AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
+	// PrimaryUpstreamProvider names the upstream IDP whose access token's
+	// claims Cedar should evaluate.
+	//
+	// Deprecated: this field has moved to
+	// spec.authServerConfig.primaryUpstreamProvider on VirtualMCPServer (or to
+	// the embeddedAuthServer.primaryUpstreamProvider field of a referenced
+	// MCPExternalAuthConfig for MCPServer and MCPRemoteProxy). The old
+	// location is read for one release for backward compatibility and a
+	// Warning event is emitted whenever it is consumed; planned removal in
+	// the release after the deprecation cycle. On MCPServer and MCPRemoteProxy
+	// the field remains structurally meaningless (no embedded auth server
+	// runtime) and continues to surface the AuthzPrimaryUpstreamProviderIgnored
+	// advisory.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63

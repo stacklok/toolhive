@@ -232,6 +232,19 @@ type EmbeddedAuthServerConfig struct {
 	// +listMapKey=name
 	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
 
+	// PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
+	// should read claims from when authorising a request. Must match the name
+	// of one of the entries in UpstreamProviders. When empty, the controller
+	// auto-selects the first entry of UpstreamProviders. Only meaningful when
+	// at least one upstream is configured; on MCPServer and MCPRemoteProxy
+	// (single-upstream consumers) the only validated values are empty or the
+	// name of the sole upstream.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	PrimaryUpstreamProvider string `json:"primaryUpstreamProvider,omitempty"`
+
 	// Storage configures the storage backend for the embedded auth server.
 	// If not specified, defaults to in-memory storage.
 	// +optional

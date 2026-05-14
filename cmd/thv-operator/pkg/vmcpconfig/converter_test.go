@@ -1944,21 +1944,17 @@ func TestConverter_TelemetryConfigRef(t *testing.T) {
 // evaluates claims from the upstream IDP token rather than the ToolHive-issued
 // AS token. Without this, policies referencing upstream claims (e.g. "department")
 // fail at runtime because Cedar reads the wrong token. Also verifies that the
-// user-supplied spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider
-// overrides the auto-selected first upstream when set.
+// user-supplied spec.authServerConfig.primaryUpstreamProvider overrides the
+// auto-selected first upstream when set.
 func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 	t.Parallel()
 
-	authzWith := func(primary string) *mcpv1beta1.AuthzConfigRef {
-		return &mcpv1beta1.AuthzConfigRef{
-			Type: "inline",
-			Inline: &mcpv1beta1.InlineAuthzConfig{
-				Policies:                []string{`permit(principal, action, resource);`},
-				PrimaryUpstreamProvider: primary,
-			},
-		}
+	inlineAuthzRef := &mcpv1beta1.AuthzConfigRef{
+		Type: "inline",
+		Inline: &mcpv1beta1.InlineAuthzConfig{
+			Policies: []string{`permit(principal, action, resource);`},
+		},
 	}
-	inlineAuthzRef := authzWith("")
 
 	tests := []struct {
 		name             string
@@ -2047,8 +2043,9 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "okta",
 			},
-			authzConfig:      authzWith("okta"),
+			authzConfig:      inlineAuthzRef,
 			expectedProvider: "okta",
 		},
 		{
@@ -2062,8 +2059,9 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 					{Name: "github", Type: mcpv1beta1.UpstreamProviderTypeOAuth2},
 					{Name: "google", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "github",
 			},
-			authzConfig:      authzWith("github"),
+			authzConfig:      inlineAuthzRef,
 			expectedProvider: "github",
 		},
 		{
@@ -2080,8 +2078,9 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 					{Name: "", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "default",
 			},
-			authzConfig:      authzWith("default"),
+			authzConfig:      inlineAuthzRef,
 			expectedProvider: "default",
 		},
 		{
@@ -2089,11 +2088,19 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			// (CLI dry-run, webhook, test harness), Convert refuses to produce
 			// an unresolvable PrimaryUpstreamProvider. The validator rejection
 			// is the primary user-facing fail-loud point; this case locks the
-			// converter-side defense in.
+			// converter-side defense in. The provider is on the deprecated
+			// location to keep the rejection wired through ExplicitPrimaryUpstream
+			// Provider's fallback path.
 			name:             "explicit primary provider without auth server is rejected",
 			authServerConfig: nil,
-			authzConfig:      authzWith("okta"),
-			expectError:      true,
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: "inline",
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies:                []string{`permit(principal, action, resource);`},
+					PrimaryUpstreamProvider: "okta",
+				},
+			},
+			expectError: true,
 		},
 		{
 			name: "explicit primary provider that doesn't match any upstream is rejected",
@@ -2102,9 +2109,53 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "ping",
 			},
-			authzConfig: authzWith("ping"),
+			authzConfig: inlineAuthzRef,
 			expectError: true,
+		},
+		{
+			// Backward-compatibility: the deprecated inline field is read when
+			// the canonical location is empty, with no auth server set this is
+			// rejected by the defense-in-depth check above; this case validates
+			// the deprecated value flows through when the canonical is empty and
+			// matches a declared upstream.
+			name: "deprecated inline primary provider is honored when canonical is empty",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+					{Name: "github", Type: mcpv1beta1.UpstreamProviderTypeOAuth2},
+				},
+			},
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: "inline",
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies:                []string{`permit(principal, action, resource);`},
+					PrimaryUpstreamProvider: "github",
+				},
+			},
+			expectedProvider: "github",
+		},
+		{
+			// Canonical location overrides the deprecated one when both are set.
+			name: "canonical primary provider overrides deprecated inline value",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+					{Name: "github", Type: mcpv1beta1.UpstreamProviderTypeOAuth2},
+				},
+				PrimaryUpstreamProvider: "github",
+			},
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: "inline",
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies:                []string{`permit(principal, action, resource);`},
+					PrimaryUpstreamProvider: "okta",
+				},
+			},
+			expectedProvider: "github",
 		},
 	}
 

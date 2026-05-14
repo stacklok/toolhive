@@ -3538,6 +3538,9 @@ func TestDiscoveredRBACRulesIncludeMCPServerEntries(t *testing.T) {
 func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 	t.Parallel()
 
+	// inlineAuthzRef is the baseline inline authz config used by tests that
+	// place the explicit primary on the canonical spec.authServerConfig
+	// location.
 	inlineAuthzRef := &mcpv1beta1.AuthzConfigRef{
 		Type: "inline",
 		Inline: &mcpv1beta1.InlineAuthzConfig{
@@ -3545,9 +3548,11 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 		},
 	}
 
-	// authzRefWithPrimary builds an inline authz ref with an explicit
-	// PrimaryUpstreamProvider — used to exercise the override branch.
-	authzRefWithPrimary := func(primary string) *mcpv1beta1.AuthzConfigRef {
+	// authzRefWithDeprecatedInlinePrimary builds an inline authz ref that
+	// sets PrimaryUpstreamProvider on the deprecated InlineAuthzConfig field.
+	// Used to exercise the backward-compatibility fallback path on
+	// ExplicitPrimaryUpstreamProvider.
+	authzRefWithDeprecatedInlinePrimary := func(primary string) *mcpv1beta1.AuthzConfigRef {
 		return &mcpv1beta1.AuthzConfigRef{
 			Type: "inline",
 			Inline: &mcpv1beta1.InlineAuthzConfig{
@@ -3652,7 +3657,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 			name: "explicit primary provider matching an upstream is valid",
 			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
 				Type:        "oidc",
-				AuthzConfig: authzRefWithPrimary("entra"),
+				AuthzConfig: inlineAuthzRef,
 			},
 			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://authserver.example.com",
@@ -3660,6 +3665,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 					{Name: "entra", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "entra",
 			},
 			expectedWarning: warningExpectation{expectPresent: false},
 		},
@@ -3669,7 +3675,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 			name: "explicit primary provider suppresses multi-upstream advisory",
 			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
 				Type:        "oidc",
-				AuthzConfig: authzRefWithPrimary("okta"),
+				AuthzConfig: inlineAuthzRef,
 			},
 			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://authserver.example.com",
@@ -3678,6 +3684,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 					{Name: "entra", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 					{Name: "google", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "okta",
 			},
 			expectedWarning: warningExpectation{expectPresent: false},
 		},
@@ -3688,7 +3695,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 			name: "explicit primary provider not matching any upstream is invalid",
 			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
 				Type:        "oidc",
-				AuthzConfig: authzRefWithPrimary("ping"),
+				AuthzConfig: inlineAuthzRef,
 			},
 			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://authserver.example.com",
@@ -3696,6 +3703,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 					{Name: "entra", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "ping",
 			},
 			expectError:     true,
 			expectedReason:  mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
@@ -3707,11 +3715,13 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 			// the embedded AS — without an AS there is nothing for it to refer
 			// to, and the converter would otherwise forward an unresolvable
 			// name. Distinct condition reason from the upstream-mismatch case
-			// so tooling can route the two misconfigurations separately.
+			// so tooling can route the two misconfigurations separately. With
+			// authServerConfig=nil the canonical location can't carry the
+			// field, so this case exercises the deprecated inline fallback.
 			name: "explicit primary provider without embedded auth server is invalid",
 			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
 				Type:        "oidc",
-				AuthzConfig: authzRefWithPrimary("okta"),
+				AuthzConfig: authzRefWithDeprecatedInlinePrimary("okta"),
 			},
 			authServerConfig: nil,
 			expectError:      true,
@@ -3955,8 +3965,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_ClearsStaleAuthzUnknown(
 			authzRef := &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
-					PrimaryUpstreamProvider: "okta",
+					Policies: []string{`permit(principal, action, resource);`},
 				},
 			}
 
@@ -3972,12 +3981,13 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_ClearsStaleAuthzUnknown(
 						Type:        "oidc",
 						AuthzConfig: authzRef,
 					},
-					// Spec is now valid: explicit "okta" matches a declared upstream.
+					// Spec is now valid: explicit "okta" matches the single declared upstream.
 					AuthServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 						Issuer: "https://authserver.example.com",
 						UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 							{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 						},
+						PrimaryUpstreamProvider: "okta",
 					},
 				},
 				Status: mcpv1beta1.VirtualMCPServerStatus{

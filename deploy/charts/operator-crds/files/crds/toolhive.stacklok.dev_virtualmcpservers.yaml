@@ -140,6 +140,19 @@ spec:
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
+                  primaryUpstreamProvider:
+                    description: |-
+                      PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
+                      should read claims from when authorising a request. Must match the name
+                      of one of the entries in UpstreamProviders. When empty, the controller
+                      auto-selects the first entry of UpstreamProviders. Only meaningful when
+                      at least one upstream is configured; on MCPServer and MCPRemoteProxy
+                      (single-upstream consumers) the only validated values are empty or the
+                      name of the sole upstream.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                    type: string
                   signingKeySecretRefs:
                     description: |-
                       SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
@@ -1423,6 +1436,29 @@ spec:
                       authz:
                         description: Authz contains authorization configuration (optional).
                         properties:
+                          entitiesJson:
+                            description: |-
+                              EntitiesJSON is a JSON string representing Cedar entities. Required for
+                              enterprise policies that rely on transitive relationships (e.g.
+                              `ClaimGroup → PlatformRole`) — without it the Cedar authorizer is
+                              constructed with an empty entity store and `in` checks against absent
+                              entities silently evaluate to false. Defaults to "[]" when empty.
+                            type: string
+                          groupClaimName:
+                            description: |-
+                              GroupClaimName is the JWT claim key that contains group membership for
+                              the principal. When set, takes priority over the well-known defaults
+                              ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                              groups under a URI-style claim (e.g. "https://example.com/groups").
+                              When empty, only the well-known claim names are checked.
+                            type: string
+                          groupEntityType:
+                            description: |-
+                              GroupEntityType is the Cedar entity type name used for principal parent
+                              UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                              empty. Must match the entity type used in EntitiesJSON for transitive
+                              `in` checks to resolve. Namespaced names (`Foo::Bar`) are not yet supported.
+                            type: string
                           policies:
                             description: Policies contains Cedar policy definitions
                               (when Type = "cedar").
@@ -1436,6 +1472,13 @@ spec:
                               When empty, claims from the ToolHive-issued token are used.
                               Must match an upstream provider name configured in the embedded auth server
                               (e.g. "default", "github"). Only relevant when the embedded auth server is active.
+                            type: string
+                          roleClaimName:
+                            description: |-
+                              RoleClaimName is the JWT claim key that contains role membership for the
+                              principal. When set, the claim is extracted separately from GroupClaimName
+                              and both are mapped to the configured group entity type. When empty, no
+                              role extraction is performed.
                             type: string
                           type:
                             description: 'Type is the authz type: "cedar", "none"'
@@ -2386,6 +2429,28 @@ spec:
                         required:
                         - name
                         type: object
+                      groupClaimName:
+                        description: |-
+                          GroupClaimName is the JWT claim key that contains group membership for the
+                          principal. When set, takes priority over the well-known defaults
+                          ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                          groups under a URI-style claim (e.g. "https://example.com/groups"). When
+                          Type is "configMap", a group_claim_name entry in the referenced ConfigMap
+                          is overridden by this field if both are set.
+                        maxLength: 253
+                        type: string
+                      groupEntityType:
+                        description: |-
+                          GroupEntityType is the Cedar entity type name used for principal parent
+                          UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                          empty. Must match the entity type used in the static entity store for
+                          transitive `in` checks (e.g. `ClaimGroup → PlatformRole`) to resolve.
+                          Namespaced names (`Foo::Bar`) are not yet supported. When Type is
+                          "configMap", a group_entity_type entry in the referenced ConfigMap is
+                          overridden by this field if both are set.
+                        maxLength: 63
+                        pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                        type: string
                       inline:
                         description: |-
                           Inline contains direct authorization configuration
@@ -2393,8 +2458,10 @@ spec:
                         properties:
                           entitiesJson:
                             default: '[]'
-                            description: EntitiesJSON is a JSON string representing
-                              Cedar entities
+                            description: |-
+                              EntitiesJSON is a JSON string representing Cedar entities. Required when
+                              transitive policies (e.g. `ClaimGroup → PlatformRole`) need a static
+                              entity store; defaults to "[]".
                             type: string
                           policies:
                             description: Policies is a list of Cedar policy strings
@@ -2405,17 +2472,19 @@ spec:
                             x-kubernetes-list-type: atomic
                           primaryUpstreamProvider:
                             description: |-
-                              PrimaryUpstreamProvider names the upstream IDP whose access token's claims
-                              Cedar should evaluate. Currently honored only when the parent
-                              AuthzConfigRef.Type is "inline"; configMap-sourced policies will support
-                              this in a future release (see #5208). Only meaningful for VirtualMCPServer
-                              with an embedded auth server. When empty and an embedded auth server has
-                              upstreams configured, the controller defaults to the first upstream
-                              provider. The name must match one of the upstreams declared on
-                              spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
-                              rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
-                              have no embedded auth server; setting this field on those CRs surfaces an
-                              AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
+                              PrimaryUpstreamProvider names the upstream IDP whose access token's
+                              claims Cedar should evaluate.
+
+                              Deprecated: this field has moved to
+                              spec.authServerConfig.primaryUpstreamProvider on VirtualMCPServer (or to
+                              the embeddedAuthServer.primaryUpstreamProvider field of a referenced
+                              MCPExternalAuthConfig for MCPServer and MCPRemoteProxy). The old
+                              location is read for one release for backward compatibility and a
+                              Warning event is emitted whenever it is consumed; planned removal in
+                              the release after the deprecation cycle. On MCPServer and MCPRemoteProxy
+                              the field remains structurally meaningless (no embedded auth server
+                              runtime) and continues to surface the AuthzPrimaryUpstreamProviderIgnored
+                              advisory.
                             maxLength: 63
                             minLength: 1
                             pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
@@ -2423,6 +2492,15 @@ spec:
                         required:
                         - policies
                         type: object
+                      roleClaimName:
+                        description: |-
+                          RoleClaimName is the JWT claim key that contains role membership for the
+                          principal. When set, the claim is extracted separately from GroupClaimName
+                          and both are mapped to the configured GroupEntityType. When Type is
+                          "configMap", a role_claim_name entry in the referenced ConfigMap is
+                          overridden by this field if both are set.
+                        maxLength: 253
+                        type: string
                       type:
                         default: configMap
                         description: Type is the type of authorization configuration
@@ -2978,6 +3056,19 @@ spec:
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
+                  primaryUpstreamProvider:
+                    description: |-
+                      PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
+                      should read claims from when authorising a request. Must match the name
+                      of one of the entries in UpstreamProviders. When empty, the controller
+                      auto-selects the first entry of UpstreamProviders. Only meaningful when
+                      at least one upstream is configured; on MCPServer and MCPRemoteProxy
+                      (single-upstream consumers) the only validated values are empty or the
+                      name of the sole upstream.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                    type: string
                   signingKeySecretRefs:
                     description: |-
                       SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
@@ -4261,6 +4352,29 @@ spec:
                       authz:
                         description: Authz contains authorization configuration (optional).
                         properties:
+                          entitiesJson:
+                            description: |-
+                              EntitiesJSON is a JSON string representing Cedar entities. Required for
+                              enterprise policies that rely on transitive relationships (e.g.
+                              `ClaimGroup → PlatformRole`) — without it the Cedar authorizer is
+                              constructed with an empty entity store and `in` checks against absent
+                              entities silently evaluate to false. Defaults to "[]" when empty.
+                            type: string
+                          groupClaimName:
+                            description: |-
+                              GroupClaimName is the JWT claim key that contains group membership for
+                              the principal. When set, takes priority over the well-known defaults
+                              ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                              groups under a URI-style claim (e.g. "https://example.com/groups").
+                              When empty, only the well-known claim names are checked.
+                            type: string
+                          groupEntityType:
+                            description: |-
+                              GroupEntityType is the Cedar entity type name used for principal parent
+                              UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                              empty. Must match the entity type used in EntitiesJSON for transitive
+                              `in` checks to resolve. Namespaced names (`Foo::Bar`) are not yet supported.
+                            type: string
                           policies:
                             description: Policies contains Cedar policy definitions
                               (when Type = "cedar").
@@ -4274,6 +4388,13 @@ spec:
                               When empty, claims from the ToolHive-issued token are used.
                               Must match an upstream provider name configured in the embedded auth server
                               (e.g. "default", "github"). Only relevant when the embedded auth server is active.
+                            type: string
+                          roleClaimName:
+                            description: |-
+                              RoleClaimName is the JWT claim key that contains role membership for the
+                              principal. When set, the claim is extracted separately from GroupClaimName
+                              and both are mapped to the configured group entity type. When empty, no
+                              role extraction is performed.
                             type: string
                           type:
                             description: 'Type is the authz type: "cedar", "none"'
@@ -5224,6 +5345,28 @@ spec:
                         required:
                         - name
                         type: object
+                      groupClaimName:
+                        description: |-
+                          GroupClaimName is the JWT claim key that contains group membership for the
+                          principal. When set, takes priority over the well-known defaults
+                          ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                          groups under a URI-style claim (e.g. "https://example.com/groups"). When
+                          Type is "configMap", a group_claim_name entry in the referenced ConfigMap
+                          is overridden by this field if both are set.
+                        maxLength: 253
+                        type: string
+                      groupEntityType:
+                        description: |-
+                          GroupEntityType is the Cedar entity type name used for principal parent
+                          UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                          empty. Must match the entity type used in the static entity store for
+                          transitive `in` checks (e.g. `ClaimGroup → PlatformRole`) to resolve.
+                          Namespaced names (`Foo::Bar`) are not yet supported. When Type is
+                          "configMap", a group_entity_type entry in the referenced ConfigMap is
+                          overridden by this field if both are set.
+                        maxLength: 63
+                        pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                        type: string
                       inline:
                         description: |-
                           Inline contains direct authorization configuration
@@ -5231,8 +5374,10 @@ spec:
                         properties:
                           entitiesJson:
                             default: '[]'
-                            description: EntitiesJSON is a JSON string representing
-                              Cedar entities
+                            description: |-
+                              EntitiesJSON is a JSON string representing Cedar entities. Required when
+                              transitive policies (e.g. `ClaimGroup → PlatformRole`) need a static
+                              entity store; defaults to "[]".
                             type: string
                           policies:
                             description: Policies is a list of Cedar policy strings
@@ -5243,17 +5388,19 @@ spec:
                             x-kubernetes-list-type: atomic
                           primaryUpstreamProvider:
                             description: |-
-                              PrimaryUpstreamProvider names the upstream IDP whose access token's claims
-                              Cedar should evaluate. Currently honored only when the parent
-                              AuthzConfigRef.Type is "inline"; configMap-sourced policies will support
-                              this in a future release (see #5208). Only meaningful for VirtualMCPServer
-                              with an embedded auth server. When empty and an embedded auth server has
-                              upstreams configured, the controller defaults to the first upstream
-                              provider. The name must match one of the upstreams declared on
-                              spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
-                              rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
-                              have no embedded auth server; setting this field on those CRs surfaces an
-                              AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
+                              PrimaryUpstreamProvider names the upstream IDP whose access token's
+                              claims Cedar should evaluate.
+
+                              Deprecated: this field has moved to
+                              spec.authServerConfig.primaryUpstreamProvider on VirtualMCPServer (or to
+                              the embeddedAuthServer.primaryUpstreamProvider field of a referenced
+                              MCPExternalAuthConfig for MCPServer and MCPRemoteProxy). The old
+                              location is read for one release for backward compatibility and a
+                              Warning event is emitted whenever it is consumed; planned removal in
+                              the release after the deprecation cycle. On MCPServer and MCPRemoteProxy
+                              the field remains structurally meaningless (no embedded auth server
+                              runtime) and continues to surface the AuthzPrimaryUpstreamProviderIgnored
+                              advisory.
                             maxLength: 63
                             minLength: 1
                             pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
@@ -5261,6 +5408,15 @@ spec:
                         required:
                         - policies
                         type: object
+                      roleClaimName:
+                        description: |-
+                          RoleClaimName is the JWT claim key that contains role membership for the
+                          principal. When set, the claim is extracted separately from GroupClaimName
+                          and both are mapped to the configured GroupEntityType. When Type is
+                          "configMap", a role_claim_name entry in the referenced ConfigMap is
+                          overridden by this field if both are set.
+                        maxLength: 253
+                        type: string
                       type:
                         default: configMap
                         description: Type is the type of authorization configuration

@@ -286,6 +286,15 @@ func TestParseTokenLifespans(t *testing.T) {
 	})
 }
 
+// TestResolveSecret pins the observable contract of the runner-package
+// resolveSecret helper: file-precedence, whitespace-trimming, and the
+// explicit error modes for missing-file / unset-env. resolveSecret is
+// the single authoritative implementation in the codebase; the
+// pkg/auth/dcr package no longer carries a parallel copy (removed in
+// #5219 sub-issue 4b, when the resolver's input was neutralised and the
+// embedded-authserver adapter took responsibility for resolving the
+// file-or-env reference into Request.InitialAccessToken at the call
+// site).
 func TestResolveSecret(t *testing.T) {
 	t.Parallel()
 
@@ -1580,16 +1589,16 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID)
 		assert.Equal(t, "dcr-client-secret", got[0].OAuth2Config.ClientSecret)
 
-		// Store now contains the resolution under the canonical DCRKey.
+		// Store now contains the resolution under the canonical storage.DCRKey.
 		redirectURI := server.URL + "/oauth/callback"
-		key := DCRKey{
+		key := storage.DCRKey{
 			Issuer:      server.URL,
 			RedirectURI: redirectURI,
 			ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 		}
 		cached, ok, err := store.Get(context.Background(), key)
 		require.NoError(t, err)
-		require.True(t, ok, "store should contain the DCR resolution keyed by DCRKey")
+		require.True(t, ok, "store should contain the DCR resolution keyed by storage.DCRKey")
 		assert.Equal(t, "dcr-client-id", cached.ClientID)
 
 		// First call must have hit the mock AS at least once (metadata +
@@ -1663,10 +1672,12 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 // TestNewEmbeddedAuthServer_DCRBoot drives the full NewEmbeddedAuthServer
 // boot path against a mock upstream AS: signing keys are generated
 // ephemerally, storage defaults to memory, and the DCR resolver runs
-// inside the constructor. It verifies that (a) the constructor plumbs a
-// dcrStore onto EmbeddedAuthServer, (b) that store is populated with the
-// canonical DCRKey after boot, and (c) the caller's original
-// RunConfig.Upstreams[i] slice element is unchanged.
+// inside the constructor. It verifies that (a) the constructor wires
+// the shared storage.DCRCredentialStore into the DCR resolver (via the
+// dcr.CredentialStore adapter passed to buildUpstreamConfigs), (b) that
+// store is populated with the canonical storage.DCRKey after boot, and
+// (c) the caller's original RunConfig.Upstreams[i] slice element is
+// unchanged.
 //
 // This complements TestBuildUpstreamConfigs_DCR by exercising the full
 // wiring — signing-key creation, HMAC secret defaults, storage
@@ -1715,13 +1726,13 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 	assert.Greater(t, atomic.LoadInt32(requestCount), int32(0),
 		"DCR boot should have issued network I/O to the mock AS")
 
-	// The store on the EmbeddedAuthServer contains the canonical DCRKey
-	// for this upstream — the accessor delegates to the same
-	// storage.DCRCredentialStore createStorage produced, so a successful
-	// boot persisted the resolution there directly (no separate in-memory
-	// store was created).
+	// The store on the EmbeddedAuthServer contains the canonical
+	// storage.DCRKey for this upstream — the accessor delegates to the
+	// same storage.DCRCredentialStore createStorage produced, so a
+	// successful boot persisted the resolution there directly (no
+	// separate in-memory store was created).
 	redirectURI := server.URL + "/oauth/callback"
-	key := DCRKey{
+	key := storage.DCRKey{
 		Issuer:      server.URL,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
@@ -1901,7 +1912,7 @@ func TestEmbeddedAuthServer_DCRStorePersistsAcrossClose(t *testing.T) {
 	// replica and cross-restart reuse paths depend on: that the
 	// resolution lives in storage, not in process-local cache state.
 	redirectURI := server.URL + "/oauth/callback"
-	key := DCRKey{
+	key := storage.DCRKey{
 		Issuer:      server.URL,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
@@ -1926,7 +1937,7 @@ func TestEmbeddedAuthServer_DCRStorePersistsAcrossClose(t *testing.T) {
 // URL-bearing error from Close. It exists so
 // TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog can verify that the
 // deferred-cleanup gate routes both closeErr and retErr through
-// sanitizeErrorForLog, scrubbing any query / userinfo / fragment that might
+// dcr.SanitizeErrorForLog, scrubbing any query / userinfo / fragment that might
 // carry credentials in a future regression.
 type urlErrorOnCloseStorage struct {
 	storage.Storage
@@ -1944,7 +1955,7 @@ func (s *urlErrorOnCloseStorage) Close() error {
 // TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog pins the post-#5196
 // invariant that the deferred-cleanup slog.Warn at the top of
 // newEmbeddedAuthServerWithStorage routes both closeErr and retErr through
-// sanitizeErrorForLog, so a future regression that drops the call (or that
+// dcr.SanitizeErrorForLog, so a future regression that drops the call (or that
 // changes the error chain to inline an upstream response body containing a
 // userinfo/query/fragment) cannot silently leak secrets to operator logs.
 //

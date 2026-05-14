@@ -788,6 +788,87 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 			expectErr: true,
 			errMsg:    "dcrConfig.softwareStatement: length",
 		},
+		{
+			name: "OAuth2 provider with identityFromToken empty subjectPath rejected",
+			provider: UpstreamProviderConfig{
+				Name: "snowflake",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://myaccount.snowflakecomputing.com/oauth/authorize",
+					TokenEndpoint:         "https://myaccount.snowflakecomputing.com/oauth/token-request",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://myaccount.snowflakecomputing.com/api/v2/users/me"},
+					IdentityFromToken:     &IdentityFromTokenConfig{SubjectPath: ""},
+				},
+			},
+			expectErr: true,
+			errMsg:    "identityFromToken.subjectPath must not be empty when identityFromToken is set",
+		},
+		{
+			name: "OAuth2 provider with identityFromToken non-empty subjectPath accepted",
+			provider: UpstreamProviderConfig{
+				Name: "snowflake",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://myaccount.snowflakecomputing.com/oauth/authorize",
+					TokenEndpoint:         "https://myaccount.snowflakecomputing.com/oauth/token-request",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://myaccount.snowflakecomputing.com/api/v2/users/me"},
+					IdentityFromToken:     &IdentityFromTokenConfig{SubjectPath: "username"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with identityFromToken and userInfo both set — accepted",
+			provider: UpstreamProviderConfig{
+				Name: "snowflake",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://myaccount.snowflakecomputing.com/oauth/authorize",
+					TokenEndpoint:         "https://myaccount.snowflakecomputing.com/oauth/token-request",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://myaccount.snowflakecomputing.com/api/v2/users/me"},
+					IdentityFromToken:     &IdentityFromTokenConfig{SubjectPath: "username", NamePath: "display_name"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with identityFromToken and tokenResponseMapping both set — accepted",
+			provider: UpstreamProviderConfig{
+				Name: "slack",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://slack.com/oauth/v2/authorize",
+					TokenEndpoint:         "https://slack.com/api/oauth.v2.access",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://slack.com/api/users.info"},
+					TokenResponseMapping:  &TokenResponseMapping{AccessTokenPath: "authed_user.access_token"},
+					IdentityFromToken:     &IdentityFromTokenConfig{SubjectPath: "authed_user.id"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			// UserInfo is +optional, and validateUpstreamProvider permits nil
+			// UserInfo so identity can be resolved solely via IdentityFromToken
+			// — the Snowflake / Slack shape where the userinfo endpoint is
+			// absent or unusable.
+			name: "OAuth2 provider with identityFromToken and nil userInfo — accepted at runtime",
+			provider: UpstreamProviderConfig{
+				Name: "snowflake",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://myaccount.snowflakecomputing.com/oauth/authorize",
+					TokenEndpoint:         "https://myaccount.snowflakecomputing.com/oauth/token-request",
+					ClientID:              "client-id",
+					UserInfo:              nil,
+					IdentityFromToken:     &IdentityFromTokenConfig{SubjectPath: "username"},
+				},
+			},
+			expectErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -851,6 +932,16 @@ func TestEmbeddedAuthServerConfig_SyntheticIdentityUpstreams(t *testing.T) {
 			ClientID:              "client",
 		},
 	}
+	oauth2IdentityFromTokenOnly := UpstreamProviderConfig{
+		Name: "snowflake",
+		Type: UpstreamProviderTypeOAuth2,
+		OAuth2Config: &OAuth2UpstreamConfig{
+			AuthorizationEndpoint: "https://idp/authorize",
+			TokenEndpoint:         "https://idp/token",
+			ClientID:              "client",
+			IdentityFromToken:     &IdentityFromTokenConfig{SubjectPath: "username"},
+		},
+	}
 
 	tests := []struct {
 		name string
@@ -893,6 +984,18 @@ func TestEmbeddedAuthServerConfig_SyntheticIdentityUpstreams(t *testing.T) {
 			name: "mixed: only OAuth2-without-userInfo are returned",
 			cfg: &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{
 				*oidc, oauth2WithUserInfo, oauth2NoUserInfo,
+			}},
+			want: []string{"no-userinfo"},
+		},
+		{
+			name: "OAuth2 with identityFromToken (no userInfo) is not synthesis-mode",
+			cfg:  &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{oauth2IdentityFromTokenOnly}},
+			want: nil,
+		},
+		{
+			name: "mixed: identityFromToken upstream excluded; synthesis-mode upstream included",
+			cfg: &EmbeddedAuthServerConfig{UpstreamProviders: []UpstreamProviderConfig{
+				oauth2IdentityFromTokenOnly, oauth2NoUserInfo,
 			}},
 			want: []string{"no-userinfo"},
 		},

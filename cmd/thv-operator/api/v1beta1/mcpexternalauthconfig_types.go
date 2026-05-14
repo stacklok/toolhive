@@ -230,11 +230,26 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	Storage *AuthServerStorageConfig `json:"storage,omitempty"`
 
-	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
-	// For an embedded auth server, this can be determined by the servers (MCP or vMCP) it serves.
-
-	// ScopesSupported is the list of OAuth 2.0 scopes that this authorization server supports.
-	// For an embedded auth server, this can be derived from the server's (MCP or vMCP) OIDC configuration.
+	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
+	// included in every client registration. The embedded auth server unions these
+	// scopes into the registered set returned by RFC 7591 Dynamic Client
+	// Registration, so a client that narrows the `scope` field at /oauth/register
+	// can still request the baseline scopes at /oauth/authorize. All values must
+	// be present in the upstream-derived scopesSupported set; the auth server
+	// fails to start if any value is missing.
+	//
+	// Security: every client registered via /oauth/register will gain the
+	// ability to request these scopes at /oauth/authorize, regardless of what
+	// the client itself requested. Keep the baseline narrow (typically
+	// "openid" and "offline_access"). Adding a privileged scope here — e.g.
+	// "admin:read" — would grant it to every DCR-registered client, including
+	// public clients like Claude Code, Cursor, and VS Code.
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:Pattern=`^[\x21\x23-\x5B\x5D-\x7E]+$`
+	// +listType=atomic
+	// +optional
+	BaselineClientScopes []string `json:"baselineClientScopes,omitempty"`
 }
 
 // TokenLifespanConfig holds configuration for token lifetimes.
@@ -407,10 +422,13 @@ type OAuth2UpstreamConfig struct {
 	TokenEndpoint string `json:"tokenEndpoint"`
 
 	// UserInfo contains configuration for fetching user information from the upstream provider.
-	// When omitted, the embedded auth server runs in synthesis mode for this
-	// upstream: a non-PII subject derived from the access token, no Name/Email.
-	// Use this shape for upstreams with no userinfo surface (e.g., MCP
-	// authorization servers per the MCP spec).
+	// When omitted and IdentityFromToken is also unset, the embedded auth server runs in
+	// synthesis mode for this upstream: a non-PII subject derived from the access token, no
+	// Name/Email. Use this shape for upstreams with no userinfo surface and no identity in
+	// the token response (e.g., MCP authorization servers per the MCP spec). When
+	// IdentityFromToken is set instead, identity is resolved from the token response body
+	// (e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call
+	// is skipped entirely.
 	// +optional
 	UserInfo *UserInfoConfig `json:"userInfo,omitempty"`
 
@@ -441,8 +459,17 @@ type OAuth2UpstreamConfig struct {
 	// instead of returning them at the top level. When set, ToolHive performs the token
 	// exchange HTTP call directly and extracts fields using the configured dot-notation paths.
 	// If nil, standard OAuth 2.0 token response parsing is used.
+	// For extracting user identity from the token response, see IdentityFromToken.
 	// +optional
 	TokenResponseMapping *TokenResponseMapping `json:"tokenResponseMapping,omitempty"`
+
+	// IdentityFromToken extracts user identity (subject, name, email) directly
+	// from the OAuth2 token-endpoint response body using gjson dot-notation paths.
+	// When set, the embedded auth server skips the userinfo HTTP call entirely
+	// and resolves identity from the token response. See IdentityFromTokenConfig
+	// for trust-model and uniqueness considerations.
+	// +optional
+	IdentityFromToken *IdentityFromTokenConfig `json:"identityFromToken,omitempty"`
 
 	// AdditionalAuthorizationParams are extra query parameters to include in
 	// authorization requests sent to the upstream provider.
@@ -547,9 +574,56 @@ type DCRUpstreamConfig struct {
 	SoftwareStatement string `json:"softwareStatement,omitempty"`
 }
 
+// IdentityFromTokenConfig extracts user identity (subject, name, email) directly from the
+// OAuth2 token-endpoint response body using gjson dot-notation paths. When configured on an
+// OAuth2UpstreamConfig, the embedded auth server skips the userinfo HTTP call entirely and
+// resolves identity from the token response.
+//
+// Paths use gjson dot-notation, where each segment is a JSON object key. For example,
+// "username" extracts a top-level field, and "authed_user.id" extracts a nested field.
+//
+// Trust-model warning: Identity claims extracted via this block are not cryptographically
+// verified — they are trusted only via the TLS connection to the token endpoint. Prefer
+// OIDC + ID token validation when verifiable claims are required.
+//
+// Subject uniqueness is scoped to the upstream provider entry. To keep identity namespaces
+// separate across multiple instances of the same provider (e.g., two Snowflake accounts),
+// use distinct upstream provider entries.
+type IdentityFromTokenConfig struct {
+	// SubjectPath is the dot-notation path to the subject (user ID) field in the token response.
+	// Warning: claims read from the token response are trusted only via TLS, not
+	// cryptographically verified; prefer OIDC ID tokens when verifiable claims are required.
+	// Example: "authed_user.id" for Slack (top-level token-response field). For providers
+	// whose token response embeds the access token as a JWT (e.g. Snowflake), use the
+	// "@upstreamjwt" modifier to decode the payload, e.g. "access_token|@upstreamjwt|sub".
+	// The "@upstreamjwt" modifier performs no signature verification either.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	SubjectPath string `json:"subjectPath"`
+
+	// NamePath is the dot-notation path to the display name field in the token response.
+	// If not specified or if the path does not resolve to a string, the display name is omitted.
+	// Omit the field entirely rather than setting it to an empty string.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	NamePath string `json:"namePath,omitempty"`
+
+	// EmailPath is the dot-notation path to the email address field in the token response.
+	// If not specified or if the path does not resolve to a string, the email is omitted.
+	// Omit the field entirely rather than setting it to an empty string.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	EmailPath string `json:"emailPath,omitempty"`
+}
+
 // TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields
 // using dot-notation JSON paths. This supports upstream providers like GovSlack that nest
 // the access token under paths like "authed_user.access_token".
+//
+// For extracting user identity from the token response, see IdentityFromToken.
 type TokenResponseMapping struct {
 	// AccessTokenPath is the dot-notation path to the access token in the response.
 	// Example: "authed_user.access_token"
@@ -575,7 +649,9 @@ type TokenResponseMapping struct {
 
 // UserInfoConfig contains configuration for fetching user information from an upstream provider.
 // This supports both standard OIDC UserInfo endpoints and custom provider-specific endpoints
-// like GitHub's /user API.
+// like GitHub's /user API. For providers that do not expose a usable userinfo endpoint but
+// include identity in the OAuth2 token response, use IdentityFromToken on OAuth2UpstreamConfig
+// instead.
 type UserInfoConfig struct {
 	// EndpointURL is the URL of the userinfo endpoint.
 	// +kubebuilder:validation:Required
@@ -921,10 +997,11 @@ type UpstreamInjectSpec struct {
 // auth server config it shares with VirtualMCPServer.
 const (
 	// ConditionTypeIdentitySynthesized is an advisory set to True when at
-	// least one OAuth2 upstream has no userInfo endpoint configured (the
-	// embedded auth server synthesizes its subject from the access token,
-	// no Name/Email claims). Surfaces on resources that own the upstream
-	// declaration so a missing userInfo block is visible in
+	// least one OAuth2 upstream has no real-identity source configured
+	// (neither userInfo nor identityFromToken). The embedded auth server
+	// then synthesizes its subject from the access token, with no
+	// Name/Email claims. Surfaces on resources that own the upstream
+	// declaration so a missing identity source is visible in
 	// `kubectl describe` instead of only in proxyrunner logs.
 	ConditionTypeIdentitySynthesized = "IdentitySynthesized"
 )
@@ -932,11 +1009,13 @@ const (
 // Condition reasons for ConditionTypeIdentitySynthesized.
 const (
 	// ConditionReasonIdentitySynthesizedActive: one or more OAuth2 upstreams
-	// have nil userInfo. The condition message names the affected upstream(s).
+	// have neither userInfo nor identityFromToken configured. The condition
+	// message names the affected upstream(s).
 	ConditionReasonIdentitySynthesizedActive = "OAuth2UpstreamWithoutUserInfo"
 
-	// ConditionReasonIdentitySynthesizedInactive: every upstream has userInfo;
-	// real identity is being resolved.
+	// ConditionReasonIdentitySynthesizedInactive: every OAuth2 upstream has
+	// a real-identity source (userInfo or identityFromToken); real identity
+	// is being resolved.
 	ConditionReasonIdentitySynthesizedInactive = "AllUpstreamsHaveUserInfo"
 )
 
@@ -1117,10 +1196,13 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 			"and oauth2Config must be set when type is 'oauth2' (and the other must not be set)", prefix)
 	}
 
-	// Validate OAuth2-specific DCR / ClientID constraints (defense-in-depth with CEL).
+	// Validate OAuth2-specific constraints (defense-in-depth with CEL).
 	// The discriminator above guarantees OAuth2Config != nil when type is oauth2.
 	if provider.Type == UpstreamProviderTypeOAuth2 {
 		if err := ValidateOAuth2DCRConfig(provider.OAuth2Config); err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
+		if err := validateOAuth2UpstreamConfig(provider.OAuth2Config); err != nil {
 			return fmt.Errorf("%s: %w", prefix, err)
 		}
 	}
@@ -1197,6 +1279,18 @@ func ValidateOAuth2DCRConfig(cfg *OAuth2UpstreamConfig) error {
 	return nil
 }
 
+// validateOAuth2UpstreamConfig validates OAuth2-specific upstream provider configuration
+// beyond the DCR / ClientID constraints handled by ValidateOAuth2DCRConfig. Errors are
+// scoped to "oauth2Config[.field]" so callers can wrap with their own outer scope (e.g.
+// "upstreamProviders[i]: %w") without duplicating the field name, matching the contract
+// of ValidateOAuth2DCRConfig.
+func validateOAuth2UpstreamConfig(cfg *OAuth2UpstreamConfig) error {
+	if cfg.IdentityFromToken != nil && cfg.IdentityFromToken.SubjectPath == "" {
+		return fmt.Errorf("oauth2Config.identityFromToken.subjectPath must not be empty when identityFromToken is set")
+	}
+	return nil
+}
+
 // AdditionalAuthorizationParams returns the additional authorization parameters
 // from whichever upstream config is set, or nil if none.
 func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]string {
@@ -1210,9 +1304,11 @@ func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]stri
 }
 
 // SyntheticIdentityUpstreams returns the names of OAuth2 upstreams running
-// in synthesis mode (no userInfo configured), sorted lexically for
-// deterministic condition messages. OIDC upstreams are skipped — they always
-// have an ID-token-derived subject. Source of truth for the
+// in synthesis mode (neither userInfo nor identityFromToken configured),
+// sorted lexically for deterministic condition messages. OIDC upstreams are
+// skipped — they always have an ID-token-derived subject. Upstreams with
+// identityFromToken are also skipped — the subject is extracted from the
+// token response, not synthesized. Source of truth for the
 // ConditionTypeIdentitySynthesized advisory.
 func (c *EmbeddedAuthServerConfig) SyntheticIdentityUpstreams() []string {
 	if c == nil {
@@ -1224,7 +1320,7 @@ func (c *EmbeddedAuthServerConfig) SyntheticIdentityUpstreams() []string {
 		if p.Type != UpstreamProviderTypeOAuth2 || p.OAuth2Config == nil {
 			continue
 		}
-		if p.OAuth2Config.UserInfo == nil {
+		if p.OAuth2Config.UserInfo == nil && p.OAuth2Config.IdentityFromToken == nil {
 			names = append(names, p.Name)
 		}
 	}

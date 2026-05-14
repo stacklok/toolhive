@@ -90,6 +90,29 @@ spec:
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
+                  baselineClientScopes:
+                    description: |-
+                      BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
+                      included in every client registration. The embedded auth server unions these
+                      scopes into the registered set returned by RFC 7591 Dynamic Client
+                      Registration, so a client that narrows the `scope` field at /oauth/register
+                      can still request the baseline scopes at /oauth/authorize. All values must
+                      be present in the upstream-derived scopesSupported set; the auth server
+                      fails to start if any value is missing.
+
+                      Security: every client registered via /oauth/register will gain the
+                      ability to request these scopes at /oauth/authorize, regardless of what
+                      the client itself requested. Keep the baseline narrow (typically
+                      "openid" and "offline_access"). Adding a privileged scope here — e.g.
+                      "admin:read" — would grant it to every DCR-registered client, including
+                      public clients like Claude Code, Cursor, and VS Code.
+                    items:
+                      minLength: 1
+                      pattern: ^[\x21\x23-\x5B\x5D-\x7E]+$
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -525,6 +548,45 @@ spec:
                               - message: exactly one of discoveryUrl or registrationEndpoint
                                   must be set
                                 rule: has(self.discoveryUrl) != has(self.registrationEndpoint)
+                            identityFromToken:
+                              description: |-
+                                IdentityFromToken extracts user identity (subject, name, email) directly
+                                from the OAuth2 token-endpoint response body using gjson dot-notation paths.
+                                When set, the embedded auth server skips the userinfo HTTP call entirely
+                                and resolves identity from the token response. See IdentityFromTokenConfig
+                                for trust-model and uniqueness considerations.
+                              properties:
+                                emailPath:
+                                  description: |-
+                                    EmailPath is the dot-notation path to the email address field in the token response.
+                                    If not specified or if the path does not resolve to a string, the email is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                namePath:
+                                  description: |-
+                                    NamePath is the dot-notation path to the display name field in the token response.
+                                    If not specified or if the path does not resolve to a string, the display name is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                subjectPath:
+                                  description: |-
+                                    SubjectPath is the dot-notation path to the subject (user ID) field in the token response.
+                                    Warning: claims read from the token response are trusted only via TLS, not
+                                    cryptographically verified; prefer OIDC ID tokens when verifiable claims are required.
+                                    Example: "authed_user.id" for Slack (top-level token-response field). For providers
+                                    whose token response embeds the access token as a JWT (e.g. Snowflake), use the
+                                    "@upstreamjwt" modifier to decode the payload, e.g. "access_token|@upstreamjwt|sub".
+                                    The "@upstreamjwt" modifier performs no signature verification either.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - subjectPath
+                              type: object
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -550,6 +612,7 @@ spec:
                                 instead of returning them at the top level. When set, ToolHive performs the token
                                 exchange HTTP call directly and extracts fields using the configured dot-notation paths.
                                 If nil, standard OAuth 2.0 token response parsing is used.
+                                For extracting user identity from the token response, see IdentityFromToken.
                               properties:
                                 accessTokenPath:
                                   description: |-
@@ -578,10 +641,13 @@ spec:
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.
-                                When omitted, the embedded auth server runs in synthesis mode for this
-                                upstream: a non-PII subject derived from the access token, no Name/Email.
-                                Use this shape for upstreams with no userinfo surface (e.g., MCP
-                                authorization servers per the MCP spec).
+                                When omitted and IdentityFromToken is also unset, the embedded auth server runs in
+                                synthesis mode for this upstream: a non-PII subject derived from the access token, no
+                                Name/Email. Use this shape for upstreams with no userinfo surface and no identity in
+                                the token response (e.g., MCP authorization servers per the MCP spec). When
+                                IdentityFromToken is set instead, identity is resolved from the token response body
+                                (e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call
+                                is skipped entirely.
                               properties:
                                 additionalHeaders:
                                   additionalProperties:
@@ -1970,6 +2036,131 @@ spec:
                     required:
                     - source
                     type: object
+                  rateLimiting:
+                    description: |-
+                      RateLimiting defines rate limiting configuration for the Virtual MCP server.
+                      Requires Redis session storage to be configured for distributed rate limiting.
+                    properties:
+                      perUser:
+                        description: |-
+                          PerUser is a token bucket applied independently to each authenticated user
+                          at the server level. Requires authentication to be enabled.
+                          Each unique userID creates Redis keys that expire after 2x refillPeriod.
+                          Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys.
+                        properties:
+                          maxTokens:
+                            description: |-
+                              MaxTokens is the maximum number of tokens (bucket capacity).
+                              This is also the burst size: the maximum number of requests that can be served
+                              instantaneously before the bucket is depleted.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          refillPeriod:
+                            description: |-
+                              RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                              The effective refill rate is maxTokens / refillPeriod tokens per second.
+                              Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                            type: string
+                        required:
+                        - maxTokens
+                        - refillPeriod
+                        type: object
+                      shared:
+                        description: Shared is a token bucket shared across all users
+                          for the entire server.
+                        properties:
+                          maxTokens:
+                            description: |-
+                              MaxTokens is the maximum number of tokens (bucket capacity).
+                              This is also the burst size: the maximum number of requests that can be served
+                              instantaneously before the bucket is depleted.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          refillPeriod:
+                            description: |-
+                              RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                              The effective refill rate is maxTokens / refillPeriod tokens per second.
+                              Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                            type: string
+                        required:
+                        - maxTokens
+                        - refillPeriod
+                        type: object
+                      tools:
+                        description: |-
+                          Tools defines per-tool rate limit overrides.
+                          Each entry applies additional rate limits to calls targeting a specific tool name.
+                          A request must pass both the server-level limit and the per-tool limit.
+                        items:
+                          description: |-
+                            ToolRateLimitConfig defines rate limits for a specific tool.
+                            At least one of shared or perUser must be configured.
+                          properties:
+                            name:
+                              description: Name is the MCP tool name this limit applies
+                                to.
+                              minLength: 1
+                              type: string
+                            perUser:
+                              description: PerUser token bucket configuration for
+                                this tool.
+                              properties:
+                                maxTokens:
+                                  description: |-
+                                    MaxTokens is the maximum number of tokens (bucket capacity).
+                                    This is also the burst size: the maximum number of requests that can be served
+                                    instantaneously before the bucket is depleted.
+                                  format: int32
+                                  minimum: 1
+                                  type: integer
+                                refillPeriod:
+                                  description: |-
+                                    RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                    The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                    Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                                  type: string
+                              required:
+                              - maxTokens
+                              - refillPeriod
+                              type: object
+                            shared:
+                              description: Shared token bucket for this specific tool.
+                              properties:
+                                maxTokens:
+                                  description: |-
+                                    MaxTokens is the maximum number of tokens (bucket capacity).
+                                    This is also the burst size: the maximum number of requests that can be served
+                                    instantaneously before the bucket is depleted.
+                                  format: int32
+                                  minimum: 1
+                                  type: integer
+                                refillPeriod:
+                                  description: |-
+                                    RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                    The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                    Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                                  type: string
+                              required:
+                              - maxTokens
+                              - refillPeriod
+                              type: object
+                          required:
+                          - name
+                          type: object
+                          x-kubernetes-validations:
+                          - message: at least one of shared or perUser must be configured
+                            rule: has(self.shared) || has(self.perUser)
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                    type: object
+                    x-kubernetes-validations:
+                    - message: at least one of shared, perUser, or tools must be configured
+                      rule: has(self.shared) || has(self.perUser) || (has(self.tools)
+                        && size(self.tools) > 0)
                   sessionStorage:
                     description: |-
                       SessionStorage configures session storage for stateful horizontal scaling.
@@ -2490,6 +2681,17 @@ spec:
             - groupRef
             - incomingAuth
             type: object
+            x-kubernetes-validations:
+            - message: config.rateLimiting requires sessionStorage with provider 'redis'
+              rule: '!has(self.config) || !has(self.config.rateLimiting) || (has(self.sessionStorage)
+                && self.sessionStorage.provider == ''redis'')'
+            - message: config.rateLimiting.perUser requires incomingAuth.type oidc
+              rule: '!(has(self.config) && has(self.config.rateLimiting) && has(self.config.rateLimiting.perUser))
+                || (has(self.incomingAuth) && self.incomingAuth.type == ''oidc'')'
+            - message: per-tool perUser rate limiting requires incomingAuth.type oidc
+              rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
+                || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
+                && self.incomingAuth.type == ''oidc'')'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
@@ -2726,6 +2928,29 @@ spec:
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
+                  baselineClientScopes:
+                    description: |-
+                      BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
+                      included in every client registration. The embedded auth server unions these
+                      scopes into the registered set returned by RFC 7591 Dynamic Client
+                      Registration, so a client that narrows the `scope` field at /oauth/register
+                      can still request the baseline scopes at /oauth/authorize. All values must
+                      be present in the upstream-derived scopesSupported set; the auth server
+                      fails to start if any value is missing.
+
+                      Security: every client registered via /oauth/register will gain the
+                      ability to request these scopes at /oauth/authorize, regardless of what
+                      the client itself requested. Keep the baseline narrow (typically
+                      "openid" and "offline_access"). Adding a privileged scope here — e.g.
+                      "admin:read" — would grant it to every DCR-registered client, including
+                      public clients like Claude Code, Cursor, and VS Code.
+                    items:
+                      minLength: 1
+                      pattern: ^[\x21\x23-\x5B\x5D-\x7E]+$
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -3161,6 +3386,45 @@ spec:
                               - message: exactly one of discoveryUrl or registrationEndpoint
                                   must be set
                                 rule: has(self.discoveryUrl) != has(self.registrationEndpoint)
+                            identityFromToken:
+                              description: |-
+                                IdentityFromToken extracts user identity (subject, name, email) directly
+                                from the OAuth2 token-endpoint response body using gjson dot-notation paths.
+                                When set, the embedded auth server skips the userinfo HTTP call entirely
+                                and resolves identity from the token response. See IdentityFromTokenConfig
+                                for trust-model and uniqueness considerations.
+                              properties:
+                                emailPath:
+                                  description: |-
+                                    EmailPath is the dot-notation path to the email address field in the token response.
+                                    If not specified or if the path does not resolve to a string, the email is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                namePath:
+                                  description: |-
+                                    NamePath is the dot-notation path to the display name field in the token response.
+                                    If not specified or if the path does not resolve to a string, the display name is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                subjectPath:
+                                  description: |-
+                                    SubjectPath is the dot-notation path to the subject (user ID) field in the token response.
+                                    Warning: claims read from the token response are trusted only via TLS, not
+                                    cryptographically verified; prefer OIDC ID tokens when verifiable claims are required.
+                                    Example: "authed_user.id" for Slack (top-level token-response field). For providers
+                                    whose token response embeds the access token as a JWT (e.g. Snowflake), use the
+                                    "@upstreamjwt" modifier to decode the payload, e.g. "access_token|@upstreamjwt|sub".
+                                    The "@upstreamjwt" modifier performs no signature verification either.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - subjectPath
+                              type: object
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -3186,6 +3450,7 @@ spec:
                                 instead of returning them at the top level. When set, ToolHive performs the token
                                 exchange HTTP call directly and extracts fields using the configured dot-notation paths.
                                 If nil, standard OAuth 2.0 token response parsing is used.
+                                For extracting user identity from the token response, see IdentityFromToken.
                               properties:
                                 accessTokenPath:
                                   description: |-
@@ -3214,10 +3479,13 @@ spec:
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.
-                                When omitted, the embedded auth server runs in synthesis mode for this
-                                upstream: a non-PII subject derived from the access token, no Name/Email.
-                                Use this shape for upstreams with no userinfo surface (e.g., MCP
-                                authorization servers per the MCP spec).
+                                When omitted and IdentityFromToken is also unset, the embedded auth server runs in
+                                synthesis mode for this upstream: a non-PII subject derived from the access token, no
+                                Name/Email. Use this shape for upstreams with no userinfo surface and no identity in
+                                the token response (e.g., MCP authorization servers per the MCP spec). When
+                                IdentityFromToken is set instead, identity is resolved from the token response body
+                                (e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call
+                                is skipped entirely.
                               properties:
                                 additionalHeaders:
                                   additionalProperties:
@@ -4606,6 +4874,131 @@ spec:
                     required:
                     - source
                     type: object
+                  rateLimiting:
+                    description: |-
+                      RateLimiting defines rate limiting configuration for the Virtual MCP server.
+                      Requires Redis session storage to be configured for distributed rate limiting.
+                    properties:
+                      perUser:
+                        description: |-
+                          PerUser is a token bucket applied independently to each authenticated user
+                          at the server level. Requires authentication to be enabled.
+                          Each unique userID creates Redis keys that expire after 2x refillPeriod.
+                          Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys.
+                        properties:
+                          maxTokens:
+                            description: |-
+                              MaxTokens is the maximum number of tokens (bucket capacity).
+                              This is also the burst size: the maximum number of requests that can be served
+                              instantaneously before the bucket is depleted.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          refillPeriod:
+                            description: |-
+                              RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                              The effective refill rate is maxTokens / refillPeriod tokens per second.
+                              Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                            type: string
+                        required:
+                        - maxTokens
+                        - refillPeriod
+                        type: object
+                      shared:
+                        description: Shared is a token bucket shared across all users
+                          for the entire server.
+                        properties:
+                          maxTokens:
+                            description: |-
+                              MaxTokens is the maximum number of tokens (bucket capacity).
+                              This is also the burst size: the maximum number of requests that can be served
+                              instantaneously before the bucket is depleted.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          refillPeriod:
+                            description: |-
+                              RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                              The effective refill rate is maxTokens / refillPeriod tokens per second.
+                              Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                            type: string
+                        required:
+                        - maxTokens
+                        - refillPeriod
+                        type: object
+                      tools:
+                        description: |-
+                          Tools defines per-tool rate limit overrides.
+                          Each entry applies additional rate limits to calls targeting a specific tool name.
+                          A request must pass both the server-level limit and the per-tool limit.
+                        items:
+                          description: |-
+                            ToolRateLimitConfig defines rate limits for a specific tool.
+                            At least one of shared or perUser must be configured.
+                          properties:
+                            name:
+                              description: Name is the MCP tool name this limit applies
+                                to.
+                              minLength: 1
+                              type: string
+                            perUser:
+                              description: PerUser token bucket configuration for
+                                this tool.
+                              properties:
+                                maxTokens:
+                                  description: |-
+                                    MaxTokens is the maximum number of tokens (bucket capacity).
+                                    This is also the burst size: the maximum number of requests that can be served
+                                    instantaneously before the bucket is depleted.
+                                  format: int32
+                                  minimum: 1
+                                  type: integer
+                                refillPeriod:
+                                  description: |-
+                                    RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                    The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                    Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                                  type: string
+                              required:
+                              - maxTokens
+                              - refillPeriod
+                              type: object
+                            shared:
+                              description: Shared token bucket for this specific tool.
+                              properties:
+                                maxTokens:
+                                  description: |-
+                                    MaxTokens is the maximum number of tokens (bucket capacity).
+                                    This is also the burst size: the maximum number of requests that can be served
+                                    instantaneously before the bucket is depleted.
+                                  format: int32
+                                  minimum: 1
+                                  type: integer
+                                refillPeriod:
+                                  description: |-
+                                    RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                    The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                    Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                                  type: string
+                              required:
+                              - maxTokens
+                              - refillPeriod
+                              type: object
+                          required:
+                          - name
+                          type: object
+                          x-kubernetes-validations:
+                          - message: at least one of shared or perUser must be configured
+                            rule: has(self.shared) || has(self.perUser)
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                    type: object
+                    x-kubernetes-validations:
+                    - message: at least one of shared, perUser, or tools must be configured
+                      rule: has(self.shared) || has(self.perUser) || (has(self.tools)
+                        && size(self.tools) > 0)
                   sessionStorage:
                     description: |-
                       SessionStorage configures session storage for stateful horizontal scaling.
@@ -5126,6 +5519,17 @@ spec:
             - groupRef
             - incomingAuth
             type: object
+            x-kubernetes-validations:
+            - message: config.rateLimiting requires sessionStorage with provider 'redis'
+              rule: '!has(self.config) || !has(self.config.rateLimiting) || (has(self.sessionStorage)
+                && self.sessionStorage.provider == ''redis'')'
+            - message: config.rateLimiting.perUser requires incomingAuth.type oidc
+              rule: '!(has(self.config) && has(self.config.rateLimiting) && has(self.config.rateLimiting.perUser))
+                || (has(self.incomingAuth) && self.incomingAuth.type == ''oidc'')'
+            - message: per-tool perUser rate limiting requires incomingAuth.type oidc
+              rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
+                || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
+                && self.incomingAuth.type == ''oidc'')'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:

@@ -1,7 +1,49 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package runner
+// Package dcr is the shared RFC 7591 Dynamic Client Registration client used
+// by every consumer in the codebase that needs to register a downstream
+// OAuth 2.x client at runtime. The package owns the stateful concerns of the
+// flow — credential cache, in-process singleflight deduplication, scope-set
+// canonicalisation, token-endpoint auth-method selection (with the RFC 7636 /
+// OAuth 2.1 S256 PKCE gate), RFC 7591 §3.2.1 expiry-driven cache invalidation,
+// the bearer-token transport with redirect refusal, and panic recovery around
+// the registration body. Stateless RFC 7591 wire-shape primitives live in
+// pkg/oauthproto.
+//
+// # API surface
+//
+// ResolveCredentials takes a profile-neutral Request and a CredentialStore
+// and returns a Resolution. The Request carries only the fields the resolver
+// actually reads (issuer, redirect URI, scopes, discovery URL or registration
+// endpoint, optional explicit endpoint overrides, optional initial access
+// token, optional registration metadata); each consumer translates its
+// domain types into a Request at the call site so the resolver does not
+// import any consumer's shapes.
+//
+// Two consumers exist today:
+//
+//   - pkg/authserver/runner constructs a Request from
+//     *authserver.OAuth2UpstreamRunConfig and uses its own adapter helpers
+//     (needsDCR / consumeResolution / applyResolutionToOAuth2Config in
+//     runner/dcr_adapter.go) to fold the resolution back into its
+//     run-config and built upstream.OAuth2Config.
+//   - pkg/auth/discovery constructs a Request from *OAuthFlowConfig for the
+//     CLI OAuth flow and copies the returned Resolution onto OAuthFlowResult.
+//
+// # Concurrency
+//
+// The package maintains a process-global singleflight keyed on the tuple
+// (issuer, redirectURI, scopesHash) so concurrent ResolveCredentials calls
+// across all consumers in a single process coalesce when their cache keys
+// match. Consumers that share any of those three values will share a flight
+// — the deduplication is a feature for the embedded authserver but means
+// callers cannot assume per-call-site flight isolation. See the dcrFlight
+// doc comment below for the rationale.
+//
+// See issue #5145 for the design discussion that motivated lifting this out
+// of pkg/authserver/runner.
+package dcr
 
 import (
 	"context"
@@ -18,33 +60,67 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
-	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// dcrFlight coalesces concurrent resolveDCRCredentials calls that share the
-// same DCRKey. Two goroutines hitting the resolver for the same upstream and
+// dcrFlight coalesces concurrent ResolveCredentials calls that share the
+// same Key. Two goroutines hitting the resolver for the same upstream and
 // scope set will both miss the cache, so without coalescing they would both
 // call RegisterClientDynamically and the loser's registration would become
 // orphaned at the upstream IdP — an operator-visible cleanup task and
 // possibly a transient startup failure if the upstream rate-limits
 // concurrent registrations. Followers wait for the leader's result and
-// observe the same DCRResolution.
+// observe the same Resolution.
 //
-// Lifetime: process-wide. This intentionally contrasts with
-// EmbeddedAuthServer.dcrStore, which is per-instance. The asymmetry is
-// load-bearing: the singleflight only deduplicates the in-flight network
-// call, while the cache deduplicates the resolution itself across calls.
-// Process-wide flight means concurrent EmbeddedAuthServer instances in
-// the same process targeting the same upstream still get deduplicated;
-// the per-instance cache is correct because each instance independently
-// decides whether the resolution is fresh enough to reuse. A future
-// Redis-backed store would still want this in-process gate so a single
-// replica does not double-register against itself.
+// Lifetime: process-wide. This intentionally contrasts with the
+// CredentialStore the embedded authserver constructs and injects into
+// ResolveCredentials, which is per-instance for the memory backend and
+// shared across replicas for Redis. The asymmetry is load-bearing: the
+// singleflight only deduplicates the in-flight network call, while the
+// cache deduplicates the resolution itself across calls. Process-wide
+// flight means concurrent EmbeddedAuthServer instances in the same
+// process targeting the same upstream still get deduplicated; the
+// injected cache decides whether the resolution is fresh enough to
+// reuse. A Redis-backed store still wants this in-process gate so a
+// single replica does not double-register against itself.
+//
+// Cross-consumer caveat: because dcrFlight is package-global, two
+// consumers that happen to construct identical Keys (same issuer, same
+// redirect URI, same scopes hash) will share a single in-flight
+// registration even if they semantically want different client profiles.
+// The two current call sites do not collide by construction — the embedded
+// authserver's redirect URI lives on the AS origin, and the CLI flow's
+// redirect URI lives on a loopback (http://localhost:{port}/callback per
+// RFC 8252 §7.3), so the disjoint RedirectURI address spaces separate
+// the public-client and confidential-client profiles at both the
+// singleflight and the persistent-cache layers. A future consumer that
+// defaults its redirect URI into either of those spaces would silently
+// coalesce; if a third profile is added the flight key (and persisted
+// DCRKey) MUST gain a consumer-identifier component so a collision is
+// impossible rather than improbable.
 var dcrFlight singleflight.Group
+
+// flightKeyOf canonicalises a Key into the singleflight string used by
+// dcrFlight. The "\n" separator is safe because newline is not a valid
+// byte in any of the three components: URI reference characters in
+// Issuer and RedirectURI (RFC 3986 §2), and hex digits in ScopesHash
+// (the form storage.ScopesHash always emits). Exposed as a function so
+// tests and future inspection helpers can compute the exact key the
+// resolver would route through dcrFlight without re-implementing the
+// concatenation.
+//
+// PublicClient is intentionally NOT part of the flight key — the
+// dcrFlight doc above explains why: today's two consumers register on
+// disjoint RedirectURI address spaces (AS-origin vs RFC 8252 loopback),
+// so the public-client and confidential-client profiles cannot share a
+// flight key by construction. The same property protects the persisted
+// DCRKey from cross-profile coalescence; the two layers are aligned
+// rather than asymmetric.
+func flightKeyOf(key Key) string {
+	return key.Issuer + "\n" + key.RedirectURI + "\n" + key.ScopesHash
+}
 
 // defaultUpstreamRedirectPath is the redirect path derived from the issuer
 // origin when the caller's run-config does not supply an explicit RedirectURI.
@@ -67,23 +143,26 @@ var authMethodPreference = []string{
 	"none",
 }
 
-// DCRResolution captures the full RFC 7591 + RFC 7592 response for a
+// Resolution captures the full RFC 7591 + RFC 7592 response for a
 // successful Dynamic Client Registration, together with the endpoints the
 // upstream advertises so the caller need not re-discover them.
 //
-// The struct is the unit of storage in dcrResolutionCache and the unit of
-// application via consumeResolution.
+// The struct is the unit of storage in CredentialStore and the unit of
+// application that consumers project back into their own domain types
+// (e.g. consumeResolution / applyResolutionToOAuth2Config in
+// pkg/authserver/runner/dcr_adapter.go, or direct OAuthFlowResult field
+// writes in pkg/auth/discovery).
 //
 // MUST update both converters (resolutionToCredentials and
-// credentialsToResolution in dcr_store.go) when adding, renaming, or
+// credentialsToResolution in store.go) when adding, renaming, or
 // removing a field here. The two converters are the seam between this
-// runner-side type and the persisted *storage.DCRCredentials shape; a
+// dcr-package type and the persisted *storage.DCRCredentials shape; a
 // field added here without a paired converter update will silently fail
 // to round-trip across an authserver restart, the exact "parallel types
 // drift" failure mode .claude/rules/go-style.md warns about. The
 // round-trip behaviour is pinned by TestResolutionCredentialsRoundTrip
-// in dcr_store_test.go.
-type DCRResolution struct {
+// in store_test.go.
+type Resolution struct {
 	// ClientID is the RFC 7591 "client_id" returned by the authorization
 	// server.
 	ClientID string
@@ -114,12 +193,12 @@ type DCRResolution struct {
 	TokenEndpointAuthMethod string
 
 	// RedirectURI is the redirect URI presented to the authorization server
-	// during registration. When the caller's run-config did not specify one,
+	// during registration. When the caller's Request did not specify one,
 	// this holds the defaulted value derived from the issuer + /oauth/callback
 	// (via resolveUpstreamRedirectURI). Persisting it on the resolution lets
-	// consumeResolution write it back onto the run-config COPY so that
-	// downstream consumers (buildPureOAuth2Config, upstream.OAuth2Config
-	// validation) see a non-empty RedirectURI.
+	// consumers (pkg/authserver/runner.consumeResolution) write it back onto
+	// the run-config COPY so that downstream code (buildPureOAuth2Config,
+	// upstream.OAuth2Config validation) sees a non-empty RedirectURI.
 	RedirectURI string
 
 	// ClientIDIssuedAt is the RFC 7591 §3.2.1 "client_id_issued_at" value
@@ -142,103 +221,14 @@ type DCRResolution struct {
 	ClientSecretExpiresAt time.Time
 
 	// CreatedAt is the wall-clock time at which the resolution was completed.
-	// Used by Step 2g observability to compute staleness against
-	// dcrStaleAgeThreshold.
+	// Used by the staleness observability in lookupCachedResolution to
+	// compute age against dcrStaleAgeThreshold and emit a warn log when a
+	// cached registration exceeds the threshold.
 	CreatedAt time.Time
 }
 
-// needsDCR reports whether rc requires runtime Dynamic Client Registration.
-// A run-config needs DCR exactly when ClientID is empty and DCRConfig is
-// non-nil (the mutually-exclusive constraint is enforced by
-// OAuth2UpstreamRunConfig.Validate; this helper is a convenience check).
-func needsDCR(rc *authserver.OAuth2UpstreamRunConfig) bool {
-	if rc == nil {
-		return false
-	}
-	return rc.ClientID == "" && rc.DCRConfig != nil
-}
-
-// consumeResolution copies resolved credentials and endpoints from res into
-// rc and consumes rc.DCRConfig (sets it to nil), transitioning the run-
-// config copy from "DCR-pending" (ClientID == "" && DCRConfig != nil) to
-// "DCR-resolved" (ClientID populated && DCRConfig == nil). The "consume"
-// name is deliberate: a second call after the first is a no-op only
-// because the first cleared DCRConfig — this is a one-shot state
-// transition, not an idempotent default-fill.
-//
-// Callers must pass a COPY of the upstream run-config so the caller's
-// original is unaffected; consumeResolution does not clone rc internally.
-//
-// Why DCRConfig is cleared: OAuth2UpstreamRunConfig.Validate enforces
-// ClientID xor DCRConfig — a resolved copy that left DCRConfig set would
-// fail the validator that runs downstream in buildPureOAuth2Config. The
-// caller's *original* OAuth2Config is unaffected because
-// buildUpstreamConfigs deep-copies before resolution; only the post-
-// resolution copy is mutated here.
-//
-// ClientID, the endpoints, and RedirectURI are written only when rc leaves
-// them empty — explicit caller configuration always wins. The conditional
-// ClientID write is defence-in-depth against future call sites that bypass
-// the resolver's validateResolveInputs precondition (which enforces
-// ClientID == "" up front); an unconditional overwrite would silently
-// clobber a pre-provisioned ClientID with no error.
-//
-// The defaulted RedirectURI write closes the loop on resolver-side defaulting:
-// when the caller's run-config left RedirectURI empty, resolveUpstreamRedirectURI
-// derived issuer + /oauth/callback and persisted it on the resolution; copying
-// it back here means the downstream upstream.OAuth2Config has a non-empty
-// RedirectURI, which authserver.Config validation requires.
-//
-// Note on ClientSecret: consumeResolution does NOT write the resolved
-// secret to rc because OAuth2UpstreamRunConfig models secrets as file-or-
-// env references only. To propagate the DCR-resolved secret into the
-// final upstream.OAuth2Config, callers must pair this call with
-// applyResolutionToOAuth2Config once the config has been built. Keeping
-// the two helpers side-by-side localises the DCR-specific application
-// logic.
-func consumeResolution(rc *authserver.OAuth2UpstreamRunConfig, res *DCRResolution) {
-	if rc == nil || res == nil {
-		return
-	}
-	if rc.ClientID == "" {
-		rc.ClientID = res.ClientID
-	}
-	rc.DCRConfig = nil
-	if rc.AuthorizationEndpoint == "" {
-		rc.AuthorizationEndpoint = res.AuthorizationEndpoint
-	}
-	if rc.TokenEndpoint == "" {
-		rc.TokenEndpoint = res.TokenEndpoint
-	}
-	if rc.RedirectURI == "" {
-		rc.RedirectURI = res.RedirectURI
-	}
-}
-
-// applyResolutionToOAuth2Config overlays the DCR-resolved ClientSecret onto
-// a built *upstream.OAuth2Config. This is the companion to
-// consumeResolution: where that function writes fields representable in
-// the file-or-env run-config model, this one writes the inline-only
-// ClientSecret directly on the runtime config.
-//
-// The split exists because buildPureOAuth2Config intentionally retains a
-// narrow file-or-env contract (no DCR awareness) and because OAuth2's
-// ClientSecret on the run-config is modelled as a reference rather than
-// an inline string. Any future output path from OAuth2UpstreamRunConfig
-// to upstream.OAuth2Config must call BOTH consumeResolution (run-config
-// side) AND applyResolutionToOAuth2Config (built-config side) to get a
-// fully-resolved DCR client. Forgetting the second call leaves
-// ClientSecret empty and produces silent auth failures at request time —
-// the type system does not enforce the pair, so the invariant lives here.
-func applyResolutionToOAuth2Config(cfg *upstream.OAuth2Config, res *DCRResolution) {
-	if cfg == nil || res == nil {
-		return
-	}
-	cfg.ClientSecret = res.ClientSecret
-}
-
 // Step identifiers for structured error logs emitted by the caller of
-// resolveDCRCredentials. These values flow through the "step" attribute so
+// ResolveCredentials. These values flow through the "step" attribute so
 // operators can narrow failures to a specific phase without parsing error
 // messages. They are reported only at the boundary log — see
 // dcrStepError — so a single failure produces a single slog.Error record.
@@ -255,13 +245,13 @@ const (
 // dcrStepError annotates a resolver error with the phase it was produced
 // in. The boundary caller (buildUpstreamConfigs) emits the single
 // slog.Error record for the failure; individual error branches inside
-// resolveDCRCredentials do not log so that each failure surfaces exactly
+// ResolveCredentials do not log so that each failure surfaces exactly
 // once in the combined log stream.
 //
 // RedirectURI is included when known so that operators can correlate the
 // failure with a specific upstream registration without parsing the
 // wrapped error string. Stack carries a captured stack trace for the
-// dcrStepRegister panic-recovery branch so logDCRStepError can include
+// dcrStepRegister panic-recovery branch so LogStepError can include
 // it in the single boundary record without the in-defer site emitting
 // its own duplicate slog.Error. A zero-value dcrStepError is invalid;
 // construct via newDCRStepError or the resolver's internal helpers.
@@ -293,25 +283,20 @@ func newDCRStepError(step, issuer, redirectURI string, err error) *dcrStepError 
 	}
 }
 
-// resolveDCRCredentials performs Dynamic Client Registration for rc against
-// the upstream authorization server identified by rc.DCRConfig, caching the
-// resulting credentials in cache. On cache hit the resolver returns
-// immediately without any network I/O.
+// ResolveCredentials performs Dynamic Client Registration for req against
+// the upstream authorization server identified by req.DiscoveryURL or
+// req.RegistrationEndpoint, caching the resulting credentials in cache.
+// On cache hit the resolver returns immediately without any network I/O.
 //
-// rc must have ClientID == "" and DCRConfig != nil — the caller is expected
-// to have validated this via OAuth2UpstreamRunConfig.Validate.
-//
-// localIssuer is *this* auth server's issuer identifier, NOT the upstream's.
+// req.Issuer is *this caller's* logical issuer identifier, NOT the upstream's.
 // It is used to key the cache and to default the redirect URI to
-// {localIssuer}/oauth/callback when rc.RedirectURI is empty. The upstream's
-// issuer is recovered separately from rc.DCRConfig.DiscoveryURL inside the
-// resolver and is used solely for RFC 8414 §3.3 metadata verification.
-// Passing the upstream's issuer here would produce a wrong-origin default
-// redirect and a cache key that does not identify the auth-server context.
+// {req.Issuer}/oauth/callback when req.RedirectURI is empty. The upstream's
+// issuer is recovered separately from req.DiscoveryURL inside the resolver
+// and is used solely for RFC 8414 §3.3 metadata verification. Passing the
+// upstream's issuer in req.Issuer would produce a wrong-origin default
+// redirect and a cache key that does not identify the caller context.
 //
-// The caller is responsible for applying the returned resolution onto a COPY
-// of rc via consumeResolution (per the copy-before-mutate rule). This function
-// neither mutates rc nor the cache on failure.
+// The resolver does not mutate req or the cache on failure.
 //
 // Observability: this function never calls slog.Error directly — all
 // failures are annotated with a *dcrStepError and returned to the caller,
@@ -322,119 +307,128 @@ func newDCRStepError(step, issuer, redirectURI string, err error) *dcrStepError 
 // outer-frame equivalent. No secret values (client_secret,
 // registration_access_token, initial_access_token) are ever logged — only
 // public metadata such as client_id and redirect_uri.
-func resolveDCRCredentials(
+func ResolveCredentials(
 	ctx context.Context,
-	rc *authserver.OAuth2UpstreamRunConfig,
-	localIssuer string,
-	cache dcrResolutionCache,
-) (*DCRResolution, error) {
-	if err := validateResolveInputs(rc, localIssuer, cache); err != nil {
-		return nil, newDCRStepError(dcrStepValidate, localIssuer, "", err)
+	req *Request,
+	cache CredentialStore,
+) (*Resolution, error) {
+	if err := validateResolveInputs(req, cache); err != nil {
+		issuer := ""
+		if req != nil {
+			issuer = req.Issuer
+		}
+		return nil, newDCRStepError(dcrStepValidate, issuer, "", err)
 	}
 
-	redirectURI, err := resolveUpstreamRedirectURI(rc.RedirectURI, localIssuer)
+	redirectURI, err := resolveUpstreamRedirectURI(req.RedirectURI, req.Issuer)
 	if err != nil {
-		return nil, newDCRStepError(dcrStepResolveRedirect, localIssuer, "",
+		return nil, newDCRStepError(dcrStepResolveRedirect, req.Issuer, "",
 			fmt.Errorf("resolve redirect uri: %w", err))
 	}
 
-	scopes := slices.Clone(rc.Scopes)
-	key := DCRKey{
-		Issuer:      localIssuer,
+	scopes := slices.Clone(req.Scopes)
+	key := Key{
+		Issuer:      req.Issuer,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash(scopes),
 	}
 
 	// Cache lookup short-circuits before any network I/O.
-	if cached, hit, err := lookupCachedResolution(ctx, cache, key, localIssuer, redirectURI); err != nil {
-		return nil, newDCRStepError(dcrStepCacheRead, localIssuer, redirectURI, err)
+	if cached, hit, err := lookupCachedResolution(ctx, cache, key, req.Issuer, redirectURI); err != nil {
+		return nil, newDCRStepError(dcrStepCacheRead, req.Issuer, redirectURI, err)
 	} else if hit {
 		return cached, nil
 	}
 
-	// Coalesce concurrent registrations for the same DCRKey — see dcrFlight
+	// Coalesce concurrent registrations for the same Key — see dcrFlight
 	// doc comment. The leader runs the registerOnce closure; followers
-	// receive the leader's *DCRResolution result. The flight key embeds the
-	// DCRKey fields with a separator that cannot appear in any of them
+	// receive the leader's *Resolution result. The flight key embeds the
+	// Key fields with a separator that cannot appear in any of them
 	// (newline is not valid in OAuth scope tokens, URLs, or hex digests).
 	//
 	// A defer/recover inside the closure converts a panic in registerAndCache
 	// (or anything it calls) into a normal error. Without this, singleflight
 	// re-panics the leader's panic in every follower — N concurrent callers
-	// for the same DCRKey would all crash with the same value. The panic is
+	// for the same Key would all crash with the same value. The panic is
 	// still surfaced: the captured stack trace is attached to the wrapped
 	// dcrStepError and surfaces in the single boundary log emitted by
-	// logDCRStepError, so the failure produces exactly one Error record (no
+	// LogStepError, so the failure produces exactly one Error record (no
 	// in-defer log here) and callers can react to it as a normal failure.
-	flightKey := key.Issuer + "\n" + key.RedirectURI + "\n" + key.ScopesHash
+	flightKey := flightKeyOf(key)
 	resolutionAny, err, _ := dcrFlight.Do(flightKey, func() (res any, err error) {
 		defer func() {
 			if r := recover(); r != nil {
-				stepErr := newDCRStepError(dcrStepRegister, localIssuer, redirectURI,
+				stepErr := newDCRStepError(dcrStepRegister, req.Issuer, redirectURI,
 					fmt.Errorf("registration panicked: %v", r))
 				stepErr.Stack = string(debug.Stack())
 				err = stepErr
 				res = nil
 			}
 		}()
-		return registerAndCache(ctx, rc, localIssuer, redirectURI, scopes, key, cache)
+		return registerAndCache(ctx, req, redirectURI, scopes, key, cache)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return resolutionAny.(*DCRResolution), nil
+	return resolutionAny.(*Resolution), nil
 }
 
-// registerAndCache is the leader-only body of resolveDCRCredentials wrapped
+// registerAndCache is the leader-only body of ResolveCredentials wrapped
 // by the singleflight. It rechecks the cache before any network I/O so
 // followers that arrive after the leader's Put returns immediately see the
 // fresh entry on a subsequent call. Endpoint resolution, registration, and
 // the durable Put live here.
 func registerAndCache(
 	ctx context.Context,
-	rc *authserver.OAuth2UpstreamRunConfig,
-	localIssuer, redirectURI string,
+	req *Request,
+	redirectURI string,
 	scopes []string,
-	key DCRKey,
-	cache dcrResolutionCache,
-) (*DCRResolution, error) {
+	key Key,
+	cache CredentialStore,
+) (*Resolution, error) {
 	// Recheck cache: another flight that just finished may have populated
 	// it between our initial lookup and our singleflight entry.
-	if cached, hit, err := lookupCachedResolution(ctx, cache, key, localIssuer, redirectURI); err != nil {
-		return nil, newDCRStepError(dcrStepCacheRead, localIssuer, redirectURI, err)
+	if cached, hit, err := lookupCachedResolution(ctx, cache, key, req.Issuer, redirectURI); err != nil {
+		return nil, newDCRStepError(dcrStepCacheRead, req.Issuer, redirectURI, err)
 	} else if hit {
 		return cached, nil
 	}
 
 	// Endpoint resolution: discover metadata when configured, otherwise use
 	// the caller-supplied RegistrationEndpoint directly. The upstream's
-	// expected issuer is recovered from cfg.DiscoveryURL inside the helper.
-	// localIssuer here is *this* auth server's issuer — correct for cache
-	// keying and redirect URI defaulting, but it must not be used for
-	// RFC 8414 §3.3 metadata verification (which is the upstream's concern).
-	endpoints, err := resolveDCREndpoints(ctx, rc.DCRConfig)
+	// expected issuer is recovered from req.DiscoveryURL inside the helper.
+	// req.Issuer here is *this caller's* issuer — correct for cache keying
+	// and redirect URI defaulting, but it must not be used for RFC 8414
+	// §3.3 metadata verification (which is the upstream's concern).
+	endpoints, err := resolveDCREndpoints(ctx, req)
 	if err != nil {
-		return nil, newDCRStepError(dcrStepMetadata, localIssuer, redirectURI, err)
+		return nil, newDCRStepError(dcrStepMetadata, req.Issuer, redirectURI, err)
 	}
-	applyExplicitEndpointOverrides(endpoints, rc)
+	if err := applyExplicitEndpointOverrides(endpoints, req); err != nil {
+		return nil, newDCRStepError(dcrStepMetadata, req.Issuer, redirectURI, err)
+	}
 
 	// Token-endpoint auth method: intersect server support with our
 	// preference order; default to client_secret_basic if the server does
-	// not advertise the field at all.
+	// not advertise the field at all. When the caller declared the
+	// registration is for a public PKCE client (CLI flow), force
+	// token_endpoint_auth_method=none while still enforcing the S256
+	// PKCE gate.
 	authMethod, err := selectTokenEndpointAuthMethod(
 		endpoints.tokenEndpointAuthMethodsSupported,
 		endpoints.codeChallengeMethodsSupported,
+		req.PublicClient,
 	)
 	if err != nil {
-		return nil, newDCRStepError(dcrStepSelectAuthMethod, localIssuer, redirectURI, err)
+		return nil, newDCRStepError(dcrStepSelectAuthMethod, req.Issuer, redirectURI, err)
 	}
 
-	registrationScopes := chooseRegistrationScopes(scopes, endpoints.scopesSupported, localIssuer)
+	registrationScopes := chooseRegistrationScopes(scopes, endpoints.scopesSupported, req.Issuer)
 
-	response, err := performRegistration(ctx, rc.DCRConfig, endpoints.registrationEndpoint,
+	response, err := performRegistration(ctx, req, endpoints.registrationEndpoint,
 		redirectURI, authMethod, registrationScopes)
 	if err != nil {
-		return nil, newDCRStepError(dcrStepRegister, localIssuer, redirectURI, err)
+		return nil, newDCRStepError(dcrStepRegister, req.Issuer, redirectURI, err)
 	}
 
 	resolution := buildResolution(response, endpoints, authMethod, redirectURI)
@@ -444,33 +438,33 @@ func registerAndCache(
 	// next call simply re-resolves rather than reading a value the cache
 	// never saw.
 	if err := cache.Put(ctx, key, resolution); err != nil {
-		return nil, newDCRStepError(dcrStepCacheWrite, localIssuer, redirectURI,
+		return nil, newDCRStepError(dcrStepCacheWrite, req.Issuer, redirectURI,
 			fmt.Errorf("cache put: %w", err))
 	}
 
 	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
 	slog.Debug("dcr: registered new client",
-		"local_issuer", localIssuer,
+		"local_issuer", req.Issuer,
 		"redirect_uri", redirectURI,
 		"client_id", resolution.ClientID,
 	)
 	return resolution, nil
 }
 
-// logDCRStepError emits the single boundary slog.Error record for a DCR
+// LogStepError emits the single boundary slog.Error record for a DCR
 // resolver failure, carrying the step / issuer / redirect_uri attributes
 // extracted from err. If err is not a *dcrStepError, it is logged with a
-// generic "unknown" step — resolveDCRCredentials always wraps its errors,
+// generic "unknown" step — ResolveCredentials always wraps its errors,
 // so this branch indicates a programming error in a future caller rather
 // than a runtime condition. err == nil is a no-op so this function is
 // safe to call without an outer guard.
 //
-// Every wrapped error is passed through sanitizeErrorForLog to strip URL
+// Every wrapped error is passed through SanitizeErrorForLog to strip URL
 // query parameters that could plausibly contain sensitive tokens (defense
 // in depth — the current DCR flow sends the initial access token as an
 // Authorization header, not a query parameter, but nothing in the type
 // system prevents a future refactor from doing otherwise).
-func logDCRStepError(upstreamName string, err error) {
+func LogStepError(upstreamName string, err error) {
 	if err == nil {
 		return
 	}
@@ -479,7 +473,7 @@ func logDCRStepError(upstreamName string, err error) {
 		slog.Error("dcr: resolve failed",
 			"upstream", upstreamName,
 			"step", "unknown",
-			"error", sanitizeErrorForLog(err),
+			"error", SanitizeErrorForLog(err),
 		)
 		return
 	}
@@ -488,7 +482,7 @@ func logDCRStepError(upstreamName string, err error) {
 		"upstream", upstreamName,
 		"step", stepErr.Step,
 		"issuer", stepErr.Issuer,
-		"error", sanitizeErrorForLog(stepErr.Err),
+		"error", SanitizeErrorForLog(stepErr.Err),
 	}
 	if stepErr.RedirectURI != "" {
 		attrs = append(attrs, "redirect_uri", stepErr.RedirectURI)
@@ -499,7 +493,7 @@ func logDCRStepError(upstreamName string, err error) {
 	slog.Error("dcr: resolve failed", attrs...)
 }
 
-// sanitizeErrorForLog strips secret-bearing components from any URLs
+// SanitizeErrorForLog strips secret-bearing components from any URLs
 // embedded in err's message. The Go HTTP client, url.Error, and other
 // net/* wrappers embed the full request URL — including userinfo,
 // query, and fragment — in their error strings. Any of those can carry
@@ -514,12 +508,22 @@ func logDCRStepError(upstreamName string, err error) {
 // URL?q=1, retrying") is preserved — see trimURLTrailingPunctuation
 // for the list of characters considered terminators.
 //
-// Scope: the regex matches http:// and https:// schemes
-// (case-insensitively per RFC 3986 §3.1). Other schemes (file://, raw
-// host:port) are not sanitised; the current DCR flow never embeds
-// those in errors, and broadening the match risks false positives on
-// unrelated text.
-func sanitizeErrorForLog(err error) string {
+// Scope: the regex matches http://, https://, redis://, and rediss://
+// schemes (case-insensitively per RFC 3986 §3.1). The redis schemes are
+// included because the embedded-authserver DCR path persists through
+// pkg/authserver/storage/redis.go and a redis-go error chain on the
+// Get/Put critical path can embed a sentinel/cluster URL with
+// credentials. Other schemes (file://, postgres://, smtp://, raw
+// host:port) are NOT sanitised; if a future call site flows error
+// strings from one of those into LogStepError, extend the regex here
+// rather than re-implementing the sanitiser at the call site.
+//
+// IMPORTANT — caller responsibility: this function strips credentials
+// only from the schemes listed above. Callers that may receive errors
+// containing other credential-bearing URL schemes MUST verify those
+// URLs are not credential-bearing before logging, or sanitise them
+// separately.
+func SanitizeErrorForLog(err error) string {
 	if err == nil {
 		return ""
 	}
@@ -572,40 +576,42 @@ func trimURLTrailingPunctuation(s string) (core, tail string) {
 }
 
 // queryStrippingPattern matches URL-shaped substrings inside an error
-// message — sufficient to reach the url.Parse path in sanitizeErrorForLog
+// message — sufficient to reach the url.Parse path in SanitizeErrorForLog
 // and let it decide whether a secret-bearing component exists to strip.
-// The regexp is intentionally narrow (http/https schemes only) to avoid
-// false positives, but matches schemes case-insensitively per RFC 3986
-// §3.1 since upstream metadata or user input can carry mixed-case
-// schemes. Trailing sentence punctuation that the character class
-// happens to include (e.g. '.', ',', ')') is stripped by
+// The regexp covers the schemes that actually flow through the DCR
+// resolver's error paths today (http/https from upstream calls, redis/
+// rediss from the persistent CredentialStore on the embedded-authserver
+// path). It matches schemes case-insensitively per RFC 3986 §3.1 since
+// upstream metadata or user input can carry mixed-case schemes.
+// Trailing sentence punctuation that the character class happens to
+// include (e.g. '.', ',', ')') is stripped by
 // trimURLTrailingPunctuation before the match is parsed.
-var queryStrippingPattern = regexp.MustCompile(`(?i)https?://[^\s"']+`)
+var queryStrippingPattern = regexp.MustCompile(`(?i)(?:https?|rediss?)://[^\s"']+`)
 
 // -----------------------------------------------------------------------------
 // Private helpers
 // -----------------------------------------------------------------------------
 
 // validateResolveInputs performs the defensive re-check of resolver
-// preconditions. Validate() enforces most of these at config-load time, but
-// resolveDCRCredentials is an entry point that programmatic callers can
-// reach with partially-constructed run-configs.
+// preconditions. Each consumer is expected to validate its own domain
+// types upstream of the resolver; this is the final-line check for an
+// entry point that programmatic callers can reach with partially-
+// constructed Requests.
 func validateResolveInputs(
-	rc *authserver.OAuth2UpstreamRunConfig,
-	localIssuer string,
-	cache dcrResolutionCache,
+	req *Request,
+	cache CredentialStore,
 ) error {
-	if rc == nil {
-		return fmt.Errorf("oauth2 upstream run-config is required")
+	if req == nil {
+		return fmt.Errorf("dcr: request is required")
 	}
-	if rc.ClientID != "" {
-		return fmt.Errorf("dcr: oauth2 upstream has a pre-provisioned client_id")
-	}
-	if rc.DCRConfig == nil {
-		return fmt.Errorf("dcr: oauth2 upstream has no dcr_config")
-	}
-	if localIssuer == "" {
+	if req.Issuer == "" {
 		return fmt.Errorf("dcr: issuer is required")
+	}
+	if req.DiscoveryURL == "" && req.RegistrationEndpoint == "" {
+		return fmt.Errorf("dcr: request must set either discovery_url or registration_endpoint")
+	}
+	if req.DiscoveryURL != "" && req.RegistrationEndpoint != "" {
+		return fmt.Errorf("dcr: discovery_url and registration_endpoint are mutually exclusive")
 	}
 	if cache == nil {
 		return fmt.Errorf("dcr: credential store is required")
@@ -637,10 +643,10 @@ func validateResolveInputs(
 //     trigger.
 func lookupCachedResolution(
 	ctx context.Context,
-	cache dcrResolutionCache,
-	key DCRKey,
+	cache CredentialStore,
+	key Key,
 	localIssuer, redirectURI string,
-) (*DCRResolution, bool, error) {
+) (*Resolution, bool, error) {
 	cached, ok, err := cache.Get(ctx, key)
 	if err != nil {
 		return nil, false, fmt.Errorf("dcr: cache lookup: %w", err)
@@ -689,15 +695,29 @@ func lookupCachedResolution(
 
 // applyExplicitEndpointOverrides overwrites the discovered
 // authorizationEndpoint / tokenEndpoint in endpoints with explicit values
-// from rc when rc specifies them. Explicit caller configuration always wins
-// over discovery.
-func applyExplicitEndpointOverrides(endpoints *dcrEndpoints, rc *authserver.OAuth2UpstreamRunConfig) {
-	if rc.AuthorizationEndpoint != "" {
-		endpoints.authorizationEndpoint = rc.AuthorizationEndpoint
+// from req when req specifies them. Explicit caller configuration always
+// wins over discovery.
+//
+// Both overrides run through validateUpstreamEndpointURL even though the
+// known consumer call sites only ever populate these fields from
+// already-validated sources. validateUpstreamEndpointURL is the documented
+// gatekeeper "every point where an endpoint URL enters the resolver from
+// outside" — applying it here closes the override path's gap rather than
+// relying on the caller-side validation to never drift.
+func applyExplicitEndpointOverrides(endpoints *dcrEndpoints, req *Request) error {
+	if req.AuthorizationEndpoint != "" {
+		if err := validateUpstreamEndpointURL(req.AuthorizationEndpoint, "authorization_endpoint"); err != nil {
+			return fmt.Errorf("explicit %w", err)
+		}
+		endpoints.authorizationEndpoint = req.AuthorizationEndpoint
 	}
-	if rc.TokenEndpoint != "" {
-		endpoints.tokenEndpoint = rc.TokenEndpoint
+	if req.TokenEndpoint != "" {
+		if err := validateUpstreamEndpointURL(req.TokenEndpoint, "token_endpoint"); err != nil {
+			return fmt.Errorf("explicit %w", err)
+		}
+		endpoints.tokenEndpoint = req.TokenEndpoint
 	}
+	return nil
 }
 
 // chooseRegistrationScopes selects the scopes to send in the registration
@@ -719,46 +739,52 @@ func chooseRegistrationScopes(explicit, discovered []string, localIssuer string)
 // performRegistration executes the HTTP registration request exactly once.
 // The initial access token (if configured) is injected as a
 // bearer-token Authorization header via a wrapping http.Client.
+//
+// The caller is responsible for resolving any file-or-env initial access
+// token reference into req.InitialAccessToken before calling
+// ResolveCredentials; the resolver does not touch the filesystem or
+// environment.
 func performRegistration(
 	ctx context.Context,
-	dcrCfg *authserver.DCRUpstreamConfig,
+	req *Request,
 	registrationEndpoint, redirectURI, authMethod string,
 	scopes []string,
 ) (*oauthproto.DynamicClientRegistrationResponse, error) {
-	// Initial access token is optional; resolveSecret returns ("", nil)
-	// when neither file nor env var is configured.
-	initialAccessToken, err := resolveSecret(dcrCfg.InitialAccessTokenFile, dcrCfg.InitialAccessTokenEnvVar)
-	if err != nil {
-		return nil, fmt.Errorf("dcr: resolve initial access token: %w", err)
+	httpClient := newDCRHTTPClient(req.InitialAccessToken)
+
+	clientName := req.ClientName
+	if clientName == "" {
+		clientName = oauthproto.ToolHiveMCPClientName
 	}
 
-	httpClient := newDCRHTTPClient(initialAccessToken)
-
-	request := &oauthproto.DynamicClientRegistrationRequest{
+	registrationRequest := &oauthproto.DynamicClientRegistrationRequest{
 		RedirectURIs:            []string{redirectURI},
-		ClientName:              oauthproto.ToolHiveMCPClientName,
+		ClientName:              clientName,
 		TokenEndpointAuthMethod: authMethod,
 		GrantTypes:              []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken},
 		ResponseTypes:           []string{oauthproto.ResponseTypeCode},
 		Scopes:                  scopes,
 	}
 
-	// Call exactly once — no retry loop. Step 2g will add retry/backoff at a
-	// higher layer if needed.
-	response, err := oauthproto.RegisterClientDynamically(ctx, registrationEndpoint, request, httpClient)
+	// Call exactly once — no retry loop. If retry/backoff against
+	// transient upstream failures becomes useful it belongs at a higher
+	// layer (above ResolveCredentials), so the singleflight and cache
+	// semantics here stay simple: one attempt per resolution per process.
+	response, err := oauthproto.RegisterClientDynamically(ctx, registrationEndpoint, registrationRequest, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("dcr: register client: %w", err)
 	}
 	return response, nil
 }
 
-// buildResolution assembles the DCRResolution from the RFC 7591 response and
+// buildResolution assembles the Resolution from the RFC 7591 response and
 // the resolved endpoints. If the server did not echo a
 // token_endpoint_auth_method in the response, the method actually sent is
 // recorded so downstream consumers see a definite value. redirectURI is the
 // value passed to the registration endpoint (caller-supplied or defaulted
 // via resolveUpstreamRedirectURI); it is persisted on the resolution so
-// consumeResolution can propagate a defaulted value back to the run-config.
+// consumers (pkg/authserver/runner.consumeResolution) can propagate a
+// defaulted value back to the run-config.
 //
 // RFC 7591 §3.2.1 client_id_issued_at and client_secret_expires_at are
 // converted from int64 epoch seconds to time.Time. The wire value 0 means
@@ -769,12 +795,12 @@ func buildResolution(
 	endpoints *dcrEndpoints,
 	sentAuthMethod string,
 	redirectURI string,
-) *DCRResolution {
+) *Resolution {
 	authMethod := response.TokenEndpointAuthMethod
 	if authMethod == "" {
 		authMethod = sentAuthMethod
 	}
-	return &DCRResolution{
+	return &Resolution{
 		ClientID:                response.ClientID,
 		ClientSecret:            response.ClientSecret,
 		AuthorizationEndpoint:   endpoints.authorizationEndpoint,
@@ -800,7 +826,7 @@ func epochSecondsToTime(epoch int64) time.Time {
 }
 
 // dcrEndpoints is the internal bundle of endpoints produced by endpoint
-// resolution. The separation from DCRResolution lets the resolver reason
+// resolution. The separation from Resolution lets the resolver reason
 // about discovered vs. overridden values before committing to a resolution.
 type dcrEndpoints struct {
 	authorizationEndpoint             string
@@ -817,60 +843,54 @@ type dcrEndpoints struct {
 	codeChallengeMethodsSupported []string
 }
 
-// resolveDCREndpoints produces the endpoint bundle from the DCRUpstreamConfig.
+// resolveDCREndpoints produces the endpoint bundle from req.
 //
-// Three branches, in priority order:
+// Two branches, in priority order:
 //
-//  1. cfg.RegistrationEndpoint set — use it directly and skip discovery
+//  1. req.RegistrationEndpoint set — use it directly and skip discovery
 //     entirely. Server-capability fields (token_endpoint_auth_methods_supported,
 //     scopes_supported) are unavailable on this branch; the caller is
 //     expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
 //     explicit Scopes list. Auth method falls back to the
 //     selectTokenEndpointAuthMethod default.
-//  2. cfg.DiscoveryURL set — fetch the exact document the operator
+//  2. req.DiscoveryURL set — fetch the exact document the operator
 //     configured (bypassing the well-known path fallback). RFC 8414 §3.3
 //     requires the metadata's "issuer" field to match the authorization
 //     server's issuer identifier; that identifier is the upstream's, not
-//     this auth server's, so it is recovered from the discovery URL via
-//     deriveExpectedIssuerFromDiscoveryURL rather than reusing the
-//     caller-supplied issuer (which names this auth server and is used
-//     elsewhere in resolveDCRCredentials for redirect URI defaulting and
-//     cache keying).
-//  3. Neither set — defensive; Validate() rejects this configuration, but
-//     as a programmatic entry point the resolver returns an error rather
-//     than falling back to an unexpected strategy.
+//     this caller's, so it is recovered from the discovery URL via
+//     deriveExpectedIssuerFromDiscoveryURL rather than reusing
+//     req.Issuer (which names this caller and is used elsewhere in
+//     ResolveCredentials for redirect URI defaulting and cache keying).
+//
+// validateResolveInputs enforces that exactly one of the two is set, so
+// this function does not re-check the both-empty case.
 //
 // When metadata is returned but omits registration_endpoint, the resolver
 // synthesises {origin}/register — a convention used by nanobot and Hydra
 // for providers that ship DCR without advertising it in discovery. Origin
-// is taken from the upstream issuer, not this auth server's issuer, so the
+// is taken from the upstream issuer, not this caller's issuer, so the
 // synthesised endpoint lands at the upstream.
 func resolveDCREndpoints(
 	ctx context.Context,
-	cfg *authserver.DCRUpstreamConfig,
+	req *Request,
 ) (*dcrEndpoints, error) {
-	if cfg.RegistrationEndpoint != "" {
+	if req.RegistrationEndpoint != "" {
 		// Validate locally so a non-HTTPS or malformed URL fails before
 		// performRegistration constructs a bearer-token transport for it.
-		if err := validateUpstreamEndpointURL(cfg.RegistrationEndpoint, "registration_endpoint"); err != nil {
+		if err := validateUpstreamEndpointURL(req.RegistrationEndpoint, "registration_endpoint"); err != nil {
 			return nil, fmt.Errorf("dcr: %w", err)
 		}
 		return &dcrEndpoints{
-			registrationEndpoint: cfg.RegistrationEndpoint,
+			registrationEndpoint: req.RegistrationEndpoint,
 		}, nil
 	}
 
-	if cfg.DiscoveryURL == "" {
-		return nil, fmt.Errorf(
-			"dcr: dcr_config must set either discovery_url or registration_endpoint")
-	}
-
-	upstreamIssuer, err := deriveExpectedIssuerFromDiscoveryURL(cfg.DiscoveryURL)
+	upstreamIssuer, err := deriveExpectedIssuerFromDiscoveryURL(req.DiscoveryURL)
 	if err != nil {
 		return nil, err
 	}
 
-	metadata, err := oauthproto.FetchAuthorizationServerMetadataFromURL(ctx, cfg.DiscoveryURL, upstreamIssuer, nil)
+	metadata, err := oauthproto.FetchAuthorizationServerMetadataFromURL(ctx, req.DiscoveryURL, upstreamIssuer, nil)
 	return endpointsFromMetadata(metadata, err, upstreamIssuer)
 }
 
@@ -933,6 +953,15 @@ func deriveExpectedIssuerFromDiscoveryURL(discoveryURL string) (string, error) {
 // document — possible if TLS to the metadata host is compromised, or if the
 // upstream is misconfigured — could otherwise plant http:// URLs that flow
 // through to the authorization-code and token-exchange call paths.
+//
+// Contract with oauthproto: FetchAuthorizationServerMetadata* guarantees a
+// non-nil *AuthorizationServerMetadata whenever fetchErr is nil OR fetchErr
+// is ErrRegistrationEndpointMissing (in the latter case the metadata is
+// otherwise valid; only registration_endpoint is missing). The defensive
+// nil guard below catches a future cross-package contract regression — e.g.,
+// a new oauthproto sentinel that returns nil metadata alongside a non-fatal
+// error — and converts it into a clean validation error rather than a
+// nil-pointer dereference at the field accesses.
 func endpointsFromMetadata(
 	metadata *oauthproto.AuthorizationServerMetadata,
 	fetchErr error,
@@ -940,6 +969,11 @@ func endpointsFromMetadata(
 ) (*dcrEndpoints, error) {
 	if fetchErr != nil && !errors.Is(fetchErr, oauthproto.ErrRegistrationEndpointMissing) {
 		return nil, fmt.Errorf("discover authorization server metadata: %w", fetchErr)
+	}
+	if metadata == nil {
+		return nil, fmt.Errorf(
+			"dcr: authorization server metadata is nil (oauthproto contract " +
+				"violation: nil metadata returned alongside a non-fatal fetch error)")
 	}
 
 	if err := validateUpstreamEndpointURL(metadata.AuthorizationEndpoint, "authorization_endpoint"); err != nil {
@@ -1087,7 +1121,11 @@ func validateUpstreamEndpointURL(rawURL, label string) error {
 // selectTokenEndpointAuthMethod returns the preferred token endpoint auth
 // method given the server's advertised set, intersected with our preference
 // order. When the server does not advertise any methods the caller's default
-// of client_secret_basic is used (RFC 6749 §2.3.1 baseline).
+// of client_secret_basic is used (RFC 6749 §2.3.1 baseline) — unless
+// publicClient is true, in which case the absence of advertised methods is
+// not enough to safely register as a public client and the function returns
+// an error (the S256 PKCE gate cannot be evaluated without
+// code_challenge_methods_supported).
 //
 // PKCE coupling for "none": the public-client method "none" is selected only
 // when the upstream also advertises S256 in code_challenge_methods_supported.
@@ -1098,7 +1136,36 @@ func validateUpstreamEndpointURL(rawURL, label string) error {
 // and if no other method is mutually supported the function returns an error
 // so the operator sees a clear failure at boot rather than a silent
 // downgrade at runtime.
-func selectTokenEndpointAuthMethod(serverSupported, codeChallengeMethodsSupported []string) (string, error) {
+//
+// publicClient: when true (CLI flow), the function returns "none" if and
+// only if S256 PKCE is advertised. Any other outcome is an error — the
+// caller has declared intent and the resolver must not silently switch to
+// a confidential-client method.
+func selectTokenEndpointAuthMethod(serverSupported, codeChallengeMethodsSupported []string, publicClient bool) (string, error) {
+	pkceS256Advertised := slices.Contains(codeChallengeMethodsSupported, oauthproto.PKCEMethodS256)
+
+	if publicClient {
+		if !pkceS256Advertised {
+			return "", fmt.Errorf(
+				"public client requested but upstream does not advertise S256 in "+
+					"code_challenge_methods_supported (got %v); refusing to register a "+
+					"public client without S256 PKCE per RFC 7636 / OAuth 2.1",
+				codeChallengeMethodsSupported)
+		}
+		// When serverSupported is non-empty, require that it includes "none"
+		// so we don't claim a method the AS would reject.
+		if len(serverSupported) > 0 {
+			if !slices.Contains(serverSupported, "none") {
+				return "", fmt.Errorf(
+					"public client requested but upstream does not advertise "+
+						"token_endpoint_auth_method=none (got %v); the CLI flow is a "+
+						"public PKCE client and cannot register with a confidential method",
+					serverSupported)
+			}
+		}
+		return "none", nil
+	}
+
 	if len(serverSupported) == 0 {
 		return "client_secret_basic", nil
 	}
@@ -1107,8 +1174,6 @@ func selectTokenEndpointAuthMethod(serverSupported, codeChallengeMethodsSupporte
 	for _, m := range serverSupported {
 		supported[m] = struct{}{}
 	}
-
-	pkceS256Advertised := slices.Contains(codeChallengeMethodsSupported, oauthproto.PKCEMethodS256)
 
 	for _, m := range authMethodPreference {
 		if _, ok := supported[m]; !ok {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
+	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -173,6 +174,11 @@ type Config struct {
 	// the THV_SESSION_REDIS_PASSWORD environment variable.
 	// +optional
 	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty" yaml:"sessionStorage,omitempty"`
+
+	// RateLimiting defines rate limiting configuration for the Virtual MCP server.
+	// Requires Redis session storage to be configured for distributed rate limiting.
+	// +optional
+	RateLimiting *ratelimittypes.RateLimitConfig `json:"rateLimiting,omitempty" yaml:"rateLimiting,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.

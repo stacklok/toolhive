@@ -530,6 +530,7 @@ func BuildAuthServerRunConfig(
 		AuthorizationEndpointBaseURL: authConfig.AuthorizationEndpointBaseURL,
 		AllowedAudiences:             allowedAudiences,
 		ScopesSupported:              scopesSupported,
+		BaselineClientScopes:         authConfig.BaselineClientScopes,
 	}
 
 	// Build signing key configuration

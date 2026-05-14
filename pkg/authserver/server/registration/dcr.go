@@ -18,11 +18,39 @@
 package registration
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
+
+// ValidateScopeSubset checks that every scope in subset is also present in
+// superset, returning an error that names fieldName and the offending scope.
+//
+// Shared across the layers that validate baseline-scope configuration so the
+// error message format is identical wherever the violation is caught (a
+// caller using YAML-loaded config and a caller constructing config
+// programmatically both see the same wording).
+//
+// fieldName should be the wire-format or display name of the field being
+// validated (e.g. "baseline_client_scopes"). It is embedded verbatim in the
+// returned error.
+func ValidateScopeSubset(subset, superset []string, fieldName string) error {
+	if len(subset) == 0 {
+		return nil
+	}
+	supported := make(map[string]bool, len(superset))
+	for _, s := range superset {
+		supported[s] = true
+	}
+	for _, s := range subset {
+		if !supported[s] {
+			return fmt.Errorf("%s contains %q which is not in scopes_supported", fieldName, s)
+		}
+	}
+	return nil
+}
 
 // DCR error codes per RFC 7591 Section 3.2.2
 const (

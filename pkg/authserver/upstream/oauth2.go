@@ -152,7 +152,16 @@ type OAuth2Config struct {
 	// When set, the provider performs the token exchange HTTP call directly (bypassing
 	// golang.org/x/oauth2) and extracts fields using gjson dot-notation paths.
 	// When nil, standard OAuth 2.0 token response parsing is used.
+	// See also: IdentityFromToken for extracting user identity from the same response.
 	TokenResponseMapping *TokenResponseMapping `json:"token_response_mapping,omitempty" yaml:"token_response_mapping,omitempty"`
+
+	// IdentityFromToken extracts user identity from the token-endpoint response
+	// body when the upstream provider includes identity claims there (e.g.,
+	// Snowflake's `username`, Slack's `authed_user.id`). When set, the embedded
+	// auth server skips the userinfo HTTP call entirely. See the CRD type
+	// (cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) for the
+	// authoritative trust-model and uniqueness documentation.
+	IdentityFromToken *IdentityFromTokenConfig `json:"identity_from_token,omitempty" yaml:"identity_from_token,omitempty"`
 }
 
 // TokenResponseMapping configures extraction of token fields from non-standard
@@ -193,6 +202,11 @@ func (c *OAuth2Config) Validate() error {
 	if c.TokenResponseMapping != nil {
 		if c.TokenResponseMapping.AccessTokenPath == "" {
 			return errors.New("token_response_mapping.access_token_path is required when token_response_mapping is set")
+		}
+	}
+	if c.IdentityFromToken != nil {
+		if c.IdentityFromToken.SubjectPath == "" {
+			return errors.New("identity_from_token.subject_path is required when identity_from_token is set")
 		}
 	}
 	return c.CommonOAuthConfig.Validate()
@@ -322,7 +336,7 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 		"token_endpoint", config.TokenEndpoint,
 	)
 
-	if config.UserInfo == nil {
+	if config.UserInfo == nil && config.IdentityFromToken == nil {
 		// Surface synthesis mode at construction so operators see it once
 		// per provider rather than only inferring from missing claims later.
 		slog.Warn("oauth2 upstream has no userinfo configured; using synthesis mode "+
@@ -400,39 +414,73 @@ func (p *BaseOAuth2Provider) buildAuthorizationURL(
 }
 
 // ExchangeCodeForIdentity exchanges an authorization code for tokens and resolves
-// the user's identity in a single atomic operation.
-// For pure OAuth2 providers, identity is resolved via UserInfo when configured;
-// otherwise Subject is synthesized via synthesizeIdentity (which rejects empty
-// access tokens to prevent the well-known sha256("") subject collision) and
-// Name/Email are left empty. The nonce parameter is ignored (no ID token).
+// the user's identity in a single atomic operation. For pure OAuth2 providers
+// (no ID token) the priority chain is:
+//
+//  1. IdentityFromToken (operator opt-in): extract identity claims from the
+//     token-endpoint response body using gjson paths. The userinfo HTTP call
+//     is skipped entirely.
+//  2. UserInfo endpoint: fetch identity from the configured userinfo URL.
+//  3. Synthesis: when neither is configured, synthesizeIdentity derives a
+//     non-PII Subject from the access token (rejects empty tokens to prevent
+//     the well-known sha256("") collision). Name and Email are empty;
+//     Synthetic=true tells the callback handler to bypass UserResolver
+//     because the subject rotates per access token.
+//
+// The nonce parameter is ignored (no ID token to validate).
 func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, codeVerifier, _ string) (*Identity, error) {
-	tokens, err := p.exchangeCodeForTokens(ctx, code, codeVerifier)
+	exchanged, err := p.exchangeCodeForTokens(ctx, code, codeVerifier)
 	if err != nil {
 		return nil, err
 	}
 
-	// No userinfo: synthesize a non-PII subject from the access token.
-	// Synthetic=true tells the callback handler to bypass UserResolver — the
-	// synthesized subject rotates per access token, so persisting it would
-	// create a new `users` row on every re-authentication.
-	if p.config.UserInfo == nil {
-		return synthesizeIdentity(tokens)
+	// Priority 1: identityFromToken (configured by operator).
+	if p.config.IdentityFromToken != nil {
+		if exchanged.identity == nil {
+			// The rewriter logged the extraction failure at WARN with the
+			// operator-supplied path. Surface the same error here so callers
+			// can report it without requiring WARN-level log access.
+			if exchanged.extractionErr != nil {
+				return nil, exchanged.extractionErr
+			}
+			// Defense-in-depth: the rewriter guarantees one of extractedIdentity or
+			// extractionErr is set when the token endpoint returns 200. This branch
+			// fires only if that invariant is ever relaxed (e.g., a non-200-success
+			// status the oauth2 library accepts, or a future rewriter change).
+			return nil, fmt.Errorf(
+				"%w: identityFromToken configured but extraction failed",
+				ErrIdentityResolutionFailed,
+			)
+		}
+		return &Identity{
+			Tokens:  exchanged.tokens,
+			Subject: exchanged.identity.Subject,
+			Name:    exchanged.identity.Name,
+			Email:   exchanged.identity.Email,
+		}, nil
 	}
 
-	userInfo, err := p.fetchUserInfo(ctx, tokens.AccessToken)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
-	}
-	if userInfo == nil || userInfo.Subject == "" {
-		return nil, ErrIdentityResolutionFailed
+	// Priority 2: userInfo (existing behavior).
+	if p.config.UserInfo != nil {
+		userInfo, err := p.fetchUserInfo(ctx, exchanged.tokens.AccessToken)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
+		}
+		if userInfo == nil || userInfo.Subject == "" {
+			return nil, ErrIdentityResolutionFailed
+		}
+		return &Identity{
+			Tokens:  exchanged.tokens,
+			Subject: userInfo.Subject,
+			Name:    userInfo.Name,
+			Email:   userInfo.Email,
+		}, nil
 	}
 
-	return &Identity{
-		Tokens:  tokens,
-		Subject: userInfo.Subject,
-		Name:    userInfo.Name,
-		Email:   userInfo.Email,
-	}, nil
+	// Priority 3: synthesis (PR 5094). Subject derived from access token; rotates
+	// per token. The callback handler treats Synthetic=true as opt-out from the
+	// user-resolver to avoid creating a fresh users row on every re-auth.
+	return synthesizeIdentity(exchanged.tokens)
 }
 
 // synthesizedSubjectPrefix tags subjects produced by
@@ -496,21 +544,45 @@ func synthesizeIdentity(tokens *Tokens) (*Identity, error) {
 	}, nil
 }
 
+// tokenExchangeResult bundles the outputs of a successful token exchange:
+// the obtained tokens, any identity extracted from the token response body,
+// and any error from the identity extraction step. The exchange-level error
+// is returned as the function's own error return value.
+//
+// extractionErr is populated when IdentityFromToken is configured but the
+// extractor could not resolve the subject path. It carries operator-actionable
+// diagnostics (path name, type description) and already wraps
+// ErrIdentityResolutionFailed. The caller must check extractionErr when
+// identity is nil and IdentityFromToken is set.
+type tokenExchangeResult struct {
+	tokens        *Tokens
+	identity      *partialIdentity
+	extractionErr error
+}
+
 // exchangeCodeForTokens exchanges an authorization code for tokens with the upstream IDP.
-func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, codeVerifier string) (*Tokens, error) {
+// It returns a tokenExchangeResult containing the tokens, any identity extracted from
+// the token response body, and any extraction error. The function error is the
+// exchange-level error (network, HTTP, token parsing).
+func (p *BaseOAuth2Provider) exchangeCodeForTokens(
+	ctx context.Context, code, codeVerifier string,
+) (*tokenExchangeResult, error) {
 	if code == "" {
 		return nil, errors.New("authorization code is required")
 	}
 
-	slog.Info("exchanging authorization code for tokens",
+	slog.Debug("exchanging authorization code for tokens",
 		"token_endpoint", p.config.TokenEndpoint,
 		"has_pkce_verifier", codeVerifier != "",
 	)
 
-	// Wrap HTTP client with token response rewriter if mapping is configured.
-	// This normalizes non-standard responses (e.g., GovSlack's nested fields)
-	// before the oauth2 library parses them, keeping the standard exchange flow.
-	httpClient := wrapHTTPClientWithMapping(p.httpClient, p.config.TokenResponseMapping, p.config.TokenEndpoint)
+	// Wrap HTTP client with token response rewriter if mapping or identity extraction
+	// is configured. At auth-code time, both mapping (field normalization) and
+	// identityCfg (identity extraction) may be active together. Keep a reference to
+	// the rewriter so we can read extractedIdentity and extractionErr after Exchange returns.
+	httpClient, rewriter := wrapHTTPClientForTokenExchange(
+		p.httpClient, p.config.TokenResponseMapping, p.config.IdentityFromToken, p.config.TokenEndpoint,
+	)
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
 	// Build exchange options
@@ -534,7 +606,16 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, co
 		"expires_at", expiresAtLogValue(tokens.ExpiresAt),
 	)
 
-	return tokens, nil
+	// Read any identity and extraction error captured by the rewriter during the
+	// token round-trip. rewriter is nil when neither mapping nor identityCfg is
+	// configured; nil-safe.
+	result := &tokenExchangeResult{tokens: tokens}
+	if rewriter != nil {
+		result.identity = rewriter.extractedIdentity
+		result.extractionErr = rewriter.extractionErr
+	}
+
+	return result, nil
 }
 
 // RefreshTokens refreshes the upstream IDP tokens.
@@ -553,13 +634,18 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 		return nil, errors.New("refresh token is required")
 	}
 
-	slog.Info("refreshing tokens",
+	slog.Debug("refreshing tokens",
 		"token_endpoint", p.config.TokenEndpoint,
 		"scope_count", len(p.oauth2Config.Scopes),
 	)
 
 	// Wrap HTTP client with token response rewriter if mapping is configured.
-	httpClient := wrapHTTPClientWithMapping(p.httpClient, p.config.TokenResponseMapping, p.config.TokenEndpoint)
+	// Identity extraction (identityCfg) is intentionally nil here: per Snowflake's
+	// contract and the general design, the username/identity field is only present
+	// in the initial auth-code response and is omitted on refresh. Identity is
+	// cached at auth-code time and read from session storage on subsequent requests.
+	// The rewriter is discarded because refresh does not produce identity.
+	httpClient, _ := wrapHTTPClientForTokenExchange(p.httpClient, p.config.TokenResponseMapping, nil, p.config.TokenEndpoint)
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
 	opts := []oauth2.AuthCodeOption{

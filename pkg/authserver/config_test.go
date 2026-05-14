@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
@@ -105,6 +108,11 @@ func TestConfigValidate(t *testing.T) {
 		{name: "unsupported upstream type", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderType("saml")}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "unsupported provider type"},
 		{name: "OIDC with oauth2_config set rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOIDC, OIDCConfig: validOIDCUpstream, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "oauth2_config must not be set"},
 		{name: "OAuth2 with oidc_config set rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream, OIDCConfig: validOIDCUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "oidc_config must not be set"},
+
+		// BaselineClientScopes subset gate (mirrors RunConfig.Validate but on the
+		// runtime Config — catches direct constructors that bypass YAML loading).
+		{name: "baseline scope not in scopes_supported", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"offline_access"}}, wantErr: true, errMsg: `baseline_client_scopes contains "offline_access"`},
+		{name: "nil supported with baseline in DefaultScopes passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, ScopesSupported: nil, BaselineClientScopes: []string{"offline_access"}}},
 
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -350,6 +358,64 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 	}
 }
 
+func TestRunConfigValidate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		config  RunConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:   "nil baseline scopes passes",
+			config: RunConfig{ScopesSupported: []string{"openid", "profile"}, BaselineClientScopes: nil},
+		},
+		{
+			name:   "empty baseline scopes passes",
+			config: RunConfig{ScopesSupported: []string{"openid", "profile"}, BaselineClientScopes: []string{}},
+		},
+		{
+			name:   "single baseline entry in supported set passes",
+			config: RunConfig{ScopesSupported: []string{"openid", "profile", "email"}, BaselineClientScopes: []string{"openid"}},
+		},
+		{
+			name:   "all baseline entries in supported set passes",
+			config: RunConfig{ScopesSupported: []string{"openid", "profile", "email", "offline_access"}, BaselineClientScopes: []string{"openid", "offline_access"}},
+		},
+		{
+			name:    "baseline contains scope not in supported rejects with specific error",
+			config:  RunConfig{ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"openid", "offline_access"}},
+			wantErr: true,
+			errMsg:  `"offline_access" which is not in scopes_supported`,
+		},
+		{
+			name:   "nil supported with baseline in DefaultScopes passes",
+			config: RunConfig{ScopesSupported: nil, BaselineClientScopes: []string{"offline_access"}},
+		},
+		{
+			name:    "nil supported with baseline outside DefaultScopes rejects",
+			config:  RunConfig{ScopesSupported: nil, BaselineClientScopes: []string{"custom_scope"}},
+			wantErr: true,
+			errMsg:  `"custom_scope"`,
+		},
+		{
+			name:    "first missing scope is reported when multiple are missing",
+			config:  RunConfig{ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"foo", "bar"}},
+			wantErr: true,
+			errMsg:  "foo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.config.Validate()
+			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
 func TestDCRUpstreamConfigValidate(t *testing.T) {
 	t.Parallel()
 
@@ -436,6 +502,64 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 			t.Parallel()
 			err := tt.config.Validate()
 			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+func TestConfigApplyDefaults_BaselineClientScopes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		scopesSupported      []string
+		baselineClientScopes []string
+		wantErr              bool
+		errMsg               string
+		wantDefaultScopes    bool
+	}{
+		{
+			name:              "empty scopes_supported and empty baseline — defaults substituted",
+			wantDefaultScopes: true,
+		},
+		{
+			name:            "scopes_supported set and empty baseline — no substitution",
+			scopesSupported: []string{"openid", "profile"},
+		},
+		{
+			name:                 "scopes_supported set and baseline non-empty — no substitution no error",
+			scopesSupported:      []string{"openid", "profile"},
+			baselineClientScopes: []string{"openid"},
+		},
+		{
+			name:                 "empty scopes_supported with non-empty baseline applies DefaultScopes",
+			baselineClientScopes: []string{"openid"},
+			wantDefaultScopes:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &Config{
+				ScopesSupported:      tt.scopesSupported,
+				BaselineClientScopes: tt.baselineClientScopes,
+			}
+
+			err := cfg.applyDefaults()
+
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.errMsg)
+				return
+			}
+
+			require.NoError(t, err)
+			if tt.wantDefaultScopes {
+				require.Equal(t, registration.DefaultScopes, cfg.ScopesSupported)
+			} else {
+				require.Equal(t, tt.scopesSupported, cfg.ScopesSupported)
+			}
 		})
 	}
 }

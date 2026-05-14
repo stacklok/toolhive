@@ -5,6 +5,7 @@ package audit
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1012,7 +1013,7 @@ func TestAuditLoggerLevelFormat(t *testing.T) {
 		logger := NewAuditLogger(&logBuf)
 
 		// Log an audit event
-		logger.Log(nil, LevelAudit, "test audit event",
+		logger.Log(context.TODO(), LevelAudit, "test audit event",
 			"audit_id", "test-123",
 			"type", "test_event")
 

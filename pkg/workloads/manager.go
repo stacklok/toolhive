@@ -45,7 +45,7 @@ type CompletionFunc func() error
 // NOTE: This interface may be split up in future PRs, in particular, operations
 // which are only relevant to the CLI/API use case will be split out.
 //
-//go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=manager.go Manager
+//go:generate mockgen -destination=mocks/mock_manager.go -package=mocks github.com/stacklok/toolhive/pkg/workloads Manager
 type Manager interface {
 	// GetWorkload retrieves details of the named workload including its status.
 	GetWorkload(ctx context.Context, workloadName string) (core.Workload, error)
@@ -97,6 +97,68 @@ type DefaultManager struct {
 	runtime        rt.Runtime
 	statuses       statuses.StatusManager
 	configProvider config.Provider
+
+	retryConfig *retryConfig
+	newRunner   mcpRunnerFactory
+}
+
+// mcpRunner is the subset of *runner.Runner that RunWorkload's retry loop
+// depends on. It exists only to make the retry loop unit-testable; it is
+// not part of the workloads package's public API.
+type mcpRunner interface {
+	Run(ctx context.Context) error
+}
+
+// mcpRunnerFactory constructs an mcpRunner for one attempt of the retry loop.
+type mcpRunnerFactory func(*runner.RunConfig, statuses.StatusManager) mcpRunner
+
+// retryConfig bundles the RunWorkload retry loop's tunable parameters.
+type retryConfig struct {
+	maxRetries         int
+	initialDelay       time.Duration
+	maxBackoff         time.Duration
+	stableRunThreshold time.Duration
+}
+
+// defaultRetryConfig returns the production retry parameters.
+func defaultRetryConfig() retryConfig {
+	return retryConfig{
+		maxRetries:         10,
+		initialDelay:       5 * time.Second,
+		maxBackoff:         60 * time.Second,
+		stableRunThreshold: 30 * time.Second,
+	}
+}
+
+// managerOption configures a DefaultManager.
+type managerOption func(*DefaultManager)
+
+// withRetryConfig overrides the retry loop's tunable parameters.
+func withRetryConfig(cfg retryConfig) managerOption {
+	return func(d *DefaultManager) { d.retryConfig = &cfg }
+}
+
+// withRunnerFactory overrides the per-attempt runner constructor.
+func withRunnerFactory(f mcpRunnerFactory) managerOption {
+	return func(d *DefaultManager) { d.newRunner = f }
+}
+
+// retryConfigOrDefault returns the manager's retryConfig if set, otherwise defaults.
+func (d *DefaultManager) retryConfigOrDefault() retryConfig {
+	if d.retryConfig == nil {
+		return defaultRetryConfig()
+	}
+	return *d.retryConfig
+}
+
+// newRunnerOrDefault returns the manager's runner factory if set, otherwise wraps runner.NewRunner.
+func (d *DefaultManager) newRunnerOrDefault() mcpRunnerFactory {
+	if d.newRunner != nil {
+		return d.newRunner
+	}
+	return func(rc *runner.RunConfig, sm statuses.StatusManager) mcpRunner {
+		return runner.NewRunner(rc, sm)
+	}
 }
 
 // ErrWorkloadNotRunning is returned when a container cannot be found by name.
@@ -416,29 +478,35 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 	}
 
 	// Retry loop with exponential backoff for container restarts
-	maxRetries := 10 // Allow many retries for transient issues
-	retryDelay := 5 * time.Second
+	cfg := d.retryConfigOrDefault()
+	maxRetries := cfg.maxRetries
+	newRunner := d.newRunnerOrDefault()
+	retryDelay := cfg.initialDelay
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	attempt := 1
+	for attempt <= maxRetries {
 		if attempt > 1 {
 			slog.Info("restart attempt", "attempt", attempt, "maxRetries", maxRetries, "workload", runConfig.BaseName, "delay", retryDelay)
 			time.Sleep(retryDelay)
 
 			// Exponential backoff: 5s, 10s, 20s, 40s, 60s (capped)
 			retryDelay *= 2
-			if retryDelay > 60*time.Second {
-				retryDelay = 60 * time.Second
+			if retryDelay > cfg.maxBackoff {
+				retryDelay = cfg.maxBackoff
 			}
 		}
 
-		mcpRunner := runner.NewRunner(runConfig, d.statuses)
+		mcpRunner := newRunner(runConfig, d.statuses)
+		runStartTime := time.Now()
 		err := mcpRunner.Run(ctx)
+		runDuration := time.Since(runStartTime)
 
 		if err != nil {
 			// Check if this is a "container exited, restart needed" error
 			if errors.Is(err, runner.ErrContainerExitedRestartNeeded) {
 				slog.Warn("workload exited unexpectedly, restarting",
-					"workload", runConfig.BaseName, "attempt", attempt, "maxRetries", maxRetries)
+					"workload", runConfig.BaseName, "attempt", attempt, "maxRetries", maxRetries,
+					"runDuration", runDuration)
 
 				// Remove from client config so clients notice the restart
 				clientManager, clientErr := client.NewManager(ctx)
@@ -449,19 +517,42 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 					}
 				}
 
+				// A "stable" run reached at least stableRunThreshold of runtime before
+				// failing — long enough that we treat the next attempt as a fresh
+				// failure rather than another tick of the current retry sequence.
+				stable := runDuration >= cfg.stableRunThreshold
+
 				// Set status to starting (since we're restarting)
+				statusReason := "Container exited, restarting"
+				if stable {
+					statusReason = "Container exited after stable run, restarting"
+				}
 				statusErr := d.statuses.SetWorkloadStatus(
 					ctx,
 					runConfig.BaseName,
 					rt.WorkloadStatusStarting,
-					"Container exited, restarting",
+					statusReason,
 				)
 				if statusErr != nil {
 					slog.Warn("failed to set workload status to starting", "workload", runConfig.BaseName, "error", statusErr)
 				}
 
+				// Without this reset of the attempt count, sustained external
+				// disruption (Docker daemon flap, host sleep/wake) exhausts the
+				// retry budget through repeated short healthy restarts, and the
+				// manager gives up on a workload that would have recovered once
+				// the disruption ended.
+				if stable {
+					slog.Debug("resetting retry counter after stable run",
+						"workload", runConfig.BaseName, "duration", runDuration)
+					attempt = 1
+					retryDelay = cfg.initialDelay
+					continue
+				}
+
 				// If we haven't exhausted retries, continue the loop
 				if attempt < maxRetries {
+					attempt++
 					continue
 				}
 

@@ -548,6 +548,45 @@ spec:
                               - message: exactly one of discoveryUrl or registrationEndpoint
                                   must be set
                                 rule: has(self.discoveryUrl) != has(self.registrationEndpoint)
+                            identityFromToken:
+                              description: |-
+                                IdentityFromToken extracts user identity (subject, name, email) directly
+                                from the OAuth2 token-endpoint response body using gjson dot-notation paths.
+                                When set, the embedded auth server skips the userinfo HTTP call entirely
+                                and resolves identity from the token response. See IdentityFromTokenConfig
+                                for trust-model and uniqueness considerations.
+                              properties:
+                                emailPath:
+                                  description: |-
+                                    EmailPath is the dot-notation path to the email address field in the token response.
+                                    If not specified or if the path does not resolve to a string, the email is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                namePath:
+                                  description: |-
+                                    NamePath is the dot-notation path to the display name field in the token response.
+                                    If not specified or if the path does not resolve to a string, the display name is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                subjectPath:
+                                  description: |-
+                                    SubjectPath is the dot-notation path to the subject (user ID) field in the token response.
+                                    Warning: claims read from the token response are trusted only via TLS, not
+                                    cryptographically verified; prefer OIDC ID tokens when verifiable claims are required.
+                                    Example: "authed_user.id" for Slack (top-level token-response field). For providers
+                                    whose token response embeds the access token as a JWT (e.g. Snowflake), use the
+                                    "@upstreamjwt" modifier to decode the payload, e.g. "access_token|@upstreamjwt|sub".
+                                    The "@upstreamjwt" modifier performs no signature verification either.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - subjectPath
+                              type: object
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -573,6 +612,7 @@ spec:
                                 instead of returning them at the top level. When set, ToolHive performs the token
                                 exchange HTTP call directly and extracts fields using the configured dot-notation paths.
                                 If nil, standard OAuth 2.0 token response parsing is used.
+                                For extracting user identity from the token response, see IdentityFromToken.
                               properties:
                                 accessTokenPath:
                                   description: |-
@@ -601,10 +641,13 @@ spec:
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.
-                                When omitted, the embedded auth server runs in synthesis mode for this
-                                upstream: a non-PII subject derived from the access token, no Name/Email.
-                                Use this shape for upstreams with no userinfo surface (e.g., MCP
-                                authorization servers per the MCP spec).
+                                When omitted and IdentityFromToken is also unset, the embedded auth server runs in
+                                synthesis mode for this upstream: a non-PII subject derived from the access token, no
+                                Name/Email. Use this shape for upstreams with no userinfo surface and no identity in
+                                the token response (e.g., MCP authorization servers per the MCP spec). When
+                                IdentityFromToken is set instead, identity is resolved from the token response body
+                                (e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call
+                                is skipped entirely.
                               properties:
                                 additionalHeaders:
                                   additionalProperties:
@@ -3343,6 +3386,45 @@ spec:
                               - message: exactly one of discoveryUrl or registrationEndpoint
                                   must be set
                                 rule: has(self.discoveryUrl) != has(self.registrationEndpoint)
+                            identityFromToken:
+                              description: |-
+                                IdentityFromToken extracts user identity (subject, name, email) directly
+                                from the OAuth2 token-endpoint response body using gjson dot-notation paths.
+                                When set, the embedded auth server skips the userinfo HTTP call entirely
+                                and resolves identity from the token response. See IdentityFromTokenConfig
+                                for trust-model and uniqueness considerations.
+                              properties:
+                                emailPath:
+                                  description: |-
+                                    EmailPath is the dot-notation path to the email address field in the token response.
+                                    If not specified or if the path does not resolve to a string, the email is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                namePath:
+                                  description: |-
+                                    NamePath is the dot-notation path to the display name field in the token response.
+                                    If not specified or if the path does not resolve to a string, the display name is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                subjectPath:
+                                  description: |-
+                                    SubjectPath is the dot-notation path to the subject (user ID) field in the token response.
+                                    Warning: claims read from the token response are trusted only via TLS, not
+                                    cryptographically verified; prefer OIDC ID tokens when verifiable claims are required.
+                                    Example: "authed_user.id" for Slack (top-level token-response field). For providers
+                                    whose token response embeds the access token as a JWT (e.g. Snowflake), use the
+                                    "@upstreamjwt" modifier to decode the payload, e.g. "access_token|@upstreamjwt|sub".
+                                    The "@upstreamjwt" modifier performs no signature verification either.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - subjectPath
+                              type: object
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -3368,6 +3450,7 @@ spec:
                                 instead of returning them at the top level. When set, ToolHive performs the token
                                 exchange HTTP call directly and extracts fields using the configured dot-notation paths.
                                 If nil, standard OAuth 2.0 token response parsing is used.
+                                For extracting user identity from the token response, see IdentityFromToken.
                               properties:
                                 accessTokenPath:
                                   description: |-
@@ -3396,10 +3479,13 @@ spec:
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.
-                                When omitted, the embedded auth server runs in synthesis mode for this
-                                upstream: a non-PII subject derived from the access token, no Name/Email.
-                                Use this shape for upstreams with no userinfo surface (e.g., MCP
-                                authorization servers per the MCP spec).
+                                When omitted and IdentityFromToken is also unset, the embedded auth server runs in
+                                synthesis mode for this upstream: a non-PII subject derived from the access token, no
+                                Name/Email. Use this shape for upstreams with no userinfo surface and no identity in
+                                the token response (e.g., MCP authorization servers per the MCP spec). When
+                                IdentityFromToken is set instead, identity is resolved from the token response body
+                                (e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call
+                                is skipped entirely.
                               properties:
                                 additionalHeaders:
                                   additionalProperties:

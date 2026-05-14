@@ -338,6 +338,13 @@ const (
 	// ConditionReasonIncomingAuthInvalid indicates incoming auth is invalid
 	ConditionReasonIncomingAuthInvalid = "IncomingAuthInvalid"
 
+	// Note: ConditionReasonAuthzConfigMapNotFound is shared with MCPRemoteProxy and is
+	// declared in mcpremoteproxy_types.go.
+
+	// ConditionReasonAuthzConfigMapInvalid indicates the referenced authz ConfigMap was
+	// found but its payload is missing/empty/malformed or fails Cedar validation.
+	ConditionReasonAuthzConfigMapInvalid = "AuthzConfigMapInvalid"
+
 	// ConditionReasonGroupRefValid indicates the GroupRef is valid
 	ConditionReasonVirtualMCPServerGroupRefValid = "GroupRefValid"
 

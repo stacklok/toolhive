@@ -3551,9 +3551,9 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 		return &mcpv1beta1.AuthzConfigRef{
 			Type: "inline",
 			Inline: &mcpv1beta1.InlineAuthzConfig{
-				Policies:                []string{`permit(principal, action, resource);`},
-				PrimaryUpstreamProvider: primary,
+				Policies: []string{`permit(principal, action, resource);`},
 			},
+			PrimaryUpstreamProvider: primary,
 		}
 	}
 
@@ -3955,9 +3955,9 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_ClearsStaleAuthzUnknown(
 			authzRef := &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
-					PrimaryUpstreamProvider: "okta",
+					Policies: []string{`permit(principal, action, resource);`},
 				},
+				PrimaryUpstreamProvider: "okta",
 			}
 
 			vmcp := &mcpv1beta1.VirtualMCPServer{

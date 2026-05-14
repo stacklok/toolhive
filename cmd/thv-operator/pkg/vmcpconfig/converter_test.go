@@ -1953,9 +1953,9 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 		return &mcpv1beta1.AuthzConfigRef{
 			Type: "inline",
 			Inline: &mcpv1beta1.InlineAuthzConfig{
-				Policies:                []string{`permit(principal, action, resource);`},
-				PrimaryUpstreamProvider: primary,
+				Policies: []string{`permit(principal, action, resource);`},
 			},
+			PrimaryUpstreamProvider: primary,
 		}
 	}
 	inlineAuthzRef := authzWith("")

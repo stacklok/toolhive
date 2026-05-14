@@ -42,6 +42,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
 // MCPServerReconciler reconciles a MCPServer object
@@ -1144,6 +1145,11 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			})
 		}
 	}
+
+	// Mount Redis password secret when session storage provider is Redis.
+	// Appended after user overrides so the secretRef-backed env wins on
+	// name collision (ResourceOverrides.Env only accepts plain strings).
+	env = append(env, r.buildRedisPasswordEnvVar(m)...)
 
 	// Add volume mounts for user-defined volumes
 	for _, v := range m.Spec.Volumes {
@@ -2445,6 +2451,27 @@ func (r *MCPServerReconciler) validateSessionStorageForReplicas(ctx context.Cont
 	if err := r.Status().Update(ctx, mcpServer); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to update MCPServer status after session storage validation")
 	}
+}
+
+// buildRedisPasswordEnvVar returns the THV_SESSION_REDIS_PASSWORD env var when
+// sessionStorage.provider == "redis" and passwordRef is set; returns nil otherwise.
+func (*MCPServerReconciler) buildRedisPasswordEnvVar(m *mcpv1beta1.MCPServer) []corev1.EnvVar {
+	if m.Spec.SessionStorage == nil ||
+		m.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis ||
+		m.Spec.SessionStorage.PasswordRef == nil {
+		return nil
+	}
+	return []corev1.EnvVar{{
+		Name: session.RedisPasswordEnvVar,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: m.Spec.SessionStorage.PasswordRef.Name,
+				},
+				Key: m.Spec.SessionStorage.PasswordRef.Key,
+			},
+		},
+	}}
 }
 
 // setRateLimitConfigCondition sets the RateLimitConfigValid status condition.

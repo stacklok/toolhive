@@ -381,6 +381,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 
 	serverCfg := &vmcpserver.Config{
 		Name:                    vmcpCfg.Name,
+		Namespace:               vmcpNamespace(),
 		Version:                 versions.Version,
 		GroupRef:                vmcpCfg.Group,
 		Host:                    cfg.Host,
@@ -399,6 +400,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		OptimizerConfig:         optCfg,
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
+		RateLimiting:            vmcpCfg.RateLimiting,
 	}
 
 	// Assign Watcher only when backendWatcher is non-nil. A typed nil
@@ -532,6 +534,14 @@ func generateQuickModeConfig(groupRef string) (*config.Config, error) {
 		return nil, fmt.Errorf("quick-mode config validation failed: %w", err)
 	}
 	return cfg, nil
+}
+
+func vmcpNamespace() string {
+	namespace := os.Getenv("VMCP_NAMESPACE")
+	if namespace == "" {
+		return "local"
+	}
+	return namespace
 }
 
 // loadAuthServerConfig loads the auth server RunConfig from a sibling file

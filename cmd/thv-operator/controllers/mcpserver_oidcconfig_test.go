@@ -224,7 +224,10 @@ func TestMCPServerReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) 
 
 		cfg := &mcpv1beta1.MCPOIDCConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-			Status:     mcpv1beta1.MCPOIDCConfigStatus{ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef}},
+			Status: mcpv1beta1.MCPOIDCConfigStatus{
+				ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef},
+				ReferenceCount:       1,
+			},
 		}
 		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cfg).
 			WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()
@@ -244,7 +247,10 @@ func TestMCPServerReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) 
 
 		cfg := &mcpv1beta1.MCPOIDCConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-			Status:     mcpv1beta1.MCPOIDCConfigStatus{ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef}},
+			Status: mcpv1beta1.MCPOIDCConfigStatus{
+				ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef},
+				ReferenceCount:       1,
+			},
 		}
 		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cfg).
 			WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()

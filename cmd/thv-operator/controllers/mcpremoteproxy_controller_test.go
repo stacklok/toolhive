@@ -1408,7 +1408,7 @@ func TestMCPRemoteProxyReconciler_updateOIDCConfigReferencingWorkloads(t *testin
 			expectedCount: 2,
 		},
 		{
-			name:          "updates stale count for existing reference",
+			name:          "does not duplicate existing reference",
 			proxyName:     "existing",
 			expectedRefs:  []mcpv1beta1.WorkloadReference{existingRef},
 			expectedCount: 1,
@@ -1427,6 +1427,7 @@ func TestMCPRemoteProxyReconciler_updateOIDCConfigReferencingWorkloads(t *testin
 				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
 				Status: mcpv1beta1.MCPOIDCConfigStatus{
 					ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef},
+					ReferenceCount:       1,
 				},
 			}
 			fakeClient := fake.NewClientBuilder().

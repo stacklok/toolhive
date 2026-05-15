@@ -15,13 +15,18 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
+	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	routerMocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
 )
 
 func TestBuildRateLimitMiddlewareDisabledWithoutConfig(t *testing.T) {
@@ -51,6 +56,82 @@ func TestBuildRateLimitMiddlewareRequiresRedisSessionStorage(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "requires Redis session storage")
+	assert.Nil(t, middleware)
+	assert.Nil(t, cleanup)
+}
+
+func TestBuildRateLimitMiddlewareRequiresRedisAddress(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{
+		config: &Config{
+			Name:         "vmcp",
+			Namespace:    "default",
+			RateLimiting: sharedRateLimitConfig(1),
+			SessionStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+			},
+		},
+	}
+
+	middleware, cleanup, err := s.buildRateLimitMiddleware(t.Context())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires Redis session storage address")
+	assert.Nil(t, middleware)
+	assert.Nil(t, cleanup)
+}
+
+func TestBuildRateLimitMiddlewareRedisPingFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	s := &Server{
+		config: &Config{
+			Name:         "vmcp",
+			Namespace:    "default",
+			RateLimiting: sharedRateLimitConfig(1),
+			SessionStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "127.0.0.1:1",
+			},
+		},
+	}
+
+	middleware, cleanup, err := s.buildRateLimitMiddleware(ctx)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to connect to Redis")
+	assert.Nil(t, middleware)
+	assert.Nil(t, cleanup)
+}
+
+func TestBuildRateLimitMiddlewareInvalidRateLimitConfig(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	s := &Server{
+		config: &Config{
+			Name:      "vmcp",
+			Namespace: "default",
+			RateLimiting: &ratelimittypes.RateLimitConfig{
+				Shared: &ratelimittypes.RateLimitBucket{
+					MaxTokens:    0,
+					RefillPeriod: metav1.Duration{Duration: time.Minute},
+				},
+			},
+			SessionStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  mr.Addr(),
+			},
+		},
+	}
+
+	middleware, cleanup, err := s.buildRateLimitMiddleware(t.Context())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create rate limiter")
 	assert.Nil(t, middleware)
 	assert.Nil(t, cleanup)
 }
@@ -148,6 +229,96 @@ func TestRateLimitToolNameFallsBackToCallTool(t *testing.T) {
 	}
 
 	assert.Equal(t, "call_tool", s.rateLimitToolName(parsed))
+}
+
+func TestRateLimitToolNameNilParsedRequest(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{config: &Config{}}
+
+	assert.Empty(t, s.rateLimitToolName(nil))
+}
+
+func TestRateLimitToolNameOptimizerFallsBackForInvalidInnerToolName(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{config: &Config{OptimizerConfig: &optimizer.Config{}}}
+	parsed := &mcpparser.ParsedMCPRequest{
+		Method:     "tools/call",
+		ResourceID: "call_tool",
+		Arguments:  map[string]any{"tool_name": 123},
+	}
+
+	assert.Equal(t, "call_tool", s.rateLimitToolName(parsed))
+}
+
+func TestApplyRateLimitingWrapsConfiguredMiddleware(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{
+		rateLimitMiddleware: func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Rate-Limit-Test", "wrapped")
+				next.ServeHTTP(w, r)
+			})
+		},
+	}
+	handler := s.applyRateLimiting(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Equal(t, "wrapped", rec.Header().Get("X-Rate-Limit-Test"))
+}
+
+func TestApplyAuthorizationWrapsConfiguredMiddleware(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{config: &Config{
+		AuthzMiddleware: func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Authz-Test", "wrapped")
+				next.ServeHTTP(w, r)
+			})
+		},
+	}}
+	handler := s.applyAuthorization(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Equal(t, "wrapped", rec.Header().Get("X-Authz-Test"))
+}
+
+func TestNewDefaultsNamespace(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+
+	s, err := New(
+		t.Context(),
+		&Config{SessionFactory: testMinimalFactory()},
+		mockRouter,
+		mockBackendClient,
+		mockDiscoveryMgr,
+		vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+		nil,
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "local", s.config.Namespace)
 }
 
 func newTestRateLimitHandler(t *testing.T, cfg *Config) http.Handler {

@@ -13,11 +13,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
+	transportmocks "github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
 
 // dummyLimiter is a test double for the Limiter interface.
@@ -207,4 +213,71 @@ func TestRateLimitHandler_NoIdentityPassesEmptyUserID(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "echo", recorder.toolName)
 	assert.Empty(t, recorder.userID, "unauthenticated requests should pass empty userID")
+}
+
+func TestDefaultToolNameResolverNilParsedRequest(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, DefaultToolNameResolver(nil))
+}
+
+func TestNewMiddlewareUsesCustomToolNameResolver(t *testing.T) {
+	t.Parallel()
+
+	recorder := &recordingLimiter{}
+	handler := NewMiddleware(recorder, func(*mcp.ParsedMCPRequest) string {
+		return "resolved-tool"
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req = withParsedMCPRequest(req, "tools/call", "raw-tool", 1)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "resolved-tool", recorder.toolName)
+}
+
+func TestRateLimitMiddlewareHandlerReturnsConfiguredHandler(t *testing.T) {
+	t.Parallel()
+
+	expected := rateLimitHandler(&dummyLimiter{decision: &Decision{Allowed: true}})
+	mw := &rateLimitMiddleware{handler: expected}
+
+	assert.NotNil(t, mw.Handler())
+}
+
+func TestCreateMiddlewareRegistersUsableMiddleware(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	cfg, err := transporttypes.NewMiddlewareConfig(MiddlewareType, MiddlewareParams{
+		Namespace:  "default",
+		ServerName: "server",
+		RedisAddr:  mr.Addr(),
+		Config: &v1beta1.RateLimitConfig{
+			Shared: &v1beta1.RateLimitBucket{
+				MaxTokens:    1,
+				RefillPeriod: metav1.Duration{Duration: time.Minute},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	ctrl := gomock.NewController(t)
+	runner := transportmocks.NewMockMiddlewareRunner(ctrl)
+	var registered transporttypes.Middleware
+	runner.EXPECT().
+		AddMiddleware(MiddlewareType, gomock.AssignableToTypeOf(&rateLimitMiddleware{})).
+		Do(func(_ string, middleware transporttypes.Middleware) {
+			registered = middleware
+		})
+
+	require.NoError(t, CreateMiddleware(cfg, runner))
+	require.NotNil(t, registered)
+	require.NotNil(t, registered.Handler())
+	require.NoError(t, registered.Close())
 }

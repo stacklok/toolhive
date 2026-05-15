@@ -337,6 +337,20 @@ func TestValidateQuickModeHost(t *testing.T) {
 	}
 }
 
+func TestVMCPNamespace(t *testing.T) {
+	t.Run("defaults to local", func(t *testing.T) {
+		t.Setenv("VMCP_NAMESPACE", "")
+
+		assert.Equal(t, "local", vmcpNamespace())
+	})
+
+	t.Run("uses environment value", func(t *testing.T) {
+		t.Setenv("VMCP_NAMESPACE", "toolhive-system")
+
+		assert.Equal(t, "toolhive-system", vmcpNamespace())
+	})
+}
+
 // TestRunDiscovery_ZeroBackends exercises the branch in runDiscovery where the
 // discoverer succeeds but returns no backends. The function must return a
 // non-error, an empty (non-nil) backend slice, and pass through the client and
